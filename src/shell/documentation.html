@@ -60,7 +60,7 @@
         <li><a role="button" id="signOut" href="/auth/logout" hidden>Sign out</a></li>
       </ul>
     </nav>
-    <main class="container">
+    <main class="container documentation">
       <!-- The mark and the wordmark, once, above whatever the page is showing. -->
       <div class="hero">
         <svg class="mark" aria-hidden="true"><use href="#logomark" /></svg>
@@ -68,11 +68,19 @@
       </div>
       <p class="tagline">A free collaborative platform to comment on HTML and Markdown documents</p>
 
-      <!-- The project's README, rendered into the shell at build time. There is
-           no copy of the text here: the placeholder is replaced with rendered
-           markdown when the shell is loaded, so the page and the README cannot
-           drift apart. -->
-      <article class="prose">__README__</article>
+      <div class="documentation-layout">
+        <aside class="toc" aria-label="Table of contents">
+          <details open>
+            <summary>Contents</summary>
+            <nav id="tableOfContents"></nav>
+          </details>
+        </aside>
+        <!-- The project's README, rendered into the shell at build time. There is
+             no copy of the text here: the placeholder is replaced with rendered
+             markdown when the shell is loaded, so the page and the README cannot
+             drift apart. -->
+        <article class="prose">__README__</article>
+      </div>
     </main>
     <dialog id="imageLightbox" class="image-lightbox" aria-label="Expanded image">
       <button type="button" aria-label="Close expanded image">×</button>
@@ -118,6 +126,28 @@
       lightbox.addEventListener("click", (event) => {
         if (event.target === lightbox) lightbox.close();
       });
+
+      const toc = document.getElementById("tableOfContents");
+      const headings = [...document.querySelectorAll(".prose h2, .prose h3")];
+      headings.forEach((heading) => {
+        const link = document.createElement("a");
+        link.href = `#${heading.id}`;
+        link.textContent = heading.textContent;
+        link.dataset.level = heading.tagName.slice(1);
+        toc.appendChild(link);
+      });
+      if (!headings.length) toc.closest(".toc").hidden = true;
+
+      const activate = (id) => {
+        toc.querySelectorAll("a").forEach((link) => {
+          link.toggleAttribute("aria-current", link.hash === `#${id}`);
+        });
+      };
+      const observer = new IntersectionObserver(
+        (entries) => entries.forEach((entry) => entry.isIntersecting && activate(entry.target.id)),
+        { rootMargin: "-15% 0px -70% 0px", threshold: 0 },
+      );
+      headings.forEach((heading) => observer.observe(heading));
     </script>
   </body>
 </html>

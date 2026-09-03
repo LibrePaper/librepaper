@@ -39,6 +39,14 @@ If you do not want to log in but want to try annotating some documents, you can 
 - [Marimo: How Far Does a Drunk Walk?](https://komodoc.vincentarelbundock.workers.dev/docs/marimo-how-far-does-a-drunk-walk)
 - [Publication and management console](https://komodoc.vincentarelbundock.workers.dev) (requires Github Login)
 
+<aside class="callout warning">
+<strong>Warning:</strong> Do not publish confidential information on the Komodoc
+sandbox. Documents are only visible to the person who uploaded them or to people
+with the randomly generated link. If you are gathering comments on documents
+about national security, you should <a href="#self-managed-server">host your own
+instance</a> instead.
+</aside>
+
 ## Publish
 
 A hosted Komodoc service is called an *endpoint*. You can use the sandbox

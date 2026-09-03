@@ -722,6 +722,10 @@ footer.grid > [role="button"] {
 
 /* ---------------------------------------------------------- documentation */
 
+.documentation {
+  max-width: 90rem;
+}
+
 /* The middle group sits between the two the flex row pushes apart. */
 nav > ul.navmid {
   margin: 0 auto;
@@ -749,6 +753,98 @@ nav > ul.navmid svg {
 .prose {
   max-width: 64rem;
   margin: 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.prose a {
+  color: #236fbe;
+  text-decoration-thickness: 0.1em;
+  text-underline-offset: 0.15em;
+}
+.prose a:visited {
+  color: #236fbe;
+}
+.callout {
+  padding: 1rem 1.2rem;
+  border: 1px solid color-mix(in srgb, var(--pico-del-color) 45%, var(--pico-muted-border-color));
+  border-left: 0.3rem solid var(--pico-del-color);
+  border-radius: var(--pico-border-radius);
+  background: color-mix(in srgb, var(--pico-del-color) 8%, var(--pico-background-color));
+}
+.callout.warning {
+  color: var(--pico-color);
+}
+.documentation-layout {
+  max-width: 64rem;
+  margin: 0 auto;
+}
+.toc {
+  margin-bottom: 1.5rem;
+}
+.toc details {
+  margin-bottom: 0;
+}
+.toc summary {
+  color: var(--pico-muted-color);
+  font-size: 0.9rem;
+}
+.toc nav {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.6rem;
+}
+.toc a {
+  display: block;
+  padding-left: 0.6rem;
+  border-left: 2px solid transparent;
+  color: var(--pico-muted-color);
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+.toc a[data-level="3"] {
+  padding-left: 1.25rem;
+  font-size: 0.8rem;
+}
+.toc a:hover,
+.toc a[aria-current] {
+  border-left-color: var(--pico-primary);
+  color: var(--pico-primary);
+}
+@media (min-width: 1100px) {
+  .documentation-layout {
+    max-width: 80rem;
+    display: grid;
+    grid-template-columns: minmax(0, 64rem) 12rem;
+    gap: 2rem;
+    align-items: start;
+  }
+  .toc {
+    grid-column: 2;
+    grid-row: 1;
+    position: sticky;
+    top: calc(var(--komodoc-bar) + 1rem);
+    margin-bottom: 0;
+  }
+  .toc details {
+    border: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .toc summary {
+    cursor: default;
+    list-style: none;
+  }
+  .toc summary::-webkit-details-marker {
+    display: none;
+  }
+  .prose {
+    grid-column: 1;
+    grid-row: 1;
+  }
 }
 .prose img {
   display: block;

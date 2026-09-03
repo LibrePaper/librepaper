@@ -555,9 +555,16 @@ async function deleteDocument(env, slug) {
 async function documentRoom(env, request, slug, entry) {
   if (!entry) return null;
   if (!entry.example) return room(env, slug);
+  // Each example room is a Durable Object of its own, so what names the room
+  // decides how many can be conjured. A signed-in reader gets one per
+  // account. An anonymous reader gets one per network address rather than
+  // per visitor cookie: the shell hands out a fresh cookie to any request
+  // that has none, so a cookie is free to rotate and an address is not.
+  // Readers behind one address share a sandbox, which for an example that
+  // resets itself hourly is an acceptable trade.
   const login = request.headers.get("x-komodoc-login") || "";
-  const visitor = await readVisitor(env, cookieValue(request, VISITOR_COOKIE));
-  const identity = login ? `github:${login.toLowerCase()}` : `browser:${visitor || "missing"}`;
+  const address = request.headers.get("cf-connecting-ip") || "missing";
+  const identity = login ? `github:${login.toLowerCase()}` : `address:${address}`;
   const stub = room(env, `example:${slug}:${identity}`);
   await stub.fetch(new Request(
     `https://internal/ensure?slug=${encodeURIComponent(slug)}&revision=${entry.example_revision || ""}`,
