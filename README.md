@@ -125,10 +125,9 @@ The maintainer's sandbox also deploys with `--examples`. This reserves the four
 curated example notebooks and gives each visitor a personal annotation room
 that resets after an hour. Ordinary notebooks remain shared and collaborative.
 
-The stable examples are [Bootstrap](https://komodoc.vincentarelbundock.workers.dev/docs/what-the-bootstrap-actually-resamples),
-[Newton's method](https://komodoc.vincentarelbundock.workers.dev/docs/newton-s-method-is-not-always-your-friend),
-[quantitative writing](https://komodoc.vincentarelbundock.workers.dev/docs/a-short-style-guide-for-quantitative-writing),
-and [random walks](https://komodoc.vincentarelbundock.workers.dev/docs/how-far-does-a-drunk-walk).
+The stable examples are:
+- [Calepin example](https://komodoc.vincentarelbundock.workers.dev/docs/what-the-bootstrap-actually-resamples) — Calepin
+- [Quarto example](https://komodoc.vincentarelbundock.workers.dev/docs/a-short-style-guide-for-quantitative-writing) — Quarto
 
 ## Export comments
 
