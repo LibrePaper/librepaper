@@ -34,9 +34,10 @@ func publishAs(t *testing.T, base, login, title string, slug ...string) string {
 	return text(document["slug"])
 }
 
-// visitorAs is the cookie the shell hands a browser that has not signed in.
+// visitorAs is the cookie the shell hands a browser that has not signed in:
+// signed, as issueVisitor would mint it, so owner() accepts it.
 func visitorAs(id string) string {
-	return visitorCookie + "=" + id
+	return visitorCookie + "=" + signVisitor(testKey, id)
 }
 
 // publishWith uploads carrying whatever cookie is given, including none.

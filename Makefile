@@ -122,6 +122,9 @@ deploy: seed  ## Seed the examples and serve them on this machine, no sign-in
 
 # The label is the first component of the endpoint host, so the URL is stated
 # once and the two cannot drift apart.
+# Only these accounts may install the reserved examples; they never expire.
+EXAMPLE_PUBLISHERS ?= vincentarelbundock
+
 SANDBOX_LABEL = $(firstword $(subst ., ,$(patsubst https://%,%,$(KOMODOC_ENDPOINT_SANDBOX))))
 
 deploy-sandbox: $(BIN) $(EXAMPLES)  ## Deploy to Cloudflare and publish the examples there
@@ -133,18 +136,13 @@ deploy-sandbox: $(BIN) $(EXAMPLES)  ## Deploy to Cloudflare and publish the exam
 	@KOMODOC_GITHUB_CLIENT_ID="$$KOMODOC_GITHUB_CLIENT_ID_SANDBOX" \
 		KOMODOC_GITHUB_CLIENT_SECRET="$$KOMODOC_GITHUB_CLIENT_SECRET_SANDBOX" \
 		$(BIN) deploy --label $(SANDBOX_LABEL) \
-		--publishers $(PUBLISHERS) --commenters $(COMMENTERS) --examples
+		--publishers $(PUBLISHERS) --commenters $(COMMENTERS) --examples $(EXAMPLE_PUBLISHERS) \
+		--max-size 4 --quota 100 --expire-after 24h
 	@$(BIN) login --client-id "$$KOMODOC_GITHUB_CLIENT_ID_SANDBOX" --endpoint "$$KOMODOC_ENDPOINT_SANDBOX"
 	@$(BIN) seed --endpoint "$$KOMODOC_ENDPOINT_SANDBOX"
 
-# Make cannot put anything into the shell that invoked it, so this prints the
-# assignments and you eval them:
-# A shell with the keys already in its environment. Nothing is printed and no
-# process outside that subshell ever sees them; exit it to drop them again.
-#
-# No target can export into the shell that ran make -- that is a process
-# boundary, not something a flag can cross -- so a one-off command is wrapped
-# rather than exported:
+# A target cannot export into the shell that ran make, so `secrets` opens a
+# subshell with the keys loaded. A one-off command can be wrapped as:
 #
 #     sops exec-env $(KEYS) 'make deploy-sandbox'
 KEYS ?= .keys.yaml

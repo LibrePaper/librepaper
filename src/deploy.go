@@ -73,7 +73,7 @@ type deployOptions struct {
 	commenters   string
 	expireAfter  string
 	expireFrom   string
-	examples     bool
+	examples     string
 }
 
 func deploy(options deployOptions) {
@@ -128,7 +128,15 @@ func deploy(options deployOptions) {
 	bindings = append(bindings, settingBinding(cf, existing, "KOMODOC_GITHUB_CLIENT_ID", clientID))
 	bindings = append(bindings, settingBinding(cf, existing, "KOMODOC_PUBLISHERS", publishers.String()))
 	bindings = append(bindings, settingBinding(cf, existing, "KOMODOC_COMMENTERS", commenters.String()))
-	bindings = append(bindings, map[string]string{"type": "plain_text", "name": "KOMODOC_EXAMPLES", "text": fmt.Sprint(options.examples)})
+	// Who may install the reserved examples. Empty disables them. The Worker
+	// reads it as a login list, and only those accounts may publish a document
+	// with the example flag set: an example never expires and cannot be
+	// deleted through the API, so it must not be anyone's to create.
+	examples := parsePolicy(options.examples)
+	if examples.Public || examples.Any {
+		die("--examples takes the GitHub logins allowed to install the examples, not 'any' or 'anyone'")
+	}
+	bindings = append(bindings, map[string]string{"type": "plain_text", "name": "KOMODOC_EXAMPLES", "text": examples.String()})
 	if existing && expireAfterValue == "" {
 		bindings = append(bindings, map[string]string{"type": "inherit", "name": "KOMODOC_EXPIRE_SECONDS"})
 		bindings = append(bindings, map[string]string{"type": "inherit", "name": "KOMODOC_EXPIRE_FROM"})
@@ -198,7 +206,7 @@ func deploy(options deployOptions) {
 		schedules := []any{}
 		if retention > 0 {
 			schedules = append(schedules, map[string]string{"cron": "0 * * * *"})
-			fmt.Printf("  expiry: %s after %s (daily cleanup)\n", expireFrom, retention)
+			fmt.Printf("  expiry: %s after %s (hourly cleanup)\n", expireFrom, retention)
 		}
 		cf.callJSON("PUT", "/accounts/"+cf.account+"/workers/scripts/"+scriptName+"/schedules", schedules)
 	}

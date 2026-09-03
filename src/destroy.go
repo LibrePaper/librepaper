@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -176,4 +177,11 @@ func parseObjects(result json.RawMessage) ([]string, string) {
 		keys = append(keys, entry.Key)
 	}
 	return keys, paged.Cursor
+}
+
+// sortByUpdated orders documents oldest first, as the destroy listing does.
+func sortByUpdated(documents []map[string]any) {
+	sort.SliceStable(documents, func(i, j int) bool {
+		return text(documents[i]["updated_at"]) < text(documents[j]["updated_at"])
+	})
 }

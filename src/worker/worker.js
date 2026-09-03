@@ -90,7 +90,35 @@ function cookieValue(request, name) {
   return "";
 }
 
+// signVisitor and readVisitor sign the visitor cookie the same way sessions
+// are signed, over the same key: a client that could set komodoc_visitor to
+// anything would manufacture as many owners -- and, through documentRoom, as
+// many Durable Objects -- as it liked.
+async function signVisitor(env, token) {
+  return `${token}.${await signPayload(env.KOMODOC_SESSION_KEY || "", token)}`;
+}
+
+async function readVisitor(env, cookie) {
+  const [token, signature] = String(cookie || "").split(".");
+  if (!token || !signature) return "";
+  if ((await signPayload(env.KOMODOC_SESSION_KEY || "", token)) !== signature) return "";
+  return token;
+}
+
+// bearerCache remembers who a GitHub token belongs to for five minutes, so a
+// CLI session that calls the API repeatedly does not cost a GitHub request
+// per call. Isolates are short-lived, so this stays small on its own; the
+// cap below is a backstop against an isolate that somehow lives long enough
+// to see many distinct tokens.
+const bearerCache = new Map();
+const BEARER_TTL_MS = 5 * 60 * 1000;
+const BEARER_CACHE_LIMIT = 1000;
+
 async function githubLogin(token) {
+  const key = await sha256(token);
+  const cached = bearerCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.login;
+
   const response = await fetch("https://api.github.com/user", {
     headers: {
       authorization: `Bearer ${token}`,
@@ -99,7 +127,10 @@ async function githubLogin(token) {
     },
   });
   if (!response.ok) return "";
-  return (await response.json()).login || "";
+  const login = (await response.json()).login || "";
+  if (bearerCache.size >= BEARER_CACHE_LIMIT) bearerCache.clear();
+  bearerCache.set(key, { login, expires: Date.now() + BEARER_TTL_MS });
+  return login;
 }
 
 // whoami identifies a caller: a browser by its session cookie, the CLI by the
@@ -118,17 +149,20 @@ async function whoami(request, env) {
 //
 // A caller with neither -- the CLI publishing to a deployment open to
 // everyone -- owns nothing, and their uploads stay shared.
-function ownerKey(request, login) {
+async function ownerKey(request, env, login) {
   if (login) return login;
-  const visitor = cookieValue(request, VISITOR_COOKIE);
+  const visitor = await readVisitor(env, cookieValue(request, VISITOR_COOKIE));
   return visitor ? VISITOR_PREFIX + visitor : "";
 }
 
-// publisher returns { owner } when allowed, or { refusal } to send back.
+// publisher returns { owner, login } when allowed, or { refusal } to send
+// back. login is returned alongside owner so a caller that needs it too --
+// the example gate, in particular -- does not have to verify identity a
+// second time.
 async function publisher(request, env) {
   const login = (await whoami(request, env)).toLowerCase();
   const policy = parsePolicy(env.KOMODOC_PUBLISHERS);
-  if (policyAllows(policy, login)) return { owner: ownerKey(request, login) };
+  if (policyAllows(policy, login)) return { owner: await ownerKey(request, env, login), login };
   if (!login) return { refusal: json({ error: "sign in with GitHub to publish" }, 401) };
   return {
     refusal: json(
@@ -136,6 +170,13 @@ async function publisher(request, env) {
       403,
     ),
   };
+}
+
+// Reserved examples are installed only by the accounts a deployment names
+// with --examples; the policy is never "any" or "anyone" (deploy refuses to
+// configure it that way), so a non-empty login list is what "enabled" means.
+function examplesEnabled(env) {
+  return parsePolicy(env.KOMODOC_EXAMPLES).logins.length > 0;
 }
 
 // A document with no publisher belongs to no one in particular and stays
@@ -269,10 +310,18 @@ function withAgent(html, reader) {
   return at >= 0 ? html.slice(0, at) + tag + html.slice(at) : html + tag;
 }
 
-async function handleUpload(request, env) {
-  // Checked before the body is read, so an unauthorised upload costs nothing.
-  const { owner, refusal } = await publisher(request, env);
-  if (refusal) return refusal;
+// readUpload parses the two upload shapes -- a JSON body from the CLI and
+// API clients, a multipart form from the browser -- into the fields a
+// document needs. It returns those fields, or the Response to send back when
+// the body cannot be read at all. Nothing here checks who is allowed to
+// upload or where it will be stored; that is the storage half's job.
+async function readUpload(request) {
+  // JSON escaping can inflate a document, so the body is allowed to be
+  // larger than MAX_HTML on the wire; the real check is on the decoded bytes
+  // below. Refusing on the header keeps an oversized body from being read at
+  // all, before a single byte of it is spent.
+  const contentLength = Number(request.headers.get("content-length") || 0);
+  if (contentLength > MAX_HTML * 2 + 1024) return json({ error: "document too large" }, 413);
 
   let title, slug, html, example = false, annotations = [];
   const type = request.headers.get("content-type") || "";
@@ -302,7 +351,89 @@ async function handleUpload(request, env) {
   title = String(title || "").trim();
   html = String(html || "");
   if (!title || !html.trim()) return json({ error: "title and html are required" }, 400);
-  if (html.length > MAX_HTML) return json({ error: "document too large" }, 413);
+
+  // The byte length, not the character length: a document full of multi-byte
+  // characters can be well under MAX_HTML in .length and over it in bytes,
+  // which is what R2 and the quotas below actually charge for.
+  const size = new TextEncoder().encode(html).byteLength;
+  if (size > MAX_HTML) return json({ error: "document too large" }, 413);
+
+  return { title, slug, html, example: Boolean(example), annotations, size };
+}
+
+// Thrown from inside updateIndex's mutate callback. The callback runs
+// unguarded in updateIndex's retry loop, so throwing from it exits that loop
+// immediately rather than being retried as though the ETag had merely lost a
+// race -- a quota refusal is not a race to retry.
+class QuotaRefusal {
+  constructor(response) {
+    this.response = response;
+  }
+}
+
+// checkQuota enforces the deployment's storage ceilings against one snapshot
+// of the index. Entries written before sizes were tracked count as zero
+// bytes, so old documents can never by themselves blow a quota. It returns
+// the refusal Response to send back, or null when the upload may proceed.
+function checkQuota(entries, owner, key, size) {
+  const existing = entries[key];
+  const replacing = Boolean(existing);
+  const sameOwner = replacing && (existing.publisher || "") === owner;
+  const cutoff = Date.now() - 3600 * 1000;
+
+  let total = 0, ownerBytes = 0, ownerDocs = 0, recentUploads = 0;
+  for (const [entrySlug, entry] of Object.entries(entries)) {
+    const entrySize = entry.size || 0;
+    total += entrySize;
+    if ((entry.publisher || "") === owner) {
+      ownerBytes += entrySize;
+      if (entrySlug !== key) ownerDocs++;
+      if (Date.parse(entry.updated_at) >= cutoff) recentUploads++;
+    }
+  }
+  // A replacement's old bytes are leaving, not staying, so they do not count
+  // against the room the new version needs.
+  if (replacing) total -= existing.size || 0;
+  if (sameOwner) ownerBytes -= existing.size || 0;
+
+  if (total + size > CONFIG.storage.total) {
+    return json({ error: "this deployment has no room left" }, 507);
+  }
+  if (ownerBytes + size > CONFIG.storage.per_owner) {
+    return json({ error: "your storage quota is used up; delete a document first" }, 507);
+  }
+  if (!replacing && ownerDocs >= CONFIG.storage.documents_per_owner) {
+    return json({ error: "you have reached the document limit; delete one first" }, 507);
+  }
+  if (recentUploads >= CONFIG.storage.uploads_per_hour) {
+    return json({ error: "too many uploads this hour; try later" }, 429);
+  }
+  return null;
+}
+
+// deleteStaleVersions removes every stored version of a document except the
+// one the index now names. The reader only ever asks for the current digest,
+// so nothing references an older one; on a document's first version there is
+// nothing here to remove.
+async function deleteStaleVersions(env, key, digest) {
+  const keep = `documents/${key}/${digest}.html`;
+  let cursor;
+  do {
+    const listing = await env.DOCS.list({ prefix: `documents/${key}/`, cursor });
+    const stale = listing.objects.filter((object) => object.key !== keep);
+    if (stale.length) await env.DOCS.delete(stale.map((object) => object.key));
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+}
+
+async function handleUpload(request, env) {
+  // Checked before the body is read, so an unauthorised upload costs nothing.
+  const { owner, login, refusal } = await publisher(request, env);
+  if (refusal) return refusal;
+
+  const parsed = await readUpload(request);
+  if (parsed instanceof Response) return parsed;
+  const { title, slug, html, example, annotations, size } = parsed;
 
   const base = slugify(slug) || slugify(title);
   if (!base) return json({ error: "could not derive a slug" }, 400);
@@ -311,38 +442,72 @@ async function handleUpload(request, env) {
   // keeps its URL and its comments. Anything else is a new document, and gets a
   // random suffix so the link cannot be guessed from the title.
   const { entries: existingIndex } = await readIndex(env);
-  // Reserved examples are installed only through the authenticated seed CLI.
-  // Their deterministic URL survives the hourly reset.
-  example = Boolean(example);
-  if (example && env.KOMODOC_EXAMPLES !== "true") {
-    return json({ error: "this deployment does not enable reserved examples" }, 400);
+
+  // Reserved examples are installed only by the accounts a deployment names
+  // with --examples. Their deterministic URL survives the hourly reset, and
+  // an example publisher may replace any example; nobody else may touch one.
+  if (example && !policyAllows(parsePolicy(env.KOMODOC_EXAMPLES), login)) {
+    return json(
+      { error: "only the deployment's example publishers may install reserved examples" }, 403);
   }
+  if (example) {
+    const annotationBytes = new TextEncoder().encode(JSON.stringify(annotations)).byteLength;
+    if (annotationBytes > CONFIG.max_annotations) {
+      return json({ error: "example annotations too large" }, 413);
+    }
+  }
+
   // Someone else's document is not yours to replace, and guessing its slug
   // should not even tell you it is there: a title that collides with another
   // publisher's document simply becomes a new document of your own.
   const replacing = existingIndex[base] && ownedBy(existingIndex[base], owner);
   const key = example || replacing ? base : `${base}-${randomSuffix()}`;
 
+  // Checked against the index as just read, before an R2 write is spent on a
+  // document that has nowhere to go. The CAS update below re-runs the same
+  // check against whatever the index has become by the time it commits.
+  const preflight = checkQuota(existingIndex, owner, key, size);
+  if (preflight) return preflight;
+
   const digest = await sha256(html);
   const exampleRevision = example ? await sha256(JSON.stringify(annotations)) : "";
   await env.DOCS.put(`documents/${key}/${digest}.html`, html, {
     httpMetadata: { contentType: "text/html; charset=utf-8" },
   });
+
   const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-  const entries = await updateIndex(env, (index) => {
-    const existing = index[key];
-    index[key] = {
-      slug: key,
-      title,
-      sha: digest,
-      created_at: existing?.created_at || now,
-      updated_at: now,
-      // A replacement does not change hands.
-      ...((existing?.publisher || owner) ? { publisher: existing?.publisher || owner } : {}),
-      ...(example ? { example: true } : {}),
-      ...(example ? { example_revision: exampleRevision } : {}),
-    };
-  });
+  let entries;
+  try {
+    entries = await updateIndex(env, (index) => {
+      const refused = checkQuota(index, owner, key, size);
+      if (refused) throw new QuotaRefusal(refused);
+      const existing = index[key];
+      index[key] = {
+        slug: key,
+        title,
+        sha: digest,
+        size,
+        created_at: existing?.created_at || now,
+        updated_at: now,
+        // A replacement does not change hands.
+        ...((existing?.publisher || owner) ? { publisher: existing?.publisher || owner } : {}),
+        ...(example ? { example: true } : {}),
+        ...(example ? { example_revision: exampleRevision } : {}),
+      };
+    });
+  } catch (err) {
+    if (!(err instanceof QuotaRefusal)) throw err;
+    // The object was already written; a refusal here must not leave it
+    // orphaned in R2 with nothing in the index pointing at it. Unless the
+    // index already names it: a republish of unchanged content writes the
+    // very object the live document is served from, and that one stays.
+    if (existingIndex[key]?.sha !== digest) {
+      await env.DOCS.delete(`documents/${key}/${digest}.html`);
+    }
+    return err.response;
+  }
+
+  await deleteStaleVersions(env, key, digest);
   if (example) {
     await env.DOCS.put(`examples/${key}.json`, JSON.stringify(annotations), {
       httpMetadata: { contentType: "application/json" },
@@ -360,8 +525,10 @@ async function serveDocument(env, slug, sha, url) {
   return new Response(withAgent(await object.text(), reader), { headers: documentHeaders(reader) });
 }
 
-async function deleteDocument(env, slug) {
-  await room(env, slug).fetch(new Request("https://internal/purge"));
+// deleteDocumentObjects removes every stored object for a document -- every
+// version under documents/<slug>/ -- without touching the index. Shared by a
+// single delete and the janitor's sweep over many.
+async function deleteDocumentObjects(env, slug) {
   let removed = 0;
   let cursor;
   do {
@@ -370,38 +537,61 @@ async function deleteDocument(env, slug) {
     removed += listing.objects.length;
     cursor = listing.truncated ? listing.cursor : undefined;
   } while (cursor);
+  return removed;
+}
+
+async function deleteDocument(env, slug) {
+  await room(env, slug).fetch(new Request("https://internal/purge"));
+  const removed = await deleteDocumentObjects(env, slug);
   await updateIndex(env, (index) => { delete index[slug]; });
   return removed;
 }
 
-// The room for a document, or null when there is no such document. A room
-// belongs to a document: without that check any invented slug would bring a
-// fresh Durable Object into being, and since the comment rate limit is counted
-// inside the room, a new slug per comment would mean no rate limit at all.
-async function documentRoom(env, request, slug) {
-  const { entries } = await readIndex(env);
-  if (!entries[slug]) return null;
-  if (!entries[slug].example) return room(env, slug);
+// The room for a document, given its already-looked-up index entry, or null
+// when there is no such document. A room belongs to a document: without that
+// check any invented slug would bring a fresh Durable Object into being, and
+// since the comment rate limit is counted inside the room, a new slug per
+// comment would mean no rate limit at all.
+async function documentRoom(env, request, slug, entry) {
+  if (!entry) return null;
+  if (!entry.example) return room(env, slug);
+  // Each example room is a Durable Object of its own, so what names the room
+  // decides how many can be conjured. A signed-in reader gets one per
+  // account. An anonymous reader gets one per network address rather than
+  // per visitor cookie: the shell hands out a fresh cookie to any request
+  // that has none, so a cookie is free to rotate and an address is not.
+  // Readers behind one address share a sandbox, which for an example that
+  // resets itself hourly is an acceptable trade.
   const login = request.headers.get("x-komodoc-login") || "";
-  const visitor = cookieValue(request, VISITOR_COOKIE);
-  const identity = login ? `github:${login.toLowerCase()}` : `browser:${visitor || "missing"}`;
+  const address = request.headers.get("cf-connecting-ip") || "missing";
+  const identity = login ? `github:${login.toLowerCase()}` : `address:${address}`;
   const stub = room(env, `example:${slug}:${identity}`);
   await stub.fetch(new Request(
-    `https://internal/ensure?slug=${encodeURIComponent(slug)}&revision=${entries[slug].example_revision || ""}`,
+    `https://internal/ensure?slug=${encodeURIComponent(slug)}&revision=${entry.example_revision || ""}`,
   ));
   return stub;
 }
 
+// Purges every expired document's room and objects, then drops all of their
+// index entries in a single compare-and-swap rather than one per document, so
+// a sweep over many expired documents costs one write to index.json instead
+// of many.
 async function expireDocuments(env, scheduledTime) {
   const seconds = Number(env.KOMODOC_EXPIRE_SECONDS || 0);
   if (!(seconds > 0)) return;
   const from = env.KOMODOC_EXPIRE_FROM === "created" ? "created_at" : "updated_at";
   const cutoff = scheduledTime - seconds * 1000;
   const { entries } = await readIndex(env);
-  const expired = Object.values(entries)
-    .filter((entry) => !entry.example && Date.parse(entry[from]) <= cutoff)
-    .slice(0, 100);
-  for (const entry of expired) await deleteDocument(env, entry.slug);
+  const expired = Object.values(entries).filter(
+    (entry) => !entry.example && Date.parse(entry[from]) <= cutoff);
+  if (!expired.length) return;
+  for (const entry of expired) {
+    await room(env, entry.slug).fetch(new Request("https://internal/purge"));
+    await deleteDocumentObjects(env, entry.slug);
+  }
+  await updateIndex(env, (index) => {
+    for (const entry of expired) delete index[entry.slug];
+  });
 }
 
 export default {
@@ -438,8 +628,9 @@ export default {
     let match = path.match(/^\/ws\/([^/]+)$/);
     if (match) {
       if (!SLUG.test(match[1])) return new Response("bad slug", { status: 400 });
+      const { entries } = await readIndex(env);
       const identified = await withIdentity(request, env);
-      const stub = await documentRoom(env, identified, match[1]);
+      const stub = await documentRoom(env, identified, match[1], entries[match[1]]);
       if (!stub) return new Response("not found", { status: 404 });
       return stub.fetch(identified);
     }
@@ -494,7 +685,7 @@ export default {
       const entry = entries[match[1]];
       if (!entry) return json({ error: "not found" }, 404);
       const identified = await withIdentity(request, env);
-      const counts = await (await documentRoom(env, identified, match[1]))
+      const counts = await (await documentRoom(env, identified, match[1], entry))
         .fetch(new Request(`${url.origin}/counts`))
         .then((response) => response.json());
       return json({ ...entry, ...counts, docs_origin: docsOrigin(url) });
@@ -504,8 +695,9 @@ export default {
     match = path.match(/^\/api\/documents\/([^/]+)\/comments$/);
     if (match) {
       if (!SLUG.test(match[1])) return json({ error: "bad slug" }, 400);
+      const { entries } = await readIndex(env);
       const identified = await withIdentity(request, env);
-      const stub = await documentRoom(env, identified, match[1]);
+      const stub = await documentRoom(env, identified, match[1], entries[match[1]]);
       if (!stub) return json({ error: "not found" }, 404);
       return stub.fetch(identified);
     }
@@ -524,9 +716,14 @@ export default {
     if (asset) {
       const response = assetResponse(asset);
       // Every page names the browser, not just a reader: the index page is
-      // where an upload starts, and it needs an owner to belong to.
-      if (asset.type?.startsWith("text/html") && !cookieValue(request, VISITOR_COOKIE)) {
-        response.headers.append("set-cookie", `${VISITOR_COOKIE}=${crypto.randomUUID()}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`);
+      // where an upload starts, and it needs an owner to belong to. A cookie
+      // that does not verify -- absent, or the old unsigned form a browser
+      // this Worker signed cookies for might still hold -- is treated as
+      // though there were none, and simply replaced.
+      if (asset.type?.startsWith("text/html") &&
+          !(await readVisitor(env, cookieValue(request, VISITOR_COOKIE)))) {
+        const signed = await signVisitor(env, crypto.randomUUID());
+        response.headers.append("set-cookie", `${VISITOR_COOKIE}=${signed}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`);
         // A shared cache handing this same identity to the next browser would
         // defeat the point of having one.
         response.headers.set("cache-control", "private, no-store");
@@ -619,7 +816,7 @@ async function handleAuth(request, env, url) {
       can_comment: policyAllows(commenters, login),
       comments_need_login: !commenters.public,
       can_sign_in: Boolean(clientID),
-      examples_enabled: env.KOMODOC_EXAMPLES === "true",
+      examples_enabled: examplesEnabled(env),
       publishers: describePolicy(publishers),
       commenters: describePolicy(commenters),
     });

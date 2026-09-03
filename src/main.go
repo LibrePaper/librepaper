@@ -153,6 +153,8 @@ type serviceFlags struct {
 	publishers   *string
 	commenters   *string
 	maxSize      *int
+	quota        *int
+	storage      *int
 	expireAfter  *string
 	expireFrom   *string
 }
@@ -163,7 +165,9 @@ func addServiceFlags(flags *flag.FlagSet) serviceFlags {
 		clientSecret: flags.String("client-secret", "", "GitHub OAuth app client secret; or $KOMODOC_GITHUB_CLIENT_SECRET"),
 		publishers:   flags.String("publishers", "", "who may publish: a GitHub login, a comma-separated list, or 'any'"),
 		commenters:   flags.String("commenters", "", "who may comment: 'anyone' (default), 'any' GitHub account, or a list of logins"),
-		maxSize:      flags.Int("max-size", 0, "largest document accepted, in megabytes (default 30)"),
+		maxSize:      flags.Int("max-size", 0, "largest document accepted, in megabytes (default 4)"),
+		quota:        flags.Int("quota", 0, "most one publisher may store across their documents, in megabytes (default 100)"),
+		storage:      flags.Int("storage", 0, "most the whole deployment will store, in megabytes (default 5120)"),
 		expireAfter:  flags.String("expire-after", "", "delete documents after this duration, for example 24h or 30d (default never)"),
 		expireFrom:   flags.String("expire-from", "", "start expiry at 'updated' (default; last publication) or 'created'"),
 	}
@@ -180,9 +184,10 @@ func main() {
 		flags := flag.NewFlagSet("deploy", flag.ExitOnError)
 		shared := addServiceFlags(flags)
 		label := flags.String("label", "", "deployment label: the first label of the URL and the bucket name (default komodoc, or $KOMODOC_LABEL)")
-		examples := flags.Bool("examples", false, "enable the four resettable public example notebooks")
+		examples := flags.String("examples", "", "GitHub logins allowed to install the six reserved example notebooks; enables them")
 		_ = flags.Parse(os.Args[2:])
 		setMaxHTML(*shared.maxSize)
+		setStorage(*shared.quota, *shared.storage)
 		deploy(deployOptions{
 			label: *label, clientID: *shared.clientID, clientSecret: *shared.clientSecret,
 			publishers: *shared.publishers, commenters: *shared.commenters,
@@ -216,6 +221,7 @@ func main() {
 		dir := flags.String("data", "komodoc-data", "directory for documents and comments")
 		_ = flags.Parse(os.Args[2:])
 		setMaxHTML(*shared.maxSize)
+		setStorage(*shared.quota, *shared.storage)
 		serve(serveOptions{
 			port: *port, dir: *dir,
 			clientID: *shared.clientID, clientSecret: *shared.clientSecret,

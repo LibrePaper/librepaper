@@ -25,9 +25,9 @@ The installer supports Linux and macOS. Windows binaries are available on the
 
 ## Try it now
 
-The Komodoc maintainers host a free sandbox, where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log into the Komodoc management console using your Github username:
+The Komodoc sandbox is a free website where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log with your Github username:
 
-- [Komodoc sandbox management console](https://komodoc.vincentarelbundock.workers.dev)
+[Komodoc sandbox](https://komodoc.vincentarelbundock.workers.dev)
 
 If you do not want to log in but want to try annotating some documents, you can try one of these live examples:
 
@@ -38,6 +38,10 @@ If you do not want to log in but want to try annotating some documents, you can 
 - [Jupyter: Simpson's Paradox Is Not a Paradox](https://komodoc.vincentarelbundock.workers.dev/docs/jupyter-simpson-s-paradox-is-not-a-paradox)
 - [Marimo: How Far Does a Drunk Walk?](https://komodoc.vincentarelbundock.workers.dev/docs/marimo-how-far-does-a-drunk-walk)
 - [Publication and management console](https://komodoc.vincentarelbundock.workers.dev) (requires Github Login)
+
+<aside class="callout warning">
+<strong>Warning:</strong> Do not publish confidential information on the Komodoc sandbox. Normally, documents are only visible to the person who uploaded them, or to people with the randomly generated and unlisted link. But if you are gathering comments on documents about national security, you should probably <a href="#self-managed-server">host your own instance</a> or find another solution.
+</aside>
 
 ## Publish
 
@@ -82,11 +86,44 @@ Visit the URL you were given. Select any passage to highlight it or attach a
 comment; comments appear immediately for everyone else reading the document.
 
 Depending on the publisher's settings, you may be asked to sign in with GitHub
-first. Only publicly available information is collected: your GitHub username.
+first. Only publicly available information is collected: your GitHub username.[^github-data]
 
 ## Deploy
 
-Komodoc runs on Cloudflare Workers and R2. Before deploying:
+Komodoc can run locally for a quick trial, as a self-managed server on your
+own host, or on Cloudflare Workers and R2.
+
+### Local
+
+Run a public local instance without Cloudflare or GitHub setup:
+
+```sh
+komodoc serve --port 8081 --publishers anyone --expire-after 24h
+```
+
+Open <http://localhost:8081>. Documents and comments are stored in
+`komodoc-data`; back up that directory if you use the local instance for real
+work. When expiry is enabled, the server cleans up at startup and hourly while
+it is running.
+
+### Self-managed server
+
+Run the bundled server on your own host. Set `--data` to a persistent directory
+and choose who may publish or comment:
+
+```sh
+komodoc serve --port 8080 --data /var/lib/komodoc \
+  --publishers YOUR-GITHUB-LOGIN --commenters anyone
+```
+
+For GitHub sign-in, set `KOMODOC_GITHUB_CLIENT_ID` and
+`KOMODOC_GITHUB_CLIENT_SECRET`, and configure the OAuth callback URL for the
+server's public HTTPS address. Put the server behind a TLS reverse proxy in
+production.
+
+### Cloudflare
+
+Komodoc can also run on Cloudflare Workers and R2. Before deploying:
 
 Cloudflare R2 includes 10 GB of storage per month for free and does not charge
 egress fees. You may be charged if your storage exceeds 10 GB; see
@@ -127,23 +164,11 @@ Use `--expire-from created` for a fixed lifetime from the first upload, or
 `--expire-after never` to disable expiry. Cloudflare runs the cleanup schedule;
 the `komodoc` program does not need to remain running.
 
-The maintainer's sandbox also deploys with `--examples`. This reserves the six
-curated example notebooks and gives each visitor a personal annotation room that
-resets after an hour. Ordinary notebooks remain shared and collaborative.
-
-There is one example per source format, and each is produced by the tool it is
-named after rather than hand-converted:
-
-`make examples` renders them all. Quarto and Calepin have to be installed;
-marimo and Jupyter are fetched by [uv](https://docs.astral.sh/uv/) against
-`examples/pyproject.toml`, so neither Python nor either tool needs to be on the
-machine.
-
-The marimo example is the one document here that is not self-contained: its
-exporter loads the marimo frontend from a CDN and keeps the prose in a JSON
-island the page hydrates in the browser. It is published exactly as marimo
-produces it, which is why it is also the one example that carries no
-pre-seeded annotations.
+Three flags bound what a deployment will store, and all three apply to
+`komodoc serve` as well: `--max-size` caps one document (4 MB by default),
+`--quota` caps what one publisher may hold across all their documents (100 MB),
+and `--storage` caps the whole deployment (5120 MB). Each publisher may also
+hold at most 50 documents and upload at most 30 times an hour.
 
 ## Export comments
 
@@ -157,24 +182,14 @@ komodoc export DOCUMENT-SLUG --format markdown --out comments.md \
 
 Without `--format markdown`, Komodoc exports W3C Web Annotation JSON-LD.
 
-## Try it locally
-
-Run a public local instance without Cloudflare or GitHub setup:
-
-```sh
-komodoc serve --port 8081 --publishers anyone --expire-after 24h
-```
-
-Open <http://localhost:8081>, which is the endpoint. Documents and comments are
-stored in `komodoc-data`; back up that directory if you use the local instance
-for real work. When expiry is enabled, the server cleans up at startup and
-hourly while it is running. Add `--expire-from created` for a fixed lifetime
-from the first upload instead of the default lifetime from the latest publish.
-
 Run `komodoc` to see all commands and options, including access controls,
 deleting documents, and removing a deployment.
 
 ## Environment variables
+
+[^github-data]: Komodoc requests no GitHub scopes through OAuth. It uses the
+GitHub API only to obtain your public login name; it does not collect your email,
+repositories, or other profile data.
 
 Flags take precedence over their corresponding environment variables.
 

@@ -81,16 +81,28 @@ export class Room extends DurableObject {
     return true;
   }
 
+  // An example room is keyed by document and visitor (documentRoom in
+  // worker.js), so a client that rotates its visitor cookie can otherwise
+  // manufacture an unbounded number of these objects, each seeded from R2 and
+  // never freed. The alarm every /ensure arms is what bounds that: a room
+  // still being read gets its sandbox reset, as before, while one nobody has
+  // open is emptied out, leaving nothing behind until the next visit reseeds
+  // it.
   async alarm() {
     const stale = await this.ctx.storage.list({ prefix: "rl:" });
     const current = String(Math.floor(Date.now() / 3600000));
     const drop = [...stale.keys()].filter((key) => !key.endsWith(`:${current}`));
     if (drop.length) await this.ctx.storage.delete(drop);
     const example = await this.ctx.storage.get("example");
-    if (example) {
-      const revision = (await this.ctx.storage.get("example_revision")) || "";
-      await this.resetExample(example, revision);
+    if (!example) return;
+    if (this.ctx.getWebSockets().length === 0) {
+      await this.ctx.storage.deleteAll();
+      this.cache = null;
+      return;
     }
+    const revision = (await this.ctx.storage.get("example_revision")) || "";
+    await this.resetExample(example, revision);
+    await this.ctx.storage.setAlarm(Date.now() + 3600000);
   }
 
   async resetExample(slug, revision = "") {
@@ -130,6 +142,12 @@ export class Room extends DurableObject {
       const current = await this.ctx.storage.get("example_revision");
       if (!(await this.ctx.storage.get("example")) || current !== revision) {
         await this.resetExample(slug, revision);
+      }
+      // Every example room gets a visit from alarm(), whether or not anyone
+      // ever writes to it, so a room nobody reopens is eventually freed
+      // rather than sitting seeded forever.
+      if ((await this.ctx.storage.getAlarm()) === null) {
+        await this.ctx.storage.setAlarm(Date.now() + 3600000);
       }
       return Response.json({ ready: true });
     }

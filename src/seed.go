@@ -122,7 +122,7 @@ func seedRemote(endpointFlag string, documents []seedDocument) {
 		die("could not list the sandbox before seeding (%d): %v", status, detailOf(listing))
 	}
 	// Local seeding retains its historical replace-everything behavior. An
-	// examples-enabled sandbox overwrites only its four reserved examples, so
+	// examples-enabled sandbox overwrites only its six reserved examples, so
 	// deploying it cannot erase users' short-lived notebooks.
 	if !examplesEnabled {
 		existing, _ := listing["documents"].([]any)

@@ -158,6 +158,28 @@ func sign(key []byte, payload string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+// signVisitor returns "<token>.<signature>" for a freshly minted visitor
+// token, so a browser cannot simply pick its own owner key.
+func signVisitor(key []byte, token string) string {
+	return token + "." + sign(key, token)
+}
+
+// readVisitor returns the token a visitor cookie carries, or "" when the
+// cookie is forged, damaged, or in the old unsigned form a browser issued
+// this server before might still hold. Treating that old form as absent
+// means such a browser is simply reissued a signed cookie, rather than kept
+// on a value nothing here can verify.
+func readVisitor(key []byte, cookie string) string {
+	token, signature, found := strings.Cut(cookie, ".")
+	if !found || token == "" {
+		return ""
+	}
+	if subtle.ConstantTimeCompare([]byte(sign(key, token)), []byte(signature)) != 1 {
+		return ""
+	}
+	return token
+}
+
 // sessionKey loads the key that signs cookies, creating it on first run. It
 // lives beside the documents so restarts do not sign everyone out.
 func sessionKey(dir string) []byte {
