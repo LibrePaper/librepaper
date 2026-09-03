@@ -95,7 +95,7 @@ func login(clientID, endpointFlag string) {
 	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
 		die("could not write %s: %v", path, err)
 	}
-	fmt.Printf("signed in as %s\n", who)
+	fmt.Printf("signed in as %s\n", who.Login)
 	fmt.Fprintf(os.Stderr, "  token stored in %s\n", path)
 }
 

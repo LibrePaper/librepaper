@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os/exec"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +68,25 @@ async function run() {
 
   out.example = await upload({ title: "eg", html: "<p>e</p>", example: true, annotations: [] });
 
+  // Examples get a random suffix like any other document, and re-seeding one
+  // replaces it in place rather than piling up a second copy.
+  env.KOMODOC_EXAMPLES = "anyone";
+  CONFIG.storage.per_owner = 1000000;
+  out.exampleFirst = await upload({ title: "eg", html: "<p>e</p>", example: true, annotations: [] });
+  out.exampleAgain = await upload({ title: "eg", html: "<p>e2</p>", example: true, annotations: [] });
+
+  // An example stored under the bare slug, from before suffixes, migrates to a
+  // suffixed one and leaves nothing behind.
+  const index = JSON.parse(store.get("index.json").body);
+  index["old"] = { slug: "old", title: "old", sha: "0".repeat(64), size: 3, example: true,
+    created_at: "2020-01-01T00:00:00Z", updated_at: "2020-01-01T00:00:00Z" };
+  store.set("index.json", { body: JSON.stringify(index), etag: store.get("index.json").etag });
+  store.set("documents/old/" + "0".repeat(64) + ".html", { body: "old", etag: "x" });
+  store.set("examples/old.json", { body: "[]", etag: "x" });
+  out.migrated = await upload({ title: "old", slug: "old", html: "<p>new</p>", example: true, annotations: [] });
+  out.leftovers = [...store.keys()].filter((k) => k === "documents/old/" + "0".repeat(64) + ".html" || k === "examples/old.json");
+  out.stillIndexed = Object.hasOwn(JSON.parse(store.get("index.json").body), "old");
+
   console.log(JSON.stringify(out));
 }
 run();
@@ -112,6 +134,20 @@ func TestWorkerUploadQuotas(t *testing.T) {
 			Status int
 			Body   struct{ Error string }
 		}
+		ExampleFirst struct {
+			Status int
+			Body   struct{ Slug string }
+		} `json:"exampleFirst"`
+		ExampleAgain struct {
+			Status int
+			Body   struct{ Slug string }
+		} `json:"exampleAgain"`
+		Migrated struct {
+			Status int
+			Body   struct{ Slug string }
+		}
+		Leftovers    []string
+		StillIndexed bool `json:"stillIndexed"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("decoding results: %v\n%s", err, out.String())
@@ -137,5 +173,20 @@ func TestWorkerUploadQuotas(t *testing.T) {
 	}
 	if got.Example.Status != 403 {
 		t.Errorf("anonymous example upload = %+v, want 403", got.Example)
+	}
+	suffixed := regexp.MustCompile(fmt.Sprintf(`^eg-[%s]{%d}$`, config.SuffixAlphabet, config.SuffixLength))
+	if got.ExampleFirst.Status != 201 || !suffixed.MatchString(got.ExampleFirst.Body.Slug) {
+		t.Errorf("example slug = %+v, want 201 with a random suffix", got.ExampleFirst)
+	}
+	if got.ExampleAgain.Body.Slug != got.ExampleFirst.Body.Slug {
+		t.Errorf("re-seeded example = %q, want the first one's slug %q",
+			got.ExampleAgain.Body.Slug, got.ExampleFirst.Body.Slug)
+	}
+	if got.Migrated.Status != 201 || !strings.HasPrefix(got.Migrated.Body.Slug, "old-") {
+		t.Errorf("migrated example = %+v, want 201 with a suffixed slug", got.Migrated)
+	}
+	if len(got.Leftovers) != 0 || got.StillIndexed {
+		t.Errorf("after migration: leftovers %v, still indexed %v; want neither",
+			got.Leftovers, got.StillIndexed)
 	}
 }

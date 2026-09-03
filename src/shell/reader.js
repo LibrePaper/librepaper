@@ -18,6 +18,20 @@ let figureAt = []; // text offset of each figure, by its index in the document
 let frameReady = false;
 let commentsReady = false;
 let identity = ""; // GitHub login, when signed in; comments are signed with it
+let canModerate = false; // true when the caller owns this document (GET /api/documents/{slug})
+
+// A browser cannot set a custom header on a cross-origin request without a
+// CORS preflight, which the server never grants -- so this header is proof,
+// to the server, that a state-changing request came from this page and not
+// from a hostile document on the sibling docs host.
+const SHELL_HEADERS = { "X-Komodoc-Client": "shell" };
+
+// The Delete button is only ever real for: a comment the server says this
+// caller may delete, one the caller just posted and is still waiting to be
+// confirmed (temp_id/pending), or a caller who owns the document outright.
+function canDelete(comment) {
+  return Boolean(comment.deletable) || Boolean(comment.temp_id) || Boolean(comment.pending) || canModerate;
+}
 
 // One card per comment, kept across renders so a rebuild never wipes an open
 // reply draft, an expanded quotation, or scroll position. Keyed by the
@@ -376,6 +390,7 @@ function makeCard(comment) {
     quoteOpen: false,
     sig: null,
     comment,
+    deleteButton,
   };
 
   resolveBtn.onclick = (event) => {
@@ -482,6 +497,9 @@ function updateCard(card, comment) {
   // resolved/pending can flip on their own, independent of everything above.
   card.el.className = comment.resolved || comment.pending ? "resolved" : "";
   card.resolveBtn.textContent = comment.resolved ? "Reopen" : "Resolve";
+  // Deletability can change too: an optimistic comment gets `deletable: true`
+  // once the server confirms it, and canModerate can arrive after the first render.
+  card.deleteButton.hidden = !canDelete(comment);
 
   // Replies are matched by object, not id: a reply's id changes from temp_id
   // to the server's (the same Object.assign-in-place pattern as a comment).
@@ -586,7 +604,7 @@ function send(message) {
   // The socket is down; fall back to the REST route so the write is not lost.
   fetch(`/api/documents/${SLUG}/comments`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...SHELL_HEADERS },
     body: JSON.stringify(message),
   })
     .then((response) => response.json())
@@ -608,15 +626,28 @@ function receive(event) {
       comments.forEach((comment) => {
         comment.replies = comment.replies.filter((reply) => reply.temp_id !== event.temp_id);
       });
+      render();
+      applyHighlights();
     }
-    render();
-    applyHighlights();
+    // A refused delete or resolve was applied optimistically before the
+    // server had a say; the comment named in the refusal is re-fetched from
+    // the REST route and the whole list replaced, the same way the initial
+    // hello populates it, so the optimistic change is rolled back.
+    if (event.comment_id) {
+      fetch(`/api/documents/${SLUG}/comments`)
+        .then((response) => response.json())
+        .then((data) => receive({ type: "hello", comments: data.comments }))
+        .catch(() => {});
+    }
     alert(event.message);
     return;
   }
   if (event.type === "comment") {
     const local = comments.find((comment) => comment.temp_id === event.temp_id);
-    if (local) Object.assign(local, event.comment, { temp_id: undefined, pending: false });
+    // Broadcasts carry no `deletable` field, so the caller's own comment,
+    // reconciled here from its optimistic placeholder, stays deletable by
+    // this browser regardless of what the server sent back.
+    if (local) Object.assign(local, event.comment, { temp_id: undefined, pending: false, deletable: true });
     else if (!comments.some((comment) => comment.id === event.comment.id)) {
       comments.push(event.comment);
       // Someone else's comment: anchor just this one against the cached text.
@@ -695,6 +726,13 @@ copyButton.onclick = async () => {
     copyButton.classList.remove("done");
     copyButton.innerHTML = linkIcon;
   }, 1500);
+};
+
+// A GET can be forced onto a signed-in reader cross-site, so signing out is a
+// POST, carrying the same header every other state change does.
+document.getElementById("signOut").onclick = async () => {
+  await fetch("/auth/logout", { method: "POST", headers: SHELL_HEADERS }).catch(() => {});
+  location.reload();
 };
 
 /* ------------------------------------------------------------------ tools */
@@ -832,6 +870,11 @@ fetch(`/api/documents/${SLUG}`)
     // Documents live on their own origin, which the deployment names.
     docsOrigin = doc.docs_origin || location.origin;
     frame.src = `${docsOrigin}/raw/${SLUG}/${doc.sha}.html`;
+    // Whether this caller owns the document, which unlocks deleting anyone's
+    // comment on it. This can arrive after comments have already rendered
+    // once without it, so redraw to pick it up.
+    canModerate = Boolean(doc.can_moderate);
+    render();
   })
   .catch(() => {
     document.getElementById("docTitle").textContent = "Document not found";

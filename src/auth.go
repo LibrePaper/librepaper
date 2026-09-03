@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,7 +36,36 @@ const (
 	// signing in still belongs to whoever made it.
 	visitorCookie = "komodoc_visitor"
 	sessionMaxAge = 30 * 24 * time.Hour
+
+	// hostCookiePrefix is added to every cookie name on an HTTPS request. A
+	// browser refuses to set a __Host- cookie unless it also carries Secure,
+	// Path=/, and no Domain -- exactly how every cookie here is already set --
+	// which is what keeps a same-site subdomain from planting one.
+	hostCookiePrefix = "__Host-"
 )
+
+// identity is who a caller is, once verified: the GitHub login, and its
+// numeric account id as a decimal string. Both are empty for an anonymous
+// caller. The id is what ownership and comment authorship actually key on --
+// a login can be renamed, the numeric id cannot -- the login is kept mainly
+// for display and for the publishers/commenters policies, which are written
+// in terms of it.
+type identity struct {
+	Login string
+	ID    string
+}
+
+// cookieName gains the __Host- prefix on an HTTPS request; on plain HTTP
+// (local `serve`) the old name is used, since __Host- is refused by browsers
+// without Secure. An HTTPS request must read only the prefixed name: the
+// plain one is exactly what a same-site document could plant in the reader's
+// browser, so falling back to it would defeat the point of the prefix.
+func cookieName(r *http.Request, base string) string {
+	if requestScheme(r) == "https" {
+		return hostCookiePrefix + base
+	}
+	return base
+}
 
 // A policy says who may do something. The zero value allows nobody, which is
 // the right default for publishing on a deployment that was never configured.
@@ -121,35 +151,39 @@ func (p policy) String() string {
 // sessions
 // --------------------------------------------------------------------------
 
-// signSession returns "<payload>.<signature>", where the payload is the login
-// and an expiry. Nothing is stored server-side: the signature is what makes it
-// trustworthy.
-func signSession(key []byte, login string, expiry time.Time) string {
+// signSession returns "<payload>.<signature>", where the payload is the login,
+// the numeric account id, and an expiry. Nothing is stored server-side: the
+// signature is what makes it trustworthy. A cookie from before the id was
+// added has only two fields and fails to parse below, which is deliberate:
+// such a session carries no id to check comment or document ownership
+// against, so it is treated as invalid rather than half-trusted.
+func signSession(key []byte, id identity, expiry time.Time) string {
 	payload := base64.RawURLEncoding.EncodeToString(
-		[]byte(login + "|" + strconv.FormatInt(expiry.Unix(), 10)))
+		[]byte(id.Login + "|" + id.ID + "|" + strconv.FormatInt(expiry.Unix(), 10)))
 	return payload + "." + sign(key, payload)
 }
 
-// readSession returns the login a cookie carries, or "" if it is forged,
-// damaged or expired.
-func readSession(key []byte, cookie string) string {
+// readSession returns the identity a cookie carries, or the zero identity if
+// it is forged, damaged, expired, or in the old two-field shape.
+func readSession(key []byte, cookie string) identity {
 	payload, signature, found := strings.Cut(cookie, ".")
 	if !found || subtle.ConstantTimeCompare([]byte(sign(key, payload)), []byte(signature)) != 1 {
-		return ""
+		return identity{}
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(payload)
 	if err != nil {
-		return ""
+		return identity{}
 	}
-	login, stamp, found := strings.Cut(string(raw), "|")
-	if !found {
-		return ""
+	parts := strings.SplitN(string(raw), "|", 3)
+	if len(parts) != 3 {
+		return identity{}
 	}
+	login, id, stamp := parts[0], parts[1], parts[2]
 	expiry, err := strconv.ParseInt(stamp, 10, 64)
 	if err != nil || time.Now().Unix() > expiry {
-		return ""
+		return identity{}
 	}
-	return login
+	return identity{Login: login, ID: id}
 }
 
 func sign(key []byte, payload string) string {
@@ -263,62 +297,123 @@ func (app githubApp) exchange(code, redirect string) (string, error) {
 	return reply.AccessToken, nil
 }
 
-// loginFor asks GitHub who a token belongs to.
-func loginFor(token string) (string, error) {
+// loginFor asks GitHub who a token belongs to, via the browser OAuth flow's
+// own token: the code exchange already proves it was issued to this app, so
+// the plain /user endpoint is enough here. It reads the numeric id as well as
+// the login, since both go into the session cookie.
+func loginFor(token string) (identity, error) {
 	status, raw := do("GET", githubUser, map[string]string{
 		"authorization": "Bearer " + token,
 		"accept":        "application/vnd.github+json",
 	}, nil, 30*time.Second)
 	if status != 200 {
-		return "", fmt.Errorf("github returned %d", status)
+		return identity{}, fmt.Errorf("github returned %d", status)
 	}
 	var user struct {
 		Login string `json:"login"`
+		ID    int64  `json:"id"`
 	}
 	if err := json.Unmarshal(raw, &user); err != nil || user.Login == "" {
-		return "", fmt.Errorf("github returned no login")
+		return identity{}, fmt.Errorf("github returned no login")
 	}
-	return user.Login, nil
+	return identity{Login: strings.ToLower(user.Login), ID: strconv.FormatInt(user.ID, 10)}, nil
+}
+
+// checkToken verifies a bearer token the way the CLI's device-flow token
+// arrives: not through this app's own OAuth code exchange, so GET /user alone
+// only proves the token belongs to *some* GitHub account, not that it was
+// issued to this deployment. GitHub's check-token endpoint proves that: it
+// answers only for tokens issued to the client id being asked about, and 404s
+// for anything else, including a token that is simply invalid.
+func (app githubApp) checkToken(token string) (identity, bool) {
+	if !app.configured() {
+		return identity{}, false
+	}
+	body, err := json.Marshal(map[string]string{"access_token": token})
+	if err != nil {
+		return identity{}, false
+	}
+	basic := base64.StdEncoding.EncodeToString([]byte(app.ClientID + ":" + app.ClientSecret))
+	status, raw := do("POST", fmt.Sprintf("https://api.github.com/applications/%s/token", app.ClientID),
+		map[string]string{
+			"authorization": "Basic " + basic,
+			"accept":        "application/vnd.github+json",
+			"content-type":  "application/json",
+		}, body, 30*time.Second)
+	if status != 200 {
+		// 404 means the token is not this app's (or is not valid at all); any
+		// other status is treated the same way -- unverified, not an error the
+		// caller has to handle differently.
+		return identity{}, false
+	}
+	var reply struct {
+		User struct {
+			Login string `json:"login"`
+			ID    int64  `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(raw, &reply); err != nil || reply.User.Login == "" {
+		return identity{}, false
+	}
+	return identity{Login: strings.ToLower(reply.User.Login), ID: strconv.FormatInt(reply.User.ID, 10)}, true
 }
 
 // tokenCache keeps bearer tokens from costing a GitHub call per request.
+// Positive answers are cached longer than negative ones, so a token that is
+// revoked or was never valid does not sit trusted for as long as one that is.
 type tokenCache struct {
 	mu      sync.Mutex
-	entries map[string]cachedLogin
+	entries map[string]cachedToken
 }
 
-type cachedLogin struct {
-	login   string
-	expires time.Time
+type cachedToken struct {
+	identity identity
+	ok       bool
+	expires  time.Time
 }
 
 func newTokenCache() *tokenCache {
-	return &tokenCache{entries: map[string]cachedLogin{}}
+	return &tokenCache{entries: map[string]cachedToken{}}
 }
 
-func (c *tokenCache) login(token string) string {
+const (
+	tokenPositiveTTL = 10 * time.Minute
+	tokenNegativeTTL = time.Minute
+)
+
+// verify resolves a bearer token to an identity, caching the answer keyed by
+// a digest of the token -- never the token itself. check is what actually
+// asks GitHub; a test substitutes a stand-in with the same shape so the
+// caching behaviour can be exercised without a network call.
+func (c *tokenCache) verify(check func(token string) (identity, bool), token string) identity {
 	if token == "" {
-		return ""
+		return identity{}
 	}
-	// The token itself is never stored, only a digest of it.
 	sum := sha256.Sum256([]byte(token))
 	key := hex.EncodeToString(sum[:])
 
 	c.mu.Lock()
-	entry, ok := c.entries[key]
+	entry, found := c.entries[key]
 	c.mu.Unlock()
-	if ok && time.Now().Before(entry.expires) {
-		return entry.login
+	if found && time.Now().Before(entry.expires) {
+		if entry.ok {
+			return entry.identity
+		}
+		return identity{}
 	}
 
-	login, err := loginFor(token)
-	if err != nil {
-		return ""
+	id, ok := check(token)
+	ttl := tokenNegativeTTL
+	if ok {
+		ttl = tokenPositiveTTL
 	}
 	c.mu.Lock()
-	c.entries[key] = cachedLogin{login: login, expires: time.Now().Add(10 * time.Minute)}
+	c.entries[key] = cachedToken{identity: id, ok: ok, expires: time.Now().Add(ttl)}
 	c.mu.Unlock()
-	return login
+	if !ok {
+		return identity{}
+	}
+	return id
 }
 
 // parseDeployPublishPolicy is parsePolicy with the public option refused. The

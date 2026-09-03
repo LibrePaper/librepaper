@@ -69,13 +69,18 @@ func postAuthed(target string, payload any, token string, timeout time.Duration)
 }
 
 // postDecoded is the body of both: encode, post, decode. An empty token sends
-// no authorization header at all, which is what an unauthenticated call means.
+// no authorization header at all, which is what an unauthenticated call means
+// -- a deployment whose publishers policy is "anyone" takes uploads with no
+// bearer at all. Without a bearer, the server treats a request as
+// cookie-authenticated and applies the cross-site checks in rule A, so the CLI
+// carries the same marker header the browser shell does; a bearer-carrying
+// call skips those checks regardless.
 func postDecoded(target string, payload any, token string, timeout time.Duration) (int, map[string]any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		die("could not encode the request: %v", err)
 	}
-	headers := map[string]string{"content-type": "application/json"}
+	headers := map[string]string{"content-type": "application/json", "x-komodoc-client": "cli"}
 	if token != "" {
 		headers["authorization"] = "Bearer " + token
 	}

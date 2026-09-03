@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // serve runs the whole service in this process: the same routes the Worker
@@ -291,12 +292,16 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Listing is the one thing a link-holder must not be able to do: knowing
 	// one document must not reveal the others, so it takes a publisher.
 	if path == "/api/list" && (r.Method == http.MethodPost || r.Method == http.MethodGet) {
-		login, ok := s.publisher(w, r)
+		if crossSiteRefused(r) {
+			writeJSON(w, http.StatusForbidden, crossSiteRefusal())
+			return
+		}
+		who, ok := s.publisher(w, r)
 		if !ok {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"documents": s.visible(s.store.list(), login),
+			"documents": s.visible(s.store.list(), who),
 		})
 		return
 	}
@@ -312,6 +317,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 			return
 		}
+		id := s.whoami(r)
 		total, open := s.rooms.get(match[1]).counts()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"slug": entry.Slug, "title": entry.Title, "sha": entry.SHA,
@@ -320,6 +326,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Where the reader should frame this document from, and the only
 			// origin it will accept messages from.
 			"docs_origin": docsOrigin(r),
+			// Whether this caller may delete anyone's comment here, per rule G.
+			"can_moderate": entry.ownedBy(s.owner(r, id), id.ID),
 		})
 		return
 	}
@@ -349,17 +357,27 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleSocket(w http.ResponseWriter, r *http.Request, slug string) {
+	// Browsers always send Origin on a WebSocket handshake and cannot be made
+	// to attach a custom header to one, so this is rule A's WebSocket variant:
+	// Origin alone, checked only when present.
+	if wsOriginRefused(r) {
+		http.Error(w, "cross-site request refused", http.StatusForbidden)
+		return
+	}
 	// A room belongs to a document. Without this, any invented slug would
 	// conjure one, and since the rate limiter counts per room, a new slug per
 	// comment would also mean no rate limit at all.
-	if _, exists := s.store.get(slug); !exists {
+	entry, exists := s.store.get(slug)
+	if !exists {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	current := s.rooms.get(slug)
 	// Reading is always open; writing is checked per message, so a reader who
 	// may not comment still sees the thread live.
-	identity := s.whoami(r)
+	id := s.whoami(r)
+	author := s.commentAuthor(r, id)
+	isOwner := entry.ownedBy(s.owner(r, id), id.ID)
 
 	socket, err := wsUpgrade(w, r)
 	if err != nil {
@@ -373,7 +391,7 @@ func (s *server) handleSocket(w http.ResponseWriter, r *http.Request, slug strin
 		socket.close(1000, "")
 	}()
 
-	hello, err := json.Marshal(map[string]any{"type": "hello", "comments": current.snapshot()})
+	hello, err := json.Marshal(map[string]any{"type": "hello", "comments": current.snapshotFor(author, isOwner)})
 	if err != nil || socket.writeText(hello) != nil {
 		return
 	}
@@ -387,7 +405,7 @@ func (s *server) handleSocket(w http.ResponseWriter, r *http.Request, slug strin
 		if json.Unmarshal(raw, &incoming) != nil {
 			continue
 		}
-		result, ok := s.applyFrom(current, incoming, address, identity)
+		result, ok := s.applyFrom(current, incoming, address, id, author, isOwner)
 		if !ok {
 			payload, err := json.Marshal(result)
 			if err != nil || socket.writeText(payload) != nil {
@@ -404,22 +422,30 @@ func (s *server) handleComments(w http.ResponseWriter, r *http.Request, slug str
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad slug"})
 		return
 	}
-	if _, exists := s.store.get(slug); !exists {
+	entry, exists := s.store.get(slug)
+	if !exists {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
 	current := s.rooms.get(slug)
+	id := s.whoami(r)
+	author := s.commentAuthor(r, id)
+	isOwner := entry.ownedBy(s.owner(r, id), id.ID)
 
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"comments": current.snapshot()})
+		writeJSON(w, http.StatusOK, map[string]any{"comments": current.snapshotFor(author, isOwner)})
 	case http.MethodPost:
+		if crossSiteRefused(r) {
+			writeJSON(w, http.StatusForbidden, crossSiteRefusal())
+			return
+		}
 		var incoming message
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&incoming); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad request"})
 			return
 		}
-		result, ok := s.applyFrom(current, incoming, clientAddress(r), s.whoami(r))
+		result, ok := s.applyFrom(current, incoming, clientAddress(r), id, author, isOwner)
 		if ok {
 			current.broadcast(result)
 			writeJSON(w, http.StatusOK, result)
@@ -440,8 +466,12 @@ type upload struct {
 }
 
 func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if crossSiteRefused(r) {
+		writeJSON(w, http.StatusForbidden, crossSiteRefusal())
+		return
+	}
 	// Checked before the body is read, so an unauthorised upload costs nothing.
-	login, ok := s.publisher(w, r)
+	who, ok := s.publisher(w, r)
 	if !ok {
 		return
 	}
@@ -465,13 +495,13 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// should not even tell you it is there: a title that collides with another
 	// publisher's document simply becomes a new document of your own.
 	key := base
-	if existing, exists := s.store.get(base); !exists || !existing.ownedBy(login) {
+	if existing, exists := s.store.get(base); !exists || !existing.ownedBy(who.Key, who.ID) {
 		key = base + "-" + randomSuffix()
 	}
 
 	sum := sha256.Sum256([]byte(parsed.html))
 	digest := hex.EncodeToString(sum[:])
-	entry, err := s.store.put(key, parsed.title, digest, parsed.html, login)
+	entry, err := s.store.put(key, parsed.title, digest, parsed.html, who.Key, who.ID)
 	if err != nil {
 		var quota *quotaError
 		if errors.As(err, &quota) {
@@ -570,6 +600,17 @@ func (s *server) readUpload(w http.ResponseWriter, r *http.Request) (upload, boo
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "title and html are required"})
 		return upload{}, false
 	}
+	// Stripped of control characters the same way every other free-text field
+	// is, then capped: the index holding it is read on nearly every request,
+	// on both backends, so an unbounded title is a way to sink the whole
+	// deployment. Refused rather than truncated, and before anything is
+	// written, so a caller sees the limit rather than a silently shortened
+	// title.
+	title = clean(title, utf8.RuneCountInString(title))
+	if utf8.RuneCountInString(title) > config.MaxTitle {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "title too long"})
+		return upload{}, false
+	}
 	if len(html) > config.MaxHTML {
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "document too large"})
 		return upload{}, false
@@ -579,18 +620,22 @@ func (s *server) readUpload(w http.ResponseWriter, r *http.Request) (upload, boo
 }
 
 func (s *server) handleDelete(w http.ResponseWriter, r *http.Request, slug string) {
+	if crossSiteRefused(r) {
+		writeJSON(w, http.StatusForbidden, crossSiteRefusal())
+		return
+	}
 	if !reSlug.MatchString(slug) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad slug"})
 		return
 	}
-	login, allowed := s.publisher(w, r)
+	who, allowed := s.publisher(w, r)
 	if !allowed {
 		return
 	}
 	entry, ok := s.store.get(slug)
 	// Another publisher's document answers exactly as a missing one does, so a
 	// guessed slug reveals nothing.
-	if !ok || !entry.ownedBy(login) {
+	if !ok || !entry.ownedBy(who.Key, who.ID) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
@@ -653,37 +698,54 @@ func withAgent(document []byte, reader string) []byte {
 }
 
 // whoami identifies the caller: a browser by its session cookie, the CLI by
-// the GitHub token it sends as a bearer. Neither is required; an empty login
-// simply means nobody is signed in.
-func (s *server) whoami(r *http.Request) string {
+// the GitHub token it sends as a bearer. Neither is required; the zero
+// identity simply means nobody is signed in. A bearer is verified against
+// GitHub's check-token endpoint (cached by tokenCache), and is never trusted
+// at all when this deployment has no OAuth app configured to verify it
+// against.
+func (s *server) whoami(r *http.Request) identity {
 	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
-		return s.tokens.login(strings.TrimPrefix(header, "Bearer "))
+		if !s.app.configured() {
+			return identity{}
+		}
+		return s.tokens.verify(s.app.checkToken, strings.TrimPrefix(header, "Bearer "))
 	}
-	if cookie, err := r.Cookie(sessionCookie); err == nil {
+	if cookie, err := r.Cookie(cookieName(r, sessionCookie)); err == nil {
 		return readSession(s.key, cookie.Value)
 	}
-	return ""
+	return identity{}
+}
+
+// caller is what an authorized write is attributed to: Key is the owner key
+// a document's Publisher field is compared against (a lowercased GitHub
+// login, a visitor: key, or "" for neither), and ID is the GitHub numeric
+// account id when the caller is signed in, which entry.ownedBy prefers when
+// an entry carries one.
+type caller struct {
+	Key string
+	ID  string
 }
 
 // publisher answers the request itself when the caller may not publish, and
-// otherwise returns the key that owns whatever that caller uploads: their
-// GitHub login, or their browser where publishing needs no account at all.
-func (s *server) publisher(w http.ResponseWriter, r *http.Request) (string, bool) {
-	login := s.whoami(r)
-	if s.publishers.allows(login) {
-		return s.owner(r, login), true
+// otherwise returns the key and id that own whatever that caller uploads:
+// their GitHub account, or their browser where publishing needs no account
+// at all.
+func (s *server) publisher(w http.ResponseWriter, r *http.Request) (caller, bool) {
+	id := s.whoami(r)
+	if s.publishers.allows(id.Login) {
+		return caller{Key: s.owner(r, id), ID: id.ID}, true
 	}
-	if login == "" {
+	if id.Login == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
 			"error": "sign in with GitHub to publish",
 		})
-		return "", false
+		return caller{}, false
 	}
 	writeJSON(w, http.StatusForbidden, map[string]any{
 		"error": fmt.Sprintf("@%s may not publish here; this deployment allows %s",
-			login, s.publishers.describe()),
+			id.Login, s.publishers.describe()),
 	})
-	return "", false
+	return caller{}, false
 }
 
 // owner is the key a caller's uploads belong to. A signed-in caller is their
@@ -694,11 +756,11 @@ func (s *server) publisher(w http.ResponseWriter, r *http.Request) (string, bool
 //
 // A caller with neither -- the CLI publishing to a deployment open to
 // everyone -- owns nothing, and their uploads stay shared.
-func (s *server) owner(r *http.Request, login string) string {
-	if login != "" {
-		return strings.ToLower(login)
+func (s *server) owner(r *http.Request, id identity) string {
+	if id.Login != "" {
+		return strings.ToLower(id.Login)
 	}
-	if cookie, err := r.Cookie(visitorCookie); err == nil {
+	if cookie, err := r.Cookie(cookieName(r, visitorCookie)); err == nil {
 		if token := readVisitor(s.key, cookie.Value); token != "" {
 			return visitorPrefix + token
 		}
@@ -706,12 +768,30 @@ func (s *server) owner(r *http.Request, login string) string {
 	return ""
 }
 
-// visible narrows a listing to what one owner should see: the reserved
+// commentAuthor is the key a comment or reply is attributed to (see
+// comment.Author): the signed-in account, or a digest of the visitor cookie
+// so that key can decide who may delete a comment without turning the raw
+// cookie -- which also names the caller's uploads -- into something a
+// comment payload carries around.
+func (s *server) commentAuthor(r *http.Request, id identity) string {
+	if id.Login != "" {
+		return "github:" + strings.ToLower(id.Login)
+	}
+	if cookie, err := r.Cookie(cookieName(r, visitorCookie)); err == nil {
+		if token := readVisitor(s.key, cookie.Value); token != "" {
+			sum := sha256.Sum256([]byte(token))
+			return "visitor:" + hex.EncodeToString(sum[:])
+		}
+	}
+	return ""
+}
+
+// visible narrows a listing to what one caller should see: the reserved
 // examples, the documents that predate ownership, and their own uploads.
-func (s *server) visible(entries []indexEntry, owner string) []indexEntry {
+func (s *server) visible(entries []indexEntry, who caller) []indexEntry {
 	mine := make([]indexEntry, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Example || entry.ownedBy(owner) {
+		if entry.Example || entry.ownedBy(who.Key, who.ID) {
 			mine = append(mine, entry)
 		}
 	}
@@ -733,24 +813,34 @@ func (s *server) handleAuth(w http.ResponseWriter, r *http.Request) bool {
 		}
 		state := randomToken()
 		http.SetCookie(w, &http.Cookie{
-			Name: stateCookie, Value: state + "|" + r.URL.Query().Get("next"),
-			Path: "/", MaxAge: 600, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+			Name: cookieName(r, stateCookie),
+			// The next URL is arbitrary caller-supplied text, so it is
+			// URL-encoded before it rides beside the state token in one
+			// cookie value; a next containing "|" or "&" could otherwise be
+			// misread as part of the cookie's own structure.
+			Value: state + "|" + url.QueryEscape(r.URL.Query().Get("next")),
+			Path:  "/", MaxAge: 600, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+			Secure: requestScheme(r) == "https",
 		})
 		http.Redirect(w, r, s.app.authorizeURL(s.callbackURL(r), state), http.StatusFound)
 		return true
 
 	case "/auth/callback":
-		cookie, err := r.Cookie(stateCookie)
+		cookie, err := r.Cookie(cookieName(r, stateCookie))
 		if err != nil {
 			http.Error(w, "sign-in expired; try again", http.StatusBadRequest)
 			return true
 		}
-		state, next, _ := strings.Cut(cookie.Value, "|")
+		state, encodedNext, _ := strings.Cut(cookie.Value, "|")
 		// The state ties this callback to the redirect that started it, so a
 		// link someone else crafted cannot sign you in as them.
 		if state == "" || r.URL.Query().Get("state") != state {
 			http.Error(w, "sign-in state did not match; try again", http.StatusBadRequest)
 			return true
+		}
+		next, err := url.QueryUnescape(encodedNext)
+		if err != nil {
+			next = ""
 		}
 		token, err := s.app.exchange(r.URL.Query().Get("code"), s.callbackURL(r))
 		if err != nil {
@@ -763,29 +853,44 @@ func (s *server) handleAuth(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		http.SetCookie(w, &http.Cookie{
-			Name: sessionCookie, Value: signSession(s.key, who, time.Now().Add(sessionMaxAge)),
+			Name: cookieName(r, sessionCookie), Value: signSession(s.key, who, time.Now().Add(sessionMaxAge)),
 			Path: "/", MaxAge: int(sessionMaxAge.Seconds()), HttpOnly: true,
 			// Behind a proxy that terminates TLS this connection is plain
 			// HTTP, so r.TLS alone would ship the session cookie without
 			// Secure on a deployment that is in fact HTTPS end to end.
 			SameSite: http.SameSiteLaxMode, Secure: requestScheme(r) == "https",
 		})
-		http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/", MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{Name: cookieName(r, stateCookie), Value: "", Path: "/", MaxAge: -1})
 		next = localPath(next)
 		http.Redirect(w, r, next, http.StatusFound)
 		return true
 
 	case "/auth/logout":
-		http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
-		http.Redirect(w, r, "/", http.StatusFound)
+		// A GET here would be a plain link or a browser prefetch either could
+		// trigger from a hostile page, and cookies alone do not stop that on a
+		// same-site document host; POST plus rule A's checks below do.
+		if r.Method != http.MethodPost {
+			w.Header().Set("allow", "POST")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return true
+		}
+		if crossSiteRefused(r) {
+			writeJSON(w, http.StatusForbidden, crossSiteRefusal())
+			return true
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name: cookieName(r, sessionCookie), Value: "", Path: "/", MaxAge: -1,
+			HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: requestScheme(r) == "https",
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"logged_out": true})
 		return true
 
 	case "/api/me":
-		login := s.whoami(r)
+		id := s.whoami(r)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"login":               login,
-			"can_publish":         s.publishers.allows(login),
-			"can_comment":         s.commenters.allows(login),
+			"login":               id.Login,
+			"can_publish":         s.publishers.allows(id.Login),
+			"can_comment":         s.commenters.allows(id.Login),
 			"comments_need_login": !s.commenters.Public,
 			// A wholly public deployment has no OAuth app, so there is
 			// nothing to sign in to and the page hides the button.
@@ -888,12 +993,12 @@ func localPeer(host string) bool {
 // applyFrom enforces the comment policy, then hands the message to the room.
 // When commenting needs a GitHub account, the name on the comment is the
 // verified login rather than whatever the client typed.
-func (s *server) applyFrom(current *room, incoming message, address, identity string) (map[string]any, bool) {
-	if !s.commenters.allows(identity) {
+func (s *server) applyFrom(current *room, incoming message, address string, id identity, author string, isOwner bool) (map[string]any, bool) {
+	if !s.commenters.allows(id.Login) {
 		reason := "sign in with GitHub to comment"
-		if identity != "" {
+		if id.Login != "" {
 			reason = fmt.Sprintf("@%s may not comment here; this deployment allows %s",
-				identity, s.commenters.describe())
+				id.Login, s.commenters.describe())
 		}
 		return map[string]any{
 			"type": "error", "message": reason, "temp_id": incoming.TempID,
@@ -901,10 +1006,10 @@ func (s *server) applyFrom(current *room, incoming message, address, identity st
 	}
 	// A signed-in commenter is named by their account, whether or not signing
 	// in was required. Only anonymous readers type a name.
-	if identity != "" {
-		incoming.Creator = identity
+	if id.Login != "" {
+		incoming.Creator = id.Login
 	}
-	return current.apply(incoming, address)
+	return current.apply(incoming, address, author, isOwner)
 }
 
 // visitorPrefix keeps a browser's key from ever colliding with a GitHub
@@ -920,13 +1025,16 @@ func (s *server) issueVisitor(w http.ResponseWriter, r *http.Request, asset shel
 	}
 	// An unsigned cookie -- from before this server signed them, or forged --
 	// verifies as absent, so it is simply replaced with a signed one.
-	if cookie, err := r.Cookie(visitorCookie); err == nil && readVisitor(s.key, cookie.Value) != "" {
+	if cookie, err := r.Cookie(cookieName(r, visitorCookie)); err == nil && readVisitor(s.key, cookie.Value) != "" {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: visitorCookie, Value: signVisitor(s.key, randomToken()), Path: "/",
+		Name: cookieName(r, visitorCookie), Value: signVisitor(s.key, randomToken()), Path: "/",
 		MaxAge: int((365 * 24 * time.Hour).Seconds()), HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil,
+		// r.TLS alone misses a deployment behind a proxy that terminates TLS
+		// itself, the same reason the session cookie above uses requestScheme
+		// rather than r.TLS.
+		SameSite: http.SameSiteLaxMode, Secure: requestScheme(r) == "https",
 	})
 }
 
@@ -943,6 +1051,13 @@ func writeAsset(w http.ResponseWriter, asset shellFile) {
 		body = decoded
 	}
 	w.Header().Set("content-type", asset.Type)
+	// Every shell page -- index, reader, documentation -- is a place a hostile
+	// site could otherwise iframe to phish against, since the reader carries a
+	// session cookie. A document keeps its own CSP, set where it is served,
+	// which already names the one origin allowed to frame it.
+	if strings.HasPrefix(asset.Type, "text/html") {
+		w.Header().Set("content-security-policy", "frame-ancestors 'none'")
+	}
 	privacyHeaders(w.Header())
 	switch {
 	// This response carries a freshly minted visitor cookie, and a shared

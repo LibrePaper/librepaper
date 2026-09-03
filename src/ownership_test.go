@@ -99,7 +99,7 @@ func TestListingShowsOnlyYourOwnUploads(t *testing.T) {
 
 	// An example belongs to everyone, and a document published before
 	// ownership was recorded belongs to no one in particular.
-	if _, err := instance.store.put("example-doc", "Example", digestOf("<p>e</p>"), "<p>e</p>", ""); err != nil {
+	if _, err := instance.store.put("example-doc", "Example", digestOf("<p>e</p>"), "<p>e</p>", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	instance.store.mu.Lock()
@@ -107,7 +107,7 @@ func TestListingShowsOnlyYourOwnUploads(t *testing.T) {
 	entry.Example = true
 	instance.store.entries["example-doc"] = entry
 	instance.store.mu.Unlock()
-	if _, err := instance.store.put("legacy-doc", "Legacy", digestOf("<p>l</p>"), "<p>l</p>", ""); err != nil {
+	if _, err := instance.store.put("legacy-doc", "Legacy", digestOf("<p>l</p>"), "<p>l</p>", "", ""); err != nil {
 		t.Fatal(err)
 	}
 

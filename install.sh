@@ -42,14 +42,36 @@ if [ "$VERSION" = latest ]; then
 	[ -n "$VERSION" ] || die "could not determine the latest version"
 fi
 
-url="https://github.com/$REPO/releases/download/$VERSION/komodoc_${os}_${arch}.tar.gz"
+archive="komodoc_${os}_${arch}.tar.gz"
+url="https://github.com/$REPO/releases/download/$VERSION/$archive"
+checksums_url="https://github.com/$REPO/releases/download/$VERSION/checksums.txt"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 printf 'install: downloading komodoc %s (%s/%s)\n' "$VERSION" "$os" "$arch" >&2
-fetch "$url" > "$tmp/komodoc.tar.gz" || die "download failed: $url"
-tar -xzf "$tmp/komodoc.tar.gz" -C "$tmp" || die "the download was not a valid archive"
+# The archive is saved under its release name, not a generic temp name, so the
+# line pulled out of checksums.txt below names a file that is actually there.
+fetch "$url" > "$tmp/$archive" || die "download failed: $url"
+fetch "$checksums_url" > "$tmp/checksums.txt" || die "download failed: $checksums_url"
+
+# checksums.txt has one "<sha256>  <filename>" line per archive; pull out
+# ours rather than trusting the whole file, so sha256sum/shasum only ever
+# checks the one file this run downloaded.
+line=$(awk -v f="$archive" '$2 == f { print; exit }' "$tmp/checksums.txt")
+[ -n "$line" ] || die "no checksum for $archive in checksums.txt"
+printf '%s\n' "$line" > "$tmp/checksums.txt.match"
+
+if command -v sha256sum >/dev/null 2>&1; then
+	verify() { (cd "$tmp" && sha256sum -c checksums.txt.match) >/dev/null 2>&1; }
+elif command -v shasum >/dev/null 2>&1; then
+	verify() { (cd "$tmp" && shasum -a 256 -c checksums.txt.match) >/dev/null 2>&1; }
+else
+	die "neither sha256sum nor shasum is available to verify the download"
+fi
+verify || die "checksum mismatch for $archive; the download may be corrupt or tampered with"
+
+tar -xzf "$tmp/$archive" -C "$tmp" || die "the download was not a valid archive"
 [ -f "$tmp/komodoc" ] || die "the archive did not contain a komodoc binary"
 
 mkdir -p "$BIN_DIR"

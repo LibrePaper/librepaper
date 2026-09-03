@@ -29,6 +29,12 @@ type indexEntry struct {
 	// example, and on anything published before ownership was recorded or on a
 	// deployment where publishing needs no account at all.
 	Publisher string `json:"publisher,omitempty"`
+	// PublisherID is the GitHub account's numeric id, set alongside Publisher
+	// on every new upload from a signed-in caller. A login can be renamed; the
+	// numeric id cannot, so ownedBy prefers it when a document carries one.
+	// Never set for a visitor-owned or unowned document, since neither has a
+	// GitHub account behind it.
+	PublisherID string `json:"publisher_id,omitempty"`
 	// Size is the bytes of the stored HTML, and what the storage quotas below
 	// are measured against. An entry from before Size was recorded reads back
 	// as zero, which admit treats as free rather than refusing every upload
@@ -36,11 +42,23 @@ type indexEntry struct {
 	Size int64 `json:"size"`
 }
 
-// ownedBy answers whether login may replace or delete this document. An entry
-// with no publisher belongs to no one in particular and stays shared, which is
-// how every document behaved before ownership was recorded.
-func (e indexEntry) ownedBy(login string) bool {
-	return e.Publisher == "" || e.Publisher == strings.ToLower(login)
+// ownedBy answers whether a caller -- named by ownerKey (see server.owner)
+// and, when signed in, their GitHub numeric id -- may replace or delete this
+// document. An entry with no publisher belongs to no one in particular and
+// stays shared, which is how every document behaved before ownership was
+// recorded. An entry carrying a PublisherID compares against the id instead
+// of the key, since the id survives a GitHub account being renamed and the
+// key would not; a legacy entry, or one owned by a visitor: key, has no
+// PublisherID and falls back to comparing the key, exactly as before.
+func (e indexEntry) ownedBy(ownerKey, callerID string) bool {
+	switch {
+	case e.Publisher == "":
+		return true
+	case e.PublisherID != "":
+		return callerID != "" && callerID == e.PublisherID
+	default:
+		return e.Publisher == strings.ToLower(ownerKey)
+	}
 }
 
 type store struct {
@@ -107,8 +125,10 @@ func (s *store) list() []indexEntry {
 
 // put writes a new version and updates the index, returning the stored entry.
 // The quota check and the index mutation happen under the same lock, so two
-// uploads racing for the last of a quota cannot both be admitted.
-func (s *store) put(slug, title, digest, html, owner string) (indexEntry, error) {
+// uploads racing for the last of a quota cannot both be admitted. ownerID is
+// the caller's GitHub numeric id, empty for a visitor or an unidentified
+// caller.
+func (s *store) put(slug, title, digest, html, owner, ownerID string) (indexEntry, error) {
 	size := int64(len(html))
 	// The lock is held across the file write as well as the index update. A
 	// refused upload must cost nothing on disk, so admission comes first; and
@@ -132,18 +152,20 @@ func (s *store) put(slug, title, digest, html, owner string) (indexEntry, error)
 	if existing, ok := s.entries[slug]; ok {
 		created = existing.CreatedAt
 		// A replacement keeps what the document already is: an example stays
-		// an example, and its publisher does not change hands.
+		// an example, and its publisher -- and publisher id -- do not change
+		// hands.
 		example = existing.Example
 		if existing.Publisher != "" {
-			owner = existing.Publisher
+			owner, ownerID = existing.Publisher, existing.PublisherID
 		}
 		replaced = existing.SHA
 	}
 	entry := indexEntry{
 		Slug: slug, Title: title, SHA: digest, Size: size,
 		CreatedAt: created, UpdatedAt: now,
-		Example:   example,
-		Publisher: strings.ToLower(owner),
+		Example:     example,
+		Publisher:   strings.ToLower(owner),
+		PublisherID: ownerID,
 	}
 	previous, existed := s.entries[slug]
 	s.entries[slug] = entry

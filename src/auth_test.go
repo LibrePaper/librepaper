@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -36,21 +38,32 @@ func TestPolicies(t *testing.T) {
 
 func TestSessionCookies(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	valid := signSession(key, "vincent", time.Now().Add(time.Hour))
-	if login := readSession(key, valid); login != "vincent" {
-		t.Fatalf("round trip gave %q", login)
+	id := identity{Login: "vincent", ID: "42"}
+	valid := signSession(key, id, time.Now().Add(time.Hour))
+	if got := readSession(key, valid); got != id {
+		t.Fatalf("round trip gave %+v", got)
 	}
-	if login := readSession(key, signSession(key, "vincent", time.Now().Add(-time.Hour))); login != "" {
-		t.Fatalf("an expired session was accepted as %q", login)
+	if got := readSession(key, signSession(key, id, time.Now().Add(-time.Hour))); got.Login != "" {
+		t.Fatalf("an expired session was accepted as %+v", got)
 	}
 	other := []byte("ffffffffffffffffffffffffffffffff")
-	if login := readSession(other, valid); login != "" {
-		t.Fatalf("a cookie signed with another key was accepted as %q", login)
+	if got := readSession(other, valid); got.Login != "" {
+		t.Fatalf("a cookie signed with another key was accepted as %+v", got)
 	}
 	// Flipping a character of the payload must invalidate the signature.
 	tampered := "X" + valid[1:]
-	if login := readSession(key, tampered); login != "" {
-		t.Fatalf("a tampered cookie was accepted as %q", login)
+	if got := readSession(key, tampered); got.Login != "" {
+		t.Fatalf("a tampered cookie was accepted as %+v", got)
+	}
+	// The old cookie shape carried only login|expiry. It must not be accepted
+	// as though the missing id were merely empty: a caller with no id cannot
+	// be told apart from one whose account was renamed, so such a session is
+	// simply invalid, and its owner signs in again.
+	oldPayload := base64.RawURLEncoding.EncodeToString(
+		[]byte("vincent|" + strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)))
+	oldCookie := oldPayload + "." + sign(key, oldPayload)
+	if got := readSession(key, oldCookie); got.Login != "" {
+		t.Fatalf("an old two-field cookie was accepted as %+v", got)
 	}
 }
 
@@ -88,6 +101,42 @@ func TestCommentPolicyRefusesAndAttributes(t *testing.T) {
 	stored := payload["comment"].(map[string]any)
 	if stored["creator"] != "someone" {
 		t.Fatalf("creator was %v, want the verified login", stored["creator"])
+	}
+}
+
+// TestTokenCacheCachesPositiveAndNegativeAnswers is rule F's caching half: a
+// verified token is not re-checked against GitHub on every request, and
+// neither is one that fails, though a real deployment trusts the failure for
+// a much shorter time.
+func TestTokenCacheCachesPositiveAndNegativeAnswers(t *testing.T) {
+	cache := newTokenCache()
+	calls := 0
+	good := identity{Login: "vincent", ID: "1"}
+	check := func(token string) (identity, bool) {
+		calls++
+		if token == "good-token" {
+			return good, true
+		}
+		return identity{}, false
+	}
+
+	if got := cache.verify(check, "good-token"); got != good {
+		t.Fatalf("verify(good) = %+v, want %+v", got, good)
+	}
+	if got := cache.verify(check, "good-token"); got != good || calls != 1 {
+		t.Fatalf("a cached positive answer made a second call: calls=%d, got=%+v", calls, got)
+	}
+
+	if got := cache.verify(check, "bad-token"); got.Login != "" {
+		t.Fatalf("verify(bad) = %+v, want the zero identity", got)
+	}
+	if got := cache.verify(check, "bad-token"); got.Login != "" || calls != 2 {
+		t.Fatalf("a cached negative answer made a third call: calls=%d, got=%+v", calls, got)
+	}
+
+	// An empty token is never even asked about: there is nothing to verify.
+	if got := cache.verify(check, ""); got.Login != "" || calls != 2 {
+		t.Fatalf("an empty token reached the checker: calls=%d, got=%+v", calls, got)
 	}
 }
 

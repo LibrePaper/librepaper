@@ -18,7 +18,7 @@ func TestUnsignedVisitorCookieOwnsNothing(t *testing.T) {
 
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set("cookie", visitorCookie+"=deadbeef")
-	if got := instance.owner(request, ""); got != "" {
+	if got := instance.owner(request, identity{}); got != "" {
 		t.Fatalf("an unsigned visitor cookie should own nothing, got %q", got)
 	}
 }
@@ -35,7 +35,7 @@ func TestTamperedVisitorCookieOwnsNothing(t *testing.T) {
 
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set("cookie", visitorCookie+"="+tampered)
-	if got := instance.owner(request, ""); got != "" {
+	if got := instance.owner(request, identity{}); got != "" {
 		t.Fatalf("a tampered visitor cookie should own nothing, got %q", got)
 	}
 }
@@ -48,7 +48,7 @@ func TestSignedVisitorCookieOwnsTheVisitorPrefix(t *testing.T) {
 
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set("cookie", visitorAs("alpha"))
-	if got, want := instance.owner(request, ""), visitorPrefix+"alpha"; got != want {
+	if got, want := instance.owner(request, identity{}), visitorPrefix+"alpha"; got != want {
 		t.Fatalf("owner() = %q, want %q", got, want)
 	}
 }

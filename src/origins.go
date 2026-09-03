@@ -55,3 +55,39 @@ func docsOrigin(r *http.Request) string {
 func readerOrigin(r *http.Request) string {
 	return requestScheme(r) + "://" + readerHost(r.Host)
 }
+
+// crossSiteRefused applies rule A to a state-changing route a browser can
+// reach with cookies attached: docs.<host> is same-site with the reader, so
+// SameSite cookies alone do not stop a hostile document from posting here.
+// A bearer token (the CLI) skips all of this -- it is never attached to a
+// request automatically, so a hostile page cannot forge one. Otherwise all
+// three must hold: any Origin header sent must be this reader's own origin,
+// any Sec-Fetch-Site header must say the request was not cross-site, and a
+// custom header must be present, which a browser cannot attach to a
+// cross-origin request without a CORS preflight that is never granted.
+func crossSiteRefused(r *http.Request) bool {
+	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		return false
+	}
+	if origin := r.Header.Get("Origin"); origin != "" && origin != readerOrigin(r) {
+		return true
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		return true
+	}
+	return r.Header.Get("X-Komodoc-Client") == ""
+}
+
+// wsOriginRefused is rule A's WebSocket variant: browsers always send Origin
+// on a WebSocket handshake and cannot be made to skip it or to attach a
+// custom header, so the custom-header check does not apply here -- an absent
+// Origin is not itself suspicious, but a foreign one is refused.
+func wsOriginRefused(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	return origin != "" && origin != readerOrigin(r)
+}
+
+// crossSiteRefusal is the JSON body every refusal under rule A answers with.
+func crossSiteRefusal() map[string]any {
+	return map[string]any{"error": "cross-site request refused"}
+}

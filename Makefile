@@ -148,7 +148,8 @@ deploy-sandbox: $(BIN) $(EXAMPLES)  ## Deploy to Cloudflare and publish the exam
 KEYS ?= .keys.yaml
 .PHONY: secrets
 
-secrets:  ## Open a shell with the sops-encrypted keys in its environment
+secrets:  ## Open an interactive shell with the sops-encrypted keys in its environment
 	@test -f $(KEYS) || { echo "no $(KEYS)"; exit 1; }
+	@test -t 0 || { echo "make secrets opens an interactive subshell and needs a terminal" >&2; echo "use: sops exec-env $(KEYS) 'make deploy-sandbox'" >&2; exit 2; }
 	@echo "$(KEYS) is loaded in this shell; exit to drop it"
-	@sops exec-env $(KEYS) $$SHELL
+	@sops exec-env $(KEYS) "$${SHELL:-/bin/sh}"

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +30,12 @@ type reply struct {
 	Body    string `json:"body"`
 	Creator string `json:"creator"`
 	Created string `json:"created"`
+	// Author records who actually posted this reply -- a github: or visitor:
+	// key, or "" for a caller with neither -- so a delete can be restricted to
+	// it. It is excluded here (json:"-") because reply is marshaled directly
+	// into broadcasts, snapshots and REST responses, none of which should ever
+	// carry it; storedReply below is the only shape that puts it on disk.
+	Author string `json:"-"`
 }
 
 // A rectangle on an image, in percentages of the image's own size, so it
@@ -70,12 +77,63 @@ type comment struct {
 	Resolved    bool     `json:"resolved"`
 	ResolvedAt  *string  `json:"resolved_at"`
 	Replies     []reply  `json:"replies"`
+	// Author records who actually posted this comment: "github:<login>" for a
+	// signed-in caller, "visitor:<sha256 of the visitor token>" for a verified
+	// anonymous browser, or "" for neither (including every seeded example,
+	// which belongs to nobody in particular). Excluded here for the same
+	// reason as reply.Author -- comment is marshaled straight into broadcasts,
+	// snapshots and REST responses -- and kept on disk only through
+	// storedComment.
+	Author string `json:"-"`
 }
 
-// roomState is what lands on disk, one file per document.
+// roomState is what lands on disk, one file per document. comment.Author and
+// reply.Author are excluded from comment/reply's own JSON so that nothing
+// marshaling one of those directly for a client leaks it by accident; the
+// stored* mirrors below are the one place that value is meant to travel, so
+// save and load convert through them at the edge of the file.
 type roomState struct {
-	Seq      int        `json:"seq"`
-	Comments []*comment `json:"comments"`
+	Seq      int              `json:"seq"`
+	Comments []*storedComment `json:"comments"`
+}
+
+type storedReply struct {
+	reply
+	Author string `json:"author,omitempty"`
+}
+
+type storedComment struct {
+	comment
+	Author  string        `json:"author,omitempty"`
+	Replies []storedReply `json:"replies"`
+}
+
+func toStored(items []*comment) []*storedComment {
+	out := make([]*storedComment, len(items))
+	for i, item := range items {
+		replies := make([]storedReply, len(item.Replies))
+		for j, answer := range item.Replies {
+			replies[j] = storedReply{reply: answer, Author: answer.Author}
+		}
+		out[i] = &storedComment{comment: *item, Author: item.Author, Replies: replies}
+	}
+	return out
+}
+
+func fromStored(items []*storedComment) []*comment {
+	out := make([]*comment, len(items))
+	for i, stored := range items {
+		item := stored.comment
+		item.Author = stored.Author
+		item.Replies = make([]reply, len(stored.Replies))
+		for j, answer := range stored.Replies {
+			restored := answer.reply
+			restored.Author = answer.Author
+			item.Replies[j] = restored
+		}
+		out[i] = &item
+	}
+	return out
 }
 
 type room struct {
@@ -149,7 +207,7 @@ func (r *room) load() {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return
 	}
-	r.seq, r.comments = state.Seq, state.Comments
+	r.seq, r.comments = state.Seq, fromStored(state.Comments)
 	sort.SliceStable(r.comments, func(i, j int) bool { return r.comments[i].Seq < r.comments[j].Seq })
 }
 
@@ -157,9 +215,9 @@ func (r *room) load() {
 // so this stays cheaper than any incremental scheme, and a rename makes it
 // atomic.
 func (r *room) save() error {
-	state := roomState{Seq: r.seq, Comments: r.comments}
+	state := roomState{Seq: r.seq, Comments: toStored(r.comments)}
 	if len(state.Comments) == 0 {
-		state.Comments = []*comment{}
+		state.Comments = []*storedComment{}
 	}
 	raw, err := json.Marshal(state)
 	if err != nil {
@@ -182,6 +240,38 @@ func (r *room) snapshot() []*comment {
 		return []*comment{}
 	}
 	return append([]*comment{}, r.comments...)
+}
+
+// commentView is what a caller is shown: every comment field a client ever
+// sees, plus whether this particular caller may delete it. Embedding *comment
+// promotes its exported fields (Author stays excluded, since its own tag is
+// json:"-") without needing to restate any of them here.
+type commentView struct {
+	*comment
+	Deletable bool `json:"deletable"`
+}
+
+// snapshotFor is the per-caller view of the whole thread: the hello frame and
+// the REST listing both need this, since deletable differs by who is asking.
+// Broadcast events skip it -- a single change reaches every reader in one
+// message, so deletable cannot be baked in there and is simply left off.
+func (r *room) snapshotFor(author string, isOwner bool) []commentView {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]commentView, len(r.comments))
+	for i, item := range r.comments {
+		out[i] = commentView{comment: item, Deletable: deletable(item, author, isOwner)}
+	}
+	return out
+}
+
+// deletable is rule H's authorization test: the document's owner may delete
+// anything on it, and everyone else only their own -- and "their own" never
+// matches on two callers who both have no author key, which is what an
+// anonymous caller with no visitor cookie and a nobody's-in-particular seeded
+// example both look like.
+func deletable(item *comment, author string, isOwner bool) bool {
+	return isOwner || (author != "" && item.Author == author)
 }
 
 func (r *room) counts() (int, int) {
@@ -226,6 +316,28 @@ func (r *room) broadcast(payload any) {
 	}
 }
 
+// rateKey is what the rate limiter actually counts against: an IPv4 address
+// used whole, or an IPv6 address reduced to its /64 -- the block an ISP
+// typically hands one customer -- so a rotating address within that prefix
+// does not buy a fresh limit. A value that does not parse as an address (an
+// already-collapsed test fixture, say) is used as given.
+func rateKey(address string) string {
+	ip, err := netip.ParseAddr(address)
+	if err != nil {
+		return address
+	}
+	ip = ip.Unmap()
+	if !ip.Is6() || ip.Is4In6() {
+		return ip.String()
+	}
+	bytes := ip.As16()
+	hextets := make([]string, 4)
+	for i := range hextets {
+		hextets[i] = fmt.Sprintf("%x", uint16(bytes[i*2])<<8|uint16(bytes[i*2+1]))
+	}
+	return strings.Join(hextets, ":")
+}
+
 // rateOk counts writes per address per hour, and forgets older hours as it
 // goes rather than accumulating an entry per address per hour.
 func (r *room) rateOk(address string) bool {
@@ -233,7 +345,7 @@ func (r *room) rateOk(address string) bool {
 		return true
 	}
 	hour := time.Now().Unix() / 3600
-	key := fmt.Sprintf("%s:%d", address, hour)
+	key := fmt.Sprintf("%s:%d", rateKey(address), hour)
 	suffix := fmt.Sprintf(":%d", hour)
 	for existing := range r.rate {
 		if !strings.HasSuffix(existing, suffix) {
@@ -268,12 +380,22 @@ type message struct {
 
 // apply validates, persists, and returns the event to broadcast. The second
 // result is false when the event is an error, which goes only to its sender.
-func (r *room) apply(incoming message, address string) (map[string]any, bool) {
+// author is the caller's own author key (see comment.Author), and isOwner
+// says whether the caller owns the document this room belongs to; both come
+// from the caller's identity and are never taken from the message itself.
+func (r *room) apply(incoming message, address, author string, isOwner bool) (map[string]any, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	fail := func(text string) (map[string]any, bool) {
-		return map[string]any{"type": "error", "message": text, "temp_id": incoming.TempID}, false
+		payload := map[string]any{"type": "error", "message": text, "temp_id": incoming.TempID}
+		// Named so the reader knows which optimistic row to roll back; only
+		// delete and resolve target an existing comment_id, but including it
+		// whenever one was sent costs nothing and keeps this in one place.
+		if incoming.CommentID != "" {
+			payload["comment_id"] = incoming.CommentID
+		}
+		return payload, false
 	}
 	// Every change here is acknowledged to its sender and broadcast to every
 	// other reader, so it has to be on disk first. When the write fails the
@@ -282,6 +404,13 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 	unsaved := func(undo func()) (map[string]any, bool) {
 		undo()
 		return fail("could not save that comment; try again")
+	}
+
+	// Resolving and deleting now cost a slot too, the same as posting: a
+	// caller who could resolve or delete without limit could still make a
+	// thread unusable, just by different means than flooding it with text.
+	if !r.rateOk(address) {
+		return fail("too many comments from this address; try later")
 	}
 
 	if incoming.Type == "resolve" {
@@ -311,6 +440,9 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 	if incoming.Type == "delete" {
 		for index, item := range r.comments {
 			if item.ID == incoming.CommentID {
+				if !deletable(item, author, isOwner) {
+					return fail("you may only delete your own comments")
+				}
 				kept := append([]*comment{}, r.comments...)
 				r.comments = append(r.comments[:index:index], r.comments[index+1:]...)
 				if r.save() != nil {
@@ -320,10 +452,6 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 			}
 		}
 		return fail("unknown comment")
-	}
-
-	if !r.rateOk(address) {
-		return fail("too many comments from this address; try later")
 	}
 
 	body := strings.TrimSpace(clean(incoming.Body, config.Caps.Body))
@@ -345,7 +473,10 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 		if target == nil {
 			return fail("unknown comment")
 		}
-		added := reply{ID: newID(), Body: body, Creator: creator, Created: timestamp()}
+		if len(target.Replies) >= config.MaxReplies {
+			return fail("this comment has reached its reply limit")
+		}
+		added := reply{ID: newID(), Body: body, Creator: creator, Created: timestamp(), Author: author}
 		target.Replies = append(target.Replies, added)
 		if r.save() != nil {
 			return unsaved(func() { target.Replies = target.Replies[:len(target.Replies)-1] })
@@ -388,6 +519,7 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 			Tags:        cleanTags(incoming.Tags),
 			Creator:     creator,
 			Created:     timestamp(),
+			Author:      author,
 			Replies:     []reply{},
 		}
 		r.comments = append(r.comments, added)

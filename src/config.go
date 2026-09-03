@@ -37,6 +37,14 @@ type configuration struct {
 	// not a label.
 	MaxTags int `json:"max_tags"`
 
+	// MaxTitle caps a document title, in runes. Titles live in the index, which
+	// the Worker reads on nearly every request, so an unbounded title is a way
+	// to sink the whole deployment.
+	MaxTitle int `json:"max_title"`
+	// MaxReplies caps replies on one comment, so a thread cannot grow without
+	// bound and a room stays small enough to load and rewrite whole.
+	MaxReplies int `json:"max_replies"`
+
 	// SlugPattern is the shape of a valid slug, as a RegExp source string.
 	SlugPattern string `json:"slug_pattern"`
 	SlugMax     int    `json:"slug_max"`
@@ -93,6 +101,8 @@ var config = configuration{
 	Motivations:       []string{"commenting", "questioning", "highlighting", "editing", "assessing"},
 	DefaultMotivation: "commenting",
 	MaxTags:           6,
+	MaxTitle:          200,
+	MaxReplies:        100,
 	SlugPattern:       `^[a-z0-9]+(?:-[a-z0-9]+)*$`,
 	SlugMax:           80,
 	SuffixAlphabet:    "abcdefghijkmnpqrstuvwxyz23456789",

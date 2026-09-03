@@ -48,16 +48,16 @@
            to use it, from the project's own README. -->
       <ul class="navmid">
         <li>
-          <a href="/documentation">
+          <a href="/documentation" aria-label="Documentation" title="Documentation">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/></svg>
-            Documentation
+            <span class="navlabel">Documentation</span>
           </a>
         </li>
       </ul>
       <ul>
         <li><small id="who" hidden></small></li>
         <li><a role="button" id="signIn" href="/auth/login" hidden>Sign in</a></li>
-        <li><a role="button" id="signOut" href="/auth/logout" hidden>Sign out</a></li>
+        <li><button type="button" id="signOut" hidden>Sign out</button></li>
       </ul>
     </nav>
     <main class="container">
@@ -161,6 +161,13 @@
       const MAX_HTML = CONFIG.max_html;
       const EXTENSIONS = CONFIG.extensions;
       const MAX_LABEL = Math.round(MAX_HTML / (1024 * 1024)) + " MB";
+
+      // A browser cannot set a custom header on a cross-origin request without
+      // a CORS preflight, which the server never grants -- so this header is
+      // proof, to the server, that the request came from this page and not
+      // from a hostile document on the sibling docs host. Sent on every
+      // state-changing request and on the list, never on plain navigation.
+      const SHELL_HEADERS = { "X-Komodoc-Client": "shell" };
 
       const list = document.getElementById("list");
       const rows = document.getElementById("rows");
@@ -316,7 +323,7 @@
         if (!ok) return;
         await Promise.all(
           slugs.map((slug) =>
-            fetch(`/api/documents/${slug}/delete`, { method: "POST" }).catch(() => {}),
+            fetch(`/api/documents/${slug}/delete`, { method: "POST", headers: SHELL_HEADERS }).catch(() => {}),
           ),
         );
         slugs.forEach((slug) => {
@@ -417,7 +424,7 @@
       }
 
       async function showList() {
-        const response = await fetch("/api/list", { method: "POST" });
+        const response = await fetch("/api/list", { method: "POST", headers: SHELL_HEADERS });
         if (!response.ok) return;
         documents = (await response.json()).documents;
         counts.clear();
@@ -459,6 +466,13 @@
         }
         if (me.can_publish) await showList();
       }
+
+      // A GET can be forced onto a signed-in reader cross-site, so signing out
+      // is a POST, carrying the same header every other state change does.
+      document.getElementById("signOut").onclick = async () => {
+        await fetch("/auth/logout", { method: "POST", headers: SHELL_HEADERS }).catch(() => {});
+        location.reload();
+      };
 
       function share(url) {
         document.getElementById("sharedLink").value = url;
@@ -611,7 +625,11 @@
         const button = form.querySelector('button[type="submit"]');
         button.disabled = true;
         button.textContent = "Adding…";
-        const response = await fetch("/api/documents", { method: "POST", body: new FormData(form) });
+        const response = await fetch("/api/documents", {
+          method: "POST",
+          headers: SHELL_HEADERS,
+          body: new FormData(form),
+        });
         button.disabled = false;
         button.textContent = "Add document";
         if (!response.ok) {

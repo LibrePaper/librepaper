@@ -45,9 +45,12 @@ func newTestServer(t *testing.T) (*httptest.Server, *server) {
 	return http, instance
 }
 
-// sessionAs is the cookie a browser carries after signing in as login.
+// sessionAs is the cookie a browser carries after signing in as login. The
+// login itself doubles as the fake GitHub numeric id, which is fine for a
+// test: it only has to be stable and distinct per login, the way a real
+// account's id is.
 func sessionAs(login string) string {
-	return sessionCookie + "=" + signSession(testKey, login, time.Now().Add(time.Hour))
+	return sessionCookie + "=" + signSession(testKey, identity{Login: login, ID: login}, time.Now().Add(time.Hour))
 }
 
 // post sends a request signed in as the allowed publisher.
@@ -68,6 +71,11 @@ func postAs(t *testing.T, cookie, base, path string, payload any) (int, map[stri
 		t.Fatal(err)
 	}
 	request.Header.Set("content-type", "application/json")
+	// A browser cannot attach a custom header to a cross-origin request
+	// without a preflight that is never granted, so this is what marks a
+	// same-origin request under rule A; every cookie-authenticated call in
+	// these tests is one.
+	request.Header.Set("X-Komodoc-Client", "1")
 	if cookie != "" {
 		request.Header.Set("cookie", cookie)
 	}

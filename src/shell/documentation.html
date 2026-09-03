@@ -48,16 +48,16 @@
            to use it, from the project's own README. -->
       <ul class="navmid">
         <li>
-          <a href="/documentation" aria-current="page">
+          <a href="/documentation" aria-current="page" aria-label="Documentation" title="Documentation">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/></svg>
-            Documentation
+            <span class="navlabel">Documentation</span>
           </a>
         </li>
       </ul>
       <ul>
         <li><small id="who" hidden></small></li>
         <li><a role="button" id="signIn" href="/auth/login" hidden>Sign in</a></li>
-        <li><a role="button" id="signOut" href="/auth/logout" hidden>Sign out</a></li>
+        <li><button type="button" id="signOut" hidden>Sign out</button></li>
       </ul>
     </nav>
     <main class="container documentation">
@@ -99,6 +99,14 @@
         })
         .catch(() => {});
 
+      // A GET can be forced onto a signed-in reader cross-site, so signing out
+      // is a POST, carrying the header that marks the request as coming from
+      // this page rather than a cross-site one.
+      document.getElementById("signOut").onclick = async () => {
+        await fetch("/auth/logout", { method: "POST", headers: { "X-Komodoc-Client": "shell" } }).catch(() => {});
+        location.reload();
+      };
+
       const lightbox = document.getElementById("imageLightbox");
       const expanded = lightbox.querySelector("img");
       const close = lightbox.querySelector("button");
@@ -137,6 +145,20 @@
         toc.appendChild(link);
       });
       if (!headings.length) toc.closest(".toc").hidden = true;
+
+      // Beside the text it is a list that is simply there; above the text, on a
+      // narrow screen, an open one would bury the document under its own
+      // headings, so it starts closed and follows the layout it is in.
+      const wide = window.matchMedia("(min-width: 1100px)");
+      const details = toc.closest("details");
+      const fitLayout = () => (details.open = wide.matches);
+      fitLayout();
+      wide.addEventListener("change", fitLayout);
+      // Tapping a heading in the narrow layout should leave the list closed
+      // behind you, at the section you asked for.
+      toc.addEventListener("click", () => {
+        if (!wide.matches) details.open = false;
+      });
 
       const activate = (id) => {
         toc.querySelectorAll("a").forEach((link) => {

@@ -360,6 +360,11 @@
       const image = event.target.closest?.("img");
       if (!image || !images().includes(image)) return;
       event.preventDefault();
+      // A touch drag is claimed by the browser as a scroll unless the element
+      // has given it up (touch-action, set with the tool) and the drag is
+      // captured, which is also what keeps the moves coming when a finger
+      // leaves the figure.
+      image.setPointerCapture?.(event.pointerId);
 
       const start = percentWithin(image, event);
       const outline = document.createElement("span");
@@ -382,6 +387,14 @@
       width: Math.abs(now.x - start.x) + "%",
       height: Math.abs(now.y - start.y) + "%",
     });
+  });
+
+  // The browser can take the gesture back mid-drag. Nothing was asked for, so
+  // the outline goes with it rather than being left on the figure.
+  document.addEventListener("pointercancel", () => {
+    if (!drawing) return;
+    drawing.outline.remove();
+    drawing = null;
   });
 
   document.addEventListener("pointerup", async (event) => {
@@ -429,7 +442,12 @@
     if (message.type === "tool") {
       tool = String(message.tool || "commenting");
       document.body.style.userSelect = tool === "region" ? "none" : "";
-      for (const image of images()) image.style.cursor = tool === "region" ? "crosshair" : "";
+      // touch-action is what decides a touch drag: without giving it up here,
+      // dragging a box on a figure just scrolls the document instead.
+      for (const image of images()) {
+        image.style.cursor = tool === "region" ? "crosshair" : "";
+        image.style.touchAction = tool === "region" ? "none" : "";
+      }
     }
     if (message.type === "reveal") {
       document

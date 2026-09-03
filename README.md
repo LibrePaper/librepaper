@@ -55,7 +55,9 @@ link can read the document.
 The management interface lists the documents you own and any reserved examples.
 It does not reveal documents owned by other publishers. Documents without a
 recorded owner (for example, older documents created before ownership was
-enabled) remain shared and visible to every publisher.
+enabled, or ones published by the CLI to a deployment open to everyone) remain
+shared: any publisher may replace or delete them, not just whoever uploaded
+them.
 
 Select any passage to highlight it or attach a comment; comments appear
 immediately for everyone else reading the document. Depending on the
@@ -178,7 +180,13 @@ komodoc serve --port 8080 --data /var/lib/komodoc \
 For GitHub sign-in, set `KOMODOC_GITHUB_CLIENT_ID` and
 `KOMODOC_GITHUB_CLIENT_SECRET`, and configure the OAuth callback URL for the
 server's public HTTPS address. Put the server behind a TLS reverse proxy in
-production.
+production: the session cookie is only marked `Secure` (and travels only over
+TLS) once the server sees an HTTPS request, so sign-in on plain HTTP is safe
+for local testing on `localhost` but should not be relied on anywhere else.
+The proxy must send `X-Forwarded-Proto: https`: that header is how the server
+learns it is behind TLS. Without it, cookies are not marked `Secure` and the
+browser's `Origin` on uploads and comments will not match the server's idea of
+its own address, so those requests are refused as cross-site.
 
 ### Retention
 
@@ -228,13 +236,19 @@ komodoc deploy --label my-docs --publishers YOUR-GITHUB-LOGIN
 
 The label is the first part of the URL, so this endpoint is
 `https://my-docs.YOUR-SUBDOMAIN.workers.dev`. Cloudflare runs the cleanup
-schedule; the `komodoc` program does not need to remain running.
+schedule; the `komodoc` program does not need to remain running. A label
+itself ending in `-docs` is refused: `<label>-docs` is where the deployment
+hosts documents, and a label already ending that way would collide with it.
 
 Three flags bound what a deployment will store, and all three apply to
 `komodoc serve` as well: `--max-size` caps one document (4 MB by default),
 `--quota` caps what one publisher may hold across all their documents (100 MB),
 and `--storage` caps the whole deployment (5120 MB). Each publisher may also
 hold at most 50 documents and upload at most 30 times an hour.
+
+With `--publishers anyone`, a browser's quota is tied to a cookie, not an
+account, so clearing cookies gets a new one; `--storage` is the bound that
+actually holds under that policy.
 
 ## Environment variables
 

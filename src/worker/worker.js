@@ -9,10 +9,26 @@ const SHELL = __SHELL__;
 const SLUG = new RegExp(CONFIG.slug_pattern);
 const SHA = /^[0-9a-f]{64}$/;
 const MAX_HTML = CONFIG.max_html;
-const VISITOR_COOKIE = "komodoc_visitor";
+// config.go is being extended with this limit concurrently; fall back to its
+// default until that lands. Titles live in the index, which is read on
+// nearly every request, so an unbounded one is a way to sink the deployment.
+const MAX_TITLE = CONFIG.max_title ?? 200;
+// The Worker only ever runs behind HTTPS, so it always uses the __Host-
+// prefixed cookie names: __Host- requires Secure, Path=/, and no Domain, and
+// guarantees the cookie could only have been set by this exact origin over a
+// secure channel -- a same-site document cannot plant one under this name.
+const SESSION_COOKIE = "__Host-komodoc_session";
+const VISITOR_COOKIE = "__Host-komodoc_visitor";
+const STATE_COOKIE = "__Host-komodoc_state";
 // A colon cannot appear in a GitHub login, so a browser's key never collides
 // with an account's.
 const VISITOR_PREFIX = "visitor:";
+
+// Object.hasOwn guards every index lookup by a client-supplied slug: a plain
+// object's bracket access falls through to Object.prototype, so a slug of
+// "constructor" (a valid slug shape) would otherwise resolve to a function
+// instead of "no such document".
+const lookup = (entries, slug) => (Object.hasOwn(entries, slug) ? entries[slug] : undefined);
 
 const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), {
@@ -63,22 +79,54 @@ async function signPayload(key, payload) {
   return base64url(await crypto.subtle.sign("HMAC", material, new TextEncoder().encode(payload)));
 }
 
-// A session is "<login|expiry>.<signature>". Nothing is stored: the signature
-// is what makes it trustworthy.
-async function makeSession(env, login, expiry) {
-  const payload = base64url(new TextEncoder().encode(`${login}|${expiry}`));
-  return `${payload}.${await signPayload(env.KOMODOC_SESSION_KEY || "", payload)}`;
+// signaturesMatch compares two signatures without letting a timing difference
+// leak how many leading bytes matched. crypto.subtle.timingSafeEqual is a
+// Workers-runtime extension to Web Crypto; where it is unavailable, the
+// manual XOR-and-OR loop below is the same constant-time comparison done by
+// hand. Signatures of different lengths are simply unequal -- comparing
+// unequal-length buffers is a fast, non-secret rejection, not a leak of a
+// secret value.
+async function signaturesMatch(a, b) {
+  const bytesA = new TextEncoder().encode(String(a));
+  const bytesB = new TextEncoder().encode(String(b));
+  if (bytesA.length !== bytesB.length) return false;
+  if (typeof crypto.subtle.timingSafeEqual === "function") {
+    return crypto.subtle.timingSafeEqual(bytesA, bytesB);
+  }
+  let diff = 0;
+  for (let i = 0; i < bytesA.length; i++) diff |= bytesA[i] ^ bytesB[i];
+  return diff === 0;
+}
+
+// A session is "<login|id|expiry>.<signature>". Nothing is stored: the
+// signature is what makes it trustworthy. Signing fails closed: with no
+// session key configured, makeSession hands back "" rather than signing with
+// an empty key, which anyone could reproduce themselves.
+async function makeSession(env, login, id, expiry) {
+  const key = env.KOMODOC_SESSION_KEY || "";
+  if (!key) return "";
+  const payload = base64url(new TextEncoder().encode(`${login}|${id}|${expiry}`));
+  return `${payload}.${await signPayload(key, payload)}`;
 }
 
 async function readSession(env, cookie) {
+  const key = env.KOMODOC_SESSION_KEY || "";
+  const empty = { login: "", id: "" };
+  if (!key) return empty;
   const [payload, signature] = String(cookie || "").split(".");
-  if (!payload || !signature) return "";
-  if ((await signPayload(env.KOMODOC_SESSION_KEY || "", payload)) !== signature) return "";
+  if (!payload || !signature) return empty;
+  if (!(await signaturesMatch(await signPayload(key, payload), signature))) return empty;
   const decoded = new TextDecoder().decode(
     Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)));
-  const [login, stamp] = decoded.split("|");
-  if (!login || Number(stamp) * 1000 < Date.now()) return "";
-  return login;
+  const parts = decoded.split("|");
+  // Exactly three fields: a pre-id cookie ("login|expiry", two fields) still
+  // carries a signature this same key would happily reproduce, so it must be
+  // rejected by shape, not just left to an expiry check a missing field could
+  // dodge (Number(undefined) is NaN, and NaN < anything is false).
+  if (parts.length !== 3) return empty;
+  const [login, id, stamp] = parts;
+  if (!login || !Number.isFinite(Number(stamp)) || Number(stamp) * 1000 < Date.now()) return empty;
+  return { login, id: id || "" };
 }
 
 function cookieValue(request, name) {
@@ -91,34 +139,84 @@ function cookieValue(request, name) {
 }
 
 // signVisitor and readVisitor sign the visitor cookie the same way sessions
-// are signed, over the same key: a client that could set komodoc_visitor to
-// anything would manufacture as many owners -- and, through documentRoom, as
-// many Durable Objects -- as it liked.
+// are signed, over the same key: a client that could set the visitor cookie
+// to anything would manufacture as many owners -- and, through documentRoom,
+// as many Durable Objects -- as it liked. Also fails closed with no key.
 async function signVisitor(env, token) {
-  return `${token}.${await signPayload(env.KOMODOC_SESSION_KEY || "", token)}`;
+  const key = env.KOMODOC_SESSION_KEY || "";
+  if (!key) return "";
+  return `${token}.${await signPayload(key, token)}`;
 }
 
 async function readVisitor(env, cookie) {
+  const key = env.KOMODOC_SESSION_KEY || "";
+  if (!key) return "";
   const [token, signature] = String(cookie || "").split(".");
   if (!token || !signature) return "";
-  if ((await signPayload(env.KOMODOC_SESSION_KEY || "", token)) !== signature) return "";
+  if (!(await signaturesMatch(await signPayload(key, token), signature))) return "";
   return token;
 }
 
-// bearerCache remembers who a GitHub token belongs to for five minutes, so a
-// CLI session that calls the API repeatedly does not cost a GitHub request
+// bearerCache remembers a verified token for ten minutes, and an unverified
+// one for one, keyed by the token's SHA-256 rather than the token itself, so
+// a CLI session that calls the API repeatedly does not cost a GitHub request
 // per call. Isolates are short-lived, so this stays small on its own; the
 // cap below is a backstop against an isolate that somehow lives long enough
 // to see many distinct tokens.
 const bearerCache = new Map();
-const BEARER_TTL_MS = 5 * 60 * 1000;
+const BEARER_POSITIVE_TTL_MS = 10 * 60 * 1000;
+const BEARER_NEGATIVE_TTL_MS = 60 * 1000;
 const BEARER_CACHE_LIMIT = 1000;
 
-async function githubLogin(token) {
+// verifyBearer proves a token was issued to this deployment's own OAuth app,
+// via GitHub's check-token endpoint: unlike GET /user, which answers for any
+// valid token from any app, this one 404s on a token that belongs to someone
+// else's application. Without an app configured there is nothing to check a
+// token against, so every bearer is rejected.
+async function verifyBearer(token, env) {
+  const clientID = env.KOMODOC_GITHUB_CLIENT_ID || "";
+  const clientSecret = env.KOMODOC_GITHUB_CLIENT_SECRET || "";
+  const empty = { login: "", id: "" };
+  if (!clientID || !clientSecret) return empty;
+
   const key = await sha256(token);
   const cached = bearerCache.get(key);
-  if (cached && cached.expires > Date.now()) return cached.login;
+  if (cached && cached.expires > Date.now()) return cached.identity;
 
+  const response = await fetch(`https://api.github.com/applications/${clientID}/token`, {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${btoa(`${clientID}:${clientSecret}`)}`,
+      accept: "application/vnd.github+json",
+      "content-type": "application/json",
+      "user-agent": "komodoc",
+    },
+    body: JSON.stringify({ access_token: token }),
+  });
+
+  let identity = empty;
+  let ttl = BEARER_NEGATIVE_TTL_MS;
+  if (response.status === 200) {
+    const body = await response.json().catch(() => ({}));
+    const login = body.user?.login || "";
+    const id = body.user?.id;
+    if (login && id != null) {
+      identity = { login, id: String(id) };
+      ttl = BEARER_POSITIVE_TTL_MS;
+    }
+  }
+  // A 404 means the token is not this app's (or is invalid); any other
+  // status is treated the same way -- unverified rather than trusted.
+  if (bearerCache.size >= BEARER_CACHE_LIMIT) bearerCache.clear();
+  bearerCache.set(key, { identity, expires: Date.now() + ttl });
+  return identity;
+}
+
+// githubUserInfo asks GitHub who a token belongs to, via GET /user. Used only
+// right after the OAuth code exchange, when the token was just minted by
+// GitHub for this exact request and so needs no further proof it belongs to
+// this app.
+async function githubUserInfo(token) {
   const response = await fetch("https://api.github.com/user", {
     headers: {
       authorization: `Bearer ${token}`,
@@ -126,19 +224,17 @@ async function githubLogin(token) {
       "user-agent": "komodoc",
     },
   });
-  if (!response.ok) return "";
-  const login = (await response.json()).login || "";
-  if (bearerCache.size >= BEARER_CACHE_LIMIT) bearerCache.clear();
-  bearerCache.set(key, { login, expires: Date.now() + BEARER_TTL_MS });
-  return login;
+  if (!response.ok) return { login: "", id: "" };
+  const body = await response.json().catch(() => ({}));
+  return { login: body.login || "", id: body.id != null ? String(body.id) : "" };
 }
 
 // whoami identifies a caller: a browser by its session cookie, the CLI by the
-// GitHub token it sends as a bearer.
+// GitHub token it sends as a bearer. Both return {login, id}.
 async function whoami(request, env) {
   const header = request.headers.get("authorization") || "";
-  if (header.startsWith("Bearer ")) return githubLogin(header.slice(7));
-  return readSession(env, cookieValue(request, "komodoc_session"));
+  if (header.startsWith("Bearer ")) return verifyBearer(header.slice(7), env);
+  return readSession(env, cookieValue(request, SESSION_COOKIE));
 }
 
 // owner is the key a caller's uploads belong to. A signed-in caller is their
@@ -155,14 +251,16 @@ async function ownerKey(request, env, login) {
   return visitor ? VISITOR_PREFIX + visitor : "";
 }
 
-// publisher returns { owner, login } when allowed, or { refusal } to send
-// back. login is returned alongside owner so a caller that needs it too --
-// the example gate, in particular -- does not have to verify identity a
-// second time.
+// publisher returns { owner, login, id } when allowed, or { refusal } to send
+// back. login and id are returned alongside owner so a caller that needs them
+// too -- the example gate, ownership checks -- does not have to verify
+// identity a second time.
 async function publisher(request, env) {
-  const login = (await whoami(request, env)).toLowerCase();
+  const identity = await whoami(request, env);
+  const login = (identity.login || "").toLowerCase();
+  const id = identity.id || "";
   const policy = parsePolicy(env.KOMODOC_PUBLISHERS);
-  if (policyAllows(policy, login)) return { owner: await ownerKey(request, env, login), login };
+  if (policyAllows(policy, login)) return { owner: await ownerKey(request, env, login), login, id };
   if (!login) return { refusal: json({ error: "sign in with GitHub to publish" }, 401) };
   return {
     refusal: json(
@@ -181,12 +279,20 @@ function examplesEnabled(env) {
 
 // A document with no publisher belongs to no one in particular and stays
 // shared, which is how every document behaved before ownership was recorded.
-const ownedBy = (entry, owner) => !entry.publisher || entry.publisher === owner;
+// One with a publisher_id is owned by the matching GitHub numeric id -- the
+// login on its own can be renamed or, in principle, reused. A publisher with
+// no publisher_id is a legacy entry, or a visitor: owner with no id to check;
+// for those, the owner key is still what decides it.
+const ownedBy = (entry, owner, id) => {
+  if (!entry.publisher) return true;
+  if (entry.publisher_id) return Boolean(id) && entry.publisher_id === id;
+  return entry.publisher === owner;
+};
 
 // Reserved examples are everyone's; an owner otherwise sees the documents that
 // predate ownership and their own uploads.
-function visibleTo(entries, owner) {
-  return entries.filter((entry) => entry.example || ownedBy(entry, owner));
+function visibleTo(entries, owner, id) {
+  return entries.filter((entry) => entry.example || ownedBy(entry, owner, id));
 }
 
 function slugify(value) {
@@ -196,6 +302,19 @@ function slugify(value) {
     .replace(/^-+|-+$/g, "")
     .slice(0, CONFIG.slug_max);
   return slug || null;
+}
+
+// A reserved example keeps whatever suffixed slug it already has, so
+// re-seeding replaces it in place rather than piling up copies; only the first
+// install picks a suffix. Slugs are already reduced to [a-z0-9-], so the base
+// needs no escaping here.
+function existingExampleKey(entries, base) {
+  const pattern = new RegExp(
+    `^${base}-[${CONFIG.suffix_alphabet}]{${CONFIG.suffix_length}}$`);
+  for (const [slug, entry] of Object.entries(entries)) {
+    if (entry.example && pattern.test(slug)) return slug;
+  }
+  return null;
 }
 
 function randomSuffix() {
@@ -237,6 +356,18 @@ function localPath(next) {
     const parsed = new URL(next, "https://komodoc.invalid");
     if (parsed.origin !== "https://komodoc.invalid") return "/";
     return parsed.pathname + parsed.search + parsed.hash;
+  } catch {
+    return "/";
+  }
+}
+
+// safeDecode reverses the encodeURIComponent the state cookie's next value
+// was written with. A malformed percent-escape would otherwise throw all the
+// way out of the callback; localPath rejects anything that is not a bare
+// local path regardless, so falling back to "/" here costs nothing.
+function safeDecode(value) {
+  try {
+    return decodeURIComponent(value);
   } catch {
     return "/";
   }
@@ -348,9 +479,14 @@ async function readUpload(request) {
     ({ title, slug, html, example = false, annotations = [] } = body);
   }
 
-  title = String(title || "").trim();
+  // clean is defined in room.js, which is concatenated ahead of this file;
+  // it strips control characters the same way a comment body does.
+  title = clean(String(title || "").trim(), Infinity).trim();
   html = String(html || "");
   if (!title || !html.trim()) return json({ error: "title and html are required" }, 400);
+  // Runes, not UTF-16 code units, so a title full of astral-plane characters
+  // is not charged twice for what a person reads as one character.
+  if ([...title].length > MAX_TITLE) return json({ error: "title too long" }, 400);
 
   // The byte length, not the character length: a document full of multi-byte
   // characters can be well under MAX_HTML in .length and over it in bytes,
@@ -375,14 +511,18 @@ class QuotaRefusal {
 // of the index. Entries written before sizes were tracked count as zero
 // bytes, so old documents can never by themselves blow a quota. It returns
 // the refusal Response to send back, or null when the upload may proceed.
-function checkQuota(entries, owner, key, size) {
-  const existing = entries[key];
+// `retiring` names an entry this upload removes in the same index update -- a
+// suffix-less example being migrated to a suffixed slug. Its bytes and its
+// document slot are leaving, so they do not count against the new version.
+function checkQuota(entries, owner, key, size, retiring = null) {
+  const existing = lookup(entries, key);
   const replacing = Boolean(existing);
   const sameOwner = replacing && (existing.publisher || "") === owner;
   const cutoff = Date.now() - 3600 * 1000;
 
   let total = 0, ownerBytes = 0, ownerDocs = 0, recentUploads = 0;
   for (const [entrySlug, entry] of Object.entries(entries)) {
+    if (entrySlug === retiring) continue;
     const entrySize = entry.size || 0;
     total += entrySize;
     if ((entry.publisher || "") === owner) {
@@ -428,7 +568,7 @@ async function deleteStaleVersions(env, key, digest) {
 
 async function handleUpload(request, env) {
   // Checked before the body is read, so an unauthorised upload costs nothing.
-  const { owner, login, refusal } = await publisher(request, env);
+  const { owner, login, id, refusal } = await publisher(request, env);
   if (refusal) return refusal;
 
   const parsed = await readUpload(request);
@@ -444,8 +584,8 @@ async function handleUpload(request, env) {
   const { entries: existingIndex } = await readIndex(env);
 
   // Reserved examples are installed only by the accounts a deployment names
-  // with --examples. Their deterministic URL survives the hourly reset, and
-  // an example publisher may replace any example; nobody else may touch one.
+  // with --examples. Their URL survives the hourly reset, and an example
+  // publisher may replace any example; nobody else may touch one.
   if (example && !policyAllows(parsePolicy(env.KOMODOC_EXAMPLES), login)) {
     return json(
       { error: "only the deployment's example publishers may install reserved examples" }, 403);
@@ -460,13 +600,22 @@ async function handleUpload(request, env) {
   // Someone else's document is not yours to replace, and guessing its slug
   // should not even tell you it is there: a title that collides with another
   // publisher's document simply becomes a new document of your own.
-  const replacing = existingIndex[base] && ownedBy(existingIndex[base], owner);
-  const key = example || replacing ? base : `${base}-${randomSuffix()}`;
+  const existingBase = lookup(existingIndex, base);
+  const replacing = existingBase && ownedBy(existingBase, owner, id);
+  // Examples published before they carried a suffix sit under the bare base.
+  // They cannot be deleted through the API, so re-seeding migrates them: the
+  // new suffixed document is written and the old entry drops out of the index.
+  const legacyExample = example && existingBase?.example ? base : null;
+  const key = example
+    ? (legacyExample ? null : existingExampleKey(existingIndex, base)) || `${base}-${randomSuffix()}`
+    : replacing
+      ? base
+      : `${base}-${randomSuffix()}`;
 
   // Checked against the index as just read, before an R2 write is spent on a
   // document that has nowhere to go. The CAS update below re-runs the same
   // check against whatever the index has become by the time it commits.
-  const preflight = checkQuota(existingIndex, owner, key, size);
+  const preflight = checkQuota(existingIndex, owner, key, size, legacyExample);
   if (preflight) return preflight;
 
   const digest = await sha256(html);
@@ -479,9 +628,14 @@ async function handleUpload(request, env) {
   let entries;
   try {
     entries = await updateIndex(env, (index) => {
-      const refused = checkQuota(index, owner, key, size);
+      const refused = checkQuota(index, owner, key, size, legacyExample);
       if (refused) throw new QuotaRefusal(refused);
-      const existing = index[key];
+      const existing = lookup(index, key);
+      // A replacement does not change hands: it keeps the existing entry's
+      // publisher and publisher_id exactly, even if the id is empty because
+      // the entry predates ids.
+      const publisherValue = existing?.publisher || owner;
+      const publisherIdValue = existing ? (existing.publisher_id || "") : (id || "");
       index[key] = {
         slug: key,
         title,
@@ -489,11 +643,12 @@ async function handleUpload(request, env) {
         size,
         created_at: existing?.created_at || now,
         updated_at: now,
-        // A replacement does not change hands.
-        ...((existing?.publisher || owner) ? { publisher: existing?.publisher || owner } : {}),
+        ...(publisherValue ? { publisher: publisherValue } : {}),
+        ...(publisherIdValue ? { publisher_id: publisherIdValue } : {}),
         ...(example ? { example: true } : {}),
         ...(example ? { example_revision: exampleRevision } : {}),
       };
+      if (legacyExample) delete index[legacyExample];
     });
   } catch (err) {
     if (!(err instanceof QuotaRefusal)) throw err;
@@ -501,20 +656,25 @@ async function handleUpload(request, env) {
     // orphaned in R2 with nothing in the index pointing at it. Unless the
     // index already names it: a republish of unchanged content writes the
     // very object the live document is served from, and that one stays.
-    if (existingIndex[key]?.sha !== digest) {
+    if (lookup(existingIndex, key)?.sha !== digest) {
       await env.DOCS.delete(`documents/${key}/${digest}.html`);
     }
     return err.response;
   }
 
   await deleteStaleVersions(env, key, digest);
+  if (legacyExample) {
+    // The index no longer names it, so its stored versions are unreachable.
+    await deleteStaleVersions(env, legacyExample, "");
+    await env.DOCS.delete(`examples/${legacyExample}.json`);
+  }
   if (example) {
     await env.DOCS.put(`examples/${key}.json`, JSON.stringify(annotations), {
       httpMetadata: { contentType: "application/json" },
     });
   }
   // Comments survive the replacement; they re-anchor in the reader.
-  return json({ ...entries[key], url: `/docs/${key}` }, 201);
+  return json({ ...lookup(entries, key), url: `/docs/${key}` }, 201);
 }
 
 async function serveDocument(env, slug, sha, url) {
@@ -564,7 +724,9 @@ async function documentRoom(env, request, slug, entry) {
   // resets itself hourly is an acceptable trade.
   const login = request.headers.get("x-komodoc-login") || "";
   const address = request.headers.get("cf-connecting-ip") || "missing";
-  const identity = login ? `github:${login.toLowerCase()}` : `address:${address}`;
+  // rateKey (room.js) reduces an IPv6 address to its /64, the block an ISP
+  // hands one customer, so a room per address means a room per customer.
+  const identity = login ? `github:${login.toLowerCase()}` : `address:${rateKey(address)}`;
   const stub = room(env, `example:${slug}:${identity}`);
   await stub.fetch(new Request(
     `https://internal/ensure?slug=${encodeURIComponent(slug)}&revision=${entry.example_revision || ""}`,
@@ -628,9 +790,14 @@ export default {
     let match = path.match(/^\/ws\/([^/]+)$/);
     if (match) {
       if (!SLUG.test(match[1])) return new Response("bad slug", { status: 400 });
+      // Browsers always send Origin on a WebSocket handshake; there is no
+      // custom header to check instead, since browsers cannot set one here.
+      const originRefusal = checkWebSocketOrigin(request, url);
+      if (originRefusal) return originRefusal;
       const { entries } = await readIndex(env);
-      const identified = await withIdentity(request, env);
-      const stub = await documentRoom(env, identified, match[1], entries[match[1]]);
+      const entry = lookup(entries, match[1]);
+      const identified = await withIdentity(request, env, entry);
+      const stub = await documentRoom(env, identified, match[1], entry);
       if (!stub) return new Response("not found", { status: 404 });
       return stub.fetch(identified);
     }
@@ -640,21 +807,27 @@ export default {
     match = path.match(/^\/raw\/([^/]+)$/);
     if (match) {
       const { entries } = await readIndex(env);
-      const entry = entries[match[1]];
+      const entry = lookup(entries, match[1]);
       if (!entry) return new Response("not found", { status: 404 });
       return Response.redirect(`${docsOrigin(url)}/raw/${entry.slug}/${entry.sha}.html`, 302);
     }
 
     // --- api ---------------------------------------------------------------
-    if (path === "/api/documents" && method === "POST") return handleUpload(request, env);
+    if (path === "/api/documents" && method === "POST") {
+      const originRefusal = checkOrigin(request, url);
+      if (originRefusal) return originRefusal;
+      return handleUpload(request, env);
+    }
 
     // Listing is the one thing a link-holder must not be able to do: knowing
     // one document must not reveal the others, so it takes a publisher.
     if (path === "/api/list" && (method === "POST" || method === "GET")) {
-      const { owner, refusal } = await publisher(request, env);
+      const originRefusal = checkOrigin(request, url);
+      if (originRefusal) return originRefusal;
+      const { owner, id, refusal } = await publisher(request, env);
       if (refusal) return refusal;
       const { entries } = await readIndex(env);
-      const docs = visibleTo(Object.values(entries), owner)
+      const docs = visibleTo(Object.values(entries), owner, id)
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
       return json({ documents: docs });
     }
@@ -663,17 +836,20 @@ export default {
     // comments in its Room. Gated like publishing.
     match = path.match(/^\/api\/documents\/([^/]+)\/delete$/);
     if (match && method === "POST") {
+      const originRefusal = checkOrigin(request, url);
+      if (originRefusal) return originRefusal;
       const slug = match[1];
       if (!SLUG.test(slug)) return json({ error: "bad slug" }, 400);
-      const { owner, refusal } = await publisher(request, env);
+      const { owner, id, refusal } = await publisher(request, env);
       if (refusal) return refusal;
       const { entries } = await readIndex(env);
+      const entry = lookup(entries, slug);
       // Another publisher's document answers exactly as a missing one does, so
       // a guessed slug reveals nothing.
-      if (!entries[slug]) return json({ error: "not found" }, 404);
-      if (entries[slug].example) return json({ error: "reserved examples cannot be deleted" }, 403);
-      if (!ownedBy(entries[slug], owner)) return json({ error: "not found" }, 404);
-      const title = entries[slug].title;
+      if (!entry) return json({ error: "not found" }, 404);
+      if (entry.example) return json({ error: "reserved examples cannot be deleted" }, 403);
+      if (!ownedBy(entry, owner, id)) return json({ error: "not found" }, 404);
+      const title = entry.title;
 
       const removed = await deleteDocument(env, slug);
       return json({ deleted: slug, title, versions_removed: removed });
@@ -682,22 +858,28 @@ export default {
     match = path.match(/^\/api\/documents\/([^/]+)$/);
     if (match && method === "GET") {
       const { entries } = await readIndex(env);
-      const entry = entries[match[1]];
+      const entry = lookup(entries, match[1]);
       if (!entry) return json({ error: "not found" }, 404);
-      const identified = await withIdentity(request, env);
+      const identified = await withIdentity(request, env, entry);
+      const can_moderate = identified.headers.get("x-komodoc-owner") === "1";
       const counts = await (await documentRoom(env, identified, match[1], entry))
         .fetch(new Request(`${url.origin}/counts`))
         .then((response) => response.json());
-      return json({ ...entry, ...counts, docs_origin: docsOrigin(url) });
+      return json({ ...entry, ...counts, can_moderate, docs_origin: docsOrigin(url) });
     }
 
     // REST fallbacks, used when the socket is unavailable.
     match = path.match(/^\/api\/documents\/([^/]+)\/comments$/);
     if (match) {
       if (!SLUG.test(match[1])) return json({ error: "bad slug" }, 400);
+      if (method === "POST") {
+        const originRefusal = checkOrigin(request, url);
+        if (originRefusal) return originRefusal;
+      }
       const { entries } = await readIndex(env);
-      const identified = await withIdentity(request, env);
-      const stub = await documentRoom(env, identified, match[1], entries[match[1]]);
+      const entry = lookup(entries, match[1]);
+      const identified = await withIdentity(request, env, entry);
+      const stub = await documentRoom(env, identified, match[1], entry);
       if (!stub) return json({ error: "not found" }, 404);
       return stub.fetch(identified);
     }
@@ -714,7 +896,9 @@ export default {
           : path;
     const asset = SHELL[page];
     if (asset) {
-      const response = assetResponse(asset);
+      // Shell pages -- not /agent.js, not a document -- refuse to be framed
+      // at all, on top of whatever CSP the page itself carries.
+      const response = assetResponse(asset, { shellPage: true });
       // Every page names the browser, not just a reader: the index page is
       // where an upload starts, and it needs an owner to belong to. A cookie
       // that does not verify -- absent, or the old unsigned form a browser
@@ -723,10 +907,12 @@ export default {
       if (asset.type?.startsWith("text/html") &&
           !(await readVisitor(env, cookieValue(request, VISITOR_COOKIE)))) {
         const signed = await signVisitor(env, crypto.randomUUID());
-        response.headers.append("set-cookie", `${VISITOR_COOKIE}=${signed}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`);
-        // A shared cache handing this same identity to the next browser would
-        // defeat the point of having one.
-        response.headers.set("cache-control", "private, no-store");
+        if (signed) {
+          response.headers.append("set-cookie", `${VISITOR_COOKIE}=${signed}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`);
+          // A shared cache handing this same identity to the next browser would
+          // defeat the point of having one.
+          response.headers.set("cache-control", "private, no-store");
+        }
       }
       return response;
     }
@@ -734,13 +920,58 @@ export default {
   },
 };
 
-// withIdentity copies a request, adding the caller's verified login as a
-// header. The Room is inside the trust boundary, so this is the only place the
-// name on a comment can come from when commenting needs an account.
-async function withIdentity(request, env) {
-  const login = await whoami(request, env);
+// A request is "cookie-authenticated" when it carries no bearer token; only
+// those requests need an origin check, since a bearer has to be typed or
+// configured in, never sent automatically by a browser the way a cookie is.
+const isBearerRequest = (request) => (request.headers.get("authorization") || "").startsWith("Bearer ");
+
+function crossSiteRefusal() {
+  return json({ error: "cross-site request refused" }, 403);
+}
+
+// checkOrigin guards the state-changing routes a hostile document -- same-site
+// with the reader, so SameSite cookies do not stop it -- could otherwise
+// reach with a simple cross-site request. All three checks must pass: an
+// Origin that does not match, a Sec-Fetch-Site that is neither same-origin
+// nor none, or a missing X-Komodoc-Client header (which a browser cannot set
+// on a cross-origin request without a preflight, which is never granted).
+function checkOrigin(request, url) {
+  if (isBearerRequest(request)) return null;
+  const origin = request.headers.get("origin");
+  if (origin && origin !== readerOrigin(url)) return crossSiteRefusal();
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") return crossSiteRefusal();
+  if (!request.headers.get("x-komodoc-client")) return crossSiteRefusal();
+  return null;
+}
+
+// The WebSocket handshake carries no custom headers and no Sec-Fetch-Site, so
+// only the Origin -- which browsers always send on a WS handshake -- is
+// checked.
+function checkWebSocketOrigin(request, url) {
+  if (isBearerRequest(request)) return null;
+  const origin = request.headers.get("origin");
+  if (origin && origin !== readerOrigin(url)) return crossSiteRefusal();
+  return null;
+}
+
+// withIdentity copies a request, adding the caller's verified identity as
+// headers the Room trusts: login, a hash of the visitor cookie, and whether
+// the caller owns the document (when its entry is known). The Room is inside
+// the trust boundary, so this is the only place these can come from, and
+// every one of them is always overwritten -- never left as whatever a client
+// sent.
+async function withIdentity(request, env, entry) {
+  const identity = await whoami(request, env);
+  const login = (identity.login || "").toLowerCase();
+  const owner = await ownerKey(request, env, login);
+  const visitorToken = await readVisitor(env, cookieValue(request, VISITOR_COOKIE));
+  const visitorHash = visitorToken ? await sha256(visitorToken) : "";
+  const isOwner = entry ? ownedBy(entry, owner, identity.id || "") : false;
   const headers = new Headers(request.headers);
-  headers.set("x-komodoc-login", login || "");
+  headers.set("x-komodoc-login", login);
+  headers.set("x-komodoc-visitor", visitorHash);
+  headers.set("x-komodoc-owner", isOwner ? "1" : "");
   return new Request(request, { headers });
 }
 
@@ -752,7 +983,9 @@ async function handleAuth(request, env, url) {
 
   if (url.pathname === "/auth/login") {
     const state = crypto.randomUUID();
-    const next = url.searchParams.get("next") || "/";
+    // Encoded so a "|" in a redirect target cannot be mistaken for the
+    // separator between the state and the next path when the cookie is read.
+    const next = encodeURIComponent(url.searchParams.get("next") || "/");
     const authorize = new URL("https://github.com/login/oauth/authorize");
     authorize.searchParams.set("client_id", clientID);
     authorize.searchParams.set("redirect_uri", redirect);
@@ -761,13 +994,13 @@ async function handleAuth(request, env, url) {
       status: 302,
       headers: {
         location: authorize.toString(),
-        "set-cookie": `komodoc_state=${state}|${next}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
+        "set-cookie": `${STATE_COOKIE}=${state}|${next}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
       },
     });
   }
 
   if (url.pathname === "/auth/callback") {
-    const [state, next = "/"] = (cookieValue(request, "komodoc_state") || "").split("|");
+    const [state, nextRaw] = (cookieValue(request, STATE_COOKIE) || "").split("|");
     // The state ties this callback to the redirect that started it.
     if (!state || url.searchParams.get("state") !== state) {
       return new Response("sign-in state did not match; try again", { status: 400 });
@@ -784,30 +1017,38 @@ async function handleAuth(request, env, url) {
     });
     const token = (await exchange.json().catch(() => ({}))).access_token;
     if (!token) return new Response("github refused the sign-in", { status: 400 });
-    const login = await githubLogin(token);
-    if (!login) return new Response("github would not say who you are", { status: 502 });
+    const identity = await githubUserInfo(token);
+    if (!identity.login) return new Response("github would not say who you are", { status: 502 });
 
     const expiry = Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
-    const session = await makeSession(env, login, expiry);
+    const session = await makeSession(env, identity.login, identity.id, expiry);
+    const next = nextRaw ? safeDecode(nextRaw) : "/";
     return new Response(null, {
       status: 302,
       headers: [
         ["location", localPath(next)],
-        ["set-cookie", `komodoc_session=${session}; Path=/; Max-Age=${30 * 24 * 3600}; HttpOnly; Secure; SameSite=Lax`],
-        ["set-cookie", "komodoc_state=; Path=/; Max-Age=0"],
+        ["set-cookie", `${SESSION_COOKIE}=${session}; Path=/; Max-Age=${30 * 24 * 3600}; HttpOnly; Secure; SameSite=Lax`],
+        ["set-cookie", `${STATE_COOKIE}=; Path=/; Max-Age=0`],
       ],
     });
   }
 
   if (url.pathname === "/auth/logout") {
+    // GET has no request body an attacker needs, but it also has none of the
+    // origin signals a POST carries, so a plain link or <img> tag could sign
+    // someone out cross-site; POST-only closes that off.
+    if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
+    const originRefusal = checkOrigin(request, url);
+    if (originRefusal) return originRefusal;
     return new Response(null, {
       status: 302,
-      headers: { location: "/", "set-cookie": "komodoc_session=; Path=/; Max-Age=0" },
+      headers: { location: "/", "set-cookie": `${SESSION_COOKIE}=; Path=/; Max-Age=0` },
     });
   }
 
   if (url.pathname === "/api/me") {
-    const login = await whoami(request, env);
+    const identity = await whoami(request, env);
+    const login = identity.login || "";
     const publishers = parsePolicy(env.KOMODOC_PUBLISHERS);
     const commenters = parsePolicy(env.KOMODOC_COMMENTERS);
     return json({
@@ -832,7 +1073,11 @@ async function handleAuth(request, env, url) {
 // One shell file. A binary travels as base64, because the shell is embedded as
 // JSON and JSON holds no bytes; a file whose contents never change is cached
 // for a year rather than five minutes.
-function assetResponse(asset) {
+// shellPage marks an HTML page from the reader host -- index, reader,
+// documentation -- which must refuse to be framed by anyone at all; /agent.js
+// is served through this same function but is not a page, and documents carry
+// their own CSP via documentHeaders, so neither passes the flag.
+function assetResponse(asset, { shellPage = false } = {}) {
   let body = asset.body;
   if (asset.base64) {
     const binary = atob(asset.body);
@@ -846,6 +1091,9 @@ function assetResponse(asset) {
       "cache-control": asset.immutable
         ? "public, max-age=31536000, immutable"
         : "public, max-age=300",
+      ...(shellPage && asset.type?.startsWith("text/html")
+        ? { "content-security-policy": "frame-ancestors 'none'" }
+        : {}),
     },
   });
 }

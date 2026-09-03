@@ -411,6 +411,47 @@ footer.grid > [role="button"] {
 }
 
 @media (max-width: 760px) {
+  /* The bar cannot hold the brand, the title and a row of six tools on one
+     line, and a tool that is off the side of the screen is a tool the reader
+     does not have. The group carrying the tools takes a line of its own and
+     the bar grows to hold it, rather than the row overflowing the page. */
+  body > nav {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 0.4rem var(--pico-spacing);
+    row-gap: 0.4rem;
+  }
+  /* Row one has to be able to give, so that the link beside it stays on the
+     line: the document title is what shortens, down to an ellipsis. */
+  body > nav > ul {
+    min-width: 0;
+  }
+  /* A basis of zero rather than of its contents: the brand and title take what
+     is left after the link beside them, instead of claiming the whole line and
+     pushing the link onto one of its own. */
+  body > nav > ul:first-child {
+    flex: 1 1 0;
+  }
+  /* The icon says the same thing in a fifth of the width, and the word is
+     what the document title needs back. The link keeps its name for a
+     screen reader either way. */
+  .navlabel {
+    display: none;
+  }
+  #docTitle {
+    display: block;
+    flex: 1 1 0;
+  }
+  body > nav > ul:has(.navtools) {
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  /* Narrower still than the tools themselves: they scroll rather than clip. */
+  li.navtools {
+    max-width: 100%;
+    overflow-x: auto;
+  }
   main.reader {
     display: block;
     height: auto;
@@ -432,6 +473,47 @@ footer.grid > [role="button"] {
     top: auto !important;
     bottom: max(18px, env(safe-area-inset-bottom));
     transform: translateX(-50%);
+  }
+
+  /* The search keeps a width it can be typed into; the tabs and the bulk
+     actions drop to a line of their own rather than being squeezed. */
+  .listbar {
+    flex-wrap: wrap;
+    gap: calc(var(--pico-spacing) * 0.5);
+  }
+  .listbar input[type="search"] {
+    flex: 1 1 12rem;
+    max-width: none;
+  }
+  /* Six columns do not fit a phone. The list scrolls sideways inside itself
+     rather than dragging the whole page along with it. */
+  #list {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+/* The narrowest phones are a few pixels short of the seven icons the reader's
+   tool row carries. They lose a little of their padding rather than the last
+   of them scrolling out of sight. */
+@media (max-width: 400px) {
+  .tools .tool,
+  .navtools .iconbtn {
+    min-width: 2rem;
+    padding: 0.25rem;
+  }
+  .navtools {
+    gap: 0.5rem;
+  }
+}
+
+/* A phone has room for the title or for the two dates beside it, not both, and
+   the title is what a document is found by. The dates are dropped rather than
+   left to squeeze the titles into a column of single words. */
+@media (max-width: 560px) {
+  #list td:nth-child(n + 5),
+  #list th:nth-child(n + 5) {
+    display: none;
   }
 }
 
@@ -793,9 +875,16 @@ nav > ul.navmid svg {
   max-width: 64rem;
   margin: 0 auto;
 }
+/* Too narrow for a column beside the text, so it is a disclosure above it,
+   closed until it is asked for. The wide layout below turns it back into a
+   sticky column. */
 .toc {
-  display: none;
+  display: block;
   margin-bottom: 1.5rem;
+}
+.toc details[open] nav {
+  max-height: 50vh;
+  overflow-y: auto;
 }
 .toc details {
   margin-bottom: 0;

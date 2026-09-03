@@ -74,6 +74,7 @@ func TestMarkdownUploadIsRenderedByServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("cookie", sessionAs(testPublisher))
+	request.Header.Set("X-Komodoc-Client", "1")
 	response, err := client().Do(request)
 	if err != nil {
 		t.Fatal(err)

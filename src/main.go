@@ -82,6 +82,12 @@ func configure(label string) {
 		die("'%s' is not a valid label. Use lowercase letters, digits and\n"+
 			"  hyphens, starting and ending with a letter or digit.", chosen)
 	}
+	// <label>-docs is where deploy puts the document host (see deploy.go); a
+	// label already ending in -docs would collide with its own document host.
+	if strings.HasSuffix(chosen, "-docs") {
+		die("'%s' is not a valid label: <label>-docs is reserved for the\n"+
+			"  document host this deployment creates for itself.", chosen)
+	}
 	scriptName, bucket = chosen, chosen
 }
 

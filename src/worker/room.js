@@ -7,8 +7,32 @@ const CAPS = CONFIG.caps;
 const MOTIVATIONS = CONFIG.motivations;
 const MAX_COMMENTS = CONFIG.max_comments;
 const RATE_PER_HOUR = CONFIG.rate_per_hour;
+// A comment thread that could grow forever would make one comment's replies
+// as expensive to load as the whole document's comments; config.go is being
+// extended with this limit concurrently, so fall back to its default here
+// until that lands.
+const MAX_REPLIES = CONFIG.max_replies ?? 100;
 
 const now = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
+
+// rateKey collapses an IPv6 address to its /64 -- the block an ISP hands one
+// customer -- so a rate limit keyed on it bounds one customer, not one of the
+// many addresses inside their assigned block. IPv4 addresses are used whole.
+// worker.js reuses this for the example-room identity, since a room per
+// address should mean one room per customer too.
+function rateKey(address) {
+  const value = String(address || "");
+  if (!value.includes(":")) return value;
+  let hextets = value.split(":");
+  if (value.includes("::")) {
+    const [head, tail] = value.split("::");
+    const headParts = head ? head.split(":") : [];
+    const tailParts = tail ? tail.split(":") : [];
+    const missing = 8 - headParts.length - tailParts.length;
+    hextets = [...headParts, ...Array(Math.max(missing, 0)).fill("0"), ...tailParts];
+  }
+  return hextets.slice(0, 4).join(":");
+}
 
 // Labels: lowercased, trimmed, deduplicated, capped in both length and number,
 // so filtering by one of them is predictable. cleanTags in room.go has to agree
@@ -26,6 +50,49 @@ const clean = (value, limit) =>
   String(value ?? "")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .slice(0, limit);
+
+// authorKeyFor is who a comment belongs to: a signed-in caller by their login,
+// an anonymous one by the visitor cookie the Worker verified for them, nobody
+// otherwise. worker.js computes login and visitor the same way and passes them
+// in as headers, so this is the only place that turns them into the key
+// stored on a comment and compared against on delete.
+function authorKeyFor(login, visitor) {
+  if (login) return `github:${login.toLowerCase()}`;
+  if (visitor) return `visitor:${visitor}`;
+  return "";
+}
+
+// identityFromHeaders reads the three headers the Worker sets on every
+// request it forwards here -- login, visitor hash, and whether the caller
+// owns the document -- and never anything a client could have set itself,
+// since the Worker always overwrites them before the request reaches a Room.
+function identityFromHeaders(request) {
+  return {
+    login: request.headers.get("x-komodoc-login") || "",
+    visitor: request.headers.get("x-komodoc-visitor") || "",
+    owner: request.headers.get("x-komodoc-owner") === "1",
+  };
+}
+
+// forClient is what one caller may see of one comment: never the author key
+// that identifies who wrote it, but a deletable flag computed just for them.
+// Used for the hello snapshot and the GET fallback, both single-caller views;
+// broadcasts use stripAuthor below instead, since they carry no such flag.
+function forClient(comment, authorKey, owner) {
+  const { author, replies, ...rest } = comment;
+  return {
+    ...rest,
+    deletable: Boolean(owner) || (Boolean(authorKey) && author === authorKey),
+    replies: replies.map(({ author: _replyAuthor, ...reply }) => reply),
+  };
+}
+
+// stripAuthor removes the same field for a broadcast, which goes to every
+// open socket at once and so carries no per-caller deletable flag either.
+function stripAuthor(comment) {
+  const { author, replies, ...rest } = comment;
+  return { ...rest, replies: replies.map(({ author: _replyAuthor, ...reply }) => reply) };
+}
 
 /**
  * One instance per document slug. It owns that document's comments and holds
@@ -70,7 +137,7 @@ export class Room extends DurableObject {
 
   async rateOk(ip) {
     if (!ip) return true;
-    const bucket = `rl:${ip}:${Math.floor(Date.now() / 3600000)}`;
+    const bucket = `rl:${rateKey(ip)}:${Math.floor(Date.now() / 3600000)}`;
     const count = ((await this.ctx.storage.get(bucket)) || 0) + 1;
     if (count > RATE_PER_HOUR) return false;
     await this.ctx.storage.put(bucket, count);
@@ -123,14 +190,25 @@ export class Room extends DurableObject {
         region: seed.region || null, body: seed.body || "", replacement: seed.replacement || "",
         tags: seed.tags || [], creator: seed.creator || "Example", created: stamp,
         resolved: Boolean(seed.resolved), resolved_at: seed.resolved ? stamp : null,
-        replies: (seed.replies || []).map((body) => ({ id: crypto.randomUUID(), body, creator: "Reviewer", created: stamp })),
+        replies: (seed.replies || []).map((body) => (
+          { id: crypto.randomUUID(), body, creator: "Reviewer", created: stamp, author: "" }
+        )),
+        // Seeded comments belong to nobody in particular; only the document's
+        // owner may clear them out.
+        author: "",
       };
       comments.push(comment);
       await this.persist(comment);
     }
     await this.ctx.storage.put({ seq, example: slug, example_revision: revision });
     this.cache = comments;
-    this.broadcast({ type: "hello", comments });
+    // An example room is scoped to one document and one identity (see
+    // documentRoom in worker.js), so every socket attached here was opened by
+    // the same caller and any one of their attachments describes them all.
+    const [firstSocket] = this.ctx.getWebSockets();
+    const { login = "", visitor = "", owner = false } = firstSocket ? (firstSocket.deserializeAttachment() || {}) : {};
+    const authorKey = authorKeyFor(login, visitor);
+    this.broadcast({ type: "hello", comments: comments.map((comment) => forClient(comment, authorKey, owner)) });
   }
 
   async fetch(request) {
@@ -179,25 +257,33 @@ export class Room extends DurableObject {
       const [client, server] = Object.values(new WebSocketPair());
       // Hibernatable: an idle document with open tabs costs nothing.
       this.ctx.acceptWebSocket(server);
-      // The login was verified by the Worker before this request reached here.
-      server.serializeAttachment({
-        ip: request.headers.get("cf-connecting-ip") || "",
-        login: request.headers.get("x-komodoc-login") || "",
-      });
-      server.send(JSON.stringify({ type: "hello", comments: await this.load() }));
+      // Identity was verified by the Worker before this request reached here;
+      // the attachment survives hibernation, so it travels with the socket.
+      const { login, visitor, owner } = identityFromHeaders(request);
+      const ip = request.headers.get("cf-connecting-ip") || "";
+      server.serializeAttachment({ ip, login, visitor, owner });
+      const authorKey = authorKeyFor(login, visitor);
+      const comments = (await this.load()).map((comment) => forClient(comment, authorKey, owner));
+      server.send(JSON.stringify({ type: "hello", comments }));
       return new Response(null, { status: 101, webSocket: client });
     }
 
     // REST fallback, for clients that cannot hold a socket.
     if (request.method === "GET") {
-      return Response.json({ comments: await this.load() });
+      const { login, visitor, owner } = identityFromHeaders(request);
+      const authorKey = authorKeyFor(login, visitor);
+      const comments = (await this.load()).map((comment) => forClient(comment, authorKey, owner));
+      return Response.json({ comments });
     }
     if (request.method === "POST") {
       const message = await request.json();
+      const { login, visitor, owner } = identityFromHeaders(request);
       const result = await this.apply(
         message,
         request.headers.get("cf-connecting-ip") || "",
-        request.headers.get("x-komodoc-login") || "",
+        login,
+        visitor,
+        owner,
       );
       if (result.type !== "error") this.broadcast(result);
       if (result.type !== "error" && await this.ctx.storage.get("example")) {
@@ -217,8 +303,8 @@ export class Room extends DurableObject {
     } catch {
       return;
     }
-    const { ip, login } = socket.deserializeAttachment() || {};
-    const result = await this.apply(message, ip, login);
+    const { ip, login, visitor, owner } = socket.deserializeAttachment() || {};
+    const result = await this.apply(message, ip, login, visitor, owner);
     if (result.type === "error") {
       socket.send(JSON.stringify(result));
       return;
@@ -234,8 +320,16 @@ export class Room extends DurableObject {
   }
 
   /** Validate, persist, and return the event to broadcast. */
-  async apply(message, ip, login) {
-    const fail = (text) => ({ type: "error", message: text, temp_id: message.temp_id });
+  async apply(message, ip, login, visitor, owner) {
+    // resolve and delete name the comment they act on, so an error about
+    // either carries comment_id too -- the reader needs it to roll back the
+    // optimistic update it already applied.
+    const fail = (text) => ({
+      type: "error",
+      message: text,
+      temp_id: message.temp_id,
+      ...(message.type === "resolve" || message.type === "delete" ? { comment_id: message.comment_id } : {}),
+    });
     const comments = await this.load();
 
     // Who may comment is set at deploy time, like who may publish. When it is
@@ -254,7 +348,13 @@ export class Room extends DurableObject {
     // in was required. Only anonymous readers type a name.
     if (login) message = { ...message, creator: login };
 
+    // Who this comment (or reply) is attributed to, for storage only: never
+    // sent back to a client, only compared against on delete.
+    const authorKey = authorKeyFor(login, visitor);
+
     if (message.type === "resolve") {
+      // Resolving is as cheap to spam as commenting, so it counts the same.
+      if (!(await this.rateOk(ip))) return fail("too many comments from this address; try later");
       const comment = comments.find((item) => item.id === message.comment_id);
       if (!comment) return fail("unknown comment");
       comment.resolved = Boolean(message.resolved);
@@ -269,9 +369,15 @@ export class Room extends DurableObject {
     }
 
     if (message.type === "delete") {
+      if (!(await this.rateOk(ip))) return fail("too many comments from this address; try later");
       const index = comments.findIndex((item) => item.id === message.comment_id);
       if (index < 0) return fail("unknown comment");
-      const [comment] = comments.splice(index, 1);
+      const comment = comments[index];
+      // Deleting someone else's comment takes owning the document; deleting
+      // your own takes only having written it.
+      const isAuthor = Boolean(authorKey) && comment.author === authorKey;
+      if (!isAuthor && !owner) return fail("you may only delete your own comments");
+      comments.splice(index, 1);
       await this.ctx.storage.delete(`c:${String(comment.seq).padStart(6, "0")}`);
       return { type: "delete", comment_id: comment.id };
     }
@@ -300,10 +406,14 @@ export class Room extends DurableObject {
     if (message.type === "reply") {
       const comment = comments.find((item) => item.id === message.comment_id);
       if (!comment) return fail("unknown comment");
-      const reply = { id: crypto.randomUUID(), body, creator, created: now() };
+      if (comment.replies.length >= MAX_REPLIES) {
+        return fail("this comment has reached its reply limit");
+      }
+      const reply = { id: crypto.randomUUID(), body, creator, created: now(), author: authorKey };
       comment.replies.push(reply);
       await this.persist(comment);
-      return { type: "reply", comment_id: comment.id, reply, temp_id: message.temp_id };
+      const { author: _replyAuthor, ...publicReply } = reply;
+      return { type: "reply", comment_id: comment.id, reply: publicReply, temp_id: message.temp_id };
     }
 
     if (message.type === "comment") {
@@ -338,10 +448,11 @@ export class Room extends DurableObject {
         resolved: false,
         resolved_at: null,
         replies: [],
+        author: authorKey,
       };
       comments.push(comment);
       await this.persist(comment);
-      return { type: "comment", comment, temp_id: message.temp_id };
+      return { type: "comment", comment: stripAuthor(comment), temp_id: message.temp_id };
     }
 
     return fail("unknown message type");
