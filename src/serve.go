@@ -698,8 +698,10 @@ func (s *server) owner(r *http.Request, login string) string {
 	if login != "" {
 		return strings.ToLower(login)
 	}
-	if cookie, err := r.Cookie(visitorCookie); err == nil && cookie.Value != "" {
-		return visitorPrefix + cookie.Value
+	if cookie, err := r.Cookie(visitorCookie); err == nil {
+		if token := readVisitor(s.key, cookie.Value); token != "" {
+			return visitorPrefix + token
+		}
 	}
 	return ""
 }
@@ -916,11 +918,13 @@ func (s *server) issueVisitor(w http.ResponseWriter, r *http.Request, asset shel
 	if !strings.HasPrefix(asset.Type, "text/html") {
 		return
 	}
-	if cookie, err := r.Cookie(visitorCookie); err == nil && cookie.Value != "" {
+	// An unsigned cookie -- from before this server signed them, or forged --
+	// verifies as absent, so it is simply replaced with a signed one.
+	if cookie, err := r.Cookie(visitorCookie); err == nil && readVisitor(s.key, cookie.Value) != "" {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: visitorCookie, Value: randomToken(), Path: "/",
+		Name: visitorCookie, Value: signVisitor(s.key, randomToken()), Path: "/",
 		MaxAge: int((365 * 24 * time.Hour).Seconds()), HttpOnly: true,
 		SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil,
 	})

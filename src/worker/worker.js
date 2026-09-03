@@ -90,7 +90,35 @@ function cookieValue(request, name) {
   return "";
 }
 
+// signVisitor and readVisitor sign the visitor cookie the same way sessions
+// are signed, over the same key: a client that could set komodoc_visitor to
+// anything would manufacture as many owners -- and, through documentRoom, as
+// many Durable Objects -- as it liked.
+async function signVisitor(env, token) {
+  return `${token}.${await signPayload(env.KOMODOC_SESSION_KEY || "", token)}`;
+}
+
+async function readVisitor(env, cookie) {
+  const [token, signature] = String(cookie || "").split(".");
+  if (!token || !signature) return "";
+  if ((await signPayload(env.KOMODOC_SESSION_KEY || "", token)) !== signature) return "";
+  return token;
+}
+
+// bearerCache remembers who a GitHub token belongs to for five minutes, so a
+// CLI session that calls the API repeatedly does not cost a GitHub request
+// per call. Isolates are short-lived, so this stays small on its own; the
+// cap below is a backstop against an isolate that somehow lives long enough
+// to see many distinct tokens.
+const bearerCache = new Map();
+const BEARER_TTL_MS = 5 * 60 * 1000;
+const BEARER_CACHE_LIMIT = 1000;
+
 async function githubLogin(token) {
+  const key = await sha256(token);
+  const cached = bearerCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.login;
+
   const response = await fetch("https://api.github.com/user", {
     headers: {
       authorization: `Bearer ${token}`,
@@ -99,7 +127,10 @@ async function githubLogin(token) {
     },
   });
   if (!response.ok) return "";
-  return (await response.json()).login || "";
+  const login = (await response.json()).login || "";
+  if (bearerCache.size >= BEARER_CACHE_LIMIT) bearerCache.clear();
+  bearerCache.set(key, { login, expires: Date.now() + BEARER_TTL_MS });
+  return login;
 }
 
 // whoami identifies a caller: a browser by its session cookie, the CLI by the
@@ -118,9 +149,9 @@ async function whoami(request, env) {
 //
 // A caller with neither -- the CLI publishing to a deployment open to
 // everyone -- owns nothing, and their uploads stay shared.
-function ownerKey(request, login) {
+async function ownerKey(request, env, login) {
   if (login) return login;
-  const visitor = cookieValue(request, VISITOR_COOKIE);
+  const visitor = await readVisitor(env, cookieValue(request, VISITOR_COOKIE));
   return visitor ? VISITOR_PREFIX + visitor : "";
 }
 
@@ -131,7 +162,7 @@ function ownerKey(request, login) {
 async function publisher(request, env) {
   const login = (await whoami(request, env)).toLowerCase();
   const policy = parsePolicy(env.KOMODOC_PUBLISHERS);
-  if (policyAllows(policy, login)) return { owner: ownerKey(request, login), login };
+  if (policyAllows(policy, login)) return { owner: await ownerKey(request, env, login), login };
   if (!login) return { refusal: json({ error: "sign in with GitHub to publish" }, 401) };
   return {
     refusal: json(
@@ -525,7 +556,7 @@ async function documentRoom(env, request, slug, entry) {
   if (!entry) return null;
   if (!entry.example) return room(env, slug);
   const login = request.headers.get("x-komodoc-login") || "";
-  const visitor = cookieValue(request, VISITOR_COOKIE);
+  const visitor = await readVisitor(env, cookieValue(request, VISITOR_COOKIE));
   const identity = login ? `github:${login.toLowerCase()}` : `browser:${visitor || "missing"}`;
   const stub = room(env, `example:${slug}:${identity}`);
   await stub.fetch(new Request(
@@ -678,9 +709,14 @@ export default {
     if (asset) {
       const response = assetResponse(asset);
       // Every page names the browser, not just a reader: the index page is
-      // where an upload starts, and it needs an owner to belong to.
-      if (asset.type?.startsWith("text/html") && !cookieValue(request, VISITOR_COOKIE)) {
-        response.headers.append("set-cookie", `${VISITOR_COOKIE}=${crypto.randomUUID()}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`);
+      // where an upload starts, and it needs an owner to belong to. A cookie
+      // that does not verify -- absent, or the old unsigned form a browser
+      // this Worker signed cookies for might still hold -- is treated as
+      // though there were none, and simply replaced.
+      if (asset.type?.startsWith("text/html") &&
+          !(await readVisitor(env, cookieValue(request, VISITOR_COOKIE)))) {
+        const signed = await signVisitor(env, crypto.randomUUID());
+        response.headers.append("set-cookie", `${VISITOR_COOKIE}=${signed}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`);
         // A shared cache handing this same identity to the next browser would
         // defeat the point of having one.
         response.headers.set("cache-control", "private, no-store");
