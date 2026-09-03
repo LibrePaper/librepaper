@@ -122,6 +122,9 @@ deploy: seed  ## Seed the examples and serve them on this machine, no sign-in
 
 # The label is the first component of the endpoint host, so the URL is stated
 # once and the two cannot drift apart.
+# Only these accounts may install the reserved examples; they never expire.
+EXAMPLE_PUBLISHERS ?= vincentarelbundock
+
 SANDBOX_LABEL = $(firstword $(subst ., ,$(patsubst https://%,%,$(KOMODOC_ENDPOINT_SANDBOX))))
 
 deploy-sandbox: $(BIN) $(EXAMPLES)  ## Deploy to Cloudflare and publish the examples there
@@ -133,7 +136,8 @@ deploy-sandbox: $(BIN) $(EXAMPLES)  ## Deploy to Cloudflare and publish the exam
 	@KOMODOC_GITHUB_CLIENT_ID="$$KOMODOC_GITHUB_CLIENT_ID_SANDBOX" \
 		KOMODOC_GITHUB_CLIENT_SECRET="$$KOMODOC_GITHUB_CLIENT_SECRET_SANDBOX" \
 		$(BIN) deploy --label $(SANDBOX_LABEL) \
-		--publishers $(PUBLISHERS) --commenters $(COMMENTERS) --examples
+		--publishers $(PUBLISHERS) --commenters $(COMMENTERS) --examples $(EXAMPLE_PUBLISHERS) \
+		--max-size 4 --quota 100 --expire-after 24h
 	@$(BIN) login --client-id "$$KOMODOC_GITHUB_CLIENT_ID_SANDBOX" --endpoint "$$KOMODOC_ENDPOINT_SANDBOX"
 	@$(BIN) seed --endpoint "$$KOMODOC_ENDPOINT_SANDBOX"
 

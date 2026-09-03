@@ -86,6 +86,9 @@ first. Only publicly available information is collected: your GitHub username.
 
 ## Deploy
 
+Komodoc can run locally for a quick trial, as a self-managed server on your
+own host, or on Cloudflare Workers and R2.
+
 ### Local
 
 Run a public local instance without Cloudflare or GitHub setup:

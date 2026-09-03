@@ -184,7 +184,7 @@ func main() {
 		flags := flag.NewFlagSet("deploy", flag.ExitOnError)
 		shared := addServiceFlags(flags)
 		label := flags.String("label", "", "deployment label: the first label of the URL and the bucket name (default komodoc, or $KOMODOC_LABEL)")
-		examples := flags.Bool("examples", false, "enable the four resettable public example notebooks")
+		examples := flags.String("examples", "", "GitHub logins allowed to install the six reserved example notebooks; enables them")
 		_ = flags.Parse(os.Args[2:])
 		setMaxHTML(*shared.maxSize)
 		setStorage(*shared.quota, *shared.storage)
