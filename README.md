@@ -27,7 +27,7 @@ The installer supports Linux and macOS. Windows binaries are available on the
 
 The Komodoc maintainers host a free sandbox, where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log into the Komodoc management console using your Github username:
 
-- [Komodoc sandbox management console](https://komodoc.vincentarelbundock.workers.dev)
+- [Komodoc console](https://komodoc.vincentarelbundock.workers.dev)
 
 If you do not want to log in but want to try annotating some documents, you can try one of these live examples:
 
@@ -159,24 +159,6 @@ komodoc deploy --label my-docs --expire-after 24h
 Use `--expire-from created` for a fixed lifetime from the first upload, or
 `--expire-after never` to disable expiry. Cloudflare runs the cleanup schedule;
 the `komodoc` program does not need to remain running.
-
-The maintainer's sandbox also deploys with `--examples`. This reserves the six
-curated example notebooks and gives each visitor a personal annotation room that
-resets after an hour. Ordinary notebooks remain shared and collaborative.
-
-There is one example per source format, and each is produced by the tool it is
-named after rather than hand-converted:
-
-`make examples` renders them all. Quarto and Calepin have to be installed;
-marimo and Jupyter are fetched by [uv](https://docs.astral.sh/uv/) against
-`examples/pyproject.toml`, so neither Python nor either tool needs to be on the
-machine.
-
-The marimo example is the one document here that is not self-contained: its
-exporter loads the marimo frontend from a CDN and keeps the prose in a JSON
-island the page hydrates in the browser. It is published exactly as marimo
-produces it, which is why it is also the one example that carries no
-pre-seeded annotations.
 
 ## Export comments
 

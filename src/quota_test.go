@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -180,5 +181,22 @@ func TestListIncludesDocumentSize(t *testing.T) {
 	size, ok := entry["size"].(float64)
 	if !ok || int(size) != len(html) {
 		t.Fatalf("listed size was %v, want %d", entry["size"], len(html))
+	}
+}
+
+// A refused upload must leave nothing behind: an over-quota publisher who
+// keeps trying would otherwise fill the disk with orphaned versions.
+func TestRefusedUploadWritesNothing(t *testing.T) {
+	withStorage(t, storageLimit{Total: 1 << 30, PerOwner: 10, DocumentsPerOwner: 50, UploadsPerHour: 50})
+	server, instance := newTestServer(t)
+	status, _ := post(t, server.URL, "/api/documents", map[string]string{
+		"title": "Too Big", "html": "<p>this is more than ten bytes</p>",
+	})
+	if status != http.StatusInsufficientStorage {
+		t.Fatalf("want 507, got %d", status)
+	}
+	files, _ := filepath.Glob(filepath.Join(instance.store.dir, "documents", "*", "*.html"))
+	if len(files) != 0 {
+		t.Fatalf("a refused upload left files behind: %v", files)
 	}
 }

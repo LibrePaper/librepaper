@@ -110,22 +110,19 @@ func (s *store) list() []indexEntry {
 // uploads racing for the last of a quota cannot both be admitted.
 func (s *store) put(slug, title, digest, html, owner string) (indexEntry, error) {
 	size := int64(len(html))
+	// The lock is held across the file write as well as the index update. A
+	// refused upload must cost nothing on disk, so admission comes first; and
+	// two uploads racing for the last of a quota cannot both be admitted.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.admit(slug, owner, size, time.Now()); err != nil {
+		return indexEntry{}, err
+	}
 	if err := os.MkdirAll(s.documentDir(slug), 0o755); err != nil {
 		return indexEntry{}, err
 	}
 	path := filepath.Join(s.documentDir(slug), digest+".html")
 	if err := os.WriteFile(path, []byte(html), 0o644); err != nil {
-		return indexEntry{}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.admit(slug, owner, size, time.Now()); err != nil {
-		// The bytes are already on disk, orphaned under a digest nothing in
-		// the index points to. That is wasted space, not a correctness
-		// problem: nothing reads a version its entry does not name, and the
-		// alternative -- deleting them here -- would risk removing the very
-		// bytes a same-content republish just reused.
 		return indexEntry{}, err
 	}
 	now := timestamp()

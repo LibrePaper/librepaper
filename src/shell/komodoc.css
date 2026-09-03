@@ -19,6 +19,10 @@ html {
   --pico-form-element-spacing-horizontal: 0.9rem;
 }
 
+body {
+  background: var(--pico-background-color);
+}
+
 /* ---------------------------------------------------------------- palette */
 
 /* colorhunt.co/palette/9cb0806187642b5748273338: sage, moss, pine, slate.
@@ -84,13 +88,14 @@ button,
 /* ------------------------------------------------------------------ header */
 
 body > nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   padding: 0 var(--pico-spacing);
   height: var(--komodoc-bar);
-  /* A hairline shadow, not a border: a border eats a pixel of the bar's content
-     box, leaving the row centred on a half pixel, which rounds the title one
-     pixel below the brand. */
-  box-shadow: 0 1px 0 var(--pico-muted-border-color);
-  background: var(--pico-card-background-color);
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  background: color-mix(in srgb, var(--pico-background-color) 94%, transparent);
+  backdrop-filter: blur(12px);
 }
 /* The logo is a block sized in rem and aligned by the flex row, rather than
    an inline image nudged into place. */
@@ -161,8 +166,8 @@ main.reader {
   outline: none;
 }
 .viewport {
-  padding: var(--pico-spacing);
-  background: var(--pico-muted-border-color);
+  padding: 0;
+  background: var(--pico-background-color);
   min-width: 0;
 }
 .viewport iframe {
@@ -172,8 +177,8 @@ main.reader {
   width: 100%;
   height: 100%;
   border: 0;
-  border-radius: var(--pico-border-radius);
-  background: #fff;
+  border-radius: 0;
+  background: var(--pico-background-color);
 }
 /* The header is furniture, not content: it should not be the largest thing
    in the column. */
