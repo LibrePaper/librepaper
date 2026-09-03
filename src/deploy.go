@@ -112,7 +112,7 @@ func deploy(options deployOptions) {
 			"    export KOMODOC_GITHUB_CLIENT_SECRET=...", scriptName, subdomain)
 	}
 
-	publishers := parsePublishPolicy(firstOf(options.publishers, os.Getenv("KOMODOC_PUBLISHERS")))
+	publishers := parseDeployPublishPolicy(firstOf(options.publishers, os.Getenv("KOMODOC_PUBLISHERS")))
 	if len(publishers.Logins) == 0 && !publishers.Any && !existing {
 		die("say who may publish, with --publishers.\n\n" +
 			"    --publishers your-github-login      only you\n" +

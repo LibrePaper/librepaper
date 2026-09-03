@@ -33,7 +33,10 @@ async function sha256(input) {
 function parsePolicy(value) {
   const trimmed = String(value || "").trim().toLowerCase();
   if (trimmed === "anyone" || trimmed === "public") return { public: true, logins: [] };
-  if (trimmed === "any" || trimmed === "*") return { any: true, logins: [] };
+  // "anygithub" is accepted because parsePolicy in auth.go accepts it: a
+  // deployment configured with it would otherwise be read here as a list
+  // holding one impossible login, and let nobody in at all.
+  if (trimmed === "any" || trimmed === "*" || trimmed === "anygithub") return { any: true, logins: [] };
   return { logins: trimmed.split(",").map((entry) => entry.trim()).filter(Boolean) };
 }
 

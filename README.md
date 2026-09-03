@@ -25,17 +25,21 @@ The installer supports Linux and macOS. Windows binaries are available on the
 
 ## Try it now
 
-Open the [example notebooks](https://komodoc.vincentarelbundock.workers.dev) on the public sandbox, select a passage, and
-comment on it. No account is needed. Each visitor gets their own copy of the
-annotations, so nothing you write there is visible to anyone else.
+The Komodoc maintainers host a free sandbox, where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log into the Komodoc management console using your Github username:
+
+- [Komodoc sandbox management console](https://komodoc.vincentarelbundock.workers.dev)
+
+If you do not want to log in but want to try annotating some documents, you can try one of these live examples:
+
+- [HTML: A Short Style Guide for Quantitative Writing](https://komodoc.vincentarelbundock.workers.dev/docs/html-a-short-style-guide-for-quantitative-writing)
+- [Markdown: What a Regression Table Is Hiding](https://komodoc.vincentarelbundock.workers.dev/docs/markdown-what-a-regression-table-is-hiding)
+- [Quarto: What the Bootstrap Actually Resamples](https://komodoc.vincentarelbundock.workers.dev/docs/quarto-what-the-bootstrap-actually-resamples)
+- [Calepin: Newton's Method Is Not Always Your Friend](https://komodoc.vincentarelbundock.workers.dev/docs/calepin-newton-s-method-is-not-always-your-friend)
+- [Jupyter: Simpson's Paradox Is Not a Paradox](https://komodoc.vincentarelbundock.workers.dev/docs/jupyter-simpson-s-paradox-is-not-a-paradox)
+- [Marimo: How Far Does a Drunk Walk?](https://komodoc.vincentarelbundock.workers.dev/docs/marimo-how-far-does-a-drunk-walk)
+- [Publication and management console](https://komodoc.vincentarelbundock.workers.dev) (requires Github Login)
 
 ## Publish
-
-The Komodoc maintainers host a free **sandbox** where anyone can upload small HTML files under 4 MB. Sandbox documents are short-lived and are deleted automatically after 24 hours or earlier. This service is provided with no guarantees whatsoever, and notebooks may be deleted at any time for any reason.
-
-Use the [management workspace](https://komodoc.vincentarelbundock.workers.dev)
-to upload and manage your documents. Because every sandbox notebook expires, links
-to individual examples are temporary too.
 
 A hosted Komodoc service is called an *endpoint*. You can use the sandbox
 endpoint or [deploy your own](#deploy), at a URL such as
@@ -129,14 +133,6 @@ resets after an hour. Ordinary notebooks remain shared and collaborative.
 
 There is one example per source format, and each is produced by the tool it is
 named after rather than hand-converted:
-
-- [HTML: A Short Style Guide for Quantitative Writing](https://komodoc.vincentarelbundock.workers.dev/docs/html-a-short-style-guide-for-quantitative-writing)
-- [Markdown: What a Regression Table Is Hiding](https://komodoc.vincentarelbundock.workers.dev/docs/markdown-what-a-regression-table-is-hiding)
-- [Quarto: What the Bootstrap Actually Resamples](https://komodoc.vincentarelbundock.workers.dev/docs/quarto-what-the-bootstrap-actually-resamples)
-- [Calepin: Newton's Method Is Not Always Your Friend](https://komodoc.vincentarelbundock.workers.dev/docs/calepin-newton-s-method-is-not-always-your-friend)
-- [Jupyter: Simpson's Paradox Is Not a Paradox](https://komodoc.vincentarelbundock.workers.dev/docs/jupyter-simpson-s-paradox-is-not-a-paradox)
-- [Marimo: How Far Does a Drunk Walk?](https://komodoc.vincentarelbundock.workers.dev/docs/marimo-how-far-does-a-drunk-walk)
-- [Publication and management console](https://komodoc.vincentarelbundock.workers.dev) (requires Github Login)
 
 `make examples` renders them all. Quarto and Calepin have to be installed;
 marimo and Jupyter are fetched by [uv](https://docs.astral.sh/uv/) against

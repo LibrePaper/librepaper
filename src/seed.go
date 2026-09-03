@@ -183,13 +183,10 @@ func seedRemote(endpointFlag string, documents []seedDocument) {
 func seedRemoteAnnotations(endpoint, token, slug string, annotations []seedAnnotation, visible string) (placed, missed int) {
 	url := endpoint + "/api/documents/" + slug + "/comments"
 	for _, item := range annotations {
-		at := -1
-		if item.Region == nil {
-			at = strings.Index(visible, item.Exact)
-			if at < 0 {
-				missed++
-				continue
-			}
+		spot, ok := anchor(item, visible)
+		if !ok {
+			missed++
+			continue
 		}
 
 		incoming := message{
@@ -202,12 +199,7 @@ func seedRemoteAnnotations(endpoint, token, slug string, annotations []seedAnnot
 			Exact:       item.Exact,
 			Region:      item.Region,
 		}
-		if at >= 0 {
-			incoming.Prefix = tail(visible[:at], config.Caps.Context)
-			incoming.Suffix = head(visible[at+len(item.Exact):], config.Caps.Context)
-			position := at
-			incoming.Position = &position
-		}
+		incoming.Prefix, incoming.Suffix, incoming.Position = spot.prefix, spot.suffix, spot.position
 
 		status, result := postAuthed(url, incoming, token, 60*time.Second)
 		if status != 200 {
@@ -237,17 +229,41 @@ func seedRemoteAnnotations(endpoint, token, slug string, annotations []seedAnnot
 	return placed, missed
 }
 
+// anchor locates a seeded annotation's passage in the document's visible text
+// and works out the context stored either side of it. Both seeding paths need
+// exactly this, one to build a comment and the other a message, so the finding
+// and measuring live here and only the shape they fill in differs. A region
+// annotation is anchored to the image instead and needs no passage; anything
+// else whose passage is not in the document cannot be placed, and ok is false.
+type seedAnchor struct {
+	prefix, suffix string
+	position       *int
+}
+
+func anchor(item seedAnnotation, text string) (seedAnchor, bool) {
+	if item.Region != nil {
+		return seedAnchor{}, true
+	}
+	at := strings.Index(text, item.Exact)
+	if at < 0 {
+		return seedAnchor{}, false
+	}
+	position := at
+	return seedAnchor{
+		prefix:   tail(text[:at], config.Caps.Context),
+		suffix:   head(text[at+len(item.Exact):], config.Caps.Context),
+		position: &position,
+	}, true
+}
+
 // seedAnnotations writes one document's annotations, anchoring each to where
 // its passage actually appears.
 func seedAnnotations(room *room, annotations []seedAnnotation, text string) (placed, missed int) {
 	for _, item := range annotations {
-		at := -1
-		if item.Region == nil {
-			at = strings.Index(text, item.Exact)
-			if at < 0 {
-				missed++
-				continue
-			}
+		spot, ok := anchor(item, text)
+		if !ok {
+			missed++
+			continue
 		}
 
 		written := &comment{
@@ -262,12 +278,7 @@ func seedAnnotations(room *room, annotations []seedAnnotation, text string) (pla
 			Region:      item.Region,
 			Replies:     []reply{},
 		}
-		if at >= 0 {
-			written.Prefix = tail(text[:at], config.Caps.Context)
-			written.Suffix = head(text[at+len(item.Exact):], config.Caps.Context)
-			position := at
-			written.Position = &position
-		}
+		written.Prefix, written.Suffix, written.Position = spot.prefix, spot.suffix, spot.position
 		if item.Resolved {
 			stamp := timestamp()
 			written.Resolved, written.ResolvedAt = true, &stamp
@@ -282,8 +293,11 @@ func seedAnnotations(room *room, annotations []seedAnnotation, text string) (pla
 		room.seq++
 		written.Seq = room.seq
 		room.comments = append(room.comments, written)
-		room.save()
+		err := room.save()
 		room.mu.Unlock()
+		if err != nil {
+			die("could not write the seeded comments for %s: %v", room.slug, err)
+		}
 		placed++
 	}
 	return placed, missed

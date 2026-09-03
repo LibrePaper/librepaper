@@ -91,8 +91,8 @@ func TestCommentPolicyRefusesAndAttributes(t *testing.T) {
 	}
 }
 
-func TestPublishPolicyRefusesAnyone(t *testing.T) {
-	// parsePublishPolicy calls die() on "anyone", which exits; check the
+func TestDeployPublishPolicyRefusesAnyone(t *testing.T) {
+	// parseDeployPublishPolicy calls die() on "anyone", which exits; check the
 	// parsing it builds on instead, so the refusal above it is the only
 	// untested line.
 	if !parsePolicy("anyone").Public {

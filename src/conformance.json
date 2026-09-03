@@ -1,0 +1,73 @@
+{
+  "policies": [
+    {"value": "", "describe": "nobody (unconfigured)", "allows": {"": false, "vincent": false}},
+    {"value": "anyone", "describe": "anyone", "allows": {"": true, "vincent": true}},
+    {"value": "public", "describe": "anyone", "allows": {"": true, "vincent": true}},
+    {"value": "any", "describe": "any GitHub account", "allows": {"": false, "vincent": true}},
+    {"value": "*", "describe": "any GitHub account", "allows": {"": false, "vincent": true}},
+    {"value": "anygithub", "describe": "any GitHub account", "allows": {"": false, "vincent": true}},
+    {"value": "ANY", "describe": "any GitHub account", "allows": {"": false, "vincent": true}},
+    {"value": "  any  ", "describe": "any GitHub account", "allows": {"": false, "vincent": true}},
+    {"value": "vincent", "describe": "@vincent", "allows": {"": false, "vincent": true, "VINCENT": true, "alice": false}},
+    {"value": "Vincent, Alice", "describe": "@vincent, @alice", "allows": {"vincent": true, "alice": true, "bob": false}},
+    {"value": "vincent,,alice,", "describe": "@vincent, @alice", "allows": {"vincent": true, "alice": true}},
+    {"value": "anyonelse", "describe": "@anyonelse", "allows": {"": false, "anyonelse": true, "vincent": false}}
+  ],
+  "slugs": [
+    {"value": "example", "valid": true},
+    {"value": "example-doc-2", "valid": true},
+    {"value": "a", "valid": true},
+    {"value": "Example", "valid": false},
+    {"value": "-example", "valid": false},
+    {"value": "example-", "valid": false},
+    {"value": "example--doc", "valid": false},
+    {"value": "example doc", "valid": false},
+    {"value": "example.doc", "valid": false},
+    {"value": "example/doc", "valid": false},
+    {"value": "", "valid": false},
+    {"value": "exa\nmple", "valid": false},
+    {"value": "example\nx", "valid": false}
+  ],
+  "motivations": [
+    {"value": "commenting", "kept": "commenting"},
+    {"value": "highlighting", "kept": "highlighting"},
+    {"value": "editing", "kept": "editing"},
+    {"value": "questioning", "kept": "questioning"},
+    {"value": "", "kept": "commenting"},
+    {"value": "Commenting", "kept": "commenting"},
+    {"value": "vandalising", "kept": "commenting"}
+  ],
+  "tags": [
+    {"value": ["method"], "kept": ["method"]},
+    {"value": ["  Method  "], "kept": ["method"]},
+    {"value": ["METHOD", "method", "Method"], "kept": ["method"]},
+    {"value": ["needs   citation"], "kept": ["needs citation"]},
+    {"value": ["needs\tcitation"], "kept": ["needs citation"]},
+    {"value": ["", "   ", "method"], "kept": ["method"]},
+    {"value": ["a", "b", "c", "d", "e", "f", "g", "h"], "kept": ["a", "b", "c", "d", "e", "f"]},
+    {"value": [], "kept": []}
+  ],
+  "regions": [
+    {"value": {"x": 10, "y": 10, "w": 20, "h": 20, "image_index": 0}, "kept": true},
+    {"value": {"x": 0, "y": 0, "w": 100, "h": 100, "image_index": 3}, "kept": true},
+    {"value": {"x": 10, "y": 10, "w": 0.4, "h": 20, "image_index": 0}, "kept": false},
+    {"value": {"x": 10, "y": 10, "w": 20, "h": 0.4, "image_index": 0}, "kept": false},
+    {"value": {"x": 90, "y": 10, "w": 20, "h": 20, "image_index": 0}, "kept": false},
+    {"value": {"x": 10, "y": 90, "w": 20, "h": 20, "image_index": 0}, "kept": false},
+    {"value": {"x": -1, "y": 10, "w": 20, "h": 20, "image_index": 0}, "kept": false},
+    {"value": {"x": 10, "y": 10, "w": 20, "h": 20, "image_index": -1}, "kept": false},
+    {"value": {"x": 10, "y": 10, "w": 20, "h": 20, "image_index": -1}, "kept": false}
+  ],
+  "messages": [
+    {"value": "a comment", "limit": 20, "kept": "a comment"},
+    {"value": "  spaced  ", "limit": 20, "kept": "  spaced  "},
+    {"value": "with a \u0000 null", "limit": 40, "kept": "with a  null"},
+    {"value": "bell \u0007 and \u001b escape", "limit": 40, "kept": "bell  and  escape"},
+    {"value": "tab\there", "limit": 40, "kept": "tab\there"},
+    {"value": "line\nbreak", "limit": 40, "kept": "line\nbreak"},
+    {"value": "carriage\rreturn", "limit": 40, "kept": "carriage\rreturn"},
+    {"value": "delete \u007f here", "limit": 40, "kept": "delete  here"},
+    {"value": "truncated to ten", "limit": 10, "kept": "truncated "},
+    {"value": "", "limit": 10, "kept": ""}
+  ]
+}

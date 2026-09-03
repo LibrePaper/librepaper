@@ -66,11 +66,26 @@ func do(method, target string, headers map[string]string, body []byte, timeout t
 // postJSON posts a JSON body and decodes a JSON reply, falling back to an
 // {"error": ...} shape when the reply is not JSON at all.
 func postJSON(target string, payload any, timeout time.Duration) (int, map[string]any) {
+	return postDecoded(target, payload, "", timeout)
+}
+
+// postAuthed is postJSON carrying the GitHub token the CLI signed in with.
+func postAuthed(target string, payload any, token string, timeout time.Duration) (int, map[string]any) {
+	return postDecoded(target, payload, token, timeout)
+}
+
+// postDecoded is the body of both: encode, post, decode. An empty token sends
+// no authorization header at all, which is what an unauthenticated call means.
+func postDecoded(target string, payload any, token string, timeout time.Duration) (int, map[string]any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		die("could not encode the request: %v", err)
 	}
-	status, raw := do("POST", target, map[string]string{"content-type": "application/json"}, body, timeout)
+	headers := map[string]string{"content-type": "application/json"}
+	if token != "" {
+		headers["authorization"] = "Bearer " + token
+	}
+	status, raw := do("POST", target, headers, body, timeout)
 
 	var decoded map[string]any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -119,22 +134,4 @@ func truncate(text string, limit int) string {
 		return text
 	}
 	return text[:limit]
-}
-
-// postAuthed is postJSON carrying the GitHub token the CLI signed in with.
-func postAuthed(target string, payload any, token string, timeout time.Duration) (int, map[string]any) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		die("could not encode the request: %v", err)
-	}
-	status, raw := do("POST", target, map[string]string{
-		"content-type":  "application/json",
-		"authorization": "Bearer " + token,
-	}, body, timeout)
-
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return status, map[string]any{"error": truncate(string(raw), 300)}
-	}
-	return status, decoded
 }

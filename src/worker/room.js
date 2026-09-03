@@ -9,6 +9,19 @@ const MAX_COMMENTS = CONFIG.max_comments;
 const RATE_PER_HOUR = CONFIG.rate_per_hour;
 
 const now = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
+
+// Labels: lowercased, trimmed, deduplicated, capped in both length and number,
+// so filtering by one of them is predictable. cleanTags in room.go has to agree
+// with this one, and conformance_test.go runs both over the same fixtures.
+function cleanTags(list) {
+  const tags = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const label = clean(raw, CAPS.tag).trim().toLowerCase().replace(/\s+/g, " ");
+    if (label && !tags.includes(label)) tags.push(label);
+    if (tags.length === CONFIG.max_tags) break;
+  }
+  return tags;
+}
 const clean = (value, limit) =>
   String(value ?? "")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
@@ -264,14 +277,7 @@ export class Room extends DurableObject {
     const replacement =
       motivation === "editing" ? clean(message.replacement, CAPS.replacement).trim() : "";
 
-    // Labels: lowercased, trimmed, deduplicated, capped, so filtering by one
-    // of them is predictable.
-    const tags = [];
-    for (const raw of Array.isArray(message.tags) ? message.tags : []) {
-      const label = clean(raw, CAPS.tag).trim().toLowerCase().replace(/\s+/g, " ");
-      if (label && !tags.includes(label)) tags.push(label);
-      if (tags.length === CONFIG.max_tags) break;
-    }
+    const tags = cleanTags(message.tags);
 
     if (message.type === "reply") {
       const comment = comments.find((item) => item.id === message.comment_id);

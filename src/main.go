@@ -142,6 +142,33 @@ func detailOf(payload map[string]any) any {
 	return payload
 }
 
+// serviceFlags are the options that describe a running service rather than
+// where it runs: who may publish and comment, how large a document may be, and
+// when documents expire. `deploy` and `serve` stand up the same service in two
+// places, so they take them identically and this is the one place their names,
+// defaults and help text are written.
+type serviceFlags struct {
+	clientID     *string
+	clientSecret *string
+	publishers   *string
+	commenters   *string
+	maxSize      *int
+	expireAfter  *string
+	expireFrom   *string
+}
+
+func addServiceFlags(flags *flag.FlagSet) serviceFlags {
+	return serviceFlags{
+		clientID:     flags.String("client-id", "", "GitHub OAuth app client id; or $KOMODOC_GITHUB_CLIENT_ID"),
+		clientSecret: flags.String("client-secret", "", "GitHub OAuth app client secret; or $KOMODOC_GITHUB_CLIENT_SECRET"),
+		publishers:   flags.String("publishers", "", "who may publish: a GitHub login, a comma-separated list, or 'any'"),
+		commenters:   flags.String("commenters", "", "who may comment: 'anyone' (default), 'any' GitHub account, or a list of logins"),
+		maxSize:      flags.Int("max-size", 0, "largest document accepted, in megabytes (default 30)"),
+		expireAfter:  flags.String("expire-after", "", "delete documents after this duration, for example 24h or 30d (default never)"),
+		expireFrom:   flags.String("expire-from", "", "start expiry at 'updated' (default; last publication) or 'created'"),
+	}
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
@@ -151,21 +178,15 @@ func main() {
 	switch os.Args[1] {
 	case "deploy":
 		flags := flag.NewFlagSet("deploy", flag.ExitOnError)
+		shared := addServiceFlags(flags)
 		label := flags.String("label", "", "deployment label: the first label of the URL and the bucket name (default komodoc, or $KOMODOC_LABEL)")
-		clientID := flags.String("client-id", "", "GitHub OAuth app client id; or $KOMODOC_GITHUB_CLIENT_ID")
-		clientSecret := flags.String("client-secret", "", "GitHub OAuth app client secret; or $KOMODOC_GITHUB_CLIENT_SECRET")
-		publishers := flags.String("publishers", "", "who may publish: a GitHub login, a comma-separated list, or 'any'")
-		commenters := flags.String("commenters", "", "who may comment: 'anyone' (default), 'any' GitHub account, or a list of logins")
-		maxSize := flags.Int("max-size", 0, "largest document accepted, in megabytes (default 30)")
-		expireAfter := flags.String("expire-after", "", "delete documents after this duration, for example 24h or 30d (default never)")
-		expireFrom := flags.String("expire-from", "", "start expiry at 'updated' (default; last publication) or 'created'")
 		examples := flags.Bool("examples", false, "enable the four resettable public example notebooks")
 		_ = flags.Parse(os.Args[2:])
-		setMaxHTML(*maxSize)
+		setMaxHTML(*shared.maxSize)
 		deploy(deployOptions{
-			label: *label, clientID: *clientID, clientSecret: *clientSecret,
-			publishers: *publishers, commenters: *commenters,
-			expireAfter: *expireAfter, expireFrom: *expireFrom,
+			label: *label, clientID: *shared.clientID, clientSecret: *shared.clientSecret,
+			publishers: *shared.publishers, commenters: *shared.commenters,
+			expireAfter: *shared.expireAfter, expireFrom: *shared.expireFrom,
 			examples: *examples,
 		})
 
@@ -190,22 +211,16 @@ func main() {
 
 	case "serve":
 		flags := flag.NewFlagSet("serve", flag.ExitOnError)
+		shared := addServiceFlags(flags)
 		port := flags.Int("port", 0, "port to listen on; default is the first free one from 8080 to 8099")
 		dir := flags.String("data", "komodoc-data", "directory for documents and comments")
-		clientID := flags.String("client-id", "", "GitHub OAuth app client id; or $KOMODOC_GITHUB_CLIENT_ID")
-		clientSecret := flags.String("client-secret", "", "GitHub OAuth app client secret; or $KOMODOC_GITHUB_CLIENT_SECRET")
-		publishers := flags.String("publishers", "", "who may publish: a GitHub login, a comma-separated list, or 'any'")
-		commenters := flags.String("commenters", "", "who may comment: 'anyone' (default), 'any' GitHub account, or a list of logins")
-		maxSize := flags.Int("max-size", 0, "largest document accepted, in megabytes (default 30)")
-		expireAfter := flags.String("expire-after", "", "delete documents after this duration, for example 24h or 30d (default never)")
-		expireFrom := flags.String("expire-from", "", "start expiry at 'updated' (default; last publication) or 'created'")
 		_ = flags.Parse(os.Args[2:])
-		setMaxHTML(*maxSize)
+		setMaxHTML(*shared.maxSize)
 		serve(serveOptions{
 			port: *port, dir: *dir,
-			clientID: *clientID, clientSecret: *clientSecret,
-			publishers: *publishers, commenters: *commenters,
-			expireAfter: *expireAfter, expireFrom: *expireFrom,
+			clientID: *shared.clientID, clientSecret: *shared.clientSecret,
+			publishers: *shared.publishers, commenters: *shared.commenters,
+			expireAfter: *shared.expireAfter, expireFrom: *shared.expireFrom,
 		})
 
 	case "login":

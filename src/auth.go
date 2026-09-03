@@ -299,13 +299,17 @@ func (c *tokenCache) login(token string) string {
 	return login
 }
 
-// parsePublishPolicy is parsePolicy with the public option refused: publishing
-// always requires a signed-in GitHub account, so the weakest setting is "any".
-func parsePublishPolicy(value string) policy {
+// parseDeployPublishPolicy is parsePolicy with the public option refused. The
+// rule is a deployment's, not a universal one: a deployed Worker is on the open
+// internet, where publishing with no account at all would let anyone fill the
+// bucket. `serve` runs on a machine its operator already controls and keeps the
+// public option, which is what --publishers anyone means there.
+func parseDeployPublishPolicy(value string) policy {
 	chosen := parsePolicy(value)
 	if chosen.Public {
-		die("--publishers cannot be %q: publishing always needs a GitHub account.\n"+
-			"  Use 'any' for any account, or a comma-separated list of logins.", value)
+		die("--publishers cannot be %q when deploying: publishing to a deployment\n"+
+			"  always needs a GitHub account. Use 'any' for any account, or a\n"+
+			"  comma-separated list of logins.", value)
 	}
 	return chosen
 }
