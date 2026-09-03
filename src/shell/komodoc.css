@@ -19,6 +19,60 @@ html {
   --pico-form-element-spacing-horizontal: 0.9rem;
 }
 
+/* ---------------------------------------------------------------- palette */
+
+/* colorhunt.co/palette/9cb0806187642b5748273338: sage, moss, pine, slate.
+   The green is an accent, not a wash -- it colours what the reader can act on
+   (buttons, links, focus, marks) and nothing else. Text, page and panels keep
+   Pico's neutrals, so a document in the frame is what carries the colour on
+   the screen.
+
+   Themed by overriding Pico's own variables rather than by rewriting its
+   rules, on the selector Pico itself uses: a plain :root loses to its
+   :root:not([data-theme=dark]), and the palette silently stays blue. */
+:root:not([data-theme="dark"]),
+[data-theme="light"] {
+  --komodoc-sage: #9cb080;
+  --komodoc-moss: #618764;
+  --komodoc-pine: #2b5748;
+  --komodoc-slate: #273338;
+
+  /* Pine carries every affordance; moss is the same colour with more light in
+     it, which is what makes hover read as "nearer" rather than as a different
+     control. */
+  --pico-primary: var(--komodoc-pine);
+  --pico-primary-background: var(--komodoc-pine);
+  --pico-primary-border: var(--komodoc-pine);
+  --pico-primary-underline: #2b574840;
+  --pico-primary-hover: var(--komodoc-moss);
+  --pico-primary-hover-background: var(--komodoc-moss);
+  --pico-primary-hover-border: var(--komodoc-moss);
+  --pico-primary-inverse: #fff;
+  --pico-primary-focus: #61876459;
+
+  --pico-secondary: var(--komodoc-moss);
+  --pico-secondary-background: var(--komodoc-moss);
+  --pico-secondary-border: var(--komodoc-moss);
+  --pico-secondary-underline: #61876440;
+  --pico-secondary-hover: var(--komodoc-pine);
+  --pico-secondary-hover-background: var(--komodoc-pine);
+  --pico-secondary-hover-border: var(--komodoc-pine);
+  --pico-secondary-inverse: #fff;
+  --pico-secondary-focus: #61876459;
+
+  /* Where a control answers back: the field you are in, the switch that is
+     on, the passage you have selected. */
+  --pico-form-element-active-border-color: var(--komodoc-pine);
+  --pico-form-element-focus-color: var(--komodoc-pine);
+  --pico-switch-checked-background-color: var(--komodoc-pine);
+  --pico-progress-color: var(--komodoc-pine);
+  --pico-mark-background-color: #9cb08066;
+  --pico-mark-color: var(--komodoc-slate);
+  --pico-text-selection-color: #9cb08059;
+  --pico-blockquote-border-color: var(--komodoc-sage);
+  --pico-ins-color: var(--komodoc-moss);
+}
+
 button,
 [type="submit"],
 [type="button"],
@@ -411,10 +465,27 @@ footer.grid > [role="button"] {
   width: auto;
   aspect-ratio: 971 / 759;
 }
+/* The komodo is the brand colour; the page it is holding stays ink, so the
+   mark says the same thing the wordmark does. */
+.logo-head {
+  fill: var(--komodoc-pine);
+}
+.logo-page {
+  fill: var(--komodoc-slate);
+}
+
 .wordmark {
   font-family: "IBM Plex Sans", var(--pico-font-family-sans-serif);
   font-weight: 600;
   letter-spacing: -0.02em;
+}
+
+/* "komo" is the animal, "doc" is the document -- the same split as the mark. */
+.wordmark .wordmark-komo {
+  color: var(--komodoc-pine);
+}
+.wordmark .wordmark-doc {
+  color: var(--komodoc-slate);
 }
 
 /* The same pair again, larger and centred, at the top of the landing page. */
@@ -586,9 +657,8 @@ footer.grid > [role="button"] {
   color: var(--komodoc-tint);
 }
 .tools .tool[aria-pressed="true"] {
-  background: var(--komodoc-tint);
   border-color: var(--komodoc-tint);
-  color: #fff;
+  color: var(--komodoc-tint);
 }
 
 /* The sidebar label for the annotation kind, in that kind's own colour. */
@@ -644,7 +714,48 @@ nav > ul.navmid svg {
   margin: 0 auto;
 }
 .prose img {
+  display: block;
+  width: min(100%, 28rem);
+  margin: 1.5rem auto;
+  border-radius: var(--pico-border-radius);
+  cursor: zoom-in;
+}
+.prose img:focus-visible {
+  outline: 0.2rem solid var(--pico-primary-focus);
+  outline-offset: 0.2rem;
+}
+.image-lightbox {
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  max-height: none;
+  margin: 0;
+  padding: 3rem 1rem 1rem;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.image-lightbox::backdrop {
+  background: rgb(0 0 0 / 0.82);
+}
+.image-lightbox img {
+  display: block;
   max-width: 100%;
+  max-height: calc(100vh - 4rem);
+  margin: auto;
+  object-fit: contain;
+}
+.image-lightbox button {
+  position: fixed;
+  top: 0.75rem;
+  right: 0.75rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin: 0;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.5rem;
+  line-height: 1;
 }
 .prose pre {
   overflow-x: auto;
