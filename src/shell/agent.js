@@ -207,13 +207,17 @@
 
   // Resolves a Range boundary to a {node, offset} pair inside a text node.
   // Almost always the container already is one. A triple-click, though, hands
-  // back an element with a childOffset -- if the child sitting at that offset
-  // is itself a text node, that is an unambiguous, cheap answer; anything less
-  // direct is left alone, matching the old behaviour of giving up quietly.
+  // back an element with a child offset: the boundary sits between two of its
+  // children, so it is the start of the child after it or the end of the one
+  // before, whichever is a text node. Anything less direct is left alone, and
+  // the selection is given up quietly, as before.
   function textPointOf(container, offset) {
     if (container.nodeType === Node.TEXT_NODE) return { node: container, offset };
-    const child = container.childNodes[offset];
-    return child && child.nodeType === Node.TEXT_NODE ? { node: child, offset: 0 } : null;
+    const after = container.childNodes[offset];
+    if (after && after.nodeType === Node.TEXT_NODE) return { node: after, offset: 0 };
+    const before = container.childNodes[offset - 1];
+    if (before && before.nodeType === Node.TEXT_NODE) return { node: before, offset: before.data.length };
+    return null;
   }
 
   function captureSelection() {
@@ -226,8 +230,9 @@
     const range = selection.getRangeAt(0);
     const startPoint = textPointOf(range.startContainer, range.startOffset);
     const endPoint = textPointOf(range.endContainer, range.endOffset);
-    const startIndex = startPoint && table.index.get(startPoint.node);
-    const endIndex = endPoint && table.index.get(endPoint.node);
+    if (!startPoint || !endPoint) return;
+    const startIndex = table.index.get(startPoint.node);
+    const endIndex = table.index.get(endPoint.node);
     if (startIndex === undefined || endIndex === undefined) return;
     let start = table.starts[startIndex] + startPoint.offset;
     let end = table.starts[endIndex] + endPoint.offset;
