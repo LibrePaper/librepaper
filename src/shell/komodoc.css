@@ -165,6 +165,18 @@ main.reader {
   background: var(--pico-primary);
   outline: none;
 }
+/* Dragging moves this line, not the grid column: reflowing the iframe on
+   every pointermove is what made the drag feel heavy. The real width lands
+   once, on release. */
+.grip-guide {
+  position: fixed;
+  top: var(--komodoc-bar);
+  bottom: 0;
+  width: 2px;
+  background: var(--pico-primary);
+  pointer-events: none;
+  z-index: 10;
+}
 .viewport {
   padding: 0;
   background: var(--pico-background-color);

@@ -7,6 +7,11 @@
     <link rel="icon" type="image/svg+xml" href="/assets/komodo-logo.svg" />
     <link rel="stylesheet" href="/pico.css" />
     <link rel="stylesheet" href="/komodoc.css" />
+    <!-- anchor.js is a static import of reader.js: without this the browser
+         does not learn that until reader.js has parsed, which makes it a
+         second, serial round trip. -->
+    <link rel="modulepreload" href="/reader.js" />
+    <link rel="modulepreload" href="/anchor.js" />
   </head>
   <body>
     <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
@@ -107,6 +112,10 @@
       </section>
       <div id="grip" class="grip" role="separator" aria-orientation="vertical"
            aria-label="Resize the comment pane" tabindex="0"></div>
+      <!-- Shown only while the grip is dragged: a line that follows the
+           pointer so the split can be seen moving without the iframe
+           reflowing on every pointermove. -->
+      <div id="gripGuide" class="grip-guide" hidden></div>
       <aside class="sidebar">
         <hgroup>
           <h3>Comments <small id="count"></small></h3>

@@ -1,4 +1,4 @@
-import { anchorAll } from "./anchor.js";
+import { anchorAll, flatten } from "./anchor.js";
 
 const SLUG = location.pathname.split("/").pop();
 const frame = document.getElementById("docframe");
@@ -13,6 +13,7 @@ let pending = null;
 let socket = null;
 let backoff = 500;
 let docText = null; // joined visible text, invariant across highlight renders
+let docView = null; // flatten(docText), cached so anchoring does not redo it per call
 let figureAt = []; // text offset of each figure, by its index in the document
 let frameReady = false;
 let commentsReady = false;
@@ -43,10 +44,15 @@ addEventListener("message", (event) => {
     case "ready":
       // The whole visible text of the document, in one string.
       docText = typeof message.text === "string" ? message.text : "";
+      // Computed once here, not once per anchorAll call.
+      docView = flatten(docText);
       // Where each figure sits in that text, so a note on a figure can be
       // ordered against the notes on passages.
       figureAt = Array.isArray(message.images) ? message.images.map(Number) : [];
       frameReady = true;
+      // The agent's DOM was just rebuilt and rescanned, so whatever was
+      // painted before is gone; the next applyHighlights must repaint in full.
+      lastRegions = lastHighlight = null;
       reanchor();
       break;
 
@@ -70,13 +76,21 @@ addEventListener("message", (event) => {
 });
 
 // Hand the agent the positions to paint. It knows nothing about anchoring.
+//
+// The agent repaints the whole document on every "regions" or "highlight"
+// message, so a call that changes nothing is not free even though it looks
+// idempotent. Each is sent only when its payload actually differs from the
+// last one sent -- reset when the frame republishes its text, since the
+// agent's DOM was rebuilt then and needs the full repaint regardless.
+let lastRegions = null;
+let lastHighlight = null;
+
 function applyHighlights() {
   if (!frameReady) return;
   // Annotations on figures are placed by the agent from the image identifiers,
   // since there is no text for this side to anchor against.
-  tell({
-    type: "regions",
-    regions: comments
+  const regions = JSON.stringify(
+    comments
       .filter((comment) => comment.region)
       .map((comment) => ({
         id: comment.id,
@@ -89,10 +103,14 @@ function applyHighlights() {
         motivation: comment.motivation,
         resolved: Boolean(comment.resolved),
       })),
-  });
-  tell({
-    type: "highlight",
-    ranges: comments
+  );
+  if (regions !== lastRegions) {
+    lastRegions = regions;
+    tell({ type: "regions", regions: JSON.parse(regions) });
+  }
+
+  const highlight = JSON.stringify(
+    comments
       .filter((comment) => !comment.orphaned && comment.start != null)
       .map((comment) => ({
         id: comment.id,
@@ -101,14 +119,18 @@ function applyHighlights() {
         motivation: comment.motivation,
         resolved: Boolean(comment.resolved),
       })),
-  });
+  );
+  if (highlight !== lastHighlight) {
+    lastHighlight = highlight;
+    tell({ type: "highlight", ranges: JSON.parse(highlight) });
+  }
 }
 
 function reanchor() {
   if (!frameReady || !commentsReady || docText === null) return;
   // A region annotation is placed by the agent, not by text matching, so it is
   // never orphaned for want of a quotation.
-  anchorAll(docText, comments.filter((comment) => !comment.region));
+  anchorAll(docText, comments.filter((comment) => !comment.region), docView);
   render();
   applyHighlights();
 }
@@ -460,7 +482,7 @@ function receive(event) {
     else if (!comments.some((comment) => comment.id === event.comment.id)) {
       comments.push(event.comment);
       // Someone else's comment: anchor just this one against the cached text.
-      anchorAll(docText || "", [event.comment]);
+      anchorAll(docText || "", [event.comment], docText === null ? null : docView);
     }
     render();
     applyHighlights();
@@ -616,7 +638,7 @@ function submitAnnotation({ motivation, body, replacement, tags }) {
     pending: true,
   };
   // Draw it before the round trip; `receive` reconciles it by temp_id.
-  anchorAll(docText || "", [optimistic]);
+  anchorAll(docText || "", [optimistic], docText === null ? null : docView);
   comments.push(optimistic);
   render();
   applyHighlights();
@@ -723,11 +745,16 @@ const SIDEBAR_MAX = 0.6; // of the window, so the document always keeps 40%
 
 const reader = document.querySelector("main.reader");
 const grip = document.getElementById("grip");
+const gripGuide = document.getElementById("gripGuide");
+
+function clampSidebar(width) {
+  return Math.round(Math.max(SIDEBAR_MIN, Math.min(width, innerWidth * SIDEBAR_MAX)));
+}
 
 function setSidebar(width) {
-  const limit = Math.max(SIDEBAR_MIN, Math.min(width, innerWidth * SIDEBAR_MAX));
-  reader.style.setProperty("--komodoc-sidebar", Math.round(limit) + "px");
-  return Math.round(limit);
+  const limit = clampSidebar(width);
+  reader.style.setProperty("--komodoc-sidebar", limit + "px");
+  return limit;
 }
 
 try {
@@ -738,6 +765,12 @@ try {
 }
 
 if (grip) {
+  // While dragging, only the guide line moves; the real width -- and the
+  // iframe reflow that comes with it -- is applied once, on release.
+  function guideAt(width) {
+    if (gripGuide) gripGuide.style.left = innerWidth - clampSidebar(width) + "px";
+  }
+
   grip.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     grip.setPointerCapture(event.pointerId);
@@ -745,11 +778,15 @@ if (grip) {
     // The frame swallows pointer events while it has them, so it is deafened
     // for the duration of the drag rather than the drag being lost over it.
     frame.style.pointerEvents = "none";
+    if (gripGuide) {
+      guideAt(innerWidth - event.clientX);
+      gripGuide.hidden = false;
+    }
   });
 
   grip.addEventListener("pointermove", (event) => {
     if (!grip.hasPointerCapture(event.pointerId)) return;
-    setSidebar(innerWidth - event.clientX);
+    guideAt(innerWidth - event.clientX);
   });
 
   const finish = (event) => {
@@ -757,6 +794,7 @@ if (grip) {
     grip.releasePointerCapture(event.pointerId);
     grip.classList.remove("dragging");
     frame.style.pointerEvents = "";
+    if (gripGuide) gripGuide.hidden = true;
     try {
       localStorage.setItem(SIDEBAR_KEY, String(setSidebar(innerWidth - event.clientX)));
     } catch {
