@@ -12,7 +12,27 @@
 
 (() => {
   const READER = new URL(document.currentScript.src).searchParams.get("reader") || "*";
-  let table = null; // {nodes, starts}
+  let table = null; // {nodes, starts, index, offsets, joined}
+
+  // The observer that republishes on the document's own edits (armed in
+  // watch()). Painting -- highlight(), paintRegions(), layerFor() -- mutates
+  // the DOM too, and left running the observer cannot tell our own brushwork
+  // from the document changing under us. `quietly` disconnects around such a
+  // mutation and discards whatever records piled up meanwhile, so only the
+  // document's own changes ever reach republish(). It can be called before
+  // watch() has run -- a highlight can arrive before the document settles --
+  // in which case there is nothing to suspend.
+  let observer = null;
+  function quietly(fn) {
+    if (!observer) {
+      fn();
+      return;
+    }
+    observer.disconnect();
+    fn();
+    observer.takeRecords();
+    observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+  }
 
   // One tint per tool, so what a mark means is legible without opening the
   // sidebar. Hue carries the meaning and saturation stays low: these sit under
@@ -38,35 +58,41 @@
     parent.postMessage({ komodoc: true, ...message }, READER);
   }
 
-  function textNodes(root) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) =>
-        node.parentElement && !["SCRIPT", "STYLE", "NOSCRIPT"].includes(node.parentElement.tagName)
-          ? NodeFilter.FILTER_ACCEPT
-          : NodeFilter.FILTER_REJECT,
-    });
-    const out = [];
-    let node;
-    while ((node = walker.nextNode())) out.push(node);
-    return out;
-  }
-
-  // One walk and one cumulative-offset table, rebuilt whenever the highlights
-  // change the node structure underneath us. The joined text is a separate
-  // step: a repaint needs the table but not the string, and joining a large
-  // document is the most expensive thing here.
+  // One walk of the document builds the text-node table (with a node->index
+  // map for fast lookup), the cumulative-offset table, and the offsets of the
+  // qualifying figures -- all three needed the same walk over the same nodes,
+  // so a second pass just to find the images was a second tree walk for free.
+  // Rebuilt whenever the highlights change the node structure underneath us.
+  // The joined text is a separate, lazy step: a repaint needs the table but
+  // not the string, and joining a large document is the most expensive thing
+  // here, so it is only paid for on the first `text()` call after a scan.
   function scan() {
-    const nodes = textNodes(document.body);
-    const starts = new Array(nodes.length);
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
+    );
+    const nodes = [];
+    const starts = [];
+    const index = new Map();
+    const offsets = [];
     let total = 0;
-    for (let i = 0; i < nodes.length; i++) {
-      starts[i] = total;
-      total += nodes[i].data.length;
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const parent = node.parentElement;
+        if (parent && ["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) continue;
+        index.set(node, nodes.length);
+        starts.push(total);
+        nodes.push(node);
+        total += node.data.length;
+      } else if (node.tagName === "IMG" && node.width > 40 && node.height > 40) {
+        offsets.push(total);
+      }
     }
-    table = { nodes, starts };
+    table = { nodes, starts, index, offsets, joined: null };
   }
 
-  const text = () => table.nodes.map((node) => node.data).join("");
+  const text = () => table.joined ?? (table.joined = table.nodes.map((node) => node.data).join(""));
 
   // Index of the node containing `offset`, by binary search over the table.
   function nodeAt(offset) {
@@ -107,10 +133,12 @@
   // order the comments arrive in. Painting runs right to left, which leaves the
   // node and offset of every piece still to come untouched.
   function highlight(ranges) {
-    document
-      .querySelectorAll("mark[data-komodoc]")
-      .forEach((mark) => mark.replaceWith(...mark.childNodes));
-    document.body.normalize(); // restore the pristine text-node structure
+    quietly(() => {
+      document
+        .querySelectorAll("mark[data-komodoc]")
+        .forEach((mark) => mark.replaceWith(...mark.childNodes));
+      document.body.normalize(); // restore the pristine text-node structure
+    });
     scan();
 
     const painted = ranges.filter((item) => item.end > item.start);
@@ -136,40 +164,58 @@
       for (const piece of piecesFor(start, end)) plan.push({ piece, covering });
     }
 
-    for (const { piece, covering } of plan.reverse()) {
-      const range = document.createRange();
-      range.setStart(piece.node, piece.from);
-      range.setEnd(piece.node, piece.to);
-      const mark = document.createElement("mark");
-      // Every comment covering this stretch is named, so a click can pick the
-      // most specific one and `reveal` can find any of them.
-      mark.dataset.komodoc = covering.map((item) => item.id).join(" ");
-      const live = covering.filter((item) => !item.resolved);
-      // The innermost annotation is the one this stretch most specifically
-      // belongs to, so its tool decides the colour; the number of annotations
-      // stacked here decides how deep the wash goes.
-      const inner = (live.length ? live : covering).reduce((a, b) =>
-        b.end - b.start < a.end - a.start ? b : a,
-      );
-      const shade = live.length
-        ? wash(tintOf(inner.motivation), live.length)
-        : wash(NEUTRAL, 1);
-      mark.style.cssText = `background:${shade};color:inherit;cursor:pointer`;
-      range.surroundContents(mark);
-      // The same innermost annotation the colour came from is the one a click
-      // on this stretch means.
-      mark.onclick = () => post({ type: "focus", id: inner.id });
-    }
+    quietly(() => {
+      for (const { piece, covering } of plan.reverse()) {
+        const range = document.createRange();
+        range.setStart(piece.node, piece.from);
+        range.setEnd(piece.node, piece.to);
+        const mark = document.createElement("mark");
+        // Every comment covering this stretch is named, so a click can pick the
+        // most specific one and `reveal` can find any of them.
+        mark.dataset.komodoc = covering.map((item) => item.id).join(" ");
+        const live = covering.filter((item) => !item.resolved);
+        // The innermost annotation is the one this stretch most specifically
+        // belongs to, so its tool decides the colour; the number of annotations
+        // stacked here decides how deep the wash goes.
+        const inner = (live.length ? live : covering).reduce((a, b) =>
+          b.end - b.start < a.end - a.start ? b : a,
+        );
+        const shade = live.length
+          ? wash(tintOf(inner.motivation), live.length)
+          : wash(NEUTRAL, 1);
+        mark.style.cssText = `background:${shade};color:inherit;cursor:pointer`;
+        range.surroundContents(mark);
+        // The same innermost annotation the colour came from is the one a click
+        // on this stretch means.
+        mark.onclick = () => post({ type: "focus", id: inner.id });
+      }
+    });
     // surroundContents splits the text nodes it wraps, so the table built above
     // no longer describes the document. A selection made after a highlight
     // would land in a node the table has never seen, and report offsets against
     // text that is missing whatever the splits left behind. The marks add no
     // text, so the rescan still matches the reader's copy.
+    //
+    // This rescan is not a third scan by the time republish() gets involved:
+    // the painting above ran inside `quietly`, so the observer never saw it
+    // and there is no queued republish() to race with this one.
     scan();
   }
 
   // A selection becomes a W3C TextQuoteSelector: the quoted text plus the
   // context each side, which is what the sidebar anchors with.
+
+  // Resolves a Range boundary to a {node, offset} pair inside a text node.
+  // Almost always the container already is one. A triple-click, though, hands
+  // back an element with a childOffset -- if the child sitting at that offset
+  // is itself a text node, that is an unambiguous, cheap answer; anything less
+  // direct is left alone, matching the old behaviour of giving up quietly.
+  function textPointOf(container, offset) {
+    if (container.nodeType === Node.TEXT_NODE) return { node: container, offset };
+    const child = container.childNodes[offset];
+    return child && child.nodeType === Node.TEXT_NODE ? { node: child, offset: 0 } : null;
+  }
+
   function captureSelection() {
     const selection = document.getSelection();
     if (!selection || selection.isCollapsed) {
@@ -178,13 +224,13 @@
     }
 
     const range = selection.getRangeAt(0);
-    let start = null;
-    let end = null;
-    for (let i = 0; i < table.nodes.length; i++) {
-      if (table.nodes[i] === range.startContainer) start = table.starts[i] + range.startOffset;
-      if (table.nodes[i] === range.endContainer) end = table.starts[i] + range.endOffset;
-    }
-    if (start === null || end === null) return;
+    const startPoint = textPointOf(range.startContainer, range.startOffset);
+    const endPoint = textPointOf(range.endContainer, range.endOffset);
+    const startIndex = startPoint && table.index.get(startPoint.node);
+    const endIndex = endPoint && table.index.get(endPoint.node);
+    if (startIndex === undefined || endIndex === undefined) return;
+    let start = table.starts[startIndex] + startPoint.offset;
+    let end = table.starts[endIndex] + endPoint.offset;
 
     const all = text();
     // The quote is cut from the same string the sidebar anchors against, not
@@ -265,24 +311,30 @@
 
   // Paint the rectangles the sidebar could place, one layer per image.
   async function paintRegions(regions) {
-    document.querySelectorAll(".komodoc-regions").forEach((layer) => (layer.innerHTML = ""));
+    quietly(() => {
+      document.querySelectorAll(".komodoc-regions").forEach((layer) => (layer.innerHTML = ""));
+    });
     const found = images();
-    const byDigest = new Map();
-    for (const image of found) byDigest.set(await digestOf(image), image);
+    // The digests touch crypto.subtle, which is the slow part; running them
+    // together rather than one at a time in a loop is free concurrency.
+    const hexes = await Promise.all(found.map((image) => digestOf(image)));
+    const byDigest = new Map(found.map((image, i) => [hexes[i], image]));
 
-    for (const item of regions) {
-      const image = byDigest.get(item.digest) || found[item.index];
-      if (!image) continue;
-      const box = document.createElement("span");
-      box.dataset.komodoc = item.id;
-      box.style.cssText =
-        `position:absolute;left:${item.x}%;top:${item.y}%;width:${item.w}%;height:${item.h}%;` +
-        `border:2px solid ${edge(item.resolved ? NEUTRAL : tintOf(item.motivation))};` +
-        `background:${wash(item.resolved ? NEUTRAL : tintOf(item.motivation), 1, 0.35)};` +
-        "pointer-events:auto;cursor:pointer;box-sizing:border-box";
-      box.onclick = () => post({ type: "focus", id: item.id });
-      layerFor(image).appendChild(box);
-    }
+    quietly(() => {
+      for (const item of regions) {
+        const image = byDigest.get(item.digest) || found[item.index];
+        if (!image) continue;
+        const box = document.createElement("span");
+        box.dataset.komodoc = item.id;
+        box.style.cssText =
+          `position:absolute;left:${item.x}%;top:${item.y}%;width:${item.w}%;height:${item.h}%;` +
+          `border:2px solid ${edge(item.resolved ? NEUTRAL : tintOf(item.motivation))};` +
+          `background:${wash(item.resolved ? NEUTRAL : tintOf(item.motivation), 1, 0.35)};` +
+          "pointer-events:auto;cursor:pointer;box-sizing:border-box";
+        box.onclick = () => post({ type: "focus", id: item.id });
+        layerFor(image).appendChild(box);
+      }
+    });
   }
 
   // Dragging a rectangle on a figure, while the region tool is chosen.
@@ -309,7 +361,7 @@
       outline.style.cssText =
         `position:absolute;border:2px dashed ${edge(tintOf("commenting"))};` +
         `background:${wash(tintOf("commenting"), 1, 0.35)};pointer-events:none;box-sizing:border-box`;
-      layerFor(image).appendChild(outline);
+      quietly(() => layerFor(image).appendChild(outline));
       drawing = { image, start, outline };
     },
     true,
@@ -381,9 +433,18 @@
     }
   });
 
-  document.addEventListener("mouseup", captureSelection);
-  document.addEventListener("touchend", () => setTimeout(captureSelection, 120), { passive: true });
-  document.addEventListener("selectionchange", () => setTimeout(captureSelection, 80));
+  // A single pending timer for selection capture, whichever event armed it
+  // last: a drag fires mouseup once but selectionchange dozens of times, and
+  // without a shared, re-armed timer each of those would queue its own call.
+  let selectionTimer = null;
+  function scheduleSelection(delay) {
+    clearTimeout(selectionTimer);
+    selectionTimer = setTimeout(captureSelection, delay);
+  }
+
+  document.addEventListener("mouseup", () => scheduleSelection(0));
+  document.addEventListener("touchend", () => scheduleSelection(120), { passive: true });
+  document.addEventListener("selectionchange", () => scheduleSelection(80));
 
   // The agent is injected before </body>, so the markup has parsed by the time
   // it runs -- but a document that builds itself in JavaScript has not. Its own
@@ -391,39 +452,20 @@
   // after this snapshot would have been taken. Anchoring against a text the
   // document has since outgrown puts every highlight in the wrong place, so the
   // text is published when the document has settled, and again whenever it
-  // changes. Painting adds no text, so a repaint never triggers a round trip.
+  // changes. Painting adds no text, so a repaint never triggers a round trip --
+  // and now that painting runs inside `quietly`, the observer never even sees
+  // it happen.
   let published = null;
-
-  // Where each figure sits in the text, so the sidebar can order a note on a
-  // figure against the notes on passages instead of guessing.
-  function imageOffsets() {
-    const wanted = new Set(images());
-    const offsets = new Array(wanted.size);
-    const walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
-    );
-    let total = 0;
-    let seen = 0;
-    let node;
-    while ((node = walker.nextNode())) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        if (!["SCRIPT", "STYLE", "NOSCRIPT"].includes(node.parentElement?.tagName)) {
-          total += node.data.length;
-        }
-      } else if (wanted.has(node)) {
-        offsets[seen++] = total;
-      }
-    }
-    return offsets;
-  }
 
   function publish() {
     scan();
     const current = text();
     if (current === published) return;
     published = current;
-    post({ type: "ready", text: current, images: imageOffsets() });
+    // Where each figure sits in the text, so the sidebar can order a note on a
+    // figure against the notes on passages instead of guessing. Computed by
+    // scan() in the same walk that built the text-node table.
+    post({ type: "ready", text: current, images: table.offsets });
   }
 
   let pending = null;
@@ -434,7 +476,8 @@
 
   function watch() {
     publish();
-    new MutationObserver(republish).observe(document.body, {
+    observer = new MutationObserver(republish);
+    observer.observe(document.body, {
       childList: true,
       characterData: true,
       subtree: true,
