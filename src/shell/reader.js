@@ -367,7 +367,7 @@ function makeCard(comment) {
     el,
     staticWrap,
     repliesList,
-    repliesSeen: new Set(), // reply objects already rendered as <li>
+    repliesDrawn: [], // reply objects already rendered as <li>, in order
     actions,
     resolveBtn,
     form: null, // created lazily, on first "Reply" click
@@ -483,18 +483,25 @@ function updateCard(card, comment) {
   card.el.className = comment.resolved || comment.pending ? "resolved" : "";
   card.resolveBtn.textContent = comment.resolved ? "Reopen" : "Resolve";
 
-  // Replies only ever get appended, so existing <li>s are left alone; a
-  // reply's own id can still change from temp_id to server id (the same
-  // Object.assign-in-place pattern as a comment), which is why this keys off
-  // the reply object rather than its id.
-  for (const reply of comment.replies) {
-    if (card.repliesSeen.has(reply)) continue;
+  // Replies are matched by object, not id: a reply's id changes from temp_id
+  // to the server's (the same Object.assign-in-place pattern as a comment).
+  // They are normally append-only, but a server error rolls an optimistic
+  // reply back out of the list, so the list is redrawn whenever what is drawn
+  // stops matching what is there.
+  const drawn = card.repliesDrawn;
+  const same =
+    drawn.length <= comment.replies.length && drawn.every((reply, i) => reply === comment.replies[i]);
+  if (!same) {
+    card.repliesList.innerHTML = "";
+    drawn.length = 0;
+  }
+  for (const reply of comment.replies.slice(drawn.length)) {
     const item = document.createElement("li");
     item.appendChild(element("span", reply.body));
     item.appendChild(document.createElement("br"));
     item.appendChild(element("small", reply.creator + " · " + stamp(reply.created)));
     card.repliesList.appendChild(item);
-    card.repliesSeen.add(reply);
+    drawn.push(reply);
   }
   card.repliesList.hidden = comment.replies.length === 0;
 
@@ -533,14 +540,17 @@ function render() {
   });
 
   // Drop whatever is currently in `box` but not in this render's list (a
-  // comment now filtered out, or deleted), then lay the rest out in order.
-  // Appending an already-attached node moves it, so this both reorders and
-  // inserts in one pass without touching nodes that are not moving.
+  // comment now filtered out, or deleted), then walk the rest into order.
+  // Only a card that is out of place is moved: moving a node detaches and
+  // reattaches it, which would blur a reply someone is in the middle of
+  // typing every time another comment arrived.
   const keep = new Set(elements);
   for (const child of [...box.children]) {
     if (!keep.has(child)) box.removeChild(child);
   }
-  box.append(...elements);
+  elements.forEach((el, i) => {
+    if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
+  });
 
   const open = comments.filter((comment) => !comment.resolved).length;
   countEl.textContent = comments.length ? `${open} open · ${comments.length} total` : "";
