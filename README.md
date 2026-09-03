@@ -86,7 +86,37 @@ first. Only publicly available information is collected: your GitHub username.
 
 ## Deploy
 
-Komodoc runs on Cloudflare Workers and R2. Before deploying:
+### Local
+
+Run a public local instance without Cloudflare or GitHub setup:
+
+```sh
+komodoc serve --port 8081 --publishers anyone --expire-after 24h
+```
+
+Open <http://localhost:8081>. Documents and comments are stored in
+`komodoc-data`; back up that directory if you use the local instance for real
+work. When expiry is enabled, the server cleans up at startup and hourly while
+it is running.
+
+### Self-managed server
+
+Run the bundled server on your own host. Set `--data` to a persistent directory
+and choose who may publish or comment:
+
+```sh
+komodoc serve --port 8080 --data /var/lib/komodoc \
+  --publishers YOUR-GITHUB-LOGIN --commenters anyone
+```
+
+For GitHub sign-in, set `KOMODOC_GITHUB_CLIENT_ID` and
+`KOMODOC_GITHUB_CLIENT_SECRET`, and configure the OAuth callback URL for the
+server's public HTTPS address. Put the server behind a TLS reverse proxy in
+production.
+
+### Cloudflare
+
+Komodoc can also run on Cloudflare Workers and R2. Before deploying:
 
 Cloudflare R2 includes 10 GB of storage per month for free and does not charge
 egress fees. You may be charged if your storage exceeds 10 GB; see
@@ -156,20 +186,6 @@ komodoc export DOCUMENT-SLUG --format markdown --out comments.md \
 ```
 
 Without `--format markdown`, Komodoc exports W3C Web Annotation JSON-LD.
-
-## Try it locally
-
-Run a public local instance without Cloudflare or GitHub setup:
-
-```sh
-komodoc serve --port 8081 --publishers anyone --expire-after 24h
-```
-
-Open <http://localhost:8081>, which is the endpoint. Documents and comments are
-stored in `komodoc-data`; back up that directory if you use the local instance
-for real work. When expiry is enabled, the server cleans up at startup and
-hourly while it is running. Add `--expire-from created` for a fixed lifetime
-from the first upload instead of the default lifetime from the latest publish.
 
 Run `komodoc` to see all commands and options, including access controls,
 deleting documents, and removing a deployment.

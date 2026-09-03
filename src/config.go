@@ -10,6 +10,17 @@ type configuration struct {
 	RatePerHour int      `json:"rate_per_hour"`
 	Caps        capLimit `json:"caps"`
 
+	// Storage is what keeps a deployment's bill bounded no matter who shows
+	// up: a ceiling on everything stored, a ceiling per publisher, and a cap on
+	// how many documents and how many uploads an hour one publisher gets.
+	// Sizes are bytes of stored HTML; every index entry records its own.
+	Storage storageLimit `json:"storage"`
+
+	// MaxAnnotations caps the serialized seed annotations a reserved example
+	// carries, in bytes. They are stored beside the document and re-read to
+	// build every visitor's room, so they are kept small.
+	MaxAnnotations int `json:"max_annotations"`
+
 	// Extensions are the only file types the reader can frame and anchor
 	// comments into. The upload page checks them before sending, and the
 	// server checks them again.
@@ -38,6 +49,15 @@ type configuration struct {
 	SuffixLength   int    `json:"suffix_length"`
 }
 
+// storageLimit bounds what a deployment will hold. Total and PerOwner are
+// bytes; DocumentsPerOwner and UploadsPerHour are counts.
+type storageLimit struct {
+	Total             int64 `json:"total"`
+	PerOwner          int64 `json:"per_owner"`
+	DocumentsPerOwner int   `json:"documents_per_owner"`
+	UploadsPerHour    int   `json:"uploads_per_hour"`
+}
+
 // capLimit is the maximum length of each free-text field on an annotation.
 type capLimit struct {
 	Body    int `json:"body"`
@@ -51,10 +71,17 @@ type capLimit struct {
 }
 
 var config = configuration{
-	MaxHTML:     30 * 1024 * 1024,
+	MaxHTML:     4 * 1024 * 1024,
 	MaxComments: 500,
 	RatePerHour: 20,
-	Extensions:  []string{".html", ".htm", ".md", ".markdown"},
+	Storage: storageLimit{
+		Total:             5 * 1024 * 1024 * 1024,
+		PerOwner:          100 * 1024 * 1024,
+		DocumentsPerOwner: 50,
+		UploadsPerHour:    30,
+	},
+	MaxAnnotations: 256 * 1024,
+	Extensions:     []string{".html", ".htm", ".md", ".markdown"},
 	Caps: capLimit{
 		Body:        5000,
 		Creator:     80,
@@ -95,4 +122,23 @@ func setMaxHTML(megabytes int) {
 		die("--max-size must be between 1 and 100 MB")
 	}
 	config.MaxHTML = megabytes * 1024 * 1024
+}
+
+// setStorage overrides the storage ceilings, in megabytes: how much one
+// publisher may hold across all their documents, and how much the whole
+// deployment will hold. Zero leaves a default alone.
+func setStorage(quotaMB, totalMB int) {
+	if quotaMB < 0 || totalMB < 0 {
+		die("--quota and --storage must be positive")
+	}
+	if quotaMB > 0 {
+		config.Storage.PerOwner = int64(quotaMB) * 1024 * 1024
+	}
+	if totalMB > 0 {
+		config.Storage.Total = int64(totalMB) * 1024 * 1024
+	}
+	if config.Storage.PerOwner > config.Storage.Total {
+		die("--quota (%d MB) cannot exceed --storage (%d MB)",
+			config.Storage.PerOwner>>20, config.Storage.Total>>20)
+	}
 }
