@@ -467,8 +467,12 @@ async function handleUpload(request, env) {
   } catch (err) {
     if (!(err instanceof QuotaRefusal)) throw err;
     // The object was already written; a refusal here must not leave it
-    // orphaned in R2 with nothing in the index pointing at it.
-    await env.DOCS.delete(`documents/${key}/${digest}.html`);
+    // orphaned in R2 with nothing in the index pointing at it. Unless the
+    // index already names it: a republish of unchanged content writes the
+    // very object the live document is served from, and that one stays.
+    if (existingIndex[key]?.sha !== digest) {
+      await env.DOCS.delete(`documents/${key}/${digest}.html`);
+    }
     return err.response;
   }
 
