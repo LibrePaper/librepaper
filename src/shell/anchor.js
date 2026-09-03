@@ -12,6 +12,31 @@ export function commonPrefix(a, b) {
 
 const reverse = (value) => [...value].reverse().join("");
 
+// Matches JavaScript's regex `\s` class exactly: ASCII whitespace, the
+// vertical tab, NBSP, the Unicode space separators, line/paragraph
+// separators, and BOM/ZWNBSP.
+function isSpace(code) {
+  switch (code) {
+    case 0x09: // \t
+    case 0x0a: // \n
+    case 0x0b: // \v
+    case 0x0c: // \f
+    case 0x0d: // \r
+    case 0x20: // space
+    case 0xa0: // NBSP
+    case 0x1680: // ogham space mark
+    case 0x2028: // line separator
+    case 0x2029: // paragraph separator
+    case 0x202f: // narrow no-break space
+    case 0x205f: // medium mathematical space
+    case 0x3000: // ideographic space
+    case 0xfeff: // BOM / zero width no-break space
+      return true;
+    default:
+      return code >= 0x2000 && code <= 0x200a; // en quad .. hair space
+  }
+}
+
 /**
  * A whitespace-flattened view of `text`, with a map back to the original
  * offsets. Runs of whitespace become one space, so a quote survives a
@@ -20,23 +45,27 @@ const reverse = (value) => [...value].reverse().join("");
  * whitespace normalisation before saving it.
  */
 export function flatten(text) {
-  let out = "";
-  const map = [];
+  const chunks = [];
+  const map = new Uint32Array(text.length);
+  let mapLen = 0;
+  let outLen = 0;
   let space = false;
   for (let i = 0; i < text.length; i++) {
-    if (/\s/.test(text[i])) {
-      if (!space && out.length) {
-        out += " ";
-        map.push(i);
+    if (isSpace(text.charCodeAt(i))) {
+      if (!space && outLen) {
+        chunks.push(" ");
+        map[mapLen++] = i;
+        outLen++;
         space = true;
       }
       continue;
     }
-    out += text[i];
-    map.push(i);
+    chunks.push(text[i]);
+    map[mapLen++] = i;
+    outLen++;
     space = false;
   }
-  return { text: out, map };
+  return { text: chunks.join(""), map: map.subarray(0, mapLen) };
 }
 
 const flat = (value) => value.replace(/\s+/g, " ").trim();
@@ -114,11 +143,13 @@ function search(text, { exact, prefix = "", suffix = "", position = null }) {
  * already-extracted text. Mutates each comment with `start`, `end` and
  * `orphaned` -- all derived values that are never sent to the server.
  */
-export function anchorAll(text, comments) {
+export function anchorAll(text, comments, view = null) {
   let anchored = 0;
   let orphaned = 0;
-  // One flattened view for the whole pass, not one per comment.
-  const view = flatten(text);
+  // One flattened view for the whole pass, not one per comment. A caller
+  // that already has one (e.g. reused across several anchorAll calls on the
+  // same document) can pass it in instead of paying to rebuild it.
+  view = view || flatten(text);
   for (const comment of comments) {
     const position = anchorOne(text, comment, view);
     if (position) {
