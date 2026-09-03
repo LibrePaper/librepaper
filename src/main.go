@@ -37,6 +37,7 @@ const usage = `komodoc: host HTML documents that readers can annotate.
   komodoc publish FILE                 publish a document and print its link
   komodoc serve                        run the service on this machine
   komodoc list                         list your documents
+  komodoc comment ID                   open a document for commenting
   komodoc export SLUG                  annotations as W3C JSON-LD or markdown
   komodoc seed [--endpoint URL]        replace local or remote data with examples
   komodoc destroy --document SLUG      delete one document and its comments
@@ -270,6 +271,15 @@ func main() {
 		endpoint := flags.String("endpoint", "", "deployment URL; defaults to $KOMODOC_ENDPOINT")
 		_ = flags.Parse(os.Args[2:])
 		listDocuments(*endpoint)
+
+	case "comment":
+		flags := flag.NewFlagSet("comment", flag.ExitOnError)
+		endpoint := flags.String("endpoint", "", "deployment URL; defaults to $KOMODOC_ENDPOINT")
+		_ = flags.Parse(os.Args[2:])
+		if flags.NArg() != 1 {
+			die("usage: komodoc comment ID [--endpoint URL]")
+		}
+		commentDocument(flags.Arg(0), *endpoint)
 
 	case "destroy":
 		flags := flag.NewFlagSet("destroy", flag.ExitOnError)

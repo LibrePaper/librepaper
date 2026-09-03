@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/komodoc/main/ins
 The installer supports Linux and macOS. Windows binaries are available on the
 [releases page](https://github.com/vincentarelbundock/komodoc/releases).
 
-## Try it now
+## Web interface: Try it now!
 
 The Komodoc sandbox is a free website where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log with your Github username:
 
@@ -43,50 +43,109 @@ If you do not want to log in but want to try annotating some documents, you can 
 <strong>Warning:</strong> Do not publish confidential information on the Komodoc sandbox. Normally, documents are only visible to the person who uploaded them, or to people with the randomly generated and unlisted link. But if you are gathering comments on documents about national security, you should probably <a href="#self-managed-server">host your own instance</a> or find another solution.
 </aside>
 
-## Publish
-
 A hosted Komodoc service is called an *endpoint*. You can use the sandbox
 endpoint or [deploy your own](#deploy), at a URL such as
-`https://my-docs.YOUR-SUBDOMAIN.workers.dev`. Everything you publish, and every
+`https://komodoc.vincentarelbundock.workers.dev`. Everything you publish, and every
 comment left on it, belongs to that endpoint and to nobody else.
 
-### Web
-
 Open the endpoint in a browser, sign in with GitHub, and upload an `.html` or
-`.md` file. Send the resulting link to your readers.
+`.md` file. Send the resulting unlisted link to your readers; anyone with the
+link can read the document.
 
-### CLI
+The management interface lists the documents you own and any reserved examples.
+It does not reveal documents owned by other publishers. Documents without a
+recorded owner (for example, older documents created before ownership was
+enabled) remain shared and visible to every publisher.
 
-Sign in once, then publish. Both commands need to know the endpoint:
+Select any passage to highlight it or attach a comment; comments appear
+immediately for everyone else reading the document. Depending on the
+publisher's settings, readers may be asked to sign in with GitHub first. Only
+publicly available information is collected: your GitHub username.[^github-data]
+
+<div class="screenshot-pair">
+<figure>
+<img src="docs/sandbox.svg" alt="Komodoc sandbox landing page with the upload area and document list">
+<figcaption>The free sandbox landing page.</figcaption>
+</figure>
+<figure>
+<img src="docs/commenting.png" alt="A document open in Komodoc with highlighted passages and the comments sidebar">
+<figcaption>The annotation window, with highlights and threaded comments.</figcaption>
+</figure>
+</div>
+
+## CLI
+
+The command-line client uses the endpoint URL you provide, or
+[`KOMODOC_ENDPOINT`](#environment-variables) from the environment. The
+environment variable is convenient for a shell session, but the examples below
+keep the endpoint explicit so each command can be copied and understood on its
+own.
+
+### Authenticate
+
+Sign in once with GitHub using the device flow:
 
 ```sh
-komodoc login --endpoint https://my-docs.YOUR-SUBDOMAIN.workers.dev
+komodoc login --endpoint https://komodoc.vincentarelbundock.workers.dev
+```
+
+### Publish
+
+Publish an HTML or Markdown document:
+
+```sh
 komodoc publish paper.html --title "My Paper" \
-  --endpoint https://my-docs.YOUR-SUBDOMAIN.workers.dev
+  --endpoint https://komodoc.vincentarelbundock.workers.dev
 ```
 
-Set `KOMODOC_ENDPOINT` to skip the flag:
-
-```sh
-export KOMODOC_ENDPOINT=https://my-docs.YOUR-SUBDOMAIN.workers.dev
-komodoc publish paper.html --title "My Paper"
-```
-
-Documents are unlisted, not private: anyone with the link can read them. HTML
-files must be self-contained, with images, styles, and fonts embedded. For
+HTML files must be self-contained, with images, styles, and fonts embedded. For
 Quarto, render with:
 
 ```sh
 quarto render paper.qmd --to html -M embed-resources:true
 ```
 
-## Comment
+### List
 
-Visit the URL you were given. Select any passage to highlight it or attach a
-comment; comments appear immediately for everyone else reading the document.
+List the documents visible to your account. Each row shows the shortest prefix
+that uniquely identifies the document, its date, and its title:
 
-Depending on the publisher's settings, you may be asked to sign in with GitHub
-first. Only publicly available information is collected: your GitHub username.[^github-data]
+```sh
+komodoc list --endpoint https://komodoc.vincentarelbundock.workers.dev
+```
+
+### Comment
+
+Open a listed document in your browser for commenting. The ID can be the short
+prefix printed by `list` (or the full slug):
+
+```sh
+komodoc comment af3ha --endpoint https://komodoc.vincentarelbundock.workers.dev
+```
+
+### Export
+
+Export annotations as readable Markdown:
+
+```sh
+komodoc export DOCUMENT-SLUG --format markdown --out comments.md \
+  --endpoint https://komodoc.vincentarelbundock.workers.dev
+```
+
+Without `--format markdown`, Komodoc exports W3C Web Annotation JSON-LD.
+
+### Destroy
+
+Delete one document, including its history and comments. The command asks for
+confirmation unless `--yes` is supplied:
+
+```sh
+komodoc destroy --document DOCUMENT-SLUG \
+  --endpoint https://komodoc.vincentarelbundock.workers.dev
+```
+
+To remove an entire Cloudflare deployment instead, use
+`komodoc destroy --service --label my-docs`.
 
 ## Deploy
 
@@ -121,6 +180,22 @@ For GitHub sign-in, set `KOMODOC_GITHUB_CLIENT_ID` and
 server's public HTTPS address. Put the server behind a TLS reverse proxy in
 production.
 
+### Retention
+
+Delete documents automatically after their most recent publication:
+
+```sh
+komodoc serve --expire-after 24h
+```
+
+For a fixed lifetime from the first upload, use `--expire-from created`. Use
+`--expire-after never` to disable expiry. The same options apply to Cloudflare
+deployments:
+
+```sh
+komodoc deploy --label my-docs --expire-after 24h
+```
+
 ### Cloudflare
 
 Komodoc can also run on Cloudflare Workers and R2. Before deploying:
@@ -152,38 +227,14 @@ komodoc deploy --label my-docs --publishers YOUR-GITHUB-LOGIN
 ```
 
 The label is the first part of the URL, so this endpoint is
-`https://my-docs.YOUR-SUBDOMAIN.workers.dev`.
-
-To delete documents automatically after their most recent publication:
-
-```sh
-komodoc deploy --label my-docs --expire-after 24h
-```
-
-Use `--expire-from created` for a fixed lifetime from the first upload, or
-`--expire-after never` to disable expiry. Cloudflare runs the cleanup schedule;
-the `komodoc` program does not need to remain running.
+`https://my-docs.YOUR-SUBDOMAIN.workers.dev`. Cloudflare runs the cleanup
+schedule; the `komodoc` program does not need to remain running.
 
 Three flags bound what a deployment will store, and all three apply to
 `komodoc serve` as well: `--max-size` caps one document (4 MB by default),
 `--quota` caps what one publisher may hold across all their documents (100 MB),
 and `--storage` caps the whole deployment (5120 MB). Each publisher may also
 hold at most 50 documents and upload at most 30 times an hour.
-
-## Export comments
-
-Find the document slug with `komodoc list`, then export readable Markdown:
-
-```sh
-komodoc list --endpoint https://my-docs.YOUR-SUBDOMAIN.workers.dev
-komodoc export DOCUMENT-SLUG --format markdown --out comments.md \
-  --endpoint https://my-docs.YOUR-SUBDOMAIN.workers.dev
-```
-
-Without `--format markdown`, Komodoc exports W3C Web Annotation JSON-LD.
-
-Run `komodoc` to see all commands and options, including access controls,
-deleting documents, and removing a deployment.
 
 ## Environment variables
 

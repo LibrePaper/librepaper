@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -118,12 +120,11 @@ func listDocuments(endpointFlag string) {
 		fmt.Println("no documents yet")
 		return
 	}
+	ids := shortIDs(documents)
 	width := 0
-	for _, entry := range documents {
-		if document, ok := entry.(map[string]any); ok {
-			if size := len(text(document["slug"])); size > width {
-				width = size
-			}
+	for _, id := range ids {
+		if len(id) > width {
+			width = len(id)
 		}
 	}
 	for _, entry := range documents {
@@ -135,7 +136,95 @@ func listDocuments(endpointFlag string) {
 		if len(updated) > 10 {
 			updated = updated[:10]
 		}
-		fmt.Printf("%-*s  %s  %s\n", width, text(document["slug"]), updated, text(document["title"]))
+		slug := text(document["slug"])
+		fmt.Printf("%-*s  %s  %s\n", width, ids[slug], updated, text(document["title"]))
+	}
+}
+
+// shortIDs gives each listed document the shortest prefix of its generated
+// random suffix (or explicit slug) that is unique within this listing.
+func shortIDs(documents []any) map[string]string {
+	type item struct{ slug, key string }
+	items := make([]item, 0, len(documents))
+	for _, value := range documents {
+		document, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		slug := text(document["slug"])
+		parts := strings.Split(slug, "-")
+		key := slug
+		if last := parts[len(parts)-1]; len(last) == config.SuffixLength && strings.IndexFunc(last, func(r rune) bool { return !strings.ContainsRune(config.SuffixAlphabet, r) }) < 0 {
+			key = last
+		}
+		items = append(items, item{slug: slug, key: key})
+	}
+	ids := make(map[string]string, len(items))
+	for _, current := range items {
+		chosen := current.key
+		for length := 1; length <= len(current.key); length++ {
+			prefix := current.key[:length]
+			matches := 0
+			for _, other := range items {
+				if strings.HasPrefix(other.key, prefix) {
+					matches++
+				}
+			}
+			if matches == 1 {
+				chosen = prefix
+				break
+			}
+		}
+		ids[current.slug] = chosen
+	}
+	return ids
+}
+
+func commentDocument(identifier, endpointFlag string) {
+	endpoint := endpointFrom(endpointFlag)
+	status, payload := postAuthed(endpoint+"/api/list", map[string]any{}, requireToken(), 60*time.Second)
+	if status != 200 {
+		die("listing failed (%d): %v", status, detailOf(payload))
+	}
+	documents, _ := payload["documents"].([]any)
+	ids := shortIDs(documents)
+	var match map[string]any
+	for _, value := range documents {
+		document, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		slug := text(document["slug"])
+		if identifier == slug || identifier == ids[slug] {
+			if match != nil {
+				die("%q matches more than one document", identifier)
+			}
+			match = document
+		}
+	}
+	if match == nil {
+		die("no visible document matches %q", identifier)
+	}
+	slug := text(match["slug"])
+	openURL(endpoint + "/docs/" + slug)
+}
+
+func openURL(target string) {
+	var command string
+	switch runtime.GOOS {
+	case "darwin":
+		command = "open"
+	case "windows":
+		command = "rundll32"
+	default:
+		command = "xdg-open"
+	}
+	args := []string{target}
+	if runtime.GOOS == "windows" {
+		args = []string{"url.dll,FileProtocolHandler", target}
+	}
+	if err := exec.Command(command, args...).Start(); err != nil {
+		die("could not open %s: %v", target, err)
 	}
 }
 

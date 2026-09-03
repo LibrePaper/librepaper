@@ -867,6 +867,30 @@ nav > ul.navmid svg {
   border-radius: var(--pico-border-radius);
   cursor: zoom-in;
 }
+.screenshot-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin: 1.5rem 0;
+}
+.screenshot-pair figure {
+  margin: 0;
+}
+.screenshot-pair img {
+  width: 100%;
+  margin: 0;
+}
+.screenshot-pair figcaption {
+  margin-top: 0.5rem;
+  color: var(--pico-muted-color);
+  font-size: 0.9rem;
+  text-align: center;
+}
+@media (max-width: 700px) {
+  .screenshot-pair {
+    grid-template-columns: 1fr;
+  }
+}
 .prose img:focus-visible {
   outline: 0.2rem solid var(--pico-primary-focus);
   outline-offset: 0.2rem;

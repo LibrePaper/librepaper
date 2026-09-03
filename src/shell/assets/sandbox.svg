@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Komodoc sandbox landing page</title>
+  <desc id="desc">A Komodoc landing page with navigation, upload dropzone, and document list.</desc>
+  <rect width="1440" height="900" fill="#f7f9fb"/>
+  <rect width="1440" height="72" fill="#fff" stroke="#dbe3ea"/>
+  <text x="40" y="46" font-family="Arial,sans-serif" font-size="27" font-weight="700" fill="#1479b8">komodoc</text>
+  <text x="650" y="45" font-family="Arial,sans-serif" font-size="20" fill="#4c5966">▣ Documentation</text>
+  <rect x="350" y="118" width="740" height="180" rx="10" fill="#fff" stroke="#cbd7e1" stroke-width="2" stroke-dasharray="8 7"/>
+  <text x="720" y="180" text-anchor="middle" font-family="Arial,sans-serif" font-size="27" font-weight="600" fill="#263746">Drag a document here</text>
+  <text x="720" y="220" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" fill="#748392">or</text>
+  <rect x="600" y="240" width="240" height="42" rx="5" fill="#087fba"/>
+  <text x="720" y="268" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#fff">Upload from computer</text>
+  <text x="80" y="382" font-family="Arial,sans-serif" font-size="25" font-weight="600" fill="#263746">Your documents</text>
+  <rect x="80" y="410" width="1280" height="62" fill="#fff" stroke="#dbe3ea"/>
+  <text x="125" y="449" font-family="Arial,sans-serif" font-size="18" fill="#263746">A Short Style Guide for Quantitative Writing</text>
+  <text x="1180" y="449" font-family="Arial,sans-serif" font-size="17" fill="#667788">5 comments</text>
+  <rect x="80" y="472" width="1280" height="62" fill="#fff" stroke="#dbe3ea"/>
+  <text x="125" y="511" font-family="Arial,sans-serif" font-size="18" fill="#263746">What the Bootstrap Actually Resamples</text>
+  <text x="1180" y="511" font-family="Arial,sans-serif" font-size="17" fill="#667788">2 comments</text>
+</svg>

@@ -47,6 +47,7 @@ var shellRoutes = map[string]string{
 	"/documentation":          "documentation.html",
 	"/assets/komodo-logo.svg": "assets/komodo-logo.svg",
 	"/docs/commenting.png":    "assets/commenting.png",
+	"/docs/sandbox.svg":       "assets/sandbox.svg",
 }
 
 var contentTypes = map[string]string{
