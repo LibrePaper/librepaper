@@ -19,6 +19,13 @@ let frameReady = false;
 let commentsReady = false;
 let identity = ""; // GitHub login, when signed in; comments are signed with it
 
+// One card per comment, kept across renders so a rebuild never wipes an open
+// reply draft, an expanded quotation, or scroll position. Keyed by the
+// comment object itself (not its id): `receive` mutates a comment in place
+// when the server confirms it (Object.assign onto the same object), so the
+// object's identity survives an id change and the card follows it for free.
+const cards = new Map();
+
 /* ----------------------------------------------------------------- frame */
 
 // The document is on its own origin, so nothing here can touch it. agent.js,
@@ -187,7 +194,10 @@ function mark(text, motivation) {
 // it. The sidebar shows the opening words and expands on request.
 const QUOTE_WORDS = 8;
 
-function quoteOf(exact) {
+// `card` is where "expanded or not" lives, since the quote itself gets
+// rebuilt whenever anything else about the comment changes (see updateStatic)
+// and a plain closure variable would forget the reader's click at that point.
+function quoteOf(exact, card) {
   const quote = document.createElement("blockquote");
   const words = exact.split(/\s+/);
   if (words.length <= QUOTE_WORDS + 2) {
@@ -199,16 +209,15 @@ function quoteOf(exact) {
   const text = document.createElement("span");
   const toggle = document.createElement("a");
   toggle.href = "#";
-  let open = false;
 
   const draw = () => {
-    text.textContent = open ? "“" + exact + "”" : "“" + short;
-    toggle.textContent = open ? " less" : "… ”";
+    text.textContent = card.quoteOpen ? "“" + exact + "”" : "“" + short;
+    toggle.textContent = card.quoteOpen ? " less" : "… ”";
   };
   toggle.onclick = (event) => {
     event.preventDefault();
     event.stopPropagation(); // the card itself scrolls to the highlight
-    open = !open;
+    card.quoteOpen = !card.quoteOpen;
     draw();
   };
 
@@ -272,147 +281,266 @@ function place(comment) {
   return Number.isFinite(comment.start) ? comment.start : Infinity;
 }
 
-function render() {
-  box.innerHTML = "";
-  drawTagFilter();
-  comments
-    .slice()
-    .filter((comment) => [...chosenTags].every((tag) => (comment.tags || []).includes(tag)))
-    .sort((a, b) => place(a) - place(b) || a.seq - b.seq)
-    .forEach((comment) => {
-      // Pico styles article as a card and blockquote as a quotation, so a
-      // comment needs no classes of its own beyond its resolved state.
-      const el = document.createElement("article");
-      if (comment.resolved || comment.pending) el.className = "resolved";
-      el.id = "comment-" + comment.id;
-      if (comment.orphaned) el.appendChild(mark("Needs re-anchoring"));
-      // The motivation is the W3C annotation type. Commenting is the default,
-      // so only the others are worth showing.
-      if (comment.motivation && comment.motivation !== "commenting") {
-        el.appendChild(mark(comment.motivation, comment.motivation));
-      }
-      if (comment.region) {
-        const where = element("blockquote", `Figure ${comment.region.image_index + 1}`);
-        where.className = "figureref";
-        el.appendChild(where);
-      } else {
-        el.appendChild(quoteOf(comment.exact));
-      }
-      // A suggested edit reads as what it proposes, not as a remark about it.
-      if (comment.replacement) {
-        const suggestion = element("p", comment.replacement);
-        suggestion.className = "suggestion";
-        el.appendChild(suggestion);
-      }
-      if (comment.body) el.appendChild(element("p", comment.body));
-      for (const tag of comment.tags || []) {
-        const chip = element("button", tag);
-        chip.type = "button";
-        chip.className = "tag";
-        chip.onclick = (event) => {
-          event.stopPropagation();
-          toggleTag(tag);
-        };
-        el.appendChild(chip);
-      }
-      el.appendChild(element("small", comment.creator + " · " + stamp(comment.created)));
+// Everything that goes into the static part of a card (the part rebuilt
+// wholesale when it changes) -- resolved/pending, replies and id are handled
+// elsewhere, since those can change on their own without touching this.
+function cardSignature(comment) {
+  return JSON.stringify([
+    comment.exact,
+    comment.region,
+    comment.replacement,
+    comment.body,
+    comment.tags,
+    comment.motivation,
+    comment.creator,
+    comment.created,
+    comment.orphaned,
+  ]);
+}
 
-      if (comment.replies.length) {
-        const replies = document.createElement("ul");
-        comment.replies.forEach((reply) => {
-          const item = document.createElement("li");
-          item.appendChild(element("span", reply.body));
-          item.appendChild(document.createElement("br"));
-          item.appendChild(element("small", reply.creator + " · " + stamp(reply.created)));
-          replies.appendChild(item);
-        });
-        el.appendChild(replies);
-      }
+// The quote, marks, suggestion, body, tags and byline: whatever the reader
+// cannot type into and cannot leave mid-edit, so rebuilding it from scratch
+// on change costs nothing worth preserving.
+function updateStatic(card, comment) {
+  const wrap = card.staticWrap;
+  wrap.innerHTML = "";
+  if (comment.orphaned) wrap.appendChild(mark("Needs re-anchoring"));
+  // The motivation is the W3C annotation type. Commenting is the default,
+  // so only the others are worth showing.
+  if (comment.motivation && comment.motivation !== "commenting") {
+    wrap.appendChild(mark(comment.motivation, comment.motivation));
+  }
+  if (comment.region) {
+    const where = element("blockquote", `Figure ${comment.region.image_index + 1}`);
+    where.className = "figureref";
+    wrap.appendChild(where);
+  } else {
+    wrap.appendChild(quoteOf(comment.exact, card));
+  }
+  // A suggested edit reads as what it proposes, not as a remark about it.
+  if (comment.replacement) {
+    const suggestion = element("p", comment.replacement);
+    suggestion.className = "suggestion";
+    wrap.appendChild(suggestion);
+  }
+  if (comment.body) wrap.appendChild(element("p", comment.body));
+  for (const tag of comment.tags || []) {
+    const chip = element("button", tag);
+    chip.type = "button";
+    chip.className = "tag";
+    chip.onclick = (event) => {
+      event.stopPropagation();
+      toggleTag(tag);
+    };
+    wrap.appendChild(chip);
+  }
+  wrap.appendChild(element("small", comment.creator + " · " + stamp(comment.created)));
+}
 
-      // Not role="group": that is Pico's segmented control, which joins its
-      // buttons into one shape. These are two separate actions.
-      const actions = document.createElement("div");
-      actions.className = "actions";
-      const resolve = document.createElement("button");
-      resolve.textContent = comment.resolved ? "Reopen" : "Resolve";
-      resolve.onclick = (event) => {
-        event.stopPropagation();
-        // Optimistic: flip locally, then tell the room. The broadcast that
-        // comes back is idempotent with what we already drew.
-        comment.resolved = !comment.resolved;
-        render();
-        applyHighlights();
-        send({ type: "resolve", comment_id: comment.id, resolved: comment.resolved });
-      };
-      const replyButton = document.createElement("button");
-      replyButton.textContent = "Reply";
-      const deleteButton = document.createElement("button");
-      deleteButton.textContent = "Delete";
-      deleteButton.onclick = async (event) => {
-        event.stopPropagation();
-        if (!(await confirmDelete())) return;
-        // Optimistic, like resolve: drop it locally, then tell the room.
-        comments = comments.filter((item) => item.id !== comment.id);
-        render();
-        applyHighlights();
-        send({ type: "delete", comment_id: comment.id });
-      };
-      actions.append(resolve, replyButton, deleteButton);
-      el.appendChild(actions);
+// Built once per comment and reused after that. `card.comment` is a
+// reference into `comments`, and `receive` mutates that object in place
+// (Object.assign), so handlers below always see the current id/resolved/etc
+// without this needing to be told about it.
+function makeCard(comment) {
+  const el = document.createElement("article");
 
-      const form = document.createElement("form");
-      form.hidden = true;
-      const name = document.createElement("input");
-      name.placeholder = "Name";
-      name.value = identity || localStorage.getItem("komodoc-author") || "Anonymous";
-      name.maxLength = 80;
-      // Signed in, the reply is signed by the account; there is nothing to type.
-      name.hidden = Boolean(identity);
-      const body = document.createElement("textarea");
-      body.placeholder = "Reply";
-      body.rows = 2;
-      body.maxLength = 5000;
-      body.required = true;
-      const submit = document.createElement("button");
-      submit.type = "submit";
-      submit.textContent = "Add reply";
-      form.append(name, body, submit);
-      replyButton.onclick = (event) => {
-        event.stopPropagation();
-        form.hidden = !form.hidden;
-        if (!form.hidden) body.focus();
-      };
-      form.onclick = (event) => event.stopPropagation();
-      form.onsubmit = (event) => {
-        event.preventDefault();
-        if (!identity) localStorage.setItem("komodoc-author", name.value);
-        const temp_id = crypto.randomUUID();
-        comment.replies.push({
-          id: temp_id,
-          body: body.value,
-          creator: name.value || "Anonymous",
-          created: new Date().toISOString(),
-          temp_id,
-        });
-        body.value = "";
-        render();
-        send({
-          type: "reply",
-          comment_id: comment.id,
-          body: comment.replies[comment.replies.length - 1].body,
-          creator: name.value,
-          temp_id,
-        });
-      };
-      el.appendChild(form);
+  const staticWrap = document.createElement("div");
+  el.appendChild(staticWrap);
 
-      el.onclick = (event) => {
-        if (!comment.orphaned && !event.target.closest("button,input,textarea")) {
-          tell({ type: "reveal", id: comment.id });
-        }
-      };
-      box.appendChild(el);
+  const repliesList = document.createElement("ul");
+  repliesList.hidden = true;
+  el.appendChild(repliesList);
+
+  // Not role="group": that is Pico's segmented control, which joins its
+  // buttons into one shape. These are two separate actions.
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const resolveBtn = document.createElement("button");
+  const replyButton = document.createElement("button");
+  replyButton.textContent = "Reply";
+  const deleteButton = document.createElement("button");
+  deleteButton.textContent = "Delete";
+  actions.append(resolveBtn, replyButton, deleteButton);
+  el.appendChild(actions);
+
+  const card = {
+    el,
+    staticWrap,
+    repliesList,
+    repliesSeen: new Set(), // reply objects already rendered as <li>
+    actions,
+    resolveBtn,
+    form: null, // created lazily, on first "Reply" click
+    nameInput: null,
+    bodyInput: null,
+    quoteOpen: false,
+    sig: null,
+    comment,
+  };
+
+  resolveBtn.onclick = (event) => {
+    event.stopPropagation();
+    // Optimistic: flip locally, then tell the room. The broadcast that
+    // comes back is idempotent with what we already drew.
+    const target = card.comment;
+    target.resolved = !target.resolved;
+    render();
+    applyHighlights();
+    send({ type: "resolve", comment_id: target.id, resolved: target.resolved });
+  };
+
+  deleteButton.onclick = async (event) => {
+    event.stopPropagation();
+    if (!(await confirmDelete())) return;
+    // Optimistic, like resolve: drop it locally, then tell the room.
+    const target = card.comment;
+    comments = comments.filter((item) => item !== target);
+    render();
+    applyHighlights();
+    send({ type: "delete", comment_id: target.id });
+  };
+
+  replyButton.onclick = (event) => {
+    event.stopPropagation();
+    ensureForm(card);
+    card.form.hidden = !card.form.hidden;
+    if (!card.form.hidden) card.bodyInput.focus();
+  };
+
+  el.onclick = (event) => {
+    const target = card.comment;
+    if (!target.orphaned && !event.target.closest("button,input,textarea")) {
+      tell({ type: "reveal", id: target.id });
+    }
+  };
+
+  return card;
+}
+
+// Lazy, so a document with hundreds of comments does not carry hundreds of
+// unused inputs, textareas and buttons that nobody ever clicked into.
+function ensureForm(card) {
+  if (card.form) return;
+  const form = document.createElement("form");
+  form.hidden = true;
+  const name = document.createElement("input");
+  name.placeholder = "Name";
+  name.value = identity || localStorage.getItem("komodoc-author") || "Anonymous";
+  name.maxLength = 80;
+  // Signed in, the reply is signed by the account; there is nothing to type.
+  name.hidden = Boolean(identity);
+  const body = document.createElement("textarea");
+  body.placeholder = "Reply";
+  body.rows = 2;
+  body.maxLength = 5000;
+  body.required = true;
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.textContent = "Add reply";
+  form.append(name, body, submit);
+  form.onclick = (event) => event.stopPropagation();
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    const comment = card.comment;
+    if (!identity) localStorage.setItem("komodoc-author", name.value);
+    const temp_id = crypto.randomUUID();
+    comment.replies.push({
+      id: temp_id,
+      body: body.value,
+      creator: name.value || "Anonymous",
+      created: new Date().toISOString(),
+      temp_id,
     });
+    body.value = "";
+    render();
+    send({
+      type: "reply",
+      comment_id: comment.id,
+      body: comment.replies[comment.replies.length - 1].body,
+      creator: name.value,
+      temp_id,
+    });
+  };
+  card.el.appendChild(form);
+  card.form = form;
+  card.nameInput = name;
+  card.bodyInput = body;
+}
+
+// Reuses cards across renders instead of wiping and rebuilding the whole
+// column, so an open reply draft, an expanded quotation and the scroll
+// position all survive a render triggered by someone else's comment.
+function updateCard(card, comment) {
+  card.el.id = "comment-" + comment.id;
+
+  const sig = cardSignature(comment);
+  if (card.sig !== sig) {
+    updateStatic(card, comment);
+    card.sig = sig;
+  }
+
+  // resolved/pending can flip on their own, independent of everything above.
+  card.el.className = comment.resolved || comment.pending ? "resolved" : "";
+  card.resolveBtn.textContent = comment.resolved ? "Reopen" : "Resolve";
+
+  // Replies only ever get appended, so existing <li>s are left alone; a
+  // reply's own id can still change from temp_id to server id (the same
+  // Object.assign-in-place pattern as a comment), which is why this keys off
+  // the reply object rather than its id.
+  for (const reply of comment.replies) {
+    if (card.repliesSeen.has(reply)) continue;
+    const item = document.createElement("li");
+    item.appendChild(element("span", reply.body));
+    item.appendChild(document.createElement("br"));
+    item.appendChild(element("small", reply.creator + " · " + stamp(reply.created)));
+    card.repliesList.appendChild(item);
+    card.repliesSeen.add(reply);
+  }
+  card.repliesList.hidden = comment.replies.length === 0;
+
+  // The name field is the one part of an open form that identity arriving
+  // (or changing) should still touch.
+  if (card.form) {
+    card.nameInput.hidden = Boolean(identity);
+    if (identity) card.nameInput.value = identity;
+  }
+}
+
+function render() {
+  drawTagFilter();
+  const shown = comments
+    .filter((comment) => [...chosenTags].every((tag) => (comment.tags || []).includes(tag)))
+    .sort((a, b) => place(a) - place(b) || a.seq - b.seq);
+
+  // A card survives being hidden by the tag filter (its draft and state stay
+  // in `cards`); it is only ever dropped once its comment is gone for good.
+  const alive = new Set(comments);
+  for (const [comment, card] of cards) {
+    if (!alive.has(comment)) {
+      card.el.remove();
+      cards.delete(comment);
+    }
+  }
+
+  const elements = shown.map((comment) => {
+    let card = cards.get(comment);
+    if (!card) {
+      card = makeCard(comment);
+      cards.set(comment, card);
+    }
+    updateCard(card, comment);
+    return card.el;
+  });
+
+  // Drop whatever is currently in `box` but not in this render's list (a
+  // comment now filtered out, or deleted), then lay the rest out in order.
+  // Appending an already-attached node moves it, so this both reorders and
+  // inserts in one pass without touching nodes that are not moving.
+  const keep = new Set(elements);
+  for (const child of [...box.children]) {
+    if (!keep.has(child)) box.removeChild(child);
+  }
+  box.append(...elements);
 
   const open = comments.filter((comment) => !comment.resolved).length;
   countEl.textContent = comments.length ? `${open} open · ${comments.length} total` : "";
