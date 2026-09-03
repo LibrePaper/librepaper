@@ -1,0 +1,514 @@
+// Routing, uploads, and serving documents. The Room class comes from
+// room.js; the two are concatenated into one module at build time.
+export { Room } from "./room.js";
+
+// The reader shell -- HTML, CSS and the client modules -- is injected here at
+// build time from src/shell, keyed by request path.
+const SHELL = __SHELL__;
+
+const SLUG = new RegExp(CONFIG.slug_pattern);
+const SHA = /^[0-9a-f]{64}$/;
+const MAX_HTML = CONFIG.max_html;
+
+const json = (data, status = 200, headers = {}) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
+  });
+
+async function sha256(input) {
+  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// --- identity ---------------------------------------------------------------
+// The same rules serve enforces, in the runtime the Worker has. A policy is
+// "anyone" (no sign-in), "any" (any GitHub account), or a list of logins.
+
+function parsePolicy(value) {
+  const trimmed = String(value || "").trim().toLowerCase();
+  if (trimmed === "anyone" || trimmed === "public") return { public: true, logins: [] };
+  if (trimmed === "any" || trimmed === "*") return { any: true, logins: [] };
+  return { logins: trimmed.split(",").map((entry) => entry.trim()).filter(Boolean) };
+}
+
+function policyAllows(policy, login) {
+  if (policy.public) return true;
+  if (!login) return false;
+  if (policy.any) return true;
+  return policy.logins.some((allowed) => allowed === login.toLowerCase());
+}
+
+function describePolicy(policy) {
+  if (policy.public) return "anyone";
+  if (policy.any) return "any GitHub account";
+  if (!policy.logins.length) return "nobody (unconfigured)";
+  return "@" + policy.logins.join(", @");
+}
+
+const base64url = (bytes) =>
+  btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+async function signPayload(key, payload) {
+  const material = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return base64url(await crypto.subtle.sign("HMAC", material, new TextEncoder().encode(payload)));
+}
+
+// A session is "<login|expiry>.<signature>". Nothing is stored: the signature
+// is what makes it trustworthy.
+async function makeSession(env, login, expiry) {
+  const payload = base64url(new TextEncoder().encode(`${login}|${expiry}`));
+  return `${payload}.${await signPayload(env.KOMODOC_SESSION_KEY || "", payload)}`;
+}
+
+async function readSession(env, cookie) {
+  const [payload, signature] = String(cookie || "").split(".");
+  if (!payload || !signature) return "";
+  if ((await signPayload(env.KOMODOC_SESSION_KEY || "", payload)) !== signature) return "";
+  const decoded = new TextDecoder().decode(
+    Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)));
+  const [login, stamp] = decoded.split("|");
+  if (!login || Number(stamp) * 1000 < Date.now()) return "";
+  return login;
+}
+
+function cookieValue(request, name) {
+  const header = request.headers.get("cookie") || "";
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return rest.join("=");
+  }
+  return "";
+}
+
+async function githubLogin(token) {
+  const response = await fetch("https://api.github.com/user", {
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: "application/vnd.github+json",
+      "user-agent": "komodoc",
+    },
+  });
+  if (!response.ok) return "";
+  return (await response.json()).login || "";
+}
+
+// whoami identifies a caller: a browser by its session cookie, the CLI by the
+// GitHub token it sends as a bearer.
+async function whoami(request, env) {
+  const header = request.headers.get("authorization") || "";
+  if (header.startsWith("Bearer ")) return githubLogin(header.slice(7));
+  return readSession(env, cookieValue(request, "komodoc_session"));
+}
+
+// mayPublish returns null when allowed, or the Response to send back.
+async function mayPublish(request, env) {
+  const login = await whoami(request, env);
+  const policy = parsePolicy(env.KOMODOC_PUBLISHERS);
+  if (policyAllows(policy, login)) return null;
+  if (!login) return json({ error: "sign in with GitHub to publish" }, 401);
+  return json(
+    { error: `@${login} may not publish here; this deployment allows ${describePolicy(policy)}` },
+    403,
+  );
+}
+
+function slugify(value) {
+  const slug = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, CONFIG.slug_max);
+  return slug || null;
+}
+
+function randomSuffix() {
+  const alphabet = CONFIG.suffix_alphabet;
+  return [...crypto.getRandomValues(new Uint8Array(CONFIG.suffix_length))]
+    .map((byte) => alphabet[byte % alphabet.length])
+    .join("");
+}
+
+async function readIndex(env) {
+  const object = await env.DOCS.get("index.json");
+  if (!object) return { entries: {}, etag: null };
+  return { entries: await object.json(), etag: object.etag };
+}
+
+// index.json is the only object with more than one writer, and only ever on
+// upload. Compare-and-swap on the ETag rather than locking.
+async function updateIndex(env, mutate) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { entries, etag } = await readIndex(env);
+    mutate(entries);
+    const condition = etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" };
+    const written = await env.DOCS.put("index.json", JSON.stringify(entries), {
+      onlyIf: condition,
+      httpMetadata: { contentType: "application/json", cacheControl: "no-cache" },
+    });
+    if (written) return entries;
+  }
+  throw new Error("index.json is contended; try again");
+}
+
+function room(env, slug) {
+  return env.ROOM.get(env.ROOM.idFromName(slug));
+}
+
+// The document runs on its own origin, with nothing of the reader's to reach
+// for, so it may run its own scripts. What it may not do is escape the frame
+// or be framed by anyone but the reader.
+function documentHeaders(reader) {
+  return {
+    "content-type": "text/html; charset=utf-8",
+    "content-security-policy":
+      "default-src 'self' data: blob: https:; " +
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; " +
+      "style-src 'self' 'unsafe-inline' data: https:; " +
+      `frame-ancestors ${reader}; ` +
+      "form-action 'none'; base-uri 'none'",
+    "x-content-type-options": "nosniff",
+    // Content-addressed path, so the bytes behind a URL never change.
+    "cache-control": "public, max-age=31536000, immutable",
+  };
+}
+
+// Documents live on a hostname of their own, a stranger to the reader, so a
+// hostile document can reach neither its DOM nor its session. A different port
+// would not do: cookies ignore ports.
+//
+// workers.dev hostnames are a single label, <script>.<subdomain>.workers.dev,
+// so the second name cannot be a subdomain of the first. It is a second Worker
+// instead, named <script>-docs, which `deploy` uploads alongside this one.
+const DOCS_SUFFIX = "-docs";
+
+function splitHost(url) {
+  const [first, ...rest] = url.host.split(".");
+  return { first, rest: rest.join(".") };
+}
+
+const isDocsHost = (url) => splitHost(url).first.endsWith(DOCS_SUFFIX);
+
+function docsOrigin(url) {
+  const { first, rest } = splitHost(url);
+  const label = first.endsWith(DOCS_SUFFIX) ? first : first + DOCS_SUFFIX;
+  return `${url.protocol}//${rest ? label + "." + rest : label}`;
+}
+
+function readerOrigin(url) {
+  const { first, rest } = splitHost(url);
+  const label = first.endsWith(DOCS_SUFFIX) ? first.slice(0, -DOCS_SUFFIX.length) : first;
+  return `${url.protocol}//${rest ? label + "." + rest : label}`;
+}
+
+// withAgent appends the in-frame half of the reader. The stored bytes are
+// never modified; the script is added on the way out.
+function withAgent(html, reader) {
+  const tag = `<script src="/agent.js?reader=${encodeURIComponent(reader)}"></script>`;
+  const at = html.toLowerCase().lastIndexOf("</body>");
+  return at >= 0 ? html.slice(0, at) + tag + html.slice(at) : html + tag;
+}
+
+async function handleUpload(request, env) {
+  // Checked before the body is read, so an unauthorised upload costs nothing.
+  const refusal = await mayPublish(request, env);
+  if (refusal) return refusal;
+
+  let title, slug, html;
+  const type = request.headers.get("content-type") || "";
+  if (type.includes("multipart/form-data")) {
+    const form = await request.formData();
+    title = form.get("title");
+    slug = form.get("slug");
+    const file = form.get("file");
+    // Markdown is rendered in Go, which does not run here. The CLI renders it
+    // before uploading, so it is only the browser upload that cannot.
+    if (file && /\.(md|markdown)$/i.test(file.name || "")) {
+      return json(
+        {
+          error:
+            "this deployment cannot render markdown in the browser. " +
+            "Publish it from the command line instead: komodoc publish " + (file.name || "file.md"),
+        },
+        415,
+      );
+    }
+    html = file ? await file.text() : "";
+  } else {
+    const body = await request.json();
+    ({ title, slug, html } = body);
+  }
+
+  title = String(title || "").trim();
+  html = String(html || "");
+  if (!title || !html.trim()) return json({ error: "title and html are required" }, 400);
+  if (html.length > MAX_HTML) return json({ error: "document too large" }, 413);
+
+  const base = slugify(slug) || slugify(title);
+  if (!base) return json({ error: "could not derive a slug" }, 400);
+
+  // An exact slug that already exists is a replacement of that document, and
+  // keeps its URL and its comments. Anything else is a new document, and gets a
+  // random suffix so the link cannot be guessed from the title.
+  const { entries: existingIndex } = await readIndex(env);
+  const key = existingIndex[base] ? base : `${base}-${randomSuffix()}`;
+
+  const digest = await sha256(html);
+  await env.DOCS.put(`documents/${key}/${digest}.html`, html, {
+    httpMetadata: { contentType: "text/html; charset=utf-8" },
+  });
+  const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  const entries = await updateIndex(env, (index) => {
+    const existing = index[key];
+    index[key] = {
+      slug: key,
+      title,
+      sha: digest,
+      created_at: existing?.created_at || now,
+      updated_at: now,
+    };
+  });
+  // Comments survive the replacement; they re-anchor in the reader.
+  return json({ ...entries[key], url: `/docs/${key}` }, 201);
+}
+
+async function serveDocument(env, slug, sha, url) {
+  if (!SLUG.test(slug) || !SHA.test(sha)) return new Response("not found", { status: 404 });
+  const object = await env.DOCS.get(`documents/${slug}/${sha}.html`);
+  if (!object) return new Response("not found", { status: 404 });
+  const reader = readerOrigin(url);
+  return new Response(withAgent(await object.text(), reader), { headers: documentHeaders(reader) });
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
+
+    // --- the document origin -----------------------------------------------
+    // Requests on docs.<host> get documents and the in-frame agent, and
+    // nothing else: no shell, no API, no session.
+    if (isDocsHost(url)) {
+      let raw = path.match(/^\/raw\/([^/]+)\/([0-9a-f]{64})\.html$/);
+      if (raw) return serveDocument(env, raw[1], raw[2], url);
+      if (path === "/agent.js") return assetResponse(SHELL["/agent.js"]);
+      return new Response("not found", { status: 404 });
+    }
+
+    // A document asked for on the reader's own host is sent to the other one.
+    if (/^\/raw\/[^/]+\/[0-9a-f]{64}\.html$/.test(path)) {
+      return Response.redirect(docsOrigin(url) + path, 302);
+    }
+
+    // --- signing in --------------------------------------------------------
+    if (path.startsWith("/auth/") || path === "/api/me" || path === "/api/auth/config") {
+      const answered = await handleAuth(request, env, url);
+      if (answered) return answered;
+    }
+
+    // --- live comment channel -------------------------------------------
+    let match = path.match(/^\/ws\/([^/]+)$/);
+    if (match) {
+      if (!SLUG.test(match[1])) return new Response("bad slug", { status: 400 });
+      return room(env, match[1]).fetch(await withIdentity(request, env));
+    }
+
+    // Stable, shareable URL: redirect to whichever version is current, on the
+    // origin that serves documents.
+    match = path.match(/^\/raw\/([^/]+)$/);
+    if (match) {
+      const { entries } = await readIndex(env);
+      const entry = entries[match[1]];
+      if (!entry) return new Response("not found", { status: 404 });
+      return Response.redirect(`${docsOrigin(url)}/raw/${entry.slug}/${entry.sha}.html`, 302);
+    }
+
+    // --- api ---------------------------------------------------------------
+    if (path === "/api/documents" && method === "POST") return handleUpload(request, env);
+
+    // Listing is the one thing a link-holder must not be able to do: knowing
+    // one document must not reveal the others, so it takes a publisher.
+    if (path === "/api/list" && (method === "POST" || method === "GET")) {
+      const refusal = await mayPublish(request, env);
+      if (refusal) return refusal;
+      const { entries } = await readIndex(env);
+      const docs = Object.values(entries).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      return json({ documents: docs });
+    }
+
+    // Deleting one document: its stored versions, its index entry, and the
+    // comments in its Room. Gated like publishing.
+    match = path.match(/^\/api\/documents\/([^/]+)\/delete$/);
+    if (match && method === "POST") {
+      const slug = match[1];
+      if (!SLUG.test(slug)) return json({ error: "bad slug" }, 400);
+      const refusal = await mayPublish(request, env);
+      if (refusal) return refusal;
+      const { entries } = await readIndex(env);
+      if (!entries[slug]) return json({ error: "not found" }, 404);
+      const title = entries[slug].title;
+
+      await room(env, slug).fetch(new Request(`${url.origin}/purge`));
+
+      let removed = 0;
+      let cursor;
+      do {
+        const listing = await env.DOCS.list({ prefix: `documents/${slug}/`, cursor });
+        for (const object of listing.objects) {
+          await env.DOCS.delete(object.key);
+          removed++;
+        }
+        cursor = listing.truncated ? listing.cursor : undefined;
+      } while (cursor);
+
+      // The index entry goes last: until it does the document is still listed,
+      // which is a better half-state than a listing pointing at nothing.
+      await updateIndex(env, (index) => {
+        delete index[slug];
+      });
+      return json({ deleted: slug, title, versions_removed: removed });
+    }
+
+    match = path.match(/^\/api\/documents\/([^/]+)$/);
+    if (match && method === "GET") {
+      const { entries } = await readIndex(env);
+      const entry = entries[match[1]];
+      if (!entry) return json({ error: "not found" }, 404);
+      const counts = await room(env, match[1])
+        .fetch(new Request(`${url.origin}/counts`))
+        .then((response) => response.json());
+      return json({ ...entry, ...counts, docs_origin: docsOrigin(url) });
+    }
+
+    // REST fallbacks, used when the socket is unavailable.
+    match = path.match(/^\/api\/documents\/([^/]+)\/comments$/);
+    if (match) {
+      if (!SLUG.test(match[1])) return json({ error: "bad slug" }, 400);
+      return room(env, match[1]).fetch(await withIdentity(request, env));
+    }
+
+    // --- the shell ---------------------------------------------------------
+    // Served from constants compiled into this script rather than from a
+    // static-asset binding, so deploying is one script upload and nothing else.
+    const page = /^\/docs\/[^/]+$/.test(path) ? "/reader.html" : path === "/" ? "/index.html" : path;
+    const asset = SHELL[page];
+    if (asset) return assetResponse(asset);
+    return new Response("not found", { status: 404 });
+  },
+};
+
+// withIdentity copies a request, adding the caller's verified login as a
+// header. The Room is inside the trust boundary, so this is the only place the
+// name on a comment can come from when commenting needs an account.
+async function withIdentity(request, env) {
+  const login = await whoami(request, env);
+  const headers = new Headers(request.headers);
+  headers.set("x-komodoc-login", login || "");
+  return new Request(request, { headers });
+}
+
+// handleAuth serves the sign-in routes, or returns null when the path is not
+// one of them.
+async function handleAuth(request, env, url) {
+  const clientID = env.KOMODOC_GITHUB_CLIENT_ID || "";
+  const redirect = `${url.origin}/auth/callback`;
+
+  if (url.pathname === "/auth/login") {
+    const state = crypto.randomUUID();
+    const next = url.searchParams.get("next") || "/";
+    const authorize = new URL("https://github.com/login/oauth/authorize");
+    authorize.searchParams.set("client_id", clientID);
+    authorize.searchParams.set("redirect_uri", redirect);
+    authorize.searchParams.set("state", state);
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: authorize.toString(),
+        "set-cookie": `komodoc_state=${state}|${next}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
+      },
+    });
+  }
+
+  if (url.pathname === "/auth/callback") {
+    const [state, next = "/"] = (cookieValue(request, "komodoc_state") || "").split("|");
+    // The state ties this callback to the redirect that started it.
+    if (!state || url.searchParams.get("state") !== state) {
+      return new Response("sign-in state did not match; try again", { status: 400 });
+    }
+    const exchange = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({
+        client_id: clientID,
+        client_secret: env.KOMODOC_GITHUB_CLIENT_SECRET || "",
+        code: url.searchParams.get("code"),
+        redirect_uri: redirect,
+      }),
+    });
+    const token = (await exchange.json().catch(() => ({}))).access_token;
+    if (!token) return new Response("github refused the sign-in", { status: 400 });
+    const login = await githubLogin(token);
+    if (!login) return new Response("github would not say who you are", { status: 502 });
+
+    const expiry = Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
+    const session = await makeSession(env, login, expiry);
+    return new Response(null, {
+      status: 302,
+      headers: [
+        ["location", next.startsWith("/") ? next : "/"],
+        ["set-cookie", `komodoc_session=${session}; Path=/; Max-Age=${30 * 24 * 3600}; HttpOnly; Secure; SameSite=Lax`],
+        ["set-cookie", "komodoc_state=; Path=/; Max-Age=0"],
+      ],
+    });
+  }
+
+  if (url.pathname === "/auth/logout") {
+    return new Response(null, {
+      status: 302,
+      headers: { location: "/", "set-cookie": "komodoc_session=; Path=/; Max-Age=0" },
+    });
+  }
+
+  if (url.pathname === "/api/me") {
+    const login = await whoami(request, env);
+    const publishers = parsePolicy(env.KOMODOC_PUBLISHERS);
+    const commenters = parsePolicy(env.KOMODOC_COMMENTERS);
+    return json({
+      login,
+      can_publish: policyAllows(publishers, login),
+      can_comment: policyAllows(commenters, login),
+      comments_need_login: !commenters.public,
+      publishers: describePolicy(publishers),
+      commenters: describePolicy(commenters),
+    });
+  }
+
+  // The client id is public by design; the CLI asks for it so `login` needs no
+  // configuration of its own.
+  if (url.pathname === "/api/auth/config") return json({ client_id: clientID });
+
+  return null;
+}
+
+// One shell file. A binary travels as base64, because the shell is embedded as
+// JSON and JSON holds no bytes; a file whose contents never change is cached
+// for a year rather than five minutes.
+function assetResponse(asset) {
+  let body = asset.body;
+  if (asset.base64) {
+    const binary = atob(asset.body);
+    body = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) body[i] = binary.charCodeAt(i);
+  }
+  return new Response(body, {
+    headers: {
+      "content-type": asset.type,
+      "cache-control": asset.immutable
+        ? "public, max-age=31536000, immutable"
+        : "public, max-age=300",
+    },
+  });
+}

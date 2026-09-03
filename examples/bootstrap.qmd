@@ -1,0 +1,165 @@
+---
+title: "What the Bootstrap Actually Resamples"
+subtitle: "A short note on a method that is easy to run and easy to misread"
+author: "Example Author"
+date: 2026-09-03
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    theme: cosmo
+    fig-width: 7
+    fig-height: 4
+knitr:
+  opts_chunk:
+    dev: svg
+    message: false
+    warning: false
+---
+
+## The claim
+
+The bootstrap replaces an unknown sampling distribution with one we can
+enumerate. Given a sample $X_1, \dots, X_n$ drawn from an unknown $F$, and a
+statistic $T_n = t(X_1, \dots, X_n)$, we would like to know how $T_n$ varies
+across repeated samples from $F$. We cannot draw from $F$. So we draw from
+$\hat{F}_n$, the empirical distribution that puts mass $1/n$ on each observed
+point, and hope that
+
+$$
+\sqrt{n}\,(T_n^{*} - T_n) \ \approx\ \sqrt{n}\,(T_n - \theta)
+$$
+
+in distribution, where $T_n^{*}$ is computed on a resample. The approximation is
+the whole method, and it is an approximation of one distribution by another, not
+a way of extracting extra information from a fixed sample.
+
+## A first illustration
+
+Draw one sample, resample it many times, and compare the bootstrap distribution
+of the mean against the truth we can compute because we chose the population.
+
+```{r}
+#| label: setup
+set.seed(20260903)
+
+population <- function(n) rgamma(n, shape = 2, rate = 0.5)
+sample_once <- population(60)
+
+boot_means <- replicate(4000, mean(sample(sample_once, replace = TRUE)))
+true_means <- replicate(4000, mean(population(60)))
+
+c(
+  sample_mean       = mean(sample_once),
+  bootstrap_sd      = sd(boot_means),
+  true_sd_of_mean   = sd(true_means),
+  asymptotic_sd     = sd(sample_once) / sqrt(60)
+)
+```
+
+The three standard errors agree to about two significant figures. That is the
+bootstrap working: it recovered the spread of the sampling distribution without
+being told the population.
+
+```{r}
+#| label: fig-two-distributions
+#| fig-cap: "The bootstrap distribution is centred on the sample mean, not on the truth. Its shape is what carries information; its location does not."
+par(mar = c(4, 4, 1, 1))
+plot(density(true_means), lwd = 2, col = "#17202a", main = "",
+     xlab = "mean", ylab = "density")
+lines(density(boot_means), lwd = 2, col = "#3757d5")
+abline(v = mean(sample_once), lty = 2, col = "#3757d5")
+abline(v = 2 / 0.5, lty = 2, col = "#17202a")
+legend("topright", bty = "n", lwd = 2, col = c("#17202a", "#3757d5"),
+       legend = c("sampling distribution of the mean", "bootstrap distribution"))
+```
+
+Notice the offset. The bootstrap distribution sits over $\bar{X}$, the sample
+mean, while the true sampling distribution sits over $\mu$. The bootstrap says
+nothing about that gap, which is precisely the bias it cannot see.
+
+## Where it breaks
+
+The approximation relies on $T_n$ being a smooth functional of $F$. The sample
+maximum is not. Resampling can never produce a value larger than the largest
+observation, so the bootstrap distribution of the maximum is degenerate at the
+top and hopeless below it.
+
+```{r}
+#| label: fig-maximum
+#| fig-cap: "For the sample maximum, the bootstrap distribution is a poor caricature of the truth: it is discrete, bounded above by the observed maximum, and puts about 63% of its mass on that single point."
+maxima_true <- replicate(4000, max(population(60)))
+maxima_boot <- replicate(4000, max(sample(sample_once, replace = TRUE)))
+
+par(mar = c(4, 4, 1, 1))
+hist(maxima_true, breaks = 40, col = "#17202a22", border = NA, freq = FALSE,
+     main = "", xlab = "sample maximum", ylim = c(0, 0.45))
+hist(maxima_boot, breaks = 40, col = "#3757d555", border = NA, freq = FALSE, add = TRUE)
+legend("topright", bty = "n", fill = c("#17202a22", "#3757d555"), border = NA,
+       legend = c("truth", "bootstrap"))
+```
+
+The mass on the observed maximum is not a numerical accident. A resample misses
+a given observation with probability $(1 - 1/n)^n \to e^{-1}$, so the largest
+observation appears in about
+
+$$
+1 - \left(1 - \tfrac{1}{n}\right)^{n} \longrightarrow 1 - e^{-1} \approx 0.632
+$$
+
+of all resamples, and whenever it appears it *is* the maximum.
+
+```{r}
+#| label: tbl-mass
+#| tbl-cap: "Observed against predicted share of resamples containing the largest observation."
+observed <- mean(maxima_boot == max(sample_once))
+knitr::kable(
+  data.frame(
+    quantity  = c("observed share", "1 - (1 - 1/n)^n", "limit 1 - 1/e"),
+    value     = round(c(observed, 1 - (1 - 1 / 60)^60, 1 - exp(-1)), 4)
+  )
+)
+```
+
+## Coverage is the honest test
+
+A confidence interval is a claim about repeated use. The way to check one is to
+build it many times and count.
+
+```{r}
+#| label: fig-coverage
+#| fig-cap: "Coverage of a 95% percentile interval for the mean, as the sample grows. The method is asymptotically correct and visibly optimistic when n is small."
+coverage <- function(n, reps = 400, B = 400) {
+  hits <- replicate(reps, {
+    x <- population(n)
+    b <- replicate(B, mean(sample(x, replace = TRUE)))
+    ci <- quantile(b, c(0.025, 0.975))
+    ci[1] <= 4 && 4 <= ci[2]
+  })
+  mean(hits)
+}
+
+sizes <- c(10, 20, 40, 80, 160)
+rates <- vapply(sizes, coverage, numeric(1))
+
+par(mar = c(4, 4, 1, 1))
+plot(sizes, rates, type = "b", pch = 19, lwd = 2, col = "#3757d5",
+     ylim = c(0.8, 1), log = "x", xlab = "n (log scale)", ylab = "coverage")
+abline(h = 0.95, lty = 2)
+```
+
+At $n = 10$ the nominal 95% interval covers rather less than 95% of the time.
+The interval is not wrong so much as over-confident, and no number of bootstrap
+replicates $B$ fixes it: $B$ controls Monte Carlo error in the resampling, while
+$n$ controls how well $\hat{F}_n$ stands in for $F$.
+
+## What to take away
+
+1. The bootstrap approximates a *distribution*, and inherits any bias in the
+   statistic rather than correcting it.
+2. It requires smoothness. Extremes, boundaries and non-smooth functionals break
+   it in ways that are obvious once plotted and invisible in a table of standard
+   errors.
+3. $B$ and $n$ are not interchangeable. Raising $B$ buys precision in the
+   simulation; only more data buys accuracy in the inference.

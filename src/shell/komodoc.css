@@ -1,0 +1,682 @@
+/* Almost everything is stock Pico. What remains here is only what a classless
+   stylesheet cannot know about: a two-pane reader that fills the viewport, the
+   bar that floats over a text selection, and the drop target. */
+
+/* Pico scales the root font up at wider viewports, which left the chrome
+   noticeably larger than the document in the frame. The document is rendered
+   at the browser's default size, so the shell should be too. */
+html {
+  font-size: 100%;
+}
+
+:root {
+  --komodoc-bar: 56px; /* nav height, which the reader sizes against */
+
+  /* Pico's defaults are sized for a marketing page. Tightening its own two
+     spacing variables shrinks buttons, inputs and selects together, which is
+     what keeps them consistent with each other. */
+  --pico-form-element-spacing-vertical: 0.5rem;
+  --pico-form-element-spacing-horizontal: 0.9rem;
+}
+
+button,
+[type="submit"],
+[type="button"],
+[type="reset"],
+[role="button"] {
+  font-size: 0.9rem;
+}
+
+/* ------------------------------------------------------------------ header */
+
+body > nav {
+  padding: 0 var(--pico-spacing);
+  height: var(--komodoc-bar);
+  /* A hairline shadow, not a border: a border eats a pixel of the bar's content
+     box, leaving the row centred on a half pixel, which rounds the title one
+     pixel below the brand. */
+  box-shadow: 0 1px 0 var(--pico-muted-border-color);
+  background: var(--pico-card-background-color);
+}
+/* The logo is a block sized in rem and aligned by the flex row, rather than
+   an inline image nudged into place. */
+/* Only what the inline logo needs: colour and weight are Pico's. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.brand svg {
+  display: block;
+  height: 1.5rem;
+  width: 1.5rem;
+}
+
+/* Every item on the bar centres on the same line. The brand contains an SVG
+   and the title is bare text, so without this they sit on different baselines.
+   A long document name truncates rather than pushing the bar around. */
+body > nav li {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+/* Quiet, not alarming: nothing is lost while it is showing. */
+#conn {
+  color: var(--pico-muted-color);
+}
+#docTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pico-muted-color);
+}
+
+/* One size for everything in the bar, whatever element it is. */
+body > nav button,
+body > nav [role="button"] {
+  width: auto;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ------------------------------------------------------------------ reader */
+
+main.reader {
+  /* The sidebar's width is a variable so the grip between the panes can move
+     it, clamped so neither pane can be squeezed out of existence. */
+  --komodoc-sidebar: 360px;
+  height: calc(100dvh - var(--komodoc-bar));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6px var(--komodoc-sidebar);
+  max-width: none;
+  padding: 0;
+  margin: 0;
+}
+
+/* The handle between the document and the comments. */
+.grip {
+  cursor: col-resize;
+  background: var(--pico-muted-border-color);
+  border: 0;
+}
+.grip:hover,
+.grip:focus-visible,
+.grip.dragging {
+  background: var(--pico-primary);
+  outline: none;
+}
+.viewport {
+  padding: var(--pico-spacing);
+  background: var(--pico-muted-border-color);
+  min-width: 0;
+}
+.viewport iframe {
+  /* The document takes whatever the grip leaves it: the reader sets the split,
+     and the pane fills its side of it. */
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: var(--pico-border-radius);
+  background: #fff;
+}
+/* The header is furniture, not content: it should not be the largest thing
+   in the column. */
+.sidebar h3 {
+  font-size: 1.15rem;
+  margin-bottom: 0.4rem;
+}
+.sidebar hgroup {
+  margin-bottom: var(--pico-spacing);
+}
+.sidebar {
+  overflow: auto;
+  padding: var(--pico-spacing);
+  border-left: 1px solid var(--pico-muted-border-color);
+}
+/* Pico gives articles generous margins; a list of them needs less. */
+.sidebar article {
+  margin: 0 0 var(--pico-spacing);
+  padding: calc(var(--pico-spacing) * 0.6);
+  cursor: pointer;
+}
+.sidebar article > :last-child {
+  margin-bottom: 0;
+}
+.sidebar blockquote {
+  margin: 0 0 0.6rem;
+  padding: 0 0 0 0.7rem;
+  font-size: 0.85em;
+}
+.sidebar ul {
+  margin-bottom: 0.6rem;
+}
+.resolved {
+  opacity: 0.6;
+}
+
+/* The bar that appears over a selection, positioned from JavaScript. */
+#selectionbar {
+  display: none;
+  position: fixed;
+  z-index: 50;
+  width: auto;
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ upload */
+
+.dropzone {
+  /* A step darker than Pico's muted border, so the dashes read as an edge
+     you can drop onto rather than a faint divider. */
+  border: 2px dashed var(--pico-form-element-border-color);
+  border-radius: var(--pico-border-radius);
+  padding: calc(var(--pico-spacing) * 1.5);
+  text-align: center;
+}
+/* The upload area and the list below it are separate things; give them room. */
+#uploader {
+  margin-bottom: calc(var(--pico-spacing) * 2.5);
+}
+.dropzone.dragging,
+.dropzone.filled {
+  border-color: var(--pico-primary);
+}
+.dropzone button {
+  width: auto;
+}
+
+/* ----------------------------------------------------------------- listing */
+
+/* One row: the dataset on the left, bulk actions in the middle when they are
+   relevant, and the search that narrows the dataset on the right. */
+.listbar {
+  display: flex;
+  align-items: center;
+  gap: var(--pico-spacing);
+  margin-bottom: calc(var(--pico-spacing) * 0.5);
+}
+.listbar input[type="search"] {
+  width: auto;
+  max-width: 20rem;
+  margin: 0 0 0 auto;
+}
+
+/* A segmented control, not navigation: these filter one list rather than
+   leading anywhere. Pico rings the whole group when a button inside it takes
+   focus, which here reads as the whole row being selected, so the ring is
+   moved to the focused button and shown only for keyboard focus. */
+.tabs {
+  display: flex;
+  width: auto;
+  margin-bottom: 0;
+  --pico-group-box-shadow: 0 0 0 transparent;
+  --pico-group-box-shadow-focus-with-button: 0 0 0 transparent;
+  box-shadow: none;
+}
+.tabs[role="group"] > button {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  padding: calc(var(--pico-spacing) * 0.25) calc(var(--pico-spacing) * 0.75);
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 0;
+  background: none;
+  color: var(--pico-muted-color);
+  font-size: 0.875em;
+}
+.tabs[role="group"] > button:first-child {
+  border-radius: var(--pico-border-radius) 0 0 var(--pico-border-radius);
+}
+.tabs[role="group"] > button:last-child {
+  border-left: 0;
+  border-radius: 0 var(--pico-border-radius) var(--pico-border-radius) 0;
+}
+.tabs[role="group"] > button[aria-pressed="true"] {
+  border-color: var(--pico-primary);
+  background: var(--pico-primary);
+  color: var(--pico-primary-inverse);
+}
+.tabs[role="group"] > button:focus-visible {
+  box-shadow: 0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
+}
+
+/* Bulk actions occupy no space until rows are ticked. */
+.selectionbar {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  gap: calc(var(--pico-spacing) * 0.5);
+}
+.selectionbar button {
+  width: auto;
+  margin: 0;
+  padding: calc(var(--pico-spacing) * 0.25) calc(var(--pico-spacing) * 0.75);
+  font-size: 0.875em;
+}
+
+/* The tick box and the star are controls, not data: their columns are as wide
+   as they need to be and no wider, and the numbers sit away from the titles. */
+#list td,
+#list th {
+  vertical-align: middle;
+}
+#list td:nth-child(-n + 2),
+#list th:nth-child(-n + 2) {
+  width: 1px;
+  padding-right: 0;
+}
+#list input[type="checkbox"] {
+  margin: 0;
+}
+#list td:nth-child(n + 4),
+#list th:nth-child(n + 4) {
+  text-align: right;
+  white-space: nowrap;
+}
+.star {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  line-height: 1;
+  font-size: 1.25rem;
+  color: var(--pico-primary);
+}
+
+/* Stage two of the upload: the file is named, and the only decision left is
+   the title. The action sits apart from the field, since it confirms the whole
+   import rather than acting on what is typed. */
+#chosen {
+  margin-bottom: var(--pico-spacing);
+}
+.chosenfile {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pico-spacing);
+}
+.chosenfile button {
+  width: auto;
+  margin: 0;
+  padding: calc(var(--pico-spacing) * 0.25) calc(var(--pico-spacing) * 0.75);
+  font-size: 0.875em;
+}
+#chosen input[name="title"] {
+  margin-bottom: 0;
+}
+/* Cancel then Submit, in that order everywhere: the accepting action is
+   always the rightmost. */
+.chosenactions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.chosenactions button {
+  width: auto;
+  margin: 0;
+}
+
+/* Buttons standing side by side are the same size, whether they are a button
+   element or a link dressed as one. */
+[role="group"] > button,
+[role="group"] > [role="button"],
+footer.grid > button,
+footer.grid > [role="button"] {
+  width: 100%;
+  margin: 0;
+}
+
+.error {
+  color: var(--pico-del-color);
+}
+
+@media (max-width: 760px) {
+  main.reader {
+    display: block;
+    height: auto;
+  }
+  .viewport {
+    height: 62dvh;
+  }
+  .sidebar {
+    border-left: 0;
+    border-top: 1px solid var(--pico-muted-border-color);
+  }
+  /* One column on a narrow screen, so there is nothing to drag. */
+  .grip {
+    display: none;
+  }
+  #selectionbar {
+    left: 50% !important;
+    right: auto;
+    top: auto !important;
+    bottom: max(18px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+  }
+}
+
+/* Pico has no small button, and a full-size pair of them dominates a comment
+   card. These are secondary actions, so they are sized like one. */
+.sidebar {
+  --pico-form-element-spacing-vertical: 0.35rem;
+  --pico-form-element-spacing-horizontal: 0.6rem;
+}
+.sidebar button {
+  font-size: 0.875rem;
+}
+/* A full rem, not less: Safari zooms the whole page when a focused field is
+   under 16px, which throws the reader off the document. */
+.sidebar textarea,
+.sidebar input {
+  font-size: 1rem;
+}
+
+/* Who and when is context, not content: smaller and quieter than the comment
+   or reply it belongs to. */
+.sidebar small {
+  font-size: 0.8rem;
+  color: var(--pico-muted-color);
+}
+
+/* Two independent actions, side by side but plainly separate. */
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+/* Outlined, not filled: three saturated blocks on every card drowned out the
+   comment they belong to. The confirmation dialog is where a filled button
+   earns its weight. */
+.actions button {
+  width: auto;
+  margin: 0;
+  background: transparent;
+  color: var(--pico-primary);
+  border-color: var(--pico-primary);
+}
+.actions button:hover {
+  background: var(--pico-primary);
+  color: var(--pico-primary-inverse);
+}
+
+/* ------------------------------------------------------------------- brand */
+
+/* The komodo, sized by height so its own proportions decide the width. */
+.mark {
+  display: block;
+  height: 1.6rem;
+  width: auto;
+  aspect-ratio: 971 / 759;
+}
+.wordmark {
+  font-family: "IBM Plex Sans", var(--pico-font-family-sans-serif);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* The same pair again, larger and centred, at the top of the landing page. */
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin: 1.5rem 0 0.6rem;
+}
+
+/* What Komodoc is, in one line, under the mark on every page that shows it. */
+.tagline {
+  margin: 0 0 2.5rem;
+  text-align: center;
+  color: var(--pico-muted-color);
+}
+.hero .mark {
+  height: 3.2rem;
+}
+.hero .wordmark {
+  font-size: 2rem;
+}
+
+/* An empty table keeps its shape and says why, centred in the space the rows
+   would have filled. */
+.emptyrow {
+  height: 12rem;
+  text-align: center;
+  vertical-align: middle;
+  color: var(--pico-muted-color);
+}
+
+/* ------------------------------------------------------------------- fonts */
+
+/* IBM Plex Sans, SemiBold, complete and unmodified. SIL OFL 1.1; the licence
+   is in vendor/fonts/OFL.txt. Served from this deployment, never from a font
+   host, so a page still reaches out to nobody. */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-600.woff2") format("woff2");
+}
+
+/* The kind of annotation: four choices, so they are shown rather than hidden
+   behind a menu. Pico stacks radios; a row fits the dialog better. */
+#motivation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-bottom: var(--pico-spacing);
+  border: 0;
+  padding: 0;
+}
+#motivation legend {
+  width: 100%;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+#motivation label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 0.9rem;
+}
+#motivation input {
+  margin: 0;
+}
+
+/* -------------------------------------------------------------- annotating */
+
+/* The tool row in the nav: icons only, the chosen one filled. */
+.tools {
+  display: flex;
+  gap: 0.25rem;
+}
+/* The tool row and the icons beside it are one row of equal squares, so they
+   are sized by one rule rather than two that have to be kept in step. */
+.tools .tool,
+.navtools .iconbtn {
+  min-width: 2.25rem;
+  padding: 0.3rem;
+  display: inline-grid;
+  place-items: center;
+  line-height: 1;
+}
+.tools svg,
+.navtools .iconbtn svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  display: block;
+}
+
+/* An icon that acts on the document rather than making an annotation stands a
+   little apart from the tools, on the same line and at the same size. */
+.navtools {
+  gap: 0.75rem;
+}
+/* Copying leaves nothing visible behind, so the icon itself is the receipt. */
+.iconbtn.done {
+  color: var(--pico-ins-color);
+  border-color: var(--pico-ins-color);
+}
+
+/* A label on an annotation, and the same shape in the filter row above the
+   list, where a chosen one is filled in. */
+.tag {
+  width: auto;
+  margin: 0 0.3rem 0.3rem 0;
+  padding: 0.05rem 0.5rem;
+  border-radius: 99px;
+  font-size: 0.7rem;
+  background: transparent;
+  color: var(--pico-muted-color);
+  border-color: var(--pico-muted-border-color);
+}
+.tag.chosen {
+  background: var(--pico-primary-background);
+  border-color: var(--pico-primary-background);
+  color: var(--pico-primary-inverse);
+}
+.tagfilter {
+  margin-bottom: 0.6rem;
+}
+
+/* What a suggested edit proposes, set apart from any remark about it. */
+.suggestion {
+  padding: 0.4rem 0.6rem;
+  border-left: 3px solid var(--pico-primary);
+  background: var(--pico-primary-background);
+  color: var(--pico-primary-inverse);
+  border-radius: var(--pico-border-radius);
+  white-space: pre-wrap;
+  font-size: 0.85rem;
+}
+
+/* A card for an annotation on a figure: it names the figure rather than
+   quoting words that do not exist. */
+.figureref {
+  font-style: italic;
+}
+
+/* One palette for the tools, shared with the marks the agent paints and the
+   labels in the sidebar: hue says which tool, and it stays desaturated so a
+   page of annotations reads as a document rather than a highlighter set. */
+.tools .tool[data-tool="commenting"] {
+  --komodoc-tint: hsl(42 55% 45%);
+}
+.tools .tool[data-tool="questioning"] {
+  --komodoc-tint: hsl(255 30% 50%);
+}
+.tools .tool[data-tool="highlighting"] {
+  --komodoc-tint: hsl(145 28% 38%);
+}
+.tools .tool[data-tool="editing"] {
+  --komodoc-tint: hsl(8 45% 48%);
+}
+.tools .tool[data-tool="assessing"] {
+  --komodoc-tint: hsl(195 35% 40%);
+}
+.tools .tool[data-tool="region"] {
+  --komodoc-tint: hsl(42 55% 45%); /* a region is a comment on a figure */
+}
+.tools .tool {
+  border-color: var(--komodoc-tint);
+  color: var(--komodoc-tint);
+}
+.tools .tool[aria-pressed="true"] {
+  background: var(--komodoc-tint);
+  border-color: var(--komodoc-tint);
+  color: #fff;
+}
+
+/* The sidebar label for the annotation kind, in that kind's own colour. */
+.sidebar mark[data-motivation] {
+  background: hsl(42 55% 90%);
+  color: hsl(42 55% 28%);
+}
+.sidebar mark[data-motivation="questioning"] {
+  background: hsl(255 30% 90%);
+  color: hsl(255 30% 34%);
+}
+.sidebar mark[data-motivation="highlighting"] {
+  background: hsl(145 28% 90%);
+  color: hsl(145 28% 25%);
+}
+.sidebar mark[data-motivation="editing"] {
+  background: hsl(8 45% 90%);
+  color: hsl(8 45% 30%);
+}
+.sidebar mark[data-motivation="assessing"] {
+  background: hsl(195 35% 90%);
+  color: hsl(195 35% 26%);
+}
+
+/* ---------------------------------------------------------- documentation */
+
+/* The middle group sits between the two the flex row pushes apart. */
+nav > ul.navmid {
+  margin: 0 auto;
+  flex: 0 0 auto;
+}
+nav > ul.navmid a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--pico-muted-color);
+  white-space: nowrap;
+}
+nav > ul.navmid a:hover,
+nav > ul.navmid a[aria-current="page"] {
+  color: var(--pico-primary);
+}
+nav > ul.navmid svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  display: block;
+}
+
+/* The README is reference material with tables and code in it, not an essay:
+   it wants the width of the page, not a narrow measure. */
+.prose {
+  max-width: 64rem;
+  margin: 0 auto;
+}
+.prose img {
+  max-width: 100%;
+}
+.prose pre {
+  overflow-x: auto;
+}
+.prose table {
+  display: block;
+  overflow-x: auto;
+}
+
+/* A sortable column header: a button that looks like the heading it replaces,
+   with the active one marked. */
+.sort {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sort:hover {
+  color: var(--pico-primary);
+}
+.sort.active::after {
+  content: " ↑";
+  font-size: 0.8em;
+}
+.sort.active[aria-sort="descending"]::after {
+  content: " ↓";
+}
+.never {
+  color: var(--pico-muted-color);
+}

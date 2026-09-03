@@ -1,0 +1,12 @@
+dist/
+komodoc-data/
+/komodoc
+/src/src
+examples/*.html
+examples/*_files/
+examples/.calepin/
+.envrc
+.env
+
+# Copied in by the build: the documentation page is the README.
+src/shell/README.md

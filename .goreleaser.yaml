@@ -1,0 +1,59 @@
+# Release builds: one static binary per platform, plus checksums, published as
+# a GitHub release. `make snapshot` runs this locally without tagging.
+version: 2
+
+project_name: komodoc
+
+before:
+  hooks:
+    # The documentation page is the README, so the build compiles it in.
+    - cp README.md src/shell/README.md
+    - go mod tidy
+
+builds:
+  - id: komodoc
+    main: ./src
+    binary: komodoc
+    # Nothing here needs cgo, so every target cross-compiles from one runner.
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: komodoc
+    # install.sh looks for this exact name.
+    name_template: "komodoc_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  draft: false
+  footer: |
+    ## Install
+
+    ```
+    curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/komodoc/main/install.sh | sh
+    ```
