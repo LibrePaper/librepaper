@@ -1,15 +1,130 @@
 package main
 
-// The example documents and the annotations seeded onto them. Between them
-// they use every kind: a plain comment, a question, a bare highlight with no
-// words at all, a suggested edit carrying replacement text, a judgement, and a
-// rectangle drawn on a figure. Several carry tags, some have replies, and one
-// is already resolved, so the sidebar shows what each state looks like.
+// The example documents and the annotations seeded onto them. There is one
+// document per source format Komodoc accepts, and each is genuinely produced by
+// the tool it is named after: Quarto renders the .qmd, Calepin the .typ, marimo
+// exports its own notebook, nbconvert executes and exports the Jupyter one,
+// Komodoc's own markdown renderer handles the .md at publish time, and the HTML
+// example is hand-written and rendered by nothing at all. The Makefile holds
+// the commands.
+//
+// Between them the annotations use every kind: a plain comment, a question, a
+// bare highlight with no words at all, a suggested edit carrying replacement
+// text, a judgement, and a rectangle drawn on a figure. Several carry tags,
+// some have replies, and one is already resolved, so the sidebar shows what
+// each state looks like.
 //
 // Every Exact below has to appear in the rendered HTML. `seed` says so when one
 // does not, rather than writing an annotation that anchors nowhere.
 
 var seedDocuments = []seedDocument{
+	{
+		// Hand-written HTML: no stylesheet, no script, no build step. The
+		// plainest thing Komodoc can host, and a contrast with the rest.
+		File:  "examples/style-guide.html",
+		Title: "HTML: A Short Style Guide for Quantitative Writing",
+		Annotations: []seedAnnotation{
+			{
+				Motivation: "commenting",
+				Exact:      "A number in a sentence is being read, not computed.",
+				Body:       "Worth promoting to the top of the section. It is the reason for every rule under it.",
+				Tags:       []string{"framing"},
+				Creator:    "Vincent",
+			},
+			{
+				Motivation: "questioning",
+				Exact:      "the commonest error in this genre",
+				Body:       "Commonest by what count? If there is a source for this, cite it; if it is an impression, say so.",
+				Tags:       []string{"evidence"},
+				Creator:    "Reviewer",
+				Replies:    []string{"It is an impression. I will soften it to \"a common error\"."},
+			},
+			{
+				Motivation: "highlighting",
+				Exact:      "A figure that could have been a sentence should be a sentence.",
+				Creator:    "Reviewer",
+				Tags:       []string{"teaching"},
+			},
+			{
+				Motivation:  "editing",
+				Exact:       "Alphabetical order is meaningful only for looking things up.",
+				Body:        "True, but it reads as a throwaway. Give it the weight it deserves.",
+				Replacement: "Alphabetical order is meaningful only when the reader arrives knowing which row they want.",
+				Tags:        []string{"style"},
+				Creator:     "Vincent",
+			},
+			{
+				Motivation: "assessing",
+				Exact:      "it has a technical meaning and an ordinary one",
+				Body:       "This is the strongest paragraph in the guide and it is buried in a table's aftermath. It should be its own section.",
+				Tags:       []string{"structure"},
+				Creator:    "Vincent",
+				Resolved:   true,
+			},
+			{
+				Motivation: "commenting",
+				Exact:      "Right-align numbers, left-align text",
+				Body:       "The table above does not follow its own advice: the estimate column is right-aligned, but the header is not.",
+				Tags:       []string{"tables", "accuracy"},
+				Creator:    "Reviewer",
+			},
+		},
+	},
+	{
+		// Markdown, rendered by Komodoc itself on publication: the file that is
+		// read here is the .md, and readSeedDocument runs it through the same
+		// renderer an upload would.
+		File:  "examples/regression-tables.md",
+		Title: "Markdown: What a Regression Table Is Hiding",
+		Annotations: []seedAnnotation{
+			{
+				Motivation: "commenting",
+				Exact:      "every summary is a decision about what to leave out",
+				Body:       "This is the thesis, and it arrives in the first sentence. Good.",
+				Tags:       []string{"framing"},
+				Creator:    "Vincent",
+			},
+			{
+				Motivation: "questioning",
+				Exact:      "A model fit on 4,102 of 11,000 rows is a model of the 4,102.",
+				Body:       "Is the 11,000 a real figure or an illustration? If it is illustrative, say so, because it reads as a specific study.",
+				Tags:       []string{"evidence"},
+				Creator:    "Reviewer",
+				Replies: []string{
+					"Illustrative. I will make the numbers obviously round.",
+				},
+			},
+			{
+				Motivation: "highlighting",
+				Exact:      "A tight interval around a biased estimate is the most misleading object in applied statistics",
+				Creator:    "Reviewer",
+				Tags:       []string{"teaching"},
+			},
+			{
+				Motivation:  "editing",
+				Exact:       "Standard errors clustered at the wrong level are not conservative; they are simply wrong, and usually too small.",
+				Body:        "Two claims in one sentence, and the second is the surprising one. Split them.",
+				Replacement: "Standard errors clustered at the wrong level are not conservative. They are wrong, and usually too small.",
+				Tags:        []string{"style"},
+				Creator:     "Vincent",
+			},
+			{
+				Motivation: "assessing",
+				Exact:      "An effect that appears in the pooled data and in neither half is not a subtle effect.",
+				Body:       "The most useful sentence in the note, and it is third in a numbered list where nobody will find it.",
+				Tags:       []string{"structure"},
+				Creator:    "Vincent",
+				Resolved:   true,
+			},
+			{
+				Motivation: "commenting",
+				Exact:      "A table that admits nothing is not a table without problems.",
+				Body:       "A good closing line. It would be stronger still if the note gave one real example of a table doing this well.",
+				Tags:       []string{"exposition"},
+				Creator:    "Reviewer",
+			},
+		},
+	},
 	{
 		File:  "examples/bootstrap.html",
 		Title: "Quarto: What the Bootstrap Actually Resamples",
@@ -117,132 +232,69 @@ var seedDocuments = []seedDocument{
 		},
 	},
 	{
-		// Plain Typst: headings, lists and tables, and no styling of its own.
-		// A useful contrast with the other three, which arrive dressed.
-		File:  "examples/style-guide.html",
-		Title: "HTML: A Short Style Guide for Quantitative Writing",
+		File:  "examples/simpsons-paradox.html",
+		Title: "Jupyter: Simpson's Paradox Is Not a Paradox",
 		Annotations: []seedAnnotation{
 			{
 				Motivation: "commenting",
-				Exact:      "A number in a sentence is being read, not computed.",
-				Body:       "Worth promoting to the top of the section. It is the reason for every rule under it.",
+				Exact:      "the arithmetic is not in dispute and both lines are correct",
+				Body:       "This is the right framing. Most treatments present the reversal as an error to be caught rather than as two answers to two questions.",
 				Tags:       []string{"framing"},
 				Creator:    "Vincent",
 			},
 			{
 				Motivation: "questioning",
-				Exact:      "the commonest error in this genre",
-				Body:       "Commonest by what count? If there is a source for this, cite it; if it is an impression, say so.",
+				Exact:      "The slope is positive and it is not a rounding error.",
+				Body:       "Worth giving the standard error here. A reader who suspects the whole thing is noise will not be persuaded by the point estimate alone.",
 				Tags:       []string{"evidence"},
 				Creator:    "Reviewer",
-				Replies:    []string{"It is an impression. I will soften it to \"a common error\"."},
+				Replies: []string{
+					"Added it to the printed output rather than the prose.",
+				},
 			},
 			{
 				Motivation: "highlighting",
-				Exact:      "A figure that could have been a sentence should be a sentence.",
+				Exact:      "Both departments slope down. The pooled line slopes up.",
 				Creator:    "Reviewer",
 				Tags:       []string{"teaching"},
 			},
 			{
 				Motivation:  "editing",
-				Exact:       "Alphabetical order is meaningful only for looking things up.",
-				Body:        "True, but it reads as a throwaway. Give it the weight it deserves.",
-				Replacement: "Alphabetical order is meaningful only when the reader arrives knowing which row they want.",
-				Tags:        []string{"style"},
+				Exact:       "the pooled line reads that coincidence as a causal slope",
+				Body:        "\"Coincidence\" undersells it: the confounding is structural, not accidental.",
+				Replacement: "the pooled line reads that difference as a causal slope",
+				Tags:        []string{"style", "accuracy"},
 				Creator:     "Vincent",
 			},
 			{
 				Motivation: "assessing",
-				Exact:      "it has a technical meaning and an ordinary one",
-				Body:       "This is the strongest paragraph in the guide and it is buried in a table's aftermath. It should be its own section.",
+				Exact:      "no amount of staring at the scatterplot will answer it",
+				Body:       "This is the paragraph that earns the notebook. It should arrive before the figures, not after them.",
 				Tags:       []string{"structure"},
 				Creator:    "Vincent",
 				Resolved:   true,
 			},
 			{
-				Motivation: "commenting",
-				Exact:      "Right-align numbers, left-align text",
-				Body:       "The table above does not follow its own advice: the estimate column is right-aligned, but the header is not.",
-				Tags:       []string{"tables", "accuracy"},
-				Creator:    "Reviewer",
-			},
-		},
-	},
-	{
-		File:  "examples/random-walks.html",
-		Title: "Marimo: How Far Does a Random Walk Go?",
-		Annotations: []seedAnnotation{
-			{
-				Motivation: "commenting",
-				Exact:      "That fact is true and almost useless",
-				Body:       "Exactly right, and worth saying this bluntly. Most treatments open with the mean and never explain why it tells you nothing.",
-				Tags:       []string{"framing"},
-				Creator:    "Vincent",
-				Replies:    []string{"It is my favourite sentence in the note."},
-			},
-			{
+				// The second figure: the same points split by department, where
+				// the two within-group lines disagree with the dashed pooled one.
 				Motivation: "questioning",
-				Exact:      "Four times as many steps take you only twice as far.",
-				Body:       "Is it worth noting that this is why diffusion is slow at large scales? One sentence would connect it to something physical.",
-				Tags:       []string{"exposition"},
-				Creator:    "Reviewer",
-			},
-			{
-				Motivation: "highlighting",
-				Exact:      "The least likely outcome is an even split.",
-				Creator:    "Reviewer",
-				Tags:       []string{"teaching"},
-			},
-			{
-				Motivation:  "editing",
-				Exact:       "In a season of coin flips, one team leading throughout is not evidence of anything.",
-				Body:        "The analogy is doing a lot of work in one line. Spell out the transfer.",
-				Replacement: "A team that leads a season of coin flips from start to finish is not thereby a better team.",
-				Tags:        []string{"style", "exposition"},
-				Creator:     "Vincent",
-			},
-			{
-				Motivation: "assessing",
-				Exact:      "Reporting the mean of this sample would be reporting a property of the cap.",
-				Body:       "This is correct and it is the sort of error that appears in published simulation studies. It deserves more than a closing sentence.",
-				Tags:       []string{"evidence", "methods"},
-				Creator:    "Reviewer",
-				Resolved:   true,
-			},
-			{
-				// The twenty paths with the sqrt envelope.
-				Motivation: "questioning",
-				Body:       "How many of the twenty paths leave the envelope here? Counting them would make the point that the envelope is a typical scale, not a bound.",
+				Body:       "Could the dashed pooled line be drawn only across the gap between the two clouds? Running it through both groups is what makes it look like a fit to each.",
 				Tags:       []string{"figures"},
-				Creator:    "Vincent",
-				Region:     &region{ImageIndex: 1, X: 8, Y: 6, Width: 84, Height: 26},
+				Creator:    "Reviewer",
+				Region:     &region{ImageIndex: 1, X: 10, Y: 8, Width: 80, Height: 60},
 			},
 		},
 	},
 	{
-		File:  "examples/bootstrap-jupyter.html",
-		Title: "Jupyter: Bootstrap Sampling and Confidence Intervals",
-		Annotations: []seedAnnotation{
-			{
-				Motivation: "commenting",
-				Exact:      "Bootstrap is a resampling method",
-				Body:       "This is a clear and direct opening. It establishes what we are learning about.",
-				Tags:       []string{"framing"},
-				Creator:    "Vincent",
-			},
-			{
-				Motivation: "questioning",
-				Exact:      "assumes that the observed sample is representative",
-				Body:       "When would this assumption fail? Are there cases where bootstrap is not appropriate?",
-				Tags:       []string{"exposition"},
-				Creator:    "Reviewer",
-			},
-			{
-				Motivation: "highlighting",
-				Exact:      "sampling variability",
-				Creator:    "Vincent",
-				Tags:       []string{"key-concept"},
-			},
-		},
+		// marimo's own HTML export, unmodified. It loads the marimo frontend
+		// from a CDN and keeps the prose in a JSON island that only its
+		// JavaScript hydrates, so visibleText finds nothing to anchor against
+		// and this example carries no seeded annotations. A reader can still
+		// annotate it by hand once the page has rendered. It is here as what
+		// marimo actually produces rather than as something rewritten to suit
+		// the seeder.
+		File:        "examples/random-walks.html",
+		Title:       "Marimo: How Far Does a Drunk Walk?",
+		Annotations: nil,
 	},
 }

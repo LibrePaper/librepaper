@@ -21,6 +21,18 @@ type indexEntry struct {
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 	Example   bool   `json:"example,omitempty"`
+	// Publisher is the lowercased GitHub login that uploaded this version, and
+	// the only account that may replace or delete it. Empty on a reserved
+	// example, and on anything published before ownership was recorded or on a
+	// deployment where publishing needs no account at all.
+	Publisher string `json:"publisher,omitempty"`
+}
+
+// ownedBy answers whether login may replace or delete this document. An entry
+// with no publisher belongs to no one in particular and stays shared, which is
+// how every document behaved before ownership was recorded.
+func (e indexEntry) ownedBy(login string) bool {
+	return e.Publisher == "" || e.Publisher == strings.ToLower(login)
 }
 
 type store struct {
@@ -64,7 +76,7 @@ func (s *store) list() []indexEntry {
 }
 
 // put writes a new version and updates the index, returning the stored entry.
-func (s *store) put(slug, title, digest, html string) (indexEntry, error) {
+func (s *store) put(slug, title, digest, html, publisher string) (indexEntry, error) {
 	if err := os.MkdirAll(s.documentDir(slug), 0o755); err != nil {
 		return indexEntry{}, err
 	}
@@ -77,10 +89,22 @@ func (s *store) put(slug, title, digest, html string) (indexEntry, error) {
 	defer s.mu.Unlock()
 	now := timestamp()
 	created := now
+	example := false
 	if existing, ok := s.entries[slug]; ok {
 		created = existing.CreatedAt
+		// A replacement keeps what the document already is: an example stays
+		// an example, and its publisher does not change hands.
+		example = existing.Example
+		if existing.Publisher != "" {
+			publisher = existing.Publisher
+		}
 	}
-	entry := indexEntry{Slug: slug, Title: title, SHA: digest, CreatedAt: created, UpdatedAt: now}
+	entry := indexEntry{
+		Slug: slug, Title: title, SHA: digest,
+		CreatedAt: created, UpdatedAt: now,
+		Example:   example,
+		Publisher: strings.ToLower(publisher),
+	}
 	s.entries[slug] = entry
 	s.saveLocked()
 	return entry, nil

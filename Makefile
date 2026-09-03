@@ -57,8 +57,12 @@ serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, PUBLISHER
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
 	@$(BIN) serve --port $(PORT) --data $(DATA) --publishers $(PUBLISHERS) --commenters $(COMMENTERS)
 
-EXAMPLES := examples/bootstrap.html examples/newton.html examples/random-walks.html \
-            examples/style-guide.html examples/bootstrap-jupyter.html
+# One example per source format Komodoc accepts, each genuinely produced by the
+# tool it is named after. style-guide.html is hand-written and regression-tables.md
+# is rendered by Komodoc itself at publish time, so neither has a rule below.
+EXAMPLES := examples/bootstrap.html examples/newton.html \
+            examples/random-walks.html examples/simpsons-paradox.html \
+            examples/style-guide.html examples/regression-tables.md
 
 # Not in the help: a step of `deploy` and `deploy-sandbox`, not an entry point.
 examples: $(EXAMPLES)
@@ -72,10 +76,24 @@ examples/%.html: examples/%.qmd
 examples/%.html: examples/%.typ
 	@cd examples && calepin compile $(notdir $<) $(notdir $@) --format html
 
-# Plain Typst, no preprocessing and no code to run. An explicit rule, so it
-# wins over the Calepin pattern above.
-examples/style-guide.html: examples/style-guide.typ
-	@cd examples && typst compile $(notdir $<) $(notdir $@) --format html --features html 2>/dev/null
+# marimo and Jupyter come from PyPI rather than from the system, so they are run
+# through uv against examples/pyproject.toml. uv fetches its own interpreter, so
+# neither Python nor either tool has to be installed to build the examples.
+#
+# marimo's exporter runs the notebook itself. Note that its HTML loads the
+# marimo frontend from a CDN and keeps the prose in a JSON island the page
+# hydrates, so this one document is not self-contained and carries no seeded
+# annotations -- see seed_examples.go. It is here because it is what marimo
+# actually produces.
+examples/%.html: examples/%.py
+	@cd examples && uv run --quiet marimo export html $(notdir $<) -o $(notdir $@) -f
+
+# --execute runs the notebook, --embed-images inlines the figures, and blanking
+# the two CDN URLs nbconvert would otherwise link keeps the page self-contained.
+examples/%.html: examples/%.ipynb
+	@cd examples && uv run --quiet jupyter nbconvert --to html --execute --embed-images \
+		--HTMLExporter.mathjax_url='' --HTMLExporter.require_js_url='' \
+		--log-level WARN $(notdir $<) --output $(notdir $@)
 
 # Not in the help: it is a step of `deploy`, not a thing to run on its own.
 seed: $(BIN) $(EXAMPLES)

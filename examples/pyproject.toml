@@ -1,0 +1,20 @@
+# The Python toolchain that renders two of the example documents: marimo
+# exports its own notebooks, and nbconvert executes and exports the Jupyter
+# one. Both are run through `uv run` from the Makefile, so neither has to be
+# installed on the machine building the examples.
+#
+# This project is never imported and never published. It exists so that the
+# examples are genuinely produced by the tools they are named after.
+[project]
+name = "komodoc-examples"
+version = "0"
+requires-python = ">=3.11"
+dependencies = [
+    "marimo>=0.9",
+    "nbconvert>=7.16",
+    "nbclient>=0.10",
+    "ipykernel>=6.29",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+]

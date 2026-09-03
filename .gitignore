@@ -3,6 +3,9 @@ komodoc-data/
 /komodoc
 /src/src
 examples/*.html
+# ...except this one, which is the hand-written HTML example: it is a source
+# file that no tool renders, which is the whole point of it.
+!examples/style-guide.html
 examples/*_files/
 examples/.calepin/
 .envrc
@@ -10,3 +13,5 @@ examples/.calepin/
 
 # Copied in by the build: the documentation page is the README.
 src/shell/README.md
+examples/.venv/
+examples/__marimo__/

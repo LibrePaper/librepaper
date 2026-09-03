@@ -10,6 +10,9 @@ const SLUG = new RegExp(CONFIG.slug_pattern);
 const SHA = /^[0-9a-f]{64}$/;
 const MAX_HTML = CONFIG.max_html;
 const VISITOR_COOKIE = "komodoc_visitor";
+// A colon cannot appear in a GitHub login, so a browser's key never collides
+// with an account's.
+const VISITOR_PREFIX = "visitor:";
 
 const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), {
@@ -104,16 +107,42 @@ async function whoami(request, env) {
   return readSession(env, cookieValue(request, "komodoc_session"));
 }
 
-// mayPublish returns null when allowed, or the Response to send back.
-async function mayPublish(request, env) {
-  const login = await whoami(request, env);
+// owner is the key a caller's uploads belong to. A signed-in caller is their
+// GitHub login. Where publishing needs no account there is still someone on
+// the other end, so an anonymous caller is named by the visitor cookie the
+// shell handed their browser: not an identity, but enough that one visitor's
+// uploads are not another's to list, replace or delete.
+//
+// A caller with neither -- the CLI publishing to a deployment open to
+// everyone -- owns nothing, and their uploads stay shared.
+function ownerKey(request, login) {
+  if (login) return login;
+  const visitor = cookieValue(request, VISITOR_COOKIE);
+  return visitor ? VISITOR_PREFIX + visitor : "";
+}
+
+// publisher returns { owner } when allowed, or { refusal } to send back.
+async function publisher(request, env) {
+  const login = (await whoami(request, env)).toLowerCase();
   const policy = parsePolicy(env.KOMODOC_PUBLISHERS);
-  if (policyAllows(policy, login)) return null;
-  if (!login) return json({ error: "sign in with GitHub to publish" }, 401);
-  return json(
-    { error: `@${login} may not publish here; this deployment allows ${describePolicy(policy)}` },
-    403,
-  );
+  if (policyAllows(policy, login)) return { owner: ownerKey(request, login) };
+  if (!login) return { refusal: json({ error: "sign in with GitHub to publish" }, 401) };
+  return {
+    refusal: json(
+      { error: `@${login} may not publish here; this deployment allows ${describePolicy(policy)}` },
+      403,
+    ),
+  };
+}
+
+// A document with no publisher belongs to no one in particular and stays
+// shared, which is how every document behaved before ownership was recorded.
+const ownedBy = (entry, owner) => !entry.publisher || entry.publisher === owner;
+
+// Reserved examples are everyone's; an owner otherwise sees the documents that
+// predate ownership and their own uploads.
+function visibleTo(entries, owner) {
+  return entries.filter((entry) => entry.example || ownedBy(entry, owner));
 }
 
 function slugify(value) {
@@ -224,7 +253,7 @@ function withAgent(html, reader) {
 
 async function handleUpload(request, env) {
   // Checked before the body is read, so an unauthorised upload costs nothing.
-  const refusal = await mayPublish(request, env);
+  const { owner, refusal } = await publisher(request, env);
   if (refusal) return refusal;
 
   let title, slug, html, example = false, annotations = [];
@@ -270,7 +299,11 @@ async function handleUpload(request, env) {
   if (example && env.KOMODOC_EXAMPLES !== "true") {
     return json({ error: "this deployment does not enable reserved examples" }, 400);
   }
-  const key = example || existingIndex[base] ? base : `${base}-${randomSuffix()}`;
+  // Someone else's document is not yours to replace, and guessing its slug
+  // should not even tell you it is there: a title that collides with another
+  // publisher's document simply becomes a new document of your own.
+  const replacing = existingIndex[base] && ownedBy(existingIndex[base], owner);
+  const key = example || replacing ? base : `${base}-${randomSuffix()}`;
 
   const digest = await sha256(html);
   const exampleRevision = example ? await sha256(JSON.stringify(annotations)) : "";
@@ -286,6 +319,8 @@ async function handleUpload(request, env) {
       sha: digest,
       created_at: existing?.created_at || now,
       updated_at: now,
+      // A replacement does not change hands.
+      ...((existing?.publisher || owner) ? { publisher: existing?.publisher || owner } : {}),
       ...(example ? { example: true } : {}),
       ...(example ? { example_revision: exampleRevision } : {}),
     };
@@ -400,10 +435,11 @@ export default {
     // Listing is the one thing a link-holder must not be able to do: knowing
     // one document must not reveal the others, so it takes a publisher.
     if (path === "/api/list" && (method === "POST" || method === "GET")) {
-      const refusal = await mayPublish(request, env);
+      const { owner, refusal } = await publisher(request, env);
       if (refusal) return refusal;
       const { entries } = await readIndex(env);
-      const docs = Object.values(entries).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      const docs = visibleTo(Object.values(entries), owner)
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
       return json({ documents: docs });
     }
 
@@ -413,11 +449,14 @@ export default {
     if (match && method === "POST") {
       const slug = match[1];
       if (!SLUG.test(slug)) return json({ error: "bad slug" }, 400);
-      const refusal = await mayPublish(request, env);
+      const { owner, refusal } = await publisher(request, env);
       if (refusal) return refusal;
       const { entries } = await readIndex(env);
+      // Another publisher's document answers exactly as a missing one does, so
+      // a guessed slug reveals nothing.
       if (!entries[slug]) return json({ error: "not found" }, 404);
       if (entries[slug].example) return json({ error: "reserved examples cannot be deleted" }, 403);
+      if (!ownedBy(entries[slug], owner)) return json({ error: "not found" }, 404);
       const title = entries[slug].title;
 
       const removed = await deleteDocument(env, slug);
@@ -457,8 +496,13 @@ export default {
     const asset = SHELL[page];
     if (asset) {
       const response = assetResponse(asset);
-      if (/^\/docs\/[^/]+$/.test(path) && !cookieValue(request, VISITOR_COOKIE)) {
+      // Every page names the browser, not just a reader: the index page is
+      // where an upload starts, and it needs an owner to belong to.
+      if (asset.type?.startsWith("text/html") && !cookieValue(request, VISITOR_COOKIE)) {
         response.headers.append("set-cookie", `${VISITOR_COOKIE}=${crypto.randomUUID()}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`);
+        // A shared cache handing this same identity to the next browser would
+        // defeat the point of having one.
+        response.headers.set("cache-control", "private, no-store");
       }
       return response;
     }

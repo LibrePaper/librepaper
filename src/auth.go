@@ -31,6 +31,9 @@ const (
 
 	sessionCookie = "komodoc_session"
 	stateCookie   = "komodoc_state"
+	// visitorCookie names the browser itself, so an upload made without
+	// signing in still belongs to whoever made it.
+	visitorCookie = "komodoc_visitor"
 	sessionMaxAge = 30 * 24 * time.Hour
 )
 

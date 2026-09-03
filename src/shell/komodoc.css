@@ -240,6 +240,12 @@ main.reader {
 .dropzone button {
   width: auto;
 }
+/* Between the two ways in: quiet enough not to compete with either. */
+.dropzone-or {
+  margin: calc(var(--pico-spacing) * 0.5) 0;
+  color: var(--pico-muted-color);
+  font-size: 0.875em;
+}
 
 /* ----------------------------------------------------------------- listing */
 

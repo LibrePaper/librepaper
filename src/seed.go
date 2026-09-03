@@ -44,6 +44,25 @@ type seedDocument struct {
 	Annotations []seedAnnotation
 }
 
+// readSeedDocument returns the HTML a seed document is published as. A markdown
+// example goes through the same renderer the publish and upload paths use, so
+// what gets seeded is what Komodoc itself would have made of the file rather
+// than a copy rendered by something else.
+func readSeedDocument(document seedDocument) string {
+	raw, err := os.ReadFile(document.File)
+	if err != nil {
+		die("could not read %s: %v\n\n  Run `make examples` first, which renders them.", document.File, err)
+	}
+	if !isMarkdown(document.File) {
+		return string(raw)
+	}
+	rendered, err := renderMarkdownDocument(string(raw), document.Title)
+	if err != nil {
+		die("could not render %s: %v", document.File, err)
+	}
+	return rendered
+}
+
 func seed(dir string, documents []seedDocument) {
 	absolute, err := filepath.Abs(dir)
 	if err != nil {
@@ -62,18 +81,15 @@ func seed(dir string, documents []seedDocument) {
 	rooms := newRoomSet(filepath.Join(absolute, "comments"))
 
 	for _, document := range documents {
-		raw, err := os.ReadFile(document.File)
-		if err != nil {
-			die("could not read %s: %v\n\n  Run `make examples` first, which renders them.", document.File, err)
-		}
+		raw := readSeedDocument(document)
 
 		slug := slugify(document.Title) + "-" + randomSuffix()
-		entry, err := documentStore.put(slug, document.Title, digestOf(string(raw)), string(raw))
+		entry, err := documentStore.put(slug, document.Title, digestOf(raw), raw, "")
 		if err != nil {
 			die("could not store %s: %v", document.File, err)
 		}
 
-		text := visibleText(string(raw))
+		text := visibleText(raw)
 		room := rooms.get(slug)
 		placed, missed := seedAnnotations(room, document.Annotations, text)
 
@@ -126,13 +142,10 @@ func seedRemote(endpointFlag string, documents []seedDocument) {
 
 	fmt.Printf("seeding %s\n", endpoint)
 	for _, document := range documents {
-		raw, err := os.ReadFile(document.File)
-		if err != nil {
-			die("could not read %s: %v\n\n  Run `make examples` first, which renders them.", document.File, err)
-		}
+		raw := readSeedDocument(document)
 		status, uploaded := postAuthed(endpoint+"/api/documents", map[string]any{
 			"title":       document.Title,
-			"html":        string(raw),
+			"html":        raw,
 			"slug":        slugify(document.Title),
 			"example":     true,
 			"annotations": document.Annotations,
@@ -147,7 +160,7 @@ func seedRemote(endpointFlag string, documents []seedDocument) {
 			// The Worker stored these as the canonical state and creates each
 			// visitor's room from them on first use.
 			for _, item := range document.Annotations {
-				if item.Region == nil && !strings.Contains(visibleText(string(raw)), item.Exact) {
+				if item.Region == nil && !strings.Contains(visibleText(raw), item.Exact) {
 					missed++
 				} else {
 					placed++
@@ -156,7 +169,7 @@ func seedRemote(endpointFlag string, documents []seedDocument) {
 		} else {
 			// The local server has no special example rooms; seed its ordinary
 			// shared room as before.
-			placed, missed = seedRemoteAnnotations(endpoint, slug, document.Annotations, visibleText(string(raw)))
+			placed, missed = seedRemoteAnnotations(endpoint, slug, document.Annotations, visibleText(raw))
 		}
 		fmt.Printf("  %-28s %s\n", slug, document.Title)
 		fmt.Printf("      %d annotation(s)", placed)
@@ -279,7 +292,11 @@ func seedAnnotations(room *room, annotations []seedAnnotation, text string) (pla
 var (
 	reScriptOrStyle = regexp.MustCompile(`(?is)<(script|style)\b[^>]*>.*?</(script|style)>`)
 	reTag           = regexp.MustCompile(`(?s)<[^>]*>`)
-	reSpace         = regexp.MustCompile(`[ \t]+`)
+	// All whitespace, newlines included: a browser renders a line break inside
+	// a paragraph as a single space, so a phrase a reader can select may be
+	// wrapped across lines in the source. Collapsing only spaces and tabs left
+	// those unanchorable in any hand-written HTML or markdown.
+	reSpace = regexp.MustCompile(`\s+`)
 )
 
 // visibleText is what the reader would anchor against: the document with its

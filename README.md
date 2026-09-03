@@ -25,7 +25,9 @@ The installer supports Linux and macOS. Windows binaries are available on the
 
 ## Try it now
 
-See Komodoc in action with a [live example](https://komodoc.vincentarelbundock.workers.dev/docs/what-the-bootstrap-actually-resamples) on the public sandbox. Try highlighting passages and adding comments.
+Open the [example notebooks](https://komodoc.vincentarelbundock.workers.dev) on the public sandbox, select a passage, and
+comment on it. No account is needed. Each visitor gets their own copy of the
+annotations, so nothing you write there is visible to anyone else.
 
 ## Publish
 
@@ -121,16 +123,32 @@ Use `--expire-from created` for a fixed lifetime from the first upload, or
 `--expire-after never` to disable expiry. Cloudflare runs the cleanup schedule;
 the `komodoc` program does not need to remain running.
 
-The maintainer's sandbox also deploys with `--examples`. This reserves five
-curated example notebooks demonstrating different source formats, and gives each visitor a personal annotation room
-that resets after an hour. Ordinary notebooks remain shared and collaborative.
+The maintainer's sandbox also deploys with `--examples`. This reserves the six
+curated example notebooks and gives each visitor a personal annotation room that
+resets after an hour. Ordinary notebooks remain shared and collaborative.
 
-The stable examples are:
-- [Quarto: What the Bootstrap Actually Resamples](https://komodoc.vincentarelbundock.workers.dev/docs/quarto-what-the-bootstrap-actually-resamples)
-- [Calepin: Newton's Method Is Not Always Your Friend](https://komodoc.vincentarelbundock.workers.dev/docs/calepin-newton-s-method-is-not-always-your-friend)
-- [HTML: A Short Style Guide for Quantitative Writing](https://komodoc.vincentarelbundock.workers.dev/docs/html-a-short-style-guide-for-quantitative-writing)
-- [Marimo: How Far Does a Random Walk Go?](https://komodoc.vincentarelbundock.workers.dev/docs/marimo-how-far-does-a-random-walk-go)
-- [Jupyter: Bootstrap Sampling and Confidence Intervals](https://komodoc.vincentarelbundock.workers.dev/docs/jupyter-bootstrap-sampling-and-confidence-intervals)
+There is one example per source format, and each is produced by the tool it is
+named after rather than hand-converted:
+
+| Example | Source | Rendered by |
+| --- | --- | --- |
+| [HTML: A Short Style Guide for Quantitative Writing](https://komodoc.vincentarelbundock.workers.dev/docs/html-a-short-style-guide-for-quantitative-writing) | `style-guide.html` | nothing; it is written by hand |
+| [Markdown: What a Regression Table Is Hiding](https://komodoc.vincentarelbundock.workers.dev/docs/markdown-what-a-regression-table-is-hiding) | `regression-tables.md` | Komodoc, on publication |
+| [Quarto: What the Bootstrap Actually Resamples](https://komodoc.vincentarelbundock.workers.dev/docs/quarto-what-the-bootstrap-actually-resamples) | `bootstrap.qmd` | `quarto render` |
+| [Calepin: Newton's Method Is Not Always Your Friend](https://komodoc.vincentarelbundock.workers.dev/docs/calepin-newton-s-method-is-not-always-your-friend) | `newton.typ` | `calepin compile` |
+| [Jupyter: Simpson's Paradox Is Not a Paradox](https://komodoc.vincentarelbundock.workers.dev/docs/jupyter-simpson-s-paradox-is-not-a-paradox) | `simpsons-paradox.ipynb` | `jupyter nbconvert --execute` |
+| [Marimo: How Far Does a Drunk Walk?](https://komodoc.vincentarelbundock.workers.dev/docs/marimo-how-far-does-a-drunk-walk) | `random-walks.py` | `marimo export html` |
+
+`make examples` renders them all. Quarto and Calepin have to be installed;
+marimo and Jupyter are fetched by [uv](https://docs.astral.sh/uv/) against
+`examples/pyproject.toml`, so neither Python nor either tool needs to be on the
+machine.
+
+The marimo example is the one document here that is not self-contained: its
+exporter loads the marimo frontend from a CDN and keeps the prose in a JSON
+island the page hydrates in the browser. It is published exactly as marimo
+produces it, which is why it is also the one example that carries no
+pre-seeded annotations.
 
 ## Export comments
 

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Short Style Guide for Quantitative Writing</title>
+</head>
+<body>
+
+<h1>A Short Style Guide for Quantitative Writing</h1>
+
+<p>This page is hand-written HTML. There is no stylesheet, no script and no
+build step: what the browser shows is what the file says, rendered with the
+browser's own defaults. It is here as the plainest thing Komodoc can host, and
+as a contrast with the other examples, which all arrive dressed by a
+toolchain.</p>
+
+<h2>Numbers in prose</h2>
+
+<p>A number in a sentence is being read, not computed. Round it until it can be
+held in the head.</p>
+
+<ul>
+  <li>Two significant figures in the text, full precision in the table.</li>
+  <li>Units every time, without exception.</li>
+  <li>A percentage change and a percentage-point change are different
+      quantities, and swapping them silently is the commonest error in this
+      genre.</li>
+</ul>
+
+<ol>
+  <li>State the estimate.</li>
+  <li>State its uncertainty.</li>
+  <li>State what would have to be true for it to be wrong.</li>
+</ol>
+
+<h2>Choosing an interval</h2>
+
+<p>The three intervals below answer three different questions, and the choice
+is substantive rather than stylistic.</p>
+
+<table>
+  <thead>
+    <tr><th>Interval</th><th>Answers</th><th>Fails when</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Confidence</td>
+      <td>Where is the parameter, across repeated samples?</td>
+      <td>The model is wrong</td>
+    </tr>
+    <tr>
+      <td>Prediction</td>
+      <td>Where will the next observation fall?</td>
+      <td>The variance is misjudged</td>
+    </tr>
+    <tr>
+      <td>Tolerance</td>
+      <td>Where do most of the population lie?</td>
+      <td>The tails are heavier than assumed</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>A confidence interval for a mean is often reported where a prediction
+interval was wanted. The first is narrow and about a parameter; the second is
+wide and about an observation.</p>
+
+<h2>Tables</h2>
+
+<p>A table is read down its columns, so put the comparison in the columns and
+the cases in the rows.</p>
+
+<table>
+  <thead>
+    <tr><th>Method</th><th>Estimate</th><th>Std. error</th><th>Coverage</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Normal approximation</td><td>4.02</td><td>0.31</td><td>0.91</td></tr>
+    <tr><td>Percentile bootstrap</td><td>4.02</td><td>0.33</td><td>0.93</td></tr>
+    <tr><td>BCa bootstrap</td><td>4.03</td><td>0.33</td><td>0.95</td></tr>
+    <tr><td>Exact</td><td>4.00</td><td>0.32</td><td>0.95</td></tr>
+  </tbody>
+</table>
+
+<p>Three rules that survive most contact with reality:</p>
+
+<ul>
+  <li>Right-align numbers, left-align text, and align on the decimal point
+      where the format allows it.</li>
+  <li>Give every column a unit or a scale in its header, not in a
+      footnote.</li>
+  <li>Sort rows by something meaningful. Alphabetical order is meaningful only
+      for looking things up.</li>
+</ul>
+
+<h2>Figures against tables</h2>
+
+<p>Use a figure when the shape of the relationship is the finding. Use a table
+when the individual values are the finding. A figure that could have been a
+sentence should be a sentence.</p>
+
+<h2>Words to avoid</h2>
+
+<table>
+  <thead>
+    <tr><th>Instead of</th><th>Write</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>significant</td>
+      <td>large, or reliable, or <em>p</em> &lt; 0.05, whichever you mean</td>
+    </tr>
+    <tr>
+      <td>correlated with</td>
+      <td>associated with, or predicts, or causes, whichever you mean</td>
+    </tr>
+    <tr><td>proves</td><td>is consistent with</td></tr>
+    <tr><td>very</td><td>nothing at all</td></tr>
+  </tbody>
+</table>
+
+<p>&ldquo;Significant&rdquo; is the worst of these, because it has a technical
+meaning and an ordinary one, and a reader cannot tell from the sentence which
+was intended.</p>
+
+<h2>A closing note</h2>
+
+<p>The purpose of all of this is to make the reader's job easy, not to make the
+writer's job look hard. If a sentence needs a second reading to yield its
+meaning, and that second reading was not the point, rewrite it.</p>
+
+</body>
+</html>

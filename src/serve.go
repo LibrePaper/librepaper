@@ -277,10 +277,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Listing is the one thing a link-holder must not be able to do: knowing
 	// one document must not reveal the others, so it takes a publisher.
 	if path == "/api/list" && (r.Method == http.MethodPost || r.Method == http.MethodGet) {
-		if !s.mayPublish(w, r) {
+		login, ok := s.publisher(w, r)
+		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"documents": s.store.list()})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"documents": s.visible(s.store.list(), login),
+		})
 		return
 	}
 
@@ -324,6 +327,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if asset, ok := s.shell[page]; ok {
+		s.issueVisitor(w, r, asset)
 		writeAsset(w, asset)
 		return
 	}
@@ -404,7 +408,8 @@ func (s *server) handleComments(w http.ResponseWriter, r *http.Request, slug str
 
 func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// Checked before the body is read, so an unauthorised upload costs nothing.
-	if !s.mayPublish(w, r) {
+	login, ok := s.publisher(w, r)
+	if !ok {
 		return
 	}
 	var title, slug, html string
@@ -482,14 +487,17 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// An exact slug that already exists is a replacement of that document, and
 	// keeps its URL and its comments. Anything else is a new document, and gets
 	// a random suffix so the link cannot be guessed from the title.
+	// Someone else's document is not yours to replace, and guessing its slug
+	// should not even tell you it is there: a title that collides with another
+	// publisher's document simply becomes a new document of your own.
 	key := base
-	if _, exists := s.store.get(base); !exists {
+	if existing, exists := s.store.get(base); !exists || !existing.ownedBy(login) {
 		key = base + "-" + randomSuffix()
 	}
 
 	sum := sha256.Sum256([]byte(html))
 	digest := hex.EncodeToString(sum[:])
-	entry, err := s.store.put(key, title, digest, html)
+	entry, err := s.store.put(key, title, digest, html, login)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not store the document"})
 		return
@@ -507,11 +515,14 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request, slug strin
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad slug"})
 		return
 	}
-	if !s.mayPublish(w, r) {
+	login, allowed := s.publisher(w, r)
+	if !allowed {
 		return
 	}
 	entry, ok := s.store.get(slug)
-	if !ok {
+	// Another publisher's document answers exactly as a missing one does, so a
+	// guessed slug reveals nothing.
+	if !ok || !entry.ownedBy(login) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
@@ -581,23 +592,55 @@ func (s *server) whoami(r *http.Request) string {
 	return ""
 }
 
-// mayPublish answers the request itself when the caller is not allowed to.
-func (s *server) mayPublish(w http.ResponseWriter, r *http.Request) bool {
+// publisher answers the request itself when the caller may not publish, and
+// otherwise returns the key that owns whatever that caller uploads: their
+// GitHub login, or their browser where publishing needs no account at all.
+func (s *server) publisher(w http.ResponseWriter, r *http.Request) (string, bool) {
 	login := s.whoami(r)
 	if s.publishers.allows(login) {
-		return true
+		return s.owner(r, login), true
 	}
 	if login == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
 			"error": "sign in with GitHub to publish",
 		})
-		return false
+		return "", false
 	}
 	writeJSON(w, http.StatusForbidden, map[string]any{
 		"error": fmt.Sprintf("@%s may not publish here; this deployment allows %s",
 			login, s.publishers.describe()),
 	})
-	return false
+	return "", false
+}
+
+// owner is the key a caller's uploads belong to. A signed-in caller is their
+// GitHub login. Where publishing needs no account there is still someone on
+// the other end, so an anonymous caller is named by the visitor cookie the
+// shell handed their browser: not an identity, but enough that one visitor's
+// uploads are not another's to list, replace or delete.
+//
+// A caller with neither -- the CLI publishing to a deployment open to
+// everyone -- owns nothing, and their uploads stay shared.
+func (s *server) owner(r *http.Request, login string) string {
+	if login != "" {
+		return strings.ToLower(login)
+	}
+	if cookie, err := r.Cookie(visitorCookie); err == nil && cookie.Value != "" {
+		return visitorPrefix + cookie.Value
+	}
+	return ""
+}
+
+// visible narrows a listing to what one owner should see: the reserved
+// examples, the documents that predate ownership, and their own uploads.
+func (s *server) visible(entries []indexEntry, owner string) []indexEntry {
+	mine := make([]indexEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Example || entry.ownedBy(owner) {
+			mine = append(mine, entry)
+		}
+	}
+	return mine
 }
 
 // handleAuth serves the sign-in routes: the redirect to GitHub, the callback
@@ -757,6 +800,27 @@ func (s *server) applyFrom(current *room, incoming message, address, identity st
 	return current.apply(incoming, address)
 }
 
+// visitorPrefix keeps a browser's key from ever colliding with a GitHub
+// login, which cannot contain a colon.
+const visitorPrefix = "visitor:"
+
+// issueVisitor names a browser the first time it is served a page, so an
+// upload it makes without signing in belongs to it and to nobody else. Only
+// pages carry it: an image or a font is not where a session starts.
+func (s *server) issueVisitor(w http.ResponseWriter, r *http.Request, asset shellFile) {
+	if !strings.HasPrefix(asset.Type, "text/html") {
+		return
+	}
+	if cookie, err := r.Cookie(visitorCookie); err == nil && cookie.Value != "" {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: visitorCookie, Value: randomToken(), Path: "/",
+		MaxAge: int((365 * 24 * time.Hour).Seconds()), HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil,
+	})
+}
+
 // writeAsset serves one shell file: decoded if it is a binary carried as
 // base64, and cached for a year if its bytes never change.
 func writeAsset(w http.ResponseWriter, asset shellFile) {
@@ -771,9 +835,15 @@ func writeAsset(w http.ResponseWriter, asset shellFile) {
 	}
 	w.Header().Set("content-type", asset.Type)
 	privacyHeaders(w.Header())
-	if asset.Immutable {
+	switch {
+	// This response carries a freshly minted visitor cookie, and a shared
+	// cache handing that same identity to the next browser would defeat the
+	// point of having one.
+	case w.Header().Get("set-cookie") != "":
+		w.Header().Set("cache-control", "private, no-store")
+	case asset.Immutable:
 		w.Header().Set("cache-control", "public, max-age=31536000, immutable")
-	} else {
+	default:
 		w.Header().Set("cache-control", "public, max-age=300")
 	}
 	_, _ = w.Write(body)
