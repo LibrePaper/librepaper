@@ -561,25 +561,36 @@ toolButtons.filter((b) => b.dataset.tool !== tool).forEach((b) => (b.className =
 
 bar.onclick = () => {
   if (!pending) return;
-  bar.style.display = "none";
+  bar.style.display = “none”;
 
-  if (tool === "highlighting") {
+  if (tool === “highlighting”) {
     // No dialog: the passage is the whole annotation.
-    submitAnnotation({ motivation: "highlighting", body: "", replacement: "", tags: [] });
+    submitAnnotation({ motivation: “highlighting”, body: “”, replacement: “”, tags: [] });
     return;
   }
 
-  document.getElementById("selectedQuote").textContent = pending.region
-    ? `Figure ${pending.region.image_index + 1}`
-    : "“" + pending.exact + "”";
-  document.getElementById("replacementField").hidden = tool !== "editing";
-  // A region has no passage to replace, so the edit tool falls back to a remark.
-  document.getElementById("bodyLabel").textContent =
-    tool === "editing" ? "Why" : tool === "questioning" ? "Question" : "Comment";
-  if (tool === "editing") document.getElementById("replacement").value = pending.exact;
-  dialog.showModal();
-  document.getElementById(tool === "editing" ? "replacement" : "body").focus();
+  // If not logged in, ask how they want to identify
+  if (!identity) {
+    const identityDialog = document.getElementById(“identityDialog”);
+    identityDialog.showModal();
+    return;
+  }
+
+  showCommentDialog();
 };
+
+function showCommentDialog() {
+  document.getElementById(“selectedQuote”).textContent = pending.region
+    ? `Figure ${pending.region.image_index + 1}`
+    : “”” + pending.exact + “””;
+  document.getElementById(“replacementField”).hidden = tool !== “editing”;
+  // A region has no passage to replace, so the edit tool falls back to a remark.
+  document.getElementById(“bodyLabel”).textContent =
+    tool === “editing” ? “Why” : tool === “questioning” ? “Question” : “Comment”;
+  if (tool === “editing”) document.getElementById(“replacement”).value = pending.exact;
+  dialog.showModal();
+  document.getElementById(tool === “editing” ? “replacement” : “body”).focus();
+}
 
 // One path for every kind, whether it came from the dialog or straight from
 // the highlight tool.
@@ -638,6 +649,18 @@ function parseTags(value) {
 
 document.getElementById("author").value = localStorage.getItem("komodoc-author") || "Anonymous";
 
+// Identity dialog handlers
+const identityDialog = document.getElementById("identityDialog");
+document.getElementById("signInChoice").onclick = () => {
+  identityDialog.close();
+  window.location.href = `/auth/login?next=${encodeURIComponent(location.pathname)}`;
+};
+
+document.getElementById("nameChoice").onclick = () => {
+  identityDialog.close();
+  showCommentDialog();
+};
+
 // Document bytes and comments are fetched in parallel; whichever lands last
 // triggers the single anchoring pass.
 connect();
@@ -665,6 +688,9 @@ fetch("/api/me")
     // The nav shows who you are on every page, landing or document.
     document.getElementById("who").hidden = !identity;
     document.getElementById("who").textContent = identity ? "@" + identity : "";
+    const signIn = document.getElementById("signIn");
+    signIn.hidden = Boolean(identity) || !me.can_sign_in;
+    signIn.href = `/auth/login?next=${encodeURIComponent(location.pathname)}`;
     document.getElementById("signOut").hidden = !identity;
     const name = document.getElementById("author");
     const label = document.getElementById("nameLabel");
