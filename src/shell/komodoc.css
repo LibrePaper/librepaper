@@ -656,9 +656,34 @@ footer.grid > [role="button"] {
   border-color: var(--komodoc-tint);
   color: var(--komodoc-tint);
 }
-.tools .tool[aria-pressed="true"] {
-  background: var(--komodoc-tint);
-  border-color: var(--komodoc-tint);
+.tools .tool[data-tool="commenting"][aria-pressed="true"] {
+  background: hsl(42 55% 45%);
+  border-color: hsl(42 55% 45%);
+  color: #fff;
+}
+.tools .tool[data-tool="questioning"][aria-pressed="true"] {
+  background: hsl(255 30% 50%);
+  border-color: hsl(255 30% 50%);
+  color: #fff;
+}
+.tools .tool[data-tool="highlighting"][aria-pressed="true"] {
+  background: hsl(145 28% 38%);
+  border-color: hsl(145 28% 38%);
+  color: #fff;
+}
+.tools .tool[data-tool="editing"][aria-pressed="true"] {
+  background: hsl(8 45% 48%);
+  border-color: hsl(8 45% 48%);
+  color: #fff;
+}
+.tools .tool[data-tool="assessing"][aria-pressed="true"] {
+  background: hsl(195 35% 40%);
+  border-color: hsl(195 35% 40%);
+  color: #fff;
+}
+.tools .tool[data-tool="region"][aria-pressed="true"] {
+  background: hsl(42 55% 45%);
+  border-color: hsl(42 55% 45%);
   color: #fff;
 }
 
