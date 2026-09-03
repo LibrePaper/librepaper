@@ -3,12 +3,14 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Seeding fills an empty data directory with the example documents and a
@@ -20,20 +22,20 @@ import (
 // the API would mean holding a GitHub token to talk to your own laptop.
 
 type seedAnnotation struct {
-	Motivation string
+	Motivation string `json:"motivation"`
 	// Exact is the passage to anchor to. It has to appear in the rendered
 	// document, and it has to appear once: prefix and suffix are computed from
 	// wherever it is found.
-	Exact       string
-	Body        string
-	Replacement string
-	Tags        []string
-	Creator     string
-	Resolved    bool
-	Replies     []string
+	Exact       string   `json:"exact"`
+	Body        string   `json:"body"`
+	Replacement string   `json:"replacement,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Creator     string   `json:"creator"`
+	Resolved    bool     `json:"resolved,omitempty"`
+	Replies     []string `json:"replies,omitempty"`
 	// Region annotates part of a figure instead of a passage, given as
 	// percentages of the image.
-	Region *region
+	Region *region `json:"region,omitempty"`
 }
 
 type seedDocument struct {
@@ -84,6 +86,142 @@ func seed(dir string, documents []seedDocument) {
 		}
 		fmt.Println()
 	}
+}
+
+// seedRemote gives a deployed sandbox the same curated titles and annotations
+// as the local seed. It deliberately replaces everything already there: a
+// seed is a known demonstration state, not an additive publishing operation.
+func seedRemote(endpointFlag string, documents []seedDocument) {
+	endpoint := endpointFrom(endpointFlag)
+	token := storedToken()
+	status, raw := do("GET", endpoint+"/api/me", nil, nil, 30*time.Second)
+	var capabilities map[string]any
+	if status == 200 {
+		_ = json.Unmarshal(raw, &capabilities)
+	}
+	examplesEnabled, _ := capabilities["examples_enabled"].(bool)
+
+	status, listing := postAuthed(endpoint+"/api/list", map[string]any{}, token, 60*time.Second)
+	if status != 200 {
+		die("could not list the sandbox before seeding (%d): %v", status, detailOf(listing))
+	}
+	// Local seeding retains its historical replace-everything behavior. An
+	// examples-enabled sandbox overwrites only its four reserved examples, so
+	// deploying it cannot erase users' short-lived notebooks.
+	if !examplesEnabled {
+		existing, _ := listing["documents"].([]any)
+		for _, value := range existing {
+			document, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			slug := text(document["slug"])
+			status, result := postAuthed(endpoint+"/api/documents/"+slug+"/delete",
+				map[string]any{}, token, 120*time.Second)
+			if status != 200 {
+				die("could not remove %s before seeding (%d): %v", slug, status, detailOf(result))
+			}
+		}
+	}
+
+	fmt.Printf("seeding %s\n", endpoint)
+	for _, document := range documents {
+		raw, err := os.ReadFile(document.File)
+		if err != nil {
+			die("could not read %s: %v\n\n  Run `make examples` first, which renders them.", document.File, err)
+		}
+		status, uploaded := postAuthed(endpoint+"/api/documents", map[string]any{
+			"title":       document.Title,
+			"html":        string(raw),
+			"slug":        slugify(document.Title),
+			"example":     true,
+			"annotations": document.Annotations,
+		}, token, 300*time.Second)
+		if status != 201 {
+			die("could not seed %s (%d): %v", document.File, status, detailOf(uploaded))
+		}
+
+		slug := text(uploaded["slug"])
+		placed, missed := 0, 0
+		if marked, _ := uploaded["example"].(bool); marked {
+			// The Worker stored these as the canonical state and creates each
+			// visitor's room from them on first use.
+			for _, item := range document.Annotations {
+				if item.Region == nil && !strings.Contains(visibleText(string(raw)), item.Exact) {
+					missed++
+				} else {
+					placed++
+				}
+			}
+		} else {
+			// The local server has no special example rooms; seed its ordinary
+			// shared room as before.
+			placed, missed = seedRemoteAnnotations(endpoint, slug, document.Annotations, visibleText(string(raw)))
+		}
+		fmt.Printf("  %-28s %s\n", slug, document.Title)
+		fmt.Printf("      %d annotation(s)", placed)
+		if missed > 0 {
+			fmt.Printf(", %d could not be anchored", missed)
+		}
+		fmt.Println()
+	}
+}
+
+func seedRemoteAnnotations(endpoint, slug string, annotations []seedAnnotation, visible string) (placed, missed int) {
+	url := endpoint + "/api/documents/" + slug + "/comments"
+	for _, item := range annotations {
+		at := -1
+		if item.Region == nil {
+			at = strings.Index(visible, item.Exact)
+			if at < 0 {
+				missed++
+				continue
+			}
+		}
+
+		incoming := message{
+			Type:        "comment",
+			Motivation:  item.Motivation,
+			Body:        item.Body,
+			Replacement: item.Replacement,
+			Tags:        item.Tags,
+			Creator:     item.Creator,
+			Exact:       item.Exact,
+			Region:      item.Region,
+		}
+		if at >= 0 {
+			incoming.Prefix = tail(visible[:at], config.Caps.Context)
+			incoming.Suffix = head(visible[at+len(item.Exact):], config.Caps.Context)
+			position := at
+			incoming.Position = &position
+		}
+
+		status, result := postAuthed(url, incoming, "", 60*time.Second)
+		if status != 200 {
+			die("could not seed an annotation on %s (%d): %v", slug, status, detailOf(result))
+		}
+		comment, _ := result["comment"].(map[string]any)
+		commentID := text(comment["id"])
+
+		for _, body := range item.Replies {
+			status, reply := postAuthed(url, message{
+				Type: "reply", CommentID: commentID, Body: body, Creator: "Reviewer",
+			}, "", 60*time.Second)
+			if status != 200 {
+				die("could not seed a reply on %s (%d): %v", slug, status, detailOf(reply))
+			}
+		}
+		if item.Resolved {
+			status, resolved := postAuthed(url, message{
+				Type: "resolve", CommentID: commentID, Resolved: true,
+			}, "", 60*time.Second)
+			if status != 200 {
+				die("could not resolve a seeded annotation on %s (%d): %v", slug, status, detailOf(resolved))
+			}
+		}
+		placed++
+	}
+	return placed, missed
 }
 
 // seedAnnotations writes one document's annotations, anchoring each to where

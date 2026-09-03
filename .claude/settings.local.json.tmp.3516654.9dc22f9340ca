@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make build *)",
+      "Bash(pkill -f 'dist/komodoc serve')",
+      "Bash(./dist/komodoc serve *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git commit -m 'Remove green background from annotation tool buttons *)",
+      "Bash(git commit -m 'Invert annotation tool button colors when selected *)",
+      "Bash(git commit -m 'Add management workspace section and live example link *)",
+      "Bash(git commit -m 'Show only Calepin and Quarto examples with subtitles *)",
+      "Bash(git commit -m 'Add 5 example notebooks demonstrating different source formats *)"
+    ]
+  }
+}

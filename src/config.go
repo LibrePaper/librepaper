@@ -82,3 +82,17 @@ func allowedMotivation(value string) string {
 	}
 	return config.DefaultMotivation
 }
+
+// setMaxHTML overrides the document size ceiling, in megabytes. Both backends
+// read config.MaxHTML, and the Worker and the upload page get it injected at
+// deploy time, so setting it here at startup is enough to move the limit
+// everywhere.
+func setMaxHTML(megabytes int) {
+	if megabytes == 0 {
+		return
+	}
+	if megabytes < 1 || megabytes > 100 {
+		die("--max-size must be between 1 and 100 MB")
+	}
+	config.MaxHTML = megabytes * 1024 * 1024
+}

@@ -62,7 +62,9 @@ export class Room extends DurableObject {
     if (count > RATE_PER_HOUR) return false;
     await this.ctx.storage.put(bucket, count);
     // Expire the counters rather than accumulating a row per IP per hour.
-    this.ctx.storage.setAlarm(Date.now() + 3600000);
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + 3600000);
+    }
     return true;
   }
 
@@ -71,10 +73,53 @@ export class Room extends DurableObject {
     const current = String(Math.floor(Date.now() / 3600000));
     const drop = [...stale.keys()].filter((key) => !key.endsWith(`:${current}`));
     if (drop.length) await this.ctx.storage.delete(drop);
+    const example = await this.ctx.storage.get("example");
+    if (example) {
+      const revision = (await this.ctx.storage.get("example_revision")) || "";
+      await this.resetExample(example, revision);
+    }
+  }
+
+  async resetExample(slug, revision = "") {
+    const stored = await this.env.DOCS.get(`examples/${slug}.json`);
+    if (!stored) return;
+    const seeds = await stored.json();
+    const old = await this.ctx.storage.list({ prefix: "c:" });
+    if (old.size) await this.ctx.storage.delete([...old.keys()]);
+    let seq = 0;
+    const stamp = now();
+    const comments = [];
+    for (const seed of seeds) {
+      const comment = {
+        id: crypto.randomUUID(), seq: ++seq,
+        motivation: seed.motivation || "commenting",
+        exact: seed.exact || "", prefix: seed.prefix || "", suffix: seed.suffix || "",
+        position: Number.isInteger(seed.position) ? seed.position : null,
+        region: seed.region || null, body: seed.body || "", replacement: seed.replacement || "",
+        tags: seed.tags || [], creator: seed.creator || "Example", created: stamp,
+        resolved: Boolean(seed.resolved), resolved_at: seed.resolved ? stamp : null,
+        replies: (seed.replies || []).map((body) => ({ id: crypto.randomUUID(), body, creator: "Reviewer", created: stamp })),
+      };
+      comments.push(comment);
+      await this.persist(comment);
+    }
+    await this.ctx.storage.put({ seq, example: slug, example_revision: revision });
+    this.cache = comments;
+    this.broadcast({ type: "hello", comments });
   }
 
   async fetch(request) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/ensure") {
+      const slug = url.searchParams.get("slug") || "";
+      const revision = url.searchParams.get("revision") || "";
+      const current = await this.ctx.storage.get("example_revision");
+      if (!(await this.ctx.storage.get("example")) || current !== revision) {
+        await this.resetExample(slug, revision);
+      }
+      return Response.json({ ready: true });
+    }
 
     // Reached only through the delete route, which checks the caller first.
     // Wipes this document's comments and drops anyone still reading it.
@@ -124,6 +169,11 @@ export class Room extends DurableObject {
         request.headers.get("x-komodoc-login") || "",
       );
       if (result.type !== "error") this.broadcast(result);
+      if (result.type !== "error" && await this.ctx.storage.get("example")) {
+        if ((await this.ctx.storage.getAlarm()) === null) {
+          await this.ctx.storage.setAlarm(Date.now() + 3600000);
+        }
+      }
       return Response.json(result, { status: result.type === "error" ? 400 : 200 });
     }
     return new Response("method not allowed", { status: 405 });
@@ -143,6 +193,9 @@ export class Room extends DurableObject {
       return;
     }
     this.broadcast(result);
+    if (await this.ctx.storage.get("example") && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + 3600000);
+    }
   }
 
   async webSocketClose(socket, code, reason) {

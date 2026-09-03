@@ -34,6 +34,7 @@ src/shell/README.md: README.md
 
 test:  ## Run gofmt, go vet and the test suite
 	@gofmt -l src | grep . && { echo "gofmt needed"; exit 1; } || true
+	@for file in src/shell/*.js src/worker/*.js; do node --check "$$file"; done
 	@go vet ./...
 	@go test ./...
 
@@ -57,9 +58,10 @@ serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, PUBLISHER
 	@$(BIN) serve --port $(PORT) --data $(DATA) --publishers $(PUBLISHERS) --commenters $(COMMENTERS)
 
 EXAMPLES := examples/bootstrap.html examples/newton.html examples/random-walks.html \
-            examples/style-guide.html
+            examples/style-guide.html examples/bootstrap-jupyter.html
 
-examples: $(EXAMPLES)  ## Render the example documents to standalone HTML
+# Not in the help: a step of `deploy` and `deploy-sandbox`, not an entry point.
+examples: $(EXAMPLES)
 
 # Quarto and Calepin both inline their figures, so each output stands alone.
 # Both tools resolve paths relative to the document, so both are run from
@@ -75,9 +77,62 @@ examples/%.html: examples/%.typ
 examples/style-guide.html: examples/style-guide.typ
 	@cd examples && typst compile $(notdir $<) $(notdir $@) --format html --features html 2>/dev/null
 
-seed: $(BIN) $(EXAMPLES)  ## Wipe the data directory and fill it with the examples
+# Not in the help: it is a step of `deploy`, not a thing to run on its own.
+seed: $(BIN) $(EXAMPLES)
 	@$(BIN) seed --data $(DATA)
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
 	@pkill -f '[d]ist/komodoc serve' && echo "stopped" || echo "nothing to stop"
+
+# The two deployments. `deploy` is this machine; `deploy-sandbox` is the
+# Cloudflare service. Both start from a freshly seeded set of examples, so
+# either one is a known state rather than whatever was left over.
+#
+# There is only the one Cloudflare deployment for now, and it is a sandbox.
+# It reads its own _SANDBOX credentials, so a second, less disposable service
+# can be added later without either one inheriting the other's settings.
+# Supply them however you like -- in .env, or through sops:
+#
+#     sops exec-env .keys.yaml 'make deploy-sandbox'
+.PHONY: deploy deploy-sandbox
+
+# No sign-in at all: publishing and commenting are both open, so this needs
+# no GitHub OAuth app and no `komodoc login`.
+deploy: seed  ## Seed the examples and serve them on this machine, no sign-in
+	@$(MAKE) serve PUBLISHERS=anyone COMMENTERS=anyone
+
+# The label is the first component of the endpoint host, so the URL is stated
+# once and the two cannot drift apart.
+SANDBOX_LABEL = $(firstword $(subst ., ,$(patsubst https://%,%,$(KOMODOC_ENDPOINT_SANDBOX))))
+
+deploy-sandbox: $(BIN) $(EXAMPLES)  ## Deploy to Cloudflare and publish the examples there
+	@test -n "$$KOMODOC_ENDPOINT_SANDBOX" || { echo "set KOMODOC_ENDPOINT_SANDBOX"; exit 1; }
+	@test -n "$$KOMODOC_GITHUB_CLIENT_ID_SANDBOX" || { echo "set KOMODOC_GITHUB_CLIENT_ID_SANDBOX"; exit 1; }
+	@test -n "$$KOMODOC_GITHUB_CLIENT_SECRET_SANDBOX" || { echo "set KOMODOC_GITHUB_CLIENT_SECRET_SANDBOX"; exit 1; }
+	@# Through the environment, not the command line: an argument is visible
+	@# in ps to every process on the machine, an environment variable is not.
+	@KOMODOC_GITHUB_CLIENT_ID="$$KOMODOC_GITHUB_CLIENT_ID_SANDBOX" \
+		KOMODOC_GITHUB_CLIENT_SECRET="$$KOMODOC_GITHUB_CLIENT_SECRET_SANDBOX" \
+		$(BIN) deploy --label $(SANDBOX_LABEL) \
+		--publishers $(PUBLISHERS) --commenters $(COMMENTERS) --examples
+	@$(BIN) login --client-id "$$KOMODOC_GITHUB_CLIENT_ID_SANDBOX" --endpoint "$$KOMODOC_ENDPOINT_SANDBOX"
+	@$(BIN) seed --endpoint "$$KOMODOC_ENDPOINT_SANDBOX"
+
+# Make cannot put anything into the shell that invoked it, so this prints the
+# assignments and you eval them:
+# A shell with the keys already in its environment. Nothing is printed and no
+# process outside that subshell ever sees them; exit it to drop them again.
+#
+# No target can export into the shell that ran make -- that is a process
+# boundary, not something a flag can cross -- so a one-off command is wrapped
+# rather than exported:
+#
+#     sops exec-env $(KEYS) 'make deploy-sandbox'
+KEYS ?= .keys.yaml
+.PHONY: secrets
+
+secrets:  ## Open a shell with the sops-encrypted keys in its environment
+	@test -f $(KEYS) || { echo "no $(KEYS)"; exit 1; }
+	@echo "$(KEYS) is loaded in this shell; exit to drop it"
+	@sops exec-env $(KEYS) $$SHELL

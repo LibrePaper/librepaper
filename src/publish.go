@@ -84,11 +84,14 @@ func publish(file, title, slug, endpointFlag string) {
 		title = strings.TrimSpace(strings.NewReplacer("_", " ", "-", " ").Replace(stem))
 	}
 
+	// storedToken, not requireToken: a deployment whose publishers are
+	// "anyone" takes documents with no sign-in, and one that does need an
+	// account answers with its own message.
 	status, document := postAuthed(endpoint+"/api/documents", map[string]string{
 		"title": title,
 		"slug":  slug,
 		"html":  html,
-	}, requireToken(), 300*time.Second)
+	}, storedToken(), 300*time.Second)
 	if status != 201 {
 		die("upload failed (%d): %v", status, detailOf(document))
 	}

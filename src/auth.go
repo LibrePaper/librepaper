@@ -47,7 +47,7 @@ type policy struct {
 
 // parsePolicy reads the value of --publishers or --commenters:
 //
-//	anyone            no sign-in required (commenting only)
+//	anyone            no sign-in required at all
 //	any               any signed-in GitHub account
 //	alice,bob         only these GitHub logins
 func parsePolicy(value string) policy {

@@ -91,9 +91,19 @@ type serveOptions struct {
 	clientSecret string
 	publishers   string
 	commenters   string
+	expireAfter  string
+	expireFrom   string
 }
 
 func serve(options serveOptions) {
+	retention, err := parseRetention(firstOf(options.expireAfter, os.Getenv("KOMODOC_EXPIRE_AFTER")))
+	if err != nil {
+		die("%v; use a duration such as 24h or 30d", err)
+	}
+	expireFrom, err := parseExpireFrom(firstOf(options.expireFrom, os.Getenv("KOMODOC_EXPIRE_FROM")))
+	if err != nil {
+		die("%v", err)
+	}
 	dir := options.dir
 	if dir == "" {
 		dir = "komodoc-data"
@@ -115,7 +125,19 @@ func serve(options serveOptions) {
 		ClientID:     firstOf(options.clientID, os.Getenv("KOMODOC_GITHUB_CLIENT_ID")),
 		ClientSecret: firstOf(options.clientSecret, os.Getenv("KOMODOC_GITHUB_CLIENT_SECRET")),
 	}
-	if !app.configured() {
+	publishers := parsePolicy(firstOf(options.publishers, os.Getenv("KOMODOC_PUBLISHERS")))
+	if len(publishers.Logins) == 0 && !publishers.Any && !publishers.Public {
+		die("say who may publish, with --publishers.\n\n" +
+			"    --publishers your-github-login      only you\n" +
+			"    --publishers alice,bob              those accounts\n" +
+			"    --publishers any                    any GitHub account\n" +
+			"    --publishers anyone                 no sign-in at all")
+	}
+	commenters := parsePolicy(firstOf(options.commenters, os.Getenv("KOMODOC_COMMENTERS"), "anyone"))
+
+	// The OAuth app is only needed when something here asks for a GitHub
+	// account; a wholly public server runs without one.
+	if !app.configured() && !(publishers.Public && commenters.Public) {
 		die("this needs a GitHub OAuth app.\n\n"+
 			"  Create one at https://github.com/settings/developers (New OAuth App):\n\n"+
 			"    Homepage URL          http://localhost%s\n"+
@@ -126,15 +148,6 @@ func serve(options serveOptions) {
 			"  The callback has to match the port, so pass --port %s to keep it fixed.",
 			address, address, strings.TrimPrefix(address, ":"))
 	}
-
-	publishers := parsePublishPolicy(firstOf(options.publishers, os.Getenv("KOMODOC_PUBLISHERS")))
-	if len(publishers.Logins) == 0 && !publishers.Any {
-		die("say who may publish, with --publishers.\n\n" +
-			"    --publishers your-github-login      only you\n" +
-			"    --publishers alice,bob              those accounts\n" +
-			"    --publishers any                    any GitHub account")
-	}
-	commenters := parsePolicy(firstOf(options.commenters, os.Getenv("KOMODOC_COMMENTERS"), "anyone"))
 
 	instance := &server{
 		store:      newStore(absolute),
@@ -152,6 +165,11 @@ func serve(options serveOptions) {
 	fmt.Printf("  data in %s\n", absolute)
 	fmt.Printf("  publishing: %s\n", publishers.describe())
 	fmt.Printf("  commenting: %s\n", commenters.describe())
+	if retention > 0 {
+		fmt.Printf("  expiry: %s after %s\n", expireFrom, retention)
+		instance.deleteExpired(time.Now(), retention, expireFrom)
+		go instance.runJanitor(retention, expireFrom)
+	}
 
 	httpServer := &http.Server{
 		Handler:           instance,
@@ -160,6 +178,32 @@ func serve(options serveOptions) {
 	if err := httpServer.Serve(listener); err != nil {
 		die("%v", err)
 	}
+}
+
+func (s *server) runJanitor(retention time.Duration, from string) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for now := range ticker.C {
+		s.deleteExpired(now, retention, from)
+	}
+}
+
+func (s *server) deleteDocument(slug string) int {
+	s.rooms.purge(slug)
+	return s.store.remove(slug)
+}
+
+func (s *server) deleteExpired(now time.Time, retention time.Duration, from string) int {
+	removed := 0
+	cutoff := now.Add(-retention)
+	for _, entry := range s.store.list() {
+		stamp, err := entry.expiryTime(from)
+		if err == nil && !stamp.After(cutoff) {
+			s.deleteDocument(entry.Slug)
+			removed++
+		}
+	}
+	return removed
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -177,6 +221,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if path == "/agent.js" {
 			asset := s.shell["/agent.js"]
 			w.Header().Set("content-type", asset.Type)
+			privacyHeaders(w.Header())
 			w.Header().Set("cache-control", "public, max-age=300")
 			_, _ = io.WriteString(w, asset.Body)
 			return
@@ -270,11 +315,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// --- the shell -----------------------------------------------------------
 	page := path
-	switch {
-	case reDocsPage.MatchString(path):
-		page = "/reader.html"
-	case path == "/":
-		page = "/index.html"
+	if _, static := s.shell[page]; !static {
+		switch {
+		case reDocsPage.MatchString(path):
+			page = "/reader.html"
+		case path == "/":
+			page = "/index.html"
+		}
 	}
 	if asset, ok := s.shell[page]; ok {
 		writeAsset(w, asset)
@@ -468,8 +515,7 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request, slug strin
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
-	s.rooms.purge(slug)
-	removed := s.store.remove(slug)
+	removed := s.deleteDocument(slug)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted": slug, "title": entry.Title, "versions_removed": removed,
 	})
@@ -498,6 +544,7 @@ func (s *server) serveDocument(w http.ResponseWriter, r *http.Request, slug, dig
 			"frame-ancestors "+readerOrigin(r)+"; "+
 			"form-action 'none'; base-uri 'none'")
 	header.Set("x-content-type-options", "nosniff")
+	privacyHeaders(header)
 	// Content-addressed path, so the bytes behind a URL never change.
 	header.Set("cache-control", "public, max-age=31536000, immutable")
 	_, _ = w.Write(withAgent(raw, readerOrigin(r)))
@@ -559,6 +606,13 @@ func (s *server) mayPublish(w http.ResponseWriter, r *http.Request) bool {
 func (s *server) handleAuth(w http.ResponseWriter, r *http.Request) bool {
 	switch r.URL.Path {
 	case "/auth/login":
+		// Nothing to sign in to: this deployment is open to everyone and was
+		// started without a GitHub OAuth app.
+		if !s.app.configured() {
+			http.Error(w, "this deployment has no sign-in: everyone may read, comment and publish",
+				http.StatusNotFound)
+			return true
+		}
 		state := randomToken()
 		http.SetCookie(w, &http.Cookie{
 			Name: stateCookie, Value: state + "|" + r.URL.Query().Get("next"),
@@ -614,8 +668,11 @@ func (s *server) handleAuth(w http.ResponseWriter, r *http.Request) bool {
 			"can_publish":         s.publishers.allows(login),
 			"can_comment":         s.commenters.allows(login),
 			"comments_need_login": !s.commenters.Public,
-			"publishers":          s.publishers.describe(),
-			"commenters":          s.commenters.describe(),
+			// A wholly public deployment has no OAuth app, so there is
+			// nothing to sign in to and the page hides the button.
+			"can_sign_in": s.app.configured(),
+			"publishers":  s.publishers.describe(),
+			"commenters":  s.commenters.describe(),
 		})
 		return true
 
@@ -713,10 +770,20 @@ func writeAsset(w http.ResponseWriter, asset shellFile) {
 		body = decoded
 	}
 	w.Header().Set("content-type", asset.Type)
+	privacyHeaders(w.Header())
 	if asset.Immutable {
 		w.Header().Set("cache-control", "public, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("cache-control", "public, max-age=300")
 	}
 	_, _ = w.Write(body)
+}
+
+// privacyHeaders keep an unlisted link unlisted. The slug is the only thing
+// standing between a document and the public, and a URL is easy to spill:
+// a link in the document sends it to whatever site the reader clicks through
+// to, and a crawler that finds it once has it for good.
+func privacyHeaders(header http.Header) {
+	header.Set("referrer-policy", "no-referrer")
+	header.Set("x-robots-tag", "noindex, nofollow, noarchive")
 }

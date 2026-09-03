@@ -20,6 +20,7 @@ type indexEntry struct {
 	SHA       string `json:"sha"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	Example   bool   `json:"example,omitempty"`
 }
 
 type store struct {

@@ -66,15 +66,28 @@ func ensureSubdomain(cf *cloudflare) string {
 }
 
 type deployOptions struct {
-	name         string
+	label        string
 	clientID     string
 	clientSecret string
 	publishers   string
 	commenters   string
+	expireAfter  string
+	expireFrom   string
+	examples     bool
 }
 
 func deploy(options deployOptions) {
-	configure(options.name)
+	expireAfterValue := firstOf(options.expireAfter, os.Getenv("KOMODOC_EXPIRE_AFTER"))
+	retention, err := parseRetention(expireAfterValue)
+	if err != nil {
+		die("%v; use a duration such as 24h or 30d", err)
+	}
+	expireFromValue := firstOf(options.expireFrom, os.Getenv("KOMODOC_EXPIRE_FROM"))
+	expireFrom, err := parseExpireFrom(expireFromValue)
+	if err != nil {
+		die("%v", err)
+	}
+	configure(options.label)
 	token := os.Getenv("CLOUDFLARE_API_TOKEN")
 	if token == "" {
 		die("set CLOUDFLARE_API_TOKEN (see --help for the permissions it needs)")
@@ -115,6 +128,14 @@ func deploy(options deployOptions) {
 	bindings = append(bindings, settingBinding(cf, existing, "KOMODOC_GITHUB_CLIENT_ID", clientID))
 	bindings = append(bindings, settingBinding(cf, existing, "KOMODOC_PUBLISHERS", publishers.String()))
 	bindings = append(bindings, settingBinding(cf, existing, "KOMODOC_COMMENTERS", commenters.String()))
+	bindings = append(bindings, map[string]string{"type": "plain_text", "name": "KOMODOC_EXAMPLES", "text": fmt.Sprint(options.examples)})
+	if existing && expireAfterValue == "" {
+		bindings = append(bindings, map[string]string{"type": "inherit", "name": "KOMODOC_EXPIRE_SECONDS"})
+		bindings = append(bindings, map[string]string{"type": "inherit", "name": "KOMODOC_EXPIRE_FROM"})
+	} else {
+		bindings = append(bindings, map[string]string{"type": "plain_text", "name": "KOMODOC_EXPIRE_SECONDS", "text": fmt.Sprint(int64(retention.Seconds()))})
+		bindings = append(bindings, map[string]string{"type": "plain_text", "name": "KOMODOC_EXPIRE_FROM", "text": expireFrom})
+	}
 
 	secret := firstOf(options.clientSecret, os.Getenv("KOMODOC_GITHUB_CLIENT_SECRET"))
 	switch {
@@ -171,6 +192,16 @@ func deploy(options deployOptions) {
 
 	cf.callJSON("POST", "/accounts/"+cf.account+"/workers/scripts/"+scriptName+"/subdomain",
 		map[string]any{"enabled": true, "previews_enabled": false})
+	// With no retention option, a redeploy preserves the trigger and bindings
+	// already installed. "--expire-after never" explicitly removes them.
+	if expireAfterValue != "" || !existing {
+		schedules := []any{}
+		if retention > 0 {
+			schedules = append(schedules, map[string]string{"cron": "0 * * * *"})
+			fmt.Printf("  expiry: %s after %s (daily cleanup)\n", expireFrom, retention)
+		}
+		cf.callJSON("PUT", "/accounts/"+cf.account+"/workers/scripts/"+scriptName+"/schedules", schedules)
+	}
 
 	// The same bundle again, under <name>-docs, which is where documents are
 	// served from. It needs the bucket and nothing else: no Durable Object, no

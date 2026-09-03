@@ -9,6 +9,7 @@ const SHELL = __SHELL__;
 const SLUG = new RegExp(CONFIG.slug_pattern);
 const SHA = /^[0-9a-f]{64}$/;
 const MAX_HTML = CONFIG.max_html;
+const VISITOR_COOKIE = "komodoc_visitor";
 
 const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), {
@@ -160,8 +161,18 @@ function room(env, slug) {
 // The document runs on its own origin, with nothing of the reader's to reach
 // for, so it may run its own scripts. What it may not do is escape the frame
 // or be framed by anyone but the reader.
+// privacyHeaders keep an unlisted link unlisted. The slug is the only thing
+// standing between a document and the public, and a URL is easy to spill: a
+// link in the document sends it to whatever site the reader clicks through to,
+// and a crawler that finds it once has it for good.
+const PRIVACY_HEADERS = {
+  "referrer-policy": "no-referrer",
+  "x-robots-tag": "noindex, nofollow, noarchive",
+};
+
 function documentHeaders(reader) {
   return {
+    ...PRIVACY_HEADERS,
     "content-type": "text/html; charset=utf-8",
     "content-security-policy":
       "default-src 'self' data: blob: https:; " +
@@ -216,7 +227,7 @@ async function handleUpload(request, env) {
   const refusal = await mayPublish(request, env);
   if (refusal) return refusal;
 
-  let title, slug, html;
+  let title, slug, html, example = false, annotations = [];
   const type = request.headers.get("content-type") || "";
   if (type.includes("multipart/form-data")) {
     const form = await request.formData();
@@ -238,7 +249,7 @@ async function handleUpload(request, env) {
     html = file ? await file.text() : "";
   } else {
     const body = await request.json();
-    ({ title, slug, html } = body);
+    ({ title, slug, html, example = false, annotations = [] } = body);
   }
 
   title = String(title || "").trim();
@@ -253,9 +264,16 @@ async function handleUpload(request, env) {
   // keeps its URL and its comments. Anything else is a new document, and gets a
   // random suffix so the link cannot be guessed from the title.
   const { entries: existingIndex } = await readIndex(env);
-  const key = existingIndex[base] ? base : `${base}-${randomSuffix()}`;
+  // Reserved examples are installed only through the authenticated seed CLI.
+  // Their deterministic URL survives the hourly reset.
+  example = Boolean(example);
+  if (example && env.KOMODOC_EXAMPLES !== "true") {
+    return json({ error: "this deployment does not enable reserved examples" }, 400);
+  }
+  const key = example || existingIndex[base] ? base : `${base}-${randomSuffix()}`;
 
   const digest = await sha256(html);
+  const exampleRevision = example ? await sha256(JSON.stringify(annotations)) : "";
   await env.DOCS.put(`documents/${key}/${digest}.html`, html, {
     httpMetadata: { contentType: "text/html; charset=utf-8" },
   });
@@ -268,8 +286,15 @@ async function handleUpload(request, env) {
       sha: digest,
       created_at: existing?.created_at || now,
       updated_at: now,
+      ...(example ? { example: true } : {}),
+      ...(example ? { example_revision: exampleRevision } : {}),
     };
   });
+  if (example) {
+    await env.DOCS.put(`examples/${key}.json`, JSON.stringify(annotations), {
+      httpMetadata: { contentType: "application/json" },
+    });
+  }
   // Comments survive the replacement; they re-anchor in the reader.
   return json({ ...entries[key], url: `/docs/${key}` }, 201);
 }
@@ -282,7 +307,49 @@ async function serveDocument(env, slug, sha, url) {
   return new Response(withAgent(await object.text(), reader), { headers: documentHeaders(reader) });
 }
 
+async function deleteDocument(env, slug) {
+  await room(env, slug).fetch(new Request("https://internal/purge"));
+  let removed = 0;
+  let cursor;
+  do {
+    const listing = await env.DOCS.list({ prefix: `documents/${slug}/`, cursor });
+    if (listing.objects.length) await env.DOCS.delete(listing.objects.map((object) => object.key));
+    removed += listing.objects.length;
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+  await updateIndex(env, (index) => { delete index[slug]; });
+  return removed;
+}
+
+async function documentRoom(env, request, slug) {
+  const { entries } = await readIndex(env);
+  if (!entries[slug]?.example) return room(env, slug);
+  const login = request.headers.get("x-komodoc-login") || "";
+  const visitor = cookieValue(request, VISITOR_COOKIE);
+  const identity = login ? `github:${login.toLowerCase()}` : `browser:${visitor || "missing"}`;
+  const stub = room(env, `example:${slug}:${identity}`);
+  await stub.fetch(new Request(
+    `https://internal/ensure?slug=${encodeURIComponent(slug)}&revision=${entries[slug].example_revision || ""}`,
+  ));
+  return stub;
+}
+
+async function expireDocuments(env, scheduledTime) {
+  const seconds = Number(env.KOMODOC_EXPIRE_SECONDS || 0);
+  if (!(seconds > 0)) return;
+  const from = env.KOMODOC_EXPIRE_FROM === "created" ? "created_at" : "updated_at";
+  const cutoff = scheduledTime - seconds * 1000;
+  const { entries } = await readIndex(env);
+  const expired = Object.values(entries)
+    .filter((entry) => !entry.example && Date.parse(entry[from]) <= cutoff)
+    .slice(0, 100);
+  for (const entry of expired) await deleteDocument(env, entry.slug);
+}
+
 export default {
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(expireDocuments(env, controller.scheduledTime));
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -313,7 +380,8 @@ export default {
     let match = path.match(/^\/ws\/([^/]+)$/);
     if (match) {
       if (!SLUG.test(match[1])) return new Response("bad slug", { status: 400 });
-      return room(env, match[1]).fetch(await withIdentity(request, env));
+      const identified = await withIdentity(request, env);
+      return (await documentRoom(env, identified, match[1])).fetch(identified);
     }
 
     // Stable, shareable URL: redirect to whichever version is current, on the
@@ -349,26 +417,10 @@ export default {
       if (refusal) return refusal;
       const { entries } = await readIndex(env);
       if (!entries[slug]) return json({ error: "not found" }, 404);
+      if (entries[slug].example) return json({ error: "reserved examples cannot be deleted" }, 403);
       const title = entries[slug].title;
 
-      await room(env, slug).fetch(new Request(`${url.origin}/purge`));
-
-      let removed = 0;
-      let cursor;
-      do {
-        const listing = await env.DOCS.list({ prefix: `documents/${slug}/`, cursor });
-        for (const object of listing.objects) {
-          await env.DOCS.delete(object.key);
-          removed++;
-        }
-        cursor = listing.truncated ? listing.cursor : undefined;
-      } while (cursor);
-
-      // The index entry goes last: until it does the document is still listed,
-      // which is a better half-state than a listing pointing at nothing.
-      await updateIndex(env, (index) => {
-        delete index[slug];
-      });
+      const removed = await deleteDocument(env, slug);
       return json({ deleted: slug, title, versions_removed: removed });
     }
 
@@ -377,7 +429,8 @@ export default {
       const { entries } = await readIndex(env);
       const entry = entries[match[1]];
       if (!entry) return json({ error: "not found" }, 404);
-      const counts = await room(env, match[1])
+      const identified = await withIdentity(request, env);
+      const counts = await (await documentRoom(env, identified, match[1]))
         .fetch(new Request(`${url.origin}/counts`))
         .then((response) => response.json());
       return json({ ...entry, ...counts, docs_origin: docsOrigin(url) });
@@ -387,15 +440,28 @@ export default {
     match = path.match(/^\/api\/documents\/([^/]+)\/comments$/);
     if (match) {
       if (!SLUG.test(match[1])) return json({ error: "bad slug" }, 400);
-      return room(env, match[1]).fetch(await withIdentity(request, env));
+      const identified = await withIdentity(request, env);
+      return (await documentRoom(env, identified, match[1])).fetch(identified);
     }
 
     // --- the shell ---------------------------------------------------------
     // Served from constants compiled into this script rather than from a
     // static-asset binding, so deploying is one script upload and nothing else.
-    const page = /^\/docs\/[^/]+$/.test(path) ? "/reader.html" : path === "/" ? "/index.html" : path;
+    const page = SHELL[path]
+      ? path
+      : /^\/docs\/[^/]+$/.test(path)
+        ? "/reader.html"
+        : path === "/"
+          ? "/index.html"
+          : path;
     const asset = SHELL[page];
-    if (asset) return assetResponse(asset);
+    if (asset) {
+      const response = assetResponse(asset);
+      if (/^\/docs\/[^/]+$/.test(path) && !cookieValue(request, VISITOR_COOKIE)) {
+        response.headers.append("set-cookie", `${VISITOR_COOKIE}=${crypto.randomUUID()}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`);
+      }
+      return response;
+    }
     return new Response("not found", { status: 404 });
   },
 };
@@ -481,6 +547,8 @@ async function handleAuth(request, env, url) {
       can_publish: policyAllows(publishers, login),
       can_comment: policyAllows(commenters, login),
       comments_need_login: !commenters.public,
+      can_sign_in: Boolean(clientID),
+      examples_enabled: env.KOMODOC_EXAMPLES === "true",
       publishers: describePolicy(publishers),
       commenters: describePolicy(commenters),
     });
@@ -506,6 +574,7 @@ function assetResponse(asset) {
   return new Response(body, {
     headers: {
       "content-type": asset.type,
+      ...PRIVACY_HEADERS,
       "cache-control": asset.immutable
         ? "public, max-age=31536000, immutable"
         : "public, max-age=300",

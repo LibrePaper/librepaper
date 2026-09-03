@@ -12,7 +12,7 @@ package main
 var seedDocuments = []seedDocument{
 	{
 		File:  "examples/bootstrap.html",
-		Title: "What the Bootstrap Actually Resamples",
+		Title: "Quarto: What the Bootstrap Actually Resamples",
 		Annotations: []seedAnnotation{
 			{
 				Motivation: "commenting",
@@ -66,7 +66,7 @@ var seedDocuments = []seedDocument{
 	},
 	{
 		File:  "examples/newton.html",
-		Title: "Newton's Method Is Not Always Your Friend",
+		Title: "Calepin: Newton's Method Is Not Always Your Friend",
 		Annotations: []seedAnnotation{
 			{
 				Motivation: "commenting",
@@ -120,7 +120,7 @@ var seedDocuments = []seedDocument{
 		// Plain Typst: headings, lists and tables, and no styling of its own.
 		// A useful contrast with the other three, which arrive dressed.
 		File:  "examples/style-guide.html",
-		Title: "A Short Style Guide for Quantitative Writing",
+		Title: "HTML: A Short Style Guide for Quantitative Writing",
 		Annotations: []seedAnnotation{
 			{
 				Motivation: "commenting",
@@ -170,7 +170,7 @@ var seedDocuments = []seedDocument{
 	},
 	{
 		File:  "examples/random-walks.html",
-		Title: "How Far Does a Drunk Walk?",
+		Title: "Marimo: How Far Does a Random Walk Go?",
 		Annotations: []seedAnnotation{
 			{
 				Motivation: "commenting",
@@ -216,6 +216,32 @@ var seedDocuments = []seedDocument{
 				Tags:       []string{"figures"},
 				Creator:    "Vincent",
 				Region:     &region{ImageIndex: 1, X: 8, Y: 6, Width: 84, Height: 26},
+			},
+		},
+	},
+	{
+		File:  "examples/bootstrap-jupyter.html",
+		Title: "Jupyter: Bootstrap Sampling and Confidence Intervals",
+		Annotations: []seedAnnotation{
+			{
+				Motivation: "commenting",
+				Exact:      "Bootstrap is a resampling method",
+				Body:       "This is a clear and direct opening. It establishes what we are learning about.",
+				Tags:       []string{"framing"},
+				Creator:    "Vincent",
+			},
+			{
+				Motivation: "questioning",
+				Exact:      "assumes that the observed sample is representative",
+				Body:       "When would this assumption fail? Are there cases where bootstrap is not appropriate?",
+				Tags:       []string{"exposition"},
+				Creator:    "Reviewer",
+			},
+			{
+				Motivation: "highlighting",
+				Exact:      "sampling variability",
+				Creator:    "Vincent",
+				Tags:       []string{"key-concept"},
 			},
 		},
 	},

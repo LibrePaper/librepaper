@@ -561,17 +561,17 @@ toolButtons.filter((b) => b.dataset.tool !== tool).forEach((b) => (b.className =
 
 bar.onclick = () => {
   if (!pending) return;
-  bar.style.display = “none”;
+  bar.style.display = "none";
 
-  if (tool === “highlighting”) {
+  if (tool === "highlighting") {
     // No dialog: the passage is the whole annotation.
-    submitAnnotation({ motivation: “highlighting”, body: “”, replacement: “”, tags: [] });
+    submitAnnotation({ motivation: "highlighting", body: "", replacement: "", tags: [] });
     return;
   }
 
   // If not logged in, ask how they want to identify
   if (!identity) {
-    const identityDialog = document.getElementById(“identityDialog”);
+    const identityDialog = document.getElementById("identityDialog");
     identityDialog.showModal();
     return;
   }
@@ -580,16 +580,16 @@ bar.onclick = () => {
 };
 
 function showCommentDialog() {
-  document.getElementById(“selectedQuote”).textContent = pending.region
+  document.getElementById("selectedQuote").textContent = pending.region
     ? `Figure ${pending.region.image_index + 1}`
-    : “”” + pending.exact + “””;
-  document.getElementById(“replacementField”).hidden = tool !== “editing”;
+    : "“" + pending.exact + "”";
+  document.getElementById("replacementField").hidden = tool !== "editing";
   // A region has no passage to replace, so the edit tool falls back to a remark.
-  document.getElementById(“bodyLabel”).textContent =
-    tool === “editing” ? “Why” : tool === “questioning” ? “Question” : “Comment”;
-  if (tool === “editing”) document.getElementById(“replacement”).value = pending.exact;
+  document.getElementById("bodyLabel").textContent =
+    tool === "editing" ? "Why" : tool === "questioning" ? "Question" : "Comment";
+  if (tool === "editing") document.getElementById("replacement").value = pending.exact;
   dialog.showModal();
-  document.getElementById(tool === “editing” ? “replacement” : “body”).focus();
+  document.getElementById(tool === "editing" ? "replacement" : "body").focus();
 }
 
 // One path for every kind, whether it came from the dialog or straight from

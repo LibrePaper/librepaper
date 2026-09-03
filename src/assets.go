@@ -46,12 +46,14 @@ var shellRoutes = map[string]string{
 	"/anchor.js":              "anchor.js",
 	"/documentation":          "documentation.html",
 	"/assets/komodo-logo.svg": "assets/komodo-logo.svg",
+	"/docs/commenting.png":    "assets/commenting.png",
 }
 
 var contentTypes = map[string]string{
 	".html": "text/html; charset=utf-8",
 	".css":  "text/css; charset=utf-8",
 	".js":   "text/javascript; charset=utf-8",
+	".png":  "image/png",
 	".svg":  "image/svg+xml",
 }
 
@@ -106,6 +108,15 @@ func loadShell() map[string]shellFile {
 		body, err := shellFS.ReadFile("shell/" + name)
 		if err != nil {
 			die("missing shell file: %s", name)
+		}
+		if path.Ext(name) == ".png" {
+			shell[route] = shellFile{
+				Type:      contentTypes[".png"],
+				Body:      base64.StdEncoding.EncodeToString(body),
+				Base64:    true,
+				Immutable: true,
+			}
+			continue
 		}
 		// The page checks the same size and file-type limits the server does,
 		// so __CONFIG__ is substituted here too rather than duplicated in HTML.

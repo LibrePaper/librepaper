@@ -4,7 +4,7 @@
 // compiled in, so it deploys with nothing beside it.
 //
 //	komodoc deploy                       # create/update the service
-//	komodoc deploy --name docs           # serve at docs.<subdomain>.workers.dev
+//	komodoc deploy --label docs          # serve at docs.<subdomain>.workers.dev
 //	komodoc publish paper.html           # publish, print the share link
 //	komodoc publish paper.html --slug s  # replace, keeping link+comments
 //	komodoc list                         # your documents
@@ -21,8 +21,8 @@ import (
 	"strings"
 )
 
-// The Worker name is the first label of the URL, <name>.<subdomain>.workers.dev,
-// and also names the R2 bucket. Set once at startup from --name or $KOMODOC_NAME.
+// The Worker name is the first label of the URL, <label>.<subdomain>.workers.dev,
+// and also names the R2 bucket. Set once at startup from --label or $KOMODOC_LABEL.
 var (
 	scriptName = "komodoc"
 	bucket     = "komodoc"
@@ -38,6 +38,7 @@ const usage = `komodoc: host HTML documents that readers can annotate.
   komodoc serve                        run the service on this machine
   komodoc list                         list your documents
   komodoc export SLUG                  annotations as W3C JSON-LD or markdown
+  komodoc seed [--endpoint URL]        replace local or remote data with examples
   komodoc destroy --document SLUG      delete one document and its comments
   komodoc destroy --service            delete the whole deployment
   komodoc version                      print the version
@@ -66,18 +67,18 @@ func die(format string, args ...any) {
 	os.Exit(1)
 }
 
-// configure points this run at one named deployment.
-func configure(name string) {
-	chosen := name
+// configure points this run at one labelled deployment.
+func configure(label string) {
+	chosen := label
 	if chosen == "" {
-		chosen = os.Getenv("KOMODOC_NAME")
+		chosen = os.Getenv("KOMODOC_LABEL")
 	}
 	if chosen == "" {
 		chosen = "komodoc"
 	}
 	chosen = strings.ToLower(strings.TrimSpace(chosen))
 	if !reName.MatchString(chosen) {
-		die("'%s' is not a valid name. Use lowercase letters, digits and\n"+
+		die("'%s' is not a valid label. Use lowercase letters, digits and\n"+
 			"  hyphens, starting and ending with a letter or digit.", chosen)
 	}
 	scriptName, bucket = chosen, chosen
@@ -150,15 +151,22 @@ func main() {
 	switch os.Args[1] {
 	case "deploy":
 		flags := flag.NewFlagSet("deploy", flag.ExitOnError)
-		name := flags.String("name", "", "deployment name: the first label of the URL and the bucket name (default komodoc, or $KOMODOC_NAME)")
+		label := flags.String("label", "", "deployment label: the first label of the URL and the bucket name (default komodoc, or $KOMODOC_LABEL)")
 		clientID := flags.String("client-id", "", "GitHub OAuth app client id; or $KOMODOC_GITHUB_CLIENT_ID")
 		clientSecret := flags.String("client-secret", "", "GitHub OAuth app client secret; or $KOMODOC_GITHUB_CLIENT_SECRET")
 		publishers := flags.String("publishers", "", "who may publish: a GitHub login, a comma-separated list, or 'any'")
 		commenters := flags.String("commenters", "", "who may comment: 'anyone' (default), 'any' GitHub account, or a list of logins")
+		maxSize := flags.Int("max-size", 0, "largest document accepted, in megabytes (default 30)")
+		expireAfter := flags.String("expire-after", "", "delete documents after this duration, for example 24h or 30d (default never)")
+		expireFrom := flags.String("expire-from", "", "start expiry at 'updated' (default; last publication) or 'created'")
+		examples := flags.Bool("examples", false, "enable the four resettable public example notebooks")
 		_ = flags.Parse(os.Args[2:])
+		setMaxHTML(*maxSize)
 		deploy(deployOptions{
-			name: *name, clientID: *clientID, clientSecret: *clientSecret,
+			label: *label, clientID: *clientID, clientSecret: *clientSecret,
 			publishers: *publishers, commenters: *commenters,
+			expireAfter: *expireAfter, expireFrom: *expireFrom,
+			examples: *examples,
 		})
 
 	case "publish":
@@ -188,11 +196,16 @@ func main() {
 		clientSecret := flags.String("client-secret", "", "GitHub OAuth app client secret; or $KOMODOC_GITHUB_CLIENT_SECRET")
 		publishers := flags.String("publishers", "", "who may publish: a GitHub login, a comma-separated list, or 'any'")
 		commenters := flags.String("commenters", "", "who may comment: 'anyone' (default), 'any' GitHub account, or a list of logins")
+		maxSize := flags.Int("max-size", 0, "largest document accepted, in megabytes (default 30)")
+		expireAfter := flags.String("expire-after", "", "delete documents after this duration, for example 24h or 30d (default never)")
+		expireFrom := flags.String("expire-from", "", "start expiry at 'updated' (default; last publication) or 'created'")
 		_ = flags.Parse(os.Args[2:])
+		setMaxHTML(*maxSize)
 		serve(serveOptions{
 			port: *port, dir: *dir,
 			clientID: *clientID, clientSecret: *clientSecret,
 			publishers: *publishers, commenters: *commenters,
+			expireAfter: *expireAfter, expireFrom: *expireFrom,
 		})
 
 	case "login":
@@ -208,9 +221,14 @@ func main() {
 	case "seed":
 		flags := flag.NewFlagSet("seed", flag.ExitOnError)
 		dir := flags.String("data", "komodoc-data", "directory to wipe and fill")
+		endpoint := flags.String("endpoint", "", "deployment URL to wipe and fill instead of a local directory")
 		_ = flags.Parse(os.Args[2:])
-		fmt.Printf("seeding %s\n", *dir)
-		seed(*dir, seedDocuments)
+		if *endpoint != "" {
+			seedRemote(*endpoint, seedDocuments)
+		} else {
+			fmt.Printf("seeding %s\n", *dir)
+			seed(*dir, seedDocuments)
+		}
 
 	case "export":
 		flags := flag.NewFlagSet("export", flag.ExitOnError)
@@ -236,7 +254,7 @@ func main() {
 		flags := flag.NewFlagSet("destroy", flag.ExitOnError)
 		document := flags.String("document", "", "delete just this document and its comments")
 		service := flags.Bool("service", false, "delete the whole deployment and everything in it")
-		name := flags.String("name", "", "deployment to delete (default komodoc)")
+		label := flags.String("label", "", "deployment to delete (default komodoc)")
 		endpoint := flags.String("endpoint", "", "deployment URL, with --document")
 		yes := flags.Bool("yes", false, "skip the confirmation prompt (dangerous)")
 		_ = flags.Parse(os.Args[2:])
@@ -249,7 +267,7 @@ func main() {
 		case *document != "":
 			destroyDocument(*document, *endpoint, *yes)
 		case *service:
-			destroyService(*name, *yes)
+			destroyService(*label, *yes)
 		default:
 			die("say what to delete:\n" +
 				"    --document SLUG   one document, its history and its comments\n" +

@@ -121,13 +121,16 @@ Use `--expire-from created` for a fixed lifetime from the first upload, or
 `--expire-after never` to disable expiry. Cloudflare runs the cleanup schedule;
 the `komodoc` program does not need to remain running.
 
-The maintainer's sandbox also deploys with `--examples`. This reserves the four
-curated example notebooks and gives each visitor a personal annotation room
+The maintainer's sandbox also deploys with `--examples`. This reserves five
+curated example notebooks demonstrating different source formats, and gives each visitor a personal annotation room
 that resets after an hour. Ordinary notebooks remain shared and collaborative.
 
 The stable examples are:
-- [Calepin example](https://komodoc.vincentarelbundock.workers.dev/docs/what-the-bootstrap-actually-resamples) — Calepin
-- [Quarto example](https://komodoc.vincentarelbundock.workers.dev/docs/a-short-style-guide-for-quantitative-writing) — Quarto
+- [Quarto: What the Bootstrap Actually Resamples](https://komodoc.vincentarelbundock.workers.dev/docs/quarto-what-the-bootstrap-actually-resamples)
+- [Calepin: Newton's Method Is Not Always Your Friend](https://komodoc.vincentarelbundock.workers.dev/docs/calepin-newton-s-method-is-not-always-your-friend)
+- [HTML: A Short Style Guide for Quantitative Writing](https://komodoc.vincentarelbundock.workers.dev/docs/html-a-short-style-guide-for-quantitative-writing)
+- [Marimo: How Far Does a Random Walk Go?](https://komodoc.vincentarelbundock.workers.dev/docs/marimo-how-far-does-a-random-walk-go)
+- [Jupyter: Bootstrap Sampling and Confidence Intervals](https://komodoc.vincentarelbundock.workers.dev/docs/jupyter-bootstrap-sampling-and-confidence-intervals)
 
 ## Export comments
 

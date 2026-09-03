@@ -55,8 +55,8 @@ func destroyDocument(slug, endpointFlag string, yes bool) {
 }
 
 // destroyService deletes the Worker, every Durable Object, and the bucket.
-func destroyService(name string, yes bool) {
-	configure(name)
+func destroyService(label string, yes bool) {
+	configure(label)
 	token := os.Getenv("CLOUDFLARE_API_TOKEN")
 	if token == "" {
 		die("set CLOUDFLARE_API_TOKEN")
