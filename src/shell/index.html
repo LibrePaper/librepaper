@@ -268,16 +268,9 @@
         link.textContent = doc.title;
 
         const comments = document.createElement("td");
-        comments.textContent = "—";
-        // Counts live in each document's room rather than in the index, so they
-        // are fetched per row instead of kept denormalised.
-        fetch(`/api/documents/${doc.slug}`)
-          .then((response) => response.json())
-          .then((full) => {
-            comments.textContent = full.comment_count;
-            counts.set(doc.slug, full.comment_count);
-          })
-          .catch(() => {});
+        // Counts are fetched once per showList(), not per row, so a redraw
+        // (search, sort, tab, select-all) just reads what is already known.
+        comments.textContent = counts.has(doc.slug) ? counts.get(doc.slug) : "—";
 
         for (const cell of [tick, star, link]) {
           const td = document.createElement("td");
@@ -427,6 +420,23 @@
         const response = await fetch("/api/list", { method: "POST" });
         if (!response.ok) return;
         documents = (await response.json()).documents;
+        counts.clear();
+        drawList();
+        await fetchCounts();
+      }
+
+      // Counts live in each document's room rather than in the index, so they
+      // are fetched separately, once, and the list is redrawn when they are
+      // all in, so the comments column and comment-sort come out right.
+      async function fetchCounts() {
+        await Promise.all(
+          documents.map((doc) =>
+            fetch(`/api/documents/${doc.slug}`)
+              .then((response) => response.json())
+              .then((full) => counts.set(doc.slug, full.comment_count))
+              .catch(() => {}),
+          ),
+        );
         drawList();
       }
 
