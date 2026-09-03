@@ -657,8 +657,9 @@ footer.grid > [role="button"] {
   color: var(--komodoc-tint);
 }
 .tools .tool[aria-pressed="true"] {
+  background: var(--komodoc-tint);
   border-color: var(--komodoc-tint);
-  color: var(--komodoc-tint);
+  color: #fff;
 }
 
 /* The sidebar label for the annotation kind, in that kind's own colour. */
