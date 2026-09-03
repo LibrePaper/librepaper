@@ -782,6 +782,7 @@ nav > ul.navmid svg {
   margin: 0 auto;
 }
 .toc {
+  display: none;
   margin-bottom: 1.5rem;
 }
 .toc details {
@@ -822,6 +823,7 @@ nav > ul.navmid svg {
     align-items: start;
   }
   .toc {
+    display: block;
     grid-column: 2;
     grid-row: 1;
     position: sticky;
