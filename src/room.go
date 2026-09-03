@@ -156,23 +156,23 @@ func (r *room) load() {
 // save rewrites the whole file. Comment volume per document is in the dozens,
 // so this stays cheaper than any incremental scheme, and a rename makes it
 // atomic.
-func (r *room) save() {
+func (r *room) save() error {
 	state := roomState{Seq: r.seq, Comments: r.comments}
 	if len(state.Comments) == 0 {
 		state.Comments = []*comment{}
 	}
 	raw, err := json.Marshal(state)
 	if err != nil {
-		return
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
-		return
+		return err
 	}
 	temporary := r.path + ".tmp"
 	if err := os.WriteFile(temporary, raw, 0o644); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(temporary, r.path)
+	return os.Rename(temporary, r.path)
 }
 
 func (r *room) snapshot() []*comment {
@@ -275,12 +275,21 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 	fail := func(text string) (map[string]any, bool) {
 		return map[string]any{"type": "error", "message": text, "temp_id": incoming.TempID}, false
 	}
+	// Every change here is acknowledged to its sender and broadcast to every
+	// other reader, so it has to be on disk first. When the write fails the
+	// in-memory change is undone, keeping this process and the file agreeing
+	// with each other rather than diverging until the next restart.
+	unsaved := func(undo func()) (map[string]any, bool) {
+		undo()
+		return fail("could not save that comment; try again")
+	}
 
 	if incoming.Type == "resolve" {
 		target := r.find(incoming.CommentID)
 		if target == nil {
 			return fail("unknown comment")
 		}
+		wasResolved, wasResolvedAt := target.Resolved, target.ResolvedAt
 		target.Resolved = incoming.Resolved
 		if target.Resolved {
 			stamp := timestamp()
@@ -288,7 +297,9 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 		} else {
 			target.ResolvedAt = nil
 		}
-		r.save()
+		if r.save() != nil {
+			return unsaved(func() { target.Resolved, target.ResolvedAt = wasResolved, wasResolvedAt })
+		}
 		return map[string]any{
 			"type":        "resolve",
 			"comment_id":  target.ID,
@@ -300,8 +311,11 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 	if incoming.Type == "delete" {
 		for index, item := range r.comments {
 			if item.ID == incoming.CommentID {
-				r.comments = append(r.comments[:index], r.comments[index+1:]...)
-				r.save()
+				kept := append([]*comment{}, r.comments...)
+				r.comments = append(r.comments[:index:index], r.comments[index+1:]...)
+				if r.save() != nil {
+					return unsaved(func() { r.comments = kept })
+				}
 				return map[string]any{"type": "delete", "comment_id": incoming.CommentID}, true
 			}
 		}
@@ -333,7 +347,9 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 		}
 		added := reply{ID: newID(), Body: body, Creator: creator, Created: timestamp()}
 		target.Replies = append(target.Replies, added)
-		r.save()
+		if r.save() != nil {
+			return unsaved(func() { target.Replies = target.Replies[:len(target.Replies)-1] })
+		}
 		return map[string]any{
 			"type":       "reply",
 			"comment_id": target.ID,
@@ -375,7 +391,12 @@ func (r *room) apply(incoming message, address string) (map[string]any, bool) {
 			Replies:     []reply{},
 		}
 		r.comments = append(r.comments, added)
-		r.save()
+		if r.save() != nil {
+			return unsaved(func() {
+				r.comments = r.comments[:len(r.comments)-1]
+				r.seq--
+			})
+		}
 		return map[string]any{"type": "comment", "comment": added, "temp_id": incoming.TempID}, true
 	}
 

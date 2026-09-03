@@ -130,14 +130,13 @@ resets after an hour. Ordinary notebooks remain shared and collaborative.
 There is one example per source format, and each is produced by the tool it is
 named after rather than hand-converted:
 
-| Example | Source | Rendered by |
-| --- | --- | --- |
-| [HTML: A Short Style Guide for Quantitative Writing](https://komodoc.vincentarelbundock.workers.dev/docs/html-a-short-style-guide-for-quantitative-writing) | `style-guide.html` | nothing; it is written by hand |
-| [Markdown: What a Regression Table Is Hiding](https://komodoc.vincentarelbundock.workers.dev/docs/markdown-what-a-regression-table-is-hiding) | `regression-tables.md` | Komodoc, on publication |
-| [Quarto: What the Bootstrap Actually Resamples](https://komodoc.vincentarelbundock.workers.dev/docs/quarto-what-the-bootstrap-actually-resamples) | `bootstrap.qmd` | `quarto render` |
-| [Calepin: Newton's Method Is Not Always Your Friend](https://komodoc.vincentarelbundock.workers.dev/docs/calepin-newton-s-method-is-not-always-your-friend) | `newton.typ` | `calepin compile` |
-| [Jupyter: Simpson's Paradox Is Not a Paradox](https://komodoc.vincentarelbundock.workers.dev/docs/jupyter-simpson-s-paradox-is-not-a-paradox) | `simpsons-paradox.ipynb` | `jupyter nbconvert --execute` |
-| [Marimo: How Far Does a Drunk Walk?](https://komodoc.vincentarelbundock.workers.dev/docs/marimo-how-far-does-a-drunk-walk) | `random-walks.py` | `marimo export html` |
+- [HTML: A Short Style Guide for Quantitative Writing](https://komodoc.vincentarelbundock.workers.dev/docs/html-a-short-style-guide-for-quantitative-writing)
+- [Markdown: What a Regression Table Is Hiding](https://komodoc.vincentarelbundock.workers.dev/docs/markdown-what-a-regression-table-is-hiding)
+- [Quarto: What the Bootstrap Actually Resamples](https://komodoc.vincentarelbundock.workers.dev/docs/quarto-what-the-bootstrap-actually-resamples)
+- [Calepin: Newton's Method Is Not Always Your Friend](https://komodoc.vincentarelbundock.workers.dev/docs/calepin-newton-s-method-is-not-always-your-friend)
+- [Jupyter: Simpson's Paradox Is Not a Paradox](https://komodoc.vincentarelbundock.workers.dev/docs/jupyter-simpson-s-paradox-is-not-a-paradox)
+- [Marimo: How Far Does a Drunk Walk?](https://komodoc.vincentarelbundock.workers.dev/docs/marimo-how-far-does-a-drunk-walk)
+- [Publication and management console](https://komodoc.vincentarelbundock.workers.dev) (requires Github Login)
 
 `make examples` renders them all. Quarto and Calepin have to be installed;
 marimo and Jupyter are fetched by [uv](https://docs.astral.sh/uv/) against

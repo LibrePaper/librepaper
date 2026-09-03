@@ -169,7 +169,7 @@ func seedRemote(endpointFlag string, documents []seedDocument) {
 		} else {
 			// The local server has no special example rooms; seed its ordinary
 			// shared room as before.
-			placed, missed = seedRemoteAnnotations(endpoint, slug, document.Annotations, visibleText(raw))
+			placed, missed = seedRemoteAnnotations(endpoint, token, slug, document.Annotations, visibleText(raw))
 		}
 		fmt.Printf("  %-28s %s\n", slug, document.Title)
 		fmt.Printf("      %d annotation(s)", placed)
@@ -180,7 +180,7 @@ func seedRemote(endpointFlag string, documents []seedDocument) {
 	}
 }
 
-func seedRemoteAnnotations(endpoint, slug string, annotations []seedAnnotation, visible string) (placed, missed int) {
+func seedRemoteAnnotations(endpoint, token, slug string, annotations []seedAnnotation, visible string) (placed, missed int) {
 	url := endpoint + "/api/documents/" + slug + "/comments"
 	for _, item := range annotations {
 		at := -1
@@ -209,7 +209,7 @@ func seedRemoteAnnotations(endpoint, slug string, annotations []seedAnnotation, 
 			incoming.Position = &position
 		}
 
-		status, result := postAuthed(url, incoming, "", 60*time.Second)
+		status, result := postAuthed(url, incoming, token, 60*time.Second)
 		if status != 200 {
 			die("could not seed an annotation on %s (%d): %v", slug, status, detailOf(result))
 		}
@@ -219,7 +219,7 @@ func seedRemoteAnnotations(endpoint, slug string, annotations []seedAnnotation, 
 		for _, body := range item.Replies {
 			status, reply := postAuthed(url, message{
 				Type: "reply", CommentID: commentID, Body: body, Creator: "Reviewer",
-			}, "", 60*time.Second)
+			}, token, 60*time.Second)
 			if status != 200 {
 				die("could not seed a reply on %s (%d): %v", slug, status, detailOf(reply))
 			}
@@ -227,7 +227,7 @@ func seedRemoteAnnotations(endpoint, slug string, annotations []seedAnnotation, 
 		if item.Resolved {
 			status, resolved := postAuthed(url, message{
 				Type: "resolve", CommentID: commentID, Resolved: true,
-			}, "", 60*time.Second)
+			}, token, 60*time.Second)
 			if status != 200 {
 				die("could not resolve a seeded annotation on %s (%d): %v", slug, status, detailOf(resolved))
 			}

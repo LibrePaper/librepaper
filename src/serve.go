@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -36,6 +37,14 @@ var (
 )
 
 var reSlug = regexp.MustCompile(config.SlugPattern)
+
+const (
+	// How much of a multipart upload is held in memory before the rest spills
+	// to a temporary file, and how much room the whole request gets beyond the
+	// document itself for part headers, the title, and the slug.
+	multipartMemory = 8 << 20
+	multipartSlack  = 1 << 20
+)
 
 type server struct {
 	store  *store
@@ -188,7 +197,7 @@ func (s *server) runJanitor(retention time.Duration, from string) {
 	}
 }
 
-func (s *server) deleteDocument(slug string) int {
+func (s *server) deleteDocument(slug string) (int, error) {
 	s.rooms.purge(slug)
 	return s.store.remove(slug)
 }
@@ -199,7 +208,12 @@ func (s *server) deleteExpired(now time.Time, retention time.Duration, from stri
 	for _, entry := range s.store.list() {
 		stamp, err := entry.expiryTime(from)
 		if err == nil && !stamp.After(cutoff) {
-			s.deleteDocument(entry.Slug)
+			// The janitor runs unattended: a document whose index entry could
+			// not be rewritten is left for the next hourly pass to retry.
+			if _, err := s.deleteDocument(entry.Slug); err != nil {
+				fmt.Fprintf(os.Stderr, "could not expire %s: %v\n", entry.Slug, err)
+				continue
+			}
 			removed++
 		}
 	}
@@ -335,6 +349,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleSocket(w http.ResponseWriter, r *http.Request, slug string) {
+	// A room belongs to a document. Without this, any invented slug would
+	// conjure one, and since the rate limiter counts per room, a new slug per
+	// comment would also mean no rate limit at all.
+	if _, exists := s.store.get(slug); !exists {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	current := s.rooms.get(slug)
 	// Reading is always open; writing is checked per message, so a reader who
 	// may not comment still sees the thread live.
@@ -383,6 +404,10 @@ func (s *server) handleComments(w http.ResponseWriter, r *http.Request, slug str
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad slug"})
 		return
 	}
+	if _, exists := s.store.get(slug); !exists {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		return
+	}
 	current := s.rooms.get(slug)
 
 	switch r.Method {
@@ -415,10 +440,26 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	var title, slug, html string
 
 	if strings.Contains(r.Header.Get("content-type"), "multipart/form-data") {
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
+		// ParseMultipartForm's argument caps memory, not the request: anything
+		// larger spills to temporary files, so without this an oversized body
+		// would be written to disk in full before the HTML limit below is even
+		// consulted. The slack covers the part headers and the other fields.
+		r.Body = http.MaxBytesReader(w, r.Body, int64(config.MaxHTML)+multipartSlack)
+		if err := r.ParseMultipartForm(multipartMemory); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeJSON(w, http.StatusRequestEntityTooLarge,
+					map[string]any{"error": "that upload is too large"})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad upload"})
 			return
 		}
+		defer func() {
+			if r.MultipartForm != nil {
+				_ = r.MultipartForm.RemoveAll()
+			}
+		}()
 		title, slug = r.FormValue("title"), r.FormValue("slug")
 		if file, header, err := r.FormFile("file"); err == nil {
 			defer file.Close()
@@ -526,7 +567,12 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request, slug strin
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
-	removed := s.deleteDocument(slug)
+	removed, err := s.deleteDocument(slug)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError,
+			map[string]any{"error": "could not remove the document"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted": slug, "title": entry.Title, "versions_removed": removed,
 	})
@@ -690,12 +736,13 @@ func (s *server) handleAuth(w http.ResponseWriter, r *http.Request) bool {
 		http.SetCookie(w, &http.Cookie{
 			Name: sessionCookie, Value: signSession(s.key, who, time.Now().Add(sessionMaxAge)),
 			Path: "/", MaxAge: int(sessionMaxAge.Seconds()), HttpOnly: true,
-			SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil,
+			// Behind a proxy that terminates TLS this connection is plain
+			// HTTP, so r.TLS alone would ship the session cookie without
+			// Secure on a deployment that is in fact HTTPS end to end.
+			SameSite: http.SameSiteLaxMode, Secure: requestScheme(r) == "https",
 		})
 		http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/", MaxAge: -1})
-		if next == "" || !strings.HasPrefix(next, "/") {
-			next = "/"
-		}
+		next = localPath(next)
 		http.Redirect(w, r, next, http.StatusFound)
 		return true
 
@@ -729,11 +776,26 @@ func (s *server) handleAuth(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *server) callbackURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		scheme = "https"
+	return requestScheme(r) + "://" + r.Host + "/auth/callback"
+}
+
+// localPath is where a sign-in may return to: somewhere on this site, and
+// nowhere else. A value like "//elsewhere.example" starts with a slash but is
+// read by browsers as an absolute URL, which would make the callback an open
+// redirect, so the path is parsed and required to carry no scheme or host.
+func localPath(next string) string {
+	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+		return "/"
 	}
-	return scheme + "://" + r.Host + "/auth/callback"
+	parsed, err := url.Parse(next)
+	if err != nil || parsed.Scheme != "" || parsed.Host != "" {
+		return "/"
+	}
+	target := parsed.RequestURI()
+	if parsed.Fragment != "" {
+		target += "#" + parsed.EscapedFragment()
+	}
+	return target
 }
 
 func firstOf(values ...string) string {
@@ -766,16 +828,32 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 // clientAddress is what the rate limiter counts against. Behind a reverse
-// proxy the peer is the proxy, so trust the first X-Forwarded-For entry.
+// proxy the peer is the proxy, so the first X-Forwarded-For entry is the
+// client -- but only a peer that could be that proxy is believed. A header
+// from a direct client is its own invention, and honouring it would let one
+// address claim a fresh identity for every comment and never be limited.
 func clientAddress(r *http.Request) string {
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		return strings.TrimSpace(strings.Split(forwarded, ",")[0])
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" && localPeer(host) {
+		if first := strings.TrimSpace(strings.Split(forwarded, ",")[0]); first != "" {
+			return first
+		}
 	}
 	return host
+}
+
+// localPeer is true for the addresses a reverse proxy in front of this process
+// connects from: the loopback interface, or a private network alongside it.
+func localPeer(host string) bool {
+	address, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	address = address.Unmap()
+	return address.IsLoopback() || address.IsPrivate() || address.IsLinkLocalUnicast()
 }
 
 // applyFrom enforces the comment policy, then hands the message to the room.

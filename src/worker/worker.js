@@ -183,6 +183,21 @@ async function updateIndex(env, mutate) {
   throw new Error("index.json is contended; try again");
 }
 
+// localPath is where a sign-in may return to: somewhere on this site, and
+// nowhere else. A value like "//elsewhere.example" starts with a slash but is
+// read by browsers as an absolute URL, which would make the callback an open
+// redirect, so the path is parsed and required to carry no scheme or host.
+function localPath(next) {
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return "/";
+  try {
+    const parsed = new URL(next, "https://komodoc.invalid");
+    if (parsed.origin !== "https://komodoc.invalid") return "/";
+    return parsed.pathname + parsed.search + parsed.hash;
+  } catch {
+    return "/";
+  }
+}
+
 function room(env, slug) {
   return env.ROOM.get(env.ROOM.idFromName(slug));
 }
@@ -356,9 +371,14 @@ async function deleteDocument(env, slug) {
   return removed;
 }
 
+// The room for a document, or null when there is no such document. A room
+// belongs to a document: without that check any invented slug would bring a
+// fresh Durable Object into being, and since the comment rate limit is counted
+// inside the room, a new slug per comment would mean no rate limit at all.
 async function documentRoom(env, request, slug) {
   const { entries } = await readIndex(env);
-  if (!entries[slug]?.example) return room(env, slug);
+  if (!entries[slug]) return null;
+  if (!entries[slug].example) return room(env, slug);
   const login = request.headers.get("x-komodoc-login") || "";
   const visitor = cookieValue(request, VISITOR_COOKIE);
   const identity = login ? `github:${login.toLowerCase()}` : `browser:${visitor || "missing"}`;
@@ -416,7 +436,9 @@ export default {
     if (match) {
       if (!SLUG.test(match[1])) return new Response("bad slug", { status: 400 });
       const identified = await withIdentity(request, env);
-      return (await documentRoom(env, identified, match[1])).fetch(identified);
+      const stub = await documentRoom(env, identified, match[1]);
+      if (!stub) return new Response("not found", { status: 404 });
+      return stub.fetch(identified);
     }
 
     // Stable, shareable URL: redirect to whichever version is current, on the
@@ -480,7 +502,9 @@ export default {
     if (match) {
       if (!SLUG.test(match[1])) return json({ error: "bad slug" }, 400);
       const identified = await withIdentity(request, env);
-      return (await documentRoom(env, identified, match[1])).fetch(identified);
+      const stub = await documentRoom(env, identified, match[1]);
+      if (!stub) return json({ error: "not found" }, 404);
+      return stub.fetch(identified);
     }
 
     // --- the shell ---------------------------------------------------------
@@ -568,7 +592,7 @@ async function handleAuth(request, env, url) {
     return new Response(null, {
       status: 302,
       headers: [
-        ["location", next.startsWith("/") ? next : "/"],
+        ["location", localPath(next)],
         ["set-cookie", `komodoc_session=${session}; Path=/; Max-Age=${30 * 24 * 3600}; HttpOnly; Secure; SameSite=Lax`],
         ["set-cookie", "komodoc_state=; Path=/; Max-Age=0"],
       ],

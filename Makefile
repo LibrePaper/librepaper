@@ -80,13 +80,13 @@ examples/%.html: examples/%.typ
 # through uv against examples/pyproject.toml. uv fetches its own interpreter, so
 # neither Python nor either tool has to be installed to build the examples.
 #
-# marimo's exporter runs the notebook itself. Note that its HTML loads the
-# marimo frontend from a CDN and keeps the prose in a JSON island the page
-# hydrates, so this one document is not self-contained and carries no seeded
-# annotations -- see seed_examples.go. It is here because it is what marimo
-# actually produces.
+# marimo's exporter runs the notebook itself. Export without the notebook code:
+# Komodoc serves the rendered result as a static document, not as a live marimo
+# session. Its HTML still loads the marimo frontend from a CDN and keeps the
+# prose in a JSON island the page hydrates, so this one document is not
+# self-contained and carries no seeded annotations -- see seed_examples.go.
 examples/%.html: examples/%.py
-	@cd examples && uv run --quiet marimo export html $(notdir $<) -o $(notdir $@) -f
+	@cd examples && uv run --quiet marimo export html $(notdir $<) -o $(notdir $@) -f --no-include-code
 
 # --execute runs the notebook, --embed-images inlines the figures, and blanking
 # the two CDN URLs nbconvert would otherwise link keeps the page self-contained.

@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -43,12 +44,34 @@ type store struct {
 }
 
 func newStore(dir string) *store {
-	current := &store{dir: dir, entries: map[string]indexEntry{}}
-	raw, err := os.ReadFile(current.indexPath())
-	if err == nil {
-		_ = json.Unmarshal(raw, &current.entries)
+	current := &store{dir: dir}
+	entries, err := loadIndex(current.indexPath())
+	if err != nil {
+		die("%v", err)
 	}
+	current.entries = entries
 	return current
+}
+
+// loadIndex reads index.json. No index yet is an empty store, which is how a
+// fresh directory starts. An index that exists but cannot be read or parsed is
+// a different thing entirely, and an error rather than an empty map: carrying
+// on would present every stored document as gone, and the next publish would
+// overwrite the real index with a near-empty one.
+func loadIndex(path string) (map[string]indexEntry, error) {
+	entries := map[string]indexEntry{}
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return entries, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("could not read %s: %w", path, err)
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, fmt.Errorf("%s is not readable as an index (%w); "+
+			"move it aside to start empty", path, err)
+	}
+	return entries, nil
 }
 
 func (s *store) indexPath() string              { return filepath.Join(s.dir, "index.json") }
@@ -105,8 +128,19 @@ func (s *store) put(slug, title, digest, html, publisher string) (indexEntry, er
 		Example:   example,
 		Publisher: strings.ToLower(publisher),
 	}
+	previous, existed := s.entries[slug]
 	s.entries[slug] = entry
-	s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		// The bytes are on disk but the index naming them is not, so the
+		// document does not exist as far as any later run is concerned. Undo
+		// the in-memory half rather than report a success that will vanish.
+		if existed {
+			s.entries[slug] = previous
+		} else {
+			delete(s.entries, slug)
+		}
+		return indexEntry{}, err
+	}
 	return entry, nil
 }
 
@@ -118,7 +152,7 @@ func (s *store) read(slug, digest string) ([]byte, error) {
 // returning how many versions went. The index entry goes last: until it does
 // the document is still listed, which is a better half-state than a listing
 // pointing at nothing.
-func (s *store) remove(slug string) int {
+func (s *store) remove(slug string) (int, error) {
 	removed := 0
 	if files, err := os.ReadDir(s.documentDir(slug)); err == nil {
 		for _, file := range files {
@@ -134,23 +168,22 @@ func (s *store) remove(slug string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.entries, slug)
-	s.saveLocked()
-	return removed
+	return removed, s.saveLocked()
 }
 
-func (s *store) saveLocked() {
+func (s *store) saveLocked() error {
 	raw, err := json.Marshal(s.entries)
 	if err != nil {
-		return
+		return err
 	}
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		return
+		return err
 	}
 	temporary := s.indexPath() + ".tmp"
 	if err := os.WriteFile(temporary, raw, 0o644); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(temporary, s.indexPath())
+	return os.Rename(temporary, s.indexPath())
 }
 
 // randomSuffix makes a new document's link unguessable, drawing from the same
