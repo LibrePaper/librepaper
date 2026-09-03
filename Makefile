@@ -141,14 +141,8 @@ deploy-sandbox: $(BIN) $(EXAMPLES)  ## Deploy to Cloudflare and publish the exam
 	@$(BIN) login --client-id "$$KOMODOC_GITHUB_CLIENT_ID_SANDBOX" --endpoint "$$KOMODOC_ENDPOINT_SANDBOX"
 	@$(BIN) seed --endpoint "$$KOMODOC_ENDPOINT_SANDBOX"
 
-# Make cannot put anything into the shell that invoked it, so this prints the
-# assignments and you eval them:
-# A shell with the keys already in its environment. Nothing is printed and no
-# process outside that subshell ever sees them; exit it to drop them again.
-#
-# No target can export into the shell that ran make -- that is a process
-# boundary, not something a flag can cross -- so a one-off command is wrapped
-# rather than exported:
+# A target cannot export into the shell that ran make, so `secrets` opens a
+# subshell with the keys loaded. A one-off command can be wrapped as:
 #
 #     sops exec-env $(KEYS) 'make deploy-sandbox'
 KEYS ?= .keys.yaml

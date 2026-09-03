@@ -206,7 +206,7 @@ func deploy(options deployOptions) {
 		schedules := []any{}
 		if retention > 0 {
 			schedules = append(schedules, map[string]string{"cron": "0 * * * *"})
-			fmt.Printf("  expiry: %s after %s (daily cleanup)\n", expireFrom, retention)
+			fmt.Printf("  expiry: %s after %s (hourly cleanup)\n", expireFrom, retention)
 		}
 		cf.callJSON("PUT", "/accounts/"+cf.account+"/workers/scripts/"+scriptName+"/schedules", schedules)
 	}

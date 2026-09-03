@@ -63,13 +63,7 @@ func do(method, target string, headers map[string]string, body []byte, timeout t
 	return response.StatusCode, raw
 }
 
-// postJSON posts a JSON body and decodes a JSON reply, falling back to an
-// {"error": ...} shape when the reply is not JSON at all.
-func postJSON(target string, payload any, timeout time.Duration) (int, map[string]any) {
-	return postDecoded(target, payload, "", timeout)
-}
-
-// postAuthed is postJSON carrying the GitHub token the CLI signed in with.
+// postAuthed carries the GitHub token the CLI signed in with.
 func postAuthed(target string, payload any, token string, timeout time.Duration) (int, map[string]any) {
 	return postDecoded(target, payload, token, timeout)
 }

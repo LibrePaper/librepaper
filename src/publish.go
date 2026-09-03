@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -138,13 +137,6 @@ func listDocuments(endpointFlag string) {
 		}
 		fmt.Printf("%-*s  %s  %s\n", width, text(document["slug"]), updated, text(document["title"]))
 	}
-}
-
-// sortByUpdated orders documents oldest first, as the destroy listing does.
-func sortByUpdated(documents []map[string]any) {
-	sort.SliceStable(documents, func(i, j int) bool {
-		return text(documents[i]["updated_at"]) < text(documents[j]["updated_at"])
-	})
 }
 
 // titleOr falls back to the filename, the way an untitled document is named.

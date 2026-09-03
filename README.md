@@ -25,9 +25,9 @@ The installer supports Linux and macOS. Windows binaries are available on the
 
 ## Try it now
 
-The Komodoc maintainers host a free sandbox, where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log into the Komodoc management console using your Github username:
+The Komodoc sandbox is a free website where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log with your Github username:
 
-- [Komodoc console](https://komodoc.vincentarelbundock.workers.dev)
+[Komodoc sandbox](https://komodoc.vincentarelbundock.workers.dev)
 
 If you do not want to log in but want to try annotating some documents, you can try one of these live examples:
 
@@ -40,11 +40,7 @@ If you do not want to log in but want to try annotating some documents, you can 
 - [Publication and management console](https://komodoc.vincentarelbundock.workers.dev) (requires Github Login)
 
 <aside class="callout warning">
-<strong>Warning:</strong> Do not publish confidential information on the Komodoc
-sandbox. Documents are only visible to the person who uploaded them or to people
-with the randomly generated link. If you are gathering comments on documents
-about national security, you should <a href="#self-managed-server">host your own
-instance</a> instead.
+<strong>Warning:</strong> Do not publish confidential information on the Komodoc sandbox. Normally, documents are only visible to the person who uploaded them, or to people with the randomly generated and unlisted link. But if you are gathering comments on documents about national security, you should probably <a href="#self-managed-server">host your own instance</a> or find another solution.
 </aside>
 
 ## Publish
@@ -90,7 +86,7 @@ Visit the URL you were given. Select any passage to highlight it or attach a
 comment; comments appear immediately for everyone else reading the document.
 
 Depending on the publisher's settings, you may be asked to sign in with GitHub
-first. Only publicly available information is collected: your GitHub username.
+first. Only publicly available information is collected: your GitHub username.[^github-data]
 
 ## Deploy
 
@@ -168,6 +164,12 @@ Use `--expire-from created` for a fixed lifetime from the first upload, or
 `--expire-after never` to disable expiry. Cloudflare runs the cleanup schedule;
 the `komodoc` program does not need to remain running.
 
+Three flags bound what a deployment will store, and all three apply to
+`komodoc serve` as well: `--max-size` caps one document (4 MB by default),
+`--quota` caps what one publisher may hold across all their documents (100 MB),
+and `--storage` caps the whole deployment (5120 MB). Each publisher may also
+hold at most 50 documents and upload at most 30 times an hour.
+
 ## Export comments
 
 Find the document slug with `komodoc list`, then export readable Markdown:
@@ -184,6 +186,10 @@ Run `komodoc` to see all commands and options, including access controls,
 deleting documents, and removing a deployment.
 
 ## Environment variables
+
+[^github-data]: Komodoc requests no GitHub scopes through OAuth. It uses the
+GitHub API only to obtain your public login name; it does not collect your email,
+repositories, or other profile data.
 
 Flags take precedence over their corresponding environment variables.
 
