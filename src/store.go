@@ -4,11 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // The document store: the index of what exists, and the bytes of each version.
@@ -27,6 +29,11 @@ type indexEntry struct {
 	// example, and on anything published before ownership was recorded or on a
 	// deployment where publishing needs no account at all.
 	Publisher string `json:"publisher,omitempty"`
+	// Size is the bytes of the stored HTML, and what the storage quotas below
+	// are measured against. An entry from before Size was recorded reads back
+	// as zero, which admit treats as free rather than refusing every upload
+	// until each old document is replaced.
+	Size int64 `json:"size"`
 }
 
 // ownedBy answers whether login may replace or delete this document. An entry
@@ -99,7 +106,10 @@ func (s *store) list() []indexEntry {
 }
 
 // put writes a new version and updates the index, returning the stored entry.
-func (s *store) put(slug, title, digest, html, publisher string) (indexEntry, error) {
+// The quota check and the index mutation happen under the same lock, so two
+// uploads racing for the last of a quota cannot both be admitted.
+func (s *store) put(slug, title, digest, html, owner string) (indexEntry, error) {
+	size := int64(len(html))
 	if err := os.MkdirAll(s.documentDir(slug), 0o755); err != nil {
 		return indexEntry{}, err
 	}
@@ -110,23 +120,33 @@ func (s *store) put(slug, title, digest, html, publisher string) (indexEntry, er
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.admit(slug, owner, size, time.Now()); err != nil {
+		// The bytes are already on disk, orphaned under a digest nothing in
+		// the index points to. That is wasted space, not a correctness
+		// problem: nothing reads a version its entry does not name, and the
+		// alternative -- deleting them here -- would risk removing the very
+		// bytes a same-content republish just reused.
+		return indexEntry{}, err
+	}
 	now := timestamp()
 	created := now
 	example := false
+	replaced := ""
 	if existing, ok := s.entries[slug]; ok {
 		created = existing.CreatedAt
 		// A replacement keeps what the document already is: an example stays
 		// an example, and its publisher does not change hands.
 		example = existing.Example
 		if existing.Publisher != "" {
-			publisher = existing.Publisher
+			owner = existing.Publisher
 		}
+		replaced = existing.SHA
 	}
 	entry := indexEntry{
-		Slug: slug, Title: title, SHA: digest,
+		Slug: slug, Title: title, SHA: digest, Size: size,
 		CreatedAt: created, UpdatedAt: now,
 		Example:   example,
-		Publisher: strings.ToLower(publisher),
+		Publisher: strings.ToLower(owner),
 	}
 	previous, existed := s.entries[slug]
 	s.entries[slug] = entry
@@ -141,7 +161,90 @@ func (s *store) put(slug, title, digest, html, publisher string) (indexEntry, er
 		}
 		return indexEntry{}, err
 	}
+	// The reader only ever loads the entry's own digest, so a version this
+	// replacement left behind is unreachable the moment the index above is
+	// durable. Pruning it after that point, rather than before, means a
+	// crash mid-write never leaves the current version missing.
+	if replaced != "" && replaced != digest {
+		s.pruneOtherVersions(slug, digest)
+	}
 	return entry, nil
+}
+
+// quotaError is what admit returns when a storage rule refuses an upload. It
+// carries the HTTP status and message the rule names, so the handler answers
+// with exactly what the rule decided rather than translating it a second
+// time; the Worker uses the same wording.
+type quotaError struct {
+	status  int
+	message string
+}
+
+func (e *quotaError) Error() string { return e.message }
+
+// admit enforces the storage ceilings a write must clear, under the lock that
+// makes its index entry. owner is the caller's owner key exactly as
+// server.owner returns it -- a GitHub login, a visitor key, or "" for the one
+// bucket every unidentified caller shares. An entry with no Size counts as
+// zero, which is how a document stored before Size was recorded is treated:
+// as free, not as a reason to refuse everything until it is replaced.
+func (s *store) admit(slug, owner string, size int64, now time.Time) error {
+	existing, replacing := s.entries[slug]
+	previousSize := int64(0)
+	if replacing {
+		previousSize = existing.Size
+	}
+
+	var totalBytes, ownerBytes int64
+	ownerDocuments := 0
+	ownerUploadsThisHour := 0
+	cutoff := now.Add(-time.Hour)
+	for key, entry := range s.entries {
+		totalBytes += entry.Size
+		if entry.Publisher != owner {
+			continue
+		}
+		ownerBytes += entry.Size
+		// The document being replaced is not a new document, and is not
+		// counted again against the count it already counts toward.
+		if key != slug {
+			ownerDocuments++
+		}
+		if updated, err := time.Parse(time.RFC3339, entry.UpdatedAt); err == nil && updated.After(cutoff) {
+			ownerUploadsThisHour++
+		}
+	}
+	totalBytes += size - previousSize
+	ownerBytes += size - previousSize
+
+	switch {
+	case totalBytes > config.Storage.Total:
+		return &quotaError{http.StatusInsufficientStorage, "this deployment has no room left"}
+	case ownerBytes > config.Storage.PerOwner:
+		return &quotaError{http.StatusInsufficientStorage, "your storage quota is used up; delete a document first"}
+	case !replacing && ownerDocuments >= config.Storage.DocumentsPerOwner:
+		return &quotaError{http.StatusInsufficientStorage, "you have reached the document limit; delete one first"}
+	case ownerUploadsThisHour >= config.Storage.UploadsPerHour:
+		return &quotaError{http.StatusTooManyRequests, "too many uploads this hour; try later"}
+	}
+	return nil
+}
+
+// pruneOtherVersions removes every stored version of slug except keep. A
+// failure to remove one is not an upload failure; it leaves an unreachable
+// file behind for a future cleanup to find, nothing more.
+func (s *store) pruneOtherVersions(slug, keep string) {
+	files, err := os.ReadDir(s.documentDir(slug))
+	if err != nil {
+		return
+	}
+	for _, file := range files {
+		name := file.Name()
+		if name == keep+".html" || !strings.HasSuffix(name, ".html") {
+			continue
+		}
+		_ = os.Remove(filepath.Join(s.documentDir(slug), name))
+	}
 }
 
 func (s *store) read(slug, digest string) ([]byte, error) {

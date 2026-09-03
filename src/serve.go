@@ -431,95 +431,28 @@ func (s *server) handleComments(w http.ResponseWriter, r *http.Request, slug str
 	}
 }
 
+// upload is a parsed publish request: a title, an optional exact slug asking
+// to replace that document, and the HTML to store, however the body arrived.
+type upload struct {
+	title string
+	slug  string
+	html  string
+}
+
 func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// Checked before the body is read, so an unauthorised upload costs nothing.
 	login, ok := s.publisher(w, r)
 	if !ok {
 		return
 	}
-	var title, slug, html string
-
-	if strings.Contains(r.Header.Get("content-type"), "multipart/form-data") {
-		// ParseMultipartForm's argument caps memory, not the request: anything
-		// larger spills to temporary files, so without this an oversized body
-		// would be written to disk in full before the HTML limit below is even
-		// consulted. The slack covers the part headers and the other fields.
-		r.Body = http.MaxBytesReader(w, r.Body, int64(config.MaxHTML)+multipartSlack)
-		if err := r.ParseMultipartForm(multipartMemory); err != nil {
-			var tooLarge *http.MaxBytesError
-			if errors.As(err, &tooLarge) {
-				writeJSON(w, http.StatusRequestEntityTooLarge,
-					map[string]any{"error": "that upload is too large"})
-				return
-			}
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad upload"})
-			return
-		}
-		defer func() {
-			if r.MultipartForm != nil {
-				_ = r.MultipartForm.RemoveAll()
-			}
-		}()
-		title, slug = r.FormValue("title"), r.FormValue("slug")
-		if file, header, err := r.FormFile("file"); err == nil {
-			defer file.Close()
-			raw, err := io.ReadAll(io.LimitReader(file, int64(config.MaxHTML)+1))
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad upload"})
-				return
-			}
-			html = string(raw)
-
-			// Markdown dropped on the page is rendered here, so what gets
-			// stored is HTML like everything else.
-			if isMarkdown(header.Filename) {
-				if strings.TrimSpace(title) == "" {
-					title = titleFromMarkdown(html)
-				}
-				rendered, err := renderMarkdownDocument(html, strings.TrimSpace(title))
-				if err != nil {
-					writeJSON(w, http.StatusBadRequest,
-						map[string]any{"error": "could not render that markdown"})
-					return
-				}
-				html = rendered
-			}
-		}
-	} else {
-		// JSON escaping can inflate the document, so the body is allowed to be
-		// larger than the document limit; the real check is on the decoded
-		// html below. Refusing early keeps a huge body from being read at all,
-		// and says why rather than failing to parse.
-		ceiling := int64(config.MaxHTML)*2 + 1024
-		if r.ContentLength > ceiling {
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "document too large"})
-			return
-		}
-		var body struct {
-			Title string `json:"title"`
-			Slug  string `json:"slug"`
-			HTML  string `json:"html"`
-		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, ceiling)).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad request"})
-			return
-		}
-		title, slug, html = body.Title, body.Slug, body.HTML
-	}
-
-	title = strings.TrimSpace(title)
-	if title == "" || strings.TrimSpace(html) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "title and html are required"})
-		return
-	}
-	if len(html) > config.MaxHTML {
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "document too large"})
+	parsed, ok := s.readUpload(w, r)
+	if !ok {
 		return
 	}
 
-	base := slugify(slug)
+	base := slugify(parsed.slug)
 	if base == "" {
-		base = slugify(title)
+		base = slugify(parsed.title)
 	}
 	if base == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "could not derive a slug"})
@@ -536,10 +469,15 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		key = base + "-" + randomSuffix()
 	}
 
-	sum := sha256.Sum256([]byte(html))
+	sum := sha256.Sum256([]byte(parsed.html))
 	digest := hex.EncodeToString(sum[:])
-	entry, err := s.store.put(key, title, digest, html, login)
+	entry, err := s.store.put(key, parsed.title, digest, parsed.html, login)
 	if err != nil {
+		var quota *quotaError
+		if errors.As(err, &quota) {
+			writeJSON(w, quota.status, map[string]any{"error": quota.message})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not store the document"})
 		return
 	}
@@ -549,6 +487,95 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		"created_at": entry.CreatedAt, "updated_at": entry.UpdatedAt,
 		"url": "/docs/" + entry.Slug,
 	})
+}
+
+// readUpload parses a publish request's body, in either format it may
+// arrive as, and applies the checks common to both: a title and some HTML are
+// present, and the HTML is not over the size ceiling. It answers the request
+// itself and returns false on any problem, so handleUpload only has to decide
+// where to store what comes back.
+func (s *server) readUpload(w http.ResponseWriter, r *http.Request) (upload, bool) {
+	var title, slug, html string
+
+	if strings.Contains(r.Header.Get("content-type"), "multipart/form-data") {
+		// ParseMultipartForm's argument caps memory, not the request: anything
+		// larger spills to temporary files, so without this an oversized body
+		// would be written to disk in full before the HTML limit below is even
+		// consulted. The slack covers the part headers and the other fields.
+		r.Body = http.MaxBytesReader(w, r.Body, int64(config.MaxHTML)+multipartSlack)
+		if err := r.ParseMultipartForm(multipartMemory); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeJSON(w, http.StatusRequestEntityTooLarge,
+					map[string]any{"error": "that upload is too large"})
+				return upload{}, false
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad upload"})
+			return upload{}, false
+		}
+		defer func() {
+			if r.MultipartForm != nil {
+				_ = r.MultipartForm.RemoveAll()
+			}
+		}()
+		title, slug = r.FormValue("title"), r.FormValue("slug")
+		if file, header, err := r.FormFile("file"); err == nil {
+			defer file.Close()
+			raw, err := io.ReadAll(io.LimitReader(file, int64(config.MaxHTML)+1))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad upload"})
+				return upload{}, false
+			}
+			html = string(raw)
+
+			// Markdown dropped on the page is rendered here, so what gets
+			// stored is HTML like everything else.
+			if isMarkdown(header.Filename) {
+				if strings.TrimSpace(title) == "" {
+					title = titleFromMarkdown(html)
+				}
+				rendered, err := renderMarkdownDocument(html, strings.TrimSpace(title))
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest,
+						map[string]any{"error": "could not render that markdown"})
+					return upload{}, false
+				}
+				html = rendered
+			}
+		}
+	} else {
+		// JSON escaping can inflate the document, so the body is allowed to be
+		// larger than the document limit; the real check is on the decoded
+		// html below. Refusing early keeps a huge body from being read at all,
+		// and says why rather than failing to parse.
+		ceiling := int64(config.MaxHTML)*2 + 1024
+		if r.ContentLength > ceiling {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "document too large"})
+			return upload{}, false
+		}
+		var body struct {
+			Title string `json:"title"`
+			Slug  string `json:"slug"`
+			HTML  string `json:"html"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, ceiling)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad request"})
+			return upload{}, false
+		}
+		title, slug, html = body.Title, body.Slug, body.HTML
+	}
+
+	title = strings.TrimSpace(title)
+	if title == "" || strings.TrimSpace(html) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "title and html are required"})
+		return upload{}, false
+	}
+	if len(html) > config.MaxHTML {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "document too large"})
+		return upload{}, false
+	}
+
+	return upload{title: title, slug: slug, html: html}, true
 }
 
 func (s *server) handleDelete(w http.ResponseWriter, r *http.Request, slug string) {
