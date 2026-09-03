@@ -1,203 +1,180 @@
 # Komodoc
 
-Host a self-contained HTML document on the web. Anyone with the (secret) link can highlight passages and leave comments on it.
+Publish an HTML or Markdown document, share its unlisted link, and collect
+comments and highlights in real time.
 
-* Multiple simultaneous readers, comments appear instantly
-* Serverless: a Cloudflare Worker and a bucket, nothing to maintain
-* Deploy in about two minutes
+- Highlight passages, suggest edits, and comment on figures
+- Multiple people can annotate simultaneously, with live updates
+- Publish and manage documents from the web or CLI
+- Trivial to deploy: host locally with the bundled server, or on Cloudflare
+  Workers and R2
+- Free public sandbox for small, short-lived notebooks
+- Allow anonymous comments or require GitHub authentication
+- Export annotations as Markdown or W3C JSON-LD
 
-| | |
-| --- | --- |
-| [**Host**](#host) | Get the service running, on Cloudflare or your own machine |
-| [**Publish**](#publish) | Share a document for others to annotate |
-| [**Comment**](#comment) | What readers do with the link you send them |
-| [**Export**](#export) | Take the annotations out |
-| [**Manage**](#manage) | List, destroy, export |
-| [**Reference**](#reference) | Every command and setting |
+![A document with comments in the sidebar](docs/commenting.png)
 
----
-
-# Host
-
-First get the binary. It is a single static file with everything inside it, and
-needs nothing beside it.
+## Install
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/komodoc/main/install.sh | sh
 ```
 
-That fetches the release built for your machine (Linux and macOS, Intel and
-Arm) and puts it in `~/.local/bin`. Set `KOMODOC_BIN_DIR` to put it elsewhere,
-or `KOMODOC_VERSION=v0.0.1` to pin a version. Windows binaries are on the
+The installer supports Linux and macOS. Windows binaries are available on the
 [releases page](https://github.com/vincentarelbundock/komodoc/releases).
 
-To build it yourself instead, you need [Go](https://go.dev/dl/):
+## Try it now
+
+See Komodoc in action with a [live example](https://komodoc.vincentarelbundock.workers.dev/docs/what-the-bootstrap-actually-resamples) on the public sandbox. Try highlighting passages and adding comments.
+
+## Publish
+
+The Komodoc maintainers host a free **sandbox** where anyone can upload small HTML files under 4 MB. Sandbox documents are short-lived and are deleted automatically after 24 hours or earlier. This service is provided with no guarantees whatsoever, and notebooks may be deleted at any time for any reason.
+
+Use the [management workspace](https://komodoc.vincentarelbundock.workers.dev)
+to upload and manage your documents. Because every sandbox notebook expires, links
+to individual examples are temporary too.
+
+A hosted Komodoc service is called an *endpoint*. You can use the sandbox
+endpoint or [deploy your own](#deploy), at a URL such as
+`https://my-docs.YOUR-SUBDOMAIN.workers.dev`. Everything you publish, and every
+comment left on it, belongs to that endpoint and to nobody else.
+
+### Web
+
+Open the endpoint in a browser, sign in with GitHub, and upload an `.html` or
+`.md` file. Send the resulting link to your readers.
+
+### CLI
+
+Sign in once, then publish. Both commands need to know the endpoint:
 
 ```sh
-go build -o dist/komodoc ./src
+komodoc login --endpoint https://my-docs.YOUR-SUBDOMAIN.workers.dev
+komodoc publish paper.html --title "My Paper" \
+  --endpoint https://my-docs.YOUR-SUBDOMAIN.workers.dev
 ```
 
-Then pick one: Cloudflare to put it on the internet, or your own machine to try it out.
+Set `KOMODOC_ENDPOINT` to skip the flag:
 
-## On Cloudflare
-
-You need a Cloudflare account and a GitHub account. Five things to collect, then one command.
-
-**1. A workers.dev subdomain.** At [dash.cloudflare.com](https://dash.cloudflare.com), open **Workers & Pages** → **Settings**, and set a subdomain in the right-hand sidebar. It is account-wide. Your site will live at `https://<name>.<subdomain>.workers.dev`.
-
-**2. Storage.** Search **R2 Object Storage** in the dashboard, open it, and turn it on. The free tier is usually enough; Cloudflare may still ask for a card.
-
-**3. A Cloudflare API token.** At [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) choose **Create Custom Token**, and give it three Account permissions:
-
-* Workers Scripts: Edit
-* Workers R2 Storage: Edit
-* Account Settings: Read
-
-**4. A GitHub OAuth app.** At [github.com/settings/developers](https://github.com/settings/developers) choose **New OAuth App**. The form asks for two URLs, both built from the `<name>` you are about to deploy under, so decide it now:
-
-```
-Homepage URL                  https://<name>.<subdomain>.workers.dev
-Authorization callback URL    https://<name>.<subdomain>.workers.dev/auth/callback
+```sh
+export KOMODOC_ENDPOINT=https://my-docs.YOUR-SUBDOMAIN.workers.dev
+komodoc publish paper.html --title "My Paper"
 ```
 
-The callback is the one that has to be exact; the homepage URL is only shown to people signing in. Name the app whatever you like. Keep the client id, and press **Generate a new client secret**.
+Documents are unlisted, not private: anyone with the link can read them. HTML
+files must be self-contained, with images, styles, and fonts embedded. For
+Quarto, render with:
 
-**5. Deploy.**
+```sh
+quarto render paper.qmd --to html -M embed-resources:true
+```
+
+## Comment
+
+Visit the URL you were given. Select any passage to highlight it or attach a
+comment; comments appear immediately for everyone else reading the document.
+
+Depending on the publisher's settings, you may be asked to sign in with GitHub
+first. Only publicly available information is collected: your GitHub username.
+
+## Deploy
+
+Komodoc runs on Cloudflare Workers and R2. Before deploying:
+
+Cloudflare R2 includes 10 GB of storage per month for free and does not charge
+egress fees. You may be charged if your storage exceeds 10 GB; see
+[R2 pricing](https://developers.cloudflare.com/r2/pricing/).
+
+1. In the Cloudflare dashboard, enable R2 and choose a `workers.dev` subdomain.
+2. Create a [Cloudflare API token](https://dash.cloudflare.com/profile/api-tokens)
+   with `Workers Scripts: Edit`, `Workers R2 Storage: Edit`, and
+   `Account Settings: Read` permissions.
+3. Create a [GitHub OAuth app](https://github.com/settings/developers), with
+   Device Flow enabled. For a deployment labelled `my-docs`, use these URLs:
+
+   ```text
+   Homepage URL:               https://my-docs.YOUR-SUBDOMAIN.workers.dev
+   Authorization callback URL: https://my-docs.YOUR-SUBDOMAIN.workers.dev/auth/callback
+   ```
+
+Deploy it:
 
 ```sh
 export CLOUDFLARE_API_TOKEN="..."
-export KOMODOC_GITHUB_CLIENT_ID="..." KOMODOC_GITHUB_CLIENT_SECRET="..."
+export KOMODOC_GITHUB_CLIENT_ID="..."
+export KOMODOC_GITHUB_CLIENT_SECRET="..."
 
-./dist/komodoc deploy --name your-example --publishers your-github-login
-# -> deployed: https://your-example.your-subdomain.workers.dev
+komodoc deploy --label my-docs --publishers YOUR-GITHUB-LOGIN
 ```
 
-That creates the bucket, uploads the site, and stores the secrets for you. you never install secrets by hand, and you never need to repeat this: a later `./dist/komodoc deploy` with no options at all keeps the client secret, the settings, and the key that signs sessions, so nobody is signed out.
+The label is the first part of the URL, so this endpoint is
+`https://my-docs.YOUR-SUBDOMAIN.workers.dev`.
 
-Add `CLOUDFLARE_ACCOUNT_ID` only if your token can see more than one account; `deploy` lists them if so.
-
-To change one setting later, pass just that one:
+To delete documents automatically after their most recent publication:
 
 ```sh
-./dist/komodoc deploy --publishers alice,bob
+komodoc deploy --label my-docs --expire-after 24h
 ```
 
-## On your own machine
+Use `--expire-from created` for a fixed lifetime from the first upload, or
+`--expire-after never` to disable expiry. Cloudflare runs the cleanup schedule;
+the `komodoc` program does not need to remain running.
 
-No Cloudflare account, no internet. Everything is kept in one directory: documents as files, comments as one JSON file each.
+The maintainer's sandbox also deploys with `--examples`. This reserves the four
+curated example notebooks and gives each visitor a personal annotation room
+that resets after an hour. Ordinary notebooks remain shared and collaborative.
 
-You still need a GitHub OAuth app (step 4 above), with both URLs pointing at your own machine:
+The stable examples are [Bootstrap](https://komodoc.vincentarelbundock.workers.dev/docs/what-the-bootstrap-actually-resamples),
+[Newton's method](https://komodoc.vincentarelbundock.workers.dev/docs/newton-s-method-is-not-always-your-friend),
+[quantitative writing](https://komodoc.vincentarelbundock.workers.dev/docs/a-short-style-guide-for-quantitative-writing),
+and [random walks](https://komodoc.vincentarelbundock.workers.dev/docs/how-far-does-a-drunk-walk).
 
-```
-Homepage URL                  http://localhost:8081
-Authorization callback URL    http://localhost:8081/auth/callback
-```
+## Export comments
 
-Use a separate app from the deployed one; GitHub matches the callback exactly.
+Find the document slug with `komodoc list`, then export readable Markdown:
 
 ```sh
-export KOMODOC_GITHUB_CLIENT_ID="..." KOMODOC_GITHUB_CLIENT_SECRET="..."
-
-./dist/komodoc serve --port 8081 --publishers your-github-login
-# -> komodoc serving http://localhost:8081
+komodoc list --endpoint https://my-docs.YOUR-SUBDOMAIN.workers.dev
+komodoc export DOCUMENT-SLUG --format markdown --out comments.md \
+  --endpoint https://my-docs.YOUR-SUBDOMAIN.workers.dev
 ```
 
-Open that address in a browser. Stop it with Ctrl-C.
+Without `--format markdown`, Komodoc exports W3C Web Annotation JSON-LD.
 
-The port has to match the callback URL you registered, so pick one and keep it. Leave `--port` off and it takes the first free port between 8080 and 8099, which is convenient but means registering a callback for each.
+## Try it locally
 
-Documents and comments go in `komodoc-data` beside you; `--data ~/somewhere-else` puts them anywhere you like. That directory is the only copy of your comments, so back it up. Sessions survive a restart.
-
-To see the site with documents and comments already in it:
+Run a public local instance without Cloudflare or GitHub setup:
 
 ```sh
-./dist/komodoc seed
+komodoc serve --port 8081 --publishers anyone --expire-after 24h
 ```
 
----
+Open <http://localhost:8081>, which is the endpoint. Documents and comments are
+stored in `komodoc-data`; back up that directory if you use the local instance
+for real work. When expiry is enabled, the server cleans up at startup and
+hourly while it is running. Add `--expire-from created` for a fixed lifetime
+from the first upload instead of the default lifetime from the latest publish.
 
-# Publish
+Run `komodoc` to see all commands and options, including access controls,
+deleting documents, and removing a deployment.
 
-Sign in, then publish a self-contained HTML file:
+## Environment variables
 
-```sh
-./dist/komodoc login
-export KOMODOC_ENDPOINT=https://your-example.your-subdomain.workers.dev
-./dist/komodoc publish paper.html --title "My Paper"
-# -> https://your-example.your-subdomain.workers.dev/docs/my-paper-k7f2q9xw3m
-```
+Flags take precedence over their corresponding environment variables.
 
-That URL is the share link. Its tail, `my-paper-k7f2q9xw3m`, is the document's slug, which every command that acts on one document takes; `./dist/komodoc list` prints them. Documents are unlisted rather than private, so treat the link as the secret.
-
-Anything up to 30 MB with its images, styles and fonts inlined will do — `quarto render paper.qmd --to html -M embed-resources:true`, or any equivalent export. Documents keep their own JavaScript, so charts and maps still work. Markdown is rendered for you, and its first `#` heading becomes the title.
-
-You can do the same thing without the terminal: sign in on the front page and drop a file on the upload field.
-
----
-
-# Comment
-
-Open the link, sign in with GitHub if the host asks you to, and comment on the document.
-
-![The reader: the document on the left, comments on the right](docs/commenting.png)
-
----
-
-# Export
-
-Annotations come out in the [W3C Web Annotation Data Model](https://www.w3.org/TR/annotation-model/), which Hypothesis and other annotation tools read.
-
-```sh
-./dist/komodoc export my-paper-k7f2q9xw3m > annotations.json
-./dist/komodoc export my-paper-k7f2q9xw3m --format markdown --out notes.md
-```
-
-Use `--format markdown` for something to read; the default JSON-LD is for feeding another tool. Highlights, suggested edits, figure regions, tags and replies all survive the trip.
-
----
-
-# Manage
-
-```sh
-./dist/komodoc list                                   # documents and their slugs
-./dist/komodoc export my-paper-k7f2q9xw3m             # annotations out
-./dist/komodoc destroy --document my-paper-k7f2q9xw3m # one document and its comments
-./dist/komodoc destroy --service                      # the whole deployment
-```
-
-Both `destroy` forms ask you to confirm, and neither can be undone.
-
----
-
-# Reference
-
-Ten commands. Run `./dist/komodoc` with no arguments for the same list.
-
-| Command | What it does | Options |
-| --- | --- | --- |
-| `login` | Sign in with GitHub, by device flow | `--client-id`, `--endpoint` |
-| `logout` | Forget the stored token | |
-| `deploy` | Create or update the Cloudflare deployment | `--name`, `--client-id`, `--client-secret`, `--publishers`, `--commenters` |
-| `serve` | Run the service on this machine | `--port` (default: first free of 8080-8099), `--data`, `--client-id`, `--client-secret`, `--publishers`, `--commenters` |
-| `publish FILE` | Publish HTML or markdown, and print the link | `--title`, `--slug`, `--endpoint` |
-| `list` | List your documents and their slugs | `--endpoint` |
-| `export SLUG` | Annotations out | `--format jsonld\|markdown`, `--out`, `--endpoint` |
-| `destroy` | Delete a document, or the whole deployment | `--document SLUG`, `--service`, `--name`, `--endpoint`, `--yes` |
-| `seed` | Wipe a local data directory and fill it with examples | `--data` |
-| `version` | Print the version | |
-
-`destroy` takes `--document SLUG` or `--service` and refuses to guess between them; either way it asks you to confirm unless you pass `--yes`. `seed` writes to a directory on disk, so it applies to `serve` and not to a Cloudflare deployment.
-
-| Variable | Used by | For |
-| --- | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | `deploy`, `destroy --service` | Required |
-| `CLOUDFLARE_ACCOUNT_ID` | `deploy`, `destroy --service` | Only if the token sees several accounts |
-| `KOMODOC_ENDPOINT` | `login`, `publish`, `list`, `export`, `destroy --document` | Your deployment URL, instead of `--endpoint` |
-| `KOMODOC_TOKEN` | `publish`, `list`, `export`, `destroy --document` | A GitHub token, instead of `login` |
-| `KOMODOC_NAME` | `deploy`, `destroy --service` | Deployment name, same as `--name` |
-| `KOMODOC_GITHUB_CLIENT_ID` | `deploy`, `serve` | OAuth app client id |
-| `KOMODOC_GITHUB_CLIENT_SECRET` | `deploy`, `serve` | OAuth app client secret |
-| `KOMODOC_PUBLISHERS` | `deploy`, `serve` | Same as `--publishers` |
-| `KOMODOC_COMMENTERS` | `deploy`, `serve` | Same as `--commenters` |
-
-The sign-in token is cached in `~/.config/komodoc/token`, or under `$XDG_CONFIG_HOME` if you set it.
+| Variable | Purpose |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare credentials for deploying or removing a service |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account to use when the token can access more than one |
+| `KOMODOC_ENDPOINT` | Default endpoint for `login`, `publish`, `list`, `export`, and document deletion |
+| `KOMODOC_TOKEN` | GitHub token to use instead of `komodoc login` |
+| `KOMODOC_LABEL` | Default deployment label |
+| `KOMODOC_GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
+| `KOMODOC_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
+| `KOMODOC_PUBLISHERS` | GitHub accounts allowed to publish |
+| `KOMODOC_COMMENTERS` | Who may comment: `anyone`, `any`, or a list of GitHub accounts |
+| `KOMODOC_EXPIRE_AFTER` | Automatically delete documents after a duration such as `24h` or `30d` |
+| `KOMODOC_EXPIRE_FROM` | Start retention at `updated` (default) or `created` |
+| `KOMODOC_VERSION` | Version selected by the installer |
+| `KOMODOC_BIN_DIR` | Installation directory selected by the installer |
