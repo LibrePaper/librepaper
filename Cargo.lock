@@ -1662,6 +1662,7 @@ dependencies = [
  "http-body-util",
  "include_dir",
  "komodoc-engine",
+ "komodoc-text",
  "percent-encoding",
  "rand 0.9.5",
  "regex",
@@ -1687,6 +1688,10 @@ dependencies = [
  "typst-assets",
  "typst-html",
 ]
+
+[[package]]
+name = "komodoc-text"
+version = "0.1.0"
 
 [[package]]
 name = "kurbo"

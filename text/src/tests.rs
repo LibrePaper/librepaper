@@ -2,7 +2,7 @@
 //! `04-SPEC-sync.md` asks for, and the invariant that holds under all of them
 //! -- applying a diff's edits to the old text gives the new one exactly.
 
-use crate::merge::{diff, merge, tokenize, Conflict, Edit, Merged};
+use crate::{diff, merge, tokenize, Conflict, Edit, Merged};
 
 /// Applies edits front to back with a running offset, which is one of the two
 /// ways the spec promises a caller may apply them; the other is back to front,
@@ -523,7 +523,7 @@ fn edits_are_sorted_and_disjoint_and_exact_over_random_soups() {
         let new = if rng.below(2) == 0 {
             soup(&mut rng, 30)
         } else {
-            let mut tokens: Vec<String> = crate::merge::tokenize(&old)
+            let mut tokens: Vec<String> = crate::tokenize(&old)
                 .iter()
                 .map(|t| t.text.to_string())
                 .collect();

@@ -10,7 +10,6 @@ mod config;
 mod export;
 mod history;
 mod http;
-mod merge;
 mod origins;
 mod render;
 mod retention;
