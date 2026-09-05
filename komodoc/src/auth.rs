@@ -927,6 +927,7 @@ impl PendingCodes {
         self.max_age.load(std::sync::atomic::Ordering::Relaxed) as i64
     }
 
+    #[allow(dead_code)] // only the tests shorten it; the server runs on the real ten minutes
     pub fn set_max_age(&self, seconds: u64) {
         self.max_age
             .store(seconds, std::sync::atomic::Ordering::Relaxed);
@@ -996,6 +997,7 @@ impl PendingCodes {
     }
 
     /// How many are waiting, for the tests and nothing else.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         let mut entries = self.entries.lock().expect("pending codes poisoned");
         self.sweep(&mut entries);

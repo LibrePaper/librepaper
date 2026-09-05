@@ -105,7 +105,7 @@ pub async fn login(server_flag: String) {
 /// Writes the token where the next command will look for it, readable by
 /// nobody else: it is a bearer, so the file permissions are the whole of its
 /// protection at rest.
-fn write_token(path: &Path, token: &str) -> Result<(), String> {
+pub fn write_token(path: &Path, token: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
@@ -129,15 +129,15 @@ pub fn logout() {
     }
 }
 
-struct DeviceCode {
-    device_code: String,
-    user_code: String,
-    verification_url: String,
-    expires_in: u64,
-    interval: u64,
+pub struct DeviceCode {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_url: String,
+    pub expires_in: u64,
+    pub interval: u64,
 }
 
-async fn request_device_code(server: &str) -> Result<DeviceCode, String> {
+pub async fn request_device_code(server: &str) -> Result<DeviceCode, String> {
     // No bearer: the terminal has no token yet, which is the whole reason it
     // is asking.
     let (status, payload) = post_json(
@@ -173,7 +173,7 @@ async fn request_device_code(server: &str) -> Result<DeviceCode, String> {
 /// Waits for the code to be approved, at the interval the server asks for and
 /// no faster. The deadline is the server's own expiry, so a code the server
 /// has already forgotten is not polled for after it says so.
-async fn poll_for_token(server: &str, code: &DeviceCode) -> Result<String, String> {
+pub async fn poll_for_token(server: &str, code: &DeviceCode) -> Result<String, String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(code.expires_in.max(60));
     let interval = Duration::from_secs(code.interval);
     while std::time::Instant::now() < deadline {
