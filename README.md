@@ -416,19 +416,27 @@ default; back it up if the instance holds real work. Point it at a bucket
 instead and the server holds nothing of its own — see
 [Bring your own bucket](#bring-your-own-bucket).
 
-Five flags bound what a deployment will store:
+Six flags bound what a deployment will store:
 
 | Flag | Caps | Default |
 | --- | --- | --- |
-| `--max-size` | one document | 4 MB |
+| `--max-size` | the texts of one document | 4 MB |
+| `--max-assets` | the figures of one document | 32 MB |
 | `--quota` | everything one publisher holds | 100 MB |
 | `--storage` | the whole deployment | 5120 MB |
 | `--max-documents` | documents one publisher may hold | 50 |
 | `--uploads-per-hour` | uploads one publisher may make in an hour | 30 |
 
 ```sh
-komodoc serve --max-size 8 --quota 500 --storage 10240
+komodoc serve --max-size 8 --max-assets 16 --quota 500 --storage 10240
 ```
+
+A document is a directory, so `--max-size` bounds the sum of its texts and
+`--max-assets` bounds its figures. Both count against `--quota`; a figure is
+an upload and counts against `--uploads-per-hour` like any other. On a
+deployment anybody may publish to, `--max-assets` is the one worth lowering:
+figures are where a paper's bytes actually are, and it is what stops a single
+document spending a publisher's whole allowance on images.
 
 Under `--publishers anyone` (see [Rights](#rights)), a browser's quota is tied
 to a cookie rather than an account, so clearing cookies gets a new one;

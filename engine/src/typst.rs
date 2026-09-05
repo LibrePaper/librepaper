@@ -526,3 +526,104 @@ mod tests {
         assert!(!is_typst("paper.md"));
     }
 }
+
+#[cfg(test)]
+mod figure_tests {
+    use super::*;
+
+    /// A one-by-one PNG, as bytes: the smallest thing that is really a PNG.
+    fn png() -> Vec<u8> {
+        const BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let mut out = Vec::new();
+        let table: Vec<u8> =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".to_vec();
+        let mut buffer = 0u32;
+        let mut bits = 0u32;
+        for byte in BASE64.bytes() {
+            if byte == b'=' {
+                break;
+            }
+            let Some(value) = table.iter().position(|c| *c == byte) else {
+                continue;
+            };
+            buffer = (buffer << 6) | value as u32;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((buffer >> bits) as u8);
+            }
+        }
+        out
+    }
+
+    /// What a figure becomes in the page, which is what says whether a reader
+    /// gets one. `typst-html` writes an image into the document itself rather
+    /// than linking to it, so the frame fetches nothing -- and this is the
+    /// test of that claim rather than the assumption of it.
+    #[test]
+    fn a_png_figure_is_written_into_the_page() {
+        let bytes = png();
+        let files = |path: &Path| -> Option<Vec<u8>> {
+            (path == Path::new("fig/one.png")).then(|| bytes.clone())
+        };
+        let compiled = compile_html(
+            "#image(\"fig/one.png\", width: 10pt)\n",
+            "main.typ",
+            &files,
+            None,
+        );
+        let page = compiled.page.expect("a document with a figure in it");
+        assert!(
+            page.contains("data:image/png;base64,") || page.contains("<img"),
+            "the figure did not reach the page"
+        );
+        assert!(
+            !page.contains("fig/one.png"),
+            "the page refers to the figure by path, so a reader would have to fetch it"
+        );
+    }
+
+    /// The same question for a PDF figure, which is the one a paper actually
+    /// has. Recorded as a test because the answer decides whether a PDF figure
+    /// is usable at all in the browser, and it is not obvious from the outside.
+    #[test]
+    fn what_becomes_of_a_pdf_figure() {
+        let pdf: Vec<u8> = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+             2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+             3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 72 72]>>endobj\n\
+             trailer<</Root 1 0 R>>\n"
+            .to_vec();
+        let files = |path: &Path| -> Option<Vec<u8>> {
+            (path == Path::new("fig/plot.pdf")).then(|| pdf.clone())
+        };
+        let compiled = compile_html("#image(\"fig/plot.pdf\")\n", "main.typ", &files, None);
+        match compiled.page {
+            Some(page) => {
+                eprintln!(
+                    "a PDF figure compiles; the page carries {}",
+                    if page.contains("data:") {
+                        "a data URL"
+                    } else {
+                        "no data URL"
+                    }
+                );
+                assert!(
+                    !page.contains("fig/plot.pdf"),
+                    "a PDF figure reached the page by path rather than by value"
+                );
+                assert!(
+                    page.contains("data:") || page.contains("<svg"),
+                    "a PDF figure compiled but nothing of it reached the page"
+                );
+            }
+            None => {
+                // Typst refusing it is an answer too, and the one worth
+                // recording: a PDF figure that does not compile here is a
+                // figure an author has to convert, and the diagnostic says so.
+                let said: Vec<String> = compiled.errors().map(|e| e.message.clone()).collect();
+                assert!(!said.is_empty(), "no page and nothing said about why");
+                eprintln!("a PDF figure is refused by this typst: {said:?}");
+            }
+        }
+    }
+}

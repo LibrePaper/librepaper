@@ -60,17 +60,84 @@ pub fn render_body(source: &str) -> String {
     comrak::markdown_to_html(source, &options())
 }
 
+/// Where an image in the document actually lives. A markdown document names
+/// its figures by path -- `![](fig/one.png)` -- and a path means nothing to a
+/// browser showing a page that was never written to a disk. The host is the
+/// only thing that knows where those bytes ended up, so it answers.
+///
+/// Typst needs none of this: it reads a figure through the same file map it
+/// reads an import through, and `typst-html` writes the image into the page as
+/// a data URL. Markdown's images are HTML that comrak has already produced, so
+/// the rewriting happens after it rather than inside it.
+pub type Resolve<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+/// Nothing beside the document, which is what a one-file markdown source has
+/// always compiled against.
+pub fn no_assets(_: &str) -> Option<String> {
+    None
+}
+
 /// Turns a markdown source into the standalone HTML page a document is stored
 /// as.
 pub fn render(source: &str, title: &str) -> String {
-    page::page(title, "", &render_body(source))
+    render_with(source, title, &no_assets)
+}
+
+/// The same, with somewhere for the figures to come from.
+pub fn render_with(source: &str, title: &str, assets: Resolve) -> String {
+    let body = rewrite_images(&render_body(source), assets);
+    page::page(title, "", &body)
+}
+
+/// Points every relative `src` at what the host says is there, and leaves
+/// everything else alone: an absolute URL is the author's own and a data URL
+/// is already the bytes. A path the host has nothing for is left as written,
+/// so a figure that has not arrived yet is a broken image rather than a
+/// rewritten one pointing nowhere.
+fn rewrite_images(html: &str, assets: Resolve) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find("src=\"") {
+        let (before, after) = rest.split_at(at + 5);
+        out.push_str(before);
+        let Some(end) = after.find('"') else {
+            rest = after;
+            break;
+        };
+        let (path, tail) = after.split_at(end);
+        // Comrak escapes what it writes into an attribute, so the path here is
+        // HTML-escaped. The few entities a path can carry are undone before it
+        // is compared with the names the document knows.
+        let decoded = path
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'");
+        let external = decoded.contains("://")
+            || decoded.starts_with("data:")
+            || decoded.starts_with("blob:")
+            || decoded.starts_with('/')
+            || decoded.starts_with('#');
+        match (external, assets(&decoded)) {
+            (false, Some(url)) => out.push_str(&crate::page::escape(&url)),
+            _ => out.push_str(path),
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The same, in the shape every renderer answers in. Comrak has no failure
 /// mode, so the list is always empty and every surface built on diagnostics is
 /// inert for markdown.
 pub fn compile(source: &str, title: &str) -> crate::diagnostic::Compiled {
-    crate::diagnostic::Compiled::page(render(source, title))
+    compile_with(source, title, &no_assets)
+}
+
+pub fn compile_with(source: &str, title: &str, assets: Resolve) -> crate::diagnostic::Compiled {
+    crate::diagnostic::Compiled::page(render_with(source, title, assets))
 }
 
 #[cfg(test)]

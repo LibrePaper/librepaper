@@ -121,6 +121,16 @@ function handOver(wasm, tree) {
   for (const [path, bytes] of Object.entries(tree.assets || {})) {
     call(wasm, "add_file", path, bytes);
   }
+  // Where each figure is, for the renderer that needs a URL rather than
+  // bytes. Typst reads a figure out of the map above and writes it into the
+  // page itself; markdown produces HTML a browser will fetch from, so its
+  // images are pointed at a blob in this browser -- never at the route they
+  // came from, which would put a credential in a rendered page.
+  if (wasm.set_asset_url) {
+    for (const [path, url] of Object.entries(tree.urls || {})) {
+      call(wasm, "set_asset_url", path, url);
+    }
+  }
   if (wasm.set_main) call(wasm, "set_main", tree.main || "");
 }
 

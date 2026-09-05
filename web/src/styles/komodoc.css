@@ -526,3 +526,35 @@ main.reader.source-right .sidebar {
   width: --spacing(3);
   height: --spacing(3);
 }
+
+/* A figure, where the editor would be. An image is shown as itself and a PDF
+   through the browser's own viewer, which gives the first page without this
+   application carrying a PDF renderer of its own. */
+.figureview {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  overflow: auto;
+  padding: --spacing(4);
+  background: var(--color-surface-100-900);
+}
+.figureview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.figureview object {
+  width: 100%;
+  height: 100%;
+  min-height: --spacing(96);
+  border: 0;
+}
+
+/* The two ways to add to a directory, side by side: a text is named, a figure
+   is chosen from a disk. */
+.filelist .filetools-row {
+  display: flex;
+}
+.filelist .chooser {
+  display: none;
+}

@@ -982,5 +982,10 @@ pub fn example_suffix(base: &str, config: &Configuration) -> String {
 
 /// The content hash a document is addressed by.
 pub fn digest_of(html: &str) -> String {
-    hex::encode(Sha256::digest(html.as_bytes()))
+    digest_of_bytes(html.as_bytes())
+}
+
+/// The same, for bytes nobody is going to read as text: a figure, a font.
+pub fn digest_of_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }

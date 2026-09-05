@@ -72,6 +72,17 @@ pub struct Server {
     /// document marked `listed` behaves as `link` under it.
     pub listing: bool,
     sockets: AtomicU64,
+    /// How many figures each owner has uploaded this hour, and which hour that
+    /// is. Uploading a figure is an upload and counts against
+    /// `uploads_per_hour` like any other; it cannot be counted the way
+    /// document uploads are, from the index, because storing a figure writes
+    /// no index entry of its own.
+    ///
+    /// Held in this process rather than in storage. A second server sharing
+    /// the bucket keeps its own count, so the ceiling is per server -- which
+    /// bounds what one deployment will take without a write on every upload,
+    /// and is the same trade the socket rate limiter already makes.
+    asset_uploads: tokio::sync::Mutex<HashMap<String, (i64, usize)>>,
 }
 
 /// The header a browser presents a link key on, and the query parameter the
@@ -175,6 +186,7 @@ impl Server {
             accounts: Arc::new(GithubAccounts),
             listing: true,
             sockets: AtomicU64::new(1),
+            asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -635,6 +647,22 @@ async fn handle(
         if method == Method::GET {
             return server
                 .handle_state(request.headers(), &arrival, slug, request.uri().query())
+                .await;
+        }
+    }
+
+    // The figures. Putting one takes an editor, because it puts bytes on the
+    // server; reading one takes whatever reading the document takes, so a
+    // private paper's figures are as private as its text.
+    if let ["api", "documents", slug, "assets"] = parts[..] {
+        if method == Method::PUT || method == Method::POST {
+            return server.handle_asset_upload(request, &arrival, slug).await;
+        }
+    }
+    if let ["api", "documents", slug, "assets", sha] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_asset_read(request.headers(), &arrival, slug, sha)
                 .await;
         }
     }
@@ -1424,6 +1452,125 @@ impl Server {
             source,
             source_format,
         })
+    }
+
+    /* -------------------------------------------------------------- assets */
+
+    /// Stores a figure and answers with its digest and size. The bytes are the
+    /// server's to keep; the name is the client's to give, which it does by
+    /// setting `assets[path]` in the shared document once this has answered.
+    ///
+    /// It takes an editor, because it puts bytes on the server, which is what
+    /// `--publishers` governs -- the same gate the socket applies to a text.
+    async fn handle_asset_upload(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(request.headers(), arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, request.headers(), arrival, None).await;
+        // A caller who may not edit is told the document is not there, on the
+        // same reasoning the delete route follows: a document somebody may not
+        // change is not a document they need to learn the shape of.
+        if !who.at_least(Role::Editor) {
+            return plain(404, "not found");
+        }
+        // Counted before the bytes are read, so a refusal costs the body
+        // rather than the storage. The ceiling is per hour and per owner.
+        {
+            let hour = crate::clock::now_unix() / 3600;
+            let mut counts = self.asset_uploads.lock().await;
+            let seen = counts.entry(who.key.clone()).or_insert((hour, 0));
+            if seen.0 != hour {
+                *seen = (hour, 0);
+            }
+            if seen.1 >= self.config.storage.uploads_per_hour {
+                return write_json(
+                    429,
+                    &json!({"error": "too many uploads this hour; try later"}),
+                );
+            }
+            seen.1 += 1;
+        }
+        let ceiling = (self.config.max_asset as usize).saturating_add(1);
+        let Ok(body) = to_bytes(request.into_body(), ceiling).await else {
+            return write_json(413, &json!({"error": "that figure is too large"}));
+        };
+        let size = body.len() as i64;
+        // The owner's quota and the deployment's, which a figure counts
+        // against exactly as a text does. `room_for` is what this document may
+        // occupy in all; what it already occupies is its entry's size.
+        if let Some(room) = self.store.room_for(slug).await {
+            if entry.size + size > room {
+                return write_json(
+                    507,
+                    &json!({"error": "your storage quota is used up; delete a document first"}),
+                );
+            }
+        }
+        let room = self.rooms.get(slug).await;
+        match room
+            .put_asset(
+                body.to_vec(),
+                (self.config.max_asset, self.config.max_assets),
+            )
+            .await
+        {
+            Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
+            Err(why) => write_json(413, &json!({"error": why})),
+        }
+    }
+
+    /// A figure's bytes, for whoever may read the document.
+    ///
+    /// Content-addressed and immutable, so it is cached for a year: the digest
+    /// is in the URL, and bytes that changed would be at another one. A
+    /// private document's figures are refused exactly as its text is.
+    async fn handle_asset_read(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        sha: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        // A digest and nothing else: this becomes a storage key, and a key is
+        // never built from something a caller can shape.
+        if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return plain(404, "not found");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, headers, arrival, None).await;
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let room = self.rooms.get(slug).await;
+        let Some(bytes) = room.read_asset(sha).await else {
+            return plain(404, "not found");
+        };
+        Response::builder()
+            .status(200)
+            .header("content-type", crate::assets::content_type(sha))
+            .header("cache-control", "public, max-age=31536000, immutable")
+            .header("x-content-type-options", "nosniff")
+            .body(Body::from(bytes))
+            .unwrap()
     }
 
     /// The document's whole Yjs state, as bytes. Reached only from a

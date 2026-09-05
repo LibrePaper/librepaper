@@ -24,12 +24,46 @@
     onrename,
     onremove,
     onmain,
+    onfigure,
+    ontext,
   } = $props();
 
   let adding = $state(false);
   let renaming = $state("");
   let draft = $state("");
   let refusal = $state("");
+  let chooser = $state(null);
+
+  /// A figure is chosen rather than named: its bytes come from the person's
+  /// own disk, and the name it will be known by is the name it already has.
+  /// The refusal comes first -- the extension and the ceilings are checked
+  /// here so that a file that cannot be stored is not uploaded first.
+  function chooseFigures(event) {
+    const chosen = [...(event.target.files || [])];
+    event.target.value = ""; // so the same file can be chosen twice
+    offer(chosen);
+  }
+
+  /// Files from a chooser or a drop. What each one becomes follows from its
+  /// name, by the same rule the server uses: a `.tex` is a text and is read
+  /// into the document, a `.png` is a figure and its bytes are stored. A name
+  /// that is neither is refused here, before anything is uploaded.
+  export function offer(chosen) {
+    refusal = "";
+    for (const file of chosen) {
+      const answer = checkPath(rules, file.name);
+      if (answer.error) {
+        refusal = answer.error;
+        continue;
+      }
+      if (files.some((known) => known.path.toLowerCase() === file.name.toLowerCase())) {
+        refusal = `${file.name}: there is already a file with that name`;
+        continue;
+      }
+      if (answer.kind === "asset") onfigure?.(file);
+      else ontext?.(file);
+    }
+  }
 
   // The rules refuse a name here as well as at the server, so the reason is
   // shown where the person is typing rather than arriving as a status code.
@@ -144,7 +178,18 @@
   </ul>
 
   {#if mayEdit && !adding && !renaming}
-    <button class="addfile" onclick={startAdding}>Add a file</button>
+    <div class="filetools-row">
+      <button class="addfile" onclick={startAdding}>Add a file</button>
+      <button class="addfile" onclick={() => chooser?.click()}>Add a figure</button>
+    </div>
+    <input
+      class="chooser"
+      type="file"
+      multiple
+      bind:this={chooser}
+      onchange={chooseFigures}
+      aria-label="Choose a figure to add"
+    />
   {/if}
   {#if refusal}
     <p class="refusal" role="alert">{refusal}</p>

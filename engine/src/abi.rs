@@ -44,6 +44,10 @@ static mut FILES: Option<Vec<(String, Vec<u8>)>> = None;
 /// named against it. Unset means `main.typ`, which is what a document with one
 /// file has always been called here.
 static mut MAIN: Option<String> = None;
+/// Where each figure is, for markdown. Empty for typst, which needs no URLs,
+/// and empty on the command line, where a markdown document's images are
+/// relative paths that the page keeps as written.
+static mut ASSET_URLS: Option<Vec<(String, String)>> = None;
 
 /// Reserves `len` bytes for the caller to write a source into.
 #[no_mangle]
@@ -143,7 +147,19 @@ fn from_host(path: &std::path::Path) -> Option<Vec<u8>> {
 
 #[cfg(all(feature = "markdown", not(feature = "typst")))]
 fn render(source: &str, title: &str) -> Compiled {
-    crate::markdown::compile(source, title)
+    crate::markdown::compile_with(source, title, &asset_url)
+}
+
+/// Where the host put a figure, for markdown's image rewriting.
+#[cfg(all(feature = "markdown", not(feature = "typst")))]
+fn asset_url(path: &str) -> Option<String> {
+    unsafe {
+        (*std::ptr::addr_of!(ASSET_URLS))
+            .as_ref()?
+            .iter()
+            .find(|(name, _)| name.as_str() == path)
+            .map(|(_, url)| url.clone())
+    }
 }
 
 /// Puts a file where the next compile can read it, under the path a document
@@ -181,6 +197,32 @@ pub extern "C" fn clear_files() {
     unsafe {
         FILES = None;
         MAIN = None;
+        ASSET_URLS = None;
+    }
+}
+
+/// Where a figure the document names actually is, for the renderer that needs
+/// a URL rather than bytes. Markdown names its images by path and the page it
+/// produces is HTML a browser will fetch from; typst needs none of this, since
+/// it reads a figure through the file map and writes it into the page itself.
+///
+/// Set with the files, before the compile, and cleared with them.
+///
+/// # Safety
+/// The pointers and lengths must describe UTF-8 written into this module.
+#[no_mangle]
+pub unsafe extern "C" fn set_asset_url(
+    path: *const u8,
+    path_len: usize,
+    url: *const u8,
+    url_len: usize,
+) {
+    let name = text_at(path, path_len).to_string();
+    let where_it_is = text_at(url, url_len).to_string();
+    let urls = (*std::ptr::addr_of_mut!(ASSET_URLS)).get_or_insert_with(Vec::new);
+    match urls.iter_mut().find(|(known, _)| *known == name) {
+        Some(slot) => slot.1 = where_it_is,
+        None => urls.push((name, where_it_is)),
     }
 }
 

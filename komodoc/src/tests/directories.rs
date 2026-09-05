@@ -375,7 +375,7 @@ fn a_checkpoint_is_the_whole_directory() {
     session::put_text(&doc, "chapters/03.tex", "The third chapter.\n");
     session::put_text(&doc, "refs.bib", "@book{a,title={A}}\n");
 
-    let (tree, bodies) = crate::room::tree_of(&doc);
+    let (tree, bodies) = crate::room::tree_of(&doc, &HashMap::new());
     assert_eq!(tree.main, "main.tex");
     assert_eq!(
         tree.files.keys().collect::<Vec<_>>(),
@@ -396,7 +396,7 @@ fn a_checkpoint_is_the_whole_directory() {
     // The name of a tree is the digest of what is stored, so naming it and
     // writing it cannot disagree, and the same directory always names itself
     // the same way.
-    let (again, _) = crate::room::tree_of(&doc);
+    let (again, _) = crate::room::tree_of(&doc, &HashMap::new());
     assert_eq!(tree.digest(), again.digest());
     assert_eq!(
         tree.digest(),
@@ -408,7 +408,7 @@ fn a_checkpoint_is_the_whole_directory() {
 fn two_files_with_the_same_words_are_one_object() {
     let doc = one_file("main.typ", "same\n");
     session::put_text(&doc, "copy.typ", "same\n");
-    let (tree, bodies) = crate::room::tree_of(&doc);
+    let (tree, bodies) = crate::room::tree_of(&doc, &HashMap::new());
     assert_eq!(tree.files["main.typ"].sha, tree.files["copy.typ"].sha);
     assert_eq!(bodies.len(), 1, "the same bytes should be written once");
 }
@@ -417,11 +417,11 @@ fn two_files_with_the_same_words_are_one_object() {
 fn the_timeline_says_which_paths_moved() {
     let doc = one_file("main.tex", "one\n");
     session::put_text(&doc, "refs.bib", "@book{a}\n");
-    let (before, _) = crate::room::tree_of(&doc);
+    let (before, _) = crate::room::tree_of(&doc, &HashMap::new());
 
     session::put_text(&doc, "refs.bib", "@book{b}\n");
     session::put_text(&doc, "chapters/03.tex", "new\n");
-    let (after, _) = crate::room::tree_of(&doc);
+    let (after, _) = crate::room::tree_of(&doc, &HashMap::new());
 
     assert_eq!(
         after.changed_from(Some(&before)),
@@ -432,7 +432,7 @@ fn the_timeline_says_which_paths_moved() {
     // A file that went away is a change too, and is listed under the name it
     // had rather than not at all.
     let doc2 = one_file("main.tex", "one\n");
-    let (fewer, _) = crate::room::tree_of(&doc2);
+    let (fewer, _) = crate::room::tree_of(&doc2, &HashMap::new());
     assert_eq!(fewer.changed_from(Some(&before)), vec!["refs.bib"]);
 
     // With no parent, everything is new.
@@ -463,7 +463,7 @@ fn a_restore_puts_every_file_back_at_one_moment() {
     let doc = one_file("main.tex", "first\n");
     session::put_text(&doc, "refs.bib", "@book{a}\n");
     let main_id = session::main_id(&doc);
-    let (recorded, bodies) = crate::room::tree_of(&doc);
+    let (recorded, bodies) = crate::room::tree_of(&doc, &HashMap::new());
 
     // The document moves on: one file edited, one added, one removed.
     session::put_text(&doc, "main.tex", "second\n");

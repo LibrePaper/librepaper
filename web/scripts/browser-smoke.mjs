@@ -11,7 +11,7 @@
 // Nothing here touches a deployment or any storage but its own temporary one.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
@@ -86,6 +86,10 @@ class Tab {
     this.next = 1;
     this.pending = new Map();
     this.console = [];
+    // Every URL this page asked the network for, so a check can say that
+    // something was fetched once and not twice -- which is the only way to
+    // show that a cache is doing its job rather than merely being present.
+    this.requests = [];
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       if (message.id && this.pending.has(message.id)) {
@@ -93,6 +97,9 @@ class Tab {
         this.pending.delete(message.id);
         message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
         return;
+      }
+      if (message.method === "Network.requestWillBeSent") {
+        this.requests.push(message.params?.request?.url || "");
       }
       if (
         message.method === "Runtime.consoleAPICalled" ||
@@ -673,13 +680,117 @@ async function run() {
 
   // And the server holds the same directory, which is what a reader will be
   // given and what a checkpoint will record.
-  const held = await fetch(`${BASE}/api/documents/${paper.slug}`, {
+  const heldPaper = await fetch(`${BASE}/api/documents/${paper.slug}`, {
     headers: { cookie: `komodoc_session=${alice}` },
   }).then((r) => r.json());
   check(
     "the server records which file is the document",
-    held.main === "main.typ",
-    JSON.stringify(held.main),
+    heldPaper.main === "main.typ",
+    JSON.stringify(heldPaper.main),
+  );
+
+  /* ---------------------------------------------------------- the figures */
+
+  // A figure is the half of a directory a paper's bytes actually live in. The
+  // bytes never enter the shared document: they go to the store under their
+  // own digest, and what travels between browsers is a name and that digest.
+  //
+  // Driven through the control a person uses -- the file chooser in the file
+  // list, handed a real file the way a person hands it one -- rather than by
+  // calling the upload route, because the route is already covered by the
+  // Rust tests and what is not covered is the path from a chooser to a page.
+  const png = join(data, "one.png");
+  writeFileSync(
+    png,
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    ),
+  );
+
+  const illustrated = await publish(
+    {
+      title: "A Paper With A Figure",
+      source: "# A Paper With A Figure\n\n![the plot](one.png)\n",
+      source_format: "markdown",
+    },
+    alice,
+  );
+  const illustrator = await openTab(`${BASE}/docs/${illustrated.slug}`, [
+    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+  ]);
+  await until("the illustrated paper opens", async () =>
+    (await illustrator.eval(`return document.body.innerText`)).includes("A Paper With A Figure"),
+  );
+  await illustrator.eval(`
+    const open = [...document.querySelectorAll("button")].find((b) => /source|edit/i.test(b.title || b.textContent));
+    open?.click();
+    return true;
+  `);
+  await until("the editor is mounted", async () =>
+    Boolean(await illustrator.eval(`return Boolean(document.querySelector(".cm-content"))`)),
+  );
+
+  // Hand the chooser a file, which is what a person does.
+  await illustrator.send("DOM.enable");
+  const { root: pageRoot } = await illustrator.send("DOM.getDocument");
+  const { nodeId } = await illustrator.send("DOM.querySelector", {
+    nodeId: pageRoot.nodeId,
+    selector: ".filelist .chooser",
+  });
+  await illustrator.send("DOM.setFileInputFiles", { nodeId, files: [png] });
+
+  const inTheList = await until("the figure joins the directory", async () =>
+    illustrator.eval(`
+      const names = [...document.querySelectorAll(".filelist .path")].map((b) => b.textContent.trim());
+      return names.includes("one.png") ? names : null;
+    `),
+  );
+  check("a figure chosen from a disk joins the directory", Boolean(inTheList), JSON.stringify(inTheList));
+
+  // It reaches the page as a blob in this browser, never as the route it came
+  // from: a rendered page must not carry a credential.
+  const drawn = await until("the figure reaches the rendered page", async () =>
+    illustrator.evalInFrame(
+      `const img = document.querySelector("img"); return img ? img.src : null`,
+      illustrated.slug,
+    ),
+  );
+  check(
+    "a markdown figure is rewritten to a blob in this browser",
+    typeof drawn === "string" && drawn.startsWith("blob:"),
+    String(drawn).slice(0, 60),
+  );
+  // The bytes reached the store, under the digest of themselves: the URL the
+  // page fetched is the digest, and what comes back from it is the PNG that
+  // went in.
+  // The document's own asset route, not the shell's bundle -- both live under
+  // a path containing "/assets/", and matching the loose one made this check
+  // pass against a JavaScript chunk.
+  const figureRoute = `/api/documents/${illustrated.slug}/assets/`;
+  const asked = await until("the figure is fetched", async () =>
+    illustrator.requests.find((url) => url.includes(figureRoute)),
+  );
+  const stored = await fetch(asked, {
+    headers: { "x-komodoc-client": "1", cookie: `komodoc_session=${alice}` },
+  });
+  const back = Buffer.from(await stored.arrayBuffer());
+  check(
+    "the figure in the store is the file that was chosen",
+    stored.status === 200 && back.equals(readFileSync(png)),
+    `${stored.status}, ${back.length} bytes`,
+  );
+
+  // Fetched once. The URL carries the digest of the bytes, so a second render
+  // reads them from this browser rather than from the network.
+  const before = illustrator.requests.filter((url) => url.includes(figureRoute)).length;
+  await appendText(illustrator, "\n\nAnother sentence, forcing a re-render.\n");
+  await wait(1200);
+  const after = illustrator.requests.filter((url) => url.includes(figureRoute)).length;
+  check(
+    "a figure already fetched is not fetched again on the next render",
+    after === before && before >= 1,
+    `${before} then ${after}`,
   );
 }
 

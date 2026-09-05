@@ -79,6 +79,9 @@ struct ServiceFlags {
     /// Largest document accepted, in megabytes (default 4)
     #[arg(long, value_name = "MB", default_value_t = 0)]
     max_size: usize,
+    /// Most the figures of one document may come to, in megabytes (default 32)
+    #[arg(long, value_name = "MB", default_value_t = 0)]
+    max_assets: i64,
     /// Most one publisher may store across their documents, in megabytes (default 100)
     #[arg(long, value_name = "MB", default_value_t = 0)]
     quota: i64,
@@ -108,6 +111,9 @@ struct ServiceFlags {
 impl ServiceFlags {
     fn configuration(&self) -> Configuration {
         let mut config = Configuration::default();
+        if let Err(err) = config.set_max_assets(self.max_assets) {
+            die(err);
+        }
         if let Err(err) = config.set_max_html(self.max_size) {
             die(err);
         }

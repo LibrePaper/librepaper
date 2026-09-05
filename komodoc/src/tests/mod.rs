@@ -11,6 +11,7 @@ mod blob;
 mod directories;
 pub mod edit;
 mod export;
+mod figures;
 mod hardening;
 mod history;
 mod ownership;

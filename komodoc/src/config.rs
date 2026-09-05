@@ -20,6 +20,19 @@ pub struct Configuration {
     pub max_files: usize,
     /// The longest one path may be, in bytes.
     pub max_path: usize,
+    /// What the figures of one document may come to, and what one of them may
+    /// be. Assets are where the bytes of a paper actually go -- a directory of
+    /// figures is an order of magnitude larger than its text -- so they get
+    /// ceilings of their own beside `max_document` rather than sharing it, and
+    /// they count against the owner's quota like everything else stored.
+    pub max_assets: i64,
+    pub max_asset: i64,
+    /// How long an asset nothing refers to is kept before it is pruned. It
+    /// exists because uploading and naming are two requests: the bytes are
+    /// stored, and the digest is written into the shared document a moment
+    /// later. An asset pruned in that moment would be one somebody had just
+    /// successfully uploaded.
+    pub asset_grace: i64,
     /// Which extensions name a file a person edits, which name bytes nobody
     /// edits in place, and which name what a compiler wrote -- and a document
     /// keeps what a person wrote. Rules rather than constants, so a deployment
@@ -157,6 +170,9 @@ impl Default for Configuration {
             max_document: 4 * 1024 * 1024,
             max_files: 200,
             max_path: 200,
+            max_assets: 32 * 1024 * 1024,
+            max_asset: 8 * 1024 * 1024,
+            asset_grace: 3600,
             text_extensions: [
                 ".tex",
                 ".typ",
@@ -271,6 +287,26 @@ impl Configuration {
             return Err("--max-size must be between 1 and 100 MB".into());
         }
         self.max_document = megabytes * 1024 * 1024;
+        Ok(())
+    }
+
+    /// Overrides what the figures of one document may come to, in megabytes.
+    /// Zero leaves the default alone.
+    ///
+    /// Worth setting low on a deployment anybody may publish to. Figures are
+    /// where the bytes of a paper actually go, and while they count against
+    /// `--quota` like everything else, this is what stops one document from
+    /// spending a publisher's whole allowance on images.
+    pub fn set_max_assets(&mut self, megabytes: i64) -> Result<(), String> {
+        if megabytes == 0 {
+            return Ok(());
+        }
+        if !(1..=1024).contains(&megabytes) {
+            return Err("--max-assets must be between 1 and 1024 MB".into());
+        }
+        self.max_assets = megabytes * 1024 * 1024;
+        // One figure may never be more than all of them.
+        self.max_asset = self.max_asset.min(self.max_assets);
         Ok(())
     }
 

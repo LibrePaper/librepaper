@@ -289,6 +289,17 @@ pub struct Session {
     /// back writes each of its texts once more -- the same bytes to the same
     /// key, which costs a write and changes nothing.
     pub blobs_written: std::collections::HashSet<String>,
+    /// Every asset this document holds, by digest, and what it costs. Read
+    /// once when the room is loaded and added to by each upload, because a
+    /// checkpoint has to record what a figure weighs and the shared document
+    /// carries only its name.
+    pub asset_sizes: HashMap<String, i64>,
+    /// When each asset was written here, for the grace period. Uploading a
+    /// figure and naming it are two requests, and an asset pruned in between
+    /// is one somebody had just successfully uploaded. Held in memory only:
+    /// the gap it covers is seconds, and a server that restarted in the middle
+    /// of it has lost the upload anyway.
+    pub asset_written_at: HashMap<String, i64>,
 }
 
 pub struct RoomState {
@@ -446,6 +457,8 @@ impl RoomSet {
                     format: String::new(),
                     last_tree: None,
                     blobs_written: std::collections::HashSet::new(),
+                    asset_sizes: HashMap::new(),
+                    asset_written_at: HashMap::new(),
                 },
                 manifest: Manifest::default(),
                 touched: now_unix(),
@@ -477,10 +490,17 @@ impl RoomSet {
             .await;
         // The history goes with the document, which is what destroy has
         // promised in the README since before there was a history to delete.
-        if let Ok(found) = self.blobs.list(&crate::blob::history_prefix(slug)).await {
-            let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
-            if !keys.is_empty() {
-                let _ = self.blobs.delete(&keys).await;
+        // So do its figures: they are the document's, stored under its slug
+        // and referred to by nothing else.
+        for prefix in [
+            crate::blob::history_prefix(slug),
+            crate::blob::asset_prefix(slug),
+        ] {
+            if let Ok(found) = self.blobs.list(&prefix).await {
+                let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
+                if !keys.is_empty() {
+                    let _ = self.blobs.delete(&keys).await;
+                }
             }
         }
         self.rooms.lock().await.remove(slug);
@@ -664,6 +684,35 @@ impl Room {
         let format = state.session.format.clone();
         if session::migrate(&state.session.doc, &main_path_for(&named, &format)) {
             state.session.dirty = true;
+        }
+        drop(state);
+        self.load_asset_sizes().await;
+    }
+
+    /// What each of this document's figures weighs, read once when the room is
+    /// loaded. The shared document carries a figure's name and digest and not
+    /// its size, and a checkpoint has to record what the document costs -- so
+    /// the answer is read from where the bytes are, which is the store.
+    ///
+    /// One listing per room rather than one request per figure, and a failure
+    /// is not fatal: a size this does not know reads as zero, which
+    /// under-counts a quota rather than refusing a document.
+    async fn load_asset_sizes(&self) {
+        let Ok(found) = self
+            .blobs
+            .list(&crate::blob::asset_prefix(&self.slug))
+            .await
+        else {
+            return;
+        };
+        let mut state = self.state.lock().await;
+        for object in found {
+            if let Some(sha) = object.key.rsplit('/').next() {
+                state
+                    .session
+                    .asset_sizes
+                    .insert(sha.to_string(), object.size);
+            }
         }
     }
 
@@ -1300,7 +1349,7 @@ impl Room {
                     true,
                 )
             } else {
-                let (tree, bodies) = tree_of(&state.session.doc);
+                let (tree, bodies) = tree_of(&state.session.doc, &state.session.asset_sizes);
                 (
                     tree,
                     bodies,
@@ -1436,7 +1485,13 @@ impl Room {
         }));
 
         // 4. the index entry, then 5. the manifest.
-        self.record_size(size + manifest.bytes(), Some(&sha)).await;
+        // What the document costs: the live session, its history, and its
+        // figures. The quota counts each object once -- a text blob and an
+        // asset are each charged where they are stored, and the tree that
+        // names them is bookkeeping rather than a third copy.
+        let assets = self.assets_bytes().await;
+        self.record_size(size + manifest.bytes() + assets, Some(&sha))
+            .await;
         {
             let mut state = self.state.lock().await;
             let body = serde_json::to_vec(&manifest).map_err(|err| err.to_string())?;
@@ -1459,6 +1514,11 @@ impl Room {
                 .collect();
             let _ = self.blobs.delete(&keys).await;
         }
+        // The figures nothing refers to any more, once the tree and the
+        // manifest that name what is kept are both written. This order is
+        // what makes a crash leave an unreferenced object rather than a tree
+        // pointing at one that is gone.
+        self.prune_assets().await;
         // The migration's one and only cleanup. A document stored the old way
         // has a rendered page and a source under the old keys; both are copies
         // of what is now a checkpoint, and this is the first moment at which
@@ -1634,7 +1694,180 @@ impl Room {
     #[allow(dead_code)] // the timeline that reads it is step 6; the tests ask now
     pub async fn tree(&self) -> crate::history::Tree {
         let state = self.state.lock().await;
-        tree_of(&state.session.doc).0
+        tree_of(&state.session.doc, &state.session.asset_sizes).0
+    }
+
+    /* ------------------------------------------------------------- assets */
+
+    /// What this document's figures come to, which is what `max_assets` bounds
+    /// and what the owner's quota is charged for.
+    pub async fn assets_bytes(&self) -> i64 {
+        self.state.lock().await.session.asset_sizes.values().sum()
+    }
+
+    /// Stores a figure and answers with its digest. The name is the client's
+    /// to give -- it sets `assets[path]` in the shared document afterwards --
+    /// and the bytes are the server's to keep.
+    ///
+    /// Bytes the document already has are not written again: the same figure
+    /// uploaded twice is one object, and the second upload costs a hash.
+    pub async fn put_asset(
+        &self,
+        body: Vec<u8>,
+        ceilings: (i64, i64),
+    ) -> Result<(String, i64), String> {
+        let (max_asset, max_assets) = ceilings;
+        let size = body.len() as i64;
+        if size == 0 {
+            return Err("that file is empty".into());
+        }
+        if size > max_asset {
+            return Err(format!(
+                "that figure is larger than the {} MB one file may be",
+                max_asset >> 20
+            ));
+        }
+        let sha = crate::store::digest_of_bytes(&body);
+        {
+            let state = self.state.lock().await;
+            if let Some(known) = state.session.asset_sizes.get(&sha) {
+                // Already here. Nothing is written and nothing is charged: the
+                // same bytes under the same name are the same object.
+                return Ok((sha, *known));
+            }
+            let held: i64 = state.session.asset_sizes.values().sum();
+            if held + size > max_assets {
+                return Err(format!(
+                    "this document has reached the {} MB it may keep in figures",
+                    max_assets >> 20
+                ));
+            }
+        }
+        if !self.hold().await {
+            return Err("this room is held by another server".into());
+        }
+        self.blobs
+            .put(
+                &crate::blob::asset_key(&self.slug, &sha),
+                body,
+                "application/octet-stream",
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        {
+            let mut state = self.state.lock().await;
+            state.session.asset_sizes.insert(sha.clone(), size);
+            state
+                .session
+                .asset_written_at
+                .insert(sha.clone(), now_unix());
+        }
+        // What the document costs has changed, and the index is what the
+        // quota is decided from.
+        self.record_size_now().await;
+        Ok((sha, size))
+    }
+
+    /// A figure's bytes, for whoever may read the document.
+    pub async fn read_asset(&self, sha: &str) -> Option<Vec<u8>> {
+        self.blobs
+            .get(&crate::blob::asset_key(&self.slug, sha))
+            .await
+            .ok()
+    }
+
+    /// Drops the figures nothing refers to any more: neither the live document
+    /// nor any checkpoint the manifest still holds.
+    ///
+    /// Run after the new tree and manifest are written, never before, so that
+    /// a crash leaves an object nothing names -- which costs storage and loses
+    /// nothing -- rather than a tree naming an object that is gone.
+    ///
+    /// An object younger than the grace period is kept whatever the document
+    /// says about it, because uploading a figure and naming it are two
+    /// requests and pruning between them would delete what somebody had just
+    /// uploaded.
+    async fn prune_assets(&self) {
+        let now = now_unix();
+        let grace = self.config.asset_grace;
+        let (live, trees, written_at) = {
+            let state = self.state.lock().await;
+            let live: std::collections::HashSet<String> = session::assets_of(&state.session.doc)
+                .into_values()
+                .collect();
+            let trees: Vec<Checkpoint> = state.manifest.checkpoints.clone();
+            (live, trees, state.session.asset_written_at.clone())
+        };
+        // Every digest any surviving checkpoint names. A restore has to find
+        // its figures where the tree says they are.
+        let mut kept = live;
+        for point in &trees {
+            if !point.tree {
+                continue; // a checkpoint from before directories names none
+            }
+            let (path, id) = {
+                let state = self.state.lock().await;
+                (
+                    session::main_path(&state.session.doc),
+                    session::main_id(&state.session.doc),
+                )
+            };
+            if let Ok(tree) =
+                crate::history::load_tree(self.blobs.as_ref(), &self.slug, point, &path, &id).await
+            {
+                for entry in tree.files.values() {
+                    if entry.kind == "asset" {
+                        kept.insert(entry.sha.clone());
+                    }
+                }
+            }
+        }
+        let Ok(found) = self
+            .blobs
+            .list(&crate::blob::asset_prefix(&self.slug))
+            .await
+        else {
+            return;
+        };
+        let mut gone = Vec::new();
+        for object in found {
+            let Some(sha) = object.key.rsplit('/').next() else {
+                continue;
+            };
+            if kept.contains(sha) {
+                continue;
+            }
+            if written_at.get(sha).is_some_and(|at| now - at < grace) {
+                continue;
+            }
+            gone.push((object.key.clone(), sha.to_string()));
+        }
+        if gone.is_empty() {
+            return;
+        }
+        let keys: Vec<String> = gone.iter().map(|(key, _)| key.clone()).collect();
+        if self.blobs.delete(&keys).await.is_ok() {
+            let mut state = self.state.lock().await;
+            for (_, sha) in gone {
+                state.session.asset_sizes.remove(&sha);
+                state.session.asset_written_at.remove(&sha);
+            }
+        }
+    }
+
+    /// Records what this document costs as it stands, without a checkpoint:
+    /// what an asset upload changes.
+    async fn record_size_now(&self) {
+        let (session_size, history) = {
+            let state = self.state.lock().await;
+            (
+                session::encode_state(&state.session.doc).len() as i64,
+                state.manifest.bytes(),
+            )
+        };
+        let assets = self.assets_bytes().await;
+        self.record_size(session_size + history + assets, None)
+            .await;
     }
 
     /// The manifest, for the timeline and for the tests.
@@ -1698,7 +1931,10 @@ impl Room {
 /// text by digest -- which is what the blobs are written from, so that two
 /// files with the same contents are one object and a file that did not change
 /// is not written again.
-pub fn tree_of(doc: &yrs::Doc) -> (crate::history::Tree, HashMap<String, String>) {
+pub fn tree_of(
+    doc: &yrs::Doc,
+    asset_sizes: &HashMap<String, i64>,
+) -> (crate::history::Tree, HashMap<String, String>) {
     use crate::history::{Tree, TreeEntry};
     let ids = session::paths_of(doc);
     let mut by_path: HashMap<String, String> = HashMap::new();
@@ -1726,11 +1962,10 @@ pub fn tree_of(doc: &yrs::Doc) -> (crate::history::Tree, HashMap<String, String>
             TreeEntry {
                 kind: "asset".to_string(),
                 id: String::new(),
+                // What a figure costs is known where its bytes are, not in the
+                // shared document, which carries only its name and digest.
+                size: asset_sizes.get(&sha).copied().unwrap_or(0),
                 sha,
-                // What an asset costs is known where its bytes are, which is
-                // the store; the size is filled there rather than guessed at
-                // here. Until assets exist it is zero, and zero is the truth.
-                size: 0,
             },
         );
     }

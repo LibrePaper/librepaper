@@ -80,3 +80,15 @@ export async function signOut() {
 /// this address is a redirect when there is one and a choice when there are
 /// two, so no page has to render a button per provider.
 export const signInHref = () => `/auth/login?next=${encodeURIComponent(location.pathname)}`;
+
+/// Puts a figure on the server and answers with its digest and size. The bytes
+/// go up as they are -- a figure is not JSON and wrapping it in base64 would
+/// cost a third of its size on the wire -- and the name is not sent at all:
+/// the server keeps the bytes under their digest, and the shared document is
+/// where the name is written, by whoever uploaded it, a moment later.
+export const uploadAsset = (slug, file, key) =>
+  fetch(`/api/documents/${slug}/assets`, {
+    method: "PUT",
+    headers: { ...SHELL_HEADERS, ...keyHeaders(key) },
+    body: file,
+  }).then(json);

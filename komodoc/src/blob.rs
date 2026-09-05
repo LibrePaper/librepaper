@@ -340,6 +340,18 @@ pub fn checkpoint_key(slug: &str, sha: &str) -> String {
 pub fn blob_key(slug: &str, sha: &str) -> String {
     format!("history/{slug}/blobs/{sha}")
 }
+/// One figure, by the digest of its bytes, under the document that holds it.
+///
+/// Under the slug and nowhere else: the same figure in two documents is stored
+/// twice, on purpose. A blob shared across documents has no owner to charge
+/// and no moment at which it may be deleted, and the bytes are cheaper than
+/// the bookkeeping that would answer either question.
+pub fn asset_key(slug: &str, sha: &str) -> String {
+    format!("assets/{slug}/{sha}")
+}
+pub fn asset_prefix(slug: &str) -> String {
+    format!("assets/{slug}/")
+}
 pub fn history_prefix(slug: &str) -> String {
     format!("history/{slug}/")
 }

@@ -6,8 +6,16 @@
   import * as renderers from "../lib/renderers.js";
   import * as diagnosticsRule from "../lib/diagnostics.js";
   import * as collab from "../lib/collab.js";
+  import * as figures from "../lib/figures.js";
   import { openRoom } from "../lib/room.js";
-  import { config as loadConfig, keyHeaders, me as whoami, signInHref } from "../lib/api.js";
+  import {
+    SHELL_HEADERS,
+    config as loadConfig,
+    keyHeaders,
+    me as whoami,
+    signInHref,
+    uploadAsset,
+  } from "../lib/api.js";
   import {
     AUTHOR,
     LAYOUT,
@@ -604,6 +612,17 @@
     const mine = ++issued;
     const tree = treeNow();
     try {
+      // The figures, if this document has any. A figure not yet here is
+      // awaited before the first compile that needs it, and the page that is
+      // already up stays up meanwhile: rendering without them would produce a
+      // document with holes in it and replace it a moment later, which reads
+      // as a flicker rather than as progress.
+      if (Object.keys(tree.digests || {}).length) {
+        const held = await figures.gather(SLUG, tree.digests, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
+        if (mine <= painted) return;
+        tree.assets = held.assets;
+        tree.urls = held.urls;
+      }
       const { html, diagnostics: said } = await renderers.render(tree, await headingOf(tree));
       // A slower render that resolves late must not paint over a newer one.
       if (mine <= painted) return;
@@ -879,9 +898,32 @@
   }
 
   function openTheFile(file) {
-    if (file.kind !== "text") return; // an asset has no editor; step 3 shows it
+    // A figure has no editor: choosing one shows it. The id of an asset is
+    // its path, since its bytes are not in the shared document and there is
+    // nothing else to key it by.
     openFile = file.id;
+    shownFigure = file.kind === "asset" ? file : null;
   }
+
+  // The figure being looked at, when the chosen file is one. Held rather than
+  // derived because the bytes it needs are fetched.
+  let shownFigure = $state(null);
+  let figureUrl = $state("");
+  $effect(() => {
+    const wanted = shownFigure;
+    if (!wanted) {
+      figureUrl = "";
+      return;
+    }
+    figures
+      .gather(SLUG, { [wanted.path]: wanted.sha }, { ...SHELL_HEADERS, ...keyHeaders(KEY) })
+      .then((held) => {
+        if (shownFigure === wanted) figureUrl = held.urls[wanted.path] || "";
+      })
+      .catch(() => {
+        if (shownFigure === wanted) figureUrl = "";
+      });
+  });
 
   function addFile(path) {
     openFile = session.addText(path, "");
@@ -906,6 +948,45 @@
     if (file.kind !== "text") return;
     session.setMain(file.id);
     paintPreview();
+  }
+
+  /// A figure: the bytes go to the store and the name goes into the shared
+  /// document, in that order. The name is this browser's to give; the bytes
+  /// are the server's to keep, under their own digest.
+  ///
+  /// The two are separate requests, which is why the server keeps a figure
+  /// nothing refers to for an hour: between them there is a moment when the
+  /// bytes are stored and nothing names them.
+  async function addFigure(file) {
+    try {
+      const { sha } = await uploadAsset(SLUG, file, KEY);
+      session.putAsset(file.name, sha);
+      paintPreview();
+    } catch (error) {
+      say(error.message || "could not add that figure", true);
+    }
+  }
+
+  // A text dropped or chosen is read and added as a file. Its bytes are
+  // words, so they belong in the shared document rather than in the store.
+  async function addDroppedText(file) {
+    try {
+      openFile = session.addText(file.name, await file.text());
+      paintPreview();
+    } catch (error) {
+      say(error.message || "could not read that file", true);
+    }
+  }
+
+  // Dropping a file on the source pane does what the controls in the list do:
+  // a text becomes a file, a figure is uploaded, and a name that is neither is
+  // refused by the same rules.
+  let fileList = $state(null);
+  function dropped(event) {
+    if (!mayEdit) return;
+    event.preventDefault();
+    const chosen = [...(event.dataTransfer?.files || [])];
+    if (chosen.length) fileList?.offer(chosen);
   }
 
   // The source pane. Nothing is fetched here and nothing is seeded: the text
@@ -1177,16 +1258,33 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       style="--komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
   {#if shown.source}
-    <section class="editorpane">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <section class="editorpane" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- The directory, above the file being edited. A document with one
            file still has a list: it is one line, and it is where the control
            to add a second one lives. -->
       {#if files.length}
-        <Files {files} open={openFile} peers={peersByFile} {mayEdit} {rules}
-               onopen={openTheFile} onadd={addFile} onrename={renameFile}
-               onremove={removeFile} onmain={makeMain} />
+        <Files bind:this={fileList} {files} open={openFile} peers={peersByFile}
+               {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
+               onrename={renameFile} onremove={removeFile} onmain={makeMain}
+               onfigure={addFigure} ontext={addDroppedText} />
       {/if}
-      {#if Editor}
+      <!-- A figure has no editor. Choosing one shows it: an image as itself,
+           a PDF through the browser's own viewer, which shows the first page
+           without this application carrying a PDF renderer of its own. -->
+      {#if shownFigure}
+        <div class="figureview">
+          {#if !figureUrl}
+            <p>Fetching {shownFigure.path}…</p>
+          {:else if shownFigure.path.toLowerCase().endsWith(".pdf")}
+            <object data={figureUrl} type="application/pdf" title={shownFigure.path}>
+              <p>{shownFigure.path}</p>
+            </object>
+          {:else}
+            <img src={figureUrl} alt={shownFigure.path} />
+          {/if}
+        </div>
+      {:else if Editor}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={sourceFormat} file={openFile}
                   onchange={sourceChanged} oncaret={followCaret} onsave={reportPersistence} />
