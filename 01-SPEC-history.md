@@ -9,18 +9,6 @@ What remains is steps 5 to 10 below: the timeline, the checkpoint fields on a
 comment, the response export, the word-level diff, restore, and git
 provenance. Each of them reads the manifest the server already writes.
 
-## Implementation order
-
-1. `03-SPEC-sharing.md`, steps 2–6: grants, sharing UI, and visibility.
-2. This spec, steps 5–10: timeline, provenance, export, and diffs.
-3. `04-SPEC-sync.md`: local file synchronization, then the automation
-   follow-ups in sharing and sync.
-4. `05-SPEC-latex.md`: browser compilation and PDF annotation, then SyncTeX
-   and optional CLI compilation. Feasibility experiments may start earlier.
-
-Files under `market-research/` are research references, not implementation
-milestones.
-
 ## What the remaining work builds on
 
 The parts of the built foundation the steps below depend on, kept here
