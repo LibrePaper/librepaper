@@ -50,7 +50,10 @@
   let docsOrigin = $state(null);
   let frameSrc = $state(null);
   let me = $state({});
-  let identity = $derived(me.login || "");
+  // The displayed name, since this is what goes on a comment and what the
+  // reader is shown commenting as. A Google account's handle is its email and
+  // belongs on neither.
+  let identity = $derived(me.name || "");
   let canModerate = $derived(Boolean(doc.can_moderate));
   let connected = $state(true);
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
@@ -221,7 +224,7 @@
       submitAnnotation({ motivation: "highlighting", body: "", tags: [] });
       return;
     }
-    if (!identity && me.can_sign_in) {
+    if (!identity && me.providers?.length) {
       identifying = true;
       return;
     }
@@ -821,9 +824,9 @@
 
     whoami().then((who) => {
       me = who;
-      if (who.login) {
-        draft.creator = who.login;
-        session?.rename(who.login);
+      if (who.name) {
+        draft.creator = who.name;
+        session?.rename(who.name);
       }
     });
 
@@ -846,7 +849,7 @@
       .catch(() => {
         doc = { title: "Document not found" };
         say(
-          me.can_sign_in && !identity
+          me.providers?.length && !identity
             ? "not found — sign in, if this was shared with you"
             : "not found",
           true,
@@ -1095,10 +1098,12 @@
         {pending?.region ? `Figure ${pending.region.image_index + 1}` : `“${pending?.exact ?? ""}”`}
       </blockquote>
       {#if identity}
-        <p class="text-surface-600-400 text-sm">commenting as @{identity}</p>
+        <p class="text-surface-600-400 text-sm">
+          commenting as {me.provider === "github" ? `@${identity}` : identity}
+        </p>
       {:else if me.comments_need_login}
         <p class="text-sm">
-          <a class="anchor" href={signInHref()}>Sign in with GitHub</a> to comment on this document.
+          <a class="anchor" href={signInHref()}>Sign in</a> to comment on this document.
         </p>
       {:else}
         <label class="label">
@@ -1159,7 +1164,7 @@
       class="btn preset-outlined-surface-300-700"
       onclick={() => { identifying = false; location.href = signInHref(); }}
     >
-      Sign in with GitHub
+      Sign in
     </button>
     <button
       type="button"

@@ -1,7 +1,9 @@
-//! Identity comes from GitHub. Two paths reach the same place: a browser signs
-//! in through the OAuth web flow and carries a signed cookie afterwards, while
-//! the CLI holds a GitHub token from the device flow and sends it as a bearer.
-//! Both end up as a login name, which the policies below either allow or not.
+//! Identity comes from a provider -- GitHub or Google. Several paths reach the
+//! same place: a browser signs in through one provider's OAuth web flow and
+//! carries a signed cookie afterwards, while the CLI holds a GitHub token from
+//! the device flow and sends it as a bearer. All of them end up as a handle,
+//! which the policies below either allow or not, and an id, which everything
+//! else keys on.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -20,6 +22,15 @@ pub const GITHUB_TOKEN: &str = "https://github.com/login/oauth/access_token";
 pub const GITHUB_DEVICE: &str = "https://github.com/login/device/code";
 pub const GITHUB_USER: &str = "https://api.github.com/user";
 
+pub const GOOGLE_AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+pub const GOOGLE_TOKEN: &str = "https://oauth2.googleapis.com/token";
+pub const GOOGLE_USERINFO: &str = "https://openidconnect.googleapis.com/v1/userinfo";
+
+/// The two providers, spelled as the id prefix and the session cookie write
+/// them. Nothing outside this module composes these strings by hand.
+pub const PROVIDER_GITHUB: &str = "github";
+pub const PROVIDER_GOOGLE: &str = "google";
+
 pub const SESSION_COOKIE: &str = "komodoc_session";
 pub const STATE_COOKIE: &str = "komodoc_state";
 /// Names the browser itself, so an upload made without signing in still
@@ -33,15 +44,22 @@ pub const SESSION_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 /// same-site subdomain from planting one.
 pub const HOST_COOKIE_PREFIX: &str = "__Host-";
 
-/// Who a caller is, once verified: the GitHub login, and its numeric account
-/// id as a decimal string. Both are empty for an anonymous caller. The id is
-/// what ownership and comment authorship actually key on -- a login can be
-/// renamed, the numeric id cannot -- the login is kept mainly for display and
-/// for the publishers/commenters policies, which are written in terms of it.
+/// Who a caller is, once verified. `id` is what ownership, comment authorship
+/// and grants key on, and it is qualified with the provider --
+/// `github:583231`, `google:107691503500061507151` -- because GitHub ids and
+/// Google `sub` values are both decimal strings and nothing but the prefix
+/// keeps one namespace out of the other. `handle` is what the policies match:
+/// a GitHub login, or a Google account's verified email. It needs no prefix,
+/// since a GitHub login cannot contain `@` and a verified email always does,
+/// so the character decides. `name` is what other readers see; it is never
+/// matched on, and for a Google account it is deliberately not the email.
+/// Every field is empty for an anonymous caller.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Identity {
-    pub login: String,
+    pub provider: String,
     pub id: String,
+    pub handle: String,
+    pub name: String,
 }
 
 impl Identity {
@@ -49,9 +67,62 @@ impl Identity {
         Identity::default()
     }
 
+    /// The id is the one field nothing here works without, so it is the one
+    /// that says whether anybody is signed in.
     pub fn is_signed_in(&self) -> bool {
-        !self.login.is_empty()
+        !self.id.is_empty()
     }
+
+    /// A GitHub account, from its login and its numeric id. The login is both
+    /// the handle and the displayed name: GitHub gives no other name to show,
+    /// and the login is what a reader recognises.
+    pub fn github(login: &str, id: &str) -> Identity {
+        let login = login.trim().to_lowercase();
+        Identity {
+            provider: PROVIDER_GITHUB.to_string(),
+            id: qualified(PROVIDER_GITHUB, id),
+            name: login.clone(),
+            handle: login,
+        }
+    }
+
+    /// A Google account, from its `sub`, its verified email, and the profile
+    /// name. Google returns no name for some accounts, and an unnamed comment
+    /// is worse than one signed with the local part of the address, which is
+    /// the name the person already writes to themselves under.
+    pub fn google(sub: &str, email: &str, name: &str) -> Identity {
+        let email = email.trim().to_lowercase();
+        let name = name.trim();
+        let shown = if name.is_empty() {
+            email.split('@').next().unwrap_or_default().to_string()
+        } else {
+            name.to_string()
+        };
+        Identity {
+            provider: PROVIDER_GOOGLE.to_string(),
+            id: qualified(PROVIDER_GOOGLE, sub),
+            handle: email,
+            name: shown,
+        }
+    }
+}
+
+/// An id with its provider in front, unless it already carries one. Empty in,
+/// empty out: no id at all is not an id belonging to anybody.
+pub fn qualified(provider: &str, id: &str) -> String {
+    let id = id.trim();
+    if id.is_empty() || id.contains(':') {
+        return id.to_string();
+    }
+    format!("{provider}:{id}")
+}
+
+/// What a bare id written by an earlier server means. Ownership, grants and
+/// checkpoints were all written before providers existed, and everything
+/// written then was GitHub, so a stored id with no prefix is read as one
+/// rather than the index being rewritten.
+pub fn stored_id(id: &str) -> String {
+    qualified(PROVIDER_GITHUB, id)
 }
 
 /// The cookie name for this request: the __Host- prefix on HTTPS, the plain
@@ -73,18 +144,26 @@ pub fn cookie_name(https: bool, base: &str) -> String {
 pub struct Policy {
     /// No sign-in at all; only meaningful for commenting.
     pub public: bool,
-    /// Any GitHub account, once signed in.
+    /// Any account on any configured provider, once signed in. An operator who
+    /// wants one provider only leaves the other unconfigured, which is a
+    /// property of the deployment rather than of every policy on it.
     pub any: bool,
-    /// The allowlist, lowercased, when neither of the above is set.
-    pub logins: Vec<String>,
+    /// The allowlist, lowercased and as written, when neither of the above is
+    /// set. Each entry is a GitHub login, an email address, or `@domain`; the
+    /// shape of the entry is what decides which, so the list stays one list.
+    pub entries: Vec<String>,
 }
 
 impl Policy {
     /// Reads the value of --publishers or --commenters:
     ///
-    ///     anyone            no sign-in required at all
-    ///     any               any signed-in GitHub account
-    ///     alice,bob         only these GitHub logins
+    ///     anyone                 no sign-in required at all
+    ///     any                    any signed-in account, either provider
+    ///     alice,bob              only these GitHub logins
+    ///     alice@example.org      the Google account with that verified email
+    ///     @example.org           any Google account on that domain
+    ///
+    /// The forms mix freely in one list.
     pub fn parse(value: &str) -> Policy {
         let trimmed = value.trim().to_lowercase();
         match trimmed.as_str() {
@@ -103,51 +182,78 @@ impl Policy {
             }
             _ => {}
         }
-        let logins = trimmed
+        let entries = trimmed
             .split(',')
             .map(str::trim)
-            .filter(|login| !login.is_empty())
+            .filter(|entry| !entry.is_empty())
             .map(str::to_string)
             .collect();
         Policy {
-            logins,
+            entries,
             ..Policy::default()
         }
     }
 
-    pub fn allows(&self, login: &str) -> bool {
+    /// Whether this policy admits a handle: a GitHub login, or a Google
+    /// account's verified email. Matching is case-insensitive throughout,
+    /// since neither a login nor an address is case-sensitive in practice.
+    pub fn allows(&self, handle: &str) -> bool {
         if self.public {
             return true;
         }
-        if login.is_empty() {
+        if handle.is_empty() {
             return false;
         }
         if self.any {
             return true;
         }
-        self.logins
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(login))
+        self.entries.iter().any(|entry| entry_admits(entry, handle))
     }
 
     /// Whether anyone at all is allowed: an unconfigured policy is none of
     /// public, any, or a list.
     pub fn is_configured(&self) -> bool {
-        self.public || self.any || !self.logins.is_empty()
+        self.public || self.any || !self.entries.is_empty()
     }
 
-    /// What the page shows when someone is refused.
+    /// What the page shows when someone is refused. The entries are shown as
+    /// they were written, since an email and a domain already carry the `@`
+    /// that tells them apart from a login.
     pub fn describe(&self) -> String {
         if self.public {
             "anyone".to_string()
         } else if self.any {
-            "any GitHub account".to_string()
-        } else if self.logins.is_empty() {
+            "any signed-in account".to_string()
+        } else if self.entries.is_empty() {
             "nobody (unconfigured)".to_string()
         } else {
-            format!("@{}", self.logins.join(", @"))
+            self.entries.join(", ")
         }
     }
+
+    /// Whether this policy names anybody who could only sign in with GitHub,
+    /// or only with Google. Startup uses these to warn about a list that names
+    /// people no configured provider can ever produce.
+    pub fn names_a_login(&self) -> bool {
+        self.entries.iter().any(|entry| !entry.contains('@'))
+    }
+
+    pub fn names_an_email_or_domain(&self) -> bool {
+        self.entries.iter().any(|entry| entry.contains('@'))
+    }
+}
+
+/// One allowlist entry against one handle. A leading `@` and nothing before it
+/// is a domain, and it matches the part after the `@` exactly, so
+/// `@example.org` does not admit `@mail.example.org`; anything else is matched
+/// whole, which covers both a login and a full address.
+fn entry_admits(entry: &str, handle: &str) -> bool {
+    if let Some(domain) = entry.strip_prefix('@') {
+        return handle
+            .split_once('@')
+            .is_some_and(|(_, host)| host.eq_ignore_ascii_case(domain));
+    }
+    entry.eq_ignore_ascii_case(handle)
 }
 
 /* ----------------------------------------------------------- sessions */
@@ -174,20 +280,32 @@ pub fn verifies(key: &[u8], payload: &str, signature: &str) -> bool {
     mac.verify_slice(&given).is_ok()
 }
 
-/// Returns "<payload>.<signature>", where the payload is the login, the
-/// numeric account id, and an expiry. Nothing is stored server-side: the
-/// signature is what makes it trustworthy. A cookie from before the id was
-/// added has only two fields and fails to parse below, which is deliberate:
-/// such a session carries no id to check comment or document ownership
-/// against, so it is treated as invalid rather than half-trusted.
+/// Returns "<payload>.<signature>", where the payload is the provider, the
+/// handle, the qualified id, the displayed name, and an expiry. Nothing is
+/// stored server-side: the signature is what makes it trustworthy. The name
+/// rides along so that rendering the nav never needs a round trip to the
+/// provider to find out what to label it with.
 pub fn sign_session(key: &[u8], id: &Identity, expiry_unix: i64) -> String {
-    let payload = base64url(format!("{}|{}|{}", id.login, id.id, expiry_unix).as_bytes());
+    let payload = base64url(
+        format!(
+            "{}|{}|{}|{}|{}",
+            id.provider, id.handle, id.id, id.name, expiry_unix
+        )
+        .as_bytes(),
+    );
     let signature = sign(key, &payload);
     format!("{payload}.{signature}")
 }
 
 /// The identity a cookie carries, or the anonymous identity if it is forged,
 /// damaged, expired, or in the old two-field shape.
+///
+/// Three shapes reach here. The five-field one is what this server writes. The
+/// three-field one -- `login|id|expiry` -- is a session an earlier server
+/// wrote, which was necessarily GitHub, and is read as one until it expires:
+/// nothing is missing from it, only implied. The two-field one, from before
+/// the id existed at all, is still refused rather than half-trusted, because
+/// it carries no id to check ownership or comment authorship against.
 pub fn read_session(key: &[u8], cookie: &str) -> Identity {
     let Some((payload, signature)) = cookie.split_once('.') else {
         return Identity::anonymous();
@@ -201,20 +319,32 @@ pub fn read_session(key: &[u8], cookie: &str) -> Identity {
     let Ok(text) = String::from_utf8(raw) else {
         return Identity::anonymous();
     };
-    let parts: Vec<&str> = text.splitn(3, '|').collect();
-    if parts.len() != 3 {
+    // A profile name may itself contain a bar, so the expiry is taken off the
+    // end and the rest split from the front; the name is whatever is left.
+    let Some((front, expiry)) = text.rsplit_once('|') else {
         return Identity::anonymous();
-    }
-    let Ok(expiry) = parts[2].parse::<i64>() else {
+    };
+    let Ok(expiry) = expiry.parse::<i64>() else {
         return Identity::anonymous();
     };
     if now_unix() > expiry {
         return Identity::anonymous();
     }
-    Identity {
-        login: parts[0].to_string(),
-        id: parts[1].to_string(),
+    let fields: Vec<&str> = front.splitn(4, '|').collect();
+    let who = match fields[..] {
+        [provider, handle, id, name] => Identity {
+            provider: provider.to_string(),
+            id: id.to_string(),
+            handle: handle.to_string(),
+            name: name.to_string(),
+        },
+        [login, id] => Identity::github(login, id),
+        _ => return Identity::anonymous(),
+    };
+    if !who.is_signed_in() {
+        return Identity::anonymous();
     }
+    who
 }
 
 pub fn now_unix() -> i64 {
@@ -388,10 +518,10 @@ impl GithubApp {
         if reply.user.login.is_empty() {
             return None;
         }
-        Some(Identity {
-            login: reply.user.login.to_lowercase(),
-            id: reply.user.id.to_string(),
-        })
+        Some(Identity::github(
+            &reply.user.login,
+            &reply.user.id.to_string(),
+        ))
     }
 }
 
@@ -419,10 +549,165 @@ pub async fn login_for(token: &str) -> Result<Identity, String> {
     if user.login.is_empty() {
         return Err("github returned no login".to_string());
     }
-    Ok(Identity {
-        login: user.login.to_lowercase(),
-        id: user.id.to_string(),
-    })
+    Ok(Identity::github(&user.login, &user.id.to_string()))
+}
+
+/* ------------------------------------------------------------- Google */
+
+/// The Google client, which has no flags of its own: a secret belongs in the
+/// environment, and the README already says so. The two endpoints are fields
+/// rather than constants so a test can point them at a stand-in, exactly as
+/// the GitHub tests stand in for `/user`.
+#[derive(Clone, Debug)]
+pub struct GoogleApp {
+    pub client_id: String,
+    pub client_secret: String,
+    pub token_url: String,
+    pub userinfo_url: String,
+}
+
+impl Default for GoogleApp {
+    fn default() -> GoogleApp {
+        GoogleApp {
+            client_id: String::new(),
+            client_secret: String::new(),
+            token_url: GOOGLE_TOKEN.to_string(),
+            userinfo_url: GOOGLE_USERINFO.to_string(),
+        }
+    }
+}
+
+/// What `userinfo` answers with. Only these four fields are read; the id token
+/// the exchange also returns is not used at all, because verifying it means
+/// fetching Google's signing keys and checking a JWT to learn what this call
+/// already proves through the same trust the GitHub `/user` call rests on --
+/// that the server itself just exchanged the code with its own secret.
+#[derive(Deserialize, Default)]
+struct GoogleUser {
+    #[serde(default)]
+    sub: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    email_verified: bool,
+    #[serde(default)]
+    name: String,
+}
+
+impl GoogleApp {
+    pub fn configured(&self) -> bool {
+        !self.client_id.is_empty()
+    }
+
+    /// Where a browser is sent to sign in. `prompt=select_account` so that
+    /// somebody with a personal and an institutional account picks the one
+    /// they mean, rather than being handed whichever Google last used.
+    pub fn authorize_url(&self, redirect: &str, state: &str, verifier: &str) -> String {
+        let mut target = url::Url::parse(GOOGLE_AUTHORIZE).expect("a constant URL");
+        target
+            .query_pairs_mut()
+            .append_pair("client_id", &self.client_id)
+            .append_pair("redirect_uri", redirect)
+            .append_pair("response_type", "code")
+            .append_pair("scope", "openid email profile")
+            .append_pair("state", state)
+            .append_pair("code_challenge", &pkce_challenge(verifier))
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("prompt", "select_account");
+        target.to_string()
+    }
+
+    /// Turns the code Google redirected back with into an access token. The
+    /// verifier proves this exchange belongs to the redirect that started it,
+    /// so a code intercepted on its way back is of no use on its own.
+    pub async fn exchange(
+        &self,
+        code: &str,
+        redirect: &str,
+        verifier: &str,
+    ) -> Result<String, String> {
+        #[derive(Deserialize, Default)]
+        struct Reply {
+            #[serde(default)]
+            access_token: String,
+            #[serde(default)]
+            error_description: String,
+        }
+        let form = [
+            ("client_id", self.client_id.as_str()),
+            ("client_secret", self.client_secret.as_str()),
+            ("code", code),
+            ("code_verifier", verifier),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", redirect),
+        ];
+        let response = client()
+            .post(&self.token_url)
+            .header("user-agent", USER_AGENT)
+            .header("accept", "application/json")
+            .form(&form)
+            .send()
+            .await
+            .map_err(|err| err.to_string())?;
+        let status = response.status().as_u16();
+        let reply: Reply = response
+            .json()
+            .await
+            .map_err(|_| format!("google returned {status}"))?;
+        if reply.access_token.is_empty() {
+            if reply.error_description.is_empty() {
+                return Err(format!("google returned {status}"));
+            }
+            return Err(reply.error_description);
+        }
+        Ok(reply.access_token)
+    }
+
+    /// Who the access token belongs to. An answer with no verified address is
+    /// refused rather than signed in: the handle would be empty, and no policy
+    /// could ever admit it.
+    pub async fn identity_for(&self, token: &str) -> Result<Identity, String> {
+        let response = client()
+            .get(&self.userinfo_url)
+            .header("user-agent", USER_AGENT)
+            .header("authorization", format!("Bearer {token}"))
+            .header("accept", "application/json")
+            .send()
+            .await
+            .map_err(|err| err.to_string())?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(format!("google returned {status}"));
+        }
+        let user: GoogleUser = response
+            .json()
+            .await
+            .map_err(|_| "google would not say who you are".to_string())?;
+        if user.sub.is_empty() {
+            return Err("google would not say who you are".to_string());
+        }
+        if user.email.is_empty() || !user.email_verified {
+            return Err(UNVERIFIED_EMAIL.to_string());
+        }
+        Ok(Identity::google(&user.sub, &user.email, &user.name))
+    }
+}
+
+/// What the callback says when Google names an account with no verified
+/// address. It is a sentence rather than a code because it is shown to the
+/// person who just tried to sign in.
+pub const UNVERIFIED_EMAIL: &str =
+    "this Google account has no verified email address, so it cannot be signed in";
+
+/// A PKCE verifier: 32 random bytes, base64url, which is inside the 43-128
+/// characters the spec allows.
+pub fn pkce_verifier() -> String {
+    base64url(&random_bytes(32))
+}
+
+/// The S256 challenge for a verifier.
+pub fn pkce_challenge(verifier: &str) -> String {
+    base64url(&Sha256::digest(verifier.as_bytes()))
 }
 
 /// Turns a GitHub login into the account behind it. A grant by name is keyed
@@ -458,10 +743,7 @@ impl Accounts for GithubAccounts {
         if user.login.is_empty() {
             return None;
         }
-        Some(Identity {
-            login: user.login.to_lowercase(),
-            id: user.id.to_string(),
-        })
+        Some(Identity::github(&user.login, &user.id.to_string()))
     }
 }
 

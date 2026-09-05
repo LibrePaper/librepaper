@@ -272,9 +272,11 @@
       </p>
     </header>
 
-    {#if me.login && !me.can_publish}
+    <!-- The handle, not the name: this is about the allowlist, which is
+         written in handles, and it is shown only to the person it refuses. -->
+    {#if me.handle && !me.can_publish}
       <aside class="card preset-tonal-warning p-4">
-        @{me.login} may not publish here; this deployment allows {me.publishers}.
+        {me.handle} may not publish here; this deployment allows {me.publishers}.
       </aside>
     {/if}
 

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::assets::load_shell;
-use crate::auth::{now_unix, sign_session, Accounts, GithubApp, Identity, Policy, SESSION_COOKIE};
+use crate::auth::{
+    now_unix, sign_session, Accounts, GithubApp, GoogleApp, Identity, Policy, SESSION_COOKIE,
+};
 use crate::blob::FsStore;
 use crate::config::Configuration;
 use crate::room::RoomSet;
@@ -45,10 +47,67 @@ impl Accounts for TestAccounts {
         if login.is_empty() || login == "nobody" {
             return None;
         }
-        Some(Identity {
-            id: login.clone(),
-            login,
-        })
+        Some(Identity::github(&login, &login))
+    }
+}
+
+/// The Google half of the same stand-in: a userinfo endpoint the callback test
+/// points `GoogleApp` at, together with the token endpoint that hands out the
+/// access token for it. It answers whatever it was built with, so a test can
+/// ask for an unverified address or a profile with no name.
+pub struct GoogleStandIn {
+    pub url: String,
+    /// Held, not read: the stand-in stops answering when it is dropped.
+    #[allow(dead_code)]
+    handle: tokio::task::JoinHandle<()>,
+}
+
+/// Starts a stand-in Google. `verifier` is the PKCE verifier the token
+/// endpoint insists on, which is how a test checks that a mismatched one is
+/// refused by the exchange rather than waved through.
+pub async fn google_stand_in(user: Value, verifier: &str) -> GoogleStandIn {
+    use axum::extract::State;
+    use axum::routing::{get, post};
+
+    #[derive(Clone)]
+    struct Fixture {
+        user: Value,
+        verifier: String,
+    }
+
+    let fixture = Fixture {
+        user,
+        verifier: verifier.to_string(),
+    };
+    let router = axum::Router::new()
+        .route(
+            "/token",
+            post(|State(fixture): State<Fixture>, body: String| async move {
+                let given = url::form_urlencoded::parse(body.as_bytes())
+                    .find(|(name, _)| name == "code_verifier")
+                    .map(|(_, value)| value.to_string())
+                    .unwrap_or_default();
+                if given != fixture.verifier {
+                    return axum::Json(json!({"error_description": "invalid code verifier"}));
+                }
+                axum::Json(json!({"access_token": "stand-in-token"}))
+            }),
+        )
+        .route(
+            "/userinfo",
+            get(|State(fixture): State<Fixture>| async move { axum::Json(fixture.user.clone()) }),
+        )
+        .with_state(fixture);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port");
+    let address = listener.local_addr().expect("an address");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("serve");
+    });
+    GoogleStandIn {
+        url: format!("http://{address}"),
+        handle,
     }
 }
 
@@ -73,6 +132,41 @@ pub async fn test_server_with(
 
 /// The same, for a deployment whose operator has turned the public front page
 /// off with `--no-listing`.
+/// The same, with a Google client pointed at a stand-in. `with_app` still says
+/// whether GitHub is configured too, since which providers a deployment has is
+/// most of what the sign-in routes answer.
+pub async fn test_server_google(
+    publishers: Policy,
+    commenters: Policy,
+    with_app: bool,
+    google: &GoogleStandIn,
+) -> TestServer {
+    let mut server = build_test_server(
+        Configuration::default(),
+        publishers,
+        commenters,
+        with_app,
+        true,
+    )
+    .await;
+    server.instance.google = GoogleApp {
+        client_id: "test-google-client".into(),
+        client_secret: "test-google-secret".into(),
+        token_url: format!("{}/token", google.url),
+        userinfo_url: format!("{}/userinfo", google.url),
+    };
+    let TestServerParts { instance, dir } = server;
+    serve_instance(Arc::new(instance), dir).await
+}
+
+/// A server and its directory, before either is behind an Arc. The Google
+/// client is set here rather than after `Arc::new`, which is what keeps every
+/// field of a serving server read-only.
+struct TestServerParts {
+    instance: Server,
+    dir: tempfile::TempDir,
+}
+
 pub async fn test_server_tuned(
     config: Configuration,
     publishers: Policy,
@@ -80,6 +174,18 @@ pub async fn test_server_tuned(
     with_app: bool,
     listing: bool,
 ) -> TestServer {
+    let TestServerParts { instance, dir } =
+        build_test_server(config, publishers, commenters, with_app, listing).await;
+    serve_instance(Arc::new(instance), dir).await
+}
+
+async fn build_test_server(
+    config: Configuration,
+    publishers: Policy,
+    commenters: Policy,
+    with_app: bool,
+    listing: bool,
+) -> TestServerParts {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let config = Arc::new(config);
     let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
@@ -107,7 +213,10 @@ pub async fn test_server_tuned(
     );
     server.accounts = Arc::new(TestAccounts);
     server.listing = listing;
-    serve_instance(Arc::new(server), dir).await
+    TestServerParts {
+        instance: server,
+        dir,
+    }
 }
 
 pub async fn serve_instance(instance: Arc<Server>, dir: tempfile::TempDir) -> TestServer {
@@ -181,17 +290,25 @@ pub async fn server_over_blobs(
     (format!("http://{address}"), instance)
 }
 
-/// The cookie a browser carries after signing in as login. The login itself
-/// doubles as the fake GitHub numeric id, which is fine for a test: it only
+/// The cookie a browser carries after signing in as a GitHub login. The login
+/// itself doubles as the fake numeric id, which is fine for a test: it only
 /// has to be stable and distinct per login, the way a real account's id is.
+/// The id it produces is qualified, `github:<login>`, exactly as a real
+/// sign-in's would be.
 pub fn session_as(login: &str) -> String {
-    let id = Identity {
-        login: login.to_string(),
-        id: login.to_string(),
-    };
+    cookie_for(&Identity::github(login, login))
+}
+
+/// The same for a Google account: the `sub` stands in for the numeric one, the
+/// email is the handle the policies match, and the name is what readers see.
+pub fn google_session_as(sub: &str, email: &str, name: &str) -> String {
+    cookie_for(&Identity::google(sub, email, name))
+}
+
+fn cookie_for(id: &Identity) -> String {
     format!(
         "{SESSION_COOKIE}={}",
-        sign_session(TEST_KEY, &id, now_unix() + 3600)
+        sign_session(TEST_KEY, id, now_unix() + 3600)
     )
 }
 

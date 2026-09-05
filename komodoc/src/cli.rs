@@ -118,7 +118,7 @@ pub async fn login(mut client_id: String, server_flag: String) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
-    println!("signed in as {}", who.login);
+    println!("signed in as {}", who.name);
     eprintln!("  token stored in {}", path.display());
 }
 

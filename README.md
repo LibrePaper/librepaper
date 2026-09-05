@@ -495,6 +495,8 @@ export KOMODOC_GITHUB_CLIENT_ID="..."
 export KOMODOC_GITHUB_CLIENT_SECRET="..."
 ```
 
+Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `KOMODOC_GOOGLE_CLIENT_ID` and `KOMODOC_GOOGLE_CLIENT_SECRET`.
+
 ## Environment variables
 
 [^github-data]: Komodoc requests no GitHub scopes through OAuth. It uses the
@@ -510,6 +512,8 @@ Flags take precedence over their corresponding environment variables.
 | `KOMODOC_DATA` | Directory `serve` and `seed` use for documents and comments (default `komodoc-data`) |
 | `KOMODOC_GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
 | `KOMODOC_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
+| `KOMODOC_GOOGLE_CLIENT_ID` | Google OAuth client ID, for signing in with Google |
+| `KOMODOC_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `KOMODOC_PUBLISHERS` | GitHub accounts allowed to publish |
 | `KOMODOC_COMMENTERS` | Who may comment: `anyone`, `any`, or a list of GitHub accounts |
 | `KOMODOC_EXPIRE_AFTER` | Automatically delete documents after a duration such as `24h` or `30d` |

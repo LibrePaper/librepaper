@@ -22,9 +22,10 @@ use tokio::sync::mpsc;
 
 use crate::assets::{renderers, ShellFile};
 use crate::auth::{
-    cookie_name, now_unix, random_token, read_session, read_visitor, sign_session, sign_visitor,
-    Accounts, GithubAccounts, GithubApp, Identity, Policy, TokenCache, SESSION_COOKIE,
-    SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
+    cookie_name, now_unix, pkce_verifier, random_token, read_session, read_visitor, sign_session,
+    sign_visitor, stored_id, Accounts, GithubAccounts, GithubApp, GoogleApp, Identity, Policy,
+    TokenCache, PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
+    VISITOR_COOKIE,
 };
 use crate::blob::document_key;
 use crate::config::Configuration;
@@ -54,6 +55,10 @@ pub struct Server {
     pub direct_reads: bool,
     pub shell: HashMap<String, ShellFile>,
     pub app: GithubApp,
+    /// The other way in. Configured from the environment alone, and set after
+    /// construction the way the other deployment switches are, so a server
+    /// without one is simply a server with one provider.
+    pub google: GoogleApp,
     pub key: Vec<u8>,
     pub tokens: TokenCache,
     pub config: Arc<Configuration>,
@@ -101,30 +106,37 @@ impl Viewer {
 }
 
 /// What an authorized write is attributed to: the owner key a document's
-/// publisher field is compared against (a lowercased GitHub login, a visitor:
-/// key, or "" for neither), and the GitHub numeric account id when the caller
-/// is signed in.
+/// publisher field is compared against (a lowercased handle, a visitor: key,
+/// or "" for neither), and the qualified account id when the caller is signed
+/// in.
 #[derive(Clone, Debug, Default)]
 pub struct Caller {
     pub key: String,
     pub id: String,
-    /// The GitHub login behind that id, empty for a caller who is not signed
-    /// in. Kept because the deployment's switches are written in terms of
-    /// logins, and a listing has to say what each row may be done with.
-    pub login: String,
+    /// The handle behind that id, empty for a caller who is not signed in.
+    /// Kept because the deployment's switches are written in terms of handles,
+    /// and a listing has to say what each row may be done with.
+    pub handle: String,
+    /// The provider that handle came from, so the identity rebuilt below is
+    /// the one that signed in rather than a guess at it.
+    pub provider: String,
 }
 
 impl Caller {
+    /// Enough of an identity to ask the switches with. The displayed name is
+    /// not carried here: nothing that asks a ceiling shows one.
     fn identity(&self) -> Identity {
         Identity {
-            login: self.login.clone(),
+            provider: self.provider.clone(),
             id: self.id.clone(),
+            handle: self.handle.clone(),
+            name: String::new(),
         }
     }
 }
 
-/// Keeps a browser's key from ever colliding with a GitHub login, which
-/// cannot contain a colon.
+/// Keeps a browser's key from ever colliding with a handle, since neither a
+/// GitHub login nor an email address can contain a colon.
 pub const VISITOR_PREFIX: &str = "visitor:";
 
 type Reply = Response<Body>;
@@ -152,6 +164,7 @@ impl Server {
             direct_reads: false,
             shell,
             app,
+            google: GoogleApp::default(),
             key,
             tokens: TokenCache::new(),
             config,
@@ -224,8 +237,8 @@ impl Server {
         }
     }
 
-    /// The key a caller's uploads belong to. A signed-in caller is their GitHub
-    /// login. Where publishing needs no account there is still someone on the
+    /// The key a caller's uploads belong to. A signed-in caller is their
+    /// handle. Where publishing needs no account there is still someone on the
     /// other end, so an anonymous caller is named by the visitor cookie the
     /// shell handed their browser: not an identity, but enough that one
     /// visitor's uploads are not another's to list, replace or delete. A
@@ -233,7 +246,7 @@ impl Server {
     /// everyone -- owns nothing, and their uploads stay shared.
     pub fn owner(&self, headers: &HeaderMap, arrival: &Arrival, id: &Identity) -> String {
         if id.is_signed_in() {
-            return id.login.to_lowercase();
+            return id.handle.to_lowercase();
         }
         if let Some(value) = cookie(headers, &cookie_name(arrival.is_https(), VISITOR_COOKIE)) {
             let token = read_visitor(&self.key, &value);
@@ -250,7 +263,15 @@ impl Server {
     /// uploads -- into something a comment payload carries around.
     pub fn comment_author(&self, headers: &HeaderMap, arrival: &Arrival, id: &Identity) -> String {
         if id.is_signed_in() {
-            return format!("github:{}", id.login.to_lowercase());
+            // A GitHub comment stays keyed on `github:<login>`, which is what
+            // every comment already written carries. Google has no login to
+            // put there, so a Google comment is keyed on the qualified id,
+            // which is already `google:<sub>`.
+            return if id.provider == PROVIDER_GITHUB {
+                format!("{PROVIDER_GITHUB}:{}", id.handle.to_lowercase())
+            } else {
+                id.id.clone()
+            };
         }
         if let Some(value) = cookie(headers, &cookie_name(arrival.is_https(), VISITOR_COOKIE)) {
             let token = read_visitor(&self.key, &value);
@@ -269,8 +290,8 @@ impl Server {
     /// carry what the switch grants without a sign-in.
     pub fn ceiling_for(&self, id: &Identity) -> Ceiling {
         Ceiling {
-            comment: self.commenters.allows(&id.login),
-            edit: self.publishers.allows(&id.login),
+            comment: self.commenters.allows(&id.handle),
+            edit: self.publishers.allows(&id.handle),
             link_comment: self.commenters.public,
             link_edit: self.publishers.public,
         }
@@ -337,22 +358,20 @@ impl Server {
     #[allow(clippy::result_large_err)]
     async fn publisher(&self, headers: &HeaderMap, arrival: &Arrival) -> Result<Caller, Reply> {
         let id = self.whoami(headers, arrival).await;
-        if self.publishers.allows(&id.login) {
+        if self.publishers.allows(&id.handle) {
             return Ok(Caller {
                 key: self.owner(headers, arrival, &id),
                 id: id.id,
-                login: id.login,
+                handle: id.handle,
+                provider: id.provider,
             });
         }
         if !id.is_signed_in() {
-            return Err(write_json(
-                401,
-                &json!({"error": "sign in with GitHub to publish"}),
-            ));
+            return Err(write_json(401, &json!({"error": "sign in to publish"})));
         }
         Err(write_json(
             403,
-            &json!({"error": format!("@{} may not publish here; this deployment allows {}", id.login, self.publishers.describe())}),
+            &json!({"error": format!("{} may not publish here; this deployment allows {}", id.handle, self.publishers.describe())}),
         ))
     }
 
@@ -422,12 +441,12 @@ impl Server {
         if !who.at_least(Role::Commenter) {
             let reason = if id.is_signed_in() {
                 format!(
-                    "@{} may not comment here; this deployment allows {}",
-                    id.login,
+                    "{} may not comment here; this deployment allows {}",
+                    id.handle,
                     self.commenters.describe()
                 )
             } else {
-                "sign in with GitHub to comment".to_string()
+                "sign in to comment".to_string()
             };
             return (
                 json!({"type": "error", "message": reason, "temp_id": incoming.temp_id}),
@@ -436,8 +455,10 @@ impl Server {
         }
         // A signed-in commenter is named by their account, whether or not
         // signing in was required. Only anonymous readers type a name.
+        // The name, not the handle: this is what other readers see, and a
+        // Google account's handle is its email, which is shown to nobody.
         if id.is_signed_in() {
-            incoming.creator = id.login.clone();
+            incoming.creator = id.name.clone();
         }
         // Every comment sits on a checkpoint by construction: what the
         // reviewer was looking at is on record the moment they say something
@@ -446,7 +467,7 @@ impl Server {
         // costs nothing and adds no entry.
         if incoming.kind == "comment" {
             let by = if id.is_signed_in() {
-                id.login.clone()
+                id.name.clone()
             } else {
                 incoming.creator.clone()
             };
@@ -1608,11 +1629,15 @@ impl Server {
                 if let Some((account, role)) = &named {
                     // One person holds one role here, so a re-grant moves them
                     // rather than leaving them on two rows.
-                    entry.editors.retain(|grant| grant.id != account.id);
-                    entry.commenters.retain(|grant| grant.id != account.id);
+                    entry
+                        .editors
+                        .retain(|grant| stored_id(&grant.id) != account.id);
+                    entry
+                        .commenters
+                        .retain(|grant| stored_id(&grant.id) != account.id);
                     let grant = Grant {
                         id: account.id.clone(),
-                        login: account.login.clone(),
+                        login: account.handle.clone(),
                         since: crate::clock::timestamp(),
                     };
                     match role {
@@ -1714,14 +1739,14 @@ impl Server {
     /// the operator's flag rather than anything about the document.
     fn grant_allowed(&self, account: &Identity, role: Role) -> Result<(), String> {
         match role {
-            Role::Editor if !self.publishers.allows(&account.login) => Err(format!(
-                "@{} may not edit here; this deployment's --publishers allows {}",
-                account.login,
+            Role::Editor if !self.publishers.allows(&account.handle) => Err(format!(
+                "{} may not edit here; this deployment's --publishers allows {}",
+                account.handle,
                 self.publishers.describe()
             )),
-            Role::Commenter if !self.commenters.allows(&account.login) => Err(format!(
-                "@{} may not comment here; this deployment's --commenters allows {}",
-                account.login,
+            Role::Commenter if !self.commenters.allows(&account.handle) => Err(format!(
+                "{} may not comment here; this deployment's --commenters allows {}",
+                account.handle,
                 self.commenters.describe()
             )),
             _ => Ok(()),
@@ -1789,24 +1814,28 @@ impl Server {
                 &json!({"error": format!("github has no account called @{}", clean(asked.to.trim().trim_start_matches('@'), 64))}),
             );
         };
-        if !self.publishers.allows(&account.login) {
+        if !self.publishers.allows(&account.handle) {
             return write_json(
                 403,
                 &json!({"error": format!(
-                    "@{} may not publish here; this deployment's --publishers allows {}",
-                    account.login, self.publishers.describe()
+                    "{} may not publish here; this deployment's --publishers allows {}",
+                    account.handle, self.publishers.describe()
                 )}),
             );
         }
         let moved = self
             .store
             .modify(slug, |entry| {
-                entry.publisher = account.login.clone();
+                entry.publisher = account.handle.clone();
                 entry.publisher_id = account.id.clone();
                 // The new owner holds everything by owning it, so a grant to
                 // them is a row that no longer says anything.
-                entry.editors.retain(|grant| grant.id != account.id);
-                entry.commenters.retain(|grant| grant.id != account.id);
+                entry
+                    .editors
+                    .retain(|grant| stored_id(&grant.id) != account.id);
+                entry
+                    .commenters
+                    .retain(|grant| stored_id(&grant.id) != account.id);
                 Ok(())
             })
             .await;
@@ -1982,9 +2011,97 @@ impl Server {
         response
     }
 
-    /// The sign-in routes: the redirect to GitHub, the callback it returns to,
-    /// signing out, and the two endpoints the page and the CLI ask about the
-    /// current state.
+    /// Which providers this deployment can actually sign somebody in with, in
+    /// the order the page offers them. A provider is configured when its
+    /// client id is set.
+    fn providers(&self) -> Vec<&'static str> {
+        let mut providers = Vec::new();
+        if self.app.configured() {
+            providers.push(PROVIDER_GITHUB);
+        }
+        if self.google.configured() {
+            providers.push(PROVIDER_GOOGLE);
+        }
+        providers
+    }
+
+    /// The page offering the choice, served from the shell the way the 404
+    /// page is: the same bytes to every caller, and the `next` path carried
+    /// through in the query so the page can put it on both links. A caller
+    /// that cannot take HTML gets the two addresses as a line of text.
+    fn sign_in_page(&self, headers: &HeaderMap, next: &str) -> Reply {
+        let accepts_html = header_of(headers, "accept").is_some_and(|a| a.contains("text/html"));
+        match self.shell.get("/signin.html") {
+            Some(asset) if accepts_html => {
+                let mut response = write_asset(asset);
+                // The page is the same for everybody, but the answer it leads
+                // to is not, and a shared cache holding it would be answering
+                // for this deployment's configuration long after it changed.
+                set(&mut response, "cache-control", "no-store");
+                response
+            }
+            _ => plain(
+                200,
+                &format!(
+                    "sign in at /auth/login/github?next={0} or /auth/login/google?next={0}",
+                    url_escape(next)
+                ),
+            ),
+        }
+    }
+
+    /// The end of either flow: adopt what this browser published before it
+    /// signed in, set the session cookie, drop the state cookie, and go back
+    /// where the person started. Both providers finish here, so a session
+    /// cookie is set in exactly one place.
+    async fn sign_in(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        who: &Identity,
+        next: &str,
+    ) -> Reply {
+        let https = arrival.is_https();
+        // What this browser uploaded before it signed in is now this account's:
+        // the publisher is rewritten and the quota moves with it. This is the
+        // answer to "I cleared my cookies and my documents are gone", which the
+        // README could only warn about. A document with no publisher at all is
+        // nobody's and is left alone. A failure here is not a reason to refuse
+        // the sign-in: the documents are still readable at their links, and the
+        // next sign-in adopts them.
+        let visitor = self.owner(headers, arrival, &Identity::anonymous());
+        if !visitor.is_empty() {
+            match self.store.adopt(&visitor, &who.handle, &who.id).await {
+                Ok(0) => {}
+                Ok(moved) => println!("adopted {moved} document(s) for {}", who.name),
+                Err(err) => eprintln!("could not adopt {}'s documents: {err}", who.name),
+            }
+        }
+        let mut response = redirect(&local_path(next));
+        let session = sign_session(
+            &self.key,
+            who,
+            now_unix() + SESSION_MAX_AGE.as_secs() as i64,
+        );
+        add_cookie(
+            &mut response,
+            &set_cookie(
+                &cookie_name(https, SESSION_COOKIE),
+                &session,
+                SESSION_MAX_AGE.as_secs() as i64,
+                https,
+            ),
+        );
+        add_cookie(
+            &mut response,
+            &clear_cookie(&cookie_name(https, STATE_COOKIE), https),
+        );
+        response
+    }
+
+    /// The sign-in routes: the door, each provider's redirect, the callbacks
+    /// they return to, signing out, and the two endpoints the page and the CLI
+    /// ask about the current state.
     async fn handle_auth(
         &self,
         method: &Method,
@@ -2002,14 +2119,29 @@ impl Server {
             })
             .unwrap_or_default();
         match path {
+            // The one door. The shell links here rather than to a provider,
+            // so no page has to know which providers this deployment has.
             "/auth/login" => {
-                // Nothing to sign in to: this deployment is open to everyone
-                // and was started without a GitHub OAuth app.
-                if !self.app.configured() {
-                    return Some(plain(
+                let next = query.get("next").cloned().unwrap_or_default();
+                match self.providers()[..] {
+                    // Nothing to sign in to: this deployment is open to
+                    // everyone and was started without any OAuth app.
+                    [] => Some(plain(
                         404,
                         "this deployment has no sign-in: everyone may read, comment and publish",
-                    ));
+                    )),
+                    // One provider is not a choice, so it is not offered as
+                    // one.
+                    [only] => Some(redirect(&format!(
+                        "/auth/login/{only}?next={}",
+                        url_escape(&next)
+                    ))),
+                    _ => Some(self.sign_in_page(headers, &next)),
+                }
+            }
+            "/auth/login/github" => {
+                if !self.app.configured() {
+                    return Some(plain(404, "this deployment has no GitHub sign-in"));
                 }
                 let state = random_token();
                 // The next URL is arbitrary caller-supplied text, so it is
@@ -2019,6 +2151,30 @@ impl Server {
                 let value = format!("{state}|{}", url_escape(&next));
                 let mut response =
                     redirect(&self.app.authorize_url(&arrival.callback_url(), &state));
+                add_cookie(
+                    &mut response,
+                    &set_cookie(&cookie_name(https, STATE_COOKIE), &value, 600, https),
+                );
+                Some(response)
+            }
+            "/auth/login/google" => {
+                if !self.google.configured() {
+                    return Some(plain(404, "this deployment has no Google sign-in"));
+                }
+                let state = random_token();
+                let next = query.get("next").cloned().unwrap_or_default();
+                // The PKCE verifier rides in the state cookie beside the state
+                // token and the next path: the cookie is HttpOnly and __Host-
+                // on HTTPS, so the verifier is exactly as private as the state
+                // already is, and the server keeps nothing between the two
+                // halves of the flow.
+                let verifier = pkce_verifier();
+                let value = format!("{state}|{}|{verifier}", url_escape(&next));
+                let mut response = redirect(&self.google.authorize_url(
+                    &arrival.google_callback_url(),
+                    &state,
+                    &verifier,
+                ));
                 add_cookie(
                     &mut response,
                     &set_cookie(&cookie_name(https, STATE_COOKIE), &value, 600, https),
@@ -2048,42 +2204,46 @@ impl Server {
                     Ok(who) => who,
                     Err(_) => return Some(plain(502, "github would not say who you are")),
                 };
-                // What this browser uploaded before it signed in is now this
-                // account's: the publisher is rewritten and the quota moves
-                // with it. This is the answer to "I cleared my cookies and my
-                // documents are gone", which the README could only warn about.
-                // A document with no publisher at all is nobody's and is left
-                // alone. A failure here is not a reason to refuse the sign-in:
-                // the documents are still readable at their links, and the
-                // next sign-in adopts them.
-                let visitor = self.owner(headers, arrival, &Identity::anonymous());
-                if !visitor.is_empty() {
-                    match self.store.adopt(&visitor, &who.login, &who.id).await {
-                        Ok(0) => {}
-                        Ok(moved) => println!("adopted {moved} document(s) for @{}", who.login),
-                        Err(err) => eprintln!("could not adopt @{}'s documents: {err}", who.login),
-                    }
+                Some(self.sign_in(headers, arrival, &who, &next).await)
+            }
+            "/auth/callback/google" => {
+                if !self.google.configured() {
+                    return Some(plain(404, "this deployment has no Google sign-in"));
                 }
-                let mut response = redirect(&local_path(&next));
-                let session = sign_session(
-                    &self.key,
-                    &who,
-                    now_unix() + SESSION_MAX_AGE.as_secs() as i64,
-                );
-                add_cookie(
-                    &mut response,
-                    &set_cookie(
-                        &cookie_name(https, SESSION_COOKIE),
-                        &session,
-                        SESSION_MAX_AGE.as_secs() as i64,
-                        https,
-                    ),
-                );
-                add_cookie(
-                    &mut response,
-                    &clear_cookie(&cookie_name(https, STATE_COOKIE), https),
-                );
-                Some(response)
+                let Some(value) = cookie(headers, &cookie_name(https, STATE_COOKIE)) else {
+                    return Some(plain(400, "sign-in expired; try again"));
+                };
+                // Three fields here rather than two: the verifier is the
+                // third, and a cookie without it did not start this flow.
+                let mut fields = value.splitn(3, '|');
+                let state = fields.next().unwrap_or_default();
+                let encoded_next = fields.next().unwrap_or_default();
+                let verifier = fields.next().unwrap_or_default();
+                if state.is_empty()
+                    || verifier.is_empty()
+                    || query.get("state").map(String::as_str) != Some(state)
+                {
+                    return Some(plain(400, "sign-in state did not match; try again"));
+                }
+                let next = url_unescape(encoded_next);
+                let code = query.get("code").cloned().unwrap_or_default();
+                let redirect_uri = arrival.google_callback_url();
+                let token = match self.google.exchange(&code, &redirect_uri, verifier).await {
+                    Ok(token) => token,
+                    Err(err) => {
+                        return Some(plain(400, &format!("google refused the sign-in: {err}")))
+                    }
+                };
+                let who = match self.google.identity_for(&token).await {
+                    Ok(who) => who,
+                    // The one refusal a person can act on: every other failure
+                    // here is the deployment's or Google's, and says so.
+                    Err(err) if err == crate::auth::UNVERIFIED_EMAIL => {
+                        return Some(plain(403, crate::auth::UNVERIFIED_EMAIL))
+                    }
+                    Err(_) => return Some(plain(502, "google would not say who you are")),
+                };
+                Some(self.sign_in(headers, arrival, &who, &next).await)
             }
             "/auth/logout" => {
                 // A GET here would be a plain link or a browser prefetch either
@@ -2110,13 +2270,19 @@ impl Server {
                 Some(write_json(
                     200,
                     &json!({
-                        "login": id.login,
-                        "can_publish": self.publishers.allows(&id.login),
-                        "can_comment": self.commenters.allows(&id.login),
+                        "provider": id.provider,
+                        // The handle is the caller's own, and reaches only the
+                        // caller: it is what the page checks against the
+                        // switches, and a Google handle is an email address.
+                        "handle": id.handle,
+                        "name": id.name,
+                        "can_publish": self.publishers.allows(&id.handle),
+                        "can_comment": self.commenters.allows(&id.handle),
                         "comments_need_login": !self.commenters.public,
-                        // A wholly public deployment has no OAuth app, so there
-                        // is nothing to sign in to and the page hides the button.
-                        "can_sign_in": self.app.configured(),
+                        // A wholly public deployment has no OAuth app at all,
+                        // so there is nothing to sign in to and the page hides
+                        // the button.
+                        "providers": self.providers(),
                         "publishers": self.publishers.describe(),
                         "commenters": self.commenters.describe(),
                     }),

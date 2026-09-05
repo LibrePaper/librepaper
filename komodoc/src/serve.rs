@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::assets::load_shell;
-use crate::auth::{session_key, GithubApp, Policy};
+use crate::auth::{session_key, GithubApp, GoogleApp, Policy};
 use crate::config::Configuration;
 use crate::origins::DOCS_PREFIX;
 use crate::retention::{describe_seconds, parse_expire_from, parse_retention};
@@ -59,6 +59,65 @@ async fn listen(port: u16) -> TcpListener {
     ))
 }
 
+/// What startup has to say about signing in: at most one reason not to start,
+/// and any number of warnings that it will. Worked out here rather than inline
+/// so the answer can be asserted without starting a server.
+#[derive(Debug, Default)]
+pub struct SignInAdvice {
+    pub fatal: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+/// A provider is only needed when something here asks for an account; a wholly
+/// public server runs without any. Either one will do, so the refusal lists
+/// both ways to get one.
+///
+/// The two warnings are not deaths: a deployment may be mid-migration, and a
+/// list naming somebody no configured provider can produce is worth saying out
+/// loud rather than refusing to start over.
+pub fn sign_in_advice(
+    github: bool,
+    google: bool,
+    publishers: &Policy,
+    commenters: &Policy,
+    address: &str,
+    port: u16,
+) -> SignInAdvice {
+    let mut advice = SignInAdvice::default();
+    if !github && (publishers.names_a_login() || commenters.names_a_login()) {
+        advice.warnings.push(
+            "warning: a policy names a GitHub login, but there is no GitHub OAuth app; \
+             nobody can sign in that way. Set KOMODOC_GITHUB_CLIENT_ID and \
+             KOMODOC_GITHUB_CLIENT_SECRET."
+                .to_string(),
+        );
+    }
+    if !google && (publishers.names_an_email_or_domain() || commenters.names_an_email_or_domain()) {
+        advice.warnings.push(
+            "warning: a policy names an email address or a domain, but there is no Google \
+             client; nobody can sign in that way. Set KOMODOC_GOOGLE_CLIENT_ID and \
+             KOMODOC_GOOGLE_CLIENT_SECRET."
+                .to_string(),
+        );
+    }
+    let needs_sign_in = !(publishers.public && commenters.public);
+    if !github && !google && needs_sign_in {
+        advice.fatal = Some(format!(
+            "this needs a way to sign people in: a GitHub OAuth app, a Google client, or both.\n\n  \
+             GitHub, at https://github.com/settings/developers (New OAuth App):\n\n    \
+             Homepage URL          http://localhost{address}\n    \
+             Authorization callback  http://localhost{address}/auth/callback\n\n  \
+             Then generate a client secret and:\n\n    \
+             export KOMODOC_GITHUB_CLIENT_ID=...\n    export KOMODOC_GITHUB_CLIENT_SECRET=...\n\n  \
+             Google, at https://console.cloud.google.com (Credentials, Web application):\n\n    \
+             Authorised redirect URI  http://localhost{address}/auth/callback/google\n\n    \
+             export KOMODOC_GOOGLE_CLIENT_ID=...\n    export KOMODOC_GOOGLE_CLIENT_SECRET=...\n\n  \
+             Either callback has to match the port, so pass --port {port} to keep it fixed."
+        ));
+    }
+    advice
+}
+
 pub async fn serve(options: ServeOptions) {
     let env = |name: &str| std::env::var(name).unwrap_or_default();
     let retention = parse_retention(&first_of(&[
@@ -93,6 +152,13 @@ pub async fn serve(options: ServeOptions) {
         client_id: first_of(&[&options.client_id, &env("KOMODOC_GITHUB_CLIENT_ID")]),
         client_secret: first_of(&[&options.client_secret, &env("KOMODOC_GITHUB_CLIENT_SECRET")]),
     };
+    // Google has no flags: a client secret belongs in the environment, and the
+    // README already tells operators to keep it there.
+    let google = GoogleApp {
+        client_id: first_of(&[&env("KOMODOC_GOOGLE_CLIENT_ID")]),
+        client_secret: first_of(&[&env("KOMODOC_GOOGLE_CLIENT_SECRET")]),
+        ..GoogleApp::default()
+    };
     let publishers = Policy::parse(&first_of(&[
         &options.publishers,
         &env("KOMODOC_PUBLISHERS"),
@@ -110,18 +176,19 @@ pub async fn serve(options: ServeOptions) {
         "anyone",
     ]));
 
-    // The OAuth app is only needed when something here asks for a GitHub
-    // account; a wholly public server runs without one.
-    if !app.configured() && !(publishers.public && commenters.public) {
-        die(format!(
-            "this needs a GitHub OAuth app.\n\n  \
-             Create one at https://github.com/settings/developers (New OAuth App):\n\n    \
-             Homepage URL          http://localhost{address}\n    \
-             Authorization callback  http://localhost{address}/auth/callback\n\n  \
-             Then generate a client secret and:\n\n    \
-             export KOMODOC_GITHUB_CLIENT_ID=...\n    export KOMODOC_GITHUB_CLIENT_SECRET=...\n\n  \
-             The callback has to match the port, so pass --port {port} to keep it fixed."
-        ));
+    let advice = sign_in_advice(
+        app.configured(),
+        google.configured(),
+        &publishers,
+        &commenters,
+        &address,
+        port,
+    );
+    for warning in &advice.warnings {
+        eprintln!("{warning}");
+    }
+    if let Some(fatal) = advice.fatal {
+        die(fatal);
     }
 
     let config = Arc::new(options.config);
@@ -143,6 +210,7 @@ pub async fn serve(options: ServeOptions) {
         publishers.clone(),
         commenters.clone(),
     );
+    instance.google = google;
     instance.direct_reads = options.storage.direct_reads;
     // An operator who wants no public front page at all. A document that asks
     // to be `listed` behaves as `link` under it, and the share dialog does not

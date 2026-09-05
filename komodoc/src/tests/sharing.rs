@@ -176,7 +176,7 @@ async fn a_grant_the_switch_forbids_is_refused_by_name() {
     assert_eq!(status, 403, "{payload}");
     let refusal = text(&payload, "error");
     assert!(
-        refusal.contains("--publishers") && refusal.contains("@alice, @bob"),
+        refusal.contains("--publishers") && refusal.contains("alice, bob"),
         "the refusal does not name the switch: {refusal}"
     );
 
@@ -215,7 +215,7 @@ async fn a_grant_stops_answering_when_the_switch_narrows() {
         .get(&slug)
         .await
         .expect("the document");
-    assert_eq!(entry.named_role("anne"), Some(Role::Editor));
+    assert_eq!(entry.named_role("github:anne"), Some(Role::Editor));
 
     // The same entry, read under a deployment that names its publishers and
     // does not name @anne. She keeps what --commenters still gives her.
@@ -226,12 +226,11 @@ async fn a_grant_stops_answering_when_the_switch_narrows() {
         true,
     )
     .await;
-    let ceiling = narrow.instance.ceiling_for(&crate::auth::Identity {
-        login: "anne".into(),
-        id: "anne".into(),
-    });
+    let ceiling = narrow
+        .instance
+        .ceiling_for(&crate::auth::Identity::github("anne", "anne"));
     assert_eq!(
-        entry.role_of("anne", "anne", "", ceiling, crate::clock::now_unix()),
+        entry.role_of("anne", "github:anne", "", ceiling, crate::clock::now_unix()),
         Role::Commenter,
         "a grant the switch forbids was still honoured"
     );
@@ -341,7 +340,7 @@ async fn a_transfer_moves_the_document_and_its_quota() {
         .await
         .expect("the document");
     assert_eq!(entry.publisher, "bob");
-    assert_eq!(entry.publisher_id, "bob");
+    assert_eq!(entry.publisher_id, "github:bob");
     // The quota follows the publisher, so what @alice is charged for is now
     // nothing and what @bob is charged for is this document.
     assert!(
@@ -822,8 +821,9 @@ async fn no_listing_makes_listed_behave_as_link() {
         .expect("the document");
     let stranger = crate::server::Caller {
         key: "anne".into(),
-        id: "anne".into(),
-        login: "anne".into(),
+        id: "github:anne".into(),
+        handle: "anne".into(),
+        provider: "github".into(),
     };
     assert_eq!(
         server

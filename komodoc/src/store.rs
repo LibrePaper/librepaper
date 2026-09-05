@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
+use crate::auth::stored_id;
 use crate::blob::{
     document_key, document_prefix, examples_key, legacy_source_key, room_key, room_lock_key,
     source_key, source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
@@ -150,14 +151,20 @@ impl IndexEntry {
     /// when signed in, their GitHub numeric id -- may replace or delete this
     /// document. An entry with no publisher belongs to no one in particular
     /// and stays shared. An entry carrying a publisher id compares against the
-    /// id instead of the key, since the id survives a GitHub account being
-    /// renamed and the key would not; a legacy entry, or one owned by a
-    /// visitor: key, has no publisher id and falls back to comparing the key.
+    /// id instead of the key, since the id survives an account being renamed
+    /// and the key would not; a legacy entry, or one owned by a visitor: key,
+    /// has no publisher id and falls back to comparing the key.
+    ///
+    /// A publisher id written before providers existed is a bare number and
+    /// means a GitHub account, so it is qualified before the comparison rather
+    /// than the index being rewritten. That is also what keeps a Google `sub`
+    /// out of a GitHub id's namespace: the two are both decimal strings, and
+    /// only the prefix tells them apart.
     pub fn owned_by(&self, owner_key: &str, caller_id: &str) -> bool {
         if self.publisher.is_empty() {
             true
         } else if !self.publisher_id.is_empty() {
-            !caller_id.is_empty() && caller_id == self.publisher_id
+            !caller_id.is_empty() && caller_id == stored_id(&self.publisher_id)
         } else {
             self.publisher == owner_key.to_lowercase()
         }
@@ -211,15 +218,19 @@ impl IndexEntry {
     }
 
     /// The role this document names an account for, if any. A grant by name
-    /// never matches a caller with no account, whose id is empty.
+    /// never matches a caller with no account, whose id is empty. A grant
+    /// recorded before providers existed holds a bare id and means a GitHub
+    /// account, and is qualified before the comparison the same way ownership
+    /// is.
     pub fn named_role(&self, caller_id: &str) -> Option<Role> {
         if caller_id.is_empty() {
             return None;
         }
-        if self.editors.iter().any(|grant| grant.id == caller_id) {
+        let names = |grants: &[Grant]| grants.iter().any(|grant| stored_id(&grant.id) == caller_id);
+        if names(&self.editors) {
             return Some(Role::Editor);
         }
-        if self.commenters.iter().any(|grant| grant.id == caller_id) {
+        if names(&self.commenters) {
             return Some(Role::Commenter);
         }
         None
