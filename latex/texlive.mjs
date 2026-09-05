@@ -38,6 +38,9 @@ const EXAMPLES = [
   { name: "paper", engine: "pdflatex", bibtex: true },
   { name: "broken", engine: "pdflatex", bibtex: false },
   { name: "xetex", engine: "xelatex", bibtex: false },
+  // Not part of the corpus the log parser and the distributions are held to.
+  // It exists to measure a package set: see examples/latex/packages/main.tex.
+  { name: "packages", engine: "pdflatex", bibtex: true },
 ];
 
 // The page count comes from the log, not from the PDF. Every TeX engine ends

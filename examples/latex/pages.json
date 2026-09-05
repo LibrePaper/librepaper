@@ -18,5 +18,10 @@
     "engine": "xelatex",
     "pages": 1,
     "synctex": true
+  },
+  "packages": {
+    "engine": "pdflatex",
+    "pages": 2,
+    "synctex": true
   }
 }
