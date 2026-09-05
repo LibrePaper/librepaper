@@ -113,6 +113,27 @@ pub fn counted(count: usize, thing: &str) -> String {
     }
 }
 
+/// What a filename says a document is written in, or `None` when it names no
+/// format this renders.
+///
+/// One place decides, because three predicates in a row is three places to
+/// forget when a fourth format arrives -- which is exactly what nearly
+/// happened to `komodoc publish <directory>`, whose choice of main file asked
+/// `is_typst || is_markdown || is_html` and would have refused a directory
+/// whose document was a `.tex`. A format added here is a format every caller
+/// of this already knows about.
+pub fn document_format(name: &str) -> Option<&'static str> {
+    if is_typst(name) {
+        Some("typst")
+    } else if is_markdown(name) {
+        Some("markdown")
+    } else if is_html(name) {
+        Some("html")
+    } else {
+        None
+    }
+}
+
 /// Reads a file under `root`, and nothing outside it. The path typst asks for
 /// is already normalised -- no `..` survives its own resolution -- but the
 /// containment is checked rather than trusted, the same as every key is.

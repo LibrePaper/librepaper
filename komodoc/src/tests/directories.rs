@@ -667,3 +667,31 @@ fn a_document_named_without_a_directory_compiles() {
     );
     assert_eq!(read, vec!["lib.typ".to_string()]);
 }
+
+#[test]
+fn one_place_decides_what_a_filename_says_a_document_is() {
+    // `publish <directory>` chooses the main file by asking which files are
+    // documents, and it used to ask three predicates in a row -- which is
+    // three places to forget when a fourth format arrives. A directory whose
+    // document was a `.tex` would have been refused as holding no document at
+    // all. Adding a format to `document_format` is what makes it a candidate
+    // here, and this is the test that says so.
+    for (name, format) in [
+        ("main.typ", Some("typst")),
+        ("paper.md", Some("markdown")),
+        ("notes.markdown", Some("markdown")),
+        ("index.html", Some("html")),
+        ("refs.bib", None),
+        ("fig/one.png", None),
+    ] {
+        assert_eq!(crate::render::document_format(name), format, "{name}");
+    }
+
+    // And the choice of main file follows it rather than a list of its own.
+    let files = vec![
+        "refs.bib".to_string(),
+        "fig/one.png".to_string(),
+        "paper.md".to_string(),
+    ];
+    assert_eq!(crate::cli::main_file(&files, "").unwrap(), "paper.md");
+}

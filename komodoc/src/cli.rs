@@ -308,7 +308,7 @@ pub fn main_file(files: &[String], asked: &str) -> Result<String, String> {
     let top: Vec<&String> = files
         .iter()
         .filter(|path| !path.contains('/'))
-        .filter(|path| is_typst(path) || is_markdown(path) || is_html(path))
+        .filter(|path| crate::render::document_format(path).is_some())
         .collect();
     if top.len() == 1 {
         return Ok(top[0].clone());
@@ -436,7 +436,11 @@ async fn publish_directory(
         .find(|(at, _)| *at == main)
         .map(|(_, bytes)| String::from_utf8_lossy(bytes).to_string())
         .unwrap_or_default();
-    let source_format = if is_typst(&main) {
+    // What the document is written in follows from the main file's name, and
+    // the server works it out again from the same name -- so this is only for
+    // the title and, for typst, for the compile that says whether the document
+    // is one a reader will be able to render.
+    if is_typst(&main) {
         if title.is_empty() {
             title = title_from_typst(&source);
         }
@@ -448,19 +452,16 @@ async fn publish_directory(
                 counted(compiled.errors().count().max(1), "error")
             ))
         }
-        "typst"
-    } else if is_markdown(&main) {
-        if title.is_empty() {
-            title = title_from_markdown(&source);
-        }
-        "markdown"
-    } else {
-        if title.is_empty() {
-            title = title_from_html(&source);
-        }
-        "html"
-    };
-    let _ = source_format;
+    } else if title.is_empty() {
+        // A format with no heading scan of its own is named by its file, which
+        // is what `title_or` below does anyway. Better that than running an
+        // HTML title scan over something that is not HTML.
+        title = match crate::render::document_format(&main) {
+            Some("markdown") => title_from_markdown(&source),
+            Some("html") => title_from_html(&source),
+            _ => String::new(),
+        };
+    }
     if title.is_empty() {
         title = title_or("", &main);
     }
