@@ -1,0 +1,43 @@
+% A document only XeTeX can set.
+%
+% `fontspec` refuses to load under pdfTeX -- it raises a fatal package error
+% and stops -- so this document is how the corpus shows a pdfTeX-only
+% distribution refusing cleanly rather than producing a wrong page. The
+% Unicode below is the second reason: pdfTeX has no way to set Greek and
+% Cyrillic from a Unicode source without a package that maps them.
+%
+% No font is named. There are no system fonts in a worker, so a document that
+% asked for one by name would fail on the browser distributions for a reason
+% that has nothing to do with the engine, and this example is about the
+% engine.
+\documentclass[11pt]{article}
+
+\usepackage{fontspec}
+\usepackage{amsmath}
+
+\title{A Document That Needs XeTeX}
+\author{The Komodoc Corpus}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Unicode, straight from the source}
+
+Greek, in the source as Greek rather than as \verb|\alpha|: αβγδε ζηθικ λμνξο.
+
+Cyrillic, likewise: Привет, мир.
+
+Mathematical Greek still comes from the maths fonts, and is unaffected:
+\begin{equation}
+  \alpha^{2} + \beta^{2} = \gamma^{2}.
+\end{equation}
+
+\section{Why this one is here}
+
+A distribution whose only engine is pdfTeX must refuse this document with the
+error \verb|fontspec| gives, and that refusal must reach the reader as a
+diagnostic rather than as a hang or a blank page. That is the whole of what
+this example tests.
+
+\end{document}

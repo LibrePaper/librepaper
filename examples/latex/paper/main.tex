@@ -1,0 +1,35 @@
+% The ordinary paper: a directory, not a file.
+%
+% `08-SPEC-directories.md` made a document a directory, and this is what that
+% means for LaTeX -- a main file, chapters reached by \include, a .bib beside
+% it rather than inside it, two figures in two formats, and a .sty of the
+% author's own. Every one of those is a path the worker has to write into the
+% engine's in-memory filesystem before it runs, and every one is a way for the
+% log's parenthesis tracking to name a file other than the main one.
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{natbib}
+\usepackage{komodoc}          % ours, in this directory, not in any TeX Live
+
+\title{An Ordinary Paper}
+\author{The Komodoc Corpus}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+  A paper of the shape the directories spec is for: several texts, a
+  bibliography of its own, two images and a local package.
+\end{abstract}
+
+\include{chapters/01}
+\include{chapters/02}
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\end{document}
