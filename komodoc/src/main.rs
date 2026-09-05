@@ -10,6 +10,7 @@ mod config;
 mod export;
 mod history;
 mod http;
+mod latex;
 mod origins;
 mod paths;
 mod render;
@@ -106,6 +107,16 @@ struct ServiceFlags {
     /// Start expiry at 'updated' (default; last publication) or 'created'
     #[arg(long, value_name = "FROM")]
     expire_from: Option<String>,
+    /// Serve LaTeX distributions from this https bucket or directory; bare
+    /// --latex uses the project's own mirror. Without it, .tex documents are
+    /// stored and read but nothing compiles them.
+    #[arg(
+        long,
+        value_name = "URL-OR-DIR",
+        num_args = 0..=1,
+        default_missing_value = crate::latex::DEFAULT_MIRROR
+    )]
+    latex: Option<String>,
 }
 
 impl ServiceFlags {
@@ -130,6 +141,12 @@ impl ServiceFlags {
     }
 }
 
+// `Serve` is a deployment's whole configuration and is much the largest
+// variant, which is what the lint is about. One of these is parsed, once, on
+// the way into `main`; boxing it would buy a few hundred bytes at the cost of
+// an indirection through every flag, and `clap` cannot flatten through a
+// `Box` anyway.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Sign in through a deployment, in a browser
@@ -301,6 +318,7 @@ async fn main() {
                 no_listing: service.no_listing,
                 expire_after: service.expire_after.unwrap_or_default(),
                 expire_from: service.expire_from.unwrap_or_default(),
+                latex: service.latex.unwrap_or_default(),
                 config,
             })
             .await

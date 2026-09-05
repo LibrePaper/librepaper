@@ -214,15 +214,17 @@ fn typst_is_offered_only_when_it_is_built() {
 }
 
 // The storable formats are the ones something can render again -- markdown,
-// typst, and HTML, whose renderer is the identity -- and nothing else is kept
-// beside a document.
+// typst, HTML, whose renderer is the identity, and LaTeX, which nothing on
+// this side renders but a browser that has fetched a distribution does -- and
+// nothing else is kept beside a document. Whether a format can be rendered
+// *here* is the separate question `renderers` answers.
 #[test]
 fn storable_source_formats() {
     let config = Configuration::default();
-    for format in ["markdown", "typst", "html"] {
+    for format in ["markdown", "typst", "html", "latex"] {
         assert!(config.storable_source(format), "{format} is not storable");
     }
-    for format in ["", "latex", "docx"] {
+    for format in ["", "docx", "rtf"] {
         assert!(
             !config.storable_source(format),
             "{format:?} is storable and should not be"

@@ -33,7 +33,7 @@ use crate::config::Configuration;
 use crate::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
-use crate::render::{is_html, is_markdown, title_from_html, title_from_markdown};
+use crate::render::{title_from_html, title_from_markdown};
 use crate::room::{
     decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet,
 };
@@ -75,6 +75,11 @@ pub struct Server {
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.
     pub pending: PendingCodes,
+    /// Where the LaTeX distributions come from, or nothing. A deployment
+    /// without one still stores and shows `.tex` documents; what it does not
+    /// do is offer a browser anywhere to fetch a compiler from, which is why
+    /// `/api/config` reports whether it is set and `renderers` counts it.
+    pub latex: Option<crate::latex::Mirror>,
     sockets: AtomicU64,
     /// How many figures each owner has uploaded this hour, and which hour that
     /// is. Uploading a figure is an upload and counts against
@@ -190,6 +195,7 @@ impl Server {
             accounts: Arc::new(GithubAccounts),
             listing: true,
             pending: PendingCodes::new(),
+            latex: None,
             sockets: AtomicU64::new(1),
             asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
         }
@@ -199,8 +205,17 @@ impl Server {
         Router::new().fallback(handle).with_state(self)
     }
 
+    /// Which formats this deployment can render again in a reader, and so
+    /// offer an editor for. The compiled-in ones come from the build; `latex`
+    /// is the one that depends on the deployment rather than on the binary,
+    /// because the compiler is not in the binary at all -- it is at `--latex`,
+    /// and a deployment without a mirror has nowhere to send a browser for it.
     pub fn renderers(&self) -> Vec<String> {
-        renderers()
+        let mut list = renderers();
+        if self.latex.is_some() {
+            list.push("latex".to_string());
+        }
+        list
     }
 
     pub async fn delete_document(&self, slug: &str) -> Result<usize, String> {
@@ -654,6 +669,31 @@ async fn handle(
             Some(entry) => redirect(&format!("{}/raw/{}/", arrival.docs_origin(), entry.slug)),
             None => plain(404, "not found"),
         };
+    }
+
+    // --- the LaTeX mirror --------------------------------------------------
+    // Static files, same-origin, and not part of the API: no identity is
+    // consulted, nothing here belongs to a document, and a distribution is
+    // public bytes whoever asks. It is on the reader's origin because that is
+    // where the compile runs -- the worker is the reader's, not the frame's.
+    // See `crate::latex` for why this is a proxy rather than a redirect.
+    if let Some(rest) = path.strip_prefix("/latex/") {
+        if method != Method::GET && method != Method::HEAD {
+            return plain(405, "method not allowed");
+        }
+        let Some(mirror) = &server.latex else {
+            // No mirror is not a broken mirror. This deployment simply serves
+            // no LaTeX, which `/api/config` has already told the reader.
+            return plain(404, "not found");
+        };
+        let served = mirror.get(rest).await;
+        let mut response = Response::new(Body::from(served.bytes));
+        *response.status_mut() =
+            StatusCode::from_u16(served.status).unwrap_or(StatusCode::BAD_GATEWAY);
+        set(&mut response, "content-type", served.content_type);
+        set(&mut response, "cache-control", served.cache_control);
+        set(&mut response, "x-content-type-options", "nosniff");
+        return response;
     }
 
     // --- api ---------------------------------------------------------------
@@ -1466,30 +1506,31 @@ impl Server {
             // rendered here and never was worth rendering here: the browser
             // showing it renders it, with the same module the editor previews
             // with.
-            if !filename.is_empty() && crate::render::is_typst(&filename) {
-                // A directory whose main file is typst. The upload form has
-                // never offered one -- it takes what a browser can drop -- but
-                // `publish <directory>` sends what the author has, and a paper
-                // in typst is the ordinary case it was built for.
+            //
+            // What the file is called is the whole of the question, and
+            // `document_format` is the one place it is answered. The command
+            // line asks it too, and a directory whose main file this route
+            // named differently from the way `publish` named it would be a
+            // document that opened in the wrong editor depending on how it
+            // arrived. Typst and LaTeX reach here from `publish <directory>`
+            // rather than from the upload form, which takes what a browser can
+            // drop; a paper is the ordinary case either way.
+            if let Some(format) = crate::render::document_format(&filename) {
                 if title.trim().is_empty() {
-                    title = crate::render::title_from_typst(&html);
+                    title = match format {
+                        "typst" => crate::render::title_from_typst(&html),
+                        "markdown" => title_from_markdown(&html),
+                        // There is no TeX here to ask, so the `\title` is
+                        // scanned for; see `render::title_from_latex`.
+                        "latex" => crate::render::title_from_latex(&html),
+                        // An HTML document's source is its own bytes, through
+                        // the identity renderer, so it opens in the editor like
+                        // the others.
+                        _ => title_from_html(&html),
+                    };
                 }
                 source = html.clone();
-                source_format = "typst".to_string();
-            } else if !filename.is_empty() && is_markdown(&filename) {
-                if title.trim().is_empty() {
-                    title = title_from_markdown(&html);
-                }
-                source = html.clone();
-                source_format = "markdown".to_string();
-            } else if !filename.is_empty() && is_html(&filename) {
-                // An HTML document's source is its own bytes, through the
-                // identity renderer, so it opens in the editor like the others.
-                if title.trim().is_empty() {
-                    title = title_from_html(&html);
-                }
-                source = html.clone();
-                source_format = "html".to_string();
+                source_format = format.to_string();
             }
         } else {
             // JSON escaping can inflate the document, so the body is allowed to
@@ -2807,7 +2848,19 @@ impl Server {
             "/api/auth/config" => Some(write_json(200, &json!({"client_id": self.app.client_id}))),
             // What this deployment will accept, so the upload page can refuse a
             // 30 MB mistake before it is sent rather than after.
-            "/api/config" => Some(write_json(200, &json!(*self.config))),
+            "/api/config" => {
+                let mut body = json!(*self.config);
+                if let Some(fields) = body.as_object_mut() {
+                    // Whether this deployment serves LaTeX distributions at
+                    // all, which is what tells the reader to offer the card
+                    // rather than "not yet rendered". Only whether, never
+                    // where: the mirror may be a bucket whose URL is the
+                    // operator's business, and the browser has no use for it --
+                    // it fetches `/latex/`, on this origin, and nothing else.
+                    fields.insert("latex".to_string(), json!(self.latex.is_some()));
+                }
+                Some(write_json(200, &body))
+            }
             _ => None,
         }
     }

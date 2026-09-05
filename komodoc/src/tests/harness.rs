@@ -179,6 +179,22 @@ pub async fn test_server_tuned(
     serve_instance(Arc::new(instance), dir).await
 }
 
+/// A deployment started with `--latex`, which is the whole difference between
+/// a server that offers a LaTeX editor and one that stores `.tex` files and
+/// leaves them unrendered.
+pub async fn test_server_latex(mirror: crate::latex::Mirror) -> TestServer {
+    let TestServerParts { mut instance, dir } = build_test_server(
+        Configuration::default(),
+        Policy::parse(TEST_PUBLISHER),
+        Policy::parse("anyone"),
+        true,
+        true,
+    )
+    .await;
+    instance.latex = Some(mirror);
+    serve_instance(Arc::new(instance), dir).await
+}
+
 async fn build_test_server(
     config: Configuration,
     publishers: Policy,

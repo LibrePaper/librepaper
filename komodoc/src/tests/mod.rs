@@ -15,6 +15,7 @@ mod export;
 mod figures;
 mod hardening;
 mod history;
+mod latex;
 mod ownership;
 mod quota;
 mod retention;

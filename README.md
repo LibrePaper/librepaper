@@ -303,13 +303,14 @@ sees is by construction what the source says, and a live document costs the
 deployment no CPU and no bandwidth beyond relaying a few dozen bytes per
 keystroke.
 
-Two formats, and they are not available in the same places:
+The formats, and they are not available in the same places:
 
 | | Published with | Renderer | Over the wire |
 |---|---|---|---|
 | **Markdown** | `komodoc publish paper.md` | comrak | ~130 KB compressed |
 | **Typst** | `komodoc publish paper.typ` | typst | ~13 MB compressed |
 | **HTML** | `komodoc publish paper.html` | the identity | nothing |
+| **LaTeX** | `komodoc publish paper.tex` | a TeX the browser fetches | ~2 MB, then ~17 MB inside the first compile |
 
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
@@ -343,6 +344,56 @@ The one thing to know about editing a generated file: the next `quarto render`
 produces a new HTML containing none of what was typed into the old one in the
 browser. The `.qmd` is where a lasting change belongs; the browser is for the
 fix that cannot wait for a render.
+
+#### LaTeX
+
+`komodoc publish paper.tex` stores a `.tex` file as `latex`, and
+`komodoc publish paper/` takes the whole directory — the chapters, the `.bib`,
+the figures. Nothing is compiled on the way: Komodoc carries no TeX, no build
+embeds one, and there is no `make latex`.
+
+LaTeX is compiled in the browser instead, by a TeX distribution built for
+WebAssembly that an editor's browser downloads once and keeps. The first time
+you open a LaTeX document, the preview pane offers the distributions this
+deployment serves and fetches nothing until you choose one; the choice is
+remembered in that browser and is not asked for again, for that document or
+any other. The compilers are AGPL-3.0 and MIT works of their own, fetched at
+run time rather than linked into Komodoc, and the card names each licence.
+
+Two things follow from that, and both are worth knowing before you rely on it.
+
+Readers see nothing until an editor has opened the document. Nobody is asked
+to download a compiler in order to read a paper, and storing a rendering
+beside the document — so a reader gets pages rather than "not yet rendered" —
+is a later step and is not built yet.
+
+The package set is bounded, and is a mirror rather than a TeX Live. What is
+carried is TeX Live's `latex-recommended`, `latex-extra`, `fonts-recommended`
+and `mathscience` collections: about 190 MB of files, fetched one at a time by
+name as a compile asks for them. `tikz` and `biblatex` are in collections that
+are not mirrored and will not be found. And the engine's preloaded format is
+LaTeX2e 2020-02-02, so a package that checks the kernel date — `siunitx` is
+one — refuses to load however completely it was mirrored. When any of this
+happens you get the engine's own error, in the badge and the gutter that typst
+errors already appear in.
+
+A self-hoster says where the distributions come from:
+
+```sh
+komodoc serve --latex /srv/komodoc/latex          # a mirror built by
+                                                  # node latex/mirror.mjs
+komodoc serve --latex https://mirror.example.com  # or a bucket serving one
+komodoc serve --latex                             # or the project's own
+```
+
+Without `--latex` a deployment stores and shows `.tex` files and offers no
+LaTeX editor: `/api/config` says so, and the reader offers the source rather
+than the card. Whichever you pass, browsers only ever fetch `/latex/` on your
+own origin — the server reads from the bucket, the browser never does, because
+the list of packages a document asks for is a description of the document and
+should go no further than the deployment that already has the source. An
+`http:` mirror is refused at startup, since the page a document is framed in
+will not load a compiler over one.
 
 ### Storage
 
@@ -586,6 +637,7 @@ Flags take precedence over their corresponding environment variables.
 | `KOMODOC_COMMENTERS` | Who may comment: `anyone`, `any`, or a list of logins, addresses and domains |
 | `KOMODOC_EXPIRE_AFTER` | Automatically delete documents after a duration such as `24h` or `30d` |
 | `KOMODOC_EXPIRE_FROM` | Start retention at `updated` (default) or `created` |
+| `KOMODOC_LATEX` | Where `serve` reads LaTeX distributions from: an https bucket or a directory |
 | `KOMODOC_VERSION` | Version selected by the installer |
 | `KOMODOC_BIN_DIR` | Installation directory selected by the installer |
 

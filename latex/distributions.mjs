@@ -28,6 +28,9 @@ export const BUSYTEX_RELEASE = {
 export const DISTRIBUTIONS = [
   {
     name: "swiftlatex-pdftex",
+    // On the card. See the comment above `shown` on the next entry for what
+    // the flag decides and who decides it.
+    shown: true,
     label: "SwiftLaTeX pdfTeX",
     engines: ["pdfTeX"],
     bibliography: "BibTeX, inside the engine",
@@ -45,6 +48,19 @@ export const DISTRIBUTIONS = [
   },
   {
     name: "swiftlatex-xetex",
+    // Not on the card, and driven all the same.
+    //
+    // `shown` is the one place a distribution is offered to a person, and it
+    // is a measurement rather than an opinion: `examples/latex/MEASUREMENTS.md`
+    // records what each one could and could not compile. This engine's
+    // dvipdfmx has no font to embed, and BusyTeX below cannot compile
+    // `\\usepackage[T1]{fontenc}` -- no Type 1 EC fonts in any of its bundles,
+    // and `mktexpk` cannot fork inside a worker. Both stay in the worker and
+    // in the mirror, because the flag travels in the manifest: a self-hoster
+    // who fixes a bundle turns one on by flipping this and rebuilding the
+    // mirror, with no build of Komodoc involved. The card lists what the
+    // manifest marks shown and names none of them itself.
+    shown: false,
     label: "SwiftLaTeX XeTeX",
     engines: ["XeTeX", "dvipdfmx"],
     bibliography: "BibTeX, inside the engine",
@@ -60,6 +76,7 @@ export const DISTRIBUTIONS = [
   },
   {
     name: "busytex",
+    shown: false,
     label: "BusyTeX, TeX Live 2023",
     engines: ["pdfTeX", "XeTeX", "LuaTeX", "BibTeX", "dvipdfmx"],
     bibliography: "BibTeX",

@@ -32,6 +32,10 @@ pub struct ServeOptions {
     pub no_listing: bool,
     pub expire_after: String,
     pub expire_from: String,
+    /// Where this deployment reads LaTeX distributions from: an https bucket,
+    /// a directory on this machine, or empty for a deployment that serves no
+    /// LaTeX at all. See `crate::latex`.
+    pub latex: String,
     pub config: Configuration,
 }
 
@@ -125,6 +129,13 @@ pub async fn serve(options: ServeOptions) {
         &env("KOMODOC_EXPIRE_AFTER"),
     ]))
     .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
+    // Read before anything is opened or a port is claimed: a mirror flag that
+    // cannot work is a typo the operator is still standing in front of, and a
+    // plain HTTP one would fail invisibly in every browser rather than here.
+    let latex = match first_of(&[&options.latex, &env("KOMODOC_LATEX")]).trim() {
+        "" => None,
+        flag => Some(crate::latex::Mirror::open(flag).unwrap_or_else(|err| die(err))),
+    };
     let expire_from = parse_expire_from(&first_of(&[
         &options.expire_from,
         &env("KOMODOC_EXPIRE_FROM"),
@@ -217,6 +228,7 @@ pub async fn serve(options: ServeOptions) {
     // to be `listed` behaves as `link` under it, and the share dialog does not
     // offer the choice.
     instance.listing = !options.no_listing;
+    instance.latex = latex;
     let instance = Arc::new(instance);
 
     println!("komodoc serving http://localhost{address}");
@@ -224,6 +236,16 @@ pub async fn serve(options: ServeOptions) {
     println!("  data in {}", blobs.describe());
     println!("  publishing: {}", publishers.describe());
     println!("  commenting: {}", commenters.describe());
+    // A mirror that answers nothing is a card that spins, and the only place
+    // anyone will connect the two is here. Unreachable is a warning, never a
+    // death: a deployment that serves markdown has no business refusing to
+    // start because a bucket is still filling.
+    if let Some(mirror) = &instance.latex {
+        println!("  latex: {}", mirror.describe());
+        if let Some(warning) = mirror.probe().await {
+            eprintln!("{warning}");
+        }
+    }
     if retention > 0 {
         println!(
             "  expiry: {expire_from} after {}",
