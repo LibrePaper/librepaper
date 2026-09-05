@@ -26,3 +26,19 @@ target/
 # Installed by bun from web/bun.lock, which is committed: a lockfile is a
 # build input, the tree it installs is not.
 web/node_modules/
+
+# The LaTeX distributions, mirrored locally by latex/mirror.mjs. Hundreds of
+# megabytes of somebody else's release; a manifest and a script rebuild it.
+latex/mirror/
+
+# What a TeX run leaves beside a document in examples/latex. The corpus keeps
+# its sources and the logs the engines produced; everything else is remade by
+# `node latex/texlive.mjs`.
+examples/latex/*/main.aux
+examples/latex/*/main.bbl
+examples/latex/*/main.blg
+examples/latex/*/main.log
+examples/latex/*/main.pdf
+examples/latex/*/main.synctex.gz
+examples/latex/*/chapters/*.aux
+examples/latex/article/article.bib

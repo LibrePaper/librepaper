@@ -1,0 +1,18 @@
+This is XeTeX, Version 3.14159265-2.6-0.999992 (XeTeX WebAssembly 0.3.0) (preloaded format=swiftlatexxetex)
+entering extended mode
+(main.tex
+LaTeX2e <2020-02-02> patch level 2
+L3 programming layer <2020-02-14> (/tex/b20a30ef79872ed1adb42bb47bf86332
+Document Class: article 2019/12/20 v1.4l Standard LaTeX document class
+(/tex/d3fa3ed15375c8f01c53581e1d26134e)) (/tex/077c6ec1baafb4b622b3f7ea17c8a3db
+(/tex/54f78bd9a0a0ea15f67a34ecb4aa9c18)) (brokenpkg.sty
+
+Package brokenpkg Warning: This package warns on purpose on input line 9.
+
+) (/tex/3152a0f1cad589c575ac7997f66b4f5d) (main.aux (chapters/01.aux))
+(/tex/0c41f180ac83d031cf99284624548e6a) [1] (chapters/01.tex
+! Undefined control sequence.
+l.7 \thiscommanddoesnotexist
+                            
+Output written on main.xdv (1 page, 436 bytes).
+Transcript written on main.log.

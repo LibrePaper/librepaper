@@ -1,0 +1,48 @@
+This is XeTeX, Version 3.14159265-2.6-0.999992 (XeTeX WebAssembly 0.3.0) (preloaded format=swiftlatexxetex)
+entering extended mode
+(main.tex
+LaTeX2e <2020-02-02> patch level 2
+L3 programming layer <2020-02-14> (/tex/b20a30ef79872ed1adb42bb47bf86332
+Document Class: article 2019/12/20 v1.4l Standard LaTeX document class
+(/tex/d3fa3ed15375c8f01c53581e1d26134e)) (/tex/077c6ec1baafb4b622b3f7ea17c8a3db
+(/tex/54f78bd9a0a0ea15f67a34ecb4aa9c18)) (/tex/843c4a4ee0404b93ea384acb44f137ec
+For additional information on amsmath, use the `?' option.
+(/tex/3c27d940d38027ca930d9ecefc615d81 (/tex/785f0b19d3ed9e5a94c5198c4400685e))
+ (/tex/4f806f0319e8e45acb2d0ea8052b7828) (/tex/1bde81ae4bb2198d3f99aa4f0e0b7bd3
+)) (/tex/431ccfe3c42cd8e20f956fd60e7d55ce
+(/tex/dac21f2d090d1a055b45dcefac77f6f5) (/tex/f293789153e8de00444f2cb031fc66d0
+(/tex/06ceddc6a846d34b8ff178ffe49b23b3) (/tex/feb91e48789a21e4acced98e952c77a2)
+(/tex/7c81a9b69d3e7e925719a164d4b1b877)))
+(/tex/d2709be806dc7d5f54daa9a16022ba14) (komodoc.sty)
+(/tex/3152a0f1cad589c575ac7997f66b4f5d) (main.aux (chapters/01.aux)
+(chapters/02.aux)) (/tex/0c41f180ac83d031cf99284624548e6a) [1] (chapters/01.tex
+(/tex/ed94775a6bab5267b1e471e54d209a08)) [2] (chapters/02.tex) [3] (main.bbl)
+[4] (main.aux (chapters/01.aux) (chapters/02.aux)) )
+Output written on main.xdv (4 pages, 3884 bytes).
+Transcript written on main.log.
+A level-1 auxiliary file: chapters/01.aux
+A level-1 auxiliary file: chapters/02.aux
+
+[1][2
+warning: Error locating image file "fig/one.png"
+Error locating image file "fig/one.png"
+warning: Could not find image resource...
+Could not find image resource...
+warning: Interpreting special command image (pdf:) failed.
+Interpreting special command image (pdf:) failed.
+warning: >> at page="2" position="(233.396, 387.457)" (in PDF)
+>> at page="2" position="(233.396, 387.457)" (in PDF)
+warning: >> xxx "pdf:image bbox 0 0 63.99985 63.99985 clip 0 width 143.9978pt (f"
+>> xxx "pdf:image bbox 0 0 63.99985 63.99985 clip 0 width 143.9978pt (f"
+][3
+warning: Error locating image file "fig/two.pdf"
+Error locating image file "fig/two.pdf"
+warning: Could not find image resource...
+Could not find image resource...
+warning: Interpreting special command image (pdf:) failed.
+Interpreting special command image (pdf:) failed.
+warning: >> at page="3" position="(233.396, 430.835)" (in PDF)
+>> at page="3" position="(233.396, 430.835)" (in PDF)
+warning: >> xxx "pdf:image matrix 1.0 0.0 0.0 1.0 0.0 0.0 page 0 pagebox cropbox"
+>> xxx "pdf:image matrix 1.0 0.0 0.0 1.0 0.0 0.0 page 0 pagebox cropbox"
+][4]

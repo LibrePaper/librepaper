@@ -1,0 +1,11 @@
+% A package whose only purpose is to warn.
+%
+% A real package's warning would tie the fixture to a TeX Live version; this
+% one says the same words on every distribution, which is what a fixture
+% needs.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{brokenpkg}[2026/01/01 v1.0 warns on purpose]
+
+\PackageWarning{brokenpkg}{This package warns on purpose}
+
+\endinput

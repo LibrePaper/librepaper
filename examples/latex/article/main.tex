@@ -1,0 +1,113 @@
+% A one-file article: everything a LaTeX document can need, carried inside it.
+%
+% This is the shape `05-SPEC-latex.md` was written against, before
+% `08-SPEC-directories.md` made a document a directory. `filecontents*` still
+% works and is what this file leans on, so the corpus keeps a case for it.
+%
+% It also carries, on purpose, the four things step 4's anchoring has to
+% survive: a hyphenated line end, a page break inside a sentence, a footnote,
+% and a ligature. Do not "tidy" the paragraph lengths below; they are the
+% fixture.
+\documentclass[11pt]{article}
+
+\begin{filecontents*}[overwrite]{article.bib}
+@article{knuth1984,
+  author  = {Knuth, Donald E.},
+  title   = {Literate Programming},
+  journal = {The Computer Journal},
+  volume  = {27},
+  number  = {2},
+  pages   = {97--111},
+  year    = {1984},
+}
+@book{lamport1994,
+  author    = {Lamport, Leslie},
+  title     = {LaTeX: A Document Preparation System},
+  publisher = {Addison-Wesley},
+  year      = {1994},
+}
+\end{filecontents*}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{graphicx}
+
+\title{A One-File Article}
+\author{The Komodoc Corpus}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+  One article in one file, with its bibliography riding along inside it, so
+  that a compiler which has no files beside the document still has a
+  bibliography to typeset.
+\end{abstract}
+
+\section{Introduction}
+
+Literate programming asks that a program be written for a reader rather than
+for a compiler~\cite{knuth1984}, and the same argument was later made about
+the document preparation system this file is written in~\cite{lamport1994}.
+The claim is not that either is easy but that the difficulty is
+incompressible: it moves, it does not vanish.\footnote{A footnote, so the
+anchoring has a text node that is nowhere near its mark on the page.}
+
+The word at the end of this line is deliberately long and will be
+hyphenated by \TeX{} rather than moved whole to the next line, because
+incomprehensibility is not a word that fits in a column. That hyphen is a
+character pdf.js will extract, and the anchor that spans it has to survive it.
+
+The word ``efficient'' carries an \texttt{fi} ligature, which some fonts hand
+to pdf.js as one glyph and some as two.
+
+\section{Mathematics}
+
+The exponential integral has no elementary antiderivative:
+
+\begin{equation}
+  \label{eq:ei}
+  \operatorname{Ei}(x) = -\int_{-x}^{\infty} \frac{e^{-t}}{t}\,\mathrm{d}t,
+  \qquad x > 0 .
+\end{equation}
+
+Equation~\eqref{eq:ei} is referenced here so the second pass has something to
+resolve, which is how the log comes to ask for one.
+
+\section{A figure with no image}
+
+A figure environment with no \verb|\includegraphics| in it, because a
+compiler with no files beside the document must still be able to typeset the
+float, its caption and its number.
+
+\begin{figure}[h]
+  \centering
+  \fbox{\parbox{0.6\textwidth}{\centering\vspace{2em}(no image)\vspace{2em}}}
+  \caption{A float with nothing floating in it.}
+  \label{fig:empty}
+\end{figure}
+
+\section{The page break}
+
+\vspace{12em}
+
+This sentence begins on one page and, because of the vertical space above it
+and the filler below, is very likely to be broken across the page boundary by
+\TeX{}, which is precisely the case a text-quote anchor has to re-anchor
+across, since pdf.js will hand the reader two runs of text with a gap between
+them where the page turned and nothing in the extracted sequence to say that
+the gap is not a space.
+
+\vspace{6em}
+
+\section{Conclusion}
+
+Nothing is concluded. The document exists to be compiled by three engines and
+to produce three logs that agree about how many pages it has.
+
+\bibliographystyle{plain}
+\bibliography{article}
+
+\end{document}

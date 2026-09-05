@@ -1,0 +1,36 @@
+% The parser's test bed: four things wrong, on purpose, one of each kind.
+%
+% 1. an undefined control sequence, in a chapter, so the log's parenthesis
+%    tracking is what names the file;
+% 2. a missing file, raised by \input in this file;
+% 3. an overfull hbox, in the chapter;
+% 4. a package warning, from the directory's own package.
+%
+% `expected.json` beside this file is what the parser must say about the log.
+% Do not fix anything here. It is broken deliberately and the diagnostics are
+% the fixture.
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{brokenpkg}        % warns on purpose, from this directory
+
+\title{A Document With Four Things Wrong}
+\author{The Komodoc Corpus}
+\date{}
+
+\begin{document}
+\maketitle
+
+\include{chapters/01}
+
+\section{A missing file}
+
+The next line asks for a file this directory does not have, which is the
+error a reader gets when an \verb|\input| outlives the file it named. It
+comes last because \TeX{} stops dead on it: an input it cannot find is an
+emergency stop, so anything after it would never be reported, and a fixture
+of four errors has to reach all four.
+
+\input{chapters/missing}
+
+\end{document}
