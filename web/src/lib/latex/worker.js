@@ -20,12 +20,14 @@
 
 import { create as swiftlatex } from "./swiftlatex.js";
 import { create as busytex } from "./busytex.js";
+import { create as texlyre } from "./texlyre.js";
 import { parse } from "./log.js";
 
 const GLUE = {
   "swiftlatex-pdftex": swiftlatex,
   "swiftlatex-xetex": swiftlatex,
   busytex: busytex,
+  "texlyre-busytex": texlyre,
 };
 
 let engine = null;

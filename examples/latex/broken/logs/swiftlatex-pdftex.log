@@ -9,8 +9,9 @@ Document Class: article 2019/12/20 v1.4l Standard LaTeX document class
 
 Package brokenpkg Warning: This package warns on purpose on input line 9.
 
-) (/tex/2d8863a9c3d4424a5d0f562cbf79f8d1) (main.aux (chapters/01.aux)) [1{/tex/
-bb30fd463d750450fc5ce5ee9cbf3b81}] (chapters/01.tex
+) (/tex/2d8863a9c3d4424a5d0f562cbf79f8d1)
+No file main.aux.
+[1{/tex/bb30fd463d750450fc5ce5ee9cbf3b81}] (chapters/01.tex
 ! Undefined control sequence.
 l.7 \thiscommanddoesnotexist
                             

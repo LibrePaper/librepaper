@@ -191,5 +191,75 @@
       "end_line": 0,
       "end_column": 0
     }
+  ],
+  "texlyre-busytex": [
+    {
+      "severity": "warning",
+      "message": "Package brokenpkg Warning: This package warns on purpose on input line 9.",
+      "hints": [],
+      "file": "brokenpkg.sty",
+      "line": 9,
+      "column": 1,
+      "end_line": 9,
+      "end_column": 0
+    },
+    {
+      "severity": "error",
+      "message": "Undefined control sequence.",
+      "hints": [],
+      "file": "chapters/01.tex",
+      "line": 7,
+      "column": 1,
+      "end_line": 7,
+      "end_column": 0
+    },
+    {
+      "severity": "error",
+      "message": "==> Fatal error occurred, no output PDF file produced!",
+      "hints": [
+        "==",
+        "STDOUT:",
+        "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026_texlyre_busytexwasm) (preloaded format=/texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt)"
+      ],
+      "file": "chapters/01.tex",
+      "line": 0,
+      "column": 0,
+      "end_line": 0,
+      "end_column": 0
+    },
+    {
+      "severity": "warning",
+      "message": "Package brokenpkg Warning: This package warns on purpose on input line 9.",
+      "hints": [],
+      "file": "brokenpkg.sty",
+      "line": 9,
+      "column": 1,
+      "end_line": 9,
+      "end_column": 0
+    },
+    {
+      "severity": "error",
+      "message": "Undefined control sequence.",
+      "hints": [],
+      "file": "chapters/01.tex",
+      "line": 7,
+      "column": 1,
+      "end_line": 7,
+      "end_column": 0
+    },
+    {
+      "severity": "error",
+      "message": "==> Fatal error occurred, no output PDF file produced!",
+      "hints": [
+        "Transcript written on main.log.",
+        "==",
+        "STDERR:"
+      ],
+      "file": "chapters/01.tex",
+      "line": 0,
+      "column": 0,
+      "end_line": 0,
+      "end_column": 0
+    }
   ]
 }

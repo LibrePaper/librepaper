@@ -48,7 +48,12 @@ import {
   statSync,
 } from "node:fs";
 import { dirname, join, extname, basename } from "node:path";
-import { DISTRIBUTIONS, SWIFTLATEX_RELEASE, BUSYTEX_RELEASE } from "./distributions.mjs";
+import {
+  DISTRIBUTIONS,
+  SWIFTLATEX_RELEASE,
+  BUSYTEX_RELEASE,
+  TEXLYRE_RELEASE,
+} from "./distributions.mjs";
 import { unzip } from "./unzip.mjs";
 import { SCHEME, addScheme } from "./scheme.mjs";
 
@@ -164,6 +169,34 @@ async function fromBusytex(entry) {
   return bytes;
 }
 
+// TeXlyre's build is one tar.gz of everything -- half a gigabyte compressed,
+// seven hundred megabytes out -- so it is fetched once into `.cache` and
+// unpacked once beside itself, and the files are read out of that directory
+// afterwards. Unpacked with the `tar` already on the machine rather than with
+// a reader written here, unlike `unzip.mjs`: a gzip stream cannot be seeked,
+// so taking five files out of it costs decompressing all of it either way,
+// and at this size doing that on disk beats doing it in a Buffer.
+async function fromTexlyre(entry) {
+  const root = join(OUT, ".cache", TEXLYRE_RELEASE.tag);
+  const path = join(root, TEXLYRE_RELEASE.prefix, entry);
+  if (!existsSync(path)) {
+    const archive = join(root, "busytex-assets.tar.gz");
+    if (!existsSync(archive)) {
+      const bytes = await download(TEXLYRE_RELEASE.url, `texlyre-busytex ${TEXLYRE_RELEASE.tag}`);
+      mkdirSync(dirname(archive), { recursive: true });
+      writeFileSync(archive, bytes);
+    }
+    process.stderr.write(`mirror: unpacking ${TEXLYRE_RELEASE.tag} ...`);
+    execFileSync("tar", ["-xzf", archive, "-C", root]);
+    process.stderr.write(" done\n");
+  }
+  if (!existsSync(path)) throw new Error(`texlyre-busytex release has no ${entry}`);
+  return readFileSync(path);
+}
+
+/// Where a file named by a distribution's `upfront` or `extra` comes from.
+const SOURCES = { zip: fromZip, busytex: fromBusytex, texlyre: fromTexlyre };
+
 /* ------------------------------------------------ SwiftLaTeX's package half */
 
 // SwiftLaTeX asks its endpoint for `<engine>/<format>/<name>`, where <format>
@@ -247,9 +280,14 @@ async function mirror() {
     entry.engines = spec.engines;
     entry.bibliography = spec.bibliography;
     entry.licence = spec.licence;
+    // The card reads this and names no distribution in code, so a measured
+    // distribution reaches the card by a flag flipped in `distributions.mjs`
+    // and a re-run of this script, and by nothing else.
+    entry.shown = spec.shown !== false;
     entry.trade = spec.trade;
     entry.packages = spec.packages;
     entry.files ||= {};
+    entry.extra ||= {};
     entry.bundles ||= {};
 
     // Idempotence: a release whose every file is on disk under its digested
@@ -257,42 +295,60 @@ async function mirror() {
     // the directory is the digest of what is in it.
     const wanted = [
       ...spec.upfront.map((file) => file.as || file.entry),
+      ...(spec.extra || []),
       ...(spec.bundles || []).flatMap((b) => [b + ".js", b + ".data"]),
     ];
     const complete =
       entry.release &&
       wanted.every((name) => existsSync(join(OUT, `${spec.name}/${entry.release}/${name}`)));
+    // Every file of one distribution comes from one release, so the source
+    // kind its up-front files name is the source kind for its bundles and its
+    // extras too.
+    const from = SOURCES[spec.upfront[0].from];
+    if (!from) throw new Error(`${spec.name}: no source kind ${spec.upfront[0].from}`);
+
     if (!complete) {
-    const bytes = new Map();
-    for (const file of spec.upfront) {
-      const name = file.as || file.entry;
-      bytes.set(name, file.from === "zip" ? await fromZip(file.entry) : await fromBusytex(file.entry));
-    }
-    for (const bundle of spec.bundles || []) {
-      for (const suffix of [".js", ".data"]) {
-        bytes.set(bundle + suffix, await fromBusytex(bundle + suffix));
+      const bytes = new Map();
+      for (const file of spec.upfront) {
+        bytes.set(file.as || file.entry, await from(file.entry));
       }
-    }
-    entry.release = releaseDigest(bytes);
-    entry.files = {};
-    entry.bundles = {};
-    for (const file of spec.upfront) {
-      const name = file.as || file.entry;
-      entry.files[name] = place(spec.name, entry.release, name, bytes.get(name));
-    }
-    for (const bundle of spec.bundles || []) {
-      entry.bundles[bundle] = {
-        ".js": place(spec.name, entry.release, bundle + ".js", bytes.get(bundle + ".js")),
-        ".data": place(spec.name, entry.release, bundle + ".data", bytes.get(bundle + ".data")),
-      };
-    }
+      for (const name of spec.extra || []) bytes.set(name, await from(name));
+      for (const bundle of spec.bundles || []) {
+        for (const suffix of [".js", ".data"]) {
+          bytes.set(bundle + suffix, await from(bundle + suffix));
+        }
+      }
+      entry.release = releaseDigest(bytes);
+      entry.files = {};
+      entry.extra = {};
+      entry.bundles = {};
+      for (const file of spec.upfront) {
+        const name = file.as || file.entry;
+        entry.files[name] = place(spec.name, entry.release, name, bytes.get(name));
+      }
+      // Kept out of `files` on purpose: `files` is what is fetched before a
+      // first compile can begin, and the `upfront` total below is its sum. An
+      // extra is placed in the same release directory -- its loader looks for
+      // its payload beside itself like every other -- but is fetched only when
+      // a compile turns out to need it, so counting it up front would be a
+      // lie on the card.
+      for (const name of spec.extra || []) {
+        entry.extra[name] = place(spec.name, entry.release, name, bytes.get(name));
+      }
+      for (const bundle of spec.bundles || []) {
+        entry.bundles[bundle] = {
+          ".js": place(spec.name, entry.release, bundle + ".js", bytes.get(bundle + ".js")),
+          ".data": place(spec.name, entry.release, bundle + ".data", bytes.get(bundle + ".data")),
+        };
+      }
     }
 
     entry.upfront = Object.values(entry.files).reduce((sum, one) => sum + one.size, 0);
-    entry.bundle_bytes = Object.values(entry.bundles).reduce(
-      (sum, pair) => sum + Object.values(pair).reduce((a, b) => a + b.size, 0),
-      0,
-    );
+    entry.bundle_bytes =
+      Object.values(entry.bundles).reduce(
+        (sum, pair) => sum + Object.values(pair).reduce((a, b) => a + b.size, 0),
+        0,
+      ) + Object.values(entry.extra).reduce((sum, one) => sum + one.size, 0);
     writeManifest(manifest);
   }
 

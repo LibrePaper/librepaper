@@ -8,7 +8,7 @@ MISSFONTLOG:
 
 ==
 LOG:
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023_busytexwasm) (preloaded format=pdflatex 2024.2.16)  5 SEP 2026 17:51
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023_busytexwasm) (preloaded format=pdflatex 2024.2.16)  5 SEP 2026 19:42
 entering extended mode
  %&-line parsing enabled.
 **main.tex
@@ -33,7 +33,7 @@ File: size11.clo 2022/07/02 v1.4n Standard LaTeX file (size option)
 \bibindent=\dimen140
 )
 
-LaTeX Warning: Writing or overwriting file `./article.bib'.
+LaTeX Info: Writing file `./article.bib'.
 
 \openout15 = `article.bib'.
 
@@ -129,7 +129,8 @@ File: pdftex.def 2022/09/22 v1.2b Graphics/color driver for pdftex
 File: l3backend-pdftex.def 2023-01-16 L3 backend support: PDF output (pdfTeX)
 \l__color_backend_stack_int=\count271
 \l__pdf_internal_box=\box53
-) (./main.aux)
+)
+No file main.aux.
 \openout1 = `main.aux'.
 
 LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 40.
@@ -160,28 +161,42 @@ LaTeX Font Info:    ... okay on input line 40.
 \makeMPintoPDFobject=\count277
 \everyMPtoPDFconversion=\toks25
 )
+
+LaTeX Warning: Citation `knuth1984' on page 1 undefined on input line 52.
+
+
+LaTeX Warning: Citation `lamport1994' on page 1 undefined on input line 53.
+
 LaTeX Font Info:    Trying to load font information for T1+cmtt on input line 6
 3.
 (/texlive/texmf-dist/tex/latex/base/t1cmtt.fd
 File: t1cmtt.fd 2022/07/10 v2.5l Standard LaTeX font definitions
-) [1
+)
 
-{/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex.map}] (./main.bbl
-[2]) [3] (./main.aux)
+LaTeX Warning: Reference `eq:ei' on page 1 undefined on input line 76.
+
+[1
+
+{/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex.map}] [2]
+No file main.bbl.
+[3] (./main.aux)
+
+LaTeX Warning: There were undefined references.
+
 
 LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.
 
  ) 
 Here is how much of TeX's memory you used:
- 2251 strings out of 477985
- 32585 string characters out of 5836496
+ 2245 strings out of 477985
+ 32525 string characters out of 5836496
  1856388 words of memory out of 5000000
- 22451 multiletter control sequences out of 15000+600000
- 526882 words of font info for 65 fonts, out of 8000000 for 9000
+ 22449 multiletter control sequences out of 15000+600000
+ 526976 words of font info for 65 fonts, out of 8000000 for 9000
  14 hyphenation exceptions out of 8191
  57i,8n,62p,221b,322s stack positions out of 10000i,1000n,20000p,200000b,200000s
 
-!pdfTeX error: /bin/busytex (file ecti1095): Font ecti1095 at 600 not found
+!pdfTeX error: /bin/busytex (file ecrm0900): Font ecrm0900 at 600 not found
  ==> Fatal error occurred, no output PDF file produced!
 ==
 STDOUT:
@@ -189,7 +204,7 @@ This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023_busytexwasm) (pre
 entering extended mode
 ==
 STDERR:
-kpathsea: Running mktexpk --mfmode / --bdpi 600 --mag 1+0/600 --dpi 600 ecti1095
+kpathsea: Running mktexpk --mfmode / --bdpi 600 --mag 1+0/600 --dpi 600 ecrm0900
 kpathsea: fork(): Function not implemented
 kpathsea: Appending font creation commands to missfont.log.
 program exited (with status: 1), but keepRuntimeAlive() is set (counter=0) due to an async operation, so halting execution but not exiting the runtime or preventing further async execution (you can use emscripten_force_exit, if you want to force a true shutdown)

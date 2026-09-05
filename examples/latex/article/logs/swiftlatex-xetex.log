@@ -24,8 +24,8 @@ For additional information on amsmath, use the `?' option.
 (/tex/7c81a9b69d3e7e925719a164d4b1b877)))
 (/tex/3152a0f1cad589c575ac7997f66b4f5d) (main.aux)
 (/tex/0c41f180ac83d031cf99284624548e6a) (/tex/ed94775a6bab5267b1e471e54d209a08)
- [1] (main.bbl [2]) [3] (main.aux) )
-Output written on main.xdv (3 pages, 4768 bytes).
+ [1] [2] (main.bbl) [3] (main.aux) )
+Output written on main.xdv (3 pages, 4772 bytes).
 Transcript written on main.log.
 
 [1][2][3]

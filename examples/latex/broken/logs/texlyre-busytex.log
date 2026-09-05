@@ -1,0 +1,163 @@
+$ pdflatex -synctex=1 --no-shell-escape --interaction=batchmode --halt-on-error --fmt /texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt main.tex
+EXITCODE: 0
+
+TEXMFLOG:
+
+==
+MISSFONTLOG:
+
+==
+LOG:
+
+==
+STDOUT:
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026_texlyre_busytexwasm) (preloaded format=/texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt)
+entering extended mode
+==
+STDERR:
+program exited (with status: 1), but keepRuntimeAlive() is set (counter=0) due to an async operation, so halting execution but not exiting the runtime or preventing further async execution (you can use emscripten_force_exit, if you want to force a true shutdown)
+======
+
+$ pdflatex -synctex=1 --no-shell-escape --interaction=batchmode --halt-on-error --fmt /texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt main.tex
+EXITCODE: 0
+
+TEXMFLOG:
+
+==
+MISSFONTLOG:
+
+==
+LOG:
+
+==
+STDOUT:
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026_texlyre_busytexwasm) (preloaded format=/texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt)
+entering extended mode
+==
+STDERR:
+program exited (with status: 1), but keepRuntimeAlive() is set (counter=0) due to an async operation, so halting execution but not exiting the runtime or preventing further async execution (you can use emscripten_force_exit, if you want to force a true shutdown)
+======
+
+$ pdflatex -synctex=1 --no-shell-escape --interaction=nonstopmode --halt-on-error --output-format=pdf --fmt /texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt main.tex
+EXITCODE: 1
+
+TEXMFLOG:
+
+==
+MISSFONTLOG:
+
+==
+LOG:
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026_texlyre_busytexwasm) (preloaded format=pdflatex 2026.8.14)  5 SEP 2026 19:42
+entering extended mode
+ %&-line parsing enabled.
+**main.tex
+(./main.tex
+LaTeX2e <2025-11-01>
+L3 programming layer <2026-01-19>
+(/texlive/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2025/01/22 v1.4n Standard LaTeX document class
+(/texlive/texmf-dist/tex/latex/base/size11.clo
+File: size11.clo 2025/01/22 v1.4n Standard LaTeX file (size option)
+)
+\c@part=\count275
+\c@section=\count276
+\c@subsection=\count277
+\c@subsubsection=\count278
+\c@paragraph=\count279
+\c@subparagraph=\count280
+\c@figure=\count281
+\c@table=\count282
+\abovecaptionskip=\skip49
+\belowcaptionskip=\skip50
+\bibindent=\dimen148
+)
+(/texlive/texmf-dist/tex/latex/base/fontenc.sty
+Package: fontenc 2025/07/18 v2.1d Standard LaTeX package
+) (./brokenpkg.sty
+Package: brokenpkg 2026/01/01 v1.0 warns on purpose
+
+
+Package brokenpkg Warning: This package warns on purpose on input line 9.
+
+) (/texlive/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def
+File: l3backend-pdftex.def 2025-10-09 L3 backend support: PDF output (pdfTeX)
+\l__color_backend_stack_int=\count283
+) (./main.aux
+(./chapters/01.aux))
+\openout1 = `main.aux'.
+
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 21.
+LaTeX Font Info:    ... okay on input line 21.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 21.
+LaTeX Font Info:    ... okay on input line 21.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 21.
+LaTeX Font Info:    ... okay on input line 21.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 21.
+LaTeX Font Info:    ... okay on input line 21.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 21.
+LaTeX Font Info:    ... okay on input line 21.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 21.
+LaTeX Font Info:    ... okay on input line 21.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 21.
+LaTeX Font Info:    ... okay on input line 21.
+LaTeX Font Info:    External font `cmex10' loaded for size
+(Font)              <12> on input line 22.
+LaTeX Font Info:    External font `cmex10' loaded for size
+(Font)              <8> on input line 22.
+LaTeX Font Info:    External font `cmex10' loaded for size
+(Font)              <6> on input line 22.
+ [1
+
+{/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/pdftex.map}{/texlive/tex
+mf-dist/fonts/enc/dvips/cm-super/cm-super-t1.enc}]
+\openout2 = `chapters/01.aux'.
+
+
+(./chapters/01.tex
+! Undefined control sequence.
+l.7 \thiscommanddoesnotexist
+                            
+The control sequence at the end of the top line
+of your error message was never \def'ed. If you have
+misspelled it (e.g., `\hobx'), type `I' and the correct
+spelling (e.g., `I\hbox'). Otherwise just continue,
+and I'll forget about whatever was undefined.
+
+ 
+Here is how much of TeX's memory you used:
+ 711 strings out of 467548
+ 10800 string characters out of 5427752
+ 434756 words of memory out of 5000000
+ 29667 multiletter control sequences out of 15000+600000
+ 634601 words of font info for 55 fonts, out of 8000000 for 9000
+ 1141 hyphenation exceptions out of 8191
+ 35i,6n,38p,178b,199s stack positions out of 10000i,1000n,20000p,200000b,200000s
+!  ==> Fatal error occurred, no output PDF file produced!
+==
+STDOUT:
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026_texlyre_busytexwasm) (preloaded format=/texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt)
+entering extended mode
+(./main.tex
+LaTeX2e <2025-11-01>
+L3 programming layer <2026-01-19>
+(/texlive/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2025/01/22 v1.4n Standard LaTeX document class
+(/texlive/texmf-dist/tex/latex/base/size11.clo))
+(/texlive/texmf-dist/tex/latex/base/fontenc.sty) (./brokenpkg.sty
+
+Package brokenpkg Warning: This package warns on purpose on input line 9.
+
+) (/texlive/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def) (./main.aux
+(./chapters/01.aux)) [1{/texlive/texmf-dist/texmf-var/fonts/map/pdftex/updmap/p
+dftex.map}{/texlive/texmf-dist/fonts/enc/dvips/cm-super/cm-super-t1.enc}]
+(./chapters/01.tex
+! Undefined control sequence.
+l.7 \thiscommanddoesnotexist
+                            
+!  ==> Fatal error occurred, no output PDF file produced!
+Transcript written on main.log.
+==
+STDERR:
+program exited (with status: 1), but keepRuntimeAlive() is set (counter=0) due to an async operation, so halting execution but not exiting the runtime or preventing further async execution (you can use emscripten_force_exit, if you want to force a true shutdown)
+======

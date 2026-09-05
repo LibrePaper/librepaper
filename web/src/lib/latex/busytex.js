@@ -48,9 +48,17 @@ const DRIVERS = {
 /// own class, and the factory Emscripten names after the module. A blob
 /// module has a scope of its own, so each is copied out by an epilogue,
 /// guarded because most scripts define neither.
-const GLOBALS = ["BusytexPipeline", "busytex"];
+/// `BusytexBiber` is named here for `texlyre.js`, whose release ships such a
+/// script and whose pipeline decides biber exists at all by whether that name
+/// is defined when its constructor runs. BusyTeX's own release has no such
+/// script, and the epilogue guards every name it copies, so naming it here
+/// costs this glue nothing.
+const GLOBALS = ["BusytexPipeline", "BusytexBiber", "busytex"];
 
-async function run(url) {
+/// Exported because `texlyre.js` drives a pipeline of the same lineage and
+/// needs exactly this: the one script-loading shape the shell's CSP allows.
+/// Two copies of it would be two things to get wrong.
+export async function run(url) {
   const response = await cached(url);
   if (!response.ok) throw new Error(`${url}: ${response.status}`);
   const text = await response.text();
@@ -151,7 +159,7 @@ export async function create({ base, distribution }) {
 /// signal -- it is the package that refuses to load under pdfTeX -- and
 /// `luacode` the same for LuaTeX. Everything else is pdfTeX, which is what
 /// almost every paper is.
-function engineFor(tree) {
+export function engineFor(tree) {
   const main = (tree.texts || {})[tree.main] || "";
   const all = Object.values(tree.texts || {}).join("\n");
   const wants = (pattern) => pattern.test(main) || pattern.test(all);
