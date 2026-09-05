@@ -197,6 +197,7 @@ async fn build_test_server(
         GithubApp {
             client_id: "test-client".into(),
             client_secret: "test-secret".into(),
+            ..GithubApp::default()
         }
     } else {
         GithubApp::default()
@@ -266,6 +267,7 @@ pub async fn server_over_blobs(
         GithubApp {
             client_id: "test-client".into(),
             client_secret: "test-secret".into(),
+            ..GithubApp::default()
         },
         TEST_KEY.to_vec(),
         config,
@@ -579,4 +581,73 @@ impl Socket {
             }
         }
     }
+}
+
+/// A stand-in for GitHub's check-token endpoint that counts what reaches it.
+/// The device-flow tests read the count to prove the negative the spec asks
+/// for: a `kmd_` bearer is verified against the session key here and never
+/// over a network.
+pub struct GithubStandIn {
+    pub url: String,
+    pub hits: Arc<std::sync::atomic::AtomicUsize>,
+    /// Held, not read: the stand-in stops answering when it is dropped.
+    #[allow(dead_code)]
+    handle: tokio::task::JoinHandle<()>,
+}
+
+/// Starts one. It answers for whatever login it was built with, the way
+/// `TestAccounts` does, so a GitHub bearer resolves to the same identity a
+/// forged session cookie would.
+pub async fn github_stand_in(login: &str) -> GithubStandIn {
+    use axum::extract::State;
+    use axum::routing::post;
+
+    #[derive(Clone)]
+    struct Fixture {
+        login: String,
+        hits: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fixture = Fixture {
+        login: login.to_string(),
+        hits: hits.clone(),
+    };
+    let router = axum::Router::new()
+        .route(
+            "/check",
+            post(|State(fixture): State<Fixture>| async move {
+                fixture
+                    .hits
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                axum::Json(json!({"user": {"login": fixture.login, "id": 1}}))
+            }),
+        )
+        .with_state(fixture);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port");
+    let address = listener.local_addr().expect("an address");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("serve");
+    });
+    GithubStandIn {
+        url: format!("http://{address}"),
+        hits,
+        handle,
+    }
+}
+
+/// A server whose GitHub check-token endpoint is that stand-in rather than
+/// GitHub, so a test can watch whether a bearer went near it.
+pub async fn test_server_checking(
+    publishers: Policy,
+    commenters: Policy,
+    github: &GithubStandIn,
+) -> TestServer {
+    let mut parts =
+        build_test_server(Configuration::default(), publishers, commenters, true, true).await;
+    parts.instance.app.check_url = format!("{}/check", github.url);
+    let TestServerParts { instance, dir } = parts;
+    serve_instance(Arc::new(instance), dir).await
 }
