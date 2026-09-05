@@ -5,7 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use komodoc_engine::{markdown, typst};
+use komodoc_engine::diagnostic::{Compiled, Diagnostic};
+use komodoc_engine::{html, markdown, typst};
 
 pub fn is_markdown(name: &str) -> bool {
     markdown::is_markdown(name)
@@ -13,6 +14,17 @@ pub fn is_markdown(name: &str) -> bool {
 
 pub fn is_typst(name: &str) -> bool {
     typst::is_typst(name)
+}
+
+pub fn is_html(name: &str) -> bool {
+    html::is_html(name)
+}
+
+/// An HTML document's title is its own `<title>`, or failing that its first
+/// `<h1>` -- the same scan the landing page does, so the command line and the
+/// page finally agree on what an uploaded file is called.
+pub fn title_from_html(source: &str) -> String {
+    html::title_of(source)
 }
 
 pub fn title_from_markdown(source: &str) -> String {
@@ -31,16 +43,38 @@ pub fn render_markdown_document(source: &str, title: &str) -> String {
 /// own directory is the root: a document may import what sits beside it and
 /// nothing above it, which a reader that refuses to leave the root is what
 /// enforces.
-pub fn render_typst_document(file: &Path, source: &str, title: &str) -> Result<String, String> {
-    let root = std::path::absolute(file.parent().unwrap_or(Path::new(".")))
-        .map_err(|err| err.to_string())?;
+pub fn render_typst_document(file: &Path, source: &str, title: &str) -> Compiled {
+    let root = match std::path::absolute(file.parent().unwrap_or(Path::new("."))) {
+        Ok(root) => root,
+        Err(err) => return Compiled::failed(err.to_string()),
+    };
     let name = file
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let reader = move |path: &Path| -> Option<Vec<u8>> { read_within(&root, path) };
     typst::render(source, title, &name, &reader, typst::Today::now())
-        .map_err(|message| format!("typst could not compile {name}:\n\n{message}"))
+}
+
+/// Prints what a compile had to say the way every editor since `grep -n`
+/// expects to be told: `file:line:column: severity: message`, with the hints
+/// indented under it. A diagnostic without a span prints without the location.
+pub fn report(diagnostics: &[Diagnostic], document: &str) {
+    for diagnostic in diagnostics {
+        eprintln!("{}", diagnostic.to_line(document));
+        for hint in &diagnostic.hints {
+            eprintln!("  hint: {hint}");
+        }
+    }
+}
+
+/// How many errors and warnings there are, in the words a summary line uses.
+pub fn counted(count: usize, thing: &str) -> String {
+    if count == 1 {
+        format!("1 {thing}")
+    } else {
+        format!("{count} {thing}s")
+    }
 }
 
 /// Reads a file under `root`, and nothing outside it. The path typst asks for
@@ -85,11 +119,38 @@ mod tests {
 
         let main = dir.path().join("main.typ");
         let page = render_typst_document(&main, &std::fs::read_to_string(&main).unwrap(), "T")
+            .into_result()
             .expect("compile");
         assert!(page.contains("sibling"));
 
         let escaping = "#import \"../komodoc-above-the-root.typ\": word\n#word\n";
-        assert!(render_typst_document(&main, escaping, "T").is_err());
+        assert!(render_typst_document(&main, escaping, "T").page.is_none());
         let _ = std::fs::remove_file(above);
+    }
+
+    // What `publish` prints, and why nothing is uploaded: the diagnostics, in
+    // the form every editor since `grep -n` knows how to jump on. Typst stops
+    // at the first error it cannot get past, so the count is its business; the
+    // form of each line is this project's.
+    #[test]
+    fn a_document_that_does_not_compile_reports_every_error_where_it_is() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main = dir.path().join("paper.typ");
+        let source = "= T\n\n#unknown_variable\n";
+        std::fs::write(&main, source).unwrap();
+
+        let compiled = render_typst_document(&main, source, "T");
+        assert!(compiled.page.is_none(), "a broken document rendered a page");
+        let errors: Vec<String> = compiled
+            .errors()
+            .map(|diagnostic| diagnostic.to_line("paper.typ"))
+            .collect();
+        assert!(!errors.is_empty(), "nothing was reported");
+        for line in &errors {
+            assert!(
+                line.starts_with("paper.typ:") && line.contains(": error: "),
+                "{line}"
+            );
+        }
     }
 }

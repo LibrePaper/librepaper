@@ -94,9 +94,10 @@ pub fn typst_module() -> Option<&'static [u8]> {
 }
 
 /// The source formats this process can render in a reader, and so offer an
-/// editor for. Markdown always; typst when the module was built.
+/// editor for. Markdown always; HTML always, since its renderer is the
+/// identity and needs no module at all; typst when the module was built.
 pub fn renderers() -> Vec<String> {
-    let mut list = vec!["markdown".to_string()];
+    let mut list = vec!["markdown".to_string(), "html".to_string()];
     if typst_module().is_some() {
         list.push("typst".to_string());
     }

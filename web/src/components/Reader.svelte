@@ -6,7 +6,7 @@
   import * as renderers from "../lib/renderers.js";
   import * as collab from "../lib/collab.js";
   import { openRoom } from "../lib/room.js";
-  import { getPrivate, me as whoami, postRaw, signInHref } from "../lib/api.js";
+  import { me as whoami, signInHref } from "../lib/api.js";
   import { AUTHOR, LAYOUT, LINKED, SOURCE_SIDE, markViewed, read, write } from "../lib/storage.js";
   import { LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
 
@@ -36,13 +36,11 @@
   let canModerate = $derived(Boolean(doc.can_moderate));
   let connected = $state(true);
 
-  // The version the frame is showing. A "published" broadcast naming this one
-  // is our own save coming back, and means nothing new.
-  let shownSHA = $state("");
-  // The version this editor opened, sent back with every save. If the document
-  // has moved on since -- someone else saved, or the same person in another
-  // tab -- the server refuses rather than letting this save discard their work.
-  let baseSHA = $state("");
+  // Whether this browser's work is safe, which is a different question from
+  // whether the socket is up. `pending` counts the updates the server has not
+  // yet said it has written; `local` says the document is in this browser's
+  // own storage, which is what makes a reload safe while the socket is down.
+  let persistence = $state({ pending: 0, local: false, joined: false });
 
   /* --------------------------------------------------------------- anchoring */
 
@@ -316,11 +314,15 @@
       return;
     }
 
-    // The shared source: the state of a session as it stands, one more change
-    // to it, who else is in it, or where their carets are. All of it is
-    // meaningless unless this browser is editing, and ignored until it is.
+    // The shared document: the state of the session as it stands, one more
+    // change to it, what the server has written, who else is in it, or where
+    // their carets are. A reader receives all of this too -- that is how they
+    // see the current text -- and sends none of it.
     if (event.type === "y-state") {
-      session?.start(event, savedSource);
+      session
+        ?.start(event)
+        .then(() => paintPreview())
+        .catch((error) => say(error.message || "could not open the document", true));
       peers = event.count || 1;
       return;
     }
@@ -332,10 +334,10 @@
       session?.applyAwareness(event.update);
       return;
     }
-    if (event.type === "y-snapshot") {
-      // The session's history grew long enough that a latecomer would have to
-      // replay all of it. This browser sends the whole state instead.
-      if (session) room.send({ type: "y-update", update: session.snapshot(), replace: true });
+    if (event.type === "y-ack") {
+      // The server has written this far. Relaying was never durability; this
+      // is, and it is what the badge is allowed to speak from.
+      session?.acknowledge(event.seq || 0);
       return;
     }
     if (event.type === "y-peers") {
@@ -344,7 +346,13 @@
     }
 
     if (event.type === "published") {
-      published(event);
+      // A publish from outside the session -- the command line, or `sync` --
+      // arrives as an ordinary update into the document everyone holds. All
+      // that is left to do here is the title.
+      if (event.title) {
+        doc = { ...doc, title: event.title };
+        document.title = `${event.title} · Komodoc`;
+      }
       return;
     }
 
@@ -388,23 +396,38 @@
     }
   }
 
-  /* ----------------------------------------------------------------- editing */
+  /* ----------------------------------------------------- reading and editing */
 
-  // CodeMirror and Yjs are a third of a megabyte, and most people who open a
-  // document are here to read it. The editor is fetched when one is actually
-  // opened, so a reader never pays for it.
+  // CodeMirror is a third of a megabyte, and most people who open a document
+  // are here to read it. The editor component is fetched when one is actually
+  // opened, so a reader never pays for it. The session is not the editor: a
+  // reader joins it too, because that is where the text comes from.
   let Editor = $state(null);
   let editor = $state(null);
   let session = $state(null);
   let editing = $state(false);
+  let mayEdit = $state(false);
   let sourceFormat = $state("");
-  let savedSource = $state("");
   let state = $state(""); // what the editor is saying about itself
   let problem = $state(false);
   let peers = $state(1);
   let linked = $state(read(LINKED, false) === true);
 
-  const dirty = $derived(editing && session && session.text.toString() !== savedSource);
+  // What the toolbar says about durability. There is no save, so there is
+  // nothing to say while everything the socket carried has been written; the
+  // only things worth saying are that work is on its way, that it is being
+  // kept here for now, or that it is in neither place yet.
+  const persistenceBadge = $derived.by(() => {
+    if (!mayEdit || !session) return "";
+    if (!connected) {
+      return persistence.local ? "offline, changes kept in this browser" : "offline";
+    }
+    return persistence.pending ? "saving…" : "";
+  });
+
+  // A close is only worth interrupting when the work has reached neither this
+  // browser's storage nor the server.
+  const atRisk = $derived(Boolean(mayEdit && persistence.pending && !persistence.local));
 
   function say(text, isProblem = false) {
     state = text;
@@ -426,27 +449,117 @@
   let painted = 0;
   let previewTimer = null;
 
+  // What the last compile said, and the timer that paints it. Half of what a
+  // compiler calls an error is a construct that is not finished being typed,
+  // so a diagnostic appears only after the source has been quiet for longer
+  // than the render debounce -- and a render that succeeds clears every one of
+  // them the moment it lands. From clean to red at reading speed, from red to
+  // clean at typing speed.
+  const DIAGNOSTIC_DELAY = 400;
+  let diagnostics = $state([]);
+  let held = [];
+  let diagnosticTimer = null;
+  // Whether the frame has ever shown a page. Until it has, a document that
+  // does not compile has nothing to keep on the screen.
+  let everPainted = false;
+
+  const errorCount = $derived(diagnostics.filter((d) => d.severity !== "warning").length);
+  const warningCount = $derived(diagnostics.length - errorCount);
+  const counted = (n, thing) => `${n} ${thing}${n === 1 ? "" : "s"}`;
+  const diagnosticBadge = $derived(
+    errorCount && warningCount
+      ? `${counted(errorCount, "error")}, ${counted(warningCount, "warning")}`
+      : errorCount
+        ? counted(errorCount, "error")
+        : warningCount
+          ? counted(warningCount, "warning")
+          : "",
+  );
+
+  // A reader is told nothing. They cannot fix it, the author is looking at the
+  // error at that moment, and a reader shown a red badge for a typo in
+  // somebody else's editing session learns to stop reading while a document is
+  // being worked on. What a reader gets instead is the last page that
+  // compiled, which is what `everPainted` below keeps on the screen.
+  function paintDiagnostics(list) {
+    if (!editing) return;
+    diagnostics = list;
+    editor?.setDiagnostics?.(list);
+  }
+
+  // Clicking the badge goes to the first thing the compiler complained about,
+  // and again to the next, round the list.
+  function goToDiagnostic() {
+    editor?.nextDiagnostic?.();
+  }
+
+  // A document whose format is `html` is served into the frame as the page it
+  // is, so that the scripts a notebook or a Quarto page carries actually run.
+  // Painting over it from here would replace a live page with an inert copy of
+  // itself, so a reader leaves the frame alone; an editor still previews,
+  // which is what the source pane is for and has always been inert.
+  const paintsTheFrame = $derived(editing || sourceFormat !== "html");
+
   async function paintPreview() {
+    if (!paintsTheFrame) return;
     const mine = ++issued;
     const source = session ? session.text.toString() : "";
     try {
-      const html = await renderers.render(source, await headingOf(source), sourceFormat);
+      const { html, diagnostics: said } = await renderers.render(
+        source,
+        await headingOf(source),
+        sourceFormat,
+      );
       // A slower render that resolves late must not paint over a newer one.
       if (mine <= painted) return;
       painted = mine;
-      tell({ type: "preview", html });
-      say(dirty ? "unsaved changes" : "saved");
+      held = said || [];
+      if (html !== null) {
+        // The page is what the document says now, so every error said about an
+        // earlier state of it is cleared at once. The warnings that came with
+        // this page are painted on the same slow schedule the errors are, so
+        // that a font name half typed does not flash a badge on every
+        // keystroke.
+        tell({ type: "preview", html });
+        everPainted = true;
+        clearTimeout(diagnosticTimer);
+        const warnings = held.filter((d) => d.severity === "warning");
+        paintDiagnostics([]);
+        if (warnings.length) {
+          diagnosticTimer = setTimeout(() => paintDiagnostics(warnings), DIAGNOSTIC_DELAY);
+        }
+        return;
+      }
+      // No page: the last one that compiled stays up, and what is said is that
+      // it does not compile now, and where -- once the typing has stopped.
+      clearTimeout(diagnosticTimer);
+      diagnosticTimer = setTimeout(() => paintDiagnostics(held), DIAGNOSTIC_DELAY);
+      // Unless nothing was ever painted, which is what someone who opens the
+      // editor on a document that does not compile sees. Then the frame shows
+      // the engine's page saying so, with the list on it, styled like a
+      // document rather than like a crash.
+      if (!everPainted) {
+        const page = await renderers
+          .failurePage(await headingOf(source), sourceFormat)
+          .catch(() => null);
+        if (page && mine >= painted) tell({ type: "preview", html: page });
+      }
     } catch (error) {
+      // Not a document that did not compile: a renderer that could not be
+      // fetched, which is this page's problem rather than the author's.
       if (mine > painted) say(error.message || "could not render", true);
     }
   }
 
-  // Short enough to read as live -- the renderer takes single-digit
-  // milliseconds -- and long enough that a burst of typing is one render.
+  // Sixty milliseconds for an editor: short enough to read as live -- the
+  // renderer takes single-digit milliseconds -- and long enough that a burst
+  // of typing is one render. A second for a reader, who is watching somebody
+  // else type and should never be shown a word half written.
+  const READER_DEBOUNCE = 1000;
+
   function sourceChanged() {
-    say(dirty ? "unsaved changes" : "saved");
     clearTimeout(previewTimer);
-    previewTimer = setTimeout(paintPreview, 60);
+    previewTimer = setTimeout(paintPreview, editing ? 60 : READER_DEBOUNCE);
   }
 
   /* ------------------------------------------------------- keeping in step */
@@ -461,7 +574,7 @@
 
   function lost(yes) {
     if (!yes) {
-      if (state === NO_MATCH) say(dirty ? "unsaved changes" : "saved");
+      if (state === NO_MATCH) say("");
       return;
     }
     // Not a problem: the editor is in the state it was in, and the reader has
@@ -474,7 +587,7 @@
     if (!linked || !editing || docText === null) return;
     clearTimeout(stepTimer);
     stepTimer = setTimeout(() => {
-      const place = sync.documentPlaceFor(editor.text(), editor.caret(), docText);
+      const place = sync.documentPlaceFor(editor.text(), editor.caret(), docText, sourceFormat);
       if (place) {
         tell({ type: "locate", start: place.at, length: place.length });
         lost(false);
@@ -490,7 +603,7 @@
 
   function followDocumentClick(offset) {
     if (!linked || !editing || docText === null || !editor) return;
-    const at = sync.sourcePlaceFor(docText, offset, editor.text());
+    const at = sync.sourcePlaceFor(docText, offset, editor.text(), sourceFormat);
     if (at === null) {
       lost(true);
       return;
@@ -502,72 +615,6 @@
   function setLinked(on) {
     linked = on;
     write(LINKED, on);
-  }
-
-  /* ------------------------------------------------------------------ saving */
-
-  async function save() {
-    if (!dirty) return;
-    say("saving…");
-    const source = session.text.toString();
-    try {
-      const title = await headingOf(source);
-      const html = await renderers.render(source, title, sourceFormat);
-      const response = await postRaw("/api/documents", {
-        title, slug: SLUG, html, source, source_format: sourceFormat, base_sha: baseSHA,
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        // A conflict is the one refusal worth spelling out: nothing was
-        // written, and what to do about it is the reader's decision.
-        say(
-          response.status === 409
-            ? "published elsewhere while you were editing — reload to see it before saving over it"
-            : body.error || `save failed (${response.status})`,
-          true,
-        );
-        return;
-      }
-      savedSource = source;
-      baseSHA = shownSHA = body.sha || baseSHA;
-      say("saved");
-    } catch (error) {
-      say(error.message || "save failed", true);
-    }
-  }
-
-  // Someone published a new version of this document -- another reader saving
-  // in their own editor, or the same document republished from the command
-  // line. What to do about it depends on what this reader is in the middle of.
-  async function published(event) {
-    if (!event.sha || event.sha === shownSHA) return;
-    // In a shared session everyone is typing into one source, so a save by any
-    // of them publishes what all of them have. That is not a conflict, and
-    // warning about it would make collaborating feel like colliding.
-    if (session) {
-      shownSHA = event.sha;
-      const payload = await getPrivate(`/api/documents/${SLUG}/source`).catch(() => null);
-      if (!payload) return;
-      baseSHA = payload.sha || "";
-      if ((payload.source || "") === session.text.toString()) {
-        savedSource = payload.source || "";
-        say("saved");
-        return;
-      }
-      // Published from outside the session -- the command line, or a browser
-      // that was not in it. Their work is not this page's to discard, and the
-      // save that would discard it is refused anyway.
-      say("a newer version was published — reload before saving", true);
-      return;
-    }
-    if (dirty) {
-      say("a newer version was published — reload before saving", true);
-      return;
-    }
-    shownSHA = event.sha;
-    // Reading rather than editing: show the version that now exists. The frame
-    // republishes its text on load, which re-anchors every comment.
-    frameSrc = `${docsOrigin}/raw/${SLUG}/${event.sha}.html`;
   }
 
   /* ------------------------------------------------------------------ panes */
@@ -641,53 +688,79 @@
 
   /* ------------------------------------------------------------------- boot */
 
-  // Editing a document and looking at its source are two different things. The
-  // session lasts as long as the document is open; the pane is a view of it,
-  // which can be folded away like any other.
-  function startEditing() {
-    if (editing) return;
-    editing = true;
-    say("saved");
+  // Joining the session is what shows the document: there is no stored page to
+  // load, so a reader renders the text with the same module the editor
+  // previews with, on a longer timer. Editing is not a second connection; it
+  // is the source pane unfolding over the document this page already holds.
+  function joinSession(document_) {
     session = collab.join({
       send: (message) => room.send(message),
       onPeers: (count) => (peers = Math.max(peers, count)),
+      onState: (state_) => (persistence = state_),
       name: identity || read(AUTHOR, "Anonymous"),
+      slug: SLUG,
+      mayEdit,
     });
     session.text.observe(sourceChanged);
-    room.send({ type: "y-open" });
+    room.send(session.open());
+    void document_;
+  }
+
+  // The source pane. Nothing is fetched here and nothing is seeded: the text
+  // is already in the session, and this only shows it.
+  async function startEditing() {
+    if (editing || !mayEdit) return;
+    Editor = (await import("./Editor.svelte")).default;
+    editing = true;
     paintPreview();
   }
 
-  // Offered only when there is something to edit and someone allowed to edit
-  // it. The source is asked for once, and the renderer starts downloading with
-  // it, so opening the editor does not then wait for the module.
-  async function offerEditing(document_) {
-    // can_edit, not can_moderate: moderating is about this document's
-    // comments, editing is about replacing the document.
-    const mayEdit = document_.can_edit === undefined ? document_.can_moderate : document_.can_edit;
-    if (!mayEdit || !document_.source_format) return;
-    // A document is editable here only if this deployment can render what it
-    // was written in. Markdown always; typst when its renderer was built.
+  // What this browser may do with the document, and whether it can render it
+  // at all.
+  async function prepare(document_) {
+    // The role the document's own endpoint answers with, which is where every
+    // affordance comes from: the editor at `editor` and above. `can_edit` is
+    // the same answer in the older shape, for a server that predates the role.
+    const ROLES = ["reader", "commenter", "editor", "owner"];
+    const allowed = document_.role
+      ? ROLES.indexOf(document_.role) >= ROLES.indexOf("editor")
+      : document_.can_edit === undefined
+        ? document_.can_moderate
+        : document_.can_edit;
+    // A document published before HTML was a source format has one anyway: the
+    // page itself, through the identity renderer.
+    const format = document_.source_format || "html";
+    sourceFormat = format;
+    // A document is shown here only if this deployment can render what it was
+    // written in. Markdown and HTML always; typst when its renderer was built.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
-    if (!list.includes(document_.source_format) || !renderers.available(document_.source_format)) {
-      say(`${document_.source_format} documents are edited where their renderer is built`);
+    if (!list.includes(format) || !renderers.available(format)) {
+      say(`${format} documents are read where their renderer is built`, true);
       return;
     }
-    sourceFormat = document_.source_format;
-    Editor = (await import("./Editor.svelte")).default;
-    const payload = await getPrivate(`/api/documents/${SLUG}/source`).catch(() => null);
-    if (!payload) return; // not editable here; the reader is unchanged
-    savedSource = payload.source || "";
-    baseSHA = payload.sha || "";
-    renderers.warm(sourceFormat);
-    // A document with a source opens ready to be worked on: that is what its
-    // author came for.
-    startEditing();
+    mayEdit = Boolean(allowed);
+    renderers.warm(format);
+    joinSession(document_);
+    // A document its author may edit opens ready to be worked on: that is what
+    // they came for.
+    if (mayEdit) startEditing();
+  }
+
+  // The socket is up or down. A socket that comes back has to rejoin: the
+  // server hands the document out on `y-open` and nothing else, so without
+  // this the changes made on either side of the gap never reach the other.
+  function reconnected(up) {
+    connected = up;
+    if (!up) {
+      session?.disconnected();
+      return;
+    }
+    if (session) room.send(session.open());
   }
 
   $effect(() => {
     markViewed(SLUG);
-    room = openRoom(SLUG, { onMessage: receive, onConnected: (up) => (connected = up) });
+    room = openRoom(SLUG, { onMessage: receive, onConnected: reconnected });
 
     whoami().then((who) => {
       me = who;
@@ -703,9 +776,10 @@
         doc = found;
         document.title = `${found.title} · Komodoc`;
         docsOrigin = found.docs_origin || location.origin;
-        shownSHA = found.sha;
-        frameSrc = `${docsOrigin}/raw/${SLUG}/${found.sha}.html`;
-        offerEditing(found);
+        // The frame is an empty page with the agent in it, on the documents
+        // origin. What goes into it is what this browser renders.
+        frameSrc = `${docsOrigin}/raw/${SLUG}/`;
+        prepare(found);
       })
       .catch(() => (doc = { title: "Document not found" }));
 
@@ -718,9 +792,25 @@
     };
   });
 
-  // A tab closed mid-edit is work lost, so the browser asks first.
+  // Ctrl-S is what a hand does after typing a paragraph, and there is nothing
+  // for it to do: the document is already durable. What it must not do is
+  // claim that pending writes are saved, so it says what is actually true.
+  function reportPersistence() {
+    if (!connected) {
+      say(persistence.local ? "offline, changes kept in this browser" : "offline", true);
+      return;
+    }
+    say(persistence.pending ? "saving\u2026" : "saved on the server");
+    setTimeout(() => {
+      if (state === "saved on the server") say("");
+    }, 2000);
+  }
+
+  // There is no save, so a close is almost never worth interrupting: the
+  // document is durable, and what is not yet on the server is in this
+  // browser. The one case left is work that has reached neither.
   function beforeUnload(event) {
-    if (dirty) event.preventDefault();
+    if (atRisk) event.preventDefault();
   }
 
   // The arrangement is changed often enough to be worth a key. Ctrl-\ is what
@@ -814,11 +904,25 @@
         {/snippet}
       </ControlGroup>
       {#if editing}
-        <IconButton icon="save" label="Save a new version" title="Save"
-                    tone="primary" disabled={!dirty} onclick={save} />
+        <!-- There is no save. What the toolbar says instead is whether this
+             browser's work has reached the server, which is a different
+             question from whether the socket is open and the only one worth
+             answering. It is empty when there is nothing to say. -->
+        {#if persistenceBadge}
+          <small class="badge preset-tonal-warning whitespace-nowrap">{persistenceBadge}</small>
+        {/if}
         <!-- Said only when there is more than one person editing. -->
         {#if peers > 1}
           <small class="badge preset-tonal-secondary whitespace-nowrap">{peers} editing</small>
+        {/if}
+        <!-- What the compiler said, counted. Clicking it goes to the first
+             thing it complained about, and again to the next. -->
+        {#if diagnosticBadge}
+          <button type="button" onclick={goToDiagnostic}
+                  title="Go to the next problem"
+                  class="badge whitespace-nowrap {errorCount ? 'preset-tonal-error' : 'preset-tonal-warning'}">
+            {diagnosticBadge}
+          </button>
         {/if}
         {#if state}
           <small class="badge whitespace-nowrap {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}">
@@ -838,7 +942,7 @@
     <section class="editorpane">
       {#if Editor}
         <Editor bind:this={editor} {session} format={sourceFormat}
-                onchange={sourceChanged} oncaret={followCaret} onsave={save} />
+                onchange={sourceChanged} oncaret={followCaret} onsave={reportPersistence} />
       {/if}
     </section>
   {/if}

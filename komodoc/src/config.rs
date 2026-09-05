@@ -57,6 +57,10 @@ pub struct Configuration {
     /// room stays small enough to load and rewrite whole.
     pub max_replies: usize,
 
+    /// The live document, and what it costs to keep. Every one of these is a
+    /// bound on the bill or on the memory of a server nobody is watching.
+    pub session: SessionLimit,
+
     /// The shape of a valid slug, as a RegExp source string.
     pub slug_pattern: String,
     pub slug_max: usize,
@@ -78,6 +82,45 @@ pub struct StorageLimit {
     pub documents_per_owner: usize,
     pub uploads_per_hour: usize,
 }
+
+/// What the server-held document may cost: how often it is written, how big a
+/// state may travel inline, how many rooms may be hot at once, how far behind
+/// a socket may fall, and how fast one may write.
+///
+/// Storage quotas bound the bill; these bound the memory and the traffic,
+/// which storage quotas say nothing about.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct SessionLimit {
+    /// Seconds of quiet before the room writes `sessions/<slug>`. Every update
+    /// is relayed at once whatever this is; what waits is the durability
+    /// acknowledgment, and nothing tells a browser its work is safe until the
+    /// write has landed.
+    pub write_after_seconds: i64,
+    /// Seconds of quiet before a checkpoint is taken.
+    pub checkpoint_seconds: i64,
+    /// The most checkpoints one document keeps. Zero is no cap.
+    pub history_max: usize,
+    /// A state larger than this is fetched over HTTP instead of being sent
+    /// down the socket, so one cold join of a large document does not sit in a
+    /// text frame.
+    pub inline_state_max: usize,
+    /// How many documents may be held in memory at once. The least recently
+    /// used idle room is persisted and evicted past this.
+    pub rooms_max: usize,
+    /// How many frames may be queued for one socket before it is disconnected.
+    /// A peer that cannot keep up is resynchronised on reconnect, which costs
+    /// one state transfer and bounds what a slow reader can make the server
+    /// hold.
+    pub peer_queue: usize,
+    /// How many document updates one socket may send in a minute.
+    pub updates_per_minute: i64,
+}
+
+/// A checkpoint asked for within this many seconds of the last one waits until
+/// they have passed. A burst of saves is one mark in the timeline, and a sync
+/// client writing all day is two marks a minute at most. A constant rather
+/// than a flag, as `01-SPEC-history.md` says.
+pub const CHECKPOINT_DEFER_SECONDS: i64 = 30;
 
 /// The maximum length of each free-text field on an annotation.
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -105,7 +148,9 @@ impl Default for Configuration {
             extensions: [".html", ".htm", ".md", ".markdown"]
                 .map(String::from)
                 .to_vec(),
-            source_formats: ["markdown", "typst"].map(String::from).to_vec(),
+            // HTML is a source format like the other two, and its renderer is
+            // the identity: there is no longer a document without a source.
+            source_formats: ["markdown", "typst", "html"].map(String::from).to_vec(),
             caps: CapLimit {
                 body: 5000,
                 creator: 80,
@@ -118,6 +163,15 @@ impl Default for Configuration {
             max_tags: 6,
             max_title: 200,
             max_replies: 100,
+            session: SessionLimit {
+                write_after_seconds: 2,
+                checkpoint_seconds: 5 * 60,
+                history_max: 0,
+                inline_state_max: 256 * 1024,
+                rooms_max: 200,
+                peer_queue: 256,
+                updates_per_minute: 3000,
+            },
             slug_pattern: r"^[a-z0-9]+(?:-[a-z0-9]+)*$".to_string(),
             slug_max: 80,
             suffix_alphabet: "abcdefghijkmnpqrstuvwxyz23456789".to_string(),
@@ -176,6 +230,29 @@ impl Configuration {
                 self.storage.per_owner >> 20,
                 self.storage.total >> 20
             ));
+        }
+        Ok(())
+    }
+
+    /// Overrides the history settings an operator has a reason to change: how
+    /// long a document has to be quiet before a checkpoint is taken, in
+    /// minutes, and how many checkpoints one document keeps. Zero leaves a
+    /// default alone; `--history 0` is "no history beyond the session state",
+    /// which is expressed as a cap of one, since the newest checkpoint is
+    /// never shed.
+    pub fn set_history(
+        &mut self,
+        checkpoint_minutes: i64,
+        keep: Option<usize>,
+    ) -> Result<(), String> {
+        if checkpoint_minutes < 0 {
+            return Err("--checkpoint must be positive".into());
+        }
+        if checkpoint_minutes > 0 {
+            self.session.checkpoint_seconds = checkpoint_minutes * 60;
+        }
+        if let Some(keep) = keep {
+            self.session.history_max = keep.max(1);
         }
         Ok(())
     }

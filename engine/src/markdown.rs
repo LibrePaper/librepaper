@@ -66,6 +66,13 @@ pub fn render(source: &str, title: &str) -> String {
     page::page(title, "", &render_body(source))
 }
 
+/// The same, in the shape every renderer answers in. Comrak has no failure
+/// mode, so the list is always empty and every surface built on diagnostics is
+/// inert for markdown.
+pub fn compile(source: &str, title: &str) -> crate::diagnostic::Compiled {
+    crate::diagnostic::Compiled::page(render(source, title))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

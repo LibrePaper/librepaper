@@ -10,8 +10,8 @@ use crate::auth::{login_for, GITHUB_DEVICE, GITHUB_TOKEN};
 use crate::config::Configuration;
 use crate::http::{detail_of, get_json, post_json, send, text, truncate};
 use crate::render::{
-    is_markdown, is_typst, render_markdown_document, render_typst_document, title_from_markdown,
-    title_from_typst,
+    counted, is_html, is_markdown, is_typst, render_typst_document, report, title_from_html,
+    title_from_markdown, title_from_typst,
 };
 use crate::util::{die, is_terminal_stdin, is_terminal_stdout, read_line};
 
@@ -258,11 +258,12 @@ pub async fn publish(file: &str, mut title: String, slug: String, server_flag: S
             config.max_html / (1024 * 1024)
         ));
     }
-    let Ok(mut html) = String::from_utf8(raw.clone()) else {
+    let Ok(html) = String::from_utf8(raw.clone()) else {
         die(format!("{base_name} is not valid UTF-8 text"))
     };
     // Kept beside the rendered document so it can be reopened in the editor.
-    // A document published as HTML is its own source and keeps none.
+    // Every format komodoc renders has one, HTML included: its renderer is the
+    // identity, so an HTML document's source is the HTML it was published as.
     let (mut source, mut source_format) = (String::new(), String::new());
 
     if is_typst(file) {
@@ -270,24 +271,45 @@ pub async fn publish(file: &str, mut title: String, slug: String, server_flag: S
             // The first heading names the document, before the filename does.
             title = title_from_typst(&html);
         }
-        let rendered = render_typst_document(path, &html, &title_or(&title, file))
-            .unwrap_or_else(|err| die(err));
-        eprintln!("rendered {base_name} ({} KiB of typst)", raw.len() / 1024);
+        let compiled = render_typst_document(path, &html, &title_or(&title, file));
+        // Every diagnostic, where it is, and nothing uploaded if any of them
+        // is an error: `publish` exists to make a document readable, and a
+        // document that does not compile is not one.
+        report(&compiled.diagnostics, &base_name);
+        let errors = compiled.errors().count();
+        let warnings = compiled.warnings().count();
+        if compiled.page.is_none() {
+            die(format!(
+                "{base_name} did not compile ({})",
+                counted(errors.max(1), "error")
+            ))
+        }
+        eprintln!(
+            "rendered {base_name} ({} KiB of typst{})",
+            raw.len() / 1024,
+            if warnings == 0 {
+                String::new()
+            } else {
+                format!(", {}", counted(warnings, "warning"))
+            }
+        );
         source = html;
         source_format = "typst".to_string();
-        html = rendered;
+    } else if is_html(file) {
+        if title.is_empty() {
+            // What the document calls itself, which is what the landing page
+            // has always shown and what the command line used to ignore.
+            title = title_from_html(&html);
+        }
+        source = html.clone();
+        source_format = "html".to_string();
     } else if is_markdown(file) {
         if title.is_empty() {
             title = title_from_markdown(&html);
         }
-        let rendered = render_markdown_document(&html, &title_or(&title, file));
-        eprintln!(
-            "rendered {base_name} ({} KiB of markdown)",
-            raw.len() / 1024
-        );
+        eprintln!("read {base_name} ({} KiB of markdown)", raw.len() / 1024);
         source = html;
         source_format = "markdown".to_string();
-        html = rendered;
     } else if !html.contains('<') {
         die(format!("{base_name} contains no HTML tags"));
     }
@@ -314,7 +336,12 @@ pub async fn publish(file: &str, mut title: String, slug: String, server_flag: S
     // account answers with its own message.
     let (status, document) = post_json(
         &format!("{server}/api/documents"),
-        &json!({"title": title, "slug": slug, "html": html, "source": source, "source_format": source_format}),
+        // The source, and nothing rendered from it: the server stores the
+        // document and every browser that shows it renders it. The compile
+        // above still happens, because `publish` exists to make a document
+        // readable and a document that does not compile is not one -- but what
+        // it produces is a check, not a payload.
+        &json!({"title": title, "slug": slug, "source": source, "source_format": source_format}),
         &stored_token(),
         Duration::from_secs(300),
     )

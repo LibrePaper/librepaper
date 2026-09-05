@@ -7,7 +7,7 @@ use serde_json::json;
 use super::*;
 use crate::auth::Policy;
 use crate::config::Configuration;
-use crate::store::{digest_of, Publication};
+use crate::store::Publication;
 
 /// The sandbox shape: any signed-in GitHub account may publish, so several
 /// publishers share one deployment.
@@ -63,8 +63,8 @@ async fn listing_shows_only_your_own_uploads() {
         .put(Publication {
             slug: "example-doc".into(),
             title: "Example".into(),
-            digest: digest_of("<p>e</p>"),
-            html: "<p>e</p>".into(),
+            source: "<p>e</p>".into(),
+            source_format: "html".into(),
             ..Default::default()
         })
         .await
@@ -77,8 +77,8 @@ async fn listing_shows_only_your_own_uploads() {
         .put(Publication {
             slug: "legacy-doc".into(),
             title: "Legacy".into(),
-            digest: digest_of("<p>l</p>"),
-            html: "<p>l</p>".into(),
+            source: "<p>l</p>".into(),
+            source_format: "html".into(),
             ..Default::default()
         })
         .await
@@ -218,13 +218,8 @@ async fn another_publishers_slug_is_not_replaced() {
         .await
         .expect("bob's document");
     assert_eq!(entry.publisher, "bob", "@bob's document changed hands");
-    let body = server
-        .instance
-        .store
-        .read(&theirs, &entry.sha)
-        .await
-        .unwrap();
-    assert_eq!(body, b"<p>Bob Paper</p>", "@bob's bytes were overwritten");
+    let body = server.instance.rooms.get(&theirs).await.source().await;
+    assert_eq!(body, "<p>Bob Paper</p>", "@bob's document was overwritten");
 }
 
 #[tokio::test]
@@ -262,4 +257,42 @@ async fn deleting_another_publishers_document_is_a_not_found() {
         status, 200,
         "@bob deleting his own document returned {status}: {payload}"
     );
+}
+
+// Rights are answered by one function and read by the reader from one field:
+// the highest role a caller holds. The owner holds `owner`; anyone else on a
+// deployment that lets anyone comment holds `commenter`; on one that does not,
+// `reader`.
+#[tokio::test]
+async fn the_document_endpoint_answers_a_role() {
+    let server = any_publisher_server().await;
+    let slug = publish_as(&server.url, "bob", "Bob Paper", None).await;
+    for (login, wanted) in [("bob", "owner"), ("alice", "commenter")] {
+        let (status, payload) = get_json_as(
+            &session_as(login),
+            &server.url,
+            &format!("/api/documents/{slug}"),
+        )
+        .await;
+        assert_eq!(status, 200, "{payload}");
+        assert_eq!(text(&payload, "role"), wanted, "@{login}: {payload}");
+    }
+
+    // A deployment that names its commenters is a ceiling: a stranger there
+    // may read and nothing else.
+    let closed = test_server_with(
+        Configuration::default(),
+        Policy::parse("any"),
+        Policy::parse("bob"),
+        true,
+    )
+    .await;
+    let slug = publish_as(&closed.url, "bob", "Bob Paper", None).await;
+    let (_, payload) = get_json_as(
+        &session_as("alice"),
+        &closed.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
+    assert_eq!(text(&payload, "role"), "reader", "{payload}");
 }

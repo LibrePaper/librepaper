@@ -213,15 +213,16 @@ fn typst_is_offered_only_when_it_is_built() {
     assert!(served.kind == "application/wasm" && served.immutable);
 }
 
-// Both the storable formats are the ones the engine can actually render, and
-// nothing else is kept beside a document.
+// The storable formats are the ones something can render again -- markdown,
+// typst, and HTML, whose renderer is the identity -- and nothing else is kept
+// beside a document.
 #[test]
 fn storable_source_formats() {
     let config = Configuration::default();
-    for format in ["markdown", "typst"] {
+    for format in ["markdown", "typst", "html"] {
         assert!(config.storable_source(format), "{format} is not storable");
     }
-    for format in ["", "latex", "html", "docx"] {
+    for format in ["", "latex", "docx"] {
         assert!(
             !config.storable_source(format),
             "{format:?} is storable and should not be"

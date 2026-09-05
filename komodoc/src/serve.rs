@@ -172,11 +172,35 @@ pub async fn serve(options: ServeOptions) {
         });
     }
 
+    // The sweeper. A document nobody has open is still written out and still
+    // gets its checkpoints: that is the whole difference between a session the
+    // server holds and a session it relays, and it is why no browser has to
+    // stay open to save another client's work.
+    let sweeper = instance.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            ticker.tick().await;
+            sweeper.rooms.sweep().await;
+        }
+    });
+
+    // A server on its way down writes what it holds. An acknowledged edit
+    // survives a restart because it was written when it was acknowledged; this
+    // is about the unacknowledged ones, which have no reason to be lost to an
+    // orderly shutdown.
+    let closing = instance.clone();
+    let shutdown = async move {
+        let _ = tokio::signal::ctrl_c().await;
+        closing.rooms.flush().await;
+    };
+
     let router = instance.router();
     if let Err(err) = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown)
     .await
     {
         die(err);

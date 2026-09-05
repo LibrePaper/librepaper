@@ -4,10 +4,17 @@
 //! Keys are one layout, whichever store holds them:
 //!
 //!     index.json
-//!     documents/<slug>/<sha>.html
-//!     sources/<slug>
+//!     sessions/<slug>              the live document, as one Yjs update
+//!     history/<slug>/index.json    the manifest of its checkpoints
+//!     history/<slug>/<sha>         one checkpoint: the source bytes
 //!     rooms/<slug>.json
 //!     rooms/<slug>.lock
+//!
+//! And two the layout before this one wrote, which are read while a deployment
+//! is migrated and never written again:
+//!
+//!     documents/<slug>/<sha>.html
+//!     sources/<slug>/<sha>
 //!
 //! There is one interface, and two implementations of it.
 
@@ -60,7 +67,12 @@ impl std::error::Error for BlobError {}
 
 impl From<std::io::Error> for BlobError {
     fn from(err: std::io::Error) -> Self {
-        if err.kind() == std::io::ErrorKind::NotFound {
+        // ENOTDIR is "there is nothing under that key" too, and on a directory
+        // store it is the ordinary answer for `sources/<slug>/<sha>` when the
+        // layout before it left a *file* at `sources/<slug>`. Reading it as a
+        // failure rather than as an absence is what made a migrated markdown
+        // document come back with the stored HTML for its source.
+        if err.kind() == std::io::ErrorKind::NotFound || err.raw_os_error() == Some(20) {
             BlobError::NotFound
         } else {
             BlobError::Other(err.to_string())
@@ -279,7 +291,21 @@ pub fn document_key(slug: &str, digest: &str) -> String {
 pub fn document_prefix(slug: &str) -> String {
     format!("documents/{slug}/")
 }
-pub fn source_key(slug: &str) -> String {
+/// A source is stored under the digest of the version it was rendered into,
+/// exactly as the HTML is, so publishing a new version never writes over the
+/// source of the one the index still names. The index commits the digest, and
+/// a source written for a version the index never named is unreachable --
+/// which is the half-state to prefer.
+pub fn source_key(slug: &str, digest: &str) -> String {
+    format!("sources/{slug}/{digest}")
+}
+pub fn source_prefix(slug: &str) -> String {
+    format!("sources/{slug}/")
+}
+/// Where a source lived before it was versioned: one key for the document,
+/// whatever version it was at. Read for documents published then, never
+/// written.
+pub fn legacy_source_key(slug: &str) -> String {
     format!("sources/{slug}")
 }
 pub fn room_key(slug: &str) -> String {
@@ -292,11 +318,35 @@ pub fn examples_key(slug: &str) -> String {
     format!("examples/{slug}.json")
 }
 
+/// The live document: the Yjs state of the session as one v1 update, replaced
+/// on a debounce and at every checkpoint. Only the server reads it.
+pub fn session_key(slug: &str) -> String {
+    format!("sessions/{slug}")
+}
+/// The manifest: every checkpoint of a document, oldest first.
+pub fn history_index_key(slug: &str) -> String {
+    format!("history/{slug}/index.json")
+}
+/// One checkpoint: the source bytes, named by their own sha256.
+pub fn checkpoint_key(slug: &str, sha: &str) -> String {
+    format!("history/{slug}/{sha}")
+}
+pub fn history_prefix(slug: &str) -> String {
+    format!("history/{slug}/")
+}
+
 /// Removes everything komodoc wrote and nothing else. Seeding starts from
 /// nothing, and on a bucket somebody else supplied, "nothing" means our keys
 /// -- never the container, and never what else is in it.
 pub async fn clear_storage(blobs: &dyn BlobStore) {
-    for prefix in ["documents/", "sources/", "rooms/", "examples/"] {
+    for prefix in [
+        "documents/",
+        "sources/",
+        "rooms/",
+        "examples/",
+        "sessions/",
+        "history/",
+    ] {
         let Ok(found) = blobs.list(prefix).await else {
             continue;
         };

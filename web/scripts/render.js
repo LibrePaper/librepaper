@@ -62,3 +62,7 @@ const render = (name) => (source, file) => {
 
 export const renderMarkdown = render("markdown");
 export const renderTypst = render("typst");
+
+/// HTML's renderer is the identity, so what a reader sees is the source's own
+/// visible text and no module is needed to work it out.
+export const renderHtml = (source) => visibleText(source);

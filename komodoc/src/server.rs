@@ -31,9 +31,11 @@ use crate::config::Configuration;
 use crate::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
-use crate::render::{is_markdown, render_markdown_document, title_from_markdown};
-use crate::room::{Message as RoomMessage, Outgoing, Room, RoomSet};
-use crate::store::{digest_of, random_suffix, slugify, IndexEntry, Publication, PutError, Store};
+use crate::render::{is_html, is_markdown, title_from_html, title_from_markdown};
+use crate::room::{
+    decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet,
+};
+use crate::store::{random_suffix, slugify, IndexEntry, Publication, PutError, Store};
 use crate::util::clean;
 
 /// How much room a multipart upload gets beyond the document itself for part
@@ -41,7 +43,7 @@ use crate::util::clean;
 const MULTIPART_SLACK: usize = 1 << 20;
 
 pub struct Server {
-    pub store: Store,
+    pub store: Arc<Store>,
     pub rooms: RoomSet,
     /// Whether a document's bytes are fetched by the reader's browser straight
     /// from the bucket. Only possible when the bucket can presign, and only
@@ -85,6 +87,11 @@ impl Server {
         publishers: Policy,
         commenters: Policy,
     ) -> Server {
+        // The rooms are handed the index before anything opens one: a
+        // checkpoint has to charge itself to the document's owner, and the
+        // index is what holds that.
+        let store = Arc::new(store);
+        rooms.attach_store(store.clone());
         Server {
             store,
             rooms,
@@ -265,6 +272,26 @@ impl Server {
         if id.is_signed_in() {
             incoming.creator = id.login.clone();
         }
+        // Every comment sits on a checkpoint by construction: what the
+        // reviewer was looking at is on record the moment they say something
+        // about it, rather than being reconstructed later from a document that
+        // has moved on. A checkpoint whose text is already the current one
+        // costs nothing and adds no entry.
+        if incoming.kind == "comment" {
+            let by = if id.is_signed_in() {
+                id.login.clone()
+            } else {
+                incoming.creator.clone()
+            };
+            if let Err(err) = room.checkpoint("comment", &by).await {
+                // Not a reason to refuse the comment: the comment is the
+                // reader's work, and the checkpoint is bookkeeping about it.
+                eprintln!(
+                    "warning: could not checkpoint {} for a comment: {err}",
+                    room.slug
+                );
+            }
+        }
         room.apply(incoming, address, author, is_owner).await
     }
 }
@@ -298,6 +325,16 @@ async fn handle(
     // and nothing else: no shell, no API, no session. That is the whole point
     // of the separate hostname.
     if arrival.is_docs_host() {
+        // The shell a document is painted into. It carries the agent and
+        // nothing else: the reader renders the text itself, with the same
+        // module the editor previews with, and sends the page in. Nothing
+        // rendered is stored, so there is nothing here to serve.
+        if let ["raw", slug] | ["raw", slug, ""] = parts[..] {
+            return server.serve_shell(&arrival, slug).await;
+        }
+        // The old content-addressed page, for as long as a deployment still
+        // has one: a link written down before this change still resolves.
+        // Nothing writes these any more.
         if let ["raw", slug, file] = parts[..] {
             if let Some(digest) = file.strip_suffix(".html") {
                 return server.serve_document(&arrival, slug, digest).await;
@@ -354,16 +391,11 @@ async fn handle(
             .await;
     }
 
-    // Stable, shareable URL: redirect to whichever version is current, on the
-    // origin that serves documents.
+    // Stable, shareable URL: the document's own shell, on the origin that
+    // serves documents. There is one version, so there is no digest in it.
     if let ["raw", slug] = parts[..] {
         return match server.store.get(slug).await {
-            Some(entry) => redirect(&format!(
-                "{}/raw/{}/{}.html",
-                arrival.docs_origin(),
-                entry.slug,
-                entry.sha
-            )),
+            Some(entry) => redirect(&format!("{}/raw/{}/", arrival.docs_origin(), entry.slug)),
             None => plain(404, "not found"),
         };
     }
@@ -395,6 +427,18 @@ async fn handle(
         }
     }
 
+    // The whole state of a document, for a socket whose state is too large to
+    // send down a text frame. Same origin, signed, and short-lived, and the
+    // document's own read permission is checked again here rather than taken
+    // on trust from the socket that minted the link.
+    if let ["api", "documents", slug, "state"] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_state(request.headers(), &arrival, slug, request.uri().query())
+                .await;
+        }
+    }
+
     // The editable source of a document, for whoever may replace it. Only the
     // publisher can act on it, so only the publisher is shown it.
     if let ["api", "documents", slug, "source"] = parts[..] {
@@ -412,7 +456,12 @@ async fn handle(
             };
             let id = server.whoami(request.headers(), &arrival).await;
             let (total, open) = server.rooms.get(slug).await.counts().await;
-            let owned = entry.owned_by(&server.owner(request.headers(), &arrival, &id), &id.id);
+            let role = entry.role_of(
+                &server.owner(request.headers(), &arrival, &id),
+                &id.id,
+                server.commenters.allows(&id.login),
+            );
+            let owned = role.at_least(crate::store::Role::Editor);
             return write_json(
                 200,
                 &json!({
@@ -426,6 +475,12 @@ async fn handle(
                     // Which of those this deployment can render again, and so
                     // offer an editor for.
                     "renderers": server.renderers(),
+                    // The highest role this caller holds, which is what the
+                    // reader derives every affordance from: the editor at
+                    // `editor` and above, the comment tools at `commenter` and
+                    // above. `can_edit` and `can_moderate` are the same answer
+                    // in the older shape, kept so a cached page still works.
+                    "role": role.as_str(),
                     // Whether this caller may replace the document, which is what
                     // an editor does on save. Here that is the same question as
                     // owning it.
@@ -516,7 +571,15 @@ impl Server {
         let headers = request.headers().clone();
         let id = self.whoami(&headers, arrival).await;
         let author = self.comment_author(&headers, arrival, &id);
-        let is_owner = entry.owned_by(&self.owner(&headers, arrival, &id), &id.id);
+        // What this caller may do here, asked once: the `y-*` gate and the
+        // moderation of anyone else's comment are both the editor rung.
+        let is_owner = entry
+            .role_of(
+                &self.owner(&headers, arrival, &id),
+                &id.id,
+                self.commenters.allows(&id.login),
+            )
+            .at_least(crate::store::Role::Editor);
         let address = client_address(peer, &headers);
 
         let (mut parts, _body) = request.into_parts();
@@ -546,9 +609,14 @@ impl Server {
         is_owner: bool,
     ) {
         let (mut sink, mut stream) = socket.split();
-        let (tx, mut rx) = mpsc::unbounded_channel::<Outgoing>();
+        // Bounded: a reader whose connection cannot take another frame is
+        // disconnected rather than queued for, so one slow peer cannot make
+        // the server hold a session's worth of updates on its behalf. It
+        // reconnects and asks for what it missed by state vector.
+        let (tx, mut rx) = mpsc::channel::<Outgoing>(self.config.session.peer_queue);
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
-        room.attach(socket_id, address.clone(), tx.clone()).await;
+        room.attach(socket_id, address.clone(), tx.clone(), is_owner)
+            .await;
 
         // One task writes, so a broadcast from another connection never
         // interleaves with a reply to this one.
@@ -574,7 +642,7 @@ impl Server {
 
         let hello =
             json!({"type": "hello", "comments": room.snapshot_for(&author, is_owner).await});
-        let _ = tx.send(Outgoing::Text(hello.to_string()));
+        let _ = tx.send(Outgoing::Text(hello.to_string())).await;
 
         while let Some(Ok(frame)) = stream.next().await {
             let raw = match frame {
@@ -586,22 +654,36 @@ impl Server {
                 continue;
             };
 
-            // Editing is relayed rather than applied: the updates are a CRDT's,
-            // and this end neither reads nor merges them. Only somebody who may
-            // replace the document may change its source, which is the same
-            // rule the save itself is under.
+            // The document belongs to the room. An update is applied there
+            // before it is relayed, and what is relayed is what was applied.
+            // Reading it is open to anyone who may read the document -- that
+            // is how a reader renders the current text -- and writing it is
+            // the editor rung, the same gate the source has always been under.
             if incoming.kind.starts_with("y-") {
-                if !is_owner {
-                    continue;
-                }
                 match incoming.kind.as_str() {
-                    "y-open" => {
-                        let (updates, seed) = room.editing_state().await;
-                        let payload = json!({
-                            "type": "y-state", "updates": updates, "seed": seed,
-                            "count": room.editors().await,
-                        });
-                        if tx.send(Outgoing::Text(payload.to_string())).is_err() {
+                    // What the socket already has, or nothing on a cold join.
+                    "y-open" | "y-sync" => {
+                        let vector = decode_update(&incoming.vector).filter(|raw| !raw.is_empty());
+                        let (update, count) = room.open_state(vector.as_deref()).await;
+                        let payload = if update.len() > self.config.session.inline_state_max {
+                            // A megabyte of state does not belong in a text
+                            // frame. The socket is given a same-origin URL to
+                            // fetch it from, and catches up on whatever
+                            // arrived during the fetch by sending its state
+                            // vector back as `y-sync`.
+                            json!({
+                                "type": "y-state",
+                                "ref": self.state_reference(&room.slug),
+                                "count": count,
+                            })
+                        } else {
+                            json!({
+                                "type": "y-state",
+                                "update": encode_update(&update),
+                                "count": count,
+                            })
+                        };
+                        if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
                             break;
                         }
                         room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
@@ -612,7 +694,7 @@ impl Server {
                     // now, so it is worth nothing to whoever arrives next, and
                     // a session that kept it would be keeping a list of ghosts.
                     "y-awareness" => {
-                        if incoming.update.is_empty() {
+                        if !is_owner || incoming.update.is_empty() {
                             continue;
                         }
                         room.broadcast_except(
@@ -622,24 +704,48 @@ impl Server {
                         .await;
                     }
                     "y-update" => {
-                        if incoming.update.is_empty() {
+                        if !is_owner || incoming.update.is_empty() {
                             continue;
                         }
-                        let want_snapshot = room
-                            .editing(incoming.update.clone(), incoming.replace)
-                            .await;
-                        // Straight on to everyone else. The sender already has it.
+                        let Some(update) = decode_update(&incoming.update) else {
+                            continue;
+                        };
+                        match room
+                            .receive_update(socket_id, &update, incoming.seq, &author)
+                            .await
+                        {
+                            Applied::Ignored => continue,
+                            Applied::Refuse(reason) => {
+                                let _ = tx.send(Outgoing::Close(reason)).await;
+                                break;
+                            }
+                            Applied::Relay => {}
+                        }
+                        // Straight on to everyone else, readers included. The
+                        // sender already has it, and is told separately, once
+                        // storage has it, that it is durable.
                         room.broadcast_except(
                             Some(socket_id),
                             &json!({"type": "y-update", "update": incoming.update}),
                         )
                         .await;
-                        if want_snapshot
-                            && tx
-                                .send(Outgoing::Text(json!({"type": "y-snapshot"}).to_string()))
-                                .is_err()
-                        {
-                            break;
+                    }
+                    // A deliberate act by the author, and so a mark in the
+                    // timeline. The requester is told which checkpoint it
+                    // became, which is how `komodoc sync` knows what to print.
+                    "y-checkpoint" => {
+                        if !is_owner {
+                            continue;
+                        }
+                        let why = match incoming.why.as_str() {
+                            "sync" | "restore" | "label" => incoming.why.clone(),
+                            _ => "cli".to_string(),
+                        };
+                        if let Ok(Some(sha)) = room.checkpoint(&why, &author).await {
+                            let payload = json!({"type": "y-checkpoint", "sha": sha});
+                            if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
+                                break;
+                            }
                         }
                     }
                     _ => {}
@@ -651,7 +757,7 @@ impl Server {
                 .apply_from(&room, incoming, &address, &id, &author, is_owner)
                 .await;
             if !ok {
-                if tx.send(Outgoing::Text(result.to_string())).is_err() {
+                if tx.send(Outgoing::Text(result.to_string())).await.is_err() {
                     break;
                 }
                 continue;
@@ -660,12 +766,31 @@ impl Server {
         }
 
         room.detach(socket_id).await;
-        // The last person editing has gone, so the session goes with them.
-        room.end_editing().await;
+        // The last editor leaving is the rule that replaces `end_editing`'s
+        // forgetting: what they wrote is written out and marked, rather than
+        // dropped when the last tab closes.
+        if is_owner && room.editors_connected().await == 0 {
+            if let Err(err) = room.persist().await {
+                eprintln!(
+                    "warning: could not write the session for {}: {err}",
+                    room.slug
+                );
+            }
+            let _ = room.checkpoint("left", &author).await;
+        }
         room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
             .await;
-        let _ = tx.send(Outgoing::Close(""));
+        let _ = tx.send(Outgoing::Close("")).await;
         let _ = writer.await;
+    }
+
+    /// A same-origin URL a socket can fetch a large document state from,
+    /// signed so it cannot be handed to somebody who may not read the
+    /// document, and short-lived so it cannot be kept.
+    fn state_reference(&self, slug: &str) -> String {
+        let until = crate::clock::now_unix() + 120;
+        let token = crate::auth::sign(&self.key, &format!("state:{slug}:{until}"));
+        format!("/api/documents/{slug}/state?until={until}&token={token}")
     }
 
     async fn handle_comments(
@@ -685,7 +810,13 @@ impl Server {
         let headers = request.headers().clone();
         let id = self.whoami(&headers, arrival).await;
         let author = self.comment_author(&headers, arrival, &id);
-        let is_owner = entry.owned_by(&self.owner(&headers, arrival, &id), &id.id);
+        let is_owner = entry
+            .role_of(
+                &self.owner(&headers, arrival, &id),
+                &id.id,
+                self.commenters.allows(&id.login),
+            )
+            .at_least(crate::store::Role::Editor);
 
         match *request.method() {
             Method::GET => write_json(
@@ -754,39 +885,40 @@ impl Server {
         } else {
             format!("{base}-{}", random_suffix(&self.config))
         };
-        // An edit is about one document. Publishing a file that collides with
-        // someone else's title becomes a new document of your own, which is
-        // right for publishing and wrong here: a save that quietly forked
-        // would leave the editor showing a document nobody else can see, and
-        // the one it was opened from untouched. Refused instead.
-        if !parsed.base_sha.is_empty() {
-            if existing.is_none() {
-                return write_json(
-                    409,
-                    &json!({"error": "the document you were editing is gone"}),
-                );
-            }
-            if !mine {
-                return write_json(
-                    409,
-                    &json!({"error": "this document is no longer yours to replace"}),
-                );
-            }
+        // Publishing over a document that already exists is an edit into its
+        // live session rather than a new version beside the old one. There is
+        // one document, so there is nothing to conflict with: the source the
+        // command line sends is diffed into the session, so an editor typing
+        // at that moment keeps their words and sees the rest change under
+        // them, and the write is marked with a checkpoint.
+        if mine {
+            let room = self.rooms.get(&key).await;
+            let entry = match self
+                .edit_into_session(&room, &parsed, &who, &existing.unwrap())
+                .await
+            {
+                Ok(entry) => entry,
+                Err(response) => return response,
+            };
+            return write_json(
+                201,
+                &json!({
+                    "slug": entry.slug, "title": entry.title, "sha": entry.sha,
+                    "created_at": entry.created_at, "updated_at": entry.updated_at,
+                    "url": format!("/docs/{}", entry.slug),
+                }),
+            );
         }
 
-        let digest = digest_of(&parsed.html);
         let entry = match self
             .store
             .put(Publication {
                 slug: key.clone(),
                 title: parsed.title,
-                digest,
-                html: parsed.html,
-                source: parsed.source,
-                source_format: parsed.source_format,
+                source: parsed.source.clone(),
+                source_format: parsed.source_format.clone(),
                 owner: who.key,
                 owner_id: who.id,
-                base_sha: parsed.base_sha,
             })
             .await
         {
@@ -794,23 +926,18 @@ impl Server {
             Err(PutError::Quota { status, message }) => {
                 return write_json(status, &json!({"error": message}))
             }
-            // Someone published while this caller was editing. Nothing is
-            // written: the editor is told, and decides what to do about it.
-            Err(PutError::Stale) => {
-                return write_json(409, &json!({"error": PutError::stale_message()}))
-            }
             Err(PutError::Storage(_)) => {
                 return write_json(500, &json!({"error": "could not store the document"}))
             }
         };
-        // Comments survive the replacement; they re-anchor in the reader.
-        // Everyone with the document open is told a new version exists, over
-        // the same socket their comments arrive on.
-        self.rooms
-            .get(&key)
-            .await
-            .broadcast(&json!({"type": "published", "sha": entry.sha, "title": entry.title}))
-            .await;
+        // The document itself is the session, and the session's first
+        // checkpoint is the source it was published with. Written here rather
+        // than by the store, because it is the room that owns the document.
+        let room = self.rooms.get(&key).await;
+        room.set_source(&parsed.source, &parsed.source_format).await;
+        if let Err(err) = room.checkpoint("cli", &entry.publisher).await {
+            eprintln!("warning: could not checkpoint {key}: {err}");
+        }
         write_json(
             201,
             &json!({
@@ -819,6 +946,62 @@ impl Server {
                 "url": format!("/docs/{}", entry.slug),
             }),
         )
+    }
+
+    #[allow(clippy::result_large_err)] // as read_upload: the error is a response
+    /// A publish onto a document that already exists: the source goes into the
+    /// live session as a difference, everyone with the document open sees it
+    /// arrive, and a checkpoint marks the moment.
+    async fn edit_into_session(
+        &self,
+        room: &Room,
+        parsed: &Upload,
+        who: &Caller,
+        existing: &IndexEntry,
+    ) -> Result<IndexEntry, Reply> {
+        if parsed.source.len() > self.config.max_html {
+            return Err(write_json(
+                413,
+                &json!({"error": "that document is too large"}),
+            ));
+        }
+        // A title given on the command line renames the document; an empty one
+        // leaves it as it is.
+        let title = if parsed.title.is_empty() {
+            existing.title.clone()
+        } else {
+            parsed.title.clone()
+        };
+        let update = room.set_source(&parsed.source, &parsed.source_format).await;
+        room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
+            .await;
+        let sha = match room.checkpoint("cli", &who.key).await {
+            Ok(Some(sha)) => sha,
+            // Deferred: the text is in the session and durable at the next
+            // write, and the checkpoint follows when the window passes.
+            Ok(None) => existing.sha.clone(),
+            Err(_) => {
+                return Err(write_json(
+                    500,
+                    &json!({"error": "could not store the document"}),
+                ))
+            }
+        };
+        if let Err(err) = self.store.rename(&existing.slug, &title).await {
+            eprintln!("warning: could not rename {}: {err}", existing.slug);
+        }
+        let mut entry = self
+            .store
+            .get(&existing.slug)
+            .await
+            .unwrap_or_else(|| existing.clone());
+        entry.sha = sha;
+        // Comments survive the edit; they re-anchor in the reader. Everyone
+        // with the document open is told, over the same socket their comments
+        // arrive on.
+        room.broadcast(&json!({"type": "published", "sha": entry.sha, "title": entry.title}))
+            .await;
+        Ok(entry)
     }
 
     /// Parses a publish request's body, in either format it may arrive as, and
@@ -831,8 +1014,7 @@ impl Server {
         let max_html = self.config.max_html;
         let content_type = header_of(request.headers(), "content-type").unwrap_or_default();
         let (mut title, mut slug, mut html) = (String::new(), String::new(), String::new());
-        let (mut source, mut source_format, mut base_sha) =
-            (String::new(), String::new(), String::new());
+        let (mut source, mut source_format) = (String::new(), String::new());
 
         if content_type.contains("multipart/form-data") {
             // The whole request is bounded, not just the document: without
@@ -887,16 +1069,24 @@ impl Server {
                     _ => {}
                 }
             }
-            // Markdown dropped on the page is rendered here, so what gets
-            // stored is HTML like everything else.
+            // Markdown dropped on the page is stored as markdown. It is not
+            // rendered here and never was worth rendering here: the browser
+            // showing it renders it, with the same module the editor previews
+            // with.
             if !filename.is_empty() && is_markdown(&filename) {
                 if title.trim().is_empty() {
                     title = title_from_markdown(&html);
                 }
-                let rendered = render_markdown_document(&html, title.trim());
-                source = html;
+                source = html.clone();
                 source_format = "markdown".to_string();
-                html = rendered;
+            } else if !filename.is_empty() && is_html(&filename) {
+                // An HTML document's source is its own bytes, through the
+                // identity renderer, so it opens in the editor like the others.
+                if title.trim().is_empty() {
+                    title = title_from_html(&html);
+                }
+                source = html.clone();
+                source_format = "html".to_string();
             }
         } else {
             // JSON escaping can inflate the document, so the body is allowed to
@@ -923,8 +1113,6 @@ impl Server {
                 source: String,
                 #[serde(default)]
                 source_format: String,
-                #[serde(default)]
-                base_sha: String,
             }
             let Ok(bytes) = to_bytes(request.into_body(), ceiling).await else {
                 return Err(write_json(413, &json!({"error": "document too large"})));
@@ -937,28 +1125,33 @@ impl Server {
             html = body.html;
             source = body.source;
             source_format = body.source_format;
-            base_sha = body.base_sha;
         }
 
-        // A source is kept only in a format something can render again.
-        // Anything else is dropped rather than refused: the document itself
-        // is fine, it simply cannot be reopened in the editor.
-        if !self.config.storable_source(&source_format) {
-            source.clear();
-            source_format.clear();
+        // Nothing derived is stored, so what arrives has to be the document
+        // itself. A caller that sends only HTML -- a page dropped on the
+        // upload form, or a client written against the older API -- has sent a
+        // document whose source is that HTML and whose renderer is the
+        // identity, which is what `html` has meant as a format since
+        // `06-SPEC-html.md`.
+        if source.is_empty() && !html.trim().is_empty() {
+            source = html;
+            source_format = "html".to_string();
         }
-        if source.is_empty() {
-            source_format.clear();
+        if !self.config.storable_source(&source_format) {
+            return Err(write_json(
+                400,
+                &json!({"error": "this deployment cannot store a document in that format"}),
+            ));
         }
         if source.len() > max_html {
-            return Err(write_json(413, &json!({"error": "source too large"})));
+            return Err(write_json(413, &json!({"error": "document too large"})));
         }
 
         let title = title.trim().to_string();
-        if title.is_empty() || html.trim().is_empty() {
+        if title.is_empty() || source.trim().is_empty() {
             return Err(write_json(
                 400,
-                &json!({"error": "title and html are required"}),
+                &json!({"error": "title and a document are required"}),
             ));
         }
         // Stripped of control characters the same way every other free-text
@@ -969,49 +1162,99 @@ impl Server {
         if title.chars().count() > self.config.max_title {
             return Err(write_json(400, &json!({"error": "title too long"})));
         }
-        if html.len() > max_html {
-            return Err(write_json(413, &json!({"error": "document too large"})));
-        }
         Ok(Upload {
             title,
             slug,
-            html,
             source,
             source_format,
-            base_sha,
         })
     }
 
-    /// Hands back the markup a document was rendered from, so an editor can
-    /// reopen it. Gated exactly as replacing it is: a document whose publisher
-    /// is someone else answers as a missing one does, so a guessed slug
-    /// reveals nothing about who published what.
-    async fn handle_source(&self, headers: &HeaderMap, arrival: &Arrival, slug: &str) -> Reply {
+    /// The document's whole Yjs state, as bytes. Reached only from a
+    /// `y-state` reference, which is why it carries a signature and an expiry;
+    /// but the signature is not the authorization. Anyone who may read the
+    /// document may read this, and nobody else, which is the same rule the
+    /// socket answers `y-open` under.
+    async fn handle_state(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if self.store.get(slug).await.is_none() {
+            return plain(404, "not found");
+        }
+        let fields: HashMap<String, String> = query
+            .map(|q| {
+                url::form_urlencoded::parse(q.as_bytes())
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let until = fields
+            .get("until")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        let token = fields.get("token").cloned().unwrap_or_default();
+        if until < crate::clock::now_unix()
+            || !crate::auth::verifies(&self.key, &format!("state:{slug}:{until}"), &token)
+        {
+            return plain(403, "that link has expired");
+        }
+        // Cross-site fetches are refused here as everywhere else: a document's
+        // source is not another site's to read out of a signed-in browser.
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let room = self.rooms.get(slug).await;
+        let (state, _) = room.open_state(None).await;
+        let mut response = Response::new(Body::from(state));
+        set(&mut response, "content-type", "application/octet-stream");
+        set(&mut response, "cache-control", "no-store");
+        privacy_headers(&mut response);
+        response
+    }
+
+    /// The source of a document, which is the document. Readable by anyone
+    /// who may read it.
+    async fn handle_source(&self, _headers: &HeaderMap, _arrival: &Arrival, slug: &str) -> Reply {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let id = self.whoami(headers, arrival).await;
-        let entry = match self.store.get(slug).await {
-            Some(entry) if entry.owned_by(&self.owner(headers, arrival, &id), &id.id) => entry,
-            _ => return write_json(404, &json!({"error": "not found"})),
+        let Some(entry) = self.store.get(slug).await else {
+            return write_json(404, &json!({"error": "not found"}));
         };
-        if entry.source_format.is_empty() {
-            return write_json(
-                404,
-                &json!({"error": "this document has no stored source; publish it again from its markdown to edit it"}),
-            );
-        }
-        let Ok(source) = self.store.read_source(slug).await else {
-            return write_json(
-                404,
-                &json!({"error": "this document's source is no longer stored"}),
-            );
+        // The source is readable by anyone who may read the document. It has
+        // to be: the browser cannot render what it is not given, and nothing
+        // rendered is stored any more. `01-SPEC-history.md` accepts that and
+        // offers no way around it -- a source that must not be seen is not
+        // published here as that source.
+        //
+        // What is answered is the live document, not a stored copy of it:
+        // there is one version, and this is it.
+        let room = self.rooms.get(slug).await;
+        let source = room.source().await;
+        let format = {
+            let held = room.format().await;
+            if held.is_empty() {
+                if entry.source_format.is_empty() {
+                    "html".to_string()
+                } else {
+                    entry.source_format.clone()
+                }
+            } else {
+                held
+            }
         };
         write_json(
             200,
             &json!({
                 "slug": entry.slug, "title": entry.title, "sha": entry.sha,
-                "format": entry.source_format, "source": String::from_utf8_lossy(&source),
+                "format": format, "source": source,
             }),
         )
     }
@@ -1040,6 +1283,57 @@ impl Server {
             ),
             Err(_) => write_json(500, &json!({"error": "could not remove the document"})),
         }
+    }
+
+    /// An empty page with the agent in it, on the documents origin. The reader
+    /// joins the session, renders the text with the engine, and sends the page
+    /// in with the `preview` message the editor already uses on every
+    /// keystroke; this is the frame that receives it.
+    ///
+    /// The frame and its origin stay what they were: it is what confines a
+    /// document that turns out to be hostile, and the agent is still the only
+    /// thing on either side that touches the DOM. What changed is where the
+    /// HTML comes from.
+    async fn serve_shell(&self, arrival: &Arrival, slug: &str) -> Reply {
+        if !self.valid_slug(slug) || self.store.get(slug).await.is_none() {
+            return plain(404, "not found");
+        }
+        let reader = arrival.reader_origin();
+        // A document whose format is `html` is sent as it is. It has to be:
+        // its renderer is the identity, and a notebook or a Quarto page
+        // carries scripts of its own -- a chart, a map -- which the `preview`
+        // channel cannot run, because that path sets innerHTML. So this one
+        // format is served as the page it is, with the agent added, and a
+        // reader sees an edit to it on their next load rather than as it is
+        // typed. Every other format is rendered by the browser into the empty
+        // shell below.
+        let room = self.rooms.get(slug).await;
+        let format = room.format().await;
+        let page = if format.is_empty() || format == "html" {
+            room.source().await.into_bytes()
+        } else {
+            b"<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
+                .to_vec()
+        };
+        let mut response = Response::new(Body::from(with_agent(&page, &reader)));
+        set(&mut response, "content-type", "text/html; charset=utf-8");
+        set(
+            &mut response,
+            "content-security-policy",
+            &format!(
+                "default-src 'self' data: blob: https:; \
+                 script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; \
+                 style-src 'self' 'unsafe-inline' data: https:; \
+                 frame-ancestors {reader}; form-action 'none'; base-uri 'none'"
+            ),
+        );
+        set(&mut response, "x-content-type-options", "nosniff");
+        privacy_headers(&mut response);
+        // The shell is the same bytes for every document and every version of
+        // it, but it is served under the document's own path and a stale copy
+        // would outlive a change to the agent.
+        set(&mut response, "cache-control", "no-store");
+        response
     }
 
     async fn serve_document(&self, arrival: &Arrival, slug: &str, digest: &str) -> Reply {
@@ -1274,10 +1568,10 @@ impl Server {
 struct Upload {
     title: String,
     slug: String,
-    html: String,
+    /// The document itself, in the format below. There is no rendered form
+    /// here: nothing derived is stored.
     source: String,
     source_format: String,
-    base_sha: String,
 }
 
 pub fn slug_pattern(config: &Configuration) -> regex::Regex {

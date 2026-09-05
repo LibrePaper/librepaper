@@ -39,48 +39,57 @@ async fn source_round_trips() {
     assert_eq!(text(&payload, "sha"), text(&document, "sha"));
 }
 
-// A document published as HTML has no source but itself, and says so rather
-// than handing back an empty one an editor would then save over it.
+// A document published as HTML is its own source, through the identity
+// renderer. A caller that sends only `html`, as an older client does, has sent
+// a document whose format is `html`.
 #[tokio::test]
-async fn source_absent_for_html_documents() {
+async fn an_html_document_is_its_own_source() {
     let server = new_test_server().await;
-    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
     let (status, payload) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
-    assert_eq!(status, 404);
-    assert!(
-        text(&payload, "error").contains("no stored source"),
-        "{payload}"
+    assert_eq!(status, 200, "source returned {status}: {payload}");
+    assert_eq!(text(&payload, "format"), "html");
+    assert_eq!(
+        text(&payload, "source"),
+        "<!doctype html><p>hello world</p>",
+        "an HTML document's source is the HTML it was published as"
     );
 }
 
-// Replacing a markdown document with HTML drops the source with it: the old
-// markdown no longer says what the document says.
+// Replacing a markdown document with HTML drops the markdown source with it:
+// the old markdown no longer says what the document says, and what comes back
+// is the HTML that does.
 #[tokio::test]
 async fn publishing_html_drops_a_stale_source() {
     let server = new_test_server().await;
     let slug = text(&publish_with_source(&server.url).await, "slug");
+    let page = "<!doctype html><p>plain</p>";
     let (status, document) = post(
         &server.url,
         "/api/documents",
-        json!({"title": "My Paper", "slug": slug, "html": "<!doctype html><p>plain</p>"}),
+        json!({"title": "My Paper", "slug": slug, "html": page}),
     )
     .await;
     assert_eq!(status, 201, "replacement returned {status}: {document}");
-    let (status, _) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
-    assert_eq!(status, 404);
+    let (status, payload) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(text(&payload, "format"), "html");
+    assert_eq!(text(&payload, "source"), page);
     assert!(
         matches!(
             server.instance.store.read_source(&slug).await,
             Err(BlobError::NotFound)
         ),
-        "the stale source is still stored"
+        "the stale markdown source is still stored"
     );
 }
 
-// The source is stored, so it is charged: an entry's size is what the
-// document actually occupies.
+// What a document costs is its session and its history, and nothing rendered.
+// The old layout charged for the HTML as well as the source; there is no HTML
+// now, and the entry says so.
 #[tokio::test]
-async fn source_counts_toward_the_quota() {
+async fn a_document_is_charged_for_its_source_and_its_history() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
@@ -90,48 +99,65 @@ async fn source_counts_toward_the_quota() {
         .get(&slug)
         .await
         .expect("the document is in the index");
-    let stored = server.instance.store.read(&slug, &entry.sha).await.unwrap();
-    assert_eq!(
-        entry.size,
-        (stored.len() + TEST_MARKDOWN.len()) as i64,
-        "entry size should be html plus source"
+    // The first checkpoint is the source it was published with, and the index
+    // names it.
+    let checkpoint = server
+        .instance
+        .store
+        .blobs
+        .get(&crate::blob::checkpoint_key(&slug, &entry.sha))
+        .await
+        .expect("the source is stored as a checkpoint");
+    assert_eq!(String::from_utf8_lossy(&checkpoint), TEST_MARKDOWN);
+    // Size is the live document plus the checkpoint. It is more than the
+    // source alone, because the session state carries the CRDT's bookkeeping,
+    // and far less than a rendered page would have added.
+    assert!(
+        entry.size >= TEST_MARKDOWN.len() as i64,
+        "entry size {} does not cover the source",
+        entry.size
     );
+    // Nothing derived is stored: no page, and no second copy of the source.
+    for prefix in [
+        crate::blob::document_prefix(&slug),
+        crate::blob::source_prefix(&slug),
+    ] {
+        let found = server.instance.store.blobs.list(&prefix).await.unwrap();
+        assert!(found.is_empty(), "{prefix} still holds {found:?}");
+    }
 }
 
-// A source is not published: only the account that may replace the document
-// may read what it was written from.
+// The source is readable by anyone who may read the document. It has to be:
+// the browser cannot render what it is not given, and nothing rendered is
+// stored. `01-SPEC-history.md` accepts this and offers no way around it.
 #[tokio::test]
-async fn source_is_owner_only() {
+async fn the_source_is_readable_by_any_reader() {
     let server = new_test_server().await;
     let slug = text(&publish_with_source(&server.url).await, "slug");
     for cookie in ["", &session_as("stranger")] {
         let (status, payload) = get_source_as(cookie, &server.url, &slug).await;
         assert_eq!(
-            status, 404,
+            status, 200,
             "source read with cookie {cookie:?} got {status} {payload}"
         );
+        assert_eq!(text(&payload, "source"), TEST_MARKDOWN);
     }
 }
 
-// A source in a format this project knows nothing about is dropped rather
-// than refused: the document itself is fine, it simply cannot be reopened.
+// A document in a format this deployment cannot store is refused. There is
+// nowhere for it to go: the source is the document now, so a source that
+// cannot be kept is a document that cannot be published.
 #[tokio::test]
-async fn unknown_source_format_is_dropped() {
+async fn an_unknown_source_format_is_refused() {
     let server = new_test_server().await;
     let (status, document) = post(
         &server.url,
         "/api/documents",
-        json!({"title": "My Paper", "html": "<!doctype html><p>x</p>", "source": "\\documentclass{article}", "source_format": "latex"}),
+        json!({"title": "My Paper", "source": "\\documentclass{article}", "source_format": "latex"}),
     )
     .await;
-    assert_eq!(status, 201);
-    let (status, _) = get_source_as(
-        &session_as(TEST_PUBLISHER),
-        &server.url,
-        &text(&document, "slug"),
-    )
-    .await;
-    assert_eq!(status, 404);
+    assert_eq!(status, 400, "{document}");
+    assert!(text(&document, "error").contains("format"), "{document}");
 }
 
 // Saving in the editor is publishing a revision, and a revision keeps the
@@ -173,59 +199,46 @@ async fn saving_a_revision_keeps_comments() {
     );
 }
 
-// Two people editing the same document at once. Whoever saves second is
-// saving against a version that no longer exists, and without this they would
-// silently discard the first person's work.
+// Two people publishing over the same document at once. There is one
+// document, so there is nothing to conflict with: each publish is diffed into
+// the live session, and neither is refused. What used to be a 409 and a
+// "reload before saving over it" is now an edit that lands.
 #[tokio::test]
-async fn a_save_against_an_old_version_is_refused() {
+async fn two_publishes_both_land_and_neither_is_refused() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let opened = text(&document, "sha");
 
     let first = "# My Paper\n\nHello *world*, says the first editor.\n";
     let (status, saved) = post(
         &server.url,
         "/api/documents",
-        json!({"title": "My Paper", "slug": slug, "html": render_markdown_document(first, "My Paper"),
-            "source": first, "source_format": "markdown", "base_sha": opened}),
+        json!({"title": "My Paper", "slug": slug, "source": first, "source_format": "markdown"}),
     )
     .await;
     assert_eq!(status, 201, "the first save returned {status}: {saved}");
 
+    // The second names the version the first has already moved past, the way
+    // an editor that opened before the first save would. It is not refused.
     let second = "# My Paper\n\nHello *world*, says the second editor.\n";
-    let html = render_markdown_document(second, "My Paper");
-    let (status, refused) = post(
-        &server.url,
-        "/api/documents",
-        json!({"title": "My Paper", "slug": slug, "html": html, "source": second, "source_format": "markdown", "base_sha": opened}),
-    )
-    .await;
-    assert_eq!(status, 409, "the stale save returned {status} {refused}");
-    assert!(
-        text(&refused, "error").contains("published again while you were editing"),
-        "{refused}"
-    );
-
-    // And nothing was written: the first editor's work is what the document is.
-    let (status, current) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
-    assert!(status == 200 && text(&current, "source") == first);
-
-    // Saving against what the document actually is now goes through.
     let (status, accepted) = post(
         &server.url,
         "/api/documents",
-        json!({"title": "My Paper", "slug": slug, "html": html, "source": second, "source_format": "markdown", "base_sha": text(&saved, "sha")}),
+        json!({"title": "My Paper", "slug": slug, "source": second, "source_format": "markdown",
+            "base_sha": text(&document, "sha")}),
     )
     .await;
-    assert_eq!(
-        status, 201,
-        "saving against the current version returned {status}: {accepted}"
+    assert_eq!(status, 201, "the second save returned {status}: {accepted}");
+
+    let (status, current) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    assert!(
+        status == 200 && text(&current, "source") == second,
+        "the document after both saves: {current}"
     );
 }
 
-// Publishing a file is a deliberate replacement and says nothing about what
-// it replaces, so it carries no base and is never refused for staleness.
+// Publishing a file is a deliberate replacement and says nothing about what it
+// replaces, so it is never refused for staleness.
 #[tokio::test]
 async fn publishing_without_a_base_is_not_refused() {
     let server = new_test_server().await;
@@ -239,4 +252,70 @@ async fn publishing_without_a_base_is_not_refused() {
         .await;
         assert_eq!(status, 201, "publish {round} returned {status}: {document}");
     }
+}
+
+// An HTML document uploaded through the page keeps its source -- itself -- and
+// is named by its own <title>, which is what the landing page has always shown
+// and what the command line used to ignore.
+#[tokio::test]
+async fn an_uploaded_html_file_keeps_its_source_and_its_own_title() {
+    let server = new_test_server().await;
+    let page = "<!doctype html><html><head><title>A Paper</title></head><body><h1>A Paper</h1><p>prose</p></body></html>";
+    let (status, document) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "A Paper", "html": page, "source": page, "source_format": "html"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{document}");
+    let slug = text(&document, "slug");
+    let (status, payload) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(text(&payload, "format"), "html");
+    assert_eq!(text(&payload, "source"), page);
+}
+
+// An HTML document is stored once, as the document it is. Nothing is rendered
+// from it and nothing derived is kept, so what its owner is charged for is one
+// copy of the page.
+#[tokio::test]
+async fn an_html_document_is_stored_once() {
+    let server = new_test_server().await;
+    let page = "<!doctype html><title>A Paper</title><p>prose</p>";
+    let (status, document) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "A Paper", "html": page, "source": page, "source_format": "html"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{document}");
+    let slug = text(&document, "slug");
+    let entry = server
+        .instance
+        .store
+        .get(&slug)
+        .await
+        .expect("in the index");
+    // One copy as a checkpoint, plus the live document it is held in. Not two
+    // copies of the page, and no rendering of it.
+    let checkpoint = server
+        .instance
+        .store
+        .blobs
+        .get(&crate::blob::checkpoint_key(&slug, &entry.sha))
+        .await
+        .expect("stored as a checkpoint");
+    assert_eq!(String::from_utf8_lossy(&checkpoint), page);
+    let found = server
+        .instance
+        .store
+        .blobs
+        .list(&crate::blob::document_prefix(&slug))
+        .await
+        .unwrap();
+    assert!(found.is_empty(), "a rendered page was stored: {found:?}");
+    // And it still opens in the editor, from the document.
+    let (status, payload) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(text(&payload, "source"), page);
 }

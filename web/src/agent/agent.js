@@ -34,6 +34,24 @@
     observer.observe(document.body, { childList: true, characterData: true, subtree: true });
   }
 
+  // The styles of the page being shown. Under `01-SPEC-history.md` the frame
+  // is an empty shell and the whole document -- head and body -- arrives over
+  // the channel, so the head has to be installed here or every document would
+  // render as unstyled HTML. Only `<style>` and `<link rel=stylesheet>` are
+  // taken, and the title: nothing else in a head is this frame's to run.
+  let installed = "";
+  let installedNodes = [];
+  function adoptStyles(parsed) {
+    const wanted = [...parsed.head.querySelectorAll("style, link[rel~='stylesheet' i]")];
+    const markup = wanted.map((node) => node.outerHTML).join("");
+    if (markup === installed) return;
+    installed = markup;
+    for (const node of installedNodes) node.remove();
+    installedNodes = wanted.map((node) => document.head.appendChild(node.cloneNode(true)));
+    const title = parsed.head.querySelector("title");
+    if (title) document.title = title.textContent || "";
+  }
+
   // One tint per tool, so what a mark means is legible without opening the
   // sidebar. Hue carries the meaning and saturation stays low: these sit under
   // running text for as long as the document is open, and a saturated wash
@@ -482,6 +500,12 @@
     // innerHTML does not run scripts, so a preview never executes anything.
     if (message.type === "preview") {
       const parsed = new DOMParser().parseFromString(String(message.html || ""), "text/html");
+      // The frame this arrives in is an empty shell -- nothing rendered is
+      // stored any more, so there is no page whose styles the body could
+      // inherit. The page's own head comes with it, and is installed once:
+      // it is the same template on every keystroke, so it is replaced only
+      // when it actually differs.
+      adoptStyles(parsed);
       quietly(() => {
         document.body.innerHTML = parsed.body.innerHTML;
       });

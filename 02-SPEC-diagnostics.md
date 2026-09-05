@@ -1,7 +1,8 @@
 # SPEC: compiler errors, shown where they are
 
-Status: proposed. Nothing here is built. It stands on its own, but it is
-written for the editor `SPEC-history.md` describes, where readers render the
+Status: built, steps 1 to 6. Step 6 landed with `01-SPEC-history.md` steps 1
+to 4, which made readers render. See "What was built" at the end. It stands on its own, but it is
+written for the editor `01-SPEC-history.md` describes, where readers render the
 text themselves; the two places that spec changes what this one does are
 marked.
 
@@ -66,8 +67,8 @@ looking at it. So a diagnostic is painted only after the source has been
 quiet for longer than the render debounce, and a successful render clears
 every diagnostic the moment it lands.
 
-Markdown never produces a diagnostic, and nothing here changes for it: the
-list is empty and every surface below is inert.
+Markdown and HTML never produce a diagnostic (`06-SPEC-html.md`), and nothing
+here changes for them: the list is empty and every surface below is inert.
 
 ## What a diagnostic is
 
@@ -155,7 +156,7 @@ from red to clean at typing speed and from clean to red at reading speed,
 which is the asymmetry the fourth rule asks for.
 
 **The badge.** The toolbar badge that says "saved" or "unsaved changes"
-today -- and says nothing under `SPEC-history.md`, which removes both --
+today -- and says nothing under `01-SPEC-history.md`, which removes both --
 says "1 error", "3 errors", or "2 errors, 1 warning", in the error tone for
 errors and the warning tone for warnings alone. It is empty when there is
 nothing to say. Clicking it moves the caret to the first diagnostic and
@@ -189,7 +190,7 @@ reader can show the same one.
 ## For a reader
 
 Today a reader loads stored HTML and cannot meet an error. Under
-`SPEC-history.md` a reader renders the text themselves, and meets the same
+`01-SPEC-history.md` a reader renders the text themselves, and meets the same
 compile failures the author does, a second behind.
 
 A reader keeps the last page that compiled, as the editor does, and is told
@@ -199,12 +200,13 @@ learns to stop reading while the document is being edited. A reader who
 joins while the document does not compile has nothing to keep, and is shown
 the engine's "does not compile" page with the diagnostics on it. Falling
 back to the last checkpoint that compiled is the better answer, and it is
-`SPEC-history.md`'s to give, since it owns the checkpoints; it is listed
+`01-SPEC-history.md`'s to give, since it owns the checkpoints; it is listed
 there as a change this spec asks of it.
 
 ## On the command line
 
-`komodoc publish paper.typ` compiles natively before it uploads. When the
+`komodoc publish paper.typ` compiles, with the engine inside the
+executable, before it uploads. When the
 compile fails it prints every diagnostic and exits 1, and uploads nothing:
 
 ```
@@ -226,13 +228,16 @@ There is no `--force` to publish a document that does not compile. `publish`
 exists to make a document readable, and a document that does not compile is
 not one. `komodoc sync` is the tool for keeping a file and a session the
 same whatever state the file is in, and it does not compile at all
-(`SPEC-sync.md`, "What the client does not render"): a broken file syncs,
-and the browser tab shows where it broke.
+(`04-SPEC-sync.md`, "What the client does not render"): a broken file syncs,
+and the browser tab shows where it broke. This holds under `01-SPEC-history.md`
+too, where `publish` on an existing slug is an edit into the live session:
+it is an edit the command declines to make when the file does not compile,
+since readers would render the failure the moment it landed.
 
 ## What it is not
 
 - **Not typst-ide.** Completions, hover documentation and go-to-definition
-  are `SPEC-rust.md`'s item and stay there. This spec gives them what they
+  remain future editor work. This spec gives them what they
   will need -- a second result channel out of the module, a
   line-and-column convention, the lint extension already mounted -- and
   builds none of them.
@@ -247,19 +252,20 @@ and the browser tab shows where it broke.
   nothing here. The list is made in the browser or in the command line,
   costs a few hundred bytes of JSON, and never crosses the network. Nothing
   in this spec touches storage or the sandbox budget.
-- **Not markdown.** Comrak has no failure mode, and the list is empty for
-  it. If a markdown linter is ever wanted, it is a different spec.
+- **Not markdown, not HTML.** Comrak has no failure mode and the identity
+  has none, so the list is empty for both. If a markdown linter is ever
+  wanted, it is a different spec.
 
 ## What changes elsewhere
 
-- **`SPEC-history.md`, the reader.** A reader joining a document that does
+- **`01-SPEC-history.md`, the reader.** A reader joining a document that does
   not compile should be shown the latest checkpoint that does, not the
   diagnostics page; the checkpoints are that spec's, so the fallback is
   written there. Until it is, the reader gets the diagnostics page.
-- **`SPEC-rust.md`, the engine.** `Result<String, String>` becomes
+- **The Rust engine.** `Result<String, String>` becomes
   `Compiled`; the byte-identical native-versus-wasm test compares the
   diagnostics list as well as the page.
-- **`komodoc seed`.** Renders the seeded typst example natively and must
+- **`komodoc seed`.** Renders the seeded typst example locally and must
   fail loudly, with the list, if the example ever stops compiling against a
   new pinned typst.
 
@@ -288,7 +294,7 @@ and the browser tab shows where it broke.
 5. **The page for no page.** `typst::diagnostics_page(list, title)` in the
    engine, on the shared page template; sent to the frame when there is
    nothing else to show.
-6. **The reader**, once `SPEC-history.md` makes readers render: keep the
+6. **The reader**, once `01-SPEC-history.md` makes readers render: keep the
    last page, show the diagnostics page on a cold join.
 
 ## Open questions
@@ -305,3 +311,67 @@ and the browser tab shows where it broke.
   font it will never have -- shows a yellow badge forever. Typst has no
   suppression; a per-document "hide warnings" is the likely answer and is
   not designed here.
+
+## What was built
+
+Steps 1 to 5, on the existing Rust host and its native/WASM engine.
+
+**The engine.** `engine/src/diagnostic.rs`: `Diagnostic`, `Severity` and
+`Compiled`, with the JSON written by hand rather than by serde, so neither
+module carries a serialiser for a hundred bytes. `typst::compile_html` and
+`typst::render` return `Compiled`; the mapping from `SourceDiagnostic` goes
+through `WorldExt::range` and the source's `Lines`, and the column is
+re-counted in UTF-16 units in the engine. Hints are typst's hints followed by
+its trace. Tests: an unclosed `$` reports its line and column, an error in an
+imported file names it, a font warning comes back beside a page, and a column
+past an emoji counts UTF-16 units.
+
+**The ABI.** `diagnostics()` and `diagnostics_ptr()` beside `output_ptr()`,
+two results rather than one envelope; both modules export them, and the
+markdown one always answers `[]`. `renderers.render()` resolves to
+`{ html, diagnostics }` and no longer throws for a document that did not
+compile -- `html` is null instead -- and still throws for a module that could
+not be fetched.
+
+**The command line.** `render_typst_document` returns `Compiled`; `publish`
+prints `file:line:column: severity: message` with the hints indented, uploads
+nothing when any of them is an error, and counts the warnings into the line it
+prints when it does upload. `seed` does the same, loudly, so an example that
+stops compiling against a new pinned typst is heard about here.
+
+**The editor.** `@codemirror/lint` is mounted -- gutter, underline, hover, the
+panel on Ctrl-Shift-M -- and `Editor.svelte` exports `setDiagnostics`,
+`nextDiagnostic` and `showDiagnosticPanel`. `Reader.svelte` holds the last
+list, paints it four hundred milliseconds after the source goes quiet, clears
+it the moment a render succeeds, and counts it into a badge that goes to the
+next diagnostic when clicked. The save that used to be refused for a document
+that does not compile is gone with the save itself: under
+`01-SPEC-history.md` the source is the document, so there is nothing to refuse
+-- a document that does not compile is stored like any other, and what does
+not happen is that a reader is shown a page for it.
+
+**The page for no page.** `diagnostic::diagnostics_page(list, title)`, on the
+shared page template, reached through a `failure_page(title)` export that
+builds it from what the last compile said. The reader sends it to the frame
+when a compile fails and nothing has ever been painted, which is what someone
+who opens the editor on a document that does not compile sees.
+
+**The reader.** Step 6, once `01-SPEC-history.md` made readers render their own
+text. A reader keeps the last page that compiled and is told nothing else: no
+badge, no underline, no panel. `paintDiagnostics` returns without doing
+anything unless the source pane is open, so a compile failure in somebody
+else's editing session never reaches a reader who cannot act on it, while the
+last page that compiled stays on the screen. A reader who joins while the
+document does not compile has nothing to keep, and is shown the engine's
+"does not compile" page with the diagnostics on it, which is the same
+`failure_page` the editor shows on a cold open.
+
+What is not built: the better answer for that cold join, which is to fall back
+to the latest checkpoint that compiles. `01-SPEC-history.md` owns the
+checkpoints and its step 5 is what would expose them to the browser; until
+then the diagnostics page is what a cold join gets, as this spec said it would
+be. Two details also differ from what is written above: the four hundred
+milliseconds are measured from the render finishing rather than from the
+keystroke, so the wait is that much longer than the number says; and there is
+no fixture test of the timing, only of the engine, the command line and the
+editor's placement of a span.

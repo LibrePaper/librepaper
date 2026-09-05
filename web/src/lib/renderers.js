@@ -21,8 +21,11 @@ function urls() {
 
 /// Whether this deployment serves a renderer for this format at all. The typst
 /// module is thirty megabytes and optional, so a build may not have one.
+///
+/// HTML is the exception, and always true: its renderer is the identity, so it
+/// is the one format every deployment can edit whatever it was built with.
 export function available(format) {
-  return Boolean(urls()[format]);
+  return format === "html" || Boolean(urls()[format]);
 }
 
 function load(format) {
@@ -68,30 +71,89 @@ function call(wasm, name, ...strings) {
   } finally {
     for (const { pointer, length } of written) wasm.dealloc(pointer, length);
   }
+  const decoder = new TextDecoder();
   const out = new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), length);
-  return { text: new TextDecoder().decode(out), ok: wasm.ok() !== 0 };
+  const text = decoder.decode(out);
+  // The second result channel: what the compiler had to say, as JSON, beside
+  // the page rather than wrapped around it. A module built before it existed
+  // says nothing, which reads as an empty list.
+  let diagnostics = [];
+  if (wasm.diagnostics && wasm.diagnostics_ptr) {
+    const size = wasm.diagnostics();
+    if (size > 0) {
+      const raw = new Uint8Array(wasm.memory.buffer, wasm.diagnostics_ptr(), size);
+      try {
+        diagnostics = JSON.parse(decoder.decode(raw)) || [];
+      } catch {
+        diagnostics = [];
+      }
+    }
+  }
+  return { text, ok: wasm.ok() !== 0, diagnostics };
 }
 
-/// Renders the source into the page a save would store. A document that does
-/// not compile is an ordinary state of an editor, so a diagnostic comes back
-/// as a thrown error carrying the compiler's own message.
+/// Renders the source into the page a save would store, and says what the
+/// compiler had to say about it. A document that does not compile is an
+/// ordinary state of an editor rather than an error of this loader's, so it
+/// resolves with no page and a list of diagnostics; it throws only for what it
+/// threw for before, a module that could not be fetched.
 export async function render(source, title, format) {
+  // HTML's renderer is the identity, so there is nothing to fetch and nothing
+  // that can fail: the source is the page.
+  if (format === "html") return { html: source, diagnostics: [] };
   const wasm = await load(format);
-  const { text, ok } = call(wasm, "compile", source, title);
-  if (!ok) throw new Error(text);
-  return text;
+  const { text, ok, diagnostics } = call(wasm, "compile", source, title);
+  if (ok) return { html: text, diagnostics };
+  // A module built before the second result channel says nothing about why it
+  // failed, and puts its message where the page would be. Rather than show
+  // nothing at all, that message becomes a diagnostic with no place in the
+  // source, which is what such a module can honestly say.
+  const said = diagnostics.length
+    ? diagnostics
+    : [{ severity: "error", message: text || "this document could not be compiled", hints: [], file: "", line: 0, column: 0, end_line: 0, end_column: 0 }];
+  return { html: null, diagnostics: said };
+}
+
+/// The page to show where a document would be when there is nothing else to
+/// show it: what the last compile said, dressed as a document rather than as a
+/// crash. The engine builds it, so the command line and a reader can show the
+/// same one. Only meaningful straight after a render that produced no page.
+export async function failurePage(title, format) {
+  const wasm = await load(format);
+  if (!wasm.failure_page) return null; // an older module; the badge says it
+  return call(wasm, "failure_page", title).text;
 }
 
 /// The document's first heading, which names a document that was never given a
-/// title of its own.
+/// title of its own. For HTML that is its own `<title>`, or its first `<h1>`.
 export async function titleOf(source, format) {
+  if (format === "html") return htmlTitleOf(source);
   const wasm = await load(format);
   return call(wasm, "title_of", source).text;
+}
+
+/// The identity renderer's title scan, which matches the engine's: the
+/// `<title>`, or failing that the first `<h1>`, so the landing page, the
+/// command line and this browser all name an uploaded file the same way.
+export function htmlTitleOf(source) {
+  const inside = (open, close) => {
+    const lower = source.toLowerCase();
+    const start = lower.indexOf(open);
+    if (start < 0) return "";
+    const after = source.indexOf(">", start);
+    if (after < 0) return "";
+    const end = lower.indexOf(close, after);
+    if (end < 0) return "";
+    const parsed = new DOMParser().parseFromString(source.slice(after + 1, end), "text/html");
+    return (parsed.body.textContent || "").split(/\s+/).filter(Boolean).join(" ");
+  };
+  return inside("<title", "</title>") || inside("<h1", "</h1>");
 }
 
 /// Starts the download before anyone asks to render, so the wait for the
 /// renderer overlaps with reading the document rather than following it.
 export function warm(format) {
+  if (format === "html") return; // the identity has nothing to fetch
   load(format).catch(() => {
     /* reported when something is actually rendered */
   });

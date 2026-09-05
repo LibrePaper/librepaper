@@ -165,7 +165,7 @@ pub fn sign(key: &[u8], payload: &str) -> String {
 }
 
 /// Constant-time check of a signature against what the key says it should be.
-fn verifies(key: &[u8], payload: &str, signature: &str) -> bool {
+pub fn verifies(key: &[u8], payload: &str, signature: &str) -> bool {
     let Ok(given) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(signature) else {
         return false;
     };

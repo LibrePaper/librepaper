@@ -8,17 +8,35 @@
 //! One convention: the caller allocates, writes UTF-8 into this module's
 //! memory, calls `compile` or `title_of`, and reads the result back out of it.
 //! Both return the length; `output_ptr` says where it starts and `ok` whether
-//! it is a document or a diagnostic.
+//! there is a document.
+//!
+//! A compile leaves a second result beside the first: `diagnostics()` is the
+//! length of the JSON list of what the compiler had to say and
+//! `diagnostics_ptr()` where it starts. Two results rather than one envelope,
+//! because the page is a megabyte and the list is a hundred bytes, and
+//! wrapping the first in JSON to carry the second would be an encode and a
+//! decode of the wrong thing on every keystroke.
 //!
 //! Which renderer `compile` is depends on which feature this module was built
 //! with, so markdown.wasm and typst.wasm share a loader and differ only in
 //! what they do with a source.
 
+use crate::diagnostic::Compiled;
+
 /// Where the last result lives until the next call replaces it.
 static mut OUTPUT: Option<Vec<u8>> = None;
 static mut OK: bool = false;
+/// What the last compile had to say, as JSON, beside the page.
+static mut DIAGNOSTICS: Option<Vec<u8>> = None;
+/// And the same, kept as it was, so the page shown where a document would be
+/// can be built from it without the host sending it back.
+static mut SAID: Option<Vec<crate::diagnostic::Diagnostic>> = None;
 #[cfg(feature = "typst")]
 static mut TODAY: Option<crate::typst::Today> = None;
+/// The files the host has handed this module, which is the whole of what a
+/// document may read. Empty in a browser until several files can travel with a
+/// source; filled from the document's own directory on the command line.
+static mut FILES: Option<Vec<(String, Vec<u8>)>> = None;
 
 /// Reserves `len` bytes for the caller to write a source into.
 #[no_mangle]
@@ -58,6 +76,23 @@ unsafe fn answer(result: Result<String, String>) -> usize {
     length
 }
 
+/// A compile's two results: the page where `output_ptr` looks for it, and the
+/// list where `diagnostics_ptr` does. A document that did not compile leaves
+/// no page and is not an error of the caller's; the list says what happened.
+unsafe fn answer_compiled(compiled: Compiled) -> usize {
+    DIAGNOSTICS = Some(compiled.diagnostics_json().into_bytes());
+    SAID = Some(compiled.diagnostics.clone());
+    let (ok, text) = match compiled.page {
+        Some(page) => (true, page),
+        None => (false, String::new()),
+    };
+    let bytes = text.into_bytes();
+    let length = bytes.len();
+    OUTPUT = Some(bytes);
+    OK = ok;
+    length
+}
+
 /// Renders the `source_len` bytes of UTF-8 at `source` into the page a save
 /// would store, titled with the `title_len` bytes at `title`, and returns the
 /// length of the result. Read it from `output_ptr()`, and ask `ok()` whether it
@@ -75,18 +110,81 @@ pub unsafe extern "C" fn compile(
 ) -> usize {
     let source = text_at(source, source_len);
     let title = text_at(title, title_len);
-    answer(render(source, title))
+    answer_compiled(render(source, title))
 }
 
 #[cfg(feature = "typst")]
-fn render(source: &str, title: &str) -> Result<String, String> {
+fn render(source: &str, title: &str) -> Compiled {
     let today = unsafe { *std::ptr::addr_of!(TODAY) };
-    crate::typst::render(source, title, "", &crate::typst::no_files, today)
+    crate::typst::render(source, title, "", &from_host, today)
+}
+
+/// Reads a file the host put in the map, and nothing else: there is no
+/// directory in a browser, and a document reaches only what it was given.
+#[cfg(feature = "typst")]
+fn from_host(path: &std::path::Path) -> Option<Vec<u8>> {
+    let wanted = path.to_string_lossy();
+    unsafe {
+        (*std::ptr::addr_of!(FILES))
+            .as_ref()?
+            .iter()
+            .find(|(name, _)| name.as_str() == wanted)
+            .map(|(_, bytes)| bytes.clone())
+    }
 }
 
 #[cfg(all(feature = "markdown", not(feature = "typst")))]
-fn render(source: &str, title: &str) -> Result<String, String> {
-    Ok(crate::markdown::render(source, title))
+fn render(source: &str, title: &str) -> Compiled {
+    crate::markdown::compile(source, title)
+}
+
+/// Puts a file where the next compile can read it, under the path a document
+/// would import it by. This is what `#import` and `#bibliography` need in a
+/// host that has no directory; the browser's map stays empty until several
+/// files can travel with one source.
+///
+/// # Safety
+/// The pointers and lengths must describe memory written into this module.
+#[no_mangle]
+pub unsafe extern "C" fn add_file(
+    path: *const u8,
+    path_len: usize,
+    body: *const u8,
+    body_len: usize,
+) {
+    let name = text_at(path, path_len).to_string();
+    let bytes = if body.is_null() || body_len == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(body, body_len).to_vec()
+    };
+    let files = (*std::ptr::addr_of_mut!(FILES)).get_or_insert_with(Vec::new);
+    match files.iter_mut().find(|(known, _)| *known == name) {
+        Some(slot) => slot.1 = bytes,
+        None => files.push((name, bytes)),
+    }
+}
+
+/// Empties the map, which a host does before every document it compiles: the
+/// files of the last one are not the files of this one.
+#[no_mangle]
+pub extern "C" fn clear_files() {
+    unsafe { FILES = None }
+}
+
+/// The page to show where a document would be when the last compile produced
+/// none: what it said, dressed as a document rather than as a crash. Built
+/// from the diagnostics that compile left, so the host does not send them
+/// back. Returned the way `compile` returns its page, which it therefore
+/// replaces: ask for it after reading the page, not before.
+///
+/// # Safety
+/// `title` and `len` must describe UTF-8 written into this module's memory.
+#[no_mangle]
+pub unsafe extern "C" fn failure_page(title: *const u8, len: usize) -> usize {
+    let title = text_at(title, len);
+    let said = (*std::ptr::addr_of!(SAID)).clone().unwrap_or_default();
+    answer(Ok(crate::diagnostic::diagnostics_page(&said, title)))
 }
 
 /// The document's first heading, which names a document that was never given
@@ -136,8 +234,32 @@ pub extern "C" fn output_ptr() -> *const u8 {
     }
 }
 
-/// Whether the last result is a document (1) or a diagnostic (0).
+/// Whether the last result is a document (1) or nothing (0).
 #[no_mangle]
 pub extern "C" fn ok() -> u32 {
     unsafe { u32::from(*std::ptr::addr_of!(OK)) }
+}
+
+/// The length of what the last compile had to say, as a JSON list. Empty --
+/// `[]`, two bytes -- for markdown, which cannot fail, and for a typst compile
+/// that had nothing to report.
+#[no_mangle]
+pub extern "C" fn diagnostics() -> usize {
+    unsafe {
+        match &*std::ptr::addr_of!(DIAGNOSTICS) {
+            Some(bytes) => bytes.len(),
+            None => 0,
+        }
+    }
+}
+
+/// Where that list starts.
+#[no_mangle]
+pub extern "C" fn diagnostics_ptr() -> *const u8 {
+    unsafe {
+        match &*std::ptr::addr_of!(DIAGNOSTICS) {
+            Some(bytes) => bytes.as_ptr(),
+            None => std::ptr::null(),
+        }
+    }
 }

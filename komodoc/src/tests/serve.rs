@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::*;
 use crate::config::Configuration;
-use crate::store::{digest_of, Publication};
+use crate::store::Publication;
 
 #[tokio::test]
 async fn upload_needs_a_signed_in_publisher() {
@@ -52,12 +52,11 @@ async fn publish_then_serve_document() {
     );
     assert_eq!(text(&document, "url"), format!("/docs/{slug}"));
 
-    let sha = text(&document, "sha");
-    let version = format!("/raw/{slug}/{sha}.html");
+    let shell_path = format!("/raw/{slug}/");
 
     // Asking the reader's own host for a document sends you to the other one.
     let redirect = client()
-        .get(format!("{}{version}", server.url))
+        .get(format!("{}/raw/{slug}", server.url))
         .send()
         .await
         .unwrap();
@@ -71,9 +70,12 @@ async fn publish_then_serve_document() {
         .to_string();
     assert!(location.contains("docs."), "redirected to {location}");
 
-    // On the document host it is served, with the agent added and a CSP that
-    // lets it run its own scripts while pinning who may frame it.
-    let response = on_docs_host(&server.url, &version).await;
+    // On the document host the frame is served, with the agent in it and a CSP
+    // that lets a document run its own scripts while pinning who may frame it.
+    // This document's format is `html`, so it is served as the page it is --
+    // that is the one format whose renderer is the identity, and a page with
+    // scripts of its own has to be a page rather than an innerHTML of one.
+    let response = on_docs_host(&server.url, &shell_path).await;
     let csp = response
         .headers()
         .get("content-security-policy")
@@ -82,10 +84,13 @@ async fn publish_then_serve_document() {
         .unwrap()
         .to_string();
     let body = response.text().await.unwrap();
-    assert!(body.contains("hello world"), "document body was {body}");
     assert!(
         body.contains("<script src=\"/agent.js?reader="),
         "the in-frame agent was not injected: {body}"
+    );
+    assert!(
+        body.contains("hello world"),
+        "an html document is not served as itself: {body}"
     );
     assert!(
         csp.contains("script-src 'self'") && csp.contains("frame-ancestors http://"),
@@ -108,7 +113,8 @@ async fn publish_then_serve_document() {
         );
     }
 
-    // The stable URL redirects to the current version, on the document origin.
+    // The stable URL redirects to the document's own frame, on the document
+    // origin. There is one version, so there is no digest in it.
     let redirect = client()
         .get(format!("{}/raw/{slug}", server.url))
         .send()
@@ -122,7 +128,7 @@ async fn publish_then_serve_document() {
         .to_str()
         .unwrap()
         .to_string();
-    assert!(location.ends_with(&version), "got {location}");
+    assert!(location.ends_with(&shell_path), "got {location}");
 }
 
 #[tokio::test]
@@ -146,10 +152,13 @@ async fn republish_keeps_slug_and_comments() {
     .await;
     assert_eq!(status, 201, "republish returned {status}: {second}");
     assert_eq!(text(&second, "slug"), slug);
-    assert_ne!(
-        text(&second, "sha"),
-        text(&first, "sha"),
-        "republish should store a new version"
+    // The document says what was published, whether or not the moment earned a
+    // second mark in the timeline: a publish within thirty seconds of the last
+    // checkpoint is deferred, so the checkpoint the index names may still be
+    // the first one. What must have moved is the text.
+    assert_eq!(
+        server.instance.rooms.get(&slug).await.source().await,
+        "<!doctype html><p>hello revised world</p>",
     );
     assert_eq!(
         text(&second, "created_at"),
@@ -269,7 +278,9 @@ async fn listing_and_delete() {
     .await;
     assert_eq!(status, 200, "delete returned {status} {deleted}");
     assert_eq!(deleted["deleted"], slug);
-    assert_eq!(deleted["versions_removed"], 1);
+    // There are no stored versions any more, so none is counted as removed;
+    // what goes is the document, its history and its comments.
+    assert_eq!(deleted["versions_removed"], 0);
     let (status, _) = get_json(&server.url, &format!("/api/documents/{slug}")).await;
     assert_eq!(status, 404, "document still present after delete");
 }
@@ -285,8 +296,8 @@ async fn shell_routes() {
         .put(Publication {
             slug: slug.into(),
             title: "A Paper".into(),
-            digest: digest_of("<p>p</p>"),
-            html: "<p>p</p>".into(),
+            source: "<p>p</p>".into(),
+            source_format: "html".into(),
             ..Publication::default()
         })
         .await
@@ -385,7 +396,7 @@ async fn document_origin_is_isolated() {
 }
 
 #[tokio::test]
-async fn markdown_upload_is_rendered_by_serve() {
+async fn markdown_upload_is_stored_as_markdown() {
     let server = new_test_server().await;
     let part = reqwest::multipart::Part::text("# Notes\n\nA *point* worth making.\n")
         .file_name("notes.md");
@@ -407,20 +418,16 @@ async fn markdown_upload_is_rendered_by_serve() {
     let document: serde_json::Value = response.json().await.unwrap();
     // The first heading names it when no title was given.
     assert_eq!(document["title"], "Notes");
-    // What is stored is HTML, not the markdown source.
-    let stored = on_docs_host(
-        &server.url,
-        &format!(
-            "/raw/{}/{}.html",
-            text(&document, "slug"),
-            text(&document, "sha")
-        ),
-    )
-    .await;
-    let page = stored.text().await.unwrap();
+    // What is stored is the markdown, as markdown. Nothing derived is kept:
+    // the browser showing it renders it, with the same module the editor
+    // previews with.
+    let slug = text(&document, "slug");
+    let (status, payload) = get_json(&server.url, &format!("/api/documents/{slug}/source")).await;
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(text(&payload, "format"), "markdown");
     assert!(
-        page.contains("<em>point</em>") && !page.contains("# Notes"),
-        "the stored document is not rendered HTML: {page}"
+        text(&payload, "source").contains("# Notes"),
+        "the markdown was not kept: {payload}"
     );
 }
 

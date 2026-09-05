@@ -1,7 +1,7 @@
 use super::*;
 use crate::clock::format_unix;
 use crate::retention::{parse_expire_from, parse_retention};
-use crate::store::{digest_of, Publication};
+use crate::store::Publication;
 
 #[test]
 fn parse_retention_takes_durations_and_days() {
@@ -40,8 +40,8 @@ async fn delete_expired_removes_only_what_is_old() {
             .put(Publication {
                 slug: slug.into(),
                 title: slug.into(),
-                digest: digest_of("<p>x</p>"),
-                html: "<p>x</p>".into(),
+                source: "<p>x</p>".into(),
+                source_format: "html".into(),
                 ..Default::default()
             })
             .await

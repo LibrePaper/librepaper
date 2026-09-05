@@ -1,20 +1,31 @@
-// Editing the same source as someone else, at the same time.
+// The document, as this browser holds it.
 //
 // The source is a Yjs document -- a CRDT -- so two people typing in the same
 // sentence converge on the same text without either of them waiting for the
-// other, and without a server that has to understand what they wrote. What
-// travels is a small binary update per change, relayed by the room.
+// other. What travels is a small binary update per change.
 //
-// The server is a relay and nothing more: it holds the updates of a live
-// session and hands them to whoever joins. It never merges and never
-// interprets. The durable copy of a document is still the source a save
-// stores, which is what a session is seeded from when nobody is editing yet.
+// The server is not a relay. It holds the same document, with `yrs`, and it is
+// the durable copy: the session outlives every socket, so a tab closed by
+// mistake, a laptop that dies or a browser that restarts loses nothing. Three
+// things follow, and they are the whole of what is new here.
 //
-// Everything here is about the source. The rendered preview is not shared:
-// each browser renders what it now has, which costs the deployment nothing and
-// means every editor sees the document as it would be published.
+// **Reading and editing join the same session.** A reader receives updates and
+// sends none; the server drops anything a reader sends, and so does this,
+// which is a courtesy rather than the enforcement.
+//
+// **Relaying is not durability.** An update is relayed the moment it lands and
+// acknowledged only once the server has written it. Every update this browser
+// makes is held until its `y-ack` arrives, so `pending` is the honest answer
+// to "is my work safe", and the toolbar says that rather than saying "saved"
+// because a socket happens to be open.
+//
+// **Nothing is lost to a disconnection.** y-indexeddb keeps the document in
+// this browser, so a reload while the socket is down comes back with the text;
+// and on reconnect the whole local state is sent, which the server merges, so
+// the changes made on either side of the gap reach the other.
 
 import * as Y from "yjs";
+import { IndexeddbPersistence } from "y-indexeddb";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate } from "y-protocols/awareness.js";
 
 // Updates are binary and the room's socket carries JSON, so they travel
@@ -31,59 +42,122 @@ const decode = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
 // so a person keeps the same colour for as long as they are in it.
 const COLOURS = ["#2f5bd0", "#c2410c", "#15803d", "#7c3aed", "#be123c", "#0e7490"];
 
-/// Joins the session for this document. `send` puts a message on the room's
-/// socket; `onPeers` is told how many people are in the session, which is worth
-/// saying only when it is more than one.
-export function join({ send, onPeers, name }) {
+/// Joins the document's session. `send` puts a message on the room's socket;
+/// `onPeers` is told how many people are in it; `onState` is told whenever the
+/// answer to "is this browser's work safe" changes.
+///
+/// `mayEdit` is false for a reader, who joins to receive the text and never to
+/// change it.
+export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
   const doc = new Y.Doc();
   const text = doc.getText("source");
   const awareness = new Awareness(doc);
-  // Set once the server has said whether this browser is the one to seed the
-  // session. Until then nothing is typed into a document that may be about to
-  // be replaced by everyone else's.
-  let ready = false;
+
+  // Updates this browser has made and the server has not yet said are durable,
+  // by the number they were sent under.
+  const unacknowledged = new Map();
+  let seq = 0;
+  // Whether this browser has been given the server's copy since the socket
+  // last came up. Until it has, what is here may be behind.
+  let joined = false;
+  // Whether the document is in this browser's own storage, which is what makes
+  // a reload safe while the socket is down.
+  let local = false;
+
+  // Kept per document, so two tabs on the same document share it and a tab on
+  // another document is unaffected. A reader keeps nothing: they have nothing
+  // of their own to lose, and a copy of somebody else's document in their
+  // browser is not theirs to hold.
+  // A browser that will not give us storage -- a private window, site data
+  // blocked -- is not a browser that cannot edit. It simply has nowhere to
+  // keep the document, which is exactly what `local` is for saying.
+  let store = null;
+  try {
+    if (slug && mayEdit && typeof indexedDB !== "undefined") {
+      store = new IndexeddbPersistence(`komodoc-${slug}`, doc);
+      store.whenSynced.then(() => {
+        local = true;
+        report();
+      });
+    }
+  } catch {
+    store = null;
+  }
+
+  const report = () => onState?.({ pending: unacknowledged.size, local, joined });
 
   awareness.setLocalStateField("user", {
     name: name || "Anonymous",
     color: COLOURS[Math.floor(Math.random() * COLOURS.length)],
   });
 
-  // Anything this browser changes is sent on; anything that arrives is applied
-  // with an origin that stops it being sent straight back out.
+  // Anything this browser changes is sent on and held until it is
+  // acknowledged; anything that arrives is applied with an origin that stops
+  // it being sent straight back out. An update out of indexeddb is this
+  // browser's own past work, and is sent on for the same reason a keystroke
+  // is: the server may never have seen it.
   doc.on("update", (update, origin) => {
-    if (origin === "remote") return;
-    send({ type: "y-update", update: encode(update) });
+    if (origin === "remote" || !mayEdit) return;
+    const mine = ++seq;
+    unacknowledged.set(mine, update);
+    report();
+    send({ type: "y-update", update: encode(update), seq: mine });
   });
 
   awareness.on("update", ({ added, updated, removed }) => {
+    if (!mayEdit) return;
     const changed = added.concat(updated, removed);
     send({ type: "y-awareness", update: encode(encodeAwarenessUpdate(awareness, changed)) });
     onPeers?.(awareness.getStates().size);
   });
 
+  /// Everything this browser has, as one update. Sending it after a join is
+  /// how the changes made while the socket was down reach the server: applying
+  /// it is idempotent, so it costs nothing when there were none.
+  function catchUp() {
+    const whole = Y.encodeStateAsUpdate(doc);
+    const mine = ++seq;
+    // One entry stands for every update it contains: the acknowledgment of
+    // this send is the acknowledgment of all of them.
+    unacknowledged.clear();
+    unacknowledged.set(mine, whole);
+    report();
+    send({ type: "y-update", update: encode(whole), seq: mine });
+  }
+
   return {
     doc,
     text,
     awareness,
-    get ready() {
-      return ready;
+    get joined() {
+      return joined;
     },
 
-    /// The session as the server describes it: either this browser seeds it
-    /// from what is published, or it replays what the session has seen.
-    start(state, source) {
-      if (ready) return;
-      ready = true;
-      if (state.seed) {
-        // Exactly one browser is ever told to seed. Two seeding separately
-        // would each build their own history of the same words, and merging
-        // those shows the document twice.
-        doc.transact(() => text.insert(0, source || ""));
-        return;
+    /// What to send to join, or to rejoin: what this browser already has, so
+    /// the server answers with the rest and nothing more.
+    open() {
+      return { type: "y-open", vector: encode(Y.encodeStateVector(doc)) };
+    },
+
+    /// The server's answer to `y-open`: the document, or -- when it is too
+    /// large for a text frame -- somewhere to fetch it from.
+    async start(state) {
+      if (state.ref) {
+        // Same origin, signed, and short-lived. Whatever arrives during the
+        // fetch is caught up by the state sent below, which is why the fetch
+        // does not have to be atomic with anything.
+        const response = await fetch(state.ref, { credentials: "same-origin" });
+        if (!response.ok) throw new Error("could not fetch the document");
+        Y.applyUpdate(doc, new Uint8Array(await response.arrayBuffer()), "remote");
+      } else if (state.update) {
+        Y.applyUpdate(doc, decode(state.update), "remote");
       }
-      doc.transact(() => {
-        for (const update of state.updates || []) Y.applyUpdate(doc, decode(update), "remote");
-      }, "remote");
+      joined = true;
+      // Whatever this browser has that the server may not: its own unsent
+      // work, and -- after a reference fetch -- anything that landed while it
+      // was in flight.
+      if (mayEdit) catchUp();
+      else report();
     },
 
     apply(update) {
@@ -94,10 +168,20 @@ export function join({ send, onPeers, name }) {
       applyAwarenessUpdate(awareness, decode(update), "remote");
     },
 
-    /// The whole state of the session, sent when its history has grown long
-    /// enough that a latecomer would have to replay all of it.
-    snapshot() {
-      return encode(Y.encodeStateAsUpdate(doc));
+    /// The server has written everything up to this number. Relaying was never
+    /// this; storage is.
+    acknowledge(upTo) {
+      for (const mine of [...unacknowledged.keys()]) {
+        if (mine <= upTo) unacknowledged.delete(mine);
+      }
+      report();
+    },
+
+    /// The socket dropped. Nothing is thrown away -- what was not acknowledged
+    /// is still held, and goes again on the next join.
+    disconnected() {
+      joined = false;
+      report();
     },
 
     text_() {
@@ -111,6 +195,7 @@ export function join({ send, onPeers, name }) {
 
     leave() {
       awareness.destroy();
+      store?.destroy();
       doc.destroy();
     },
   };

@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use crate::blob::{
-    clear_storage, document_key, document_prefix, room_key, room_lock_key, source_key,
-    take_room_lock, version_of, BlobError, BlobStore, FsStore, RoomLock, INDEX_KEY,
+    clear_storage, document_key, document_prefix, legacy_source_key, room_key, room_lock_key,
+    source_key, take_room_lock, version_of, BlobError, BlobStore, FsStore, RoomLock, INDEX_KEY,
     LOCK_STALE_SECONDS,
 };
 use crate::clock::{format_unix, now_unix};
@@ -55,7 +55,11 @@ async fn blob_store_contract() {
 
     // Listing is by prefix, and says nothing about what is outside it.
     blobs
-        .put(&source_key("a-paper"), b"# hello".to_vec(), "text/plain")
+        .put(
+            &source_key("a-paper", "sha1"),
+            b"# hello".to_vec(),
+            "text/plain",
+        )
         .await
         .unwrap();
     let found = blobs.list(&document_prefix("a-paper")).await.unwrap();
@@ -67,7 +71,7 @@ async fn blob_store_contract() {
     // Deleting something that is not there is the outcome asked for, not an
     // error: callers delete a source that may never have existed.
     blobs
-        .delete(&[source_key("never-published")])
+        .delete(&[source_key("never-published", "sha1")])
         .await
         .unwrap();
 }
@@ -148,7 +152,7 @@ async fn clearing_leaves_what_is_not_ours() {
     for key in [
         INDEX_KEY.to_string(),
         document_key("a", "1"),
-        source_key("a"),
+        source_key("a", "1"),
         room_key("a"),
     ] {
         blobs.put(&key, b"ours".to_vec(), "").await.unwrap();
@@ -184,7 +188,7 @@ async fn legacy_source_is_migrated() {
 
     assert_eq!(migrate_legacy_source(&blobs).await, 1);
     assert_eq!(
-        blobs.get(&source_key("a-paper")).await.unwrap(),
+        blobs.get(&legacy_source_key("a-paper")).await.unwrap(),
         b"# was here"
     );
     assert!(

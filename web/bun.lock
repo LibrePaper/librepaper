@@ -6,8 +6,10 @@
       "name": "komodoc-web",
       "dependencies": {
         "@codemirror/commands": "^6.9.0",
+        "@codemirror/lang-html": "^6.4.12",
         "@codemirror/lang-markdown": "^6.3.4",
         "@codemirror/language": "^6.11.3",
+        "@codemirror/lint": "^6.9.7",
         "@codemirror/search": "^6.5.11",
         "@codemirror/state": "^6.5.2",
         "@codemirror/view": "^6.39.1",
@@ -17,6 +19,7 @@
         "svelte": "^5.57.0",
         "tailwindcss": "4",
         "y-codemirror.next": "^0.3.6",
+        "y-indexeddb": "^9.0.12",
         "y-protocols": "^1.0.6",
         "yjs": "^13.6.32",
       },
@@ -364,6 +367,8 @@
     "w3c-keyname": ["w3c-keyname@2.2.8", "", {}, "sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ=="],
 
     "y-codemirror.next": ["y-codemirror.next@0.3.6", "", { "dependencies": { "lib0": "^0.2.42" }, "peerDependencies": { "@codemirror/state": "^6.0.0", "@codemirror/view": "^6.0.0", "yjs": "^13.5.6" } }, "sha512-GnmVXhTe+UtoFbbaSdwhq6gdAQZdIY9az0Xj6HR2J4PO6Yw4w3xaaSssU+6T72WhXAI0wf9FbuY2s0Ms+WrexA=="],
+
+    "y-indexeddb": ["y-indexeddb@9.0.12", "", { "dependencies": { "lib0": "^0.2.74" }, "peerDependencies": { "yjs": "^13.0.0" } }, "sha512-9oCFRSPPzBK7/w5vOkJBaVCQZKHXB/v6SIT+WYhnJxlEC61juqG0hBrAf+y3gmSMLFLwICNH9nQ53uscuse6Hg=="],
 
     "y-protocols": ["y-protocols@1.0.7", "", { "dependencies": { "lib0": "^0.2.85" }, "peerDependencies": { "yjs": "^13.0.0" } }, "sha512-YSVsLoXxO67J6eE/nV4AtFtT3QEotZf5sK5BHxFBXso7VDUT3Tx07IfA6hsu5Q5OmBdMkQVmFZ9QOA7fikWvnw=="],
 

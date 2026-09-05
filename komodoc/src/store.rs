@@ -13,8 +13,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::blob::{
-    document_key, document_prefix, examples_key, room_key, room_lock_key, source_key, BlobError,
-    BlobStore, BlobVersion, INDEX_KEY,
+    document_key, document_prefix, examples_key, legacy_source_key, room_key, room_lock_key,
+    source_key, source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
 };
 use crate::clock::{now_unix, parse_timestamp, timestamp};
 use crate::config::Configuration;
@@ -73,6 +73,24 @@ impl IndexEntry {
         }
     }
 
+    /// The highest role a caller holds on this document. One function, asked
+    /// by every route, so that rights are decided in one place rather than in
+    /// each handler that happens to need them: `owned_by` answers whether
+    /// somebody is the owner, and this answers what they may do, which is the
+    /// question the routes were really asking.
+    ///
+    /// `may_comment` is the deployment's own switch, which is a ceiling: a
+    /// document may be stricter than its server and never wider.
+    pub fn role_of(&self, owner_key: &str, caller_id: &str, may_comment: bool) -> Role {
+        if self.owned_by(owner_key, caller_id) {
+            Role::Owner
+        } else if may_comment {
+            Role::Commenter
+        } else {
+            Role::Reader
+        }
+    }
+
     /// When this document expires from, as seconds since the epoch.
     pub fn expiry_time(&self, from: &str) -> Option<i64> {
         parse_timestamp(if from == "created" {
@@ -80,6 +98,40 @@ impl IndexEntry {
         } else {
             &self.updated_at
         })
+    }
+}
+
+/// What a caller may do to a document, as a ladder: each role includes the
+/// ones beneath it. Reading has never had a switch, so `reader` is what
+/// everybody who can reach a document holds; `editor` sits between commenting
+/// and owning and is held today by the owner alone, until a document can name
+/// somebody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+// `Editor` is a rung nobody stands on yet: the owner is the only editor a
+// document can have until it can name one, and the rung exists so the gates
+// can ask the question they mean ("may this caller edit") rather than the one
+// that happens to answer it today ("does this caller own it").
+#[allow(dead_code)]
+pub enum Role {
+    Reader,
+    Commenter,
+    Editor,
+    Owner,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Reader => "reader",
+            Role::Commenter => "commenter",
+            Role::Editor => "editor",
+            Role::Owner => "owner",
+        }
+    }
+
+    /// Whether this role includes another: the ladder, asked as a question.
+    pub fn at_least(self, wanted: Role) -> bool {
+        self >= wanted
     }
 }
 
@@ -126,28 +178,20 @@ pub async fn load_index(
     }
 }
 
-/// One version of a document: everything stored about it, and everything
-/// needed to decide whether storing it is allowed.
+/// A document as it is created. There is one version of it from here on, and
+/// what is stored is its source: nothing derived is kept, because every
+/// browser that shows the document renders it. So there is no HTML here, and
+/// no digest of any.
 #[derive(Clone, Debug, Default)]
 pub struct Publication {
     pub slug: String,
     pub title: String,
-    /// sha256 of html, and the name it is stored under.
-    pub digest: String,
-    pub html: String,
-    /// The markup html was rendered from, kept so the document can be reopened
-    /// in an editor; empty for a document published as HTML, which has no
-    /// source but itself. Its bytes count against the quotas along with the
-    /// HTML.
+    /// The document itself. A document published as HTML has HTML for its
+    /// source and the identity for its renderer.
     pub source: String,
     pub source_format: String,
     pub owner: String,
     pub owner_id: String,
-    /// The version this one was edited from. When it is set and the document
-    /// has moved on since, the write is refused rather than applied: two
-    /// people editing at once would otherwise mean whoever saved last silently
-    /// discarded the other's work. Empty means "whatever is there".
-    pub base_sha: String,
 }
 
 /// What `put` returns when a storage rule refuses an upload: the HTTP status
@@ -155,28 +199,14 @@ pub struct Publication {
 /// rule decided.
 #[derive(Debug)]
 pub enum PutError {
-    Quota {
-        status: u16,
-        message: &'static str,
-    },
-    /// A write made against a version the document has since moved past. It
-    /// is not a failure of the write; it is the write arriving too late to be
-    /// the one that counts.
-    Stale,
+    Quota { status: u16, message: &'static str },
     Storage(String),
-}
-
-impl PutError {
-    pub fn stale_message() -> &'static str {
-        "this document was published again while you were editing it"
-    }
 }
 
 impl std::fmt::Display for PutError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PutError::Quota { message, .. } => write!(f, "{message}"),
-            PutError::Stale => write!(f, "{}", PutError::stale_message()),
             PutError::Storage(message) => write!(f, "{message}"),
         }
     }
@@ -210,63 +240,43 @@ impl Store {
         documents
     }
 
-    /// The stored source of a document, if it kept one. There is only ever one
-    /// -- the source of the version the index names -- so its key carries no
-    /// digest.
+    /// The stored source of a document: the source of the version the index
+    /// names, and no other. A document published before sources were versioned
+    /// has one unversioned key instead, which is read when there is nothing
+    /// under the digest.
     pub async fn read_source(&self, slug: &str) -> Result<Vec<u8>, BlobError> {
-        self.blobs.get(&source_key(slug)).await
+        let digest = {
+            let state = self.state.lock().await;
+            match state.entries.get(slug) {
+                Some(entry) => entry.sha.clone(),
+                None => return Err(BlobError::NotFound),
+            }
+        };
+        match self.blobs.get(&source_key(slug, &digest)).await {
+            Err(BlobError::NotFound) => self.blobs.get(&legacy_source_key(slug)).await,
+            other => other,
+        }
     }
 
     pub async fn read(&self, slug: &str, digest: &str) -> Result<Vec<u8>, BlobError> {
         self.blobs.get(&document_key(slug, digest)).await
     }
 
-    /// Writes a version and names it in the index, returning the stored entry.
-    /// Admission, the staleness check and the index mutation all happen under
-    /// the same lock, so two uploads racing for the last of a quota cannot both
-    /// be admitted and two editors saving at once cannot both believe they won.
+    /// Names a document in the index. It writes no bytes of the document
+    /// itself: the source becomes the first checkpoint, which the room writes,
+    /// and from then on the document is the session. What is decided here is
+    /// the half that has always been decided here -- whether this deployment
+    /// will hold another document, and whose it is.
+    ///
+    /// Admission and the index mutation happen under the same lock, so two
+    /// uploads racing for the last of a quota cannot both be admitted.
     pub async fn put(&self, v: Publication) -> Result<IndexEntry, PutError> {
-        let size = (v.html.len() + v.source.len()) as i64;
-        // The lock is held across the blob writes as well as the index update.
-        // A refused upload must cost nothing in storage, so admission comes
-        // first; and two uploads racing for the last of a quota cannot both be
-        // admitted.
+        let size = v.source.len() as i64;
         let mut state = self.state.lock().await;
         self.admit(&state, &v.slug, &v.owner, size, now_unix())?;
-        // Under the lock, so a check against the index cannot be overtaken by
-        // the write it is guarding.
-        if let Some(current) = state.entries.get(&v.slug) {
-            if !v.base_sha.is_empty() && current.sha != v.base_sha {
-                return Err(PutError::Stale);
-            }
-        }
-        self.blobs
-            .put(
-                &document_key(&v.slug, &v.digest),
-                v.html.into_bytes(),
-                "text/html; charset=utf-8",
-            )
-            .await
-            .map_err(|err| PutError::Storage(err.to_string()))?;
-        // A version published from HTML replaces one published from markdown:
-        // the stale source would otherwise be reopened by an editor as though
-        // it were what the document now says.
-        if v.source.is_empty() {
-            let _ = self.blobs.delete(&[source_key(&v.slug)]).await;
-        } else {
-            self.blobs
-                .put(
-                    &source_key(&v.slug),
-                    v.source.into_bytes(),
-                    "text/plain; charset=utf-8",
-                )
-                .await
-                .map_err(|err| PutError::Storage(err.to_string()))?;
-        }
         let now = timestamp();
         let mut created = now.clone();
         let mut example = false;
-        let mut replaced = String::new();
         let (mut owner, mut owner_id) = (v.owner, v.owner_id);
         if let Some(existing) = state.entries.get(&v.slug) {
             created = existing.created_at.clone();
@@ -279,12 +289,14 @@ impl Store {
             example = existing.example;
             owner = existing.publisher.clone();
             owner_id = existing.publisher_id.clone();
-            replaced = existing.sha.clone();
         }
         let entry = IndexEntry {
             slug: v.slug.clone(),
             title: v.title,
-            sha: v.digest.clone(),
+            // The digest of the source, which is the checkpoint the room is
+            // about to write. From here the index's `sha` names the newest
+            // checkpoint rather than an HTML object.
+            sha: digest_of(&v.source),
             size,
             created_at: created,
             updated_at: now,
@@ -295,24 +307,126 @@ impl Store {
         };
         let previous = state.entries.insert(v.slug.clone(), entry.clone());
         if let Err(err) = self.save_locked(&mut state).await {
-            // The bytes are stored but the index naming them is not, so the
-            // document does not exist as far as any later run is concerned.
-            // Undo the in-memory half rather than report a success that will
-            // vanish.
+            // The index naming the document is not durable, so the document
+            // does not exist as far as any later run is concerned. Undo the
+            // in-memory half rather than report a success that will vanish.
             match previous {
                 Some(previous) => state.entries.insert(v.slug.clone(), previous),
                 None => state.entries.remove(&v.slug),
             };
             return Err(PutError::Storage(err.to_string()));
         }
-        // The reader only ever loads the entry's own digest, so a version this
-        // replacement left behind is unreachable the moment the index above is
-        // durable. Pruning it after that point, rather than before, means a
-        // crash mid-write never leaves the current version missing.
-        if !replaced.is_empty() && replaced != v.digest {
-            self.prune_other_versions(&v.slug, &v.digest).await;
-        }
         Ok(entry)
+    }
+
+    /// Removes what the old layout kept: the rendered HTML of every version,
+    /// and the sources beside them. Called once a document's source is durable
+    /// as a checkpoint, and never before, so the copy that goes is a copy and
+    /// not the document. A failure leaves objects behind for a later pass and
+    /// is not worth reporting: nothing depends on them any more.
+    pub async fn drop_derived(&self, slug: &str) {
+        for prefix in [document_prefix(slug), source_prefix(slug)] {
+            if let Ok(found) = self.blobs.list(&prefix).await {
+                let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
+                if !keys.is_empty() {
+                    let _ = self.blobs.delete(&keys).await;
+                }
+            }
+        }
+        // On its own, for the reason `remove` gives: on a directory store the
+        // versioned sources live under this key's own name.
+        let _ = self.blobs.delete(&[legacy_source_key(slug)]).await;
+    }
+
+    /// Records what a document's session and history now cost, and -- when a
+    /// checkpoint has just been taken -- the checkpoint the index names. This
+    /// is the third step of a checkpoint, between the state and the manifest.
+    ///
+    /// A checkpoint is never refused for a quota, because refusing it would
+    /// lose work; `room_for` below is what the room sheds against instead. So
+    /// this records rather than admits.
+    pub async fn record_history(
+        &self,
+        slug: &str,
+        sha: Option<&str>,
+        size: i64,
+        format: &str,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let Some(entry) = state.entries.get(slug).cloned() else {
+            return Ok(());
+        };
+        let mut updated = entry.clone();
+        updated.size = size;
+        // The room is the authority on what the document is written in: a
+        // migrated document whose source was gone opens as the page it was
+        // published as, and the index has to say so or the browser fetches a
+        // renderer for a format the document is not in.
+        if !format.is_empty() {
+            updated.source_format = format.to_string();
+        }
+        if let Some(sha) = sha {
+            updated.sha = sha.to_string();
+            updated.updated_at = timestamp();
+        }
+        if updated.size == entry.size
+            && updated.sha == entry.sha
+            && updated.source_format == entry.source_format
+        {
+            return Ok(());
+        }
+        state.entries.insert(slug.to_string(), updated);
+        if let Err(err) = self.save_locked(&mut state).await {
+            // The index did not move, so neither does the copy of it in
+            // memory: a size recorded here and nowhere else would make the
+            // next quota decision from a number no later run can see.
+            state.entries.insert(slug.to_string(), entry);
+            return Err(err.to_string());
+        }
+        Ok(())
+    }
+
+    /// Renames a document. A publish onto an existing slug is an edit into its
+    /// session rather than a new version, so the title is the one thing about
+    /// the index entry such a publish still changes.
+    pub async fn rename(&self, slug: &str, title: &str) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let Some(entry) = state.entries.get(slug).cloned() else {
+            return Ok(());
+        };
+        if entry.title == title || title.is_empty() {
+            return Ok(());
+        }
+        let mut updated = entry.clone();
+        updated.title = title.to_string();
+        updated.updated_at = timestamp();
+        state.entries.insert(slug.to_string(), updated);
+        if let Err(err) = self.save_locked(&mut state).await {
+            state.entries.insert(slug.to_string(), entry);
+            return Err(err.to_string());
+        }
+        Ok(())
+    }
+
+    /// How many bytes this document may occupy before it carries its owner or
+    /// the deployment over a ceiling. `None` for a document with no index
+    /// entry, which has no owner to charge and no ceiling to reach.
+    pub async fn room_for(&self, slug: &str) -> Option<i64> {
+        let state = self.state.lock().await;
+        let entry = state.entries.get(slug)?;
+        let owner = entry.publisher.clone();
+        let (mut total, mut mine) = (0i64, 0i64);
+        for (key, other) in &state.entries {
+            if key == slug {
+                continue;
+            }
+            total += other.size;
+            if other.publisher == owner {
+                mine += other.size;
+            }
+        }
+        let limits = self.config.storage;
+        Some((limits.total - total).min(limits.per_owner - mine).max(0))
     }
 
     /// Enforces the storage ceilings a write must clear, under the lock that
@@ -381,23 +495,6 @@ impl Store {
         Ok(())
     }
 
-    /// Removes every stored version of slug except `keep`. A failure to remove
-    /// one is not an upload failure; it leaves an unreachable object behind for
-    /// a future cleanup to find, nothing more.
-    async fn prune_other_versions(&self, slug: &str, keep: &str) {
-        let Ok(found) = self.blobs.list(&document_prefix(slug)).await else {
-            return;
-        };
-        let stale: Vec<String> = found
-            .into_iter()
-            .map(|o| o.key)
-            .filter(|key| *key != document_key(slug, keep))
-            .collect();
-        if !stale.is_empty() {
-            let _ = self.blobs.delete(&stale).await;
-        }
-    }
-
     /// Deletes every stored version of a document and its index entry,
     /// returning how many versions went. The index entry goes last: until it
     /// does the document is still listed, which is a better half-state than a
@@ -410,15 +507,34 @@ impl Store {
                 removed = keys.len();
             }
         }
-        // The source is not a version, so it is not counted among them; it
-        // goes with the document all the same.
+        // The sources are not versions of the document, so they are not
+        // counted among them; they go with it all the same.
+        if let Ok(found) = self.blobs.list(&source_prefix(slug)).await {
+            let sources: Vec<String> = found.into_iter().map(|o| o.key).collect();
+            if !sources.is_empty() {
+                let _ = self.blobs.delete(&sources).await;
+            }
+        }
+        // Alone: on a directory store the versioned sources live under this
+        // key's own name, so removing it is a request to remove a directory,
+        // and a store that refuses would take the rest of a batch down with it.
+        let _ = self.blobs.delete(&[legacy_source_key(slug)]).await;
+        // The history and the live document go with the document, which is
+        // what destroy has promised in the README since before there was a
+        // history to delete.
+        if let Ok(found) = self.blobs.list(&crate::blob::history_prefix(slug)).await {
+            let keys: Vec<String> = found.into_iter().map(|o| o.key).collect();
+            if !keys.is_empty() {
+                let _ = self.blobs.delete(&keys).await;
+            }
+        }
         let _ = self
             .blobs
             .delete(&[
-                source_key(slug),
                 examples_key(slug),
                 room_key(slug),
                 room_lock_key(slug),
+                crate::blob::session_key(slug),
             ])
             .await;
 

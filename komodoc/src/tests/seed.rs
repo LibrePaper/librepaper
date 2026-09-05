@@ -146,9 +146,10 @@ async fn seeded_annotations_anchor() {
         let rendered = if crate::render::is_markdown(&document.file) {
             crate::render::render_markdown_document(&source, document.title)
         } else if crate::render::is_typst(&document.file) {
-            match crate::render::render_typst_document(&path, &source, document.title) {
-                Ok(rendered) => rendered,
-                Err(err) => panic!("{}: {err}", document.file),
+            let compiled = crate::render::render_typst_document(&path, &source, document.title);
+            match compiled.page {
+                Some(rendered) => rendered,
+                None => panic!("{}: {}", document.file, compiled.message()),
             }
         } else {
             source
@@ -242,7 +243,7 @@ async fn seeding_leaves_no_room_locks_behind() {
         .await;
     let room = rooms.get(&entries[0].slug).await;
     assert!(
-        !room.read_only,
+        !room.read_only(),
         "a fresh server found the seeded room read-only"
     );
 }

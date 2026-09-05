@@ -397,8 +397,11 @@ async fn a_server_backed_by_a_bucket() {
     // the store expects.
     for wanted in [
         "komodoc/index.json".to_string(),
-        format!("komodoc/documents/{slug}/{}.html", text(&document, "sha")),
-        format!("komodoc/sources/{slug}"),
+        // The live document, and the checkpoint the index names. No rendered
+        // page and no second copy of the source: nothing derived is stored.
+        format!("komodoc/sessions/{slug}"),
+        format!("komodoc/history/{slug}/{}", text(&document, "sha")),
+        format!("komodoc/history/{slug}/index.json"),
     ] {
         assert!(
             objects.lock().unwrap().contains_key(&wanted),
@@ -431,8 +434,14 @@ async fn a_server_backed_by_a_bucket() {
         .await
         .expect("a fresh server did not find the document");
     assert_eq!(entry.title, "My Paper");
+    // The document itself is the checkpoint the index names, which a fresh
+    // server reads from the bucket without having to hold anything.
     assert_eq!(
-        second.read_source(&slug).await.unwrap(),
+        second
+            .blobs
+            .get(&crate::blob::checkpoint_key(&slug, &entry.sha))
+            .await
+            .unwrap(),
         markdown.as_bytes()
     );
 
@@ -467,7 +476,7 @@ async fn a_server_backed_by_a_bucket() {
 #[tokio::test]
 async fn a_second_writer_cannot_clobber_the_index() {
     use crate::config::Configuration;
-    use crate::store::{digest_of, Publication, Store};
+    use crate::store::{Publication, Store};
 
     let (endpoint, _) = fake_bucket().await;
     let options = bucket_options(&endpoint);
@@ -479,8 +488,8 @@ async fn a_second_writer_cannot_clobber_the_index() {
         .put(Publication {
             slug: "a-paper".into(),
             title: "A".into(),
-            digest: digest_of("<p>a</p>"),
-            html: "<p>a</p>".into(),
+            source: "<p>a</p>".into(),
+            source_format: "html".into(),
             ..Default::default()
         })
         .await
@@ -498,8 +507,8 @@ async fn a_second_writer_cannot_clobber_the_index() {
             .put(Publication {
                 slug: "b-paper".into(),
                 title: "B".into(),
-                digest: digest_of("<p>b</p>"),
-                html: "<p>b</p>".into(),
+                source: "<p>b</p>".into(),
+                source_format: "html".into(),
                 ..Default::default()
             })
             .await
@@ -544,8 +553,15 @@ async fn a_bucket_source_round_trips() {
     let (endpoint, _) = fake_bucket().await;
     let blobs = S3Store::new(&bucket_options(&endpoint));
     blobs
-        .put(&source_key("a-paper"), b"# hello".to_vec(), "text/plain")
+        .put(
+            &source_key("a-paper", "sha1"),
+            b"# hello".to_vec(),
+            "text/plain",
+        )
         .await
         .unwrap();
-    assert_eq!(blobs.get(&source_key("a-paper")).await.unwrap(), b"# hello");
+    assert_eq!(
+        blobs.get(&source_key("a-paper", "sha1")).await.unwrap(),
+        b"# hello"
+    );
 }

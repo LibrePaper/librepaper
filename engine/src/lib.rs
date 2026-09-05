@@ -7,6 +7,8 @@
 //! the same page template -- so what the editor previews is what the server
 //! stores, and neither can drift from the other.
 
+pub mod diagnostic;
+pub mod html;
 pub mod page;
 
 #[cfg(feature = "markdown")]

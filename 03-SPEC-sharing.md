@@ -1,8 +1,10 @@
 # SPEC: sharing, and who may do what to a document
 
-Status: proposed. Nothing here is built. Depends on `SPEC-history.md` for
-the way documents are read, and changes one line of it; reads that spec's
-"Reading without stored HTML" first.
+Status: step 1 built on the Rust host; steps 2 to 6 not. See "What was built"
+at the end. Extends the existing Rust server and its ownership checks.
+Depends on `01-SPEC-history.md` for the way
+documents are read, and changes one line of it; reads that spec's "Reading
+without stored HTML" first.
 
 ## The problem
 
@@ -31,7 +33,7 @@ reviewer a name to comment under without a GitHub account, which is what
 most reviewers of an academic paper do not have, or to keep a reviewer's
 name from the author, which is what a blind review requires.
 
-`SPEC-history.md` makes this sharper. Readers join the live session and see
+`01-SPEC-history.md` makes this sharper. Readers join the live session and see
 the source; editors' checkpoints are recorded with a `by`, which that spec
 admits "attributes to nobody in particular while a document has one owner".
 The moment a document can have coauthors, `by` means something, and the
@@ -126,7 +128,7 @@ origin minting a short-lived signed URL for each read, which is what
 `--s3-direct-reads` already does with presigned URLs. It could be built
 that way.
 
-It is not, because `SPEC-history.md` removes the need. Under that spec the
+It is not, because `01-SPEC-history.md` removes the need. Under that spec the
 frame on the documents origin is an empty shell; the text arrives through
 the socket on the main origin, where the identity is, and is pushed into the
 frame by `postMessage`. Checkpoints come from `history/<slug>/…` on the main
@@ -194,10 +196,34 @@ what it uploads and can share it by link, but cannot name anyone, since a
 name is matched against a GitHub id the visitor does not have. When a
 visitor signs in, the documents its visitor key owns are adopted by the
 account: `publisher` is rewritten to the login, `publisher_id` set, and the
-quota moves with them. This is also the answer to "I cleared my cookies and
-my documents are gone", which the README today can only warn about.
+quota moves with them. A document with no publisher at all, on a deployment
+that records none, is not a visitor's and stays publisher-less, as the rules
+require. This is also the answer to "I cleared my cookies and my documents
+are gone", which the README today can only warn about.
 
 ## What it looks like
+
+### Follow-up: scoped credentials for automation
+
+After named and link grants, an owner may mint a revocable bearer token
+scoped to one document and a role. It is presented on the WebSocket upgrade
+or an HTTP request, without a browser cookie. Token authentication feeds the
+same role function and server-policy ceilings as other grants; it must not
+be mistaken for the existing GitHub bearer token. An editor token cannot
+bypass the publisher policy: where a named account is required, it must be
+bound to an allowed account rather than treated as anonymous editing.
+
+Store only the token's hash and its scope, role, label, and rate budget.
+The token supplies a distinct author key so automated comments can be
+attributed to the automation client rather than its issuer. Its rate budget
+is separate from a human's. Revocation must stop further reads and writes,
+including on an already connected socket. The client cannot claim its own
+identity or role in a message.
+
+This is follow-up work, not part of the completed role-function step.
+Tests must cover document isolation, forbidden roles, attribution, rate
+limits, and revocation on both HTTP and an open socket. The peer client and
+snapshot interface are specified in `04-SPEC-sync.md`.
 
 ### In the reader
 
@@ -253,7 +279,7 @@ makes possible by recording `via`.
 It is not a second identity provider. A grant by name is a grant to a
 GitHub account, because that is the only account the server knows. If that
 is too narrow for the reviewers a journal has, the fix is another provider,
-which is an `auth.rs` change and not a change here; link grants carry the
+which is a change to the auth module and not a change here; link grants carry the
 load meanwhile, and were designed to.
 
 It is not a permission system for the server. `--publishers` and
@@ -289,7 +315,7 @@ shares it.
 5. **Visitor adoption.** On the OAuth callback, rewrite the visitor's
    entries to the account. Test: upload anonymously, sign in, the document
    is listed and owned.
-6. **Visibility.** After `SPEC-history.md` steps 1 to 3. `private` enforced
+6. **Visibility.** After `01-SPEC-history.md` steps 1 to 3. `private` enforced
    at `y-open` and the history routes; `listed` and `--no-listing`; the
    landing filter. Tests: a private document answers 404 to a stranger, as
    an unowned slug does today, and hello to a named reader.
@@ -311,7 +337,7 @@ afternoon. 6 waits on the history spec and is a day once that is in.
   reader who has not signed in needs to be told to, which a bare 404 does
   not do. The reader page can answer that: a 404 from the API on a slug the
   page was opened at shows "sign in, if this was shared with you".
-- **Editors and pinning.** `SPEC-history.md` gives pinning to the owner.
+- **Editors and pinning.** `01-SPEC-history.md` gives pinning to the owner.
   This spec gives it to editors, since it is a decision about the text and
   not about the document's ownership; if that is wrong, it is one row of the
   table.
@@ -324,3 +350,29 @@ afternoon. 6 waits on the history spec and is a day once that is in.
 - **Rate limits by link.** Comments are rate-limited by address today. A
   link is a better key for a commenter who arrived by one, and a worse one
   for a link forwarded to a department; left as address until it hurts.
+
+## What was built
+
+Step 1 only, on the existing Rust host.
+
+`IndexEntry::role_of(owner_key, caller_id, may_comment)` in `store.rs`
+answers the highest role a caller holds, and `Role` is the ladder this spec
+names -- reader, commenter, editor, owner -- with `at_least` for the question
+every gate really asks. The document endpoint answers `role` beside the
+`can_edit` and `can_moderate` it already answered, and `Reader.svelte` derives
+the editor from `role` when it is there and from `can_edit` when it is not, so
+a cached page still works. The server's `--commenters` switch is the ceiling
+it will be: nobody is offered `commenter` that the switch does not allow.
+The gates that mean "may edit" ask for the editor rung through it -- the
+`y-*` messages on the socket, the moderation of anyone else's comment, and the
+source endpoint -- while the two places that ask about ownership itself, the
+landing-page filter and the slug a publish may replace, still ask `owned_by`,
+which is the question they mean. Behaviour is unchanged, which is what step 1
+asked for; the test is that the existing ownership suite passes through the new
+function, plus one that pins the three answers a stranger, a commenter and an
+owner get.
+
+Nothing of steps 2 to 6 is built: no `editors` or `commenters` on the entry,
+no link grants, no `komodoc share`, no dialog, no visitor adoption, no
+visibility. `Role::Editor` is therefore a rung nobody stands on, and is marked
+as such in the code.

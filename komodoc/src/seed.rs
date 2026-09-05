@@ -22,7 +22,7 @@ use crate::http::{detail_of, get_json, post_json, text};
 use crate::render::{is_markdown, is_typst, render_markdown_document, render_typst_document};
 use crate::room::{Comment, Message, Region, Reply, Room, RoomSet};
 use crate::storage::{open_storage, StorageOptions};
-use crate::store::{digest_of, example_suffix, slugify, Publication, Store};
+use crate::store::{example_suffix, slugify, Publication, Store};
 use crate::util::{die, new_id};
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -69,11 +69,19 @@ pub fn read_seed_document(document: &SeedDocument) -> (String, String, String) {
         );
     }
     if is_typst(&document.file) {
-        let rendered = render_typst_document(Path::new(&document.file), &raw, document.title)
-            .unwrap_or_else(|err| die(format!("could not render {}: {err}", document.file)));
+        // Loudly, with the list: a seeded example that stops compiling against
+        // a new pinned typst is a thing to hear about here rather than to find
+        // in the browser.
+        let compiled = render_typst_document(Path::new(&document.file), &raw, document.title);
+        crate::render::report(&compiled.diagnostics, &document.file);
+        let rendered = compiled
+            .page
+            .unwrap_or_else(|| die(format!("could not render {}", document.file)));
         return (rendered, raw, "typst".into());
     }
-    (raw, String::new(), String::new())
+    // An HTML example is its own source, through the identity renderer, and is
+    // as editable as the other two.
+    (raw.clone(), raw, "html".into())
 }
 
 pub async fn seed(options: StorageOptions, documents: &[SeedDocument]) {
@@ -95,10 +103,15 @@ pub async fn seed_into(
     let store = Store::open(blobs.clone(), config.clone())
         .await
         .unwrap_or_else(|err| die(err));
+    let store = Arc::new(store);
     let rooms = RoomSet::new(blobs.clone(), config.clone());
+    rooms.attach_store(store.clone());
     let mut seeded = Vec::new();
 
     for document in documents {
+        // Rendered in memory, and not stored: the rendering is here only to
+        // anchor the example annotations against the text a browser will
+        // show, exactly as `visible_text` did when the HTML was stored.
         let (raw, source, format) = read_seed_document(document);
         let base = slugify(document.title, &config);
         let slug = format!("{base}-{}", example_suffix(&base, &config));
@@ -106,10 +119,8 @@ pub async fn seed_into(
             .put(Publication {
                 slug: slug.clone(),
                 title: document.title.to_string(),
-                digest: digest_of(&raw),
-                html: raw.clone(),
-                source,
-                source_format: format,
+                source: source.clone(),
+                source_format: format.clone(),
                 ..Publication::default()
             })
             .await
@@ -117,6 +128,10 @@ pub async fn seed_into(
 
         let text = visible_text(&raw);
         let room = rooms.get(&slug).await;
+        room.set_source(&source, &format).await;
+        room.checkpoint("cli", "")
+            .await
+            .unwrap_or_else(|err| die(format!("could not store {}: {err}", document.file)));
         let (placed, missed) = seed_annotations(&room, &document.annotations, &text).await;
         seeded.push(slug.clone());
 

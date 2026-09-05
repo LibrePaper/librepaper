@@ -182,11 +182,10 @@ relaying a few dozen bytes per keystroke.
 
 History is kept for you. The server takes a checkpoint of the source when the
 document has been quiet for a while, when the last editor leaves, when someone
-comments, and whenever `komodoc publish` or `komodoc sync` writes to it; the
-same text is never checkpointed twice. The timeline is behind the history
-button in the toolbar and behind `komodoc history`: open any checkpoint, name
-one, copy a link to it, or restore it. A restore is an edit, so nothing is ever
-rewritten or lost.
+comments, and whenever `komodoc publish` writes to it; the same text is never
+checkpointed twice, and nothing is ever rewritten. Checkpoints are kept from
+the first version of this, and are what a restore, a diff and the timeline in
+the toolbar will be built on; none of those three exists yet.
 
 Rendering happens in the browser, by the same compiler the command line
 renders with, built for WebAssembly — for readers as much as for editors. The
@@ -201,6 +200,7 @@ Two formats, and they are not available in the same places:
 |---|---|---|---|
 | **Markdown** | `komodoc publish paper.md` | comrak | ~130 KB compressed |
 | **Typst** | `komodoc publish paper.typ` | typst | ~13 MB compressed |
+| **HTML** | `komodoc publish paper.html` | the identity | nothing |
 
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
@@ -223,10 +223,17 @@ The typst renderer is built by `make typst`, which needs a Rust toolchain and
 is deliberately not part of `make build`. Without it Komodoc builds and runs
 exactly as before, and simply does not offer typst editing.
 
-A document published as HTML is its own source: it is shown as it was
-published and cannot be opened in the editor. One published before its source
-was kept has none stored; publish it again from its markdown to make it
-editable. The list on the landing page marks which is which.
+A document published as HTML is its own source, and its renderer is the
+identity: it is shown as it was published, which it always was, and it opens in
+the editor like the other two. That covers everything Quarto, Jupyter and
+marimo produce, so the live preview, the co-editing and the comments reach the
+documents most papers actually arrive in. A document published before HTML was
+a source format needs no republishing: the HTML that is stored is its source.
+
+The one thing to know about editing a generated file: the next `quarto render`
+produces a new HTML containing none of what was typed into the old one in the
+browser. The `.qmd` is where a lasting change belongs; the browser is for the
+fix that cannot wait for a render.
 
 ### Storage
 

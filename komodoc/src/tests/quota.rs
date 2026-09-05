@@ -156,10 +156,10 @@ async fn replacing_does_not_double_count_size() {
     );
 }
 
-// A replacement leaves the old version unreachable, so its bytes are removed
-// rather than kept forever alongside the one the index actually names.
+// There is one document. A replacement is an edit into it, not a version
+// beside it, so nothing rendered and no second copy is left behind.
 #[tokio::test]
-async fn replacing_removes_the_superseded_version() {
+async fn replacing_keeps_one_document_and_nothing_derived() {
     let server = new_test_server().await;
     let (status, first) = post(
         &server.url,
@@ -168,27 +168,30 @@ async fn replacing_removes_the_superseded_version() {
     )
     .await;
     assert_eq!(status, 201);
-    let (slug, first_sha) = (text(&first, "slug"), text(&first, "sha"));
+    let slug = text(&first, "slug");
     let (status, second) = post(
         &server.url,
         "/api/documents",
         json!({"title": "Doc", "slug": slug, "html": "<p>version two</p>"}),
     )
     .await;
-    assert_eq!(status, 201);
-    let second_sha = text(&second, "sha");
-    assert_ne!(second_sha, first_sha);
+    assert_eq!(status, 201, "{second}");
+    // There is one document, and it says what was published last. Nothing
+    // rendered is kept beside it, and no second version of it either: the
+    // earlier text is a checkpoint, which is history rather than a version.
+    let source = server.instance.rooms.get(&slug).await.source().await;
     assert!(
-        server.instance.store.read(&slug, &first_sha).await.is_err(),
-        "the superseded version should have been removed"
+        source.contains("version two"),
+        "the document says {source:?}"
     );
-    let body = server
+    let found = server
         .instance
         .store
-        .read(&slug, &second_sha)
+        .blobs
+        .list(&crate::blob::document_prefix(&slug))
         .await
         .unwrap();
-    assert!(String::from_utf8_lossy(&body).contains("version two"));
+    assert!(found.is_empty(), "a rendered version was kept: {found:?}");
 }
 
 // The listing is how a publisher sees what is eating their quota, so the
@@ -208,7 +211,14 @@ async fn list_includes_document_size() {
     assert_eq!(status, 200);
     let documents = payload["documents"].as_array().unwrap();
     assert_eq!(documents.len(), 1);
-    assert_eq!(documents[0]["size"], json!(html.len()));
+    // Size is the live document plus its history, both of which carry the
+    // published text; nothing rendered is counted, because nothing is stored.
+    let size = documents[0]["size"].as_i64().unwrap();
+    assert!(
+        size >= html.len() as i64,
+        "size {size} does not cover the {} bytes published",
+        html.len()
+    );
 }
 
 // A refused upload must leave nothing behind: an over-quota publisher who

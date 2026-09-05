@@ -96,6 +96,54 @@ pub async fn serve_instance(instance: Arc<Server>, dir: tempfile::TempDir) -> Te
     }
 }
 
+/// A server over storage that already exists, which is what a restart is: a
+/// new process, the same bucket, nothing carried across in memory. The
+/// directory belongs to whoever made it, so this borrows it rather than
+/// holding it.
+pub async fn server_over(path: &std::path::Path, config: Configuration) -> (String, Arc<Server>) {
+    server_over_blobs(Arc::new(FsStore::new(path)), config).await
+}
+
+/// The same, over whatever store is given -- a failing one, in the tests that
+/// inject storage failures.
+pub async fn server_over_blobs(
+    blobs: Arc<dyn crate::blob::BlobStore>,
+    config: Configuration,
+) -> (String, Arc<Server>) {
+    let config = Arc::new(config);
+    let store = Store::open(blobs.clone(), config.clone())
+        .await
+        .expect("the store opens");
+    let rooms = RoomSet::new(blobs, config.clone());
+    let instance = Arc::new(Server::new(
+        store,
+        rooms,
+        load_shell(&config).expect("the shell loads"),
+        GithubApp {
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+        },
+        TEST_KEY.to_vec(),
+        config,
+        Policy::parse(TEST_PUBLISHER),
+        Policy::parse("anyone"),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port");
+    let address = listener.local_addr().expect("an address");
+    let router = instance.clone().router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("serve");
+    });
+    (format!("http://{address}"), instance)
+}
+
 /// The cookie a browser carries after signing in as login. The login itself
 /// doubles as the fake GitHub numeric id, which is fine for a test: it only
 /// has to be stable and distinct per login, the way a real account's id is.

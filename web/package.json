@@ -13,8 +13,10 @@
   },
   "dependencies": {
     "@codemirror/commands": "^6.9.0",
+    "@codemirror/lang-html": "^6.4.12",
     "@codemirror/lang-markdown": "^6.3.4",
     "@codemirror/language": "^6.11.3",
+    "@codemirror/lint": "^6.9.7",
     "@codemirror/search": "^6.5.11",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.39.1",
@@ -24,6 +26,7 @@
     "svelte": "^5.57.0",
     "tailwindcss": "4",
     "y-codemirror.next": "^0.3.6",
+    "y-indexeddb": "^9.0.12",
     "y-protocols": "^1.0.6",
     "yjs": "^13.6.32"
   }

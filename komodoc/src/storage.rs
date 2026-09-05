@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use clap::Args;
 
-use crate::blob::{source_key, BlobStore, FsStore};
+use crate::blob::{legacy_source_key, BlobStore, FsStore};
 use crate::s3::S3Store;
 use crate::util::first_of;
 
@@ -201,14 +201,14 @@ pub async fn migrate_legacy_source(blobs: &dyn BlobStore) -> usize {
         let Some(slug) = rest.strip_suffix("/source.txt") else {
             continue;
         };
-        if blobs.get(&source_key(slug)).await.is_ok() {
+        if blobs.get(&legacy_source_key(slug)).await.is_ok() {
             continue; // already moved
         }
         let Ok(body) = blobs.get(&object.key).await else {
             continue;
         };
         if blobs
-            .put(&source_key(slug), body, "text/plain; charset=utf-8")
+            .put(&legacy_source_key(slug), body, "text/plain; charset=utf-8")
             .await
             .is_err()
         {

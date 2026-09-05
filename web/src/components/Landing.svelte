@@ -427,14 +427,12 @@
                   <td>
                     <Row gap={2}>
                       <a class="anchor" href="/docs/{doc.slug}">{doc.title}</a>
-                      <!-- What the document is written in. One that kept its
-                           source opens in the editor rather than only in the
-                           reader. -->
+                      <!-- What the document is written in. Every format is
+                           editable -- HTML's renderer is the identity -- so
+                           this says what it was written in and nothing more. -->
                       <span
                         class="badge preset-tonal-surface text-xs"
-                        title={doc.source_format
-                          ? `Published from ${doc.source_format}, and editable`
-                          : "HTML: published as it is, and read-only here"}
+                        title="Published from {doc.source_format || 'html'}"
                       >
                         {({ markdown: ".md", typst: ".typ" })[doc.source_format] || ".html"}
                       </span>

@@ -8,6 +8,7 @@ mod cli;
 mod clock;
 mod config;
 mod export;
+mod history;
 mod http;
 mod origins;
 mod render;
@@ -18,6 +19,7 @@ mod seed;
 mod seed_examples;
 mod serve;
 mod server;
+mod session;
 mod storage;
 mod store;
 mod util;
@@ -85,6 +87,12 @@ struct ServiceFlags {
     /// Most uploads one publisher may make in an hour (default 30)
     #[arg(long, value_name = "N", default_value_t = 0)]
     uploads_per_hour: i64,
+    /// Minutes of quiet before a document is checkpointed (default 5)
+    #[arg(long, value_name = "MINUTES", default_value_t = 0)]
+    checkpoint: i64,
+    /// Most checkpoints one document keeps; 0 keeps only the current text
+    #[arg(long, value_name = "N")]
+    history: Option<usize>,
     /// Delete documents after this duration, for example 24h or 30d (default never)
     #[arg(long, value_name = "DURATION")]
     expire_after: Option<String>,
@@ -103,6 +111,9 @@ impl ServiceFlags {
             die(err);
         }
         if let Err(err) = config.set_counts(self.max_documents, self.uploads_per_hour) {
+            die(err);
+        }
+        if let Err(err) = config.set_history(self.checkpoint, self.history) {
             die(err);
         }
         config

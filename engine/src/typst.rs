@@ -17,13 +17,14 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-use typst::diag::{FileError, FileResult};
+use typst::diag::{FileError, FileResult, Severity as TypstSeverity, SourceDiagnostic};
 use typst::foundations::{Bytes, Datetime, Duration};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
-use typst::{Feature, Features, Library, LibraryExt, World};
+use typst::{Feature, Features, Library, LibraryExt, World, WorldExt};
 
+use crate::diagnostic::{Compiled, Diagnostic, Severity};
 use crate::page;
 
 /// The compiler this crate is built against, for the version a publisher is
@@ -184,29 +185,103 @@ impl Today {
 /// the styling its maths needs. A document that does not compile is an
 /// ordinary state of an editor rather than an exceptional one, so a diagnostic
 /// comes back as an ordinary result and the caller decides how to show it.
-pub fn compile_html(
-    source: &str,
-    name: &str,
-    files: Files,
-    today: Option<Today>,
-) -> Result<String, String> {
+pub fn compile_html(source: &str, name: &str, files: Files, today: Option<Today>) -> Compiled {
     let world = DocumentWorld {
         main: Source::new(main_id(name), source.to_string()),
         files,
         today: today.and_then(|t| Datetime::from_ymd(t.year, t.month, t.day)),
     };
 
-    let first_of = |errors: ecow::EcoVec<typst::diag::SourceDiagnostic>| {
-        errors
-            .first()
-            .map(|diagnostic| diagnostic.message.to_string())
-            .unwrap_or_else(|| "typst could not compile this".to_string())
+    let compiled = typst::compile::<typst_html::HtmlDocument>(&world);
+    let mut diagnostics = describe(&world, &compiled.warnings);
+    let page = match compiled.output {
+        Ok(document) => {
+            match typst_html::html(&document, &typst_html::HtmlOptions { pretty: false }) {
+                Ok(html) => Some(html),
+                Err(errors) => {
+                    diagnostics.extend(describe(&world, &errors));
+                    None
+                }
+            }
+        }
+        Err(errors) => {
+            diagnostics.extend(describe(&world, &errors));
+            None
+        }
     };
+    // Errors first: a list read top to bottom, and a badge that jumps to the
+    // first thing worth looking at.
+    diagnostics.sort_by_key(|diagnostic| !diagnostic.is_error());
+    if page.is_none() && !diagnostics.iter().any(Diagnostic::is_error) {
+        diagnostics.push(Diagnostic::spanless(
+            Severity::Error,
+            "typst could not compile this",
+        ));
+    }
+    Compiled { page, diagnostics }
+}
 
-    let document = typst::compile::<typst_html::HtmlDocument>(&world)
-        .output
-        .map_err(first_of)?;
-    typst_html::html(&document, &typst_html::HtmlOptions { pretty: false }).map_err(first_of)
+/// Turns typst's diagnostics into the shape every host reads, mapping each
+/// span through the world that compiled: the file it names, and the line and
+/// column its byte range falls at.
+fn describe(world: &DocumentWorld, diagnostics: &[SourceDiagnostic]) -> Vec<Diagnostic> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let mut hints: Vec<String> = diagnostic
+                .hints
+                .iter()
+                .map(|hint| hint.v.to_string())
+                .collect();
+            // The trace says where a failure inside a function was reached
+            // from; it is a hint about the same diagnostic, not a structure of
+            // its own.
+            hints.extend(
+                diagnostic
+                    .trace
+                    .iter()
+                    .map(|point| format!("error occurred {}", point.v)),
+            );
+            let mut described = Diagnostic {
+                severity: match diagnostic.severity {
+                    TypstSeverity::Error => Severity::Error,
+                    TypstSeverity::Warning => Severity::Warning,
+                },
+                message: diagnostic.message.to_string(),
+                hints,
+                ..Diagnostic::default()
+            };
+            if let (Some(id), Some(range)) = (diagnostic.span.id(), world.range(diagnostic.span)) {
+                if id != world.main.id() {
+                    described.file = id.vpath().get_without_slash().to_string();
+                }
+                if let Ok(source) = world.source(id) {
+                    let (line, column) = place(&source, range.start);
+                    let (end_line, end_column) = place(&source, range.end);
+                    described.line = line;
+                    described.column = column;
+                    described.end_line = end_line;
+                    described.end_column = end_column;
+                }
+            }
+            described
+        })
+        .collect()
+}
+
+/// A byte offset as a one-based line and column, the column counted in UTF-16
+/// code units because that is what the editor on the other side counts in.
+fn place(source: &Source, byte: usize) -> (usize, usize) {
+    let lines = source.lines();
+    let Some(line) = lines.byte_to_line(byte) else {
+        return (0, 0);
+    };
+    let start = lines.line_to_byte(line).unwrap_or(byte);
+    let head = source.text().get(start..byte).unwrap_or("");
+    (
+        line + 1,
+        head.chars().map(char::len_utf16).sum::<usize>() + 1,
+    )
 }
 
 /// Compiles a source to the page every Komodoc document is stored as, so a
@@ -219,9 +294,9 @@ pub fn render(
     name: &str,
     files: Files,
     today: Option<Today>,
-) -> Result<String, String> {
-    let rendered = compile_html(source, name, files, today)?;
-    Ok(wrap(&rendered, title))
+) -> Compiled {
+    let title = title.to_string();
+    compile_html(source, name, files, today).map_page(|rendered| wrap(&rendered, &title))
 }
 
 /// Puts typst's output in the shared page: its `<style>` blocks into the head,
@@ -277,6 +352,7 @@ mod tests {
             &no_files,
             None,
         )
+        .into_result()
         .expect("typst could not compile prose");
         assert!(
             html.contains("Just prose"),
@@ -296,6 +372,7 @@ mod tests {
             &no_files,
             None,
         )
+        .into_result()
         .expect("typst could not compile the sample");
         for wanted in [
             "<h2>A Paper</h2>",
@@ -313,7 +390,9 @@ mod tests {
     // maths needs, which nothing else provides.
     #[test]
     fn wears_the_shared_page_and_keeps_its_own_styling() {
-        let page = render("= T\n\n$ x^2 $\n", "T", "", &no_files, None).expect("compile");
+        let page = render("= T\n\n$ x^2 $\n", "T", "", &no_files, None)
+            .into_result()
+            .expect("compile");
         assert!(page.starts_with("<!doctype html>"));
         assert_eq!(
             page.matches("<html").count(),
@@ -351,9 +430,14 @@ mod tests {
             &files,
             None,
         )
+        .into_result()
         .expect("the import did not resolve");
         assert!(html.contains("hello from lib"));
-        assert!(compile_html("#import \"missing.typ\": x\n", "main.typ", &files, None).is_err());
+        assert!(
+            compile_html("#import \"missing.typ\": x\n", "main.typ", &files, None)
+                .page
+                .is_none()
+        );
     }
 
     #[test]
@@ -364,10 +448,75 @@ mod tests {
             day: 4,
         };
         let html = compile_html("#datetime.today().display()\n", "", &no_files, Some(today))
+            .into_result()
             .expect("compile");
         assert!(html.contains("2026-09-04"), "{html}");
-        assert!(compile_html("#datetime.today().display()\n", "", &no_files, None).is_err());
+        assert!(
+            compile_html("#datetime.today().display()\n", "", &no_files, None)
+                .page
+                .is_none()
+        );
         assert!(Today::now().is_some());
+    }
+
+    // Nobody reads a message and then goes looking for the line, so the line
+    // comes with the message.
+    #[test]
+    fn an_error_says_where_it_is() {
+        let compiled = compile_html("= T\n\nsome prose\n\n$x\n", "", &no_files, None);
+        assert!(compiled.page.is_none());
+        let first = compiled.diagnostics.first().expect("no diagnostic");
+        assert!(first.is_error());
+        assert!(!first.message.is_empty());
+        assert_eq!(first.line, 5, "{first:?}");
+        assert!(first.column >= 1, "{first:?}");
+        assert!(compiled
+            .diagnostics_json()
+            .contains("\"severity\":\"error\""));
+    }
+
+    // A failure inside an imported file is a failure in that file, and the
+    // list says so rather than pointing at the line that imported it.
+    #[test]
+    fn an_error_in_an_imported_file_names_it() {
+        let files = |path: &Path| -> Option<Vec<u8>> {
+            (path == Path::new("lib.typ")).then(|| b"#let x = colour\n".to_vec())
+        };
+        let compiled = compile_html("#import \"lib.typ\": x\n#x\n", "main.typ", &files, None);
+        assert!(compiled.page.is_none());
+        let first = compiled.diagnostics.first().expect("no diagnostic");
+        assert_eq!(first.file, "lib.typ", "{first:?}");
+        assert_eq!(first.line, 1, "{first:?}");
+    }
+
+    // A warning is not a failure: the page is painted and the warning is
+    // reported beside it.
+    #[test]
+    fn a_warning_comes_back_beside_a_page() {
+        let compiled = compile_html(
+            "#set text(font: \"No Such Font At All\")\n= T\n\nprose\n",
+            "",
+            &no_files,
+            None,
+        );
+        assert!(compiled.page.is_some(), "{:?}", compiled.diagnostics);
+        assert!(
+            compiled.warnings().count() > 0,
+            "an unknown font family warned about nothing"
+        );
+        assert_eq!(compiled.errors().count(), 0);
+    }
+
+    // The editor counts in UTF-16 code units, so the engine does the counting
+    // once rather than every host decoding the document a second time.
+    #[test]
+    fn columns_count_utf16_units() {
+        // An emoji is one character and two UTF-16 units; the `$` after it is
+        // therefore at column 4, not 3.
+        let compiled = compile_html("= T\n\n🙂 $x\n", "", &no_files, None);
+        let first = compiled.diagnostics.first().expect("no diagnostic");
+        assert_eq!(first.line, 3, "{first:?}");
+        assert_eq!(first.column, 4, "{first:?}");
     }
 
     #[test]
