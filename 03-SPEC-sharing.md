@@ -59,9 +59,17 @@ review in which reviewers cannot see one another's comments until the owner
 reveals them is a visibility on comments rather than on documents, and is its
 own spec — which `via` on each comment already makes possible.
 
-It is not a second identity provider. A grant by name is a grant to a GitHub
-account. If that is too narrow, the fix is another provider in the auth module;
-link grants carry the load meanwhile, and were designed to.
+It is not a second identity provider. A grant by name is a grant to a
+handle -- a GitHub login, or a Google account's verified email -- and the
+handle resolves to an account through the providers the auth module has.
+What is not built: a grant to a handle the server has never seen. Only
+GitHub logins resolve before sign-in, so `--editor anne@example.org` is
+refused today with a message saying so; the fix is to store the unresolved
+handle on the grant and resolve it in `Server::sign_in()`, the one place
+both providers' callbacks pass through. When that is done, rename
+`Grant.login` to `handle` with `#[serde(alias = "login")]`, since the field
+has held a handle since providers arrived and the share dialog and
+`revoke_from` read it as one.
 
 It is not a permission system for the server, and it is not delegation: an
 editor cannot share.

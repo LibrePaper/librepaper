@@ -122,3 +122,29 @@ flattening in `sync.js`. Two questions from that work were left unanswered:
   takes a second to boot on every paint may want a longer pause, or a paint
   only on a pause in typing; whether that is a per-format constant or
   something measured from the previous paint is not decided.
+
+# Directories, left open
+
+A document is a directory: texts in the session keyed by id, assets by
+digest, a checkpoint as a tree, `publish <directory>`, a zip out. What was
+deliberately not done:
+
+- The sandbox's `max_assets` is the default 32 MB; it was to be measured
+  against the R2 bill and set lower. Cost bounding comes before every other
+  concern there, and the number is still a default.
+- Fonts for typst. A `.otf` or `.ttf` in the directory is stored and
+  versioned and not offered to typst, whose font book is built once from
+  the static faces. Building it per compile from those plus the directory's
+  is a step of its own, once someone needs a font the engine does not ship.
+- A zip in. The editor hands back the directory as a zip; a zip dropped on
+  the landing page -- the Overleaf habit -- would make `publish <directory>`
+  reachable from the browser. Small, once the routes exist; not scheduled.
+
+# Signing in, left open
+
+- The table of pending terminal sign-ins is capped at a thousand in total.
+  One caller can fill it and keep every new `komodoc login` waiting for ten
+  minutes; nothing else. A per-address cap would be the better bound.
+- `Grant.login` holds a handle, not a login, since providers arrived; see
+  `03-SPEC-sharing.md` for the rename that goes with resolving a grant to a
+  handle nobody has signed in with.

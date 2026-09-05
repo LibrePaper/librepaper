@@ -6,9 +6,8 @@ Komodoc drives and by a TeX Live on a desk, and to disagree with none of
 them. What each is for:
 
 - **`article/`** — one file, with its bibliography inside it in
-  `filecontents*`. It is the shape the spec was written against before
-  `08-SPEC-directories.md` made a document a directory, and it keeps that
-  case working. It also carries, deliberately, the four things step 4's
+  `filecontents*`. It is the shape the spec was written against before a
+  document became a directory, and it keeps that case working. It also carries, deliberately, the four things step 4's
   anchoring has to survive: a hyphenated line end, a page break inside a
   sentence, a footnote, and an `fi` ligature. Three pages.
 

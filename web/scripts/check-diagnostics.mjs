@@ -175,9 +175,9 @@ function session() {
 }
 
 // An error in a file the main one imports is an error in *that* file, and says
-// so. `08-SPEC-directories.md` struck the line in the engine that admitted
-// "in the browser it is always empty": the browser now hands the compiler the
-// whole directory, so a span in a chapter resolves to the chapter.
+// so. The engine's `file` field used to admit "in the browser it is always
+// empty"; a document is a directory now, the browser hands the compiler the
+// whole of it, and a span in a chapter resolves to the chapter.
 //
 // This is the half of the rule the editor depends on to open the right file
 // when somebody clicks the badge. The other half -- that an unplaceable

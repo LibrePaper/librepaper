@@ -222,14 +222,18 @@ checkpoint, so the author can find it; it is not a way to push or pull.
 
 ## Steps
 
-5. **The timeline.** `GET .../history`, the label `PATCH`, `komodoc
-   history` and `komodoc label`, the panel, viewing a checkpoint.
+5. **The timeline.** The label `PATCH`, `komodoc history` and `komodoc
+   label`, the panel, viewing a checkpoint. `GET .../history` exists
+   already, and every entry carries `changed`, the paths whose digest
+   differs from the parent's: a document is a directory now, so the panel
+   lists what moved and puts a per-file diff (step 8) behind each path.
 6. **Comments know their checkpoint.** The two fields, set in `apply`, in
    both exports. The passage-then-and-now line on the card.
 7. **The response export.** `--format response` and `--since`.
-8. **What changed since.** The word-level diff, one module for the command
-   line and the room, exposed to the browser through WASM; the list beside
-   the comments; anchoring hunks by quotation.
+8. **What changed since.** The word-level diff is built, as the
+   `komodoc-text` crate (`text/`), which `komodoc sync`'s merge also uses;
+   what remains is its WASM export from the engine, the list beside the
+   comments, and anchoring hunks by quotation.
 9. **Diff and restore.** The merge view in the editor, `komodoc diff`,
    `komodoc restore`, restore as a server-side diff into the document.
 10. **Provenance.** The git fields from `publish` and `sync`.
@@ -260,12 +264,6 @@ forty hex characters.
   enough that a paragraph is a checkpoint and not each sentence of it,
   short enough that a session's worth of work is many points rather than
   one. The last-editor rule bounds the loss in any case.
-- **Documents that need files beside them.** A typst source that `#import`s
-  a file or reads a `#bibliography` renders on the author's machine and
-  nowhere else, because the engine's file map in the browser has no
-  directory. The answer is the project, several files travelling with the
-  source, which remains unbuilt; `08-SPEC-directories.md` is where it is
-  designed. Until then such a document is published as HTML.
 
 ## Waiting on the timeline
 

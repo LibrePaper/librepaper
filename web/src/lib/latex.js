@@ -21,7 +21,7 @@
 //
 // A **tree** is the document: `{ main, texts, assets }`, the main path, the
 // texts as strings and the assets as bytes, exactly as `renderers.js` takes
-// it since `08-SPEC-directories.md`. Every path is written into the engine's
+// it. Every path is written into the engine's
 // in-memory filesystem where the path says, and the engine is run on the main
 // file, so `\include`, `\includegraphics`, a `.sty` of the author's own and a
 // `.bib` beside the document all work the way they do on a desk.
