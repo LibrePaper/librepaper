@@ -611,6 +611,7 @@ async fn signing_in_adopts_what_the_visitor_published() {
             &format!("{}alpha", crate::server::VISITOR_PREFIX),
             "alice",
             "alice",
+            "alice",
         )
         .await
         .expect("the documents are adopted");
@@ -824,6 +825,7 @@ async fn no_listing_makes_listed_behave_as_link() {
         id: "github:anne".into(),
         handle: "anne".into(),
         provider: "github".into(),
+        name: "anne".into(),
     };
     assert_eq!(
         server

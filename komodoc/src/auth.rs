@@ -686,7 +686,12 @@ impl GoogleApp {
         if user.sub.is_empty() {
             return Err("google would not say who you are".to_string());
         }
-        if user.email.is_empty() || !user.email_verified {
+        // The session cookie's payload is `|`-separated, and the address is
+        // the handle in it. Google does not issue addresses with a bar in
+        // them, and an account that somehow had one would sign in as a cookie
+        // whose fields had shifted; it is refused with the one refusal a
+        // person could act on, which is near enough the truth.
+        if user.email.is_empty() || !user.email_verified || user.email.contains('|') {
             return Err(UNVERIFIED_EMAIL.to_string());
         }
         Ok(Identity::google(&user.sub, &user.email, &user.name))

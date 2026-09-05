@@ -334,7 +334,7 @@ async fn a_google_account_comments_under_its_name() {
     assert_eq!(payload["comment"]["creator"], "Anne Grandchamp");
     let body = serde_json::to_string(&payload).unwrap();
     assert!(
-        !body.contains("umontreal.ca"),
+        !body.contains("anne@umontreal.ca"),
         "a Google account's email reached a comment: {body}"
     );
 
@@ -853,4 +853,106 @@ fn settings_may_be_quoted() {
     }
     // The first value that is not empty still wins.
     assert_eq!(first_of(&["", "\"second\"", "third"]), "second");
+}
+
+// The share dialog is read by everyone named on a document, and a Google
+// account's handle is its email address, which the spec shows to nobody. So
+// the dialog draws names and providers, and the handle reaches the owner
+// alone -- who typed it, and names it again to revoke.
+#[tokio::test]
+async fn a_google_owner_is_shown_by_name_and_never_by_email() {
+    let server = test_server_with(
+        Configuration::default(),
+        Policy::parse("@umontreal.ca, vincent"),
+        Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let anne = google_session_as("10769", "anne@umontreal.ca", "Anne Grandchamp");
+    let (status, payload) = post_as(
+        &anne,
+        &server.url,
+        "/api/documents",
+        json!({"title": "A paper", "source": "hello", "source_format": "markdown"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{payload}");
+    let slug = text(&payload, "slug");
+    let share = format!("/api/documents/{slug}/share");
+
+    // A grant by email is not available yet, and the refusal says so rather
+    // than asking GitHub about an address.
+    let (status, payload) = post_as(
+        &anne,
+        &server.url,
+        &share,
+        json!({"grant": {"login": "jean@umontreal.ca", "role": "editor"}}),
+    )
+    .await;
+    assert_eq!(status, 404, "{payload}");
+    assert!(
+        text(&payload, "error").contains("email address"),
+        "the refusal did not say why: {payload}"
+    );
+
+    let (status, payload) = post_as(
+        &anne,
+        &server.url,
+        &share,
+        json!({"grant": {"login": "vincent", "role": "editor"}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{payload}");
+
+    // The named editor sees a name and a provider, and no address anywhere.
+    let (status, payload) = get_json_as(&session_as("vincent"), &server.url, &share).await;
+    assert_eq!(status, 200, "{payload}");
+    let body = payload.to_string();
+    assert!(
+        !body.contains("anne@umontreal.ca"),
+        "the owner's email reached a named editor: {body}"
+    );
+    assert_eq!(text(&payload["owner"], "name"), "Anne Grandchamp");
+    assert_eq!(text(&payload["owner"], "provider"), "google");
+    assert_eq!(text(&payload["owner"], "login"), "");
+    assert_eq!(text(&payload["editors"][0], "name"), "vincent");
+    assert_eq!(text(&payload["editors"][0], "provider"), "github");
+    assert_eq!(text(&payload["editors"][0], "login"), "");
+
+    // The owner sees the handles, which are theirs to know and to revoke by.
+    let (status, payload) = get_json_as(&anne, &server.url, &share).await;
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(text(&payload["owner"], "login"), "anne@umontreal.ca");
+    assert_eq!(text(&payload["owner"], "name"), "Anne Grandchamp");
+    assert_eq!(text(&payload["editors"][0], "login"), "vincent");
+    let (status, payload) = post_as(&anne, &server.url, &share, json!({"revoke": "vincent"})).await;
+    assert_eq!(status, 200, "{payload}");
+    assert!(payload["editors"].as_array().is_some_and(Vec::is_empty));
+
+    // An entry from before names were recorded shows its login, which is a
+    // GitHub login and so is its name.
+    let entry = server
+        .instance
+        .store
+        .get(&slug)
+        .await
+        .expect("the document");
+    assert_eq!(entry.publisher_name, "Anne Grandchamp");
+    let legacy = crate::store::IndexEntry {
+        publisher: "alice".into(),
+        ..Default::default()
+    };
+    assert_eq!(legacy.owner_name(), "alice");
+}
+
+// Google does not issue addresses with a bar in them, but the session
+// cookie's payload is bar-separated and the address is a field of it, so an
+// account that somehow had one is refused rather than signed in as a cookie
+// whose fields had shifted.
+#[tokio::test]
+async fn the_google_callback_refuses_an_address_that_would_break_the_cookie() {
+    let odd = json!({"sub": "4", "email": "a|b@example.org", "email_verified": true, "name": "A"});
+    let (server, _google) = server_with_google(odd, "v").await;
+    let response = google_callback(&server.url, "st", "v", "").await;
+    assert_eq!(response.status().as_u16(), 403);
 }

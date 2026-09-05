@@ -120,17 +120,19 @@ pub struct Caller {
     /// The provider that handle came from, so the identity rebuilt below is
     /// the one that signed in rather than a guess at it.
     pub provider: String,
+    /// What other readers see this caller called, recorded on what they
+    /// publish so the share dialog never has to show the handle instead.
+    pub name: String,
 }
 
 impl Caller {
-    /// Enough of an identity to ask the switches with. The displayed name is
-    /// not carried here: nothing that asks a ceiling shows one.
+    /// Enough of an identity to ask the switches with.
     fn identity(&self) -> Identity {
         Identity {
             provider: self.provider.clone(),
             id: self.id.clone(),
             handle: self.handle.clone(),
-            name: String::new(),
+            name: self.name.clone(),
         }
     }
 }
@@ -364,6 +366,7 @@ impl Server {
                 id: id.id,
                 handle: id.handle,
                 provider: id.provider,
+                name: id.name,
             });
         }
         if !id.is_signed_in() {
@@ -1151,6 +1154,7 @@ impl Server {
                 source_format: parsed.source_format.clone(),
                 owner: who.key,
                 owner_id: who.id,
+                owner_name: who.name,
             })
             .await
         {
@@ -1565,11 +1569,11 @@ impl Server {
             let Some(role) = Role::parse(&grant.role) else {
                 return write_json(400, &json!({"error": "a grant is 'commenter' or 'editor'"}));
             };
+            if names_an_address(&grant.login) {
+                return write_json(404, &json!({"error": EMAIL_GRANTS_UNAVAILABLE}));
+            }
             let Some(account) = self.accounts.lookup(&grant.login).await else {
-                return write_json(
-                    404,
-                    &json!({"error": format!("github has no account called @{}", clean(grant.login.trim().trim_start_matches('@'), 64))}),
-                );
+                return write_json(404, &json!({"error": no_such_account(&grant.login)}));
             };
             if let Err(refusal) = self.grant_allowed(&account, role) {
                 return write_json(403, &json!({"error": refusal}));
@@ -1639,6 +1643,7 @@ impl Server {
                         id: account.id.clone(),
                         login: account.handle.clone(),
                         since: crate::clock::timestamp(),
+                        name: account.name.clone(),
                     };
                     match role {
                         Role::Editor => entry.editors.push(grant),
@@ -1681,10 +1686,22 @@ impl Server {
     /// and when it stops working.
     fn sharing_json(&self, entry: &IndexEntry, owner: bool) -> Value {
         let now = crate::clock::now_unix();
+        // A handle reaches only the owner, who typed it and names it again to
+        // revoke; everyone else named on the document sees the name and the
+        // provider, which is what the dialog draws. A Google handle is an
+        // email address, and the spec shows it to nobody.
         let people = |grants: &Vec<Grant>| -> Vec<Value> {
             grants
                 .iter()
-                .map(|grant| json!({"login": grant.login, "id": grant.id, "since": grant.since}))
+                .map(|grant| {
+                    json!({
+                        "login": if owner { grant.login.clone() } else { String::new() },
+                        "name": grant.shown(),
+                        "provider": provider_of(&grant.id),
+                        "id": grant.id,
+                        "since": grant.since,
+                    })
+                })
                 .collect()
         };
         let links: Vec<Value> = entry
@@ -1708,11 +1725,17 @@ impl Server {
             // same value that owns their other uploads, so it is not a thing to
             // print: the dialog says "this browser" instead.
             "owner": {
-                "login": if entry.publisher.starts_with(VISITOR_PREFIX) {
+                "login": if entry.publisher.starts_with(VISITOR_PREFIX) || !owner {
                     String::new()
                 } else {
                     entry.publisher.clone()
                 },
+                "name": if entry.publisher.starts_with(VISITOR_PREFIX) {
+                    ""
+                } else {
+                    entry.owner_name()
+                },
+                "provider": provider_of(&entry.publisher_id),
                 "id": entry.publisher_id,
                 "visitor": entry.publisher.starts_with(VISITOR_PREFIX),
             },
@@ -1808,11 +1831,11 @@ impl Server {
         if asked.to.trim().is_empty() {
             return write_json(400, &json!({"error": "name the account to transfer to"}));
         }
+        if names_an_address(&asked.to) {
+            return write_json(404, &json!({"error": EMAIL_GRANTS_UNAVAILABLE}));
+        }
         let Some(account) = self.accounts.lookup(&asked.to).await else {
-            return write_json(
-                404,
-                &json!({"error": format!("github has no account called @{}", clean(asked.to.trim().trim_start_matches('@'), 64))}),
-            );
+            return write_json(404, &json!({"error": no_such_account(&asked.to)}));
         };
         if !self.publishers.allows(&account.handle) {
             return write_json(
@@ -1828,6 +1851,7 @@ impl Server {
             .modify(slug, |entry| {
                 entry.publisher = account.handle.clone();
                 entry.publisher_id = account.id.clone();
+                entry.publisher_name = account.name.clone();
                 // The new owner holds everything by owning it, so a grant to
                 // them is a row that no longer says anything.
                 entry
@@ -2071,7 +2095,11 @@ impl Server {
         // next sign-in adopts them.
         let visitor = self.owner(headers, arrival, &Identity::anonymous());
         if !visitor.is_empty() {
-            match self.store.adopt(&visitor, &who.handle, &who.id).await {
+            match self
+                .store
+                .adopt(&visitor, &who.handle, &who.id, &who.name)
+                .await
+            {
                 Ok(0) => {}
                 Ok(moved) => println!("adopted {moved} document(s) for {}", who.name),
                 Err(err) => eprintln!("could not adopt {}'s documents: {err}", who.name),
@@ -2414,6 +2442,36 @@ fn link_expiry(asked: &str) -> Result<String, String> {
 /// Removes one grant, by the login it names or by the first characters of a
 /// link's id. Returns whether anything went, so a revoke that matched nothing
 /// says so rather than reporting success.
+/// Which provider a stored id belongs to, read off its prefix; a bare id from
+/// before providers existed is GitHub's, as `stored_id` says.
+fn provider_of(id: &str) -> String {
+    stored_id(id)
+        .split_once(':')
+        .map(|(provider, _)| provider.to_string())
+        .unwrap_or_default()
+}
+
+/// Only GitHub logins resolve to an account today: a grant to an email
+/// address waits on the sharing spec's step that records a handle nobody has
+/// signed in with yet. Until then an address is refused before anybody asks
+/// GitHub about it, with a message that says what is missing.
+const EMAIL_GRANTS_UNAVAILABLE: &str =
+    "sharing with an email address is not available yet; name a GitHub login";
+
+/// Whether what was typed is an address rather than a login: a GitHub login
+/// cannot contain `@` past the optional one in front.
+fn names_an_address(asked: &str) -> bool {
+    asked.trim().trim_start_matches('@').contains('@')
+}
+
+/// Why a login could not be turned into an account.
+fn no_such_account(asked: &str) -> String {
+    format!(
+        "github has no account called @{}",
+        clean(asked.trim().trim_start_matches('@'), 64)
+    )
+}
+
 fn revoke_from(entry: &mut IndexEntry, asked: &str) -> bool {
     let login = asked.trim_start_matches('@').to_lowercase();
     let before = entry.editors.len() + entry.commenters.len() + entry.links.len();

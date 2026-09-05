@@ -44,6 +44,14 @@ pub struct IndexEntry {
     /// account behind it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub publisher_id: String,
+    /// What other readers see the owner called. The share dialog shows the
+    /// owner to everyone named on the document, and for a Google account the
+    /// handle in `publisher` is an email address, which is shown to nobody;
+    /// so the name is recorded beside it whenever an identity is in hand. An
+    /// entry from before names were recorded is a GitHub entry, whose login
+    /// is its name, and reads back through `owner_name`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub publisher_name: String,
     /// The bytes of the stored HTML -- plus the source beside it, when one is
     /// kept -- and what the storage quotas are measured against. An entry from
     /// before it was recorded reads back as zero, which `admit` treats as free
@@ -75,14 +83,31 @@ pub struct IndexEntry {
     pub links: Vec<LinkGrant>,
 }
 
-/// One account named on a document. The login is kept for display; the id is
-/// what the grant is matched on.
+/// One account named on a document. The id is what the grant is matched on;
+/// `login` holds the handle -- a GitHub login, or a Google account's verified
+/// email -- which is what the owner typed and what a revoke names; `name` is
+/// what the dialog shows to everyone else. The field is still called `login`
+/// because it is a serialised name in every index already written.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Grant {
     pub id: String,
     pub login: String,
     #[serde(default)]
     pub since: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
+impl Grant {
+    /// What to show for this grant: the recorded name, or the handle for a
+    /// grant from before names were recorded, which is a GitHub login.
+    pub fn shown(&self) -> &str {
+        if self.name.is_empty() {
+            &self.login
+        } else {
+            &self.name
+        }
+    }
 }
 
 /// One link that carries a role. `hash` is the SHA-256 of the key in hex, and
@@ -160,6 +185,16 @@ impl IndexEntry {
     /// than the index being rewritten. That is also what keeps a Google `sub`
     /// out of a GitHub id's namespace: the two are both decimal strings, and
     /// only the prefix tells them apart.
+    /// What to show for the owner: the recorded name, or the handle for an
+    /// entry from before names were recorded, which is a GitHub login.
+    pub fn owner_name(&self) -> &str {
+        if self.publisher_name.is_empty() {
+            &self.publisher
+        } else {
+            &self.publisher_name
+        }
+    }
+
     pub fn owned_by(&self, owner_key: &str, caller_id: &str) -> bool {
         if self.publisher.is_empty() {
             true
@@ -382,6 +417,7 @@ pub struct Publication {
     pub source_format: String,
     pub owner: String,
     pub owner_id: String,
+    pub owner_name: String,
 }
 
 /// What `put` returns when a storage rule refuses an upload: the HTTP status
@@ -476,7 +512,7 @@ impl Store {
         let now = timestamp();
         let mut created = now.clone();
         let mut example = false;
-        let (mut owner, mut owner_id) = (v.owner, v.owner_id);
+        let (mut owner, mut owner_id, mut owner_name) = (v.owner, v.owner_id, v.owner_name);
         if let Some(existing) = state.entries.get(&v.slug) {
             created = existing.created_at.clone();
             // A replacement keeps what the document already is: an example
@@ -488,6 +524,7 @@ impl Store {
             example = existing.example;
             owner = existing.publisher.clone();
             owner_id = existing.publisher_id.clone();
+            owner_name = existing.publisher_name.clone();
         }
         // Who a document is shared with is not changed by its text changing.
         let shared = state.entries.get(&v.slug).cloned().unwrap_or_default();
@@ -504,6 +541,7 @@ impl Store {
             example,
             publisher: owner.to_lowercase(),
             publisher_id: owner_id,
+            publisher_name: owner_name,
             source_format: v.source_format,
             visibility: shared.visibility,
             editors: shared.editors,
@@ -666,7 +704,13 @@ impl Store {
     /// login and the numeric id, and the quota moves with them, since the
     /// quota is counted by publisher. A document with no publisher at all is
     /// nobody's to adopt and stays as it is. Returns how many moved.
-    pub async fn adopt(&self, visitor_key: &str, login: &str, id: &str) -> Result<usize, String> {
+    pub async fn adopt(
+        &self,
+        visitor_key: &str,
+        login: &str,
+        id: &str,
+        name: &str,
+    ) -> Result<usize, String> {
         if visitor_key.is_empty() || login.is_empty() {
             return Ok(0);
         }
@@ -685,6 +729,7 @@ impl Store {
             if let Some(entry) = state.entries.get_mut(slug) {
                 entry.publisher = login.to_lowercase();
                 entry.publisher_id = id.to_string();
+                entry.publisher_name = name.to_string();
             }
         }
         if let Err(err) = self.save_locked(&mut state).await {

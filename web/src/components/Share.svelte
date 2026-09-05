@@ -62,6 +62,11 @@
     }
   }
 
+  // How a person on the document is written: a GitHub login with its @, a
+  // Google account by its profile name. The handle behind either is sent to
+  // the owner alone, and only so a revoke can name it.
+  const shown = (who) => (who.provider === "github" ? `@${who.name}` : who.name);
+
   function addPerson(event) {
     event.preventDefault();
     const login = who.trim();
@@ -136,9 +141,12 @@
               <!-- A document published without signing in belongs to the
                    browser that published it, which has no name to print.
                    Signing in gives it one, and takes the document with it. -->
+              <!-- The name, never the handle: a Google account's handle is
+                   its email, and this row is read by everyone named here. The
+                   @ is a GitHub login's, and only a GitHub login wears it. -->
               <span class="text-sm">
-                {sharing.owner?.login
-                  ? `@${sharing.owner.login}`
+                {sharing.owner?.name
+                  ? shown(sharing.owner)
                   : sharing.owner?.visitor
                     ? "this browser"
                     : "nobody in particular"}
@@ -148,7 +156,7 @@
             {#each [["editors", "editor"], ["commenters", "commenter"]] as [field, role]}
               {#each sharing[field] ?? [] as grant}
                 <Row gap={2} justify="between">
-                  <span class="text-sm">@{grant.login}</span>
+                  <span class="text-sm">{shown(grant)}</span>
                   <Row gap={2}>
                     <span class="text-surface-600-400 text-sm">{role}</span>
                     {#if owner}
@@ -156,7 +164,7 @@
                         icon="trash"
                         tone="plain"
                         size="btn-icon-sm"
-                        label="Stop sharing with @{grant.login}"
+                        label="Stop sharing with {shown(grant)}"
                         disabled={busy}
                         onclick={() => change({ revoke: grant.login })}
                       />
