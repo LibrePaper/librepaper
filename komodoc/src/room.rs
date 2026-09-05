@@ -1896,7 +1896,6 @@ impl Room {
     }
 
     /// The manifest, for the timeline and for the tests.
-    #[allow(dead_code)] // the timeline that reads it is step 5
     pub async fn manifest(&self) -> Manifest {
         self.state.lock().await.manifest.clone()
     }

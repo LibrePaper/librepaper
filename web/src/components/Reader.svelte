@@ -967,6 +967,36 @@
     }
   }
 
+  /// The whole directory, as a zip. Built here rather than by a route,
+  /// because everything it needs is already in this browser: the texts are in
+  /// the shared document and the figures were fetched to render them, so
+  /// asking the server to assemble what is already here would be a round trip
+  /// to be told what we know.
+  async function downloadTree() {
+    const tree = treeNow();
+    const files = { ...tree.texts };
+    if (Object.keys(tree.digests || {}).length) {
+      const held = await figures.gather(SLUG, tree.digests, {
+        ...SHELL_HEADERS,
+        ...keyHeaders(KEY),
+      });
+      Object.assign(files, held.assets);
+    }
+    // Loaded when it is asked for. A reader who never downloads a document
+    // should not carry the code that would have built one.
+    const { zip } = await import("../lib/zip.js");
+    const url = URL.createObjectURL(zip(files));
+    const link = document.createElement("a");
+    link.href = url;
+    // Named for the document rather than for its main file: what is being
+    // downloaded is the directory, and the slug is what a person knows it by.
+    link.download = `${SLUG}.zip`;
+    link.click();
+    // Revoked on a later turn: revoking it now would race the download the
+    // click has only just started.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+
   // A text dropped or chosen is read and added as a file. Its bytes are
   // words, so they belong in the shared document rather than in the store.
   async function addDroppedText(file) {
@@ -1267,7 +1297,8 @@
         <Files bind:this={fileList} {files} open={openFile} peers={peersByFile}
                {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
                onrename={renameFile} onremove={removeFile} onmain={makeMain}
-               onfigure={addFigure} ontext={addDroppedText} />
+               onfigure={addFigure} ontext={addDroppedText}
+               ondownload={downloadTree} />
       {/if}
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page

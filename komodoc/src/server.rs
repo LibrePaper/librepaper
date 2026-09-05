@@ -699,6 +699,18 @@ async fn handle(
         }
     }
 
+    // What this document used to say, and when. Readable by whoever may read
+    // the document: a checkpoint is the document at a moment, and a history
+    // that were harder to read than the text would be a strange kind of
+    // secret.
+    if let ["api", "documents", slug, "history"] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_history(request.headers(), &arrival, slug)
+                .await;
+        }
+    }
+
     // The figures. Putting one takes an editor, because it puts bytes on the
     // server; reading one takes whatever reading the document takes, so a
     // private paper's figures are as private as its text.
@@ -1662,6 +1674,39 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    /// The document's manifest: every checkpoint, oldest first, with the paths
+    /// each of them changed.
+    ///
+    /// `changed` is what makes a timeline of a directory readable. Without it,
+    /// saying which files moved between two moments means fetching both trees
+    /// and comparing them, for every row; the checkpoint records it once, when
+    /// it is taken and both trees are already in hand.
+    async fn handle_history(&self, headers: &HeaderMap, arrival: &Arrival, slug: &str) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, headers, arrival, None).await;
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let room = self.rooms.get(slug).await;
+        let manifest = room.manifest().await;
+        write_json(
+            200,
+            &json!({
+                "slug": entry.slug,
+                "main": entry.main,
+                "checkpoints": manifest.checkpoints,
+            }),
+        )
     }
 
     /* -------------------------------------------------------------- assets */

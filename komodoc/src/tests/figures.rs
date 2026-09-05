@@ -54,6 +54,21 @@ async fn get_asset(cookie: &str, base: &str, slug: &str, sha: &str) -> (u16, Vec
     (status, response.bytes().await.unwrap_or_default().to_vec())
 }
 
+/// A GET carrying the marker header a browser attaches to a same-origin
+/// request. Every route below refuses without it, which is rule A and not a
+/// property of figures.
+async fn get_same_origin(cookie: &str, base: &str, path: &str) -> (u16, Value) {
+    let mut request = client()
+        .get(format!("{base}{path}"))
+        .header("x-komodoc-client", "1");
+    if !cookie.is_empty() {
+        request = request.header("cookie", cookie);
+    }
+    let response = request.send().await.expect("a response");
+    let status = response.status().as_u16();
+    let raw = response.bytes().await.unwrap_or_default();
+    (status, serde_json::from_slice(&raw).unwrap_or(Value::Null))
+}
 /* ------------------------------------------------------------ the round trip */
 
 #[tokio::test]
@@ -590,4 +605,94 @@ async fn a_one_file_publish_is_still_a_directory_of_one_file() {
     let room = server.instance.rooms.get(&slug).await;
     let state = room.state.lock().await;
     assert_eq!(crate::session::texts_of(&state.session.doc).len(), 1);
+}
+
+/* ------------------------------------------------------------- the timeline */
+
+#[tokio::test]
+async fn the_history_says_which_paths_each_checkpoint_moved() {
+    let server = new_test_server().await;
+    let cookie = session_as(TEST_PUBLISHER);
+    let (status, document) = post_directory(
+        &cookie,
+        &server.url,
+        "A Paper",
+        "paper.md",
+        &[
+            ("paper.md", b"# A Paper\n\nThe opening.\n"),
+            ("chapters/03.md", b"The third chapter.\n"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 201, "{document}");
+    let slug = text(&document, "slug");
+
+    // One chapter edited, and a checkpoint taken.
+    let room = server.instance.rooms.get(&slug).await;
+    room.add_text("chapters/03.md", "The third chapter, revised.\n")
+        .await;
+    room.checkpoint("quiet", TEST_PUBLISHER)
+        .await
+        .expect("a checkpoint")
+        .expect("not deferred");
+
+    let (status, timeline) = get_same_origin(
+        &cookie,
+        &server.url,
+        &format!("/api/documents/{slug}/history"),
+    )
+    .await;
+    assert_eq!(status, 200, "{timeline}");
+    assert_eq!(text(&timeline, "main"), "paper.md");
+    let points = timeline["checkpoints"].as_array().expect("a list");
+    assert_eq!(points.len(), 2, "{timeline}");
+
+    // The first names every path, because there was nothing before it; the
+    // second names only what moved, which is what makes a timeline of a
+    // directory readable rather than a wall of identical rows.
+    let first: Vec<&str> = points[0]["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|one| one.as_str().unwrap())
+        .collect();
+    assert_eq!(first, vec!["chapters/03.md", "paper.md"]);
+    let second: Vec<&str> = points[1]["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|one| one.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        second,
+        vec!["chapters/03.md"],
+        "the untouched file was listed"
+    );
+    assert_eq!(points[1]["tree"], true);
+}
+
+#[tokio::test]
+async fn a_history_is_as_readable_as_the_document_it_belongs_to() {
+    let server = new_test_server().await;
+    let owner = session_as(TEST_PUBLISHER);
+    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let path = format!("/api/documents/{slug}/history");
+
+    // While the document is readable by link, so is what it used to say.
+    assert_eq!(get_same_origin("", &server.url, &path).await.0, 200);
+
+    let (status, said) = post_as(
+        &owner,
+        &server.url,
+        &format!("/api/documents/{slug}/share"),
+        json!({"visibility": "private"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{said}");
+    assert_eq!(
+        get_same_origin("", &server.url, &path).await.0,
+        404,
+        "a private document's history was served to a stranger"
+    );
+    assert_eq!(get_same_origin(&owner, &server.url, &path).await.0, 200);
 }

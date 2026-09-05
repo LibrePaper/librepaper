@@ -26,6 +26,7 @@
     onmain,
     onfigure,
     ontext,
+    ondownload,
   } = $props();
 
   let adding = $state(false);
@@ -181,6 +182,7 @@
     <div class="filetools-row">
       <button class="addfile" onclick={startAdding}>Add a file</button>
       <button class="addfile" onclick={() => chooser?.click()}>Add a figure</button>
+      <button class="addfile" onclick={() => ondownload?.()}>Download</button>
     </div>
     <input
       class="chooser"

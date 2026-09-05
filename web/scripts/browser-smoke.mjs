@@ -11,7 +11,14 @@
 // Nothing here touches a deployment or any storage but its own temporary one.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
@@ -792,6 +799,44 @@ async function run() {
     after === before && before >= 1,
     `${before} then ${after}`,
   );
+
+  /* ------------------------------------------------------------- the zip */
+
+  // The whole directory, as a zip, built in this browser from what it already
+  // holds: the texts are in the shared document and the figures were fetched
+  // to render them, so there is no route to ask and nothing assembled twice.
+  //
+  // Driven through the control a person uses, and then read back by something
+  // that is not the code that wrote it -- which is the only way to find out
+  // whether what was produced is a zip or merely bytes that we believe are.
+  await illustrator.send("Browser.setDownloadBehavior", {
+    behavior: "allow",
+    downloadPath: data,
+  });
+  await illustrator.eval(`
+    const button = [...document.querySelectorAll(".filelist .addfile")]
+      .find((b) => b.textContent.trim() === "Download");
+    if (!button) throw new Error("no Download control");
+    button.click();
+    return true;
+  `);
+  const written = await until("the zip is written", async () => {
+    const names = readdirSync(data).filter((name) => name.endsWith(".zip"));
+    return names.length ? names[0] : null;
+  });
+  check("Download writes a zip of the directory", Boolean(written), String(written));
+  if (written) {
+    const bytes = readFileSync(join(data, written));
+    const tail = bytes.subarray(bytes.length - 22);
+    const asText = bytes.toString("latin1");
+    check(
+      "the zip is a zip, and holds every file of the document",
+      tail.readUInt32LE(0) === 0x06054b50 &&
+        asText.includes("main.md") &&
+        asText.includes("one.png"),
+      `${bytes.length} bytes`,
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ report */
