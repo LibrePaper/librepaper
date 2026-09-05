@@ -1,0 +1,22 @@
+\section{The first chapter}
+
+This chapter is reached by \verb|\include| from the main file, so the log
+enters it with a \verb|(| and leaves it with a \verb|)|, and a diagnostic
+raised here has \texttt{chapters/01.tex} as its \texttt{file}. That is the
+whole reason the chapter exists.
+
+\komodocnote{This note comes from the directory's own package.}
+
+A citation, so BibTeX has work to do: the argument for literate
+programming~\citep{knuth1984} and the manual for the system this is written
+in~\citep{lamport1994}.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.4\textwidth]{fig/one.png}
+  \caption{A raster figure, included by a relative path.}
+  \label{fig:one}
+\end{figure}
+
+Figure~\ref{fig:one} is referenced so that the first pass leaves the
+reference undefined and the log asks for a second one.

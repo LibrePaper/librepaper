@@ -1,0 +1,27 @@
+<!doctype html>
+<!--
+  The page `latex-check.mjs` drives.
+
+  It is not part of the application and is never served by a deployment: it is
+  an empty document on the same origin as the mirror, so that a headless
+  Chromium can import `web/src/lib/latex.js` from source, hand it a tree built
+  from `examples/latex/`, and be told what came back. The real editor imports
+  the same module through Vite; nothing here is a second implementation of
+  anything.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>komodoc latex harness</title>
+  </head>
+  <body>
+    <p>This page exists to be driven by <code>web/scripts/latex-check.mjs</code>.</p>
+    <script type="module">
+      import * as latex from "/src/lib/latex.js";
+      // The check talks to the module through the page rather than through a
+      // bundle, so what it exercises is the file in the repository.
+      globalThis.latex = latex;
+      globalThis.latexReady = true;
+    </script>
+  </body>
+</html>

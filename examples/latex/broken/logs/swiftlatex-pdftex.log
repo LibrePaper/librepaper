@@ -1,0 +1,18 @@
+This is pdfTeX, Version 3.14159265-2.6-1.40.21 (SwiftLaTeX PDFTeX 0.3.0) (preloaded format=swiftlatexpdftex)
+entering extended mode
+(main.tex
+LaTeX2e <2020-02-02> patch level 2
+L3 programming layer <2020-02-14> (/tex/b20a30ef79872ed1adb42bb47bf86332
+Document Class: article 2019/12/20 v1.4l Standard LaTeX document class
+(/tex/d3fa3ed15375c8f01c53581e1d26134e)) (/tex/077c6ec1baafb4b622b3f7ea17c8a3db
+) (brokenpkg.sty
+
+Package brokenpkg Warning: This package warns on purpose on input line 9.
+
+) (/tex/2d8863a9c3d4424a5d0f562cbf79f8d1) (main.aux (chapters/01.aux)) [1{/tex/
+bb30fd463d750450fc5ce5ee9cbf3b81}] (chapters/01.tex
+! Undefined control sequence.
+l.7 \thiscommanddoesnotexist
+                            
+!  ==> Fatal error occurred, no output PDF file produced!
+Transcript written on main.log.
