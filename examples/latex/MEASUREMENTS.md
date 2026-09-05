@@ -200,6 +200,20 @@ the first page. Every document after it, including the four-package one, then
 costs nothing. That is "large to start and quiet afterwards" taken to its
 limit, and 682 MB is past what a card can honestly ask an author to accept.
 
+Say the rest of it plainly, because the size is the symptom and not the
+illness: what makes this distribution unshippable today is the **failure
+mode**, not the 682 MB. A mirror that answered everything would cost 130 MB a
+session, and 130 MB is a number a card could carry. But the fallback is
+all-or-nothing and its trigger is one unresolved name, so a single missing
+`.cfg` -- one file, out of the ten thousand in the package half of this
+mirror -- silently turns that 130 MB session into a 682 MB one, with nothing
+said to the reader and no way for the card to have promised the smaller figure
+honestly. A cost that degrades by a factor of five on a condition the author
+can neither see nor predict is not a cost a card can state at all. Fix the
+trigger, or make the fallback incremental so an unresolved name pulls one
+bundle rather than every bundle, and the size question becomes an ordinary
+one to be answered with the numbers above.
+
 The endpoint mode is the interesting one. 130 MB before the first page, of
 which 93 MB is `texlive-basic.data`, and then a sixth of a megabyte for the
 XeTeX document and nothing at all for the second paper -- the same
@@ -231,21 +245,57 @@ compiles every one of them.
 **What it could not.** Two things.
 
 `biber` does not work, in either mirroring mode, and the failure is in the
-released pipeline rather than in this glue. A document with
-`\usepackage[backend=biber]{biblatex}` runs pdfTeX twice, runs biber, and then
-runs a third pass against a module that has lost every on-demand data package
-it had loaded -- so a nine-line document with nothing in it but `biblatex`
-ends at
+released pipeline rather than in this glue. It is written out here as a repro,
+at length, because the README advertises biber as a headline feature and
+because the next person to reach for it should find this before spending a day
+on their own glue.
+
+**Repro.** Mirror `texlyre-busytex` as above, choose it, and compile this
+document -- nothing in it but `biblatex`, and no package from any bundle
+except the one `biblatex` itself lives in:
+
+    \documentclass{article}
+    \begin{filecontents*}[overwrite]{r.bib}
+    @article{k1984, author={Knuth, Donald E.}, title={Literate Programming},
+             journal={Comp J}, year={1984}}
+    \end{filecontents*}
+    \usepackage[backend=biber]{biblatex}
+    \addbibresource{r.bib}
+    \begin{document}
+    Hello \cite{k1984}.
+    \printbibliography
+    \end{document}
+
+**What happens.** Four commands run, and the log records them in this order:
+
+    $ pdflatex ... main.tex        EXITCODE: 0
+    $ pdflatex ... main.tex        EXITCODE: 0
+    (biber runs; its wasm loads, and it writes a .bbl)
+    $ pdflatex ... main.tex        EXITCODE: 1
+
+and the third pdfTeX pass ends at
 
     ! LaTeX Error: File `biblatex.sty' not found.
+    ! Emergency stop.
 
-and the four-package document, which had `siunitx` a moment earlier, ends at
-`! LaTeX Error: File 'siunitx.sty' not found.` Biber's own wasm loads and
-runs; what breaks is the pdfTeX module underneath it. `biblatex` with
-`backend=bibtex` -- which is what `examples/latex/packages/` asks for --
-compiles to its two pages through bibtex8 without trouble, so the package
-works and only the biber backend does not. The README advertises biber as a
-headline feature.
+The first two passes found `biblatex.sty` perfectly well. Between the second
+and the third, the pdfTeX module has been reloaded and has lost *every*
+on-demand data package it had -- so the package the document is about is gone,
+and the pass that was to consume biber's output cannot start. Biber itself is
+not the broken part: its module loads, it runs, and it produces a `.bbl`. What
+breaks is the pdfTeX module underneath it.
+
+The same defect on the four-package document is the same shape one step later:
+it had `siunitx` a moment earlier and ends at
+`! LaTeX Error: File 'siunitx.sty' not found.`
+
+**What works instead.** `biblatex` with `backend=bibtex` -- which is what
+`examples/latex/packages/` asks for -- compiles to its two pages through
+bibtex8 without trouble. So `biblatex` the package works, and only the biber
+backend does not. Until that is fixed, a document with `\addbibresource` and
+no explicit backend must not be given biber silently: biblatex's own default
+is biber, so the honest choices are to fix the pipeline or to tell the author
+which backend they are actually getting.
 
 In the endpoint mode, `packages` also fails, and there the fault is ours: the
 engine asked for `biblatex-dm.cfg`, the package half of the mirror does not
