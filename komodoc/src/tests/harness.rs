@@ -197,6 +197,7 @@ async fn build_test_server(
         GithubApp {
             client_id: "test-client".into(),
             client_secret: "test-secret".into(),
+            ..GithubApp::default()
         }
     } else {
         GithubApp::default()
@@ -266,6 +267,7 @@ pub async fn server_over_blobs(
         GithubApp {
             client_id: "test-client".into(),
             client_secret: "test-secret".into(),
+            ..GithubApp::default()
         },
         TEST_KEY.to_vec(),
         config,

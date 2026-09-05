@@ -22,10 +22,11 @@ use tokio::sync::mpsc;
 
 use crate::assets::{renderers, ShellFile};
 use crate::auth::{
-    cookie_name, now_unix, pkce_verifier, random_token, read_session, read_visitor, sign_session,
-    sign_visitor, stored_id, Accounts, GithubAccounts, GithubApp, GoogleApp, Identity, Policy,
-    TokenCache, PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
-    VISITOR_COOKIE,
+    cookie_name, normalized, now_unix, pkce_verifier, random_token, read_session, read_visitor,
+    sign_session, sign_visitor, stored_id, Accounts, DeviceOutcome, GithubAccounts, GithubApp,
+    GoogleApp, Identity, PendingCodes, Policy, TokenCache, DEVICE_POLL_INTERVAL,
+    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE,
+    SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use crate::blob::document_key;
 use crate::config::Configuration;
@@ -71,6 +72,9 @@ pub struct Server {
     /// operator saying this deployment has no public front page, and a
     /// document marked `listed` behaves as `link` under it.
     pub listing: bool,
+    /// The terminals waiting to be signed in. In memory only: a restart
+    /// forgets them, and a `login` that was mid-flight starts again.
+    pub pending: PendingCodes,
     sockets: AtomicU64,
 }
 
@@ -174,6 +178,7 @@ impl Server {
             commenters,
             accounts: Arc::new(GithubAccounts),
             listing: true,
+            pending: PendingCodes::new(),
             sockets: AtomicU64::new(1),
         }
     }
@@ -213,14 +218,24 @@ impl Server {
     }
 
     /// Identifies the caller: a browser by its session cookie, the CLI by the
-    /// GitHub token it sends as a bearer. Neither is required; the anonymous
-    /// identity simply means nobody is signed in. A bearer is verified against
-    /// GitHub's check-token endpoint (cached), and is never trusted at all
-    /// when this deployment has no OAuth app configured to verify it against.
+    /// token it sends as a bearer. Neither is required; the anonymous identity
+    /// simply means nobody is signed in.
+    ///
+    /// A bearer has three cases. One this deployment issued itself, through
+    /// the device flow, carries the `kmd_` prefix and is the session payload:
+    /// it verifies against the session key here, with no network and nothing
+    /// cached, since there is no third party to ask. Anything else is a GitHub
+    /// token -- `KOMODOC_TOKEN` from a GitHub app still works this way -- and
+    /// goes through GitHub's check-token endpoint (cached). And a bearer on a
+    /// deployment with no OAuth app configured to verify it is not trusted at
+    /// all.
     pub async fn whoami(&self, headers: &HeaderMap, arrival: &Arrival) -> Identity {
         if let Some(bearer) = header_of(headers, "authorization")
             .and_then(|h| h.strip_prefix("Bearer ").map(str::to_string))
         {
+            if let Some(session) = bearer.strip_prefix(DEVICE_TOKEN_PREFIX) {
+                return read_session(&self.key, session);
+            }
             if !self.app.configured() {
                 return Identity::anonymous();
             }
@@ -559,8 +574,19 @@ async fn handle(
     if path.starts_with("/auth/")
         || path == "/api/me"
         || path == "/api/auth/config"
+        || path.starts_with("/api/auth/device")
         || path == "/api/config"
     {
+        // The terminal flow's POSTs are split off here: they are the only
+        // sign-in routes with a body, and reading one consumes the request
+        // that every other route below still needs whole.
+        if method == Method::POST && path.starts_with("/api/auth/device") {
+            let headers = request.headers().clone();
+            let Ok(body) = to_bytes(request.into_body(), 1 << 14).await else {
+                return write_json(413, &json!({"error": "that is too much body for a code"}));
+            };
+            return server.handle_device(&path, &headers, &arrival, &body).await;
+        }
         if let Some(response) = server
             .handle_auth(
                 &method,
@@ -2293,6 +2319,24 @@ impl Server {
                 );
                 Some(response)
             }
+            // Where the terminal sends the person. It is a page rather than an
+            // API because the person has to see the code and the account
+            // before anything is bound to either, and a page is what a link in
+            // a terminal can open.
+            "/auth/device" => {
+                let code = normalized(&query.get("code").cloned().unwrap_or_default());
+                let who = self.whoami(headers, arrival).await;
+                if !who.is_signed_in() {
+                    // The code rides through the sign-in in `next`, so the
+                    // person lands back on the approval rather than on the
+                    // front page with the code left in the terminal.
+                    return Some(redirect(&format!(
+                        "/auth/login?next={}",
+                        url_escape(&format!("/auth/device?code={code}"))
+                    )));
+                }
+                Some(self.device_page(headers, &code))
+            }
             "/api/me" => {
                 let id = self.whoami(headers, arrival).await;
                 Some(write_json(
@@ -2323,6 +2367,114 @@ impl Server {
             // 30 MB mistake before it is sent rather than after.
             "/api/config" => Some(write_json(200, &json!(*self.config))),
             _ => None,
+        }
+    }
+
+    /// The approval page, served the way the sign-in page is: the same bytes
+    /// to every caller, never stored by a cache, and a line of text for a
+    /// caller that cannot take HTML. The page asks `/api/me` for the account
+    /// it would sign in and reads the code out of the query itself.
+    fn device_page(&self, headers: &HeaderMap, code: &str) -> Reply {
+        let accepts_html = header_of(headers, "accept").is_some_and(|a| a.contains("text/html"));
+        match self.shell.get("/device.html") {
+            Some(asset) if accepts_html => {
+                let mut response = write_asset(asset);
+                // It names the code and the account, so it is nobody's to keep
+                // but this browser's, and not for long.
+                set(&mut response, "cache-control", "no-store");
+                response
+            }
+            _ => plain(
+                200,
+                &format!("open this page in a browser to approve the code {code}"),
+            ),
+        }
+    }
+
+    /// The three POSTs the terminal flow is made of. They are here rather than
+    /// in `handle_auth` because they are the only sign-in routes with a body,
+    /// and reading one takes the request apart.
+    ///
+    /// None of them is rate-limited beyond the ceiling on the table itself:
+    /// starting a flow is the only one that costs anything to hold, and the
+    /// ceiling is what bounds that.
+    async fn handle_device(
+        &self,
+        path: &str,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        body: &[u8],
+    ) -> Reply {
+        let payload: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let field = |name: &str| {
+            payload
+                .get(name)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        match path {
+            // No account is needed to ask: the terminal has none yet, which is
+            // the whole reason it is asking.
+            "/api/auth/device" => {
+                let Some((device, user)) = self.pending.start() else {
+                    return write_json(
+                        429,
+                        &json!({"error": "too many sign-ins are pending; try again in a few minutes"}),
+                    );
+                };
+                write_json(
+                    200,
+                    &json!({
+                        "device_code": device,
+                        "user_code": user,
+                        "verification_url": format!(
+                            "{}/auth/device?code={user}",
+                            arrival.reader_origin()
+                        ),
+                        "expires_in": self.pending.max_age(),
+                        "interval": DEVICE_POLL_INTERVAL,
+                    }),
+                )
+            }
+            // The one state-changing step, and the one a link alone must never
+            // be able to take: a page someone else sends you must not be able
+            // to put your identity on their terminal. So it is a POST with the
+            // checks /auth/logout uses, and never a GET.
+            "/api/auth/device/approve" => {
+                if cross_site_refused(headers, arrival) {
+                    return write_json(403, &cross_site_refusal());
+                }
+                let who = self.whoami(headers, arrival).await;
+                if !who.is_signed_in() {
+                    return write_json(401, &json!({"error": "sign in to approve"}));
+                }
+                if !self.pending.approve(&field("user_code"), &who) {
+                    return plain(404, "that code is not one this server is waiting for");
+                }
+                write_json(200, &json!({"approved": true}))
+            }
+            // The terminal's poll. `authorization_pending` carries a 400, as
+            // OAuth's own device flow answers it, so a client that already
+            // knows the shape needs no special case for this one.
+            "/api/auth/device/token" => match self.pending.claim(&field("device_code")) {
+                DeviceOutcome::Pending => {
+                    write_json(400, &json!({"error": "authorization_pending"}))
+                }
+                DeviceOutcome::Expired => write_json(400, &json!({"error": "expired_token"})),
+                DeviceOutcome::Approved(who) => {
+                    let seconds = DEVICE_TOKEN_MAX_AGE.as_secs() as i64;
+                    // The same payload the session cookie carries, so nothing
+                    // is stored server-side and `whoami` reads it with the one
+                    // function that already knows the shape.
+                    let token = format!(
+                        "{DEVICE_TOKEN_PREFIX}{}",
+                        sign_session(&self.key, &who, now_unix() + seconds)
+                    );
+                    write_json(200, &json!({"token": token, "expires_in": seconds}))
+                }
+            },
+            _ => plain(404, "not found"),
         }
     }
 
