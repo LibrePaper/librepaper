@@ -44,7 +44,7 @@ pub const VERSION: &str = match option_env!("KOMODOC_VERSION") {
 #[command(name = "komodoc", version = VERSION, about = "host HTML, markdown and typst documents that readers can annotate", long_about = None)]
 #[command(
     after_help = "Serving needs a GitHub OAuth app (github.com/settings/developers) and
---publishers saying which GitHub logins may publish. Publishing needs neither,
+--publishers saying who may publish. Publishing needs neither,
 only the server and a sign-in:
 
     export KOMODOC_SERVER=https://komodoc.example.org
