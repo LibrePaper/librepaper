@@ -26,6 +26,13 @@ const CORPUS = join(dirname(HERE), "examples", "latex");
 /// Which engine each example wants, and what it is for. The `xetex` example
 /// is the one pdfTeX must refuse, so it is compiled with xelatex here and its
 /// refusal is recorded rather than its page count.
+// `--pdf` keeps the PDF as well as the log. The viewer of step 4 has to draw
+// a real document -- pages, a hyphenated line end, a footnote, a ligature --
+// and the corpus is where those live. It is a build output rather than a
+// fixture: git ignores it, and a machine with no TeX Live skips the checks
+// that need it.
+const KEEP_PDF = process.argv.includes("--pdf");
+
 const EXAMPLES = [
   { name: "article", engine: "pdflatex", bibtex: true },
   { name: "paper", engine: "pdflatex", bibtex: true },
@@ -69,6 +76,10 @@ for (const example of EXAMPLES) {
   mkdirSync(logs, { recursive: true });
   const text = existsSync(log) ? readFileSync(log, "latin1") : "";
   if (text) writeFileSync(join(logs, "texlive.log"), text, "latin1");
+  if (KEEP_PDF) {
+    const pdf = join(work, "main.pdf");
+    if (existsSync(pdf)) cpSync(pdf, join(source, "main.pdf"));
+  }
   const count = pagesFromLog(text);
   record[example.name] = { engine: example.engine, pages: count, synctex: existsSync(join(work, "main.synctex.gz")) };
   console.log(`texlive: ${example.name.padEnd(8)} ${count} page(s) with ${example.engine}`);

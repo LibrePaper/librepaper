@@ -37,7 +37,11 @@ pub fn content_type(name: &str) -> &'static str {
     match name.rsplit('.').next() {
         Some("html") => "text/html; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
+        // `.mjs` as well as `.js`: pdf.js ships its worker under that
+        // extension and the bundler emits it under that extension, and a
+        // module worker served as `application/octet-stream` is refused by
+        // the browser before it runs a line.
+        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
         Some("json") => "application/json; charset=utf-8",
         Some("map") => "application/json; charset=utf-8",
         Some("png") => "image/png",

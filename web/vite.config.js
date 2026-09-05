@@ -44,6 +44,11 @@ export default defineConfig({
         documentation: resolve(import.meta.dirname, "documentation.html"),
         notfound: resolve(import.meta.dirname, "404.html"),
         signin: resolve(import.meta.dirname, "signin.html"),
+        // The PDF frame, served on the documents origin. It is a page of its
+        // own rather than a mode of the reader because it is not the reader:
+        // it lives with the document, behind the document's CSP, and the
+        // pdf.js it pulls in must never end up in the shell's bundle.
+        viewer: resolve(import.meta.dirname, "viewer.html"),
       },
     },
     // The typst module is thirty megabytes; nothing here comes close, and a

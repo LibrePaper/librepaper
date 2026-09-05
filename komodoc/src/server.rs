@@ -535,6 +535,28 @@ async fn handle(
                 return server.serve_document(&arrival, slug, digest).await;
             }
         }
+        // The PDF frame, for a document whose format is `latex`. It is the
+        // same shell as above in every way that confines a document -- same
+        // CSP, same `frame-ancestors`, same agent, same `no-store` -- and
+        // differs only in what it can be sent: a `preview` message carrying
+        // PDF bytes rather than HTML. See `05-SPEC-latex.md`, "The preview".
+        if let ["pdf", slug] | ["pdf", slug, ""] = parts[..] {
+            return server.serve_viewer(&arrival, slug).await;
+        }
+        // The viewer page's own bundle, and pdf.js's worker beside it. A page
+        // whose CSP is `script-src 'self'` can only load its scripts from the
+        // origin it was served on, so these have to be reachable here as well
+        // as on the reader's host. They are the same digest-named, immutable
+        // shell files either way, they carry no identity, and nothing else in
+        // the shell is served from this origin.
+        if path.starts_with("/assets/") {
+            if let Some(asset) = server.shell.get(&path) {
+                let mut response = write_asset(asset);
+                privacy_headers(&mut response);
+                return response;
+            }
+            return plain(404, "not found");
+        }
         if path == "/agent.js" {
             if let Some(asset) = server.shell.get("/agent.js") {
                 let mut response = Response::new(Body::from(asset.body.clone()));
@@ -1964,6 +1986,51 @@ impl Server {
         // The shell is the same bytes for every document and every version of
         // it, but it is served under the document's own path and a stale copy
         // would outlive a change to the agent.
+        set(&mut response, "cache-control", "no-store");
+        response
+    }
+
+    /// The same frame, for a document that is a PDF.
+    ///
+    /// A LaTeX document has no HTML to paint, so the empty shell above is the
+    /// wrong page for it: what arrives over the channel is PDF bytes, and
+    /// something on this origin has to draw them. That something is
+    /// `web/viewer.html`, a pdf.js viewer served from the shell, and this
+    /// route is `serve_shell` with that page in place of the empty one --
+    /// same CSP, same `frame-ancestors`, same privacy headers, same agent,
+    /// same `no-store`.
+    ///
+    /// It serves no document bytes, so unlike `serve_document` it has nothing
+    /// to withhold from a private document: the pages come from the reader,
+    /// over the channel that does carry an identity.
+    async fn serve_viewer(&self, arrival: &Arrival, slug: &str) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(404, "not found");
+        }
+        if self.store.get(slug).await.is_none() {
+            return plain(404, "not found");
+        }
+        let Some(asset) = self.shell.get("/viewer.html") else {
+            return plain(404, "not found");
+        };
+        let reader = arrival.reader_origin();
+        let mut response = Response::new(Body::from(with_agent(&asset.body, &reader)));
+        set(&mut response, "content-type", "text/html; charset=utf-8");
+        set(
+            &mut response,
+            "content-security-policy",
+            &format!(
+                "default-src 'self' data: blob: https:; \
+                 script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; \
+                 style-src 'self' 'unsafe-inline' data: https:; \
+                 frame-ancestors {reader}; form-action 'none'; base-uri 'none'"
+            ),
+        );
+        set(&mut response, "x-content-type-options", "nosniff");
+        privacy_headers(&mut response);
+        // As for the shell: the same bytes for every document, but served
+        // under the document's own path, and a stale copy would outlive a
+        // change to the agent or to the viewer.
         set(&mut response, "cache-control", "no-store");
         response
     }
