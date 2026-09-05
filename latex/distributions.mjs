@@ -51,11 +51,6 @@ export const DISTRIBUTIONS = [
     engines: ["pdfTeX"],
     bibliography: "BibTeX, inside the engine",
     licence: "AGPL-3.0",
-    // Whether the card offers this distribution. The card reads `shown` from
-    // the manifest and names no distribution in code, so taking one off the
-    // card, or putting a measured one on it, is a flag flipped here and a
-    // re-run of `mirror.mjs` -- never an edit to a component.
-    shown: true,
     // The words the card says, from the spec: which is small-and-chatty and
     // which is large-and-quiet.
     trade: "small to start and chatty afterwards: a compile that meets a new package stops, fetches it, and resumes.",
@@ -86,7 +81,6 @@ export const DISTRIBUTIONS = [
     engines: ["XeTeX", "dvipdfmx"],
     bibliography: "BibTeX, inside the engine",
     licence: "AGPL-3.0",
-    shown: true,
     trade: "small to start and chatty afterwards; system fonts are not available, only fetched ones.",
     upfront: [
       { from: "zip", entry: "swiftlatexxetex.js", as: "swiftlatexxetex.js" },
@@ -103,7 +97,6 @@ export const DISTRIBUTIONS = [
     engines: ["pdfTeX", "XeTeX", "LuaTeX", "BibTeX", "dvipdfmx"],
     bibliography: "BibTeX",
     licence: "MIT",
-    shown: true,
     trade: "large to start and quiet afterwards: the whole distribution arrives before the first compile and nothing is fetched during one.",
     upfront: [
       { from: "busytex", entry: "busytex.js" },
@@ -132,7 +125,8 @@ export const DISTRIBUTIONS = [
     licence: "AGPL-3.0",
     // Measured but not offered. Nothing reads this entry except the harness
     // until somebody decides, with `examples/latex/MEASUREMENTS.md` in hand,
-    // that it belongs beside or instead of the two that are shown.
+    // that it belongs beside or instead of the one that is shown -- and that
+    // decision is this flag and a re-run of `mirror.mjs`, nothing else.
     shown: false,
     trade:
       "the largest to start and the quietest afterwards: a whole TeX Live 2026 before the first page, and then nothing -- or, pointed at the package endpoint instead, the smallest of the four to start and the chattiest.",

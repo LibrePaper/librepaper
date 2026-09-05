@@ -283,10 +283,6 @@ async function mirror() {
     entry.engines = spec.engines;
     entry.bibliography = spec.bibliography;
     entry.licence = spec.licence;
-    // The card reads this and names no distribution in code, so a measured
-    // distribution reaches the card by a flag flipped in `distributions.mjs`
-    // and a re-run of this script, and by nothing else.
-    entry.shown = spec.shown !== false;
     entry.trade = spec.trade;
     entry.packages = spec.packages;
     entry.files ||= {};
