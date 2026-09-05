@@ -10,7 +10,7 @@
 //
 // Run by `make test`, against the examples as they are actually published.
 import { readFileSync } from "node:fs";
-import { documentPlaceFor, sourcePlaceFor } from "../src/lib/sync.js";
+import { documentPlaceFor, sourcePlaceFor, sourcePlaceInTree } from "../src/lib/sync.js";
 import { renderHtml, renderMarkdown, renderTypst } from "./render.js";
 
 // A caret every few characters is enough to catch a whole line going missing,
@@ -113,6 +113,80 @@ for (const [file, render, format] of EXAMPLES) {
   if (rate > ALLOWED || backRate > ALLOWED || placedRate > ALLOWED) {
     bad = true;
     console.error(`  over the ${(ALLOWED * 100).toFixed(0)}% this is allowed to be: ${JSON.stringify(kinds)}`);
+  }
+}
+
+// A document is a directory, so the lock has to say which file as well as
+// where in it. This is the case the one-file examples above cannot cover: two
+// texts, both of whose prose is in the one rendered page, and a click in the
+// page that has to land in the right one.
+//
+// Built here rather than added to examples/: it exists to exercise the lock
+// across files, and a document that is only ever compiled by this check does
+// not belong in the set a reader can open.
+{
+  const tree = {
+    main: "main.typ",
+    texts: {
+      "main.typ": [
+        '#import "chapter.typ": later',
+        "",
+        "= The opening",
+        "",
+        "The first chapter argues that the estimator is consistent under",
+        "the stated assumptions, which is weaker than it sounds.",
+        "",
+        "#later()",
+        "",
+      ].join("\n"),
+      "chapter.typ": [
+        "#let later() = [",
+        "  = The second part",
+        "",
+        "  Here the argument turns to the variance, where the interesting",
+        "  behaviour is, and where the simulations disagree with the theory.",
+        "]",
+        "",
+      ].join("\n"),
+    },
+  };
+  const rendered = renderTypst(tree, "main.typ");
+  if (rendered === null) {
+    console.log("sync: no typst module built; skipping the two-file case");
+  } else {
+    const formatOf = () => "typst";
+    // A phrase from each file, found in the rendered page, and asked for
+    // back: the lock must name the file the words were written in, not the
+    // file that happens to be open.
+    const cases = [
+      ["consistent under", "main.typ"],
+      ["simulations disagree", "chapter.typ"],
+    ];
+    for (const [phrase, wanted] of cases) {
+      const at = rendered.indexOf(phrase.split(" ")[0]);
+      const found = at < 0 ? null : sourcePlaceInTree(rendered, at, tree, { formatOf });
+      const ok = found && found.path === wanted;
+      console.log(
+        `sync: "${phrase}" traced to ${found ? found.path : "nowhere"}` +
+          (ok ? "" : ` — expected ${wanted}`),
+      );
+      if (!ok) bad = true;
+    }
+    // And the file on screen is tried first, which is what stops a phrase
+    // that appears in two chapters jumping somebody out of the one they are
+    // editing.
+    const both = {
+      main: "main.typ",
+      texts: { "main.typ": "the same sentence here\n", "other.typ": "the same sentence here\n" },
+    };
+    const open = sourcePlaceInTree("the same sentence here", 4, both, {
+      open: "other.typ",
+      formatOf,
+    });
+    if (!open || open.path !== "other.typ") {
+      console.error("  the open file was not tried first");
+      bad = true;
+    }
   }
 }
 

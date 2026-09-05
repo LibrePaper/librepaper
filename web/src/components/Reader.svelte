@@ -6,8 +6,16 @@
   import * as renderers from "../lib/renderers.js";
   import * as diagnosticsRule from "../lib/diagnostics.js";
   import * as collab from "../lib/collab.js";
+  import * as figures from "../lib/figures.js";
   import { openRoom } from "../lib/room.js";
-  import { keyHeaders, me as whoami, signInHref } from "../lib/api.js";
+  import {
+    SHELL_HEADERS,
+    config as loadConfig,
+    keyHeaders,
+    me as whoami,
+    signInHref,
+    uploadAsset,
+  } from "../lib/api.js";
   import {
     AUTHOR,
     LAYOUT,
@@ -35,6 +43,7 @@
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
   import Sidebar from "./Sidebar.svelte";
+  import Files from "./Files.svelte";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -145,10 +154,19 @@
         // Where each figure sits in that text, so a note on a figure can be
         // ordered against the notes on passages.
         figureAt = Array.isArray(message.images) ? message.images.map(Number) : [];
+        // The first time the frame says it is there is the first moment
+        // anything can be sent to it. A paint made before this went to a
+        // window that had not navigated yet and was lost -- which is what a
+        // reader saw as a blank document, since a reader makes no edits to
+        // trigger a second one. Only the first `ready` paints: the agent
+        // sends one after every repaint, and painting on each would be a
+        // loop.
+        const first = !frameReady;
         frameReady = true;
         // Whatever was painted before is gone with the rebuilt DOM.
         lastRegions = lastHighlight = null;
         reanchor();
+        if (first) paintPreview();
         break;
       case "selection":
         showSelection(message.selector, message.rect);
@@ -433,6 +451,11 @@
   let editor = $state(null);
   let session = $state(null);
   let editing = $state(false);
+  // Which text the editor is bound to. It changes once on a document migrated
+  // from before there were directories: the words arrive in the retired text
+  // and the session then holds them in a file. Keying the component on this is
+  // what binds it to the file rather than to what the file used to be.
+  let sourceEpoch = $state(0);
   let mayEdit = $state(false);
   let sourceFormat = $state("");
   let state = $state(""); // what the editor is saying about itself
@@ -463,9 +486,28 @@
 
   // What the document is called, which is what the rendered page is titled.
   // The title it was published under wins; a document that never had one is
-  // named by its own first heading, the way `publish` names one.
-  async function headingOf(source) {
-    return doc.title || (await renderers.titleOf(source, sourceFormat)) || "Untitled";
+  // named by its own first heading, the way `publish` names one -- the *main*
+  // file's first heading, since a chapter's heading names the chapter.
+  async function headingOf(tree) {
+    return doc.title || (await renderers.titleOf(tree)) || "Untitled";
+  }
+
+  // The document as a renderer takes it: every text in it, the figures by
+  // digest, and which file is the document. A compiler given only the main
+  // file produces the error a reader would otherwise be shown.
+  //
+  // Two moments have no directory to give. A session that has not arrived yet
+  // is empty, and a document the server has not migrated is still one text
+  // under its old name. Both are answered the same way, and with the same
+  // name the server would give them -- `main_path_for` in room.rs -- so that
+  // what is rendered before the maps land and what is rendered after are the
+  // same document under the same title.
+  function treeNow() {
+    if (!session) return { main: "", texts: {}, digests: {} };
+    const tree = session.tree();
+    if (tree.main) return tree;
+    const named = { typst: "main.typ", markdown: "main.md", html: "main.html" }[sourceFormat] || "main.txt";
+    return { main: named, texts: { [named]: session.text.toString() }, digests: {} };
   }
 
   // Painting the preview is sending it to the frame: the draft is a document,
@@ -568,13 +610,20 @@
       return;
     }
     const mine = ++issued;
-    const source = session ? session.text.toString() : "";
+    const tree = treeNow();
     try {
-      const { html, diagnostics: said } = await renderers.render(
-        source,
-        await headingOf(source),
-        sourceFormat,
-      );
+      // The figures, if this document has any. A figure not yet here is
+      // awaited before the first compile that needs it, and the page that is
+      // already up stays up meanwhile: rendering without them would produce a
+      // document with holes in it and replace it a moment later, which reads
+      // as a flicker rather than as progress.
+      if (Object.keys(tree.digests || {}).length) {
+        const held = await figures.gather(SLUG, tree.digests, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
+        if (mine <= painted) return;
+        tree.assets = held.assets;
+        tree.urls = held.urls;
+      }
+      const { html, diagnostics: said } = await renderers.render(tree, await headingOf(tree));
       // A slower render that resolves late must not paint over a newer one.
       if (mine <= painted) return;
       painted = mine;
@@ -598,7 +647,7 @@
       // document rather than like a crash.
       if (!everPainted) {
         const page = await renderers
-          .failurePage(await headingOf(source), sourceFormat)
+          .failurePage(await headingOf(tree), sourceFormat)
           .catch(() => null);
         if (page && mine >= painted) tell({ type: "preview", html: page });
       }
@@ -647,7 +696,11 @@
     if (!linked || !editing || docText === null) return;
     clearTimeout(stepTimer);
     stepTimer = setTimeout(() => {
-      const place = sync.documentPlaceFor(editor.text(), editor.caret(), docText, sourceFormat);
+      // The format of the file being edited, which is not always the
+      // document's: a .bib beside a .tex has comments of its own kind, and
+      // stripping .tex comments out of it would blank the wrong runs.
+      const format = renderers.formatOf(session?.paths?.get(openFile) || "") || sourceFormat;
+      const place = sync.documentPlaceFor(editor.text(), editor.caret(), docText, format);
       if (place) {
         tell({ type: "locate", start: place.at, length: place.length });
         lost(false);
@@ -663,13 +716,27 @@
 
   function followDocumentClick(offset) {
     if (!linked || !editing || docText === null || !editor) return;
-    const at = sync.sourcePlaceFor(docText, offset, editor.text(), sourceFormat);
-    if (at === null) {
+    // The words clicked in the document may belong to any file: a reader
+    // clicking a paragraph of chapter three is asking for chapter three, not
+    // for the file that happens to be on screen. So the whole directory is
+    // searched, and the file the words are in is opened.
+    const tree = treeNow();
+    const found = sync.sourcePlaceInTree(docText, offset, tree, {
+      open: session?.paths?.get(openFile) || "",
+      formatOf: renderers.formatOf,
+    });
+    if (!found) {
       lost(true);
       return;
     }
     lost(false);
-    editor.goTo(at);
+    const id = session.idOf(found.path);
+    if (id) {
+      openFile = id;
+      editor.goToIn(id, found.at);
+    } else {
+      editor.goTo(found.at);
+    }
   }
 
   function setLinked(on) {
@@ -761,9 +828,165 @@
       slug: SLUG,
       mayEdit,
     });
-    session.text.observe(sourceChanged);
+    session.watchSource(sourceChanged);
+    // The text the editor is bound to is not the text it was bound to when a
+    // migrated document's maps arrive. Re-keying the component is what makes
+    // it bind again; the words do not change, only which type holds them.
+    session.onSwap(() => (sourceEpoch += 1));
+    // The directory, and who is in which file. Both change under this browser
+    // rather than because of it, so both are watched rather than recomputed
+    // after each of this browser's own actions.
+    session.onFiles(filesChanged);
+    session.awareness.on("change", refreshPeers);
+    refreshFiles();
     room.send(session.open());
     void document_;
+  }
+
+  /* ------------------------------------------------------------- the files */
+
+  // The directory as the list shows it, and where everyone's caret is. Held
+  // as state rather than derived, because what they are derived from is a
+  // CRDT that changes outside Svelte's knowledge.
+  let files = $state([]);
+  let openFile = $state("");
+  let peersByFile = $state(new Map());
+  // The deployment's rules, which say what a path may be and what may sit at
+  // one. Fetched rather than compiled in, so a deployment that widens its
+  // extension lists widens them here too.
+  let rules = $state({});
+  loadConfig()
+    .then((answer) => (rules = answer || {}))
+    .catch(() => {
+      /* the server checks every path again; this only explains it sooner */
+    });
+
+  // Reading the directory into the list. Deliberately does not paint: the
+  // first call happens while the session is still being joined, before the
+  // frame has even navigated to the documents origin, and a paint sent then
+  // is a postMessage to a window that is not there yet. What paints is a
+  // *change* -- `filesChanged` below -- and the first paint of all is the one
+  // the arriving text triggers, as it always was.
+  function refreshFiles() {
+    if (!session) return;
+    files = session.list();
+    // A file that went away under this browser -- somebody else deleted it --
+    // leaves the editor showing something that is not there any more, so it
+    // falls back to the document itself.
+    if (openFile && !files.some((file) => file.id === openFile)) openFile = "";
+    if (!openFile) openFile = session.mainId();
+    // The main file's name is the document's format, and it can change: a
+    // document whose main file becomes a .typ is a typst document from that
+    // moment.
+    const format = renderers.formatOf(session.mainPath());
+    if (format && format !== sourceFormat) {
+      sourceFormat = format;
+      renderers.warm(format);
+    }
+  }
+
+  // A file added, renamed, removed, or made the main one: the list is redrawn
+  // and the document is rendered again, because every one of those changes
+  // what a compiler would produce.
+  function filesChanged() {
+    refreshFiles();
+    paintPreview();
+  }
+
+  function refreshPeers() {
+    if (session) peersByFile = session.whereEveryoneIs();
+  }
+
+  function openTheFile(file) {
+    // A figure has no editor: choosing one shows it. The id of an asset is
+    // its path, since its bytes are not in the shared document and there is
+    // nothing else to key it by.
+    openFile = file.id;
+    shownFigure = file.kind === "asset" ? file : null;
+  }
+
+  // The figure being looked at, when the chosen file is one. Held rather than
+  // derived because the bytes it needs are fetched.
+  let shownFigure = $state(null);
+  let figureUrl = $state("");
+  $effect(() => {
+    const wanted = shownFigure;
+    if (!wanted) {
+      figureUrl = "";
+      return;
+    }
+    figures
+      .gather(SLUG, { [wanted.path]: wanted.sha }, { ...SHELL_HEADERS, ...keyHeaders(KEY) })
+      .then((held) => {
+        if (shownFigure === wanted) figureUrl = held.urls[wanted.path] || "";
+      })
+      .catch(() => {
+        if (shownFigure === wanted) figureUrl = "";
+      });
+  });
+
+  function addFile(path) {
+    openFile = session.addText(path, "");
+    paintPreview();
+  }
+
+  function renameFile(id, path) {
+    session.renameFile(id, path);
+  }
+
+  function removeFile(file) {
+    // The main file is the document. Removing it would leave nothing to
+    // render, so the list does not offer it and this does not do it.
+    if (file.id === session.mainId()) return;
+    if (file.kind === "asset") session.removeAsset(file.path);
+    else session.removeFile(file.id);
+    if (openFile === file.id) openFile = session.mainId();
+    paintPreview();
+  }
+
+  function makeMain(file) {
+    if (file.kind !== "text") return;
+    session.setMain(file.id);
+    paintPreview();
+  }
+
+  /// A figure: the bytes go to the store and the name goes into the shared
+  /// document, in that order. The name is this browser's to give; the bytes
+  /// are the server's to keep, under their own digest.
+  ///
+  /// The two are separate requests, which is why the server keeps a figure
+  /// nothing refers to for an hour: between them there is a moment when the
+  /// bytes are stored and nothing names them.
+  async function addFigure(file) {
+    try {
+      const { sha } = await uploadAsset(SLUG, file, KEY);
+      session.putAsset(file.name, sha);
+      paintPreview();
+    } catch (error) {
+      say(error.message || "could not add that figure", true);
+    }
+  }
+
+  // A text dropped or chosen is read and added as a file. Its bytes are
+  // words, so they belong in the shared document rather than in the store.
+  async function addDroppedText(file) {
+    try {
+      openFile = session.addText(file.name, await file.text());
+      paintPreview();
+    } catch (error) {
+      say(error.message || "could not read that file", true);
+    }
+  }
+
+  // Dropping a file on the source pane does what the controls in the list do:
+  // a text becomes a file, a figure is uploaded, and a name that is neither is
+  // refused by the same rules.
+  let fileList = $state(null);
+  function dropped(event) {
+    if (!mayEdit) return;
+    event.preventDefault();
+    const chosen = [...(event.dataTransfer?.files || [])];
+    if (chosen.length) fileList?.offer(chosen);
   }
 
   // The source pane. Nothing is fetched here and nothing is seeded: the text
@@ -1035,10 +1258,37 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       style="--komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
   {#if shown.source}
-    <section class="editorpane">
-      {#if Editor}
-        <Editor bind:this={editor} {session} format={sourceFormat}
-                onchange={sourceChanged} oncaret={followCaret} onsave={reportPersistence} />
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <section class="editorpane" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
+      <!-- The directory, above the file being edited. A document with one
+           file still has a list: it is one line, and it is where the control
+           to add a second one lives. -->
+      {#if files.length}
+        <Files bind:this={fileList} {files} open={openFile} peers={peersByFile}
+               {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
+               onrename={renameFile} onremove={removeFile} onmain={makeMain}
+               onfigure={addFigure} ontext={addDroppedText} />
+      {/if}
+      <!-- A figure has no editor. Choosing one shows it: an image as itself,
+           a PDF through the browser's own viewer, which shows the first page
+           without this application carrying a PDF renderer of its own. -->
+      {#if shownFigure}
+        <div class="figureview">
+          {#if !figureUrl}
+            <p>Fetching {shownFigure.path}…</p>
+          {:else if shownFigure.path.toLowerCase().endsWith(".pdf")}
+            <object data={figureUrl} type="application/pdf" title={shownFigure.path}>
+              <p>{shownFigure.path}</p>
+            </object>
+          {:else}
+            <img src={figureUrl} alt={shownFigure.path} />
+          {/if}
+        </div>
+      {:else if Editor}
+        {#key sourceEpoch}
+          <Editor bind:this={editor} {session} format={sourceFormat} file={openFile}
+                  onchange={sourceChanged} oncaret={followCaret} onsave={reportPersistence} />
+        {/key}
       {/if}
     </section>
   {/if}

@@ -22,7 +22,22 @@ function peer(id) {
   let found = docs.get(id);
   if (!found) {
     const doc = new Y.Doc();
-    found = { doc, text: doc.getText("source"), awareness: new Awareness(doc), sent: [] };
+    found = {
+      doc,
+      text: doc.getText("source"),
+      // The directory: one Y.Text per file under an id, the paths beside it,
+      // and which id is the main file. A map of texts is a shape the two
+      // implementations have to agree about on its own -- an update that
+      // creates a nested type is not an update that edits one -- so the tests
+      // drive it from here rather than trusting that a text inside a map
+      // behaves like a text beside one.
+      files: doc.getMap("files"),
+      paths: doc.getMap("paths"),
+      assets: doc.getMap("assets"),
+      meta: doc.getMap("meta"),
+      awareness: new Awareness(doc),
+      sent: [],
+    };
     // Everything this peer produces locally is kept, so a test can play the
     // part of a socket that dropped: the updates made while it was down are
     // exactly the ones the server never saw.
@@ -34,21 +49,87 @@ function peer(id) {
   return found;
 }
 
+// The text a browser is bound to, which is the main file's -- exactly what
+// `collab.js` resolves. A session the server has not migrated yet has its
+// words in the retired `source` text and no directory at all, so that is the
+// fallback, and it is the same fallback the editor makes during a deploy.
+//
+// Every op below that says "the text" means this one. The tests that were
+// written when a document was one text therefore go on saying what they said,
+// and go on being true: they were never about which Yjs type held the words.
+function main(found) {
+  const id = found.meta.get("main");
+  const text = id ? found.files.get(id) : null;
+  return text instanceof Y.Text ? text : found.text;
+}
+
 const ops = {
   insert: ({ id, index, text }) => {
-    peer(id).text.insert(index, text);
+    main(peer(id)).insert(index, text);
     return {};
   },
   delete: ({ id, index, length }) => {
-    peer(id).text.delete(index, length);
+    main(peer(id)).delete(index, length);
     return {};
   },
   format: ({ id, index, length, attributes }) => {
-    peer(id).text.format(index, length, attributes);
+    main(peer(id)).format(index, length, attributes);
     return {};
   },
-  text: ({ id }) => ({ text: peer(id).text.toString() }),
-  length: ({ id }) => ({ length: peer(id).text.length }),
+  text: ({ id }) => ({ text: main(peer(id)).toString() }),
+  length: ({ id }) => ({ length: main(peer(id)).length }),
+
+  // The directory. `file` is a file's id throughout, never its path: the path
+  // is a value in `paths`, which is what makes a rename leave the text alone.
+  make_file: ({ id, file, path, body }) => {
+    const found = peer(id);
+    found.files.set(file, new Y.Text(body || ""));
+    found.paths.set(file, path);
+    return {};
+  },
+  file_insert: ({ id, file, index, text }) => {
+    peer(id).files.get(file).insert(index, text);
+    return {};
+  },
+  file_delete: ({ id, file, index, length }) => {
+    peer(id).files.get(file).delete(index, length);
+    return {};
+  },
+  file_text: ({ id, file }) => {
+    const text = peer(id).files.get(file);
+    return { text: text ? text.toString() : null };
+  },
+  file_length: ({ id, file }) => ({ length: peer(id).files.get(file).length }),
+  rename: ({ id, file, path }) => {
+    peer(id).paths.set(file, path);
+    return {};
+  },
+  remove_file: ({ id, file }) => {
+    const found = peer(id);
+    found.files.delete(file);
+    found.paths.delete(file);
+    return {};
+  },
+  set_asset: ({ id, path, sha }) => {
+    peer(id).assets.set(path, sha);
+    return {};
+  },
+  set_main: ({ id, file }) => {
+    peer(id).meta.set("main", file);
+    return {};
+  },
+  // The whole directory as this peer sees it, which is what a test compares
+  // against what the server sees.
+  tree: ({ id }) => {
+    const found = peer(id);
+    const paths = {};
+    for (const [file, path] of found.paths.entries()) paths[file] = path;
+    const texts = {};
+    for (const [file, text] of found.files.entries()) texts[file] = text.toString();
+    const assets = {};
+    for (const [path, sha] of found.assets.entries()) assets[path] = sha;
+    return { paths, texts, assets, main: found.meta.get("main") ?? "" };
+  },
   // The state vector: what this peer already has, which is what it sends a
   // server to ask for the rest.
   vector: ({ id }) => ({ vector: b64(Y.encodeStateVector(peer(id).doc)) }),

@@ -76,6 +76,17 @@ pub struct Server {
     /// forgets them, and a `login` that was mid-flight starts again.
     pub pending: PendingCodes,
     sockets: AtomicU64,
+    /// How many figures each owner has uploaded this hour, and which hour that
+    /// is. Uploading a figure is an upload and counts against
+    /// `uploads_per_hour` like any other; it cannot be counted the way
+    /// document uploads are, from the index, because storing a figure writes
+    /// no index entry of its own.
+    ///
+    /// Held in this process rather than in storage. A second server sharing
+    /// the bucket keeps its own count, so the ceiling is per server -- which
+    /// bounds what one deployment will take without a write on every upload,
+    /// and is the same trade the socket rate limiter already makes.
+    asset_uploads: tokio::sync::Mutex<HashMap<String, (i64, usize)>>,
 }
 
 /// The header a browser presents a link key on, and the query parameter the
@@ -180,6 +191,7 @@ impl Server {
             listing: true,
             pending: PendingCodes::new(),
             sockets: AtomicU64::new(1),
+            asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -435,6 +447,7 @@ impl Server {
             "example": entry.example,
             "size": entry.size,
             "source_format": entry.source_format,
+            "main": entry.main,
             "visibility": entry.visibility(),
             "role": role.as_str(),
         })
@@ -686,6 +699,22 @@ async fn handle(
         }
     }
 
+    // The figures. Putting one takes an editor, because it puts bytes on the
+    // server; reading one takes whatever reading the document takes, so a
+    // private paper's figures are as private as its text.
+    if let ["api", "documents", slug, "assets"] = parts[..] {
+        if method == Method::PUT || method == Method::POST {
+            return server.handle_asset_upload(request, &arrival, slug).await;
+        }
+    }
+    if let ["api", "documents", slug, "assets", sha] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_asset_read(request.headers(), &arrival, slug, sha)
+                .await;
+        }
+    }
+
     // Who a document is shared with. Reading it takes a place on the document;
     // changing it takes the owner, because sharing is not delegated.
     if let ["api", "documents", slug, "share"] = parts[..] {
@@ -738,6 +767,10 @@ async fn handle(
                     // the reader offers an editor for a document it can render
                     // again.
                     "source_format": entry.source_format,
+                    // Which file in the directory is the document. A reader
+                    // that has not joined the session yet has this and not the
+                    // maps, which is enough to name what it is rendering.
+                    "main": entry.main,
                     // Which of those this deployment can render again, and so
                     // offer an editor for.
                     "renderers": server.renderers(),
@@ -1200,6 +1233,11 @@ impl Server {
                 title: parsed.title,
                 source: parsed.source.clone(),
                 source_format: parsed.source_format.clone(),
+                // One file, so a directory of one file: what it is called
+                // follows from what it is written in, which is the same name
+                // the migration gives a document published before there were
+                // directories.
+                main: crate::room::main_path_for("", &parsed.source_format),
                 owner: who.key,
                 owner_id: who.id,
                 owner_name: who.name,
@@ -1219,13 +1257,23 @@ impl Server {
         // than by the store, because it is the room that owns the document.
         let room = self.rooms.get(&key).await;
         room.set_source(&parsed.source, &parsed.source_format).await;
-        if let Err(err) = room.checkpoint("cli", &entry.publisher).await {
-            eprintln!("warning: could not checkpoint {key}: {err}");
-        }
+        // The checkpoint names itself, and what it is named is the digest of
+        // the tree rather than of the source: a document is a directory, so
+        // what the index points at is the directory this document was at. The
+        // entry `put` returned was written before the tree existed, which is
+        // why the answer takes the checkpoint's own name over it.
+        let sha = match room.checkpoint("cli", &entry.publisher).await {
+            Ok(Some(sha)) => sha,
+            Ok(None) => entry.sha.clone(),
+            Err(err) => {
+                eprintln!("warning: could not checkpoint {key}: {err}");
+                entry.sha.clone()
+            }
+        };
         write_json(
             201,
             &json!({
-                "slug": entry.slug, "title": entry.title, "sha": entry.sha,
+                "slug": entry.slug, "title": entry.title, "sha": sha,
                 "created_at": entry.created_at, "updated_at": entry.updated_at,
                 "url": format!("/docs/{}", entry.slug),
             }),
@@ -1243,7 +1291,7 @@ impl Server {
         who: &Caller,
         existing: &IndexEntry,
     ) -> Result<IndexEntry, Reply> {
-        if parsed.source.len() > self.config.max_html {
+        if parsed.source.len() > self.config.max_document {
             return Err(write_json(
                 413,
                 &json!({"error": "that document is too large"}),
@@ -1295,7 +1343,7 @@ impl Server {
     /// store what comes back.
     #[allow(clippy::result_large_err)] // as publisher: the error is a response
     async fn read_upload(&self, request: Request<Body>) -> Result<Upload, Reply> {
-        let max_html = self.config.max_html;
+        let max_document = self.config.max_document;
         let content_type = header_of(request.headers(), "content-type").unwrap_or_default();
         let (mut title, mut slug, mut html) = (String::new(), String::new(), String::new());
         let (mut source, mut source_format) = (String::new(), String::new());
@@ -1305,7 +1353,7 @@ impl Server {
             // this an oversized body would be read in full before the HTML
             // limit below is even consulted. The slack covers the part headers
             // and the other fields.
-            let ceiling = max_html + MULTIPART_SLACK;
+            let ceiling = max_document + MULTIPART_SLACK;
             let declared = header_of(request.headers(), "content-length")
                 .and_then(|v| v.parse::<usize>().ok());
             let (parts, body) = request.into_parts();
@@ -1347,7 +1395,7 @@ impl Server {
                                 return Err(write_json(400, &json!({"error": "bad upload"})));
                             }
                         };
-                        html = String::from_utf8_lossy(&bytes[..bytes.len().min(max_html + 1)])
+                        html = String::from_utf8_lossy(&bytes[..bytes.len().min(max_document + 1)])
                             .to_string();
                     }
                     _ => {}
@@ -1377,7 +1425,7 @@ impl Server {
             // be larger than the document limit; the real check is on the
             // decoded html below. Refusing early keeps a huge body from being
             // read at all, and says why rather than failing to parse.
-            let ceiling = max_html * 2 + 1024;
+            let ceiling = max_document * 2 + 1024;
             if let Some(length) =
                 header_of(request.headers(), "content-length").and_then(|v| v.parse::<usize>().ok())
             {
@@ -1427,7 +1475,7 @@ impl Server {
                 &json!({"error": "this deployment cannot store a document in that format"}),
             ));
         }
-        if source.len() > max_html {
+        if source.len() > max_document {
             return Err(write_json(413, &json!({"error": "document too large"})));
         }
 
@@ -1452,6 +1500,125 @@ impl Server {
             source,
             source_format,
         })
+    }
+
+    /* -------------------------------------------------------------- assets */
+
+    /// Stores a figure and answers with its digest and size. The bytes are the
+    /// server's to keep; the name is the client's to give, which it does by
+    /// setting `assets[path]` in the shared document once this has answered.
+    ///
+    /// It takes an editor, because it puts bytes on the server, which is what
+    /// `--publishers` governs -- the same gate the socket applies to a text.
+    async fn handle_asset_upload(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(request.headers(), arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, request.headers(), arrival, None).await;
+        // A caller who may not edit is told the document is not there, on the
+        // same reasoning the delete route follows: a document somebody may not
+        // change is not a document they need to learn the shape of.
+        if !who.at_least(Role::Editor) {
+            return plain(404, "not found");
+        }
+        // Counted before the bytes are read, so a refusal costs the body
+        // rather than the storage. The ceiling is per hour and per owner.
+        {
+            let hour = crate::clock::now_unix() / 3600;
+            let mut counts = self.asset_uploads.lock().await;
+            let seen = counts.entry(who.key.clone()).or_insert((hour, 0));
+            if seen.0 != hour {
+                *seen = (hour, 0);
+            }
+            if seen.1 >= self.config.storage.uploads_per_hour {
+                return write_json(
+                    429,
+                    &json!({"error": "too many uploads this hour; try later"}),
+                );
+            }
+            seen.1 += 1;
+        }
+        let ceiling = (self.config.max_asset as usize).saturating_add(1);
+        let Ok(body) = to_bytes(request.into_body(), ceiling).await else {
+            return write_json(413, &json!({"error": "that figure is too large"}));
+        };
+        let size = body.len() as i64;
+        // The owner's quota and the deployment's, which a figure counts
+        // against exactly as a text does. `room_for` is what this document may
+        // occupy in all; what it already occupies is its entry's size.
+        if let Some(room) = self.store.room_for(slug).await {
+            if entry.size + size > room {
+                return write_json(
+                    507,
+                    &json!({"error": "your storage quota is used up; delete a document first"}),
+                );
+            }
+        }
+        let room = self.rooms.get(slug).await;
+        match room
+            .put_asset(
+                body.to_vec(),
+                (self.config.max_asset, self.config.max_assets),
+            )
+            .await
+        {
+            Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
+            Err(why) => write_json(413, &json!({"error": why})),
+        }
+    }
+
+    /// A figure's bytes, for whoever may read the document.
+    ///
+    /// Content-addressed and immutable, so it is cached for a year: the digest
+    /// is in the URL, and bytes that changed would be at another one. A
+    /// private document's figures are refused exactly as its text is.
+    async fn handle_asset_read(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        sha: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        // A digest and nothing else: this becomes a storage key, and a key is
+        // never built from something a caller can shape.
+        if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return plain(404, "not found");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, headers, arrival, None).await;
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let room = self.rooms.get(slug).await;
+        let Some(bytes) = room.read_asset(sha).await else {
+            return plain(404, "not found");
+        };
+        Response::builder()
+            .status(200)
+            .header("content-type", crate::assets::content_type(sha))
+            .header("cache-control", "public, max-age=31536000, immutable")
+            .header("x-content-type-options", "nosniff")
+            .body(Body::from(bytes))
+            .unwrap()
     }
 
     /// The document's whole Yjs state, as bytes. Reached only from a

@@ -19,8 +19,8 @@ function load(name) {
 
 function call(wasm, name, ...strings) {
   const encoder = new TextEncoder();
-  const written = strings.map((text) => {
-    const bytes = encoder.encode(text);
+  const written = strings.map((value) => {
+    const bytes = typeof value === "string" ? encoder.encode(value) : value;
     const pointer = wasm.alloc(bytes.length);
     new Uint8Array(wasm.memory.buffer, pointer, bytes.length).set(bytes);
     return { pointer, length: bytes.length };
@@ -52,11 +52,32 @@ export function visibleText(html) {
     .trim();
 }
 
+// A document is a directory, so what is rendered is a tree: `{ main, texts,
+// assets }`, the same object `renderers.js` takes in the browser. The files go
+// into the module before the compile and the main file is named, which is what
+// lets an example import a chapter or cite a .bib here exactly as it would
+// there.
+//
+// A bare string is still accepted and read as a document of one file, because
+// most examples are one file and writing `{ texts: { "x.typ": source } }` at
+// every call site would say nothing the string does not.
+function treeOf(source, file) {
+  if (typeof source === "string") return { main: file, texts: { [file]: source }, assets: {} };
+  return { main: source.main || file, texts: source.texts || {}, assets: source.assets || {} };
+}
+
 const render = (name) => (source, file) => {
   const wasm = load(name);
   if (!wasm) return null;
-  const { text, ok } = call(wasm, "compile", source, file);
-  if (!ok) throw new Error(`${file}: ${text}`);
+  const tree = treeOf(source, file);
+  if (wasm.clear_files) {
+    wasm.clear_files();
+    for (const [path, body] of Object.entries(tree.texts)) call(wasm, "add_file", path, body);
+    for (const [path, bytes] of Object.entries(tree.assets)) call(wasm, "add_file", path, bytes);
+    if (wasm.set_main) call(wasm, "set_main", tree.main || "");
+  }
+  const { text, ok } = call(wasm, "compile", tree.texts[tree.main] ?? "", tree.main);
+  if (!ok) throw new Error(`${tree.main}: ${text}`);
   return visibleText(text);
 };
 
@@ -66,3 +87,32 @@ export const renderTypst = render("typst");
 /// HTML's renderer is the identity, so what a reader sees is the source's own
 /// visible text and no module is needed to work it out.
 export const renderHtml = (source) => visibleText(source);
+
+/// What the compiler said about a tree, rather than what it produced. The
+/// second result channel, read the way `renderers.js` reads it, so a check can
+/// assert which file an error is in.
+export function diagnose(name, source, file) {
+  const wasm = load(name);
+  if (!wasm) return null;
+  const tree = treeOf(source, file);
+  if (wasm.clear_files) {
+    wasm.clear_files();
+    for (const [path, body] of Object.entries(tree.texts)) call(wasm, "add_file", path, body);
+    for (const [path, bytes] of Object.entries(tree.assets)) call(wasm, "add_file", path, bytes);
+    if (wasm.set_main) call(wasm, "set_main", tree.main || "");
+  }
+  const { ok } = call(wasm, "compile", tree.texts[tree.main] ?? "", tree.main);
+  let said = [];
+  if (wasm.diagnostics && wasm.diagnostics_ptr) {
+    const size = wasm.diagnostics();
+    if (size > 0) {
+      const raw = new Uint8Array(wasm.memory.buffer, wasm.diagnostics_ptr(), size);
+      try {
+        said = JSON.parse(new TextDecoder().decode(raw)) || [];
+      } catch {
+        said = [];
+      }
+    }
+  }
+  return { ok, diagnostics: said };
+}

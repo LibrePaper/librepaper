@@ -1,12 +1,25 @@
 //! The manifest: what a document used to say, and when.
 //!
-//! A checkpoint is the source of the document at one moment, named by the
-//! sha256 of its bytes. `history/<slug>/<sha>` holds the bytes;
-//! `history/<slug>/index.json` holds this list, oldest first. Nothing here is
-//! ever rewritten: a checkpoint is appended, and the only removals are
-//! `destroy`, expiry, and the two ceilings that shed the oldest.
+//! A checkpoint is the document's whole directory at one moment -- every path
+//! and the digest of what was at it -- named by the sha256 of that tree.
+//! `history/<slug>/<sha>` holds the tree, `history/<slug>/blobs/<sha>` holds
+//! one text apiece, and `history/<slug>/index.json` holds this list, oldest
+//! first. Restoring to Tuesday restores every chapter and the bibliography
+//! together; a chapter and the file that includes it can never be recorded out
+//! of step.
+//!
+//! Nothing here is ever rewritten: a checkpoint is appended, and the only
+//! removals are `destroy`, expiry, and the two ceilings that shed the oldest.
+//! That includes the checkpoints taken when a document was one text: such an
+//! entry has no `tree`, its object is the source bytes rather than a tree, and
+//! it is read below as a tree of one file. The timeline is therefore
+//! continuous across the change, and a rollback finds every old checkpoint
+//! exactly as it left it.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::blob::{history_index_key, BlobError, BlobStore, BlobVersion};
 
@@ -37,6 +50,100 @@ pub struct Checkpoint {
     pub commit: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dirty: bool,
+    /// Whether the object this names is a tree. Absent on every checkpoint
+    /// taken before a document was a directory, which is exactly what says to
+    /// read that object as the one file it is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tree: bool,
+    /// The paths whose digest differs from the parent's, so the timeline can
+    /// say what moved without opening two trees.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed: Vec<String>,
+}
+
+/// One file in a tree. `id` is carried for a text so that a restore can put
+/// the file back as itself rather than as a new file at the same path; an
+/// asset has none, since an asset is named by its path and its bytes live
+/// under their digest.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct TreeEntry {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    pub sha: String,
+    pub size: i64,
+}
+
+/// What a checkpoint records: which file is the main one, and every path with
+/// the digest of what was at it. A `BTreeMap` because the object is named by
+/// the digest of its own bytes, so the same directory must serialize to the
+/// same bytes every time -- which means sorted keys, always.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Tree {
+    pub main: String,
+    pub files: BTreeMap<String, TreeEntry>,
+}
+
+impl Tree {
+    /// The name of this tree: the sha256 of the JSON that is stored, so that
+    /// naming it and writing it can never disagree.
+    pub fn digest(&self) -> String {
+        hex::encode(Sha256::digest(self.to_bytes()))
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+
+    /// The size a checkpoint counts against the quota: the sum over the tree,
+    /// assets included, because that is what the document costs to keep.
+    pub fn size(&self) -> i64 {
+        self.files.values().map(|entry| entry.size).sum()
+    }
+
+    /// A checkpoint taken when a document was one text, read as what it is: a
+    /// directory of one file, at the path the document's main file has now.
+    /// The bytes were the source, so the checkpoint's own sha is the text's.
+    pub fn of_one_file(path: &str, id: &str, sha: &str, size: i64) -> Tree {
+        let mut files = BTreeMap::new();
+        files.insert(
+            path.to_string(),
+            TreeEntry {
+                kind: "text".to_string(),
+                id: id.to_string(),
+                sha: sha.to_string(),
+                size,
+            },
+        );
+        Tree {
+            main: path.to_string(),
+            files,
+        }
+    }
+
+    /// The paths whose digest differs from `parent`'s, added and removed
+    /// included, sorted. What the timeline lists on an entry.
+    pub fn changed_from(&self, parent: Option<&Tree>) -> Vec<String> {
+        let Some(parent) = parent else {
+            return self.files.keys().cloned().collect();
+        };
+        let mut moved: Vec<String> = self
+            .files
+            .iter()
+            .filter(|(path, entry)| parent.files.get(*path).map(|was| &was.sha) != Some(&entry.sha))
+            .map(|(path, _)| path.clone())
+            .collect();
+        moved.extend(
+            parent
+                .files
+                .keys()
+                .filter(|path| !self.files.contains_key(*path))
+                .cloned(),
+        );
+        moved.sort();
+        moved.dedup();
+        moved
+    }
 }
 
 /// The stored shape. An object rather than a bare array, so a later field --
@@ -110,6 +217,33 @@ pub async fn load_versioned(
             Ok((manifest, at))
         }
     }
+}
+
+/// The tree one checkpoint recorded. An entry marked `tree` is read as the
+/// JSON it is; one from before -- when a checkpoint was a source and nothing
+/// else -- is read as a directory of one file at `path`, which is what makes
+/// the timeline continuous across the change without a single old object being
+/// rewritten.
+pub async fn load_tree(
+    blobs: &dyn BlobStore,
+    slug: &str,
+    point: &Checkpoint,
+    path: &str,
+    id: &str,
+) -> Result<Tree, String> {
+    let raw = blobs
+        .get(&crate::blob::checkpoint_key(slug, &point.sha))
+        .await
+        .map_err(|err| err.to_string())?;
+    if !point.tree {
+        return Ok(Tree::of_one_file(path, id, &point.sha, raw.len() as i64));
+    }
+    serde_json::from_slice(&raw).map_err(|err| {
+        format!(
+            "the checkpoint {} of {slug} is not readable ({err})",
+            point.sha
+        )
+    })
 }
 
 /// The manifest alone, for the callers that are only reading it.

@@ -233,10 +233,10 @@ pub async fn publish(file: &str, mut title: String, slug: String, server_flag: S
     let raw =
         std::fs::read(path).unwrap_or_else(|err| die(format!("could not read {file}: {err}")));
     let config = Configuration::default();
-    if raw.len() > config.max_html {
+    if raw.len() > config.max_document {
         die(format!(
             "document exceeds the {} MB limit",
-            config.max_html / (1024 * 1024)
+            config.max_document / (1024 * 1024)
         ));
     }
     let Ok(html) = String::from_utf8(raw.clone()) else {

@@ -11,7 +11,7 @@
 // Nothing here touches a deployment or any storage but its own temporary one.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
@@ -86,6 +86,10 @@ class Tab {
     this.next = 1;
     this.pending = new Map();
     this.console = [];
+    // Every URL this page asked the network for, so a check can say that
+    // something was fetched once and not twice -- which is the only way to
+    // show that a cache is doing its job rather than merely being present.
+    this.requests = [];
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       if (message.id && this.pending.has(message.id)) {
@@ -94,7 +98,18 @@ class Tab {
         message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
         return;
       }
-      if (message.method === "Runtime.consoleAPICalled" || message.method === "Log.entryAdded") {
+      if (message.method === "Network.requestWillBeSent") {
+        this.requests.push(message.params?.request?.url || "");
+      }
+      if (
+        message.method === "Runtime.consoleAPICalled" ||
+        message.method === "Log.entryAdded" ||
+        // An uncaught exception is the thing worth knowing when a page does
+        // not come up, and it arrives on its own channel rather than as a
+        // console message. Without this a broken component shows up only as
+        // "no editor mounted", which says what did not happen and not why.
+        message.method === "Runtime.exceptionThrown"
+      ) {
         this.console.push(JSON.stringify(message.params).slice(0, 400));
       }
     });
@@ -302,7 +317,11 @@ async function run() {
   const readerSees = await until("the reader renders", async () =>
     (await readerTab.evalInFrame("return document.body.innerText", owned.slug))?.includes("Original wording."),
   );
-  check("a reader renders the document without an editor", readerSees);
+  check(
+    "a reader renders the document without an editor",
+    readerSees,
+    readerSees ? "" : `console: ${readerTab.console.slice(-3).join(" | ")}`,
+  );
 
   const noSource = await readerTab.eval(`return !!document.querySelector(".cm-content")`);
   check("a reader is not given an editor", noSource === false);
@@ -529,6 +548,250 @@ async function run() {
     return text.includes("not found") ? text : null;
   });
   check("a private document tells a stranger nothing", Boolean(refused), (refused || "").slice(0, 90));
+
+  /* ------------------------------------------------------- the directory */
+
+  // A document is a directory, and the whole point of that is this: a file
+  // that imports another one renders. Until now the browser's file map stayed
+  // empty, so a typst document with an `#import` compiled on its author's
+  // laptop and nowhere else -- and since readers render for themselves, the
+  // reader got the error too.
+  const paper = await publish(
+    {
+      title: "A Modular Paper",
+      source: "= A Modular Paper\n\nThe opening paragraph.\n",
+      source_format: "typst",
+    },
+    alice,
+  );
+  const author = await openTab(`${BASE}/docs/${paper.slug}`, [
+    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+  ]);
+  await until("the paper is open", async () =>
+    (await author.eval(`return document.body.innerText`)).includes("A Modular Paper"),
+  );
+  await author.eval(`
+    const open = [...document.querySelectorAll("button")].find((b) => /source|edit/i.test(b.title || b.textContent));
+    open?.click();
+    return true;
+  `);
+  await until("the editor is mounted", async () =>
+    Boolean(await author.eval(`return Boolean(document.querySelector(".cm-content"))`)),
+  );
+
+  // The file list is there, with the one file this document has.
+  const listed = await until("the file list is drawn", async () =>
+    author.eval(`
+      const names = [...document.querySelectorAll(".filelist .path")].map((b) => b.textContent.trim());
+      return names.length ? names : null;
+    `),
+  );
+  check(
+    "a document of one file still shows its directory",
+    listed?.length === 1 && listed[0] === "main.typ",
+    JSON.stringify(listed),
+  );
+
+  // Add a second file, and write a function in it.
+  await author.eval(`
+    [...document.querySelectorAll(".filelist .addfile")][0].click();
+    return true;
+  `);
+  await author.eval(`
+    const field = document.querySelector(".filelist input.name");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(field, "lib.typ");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return true;
+  `);
+  const two = await until("the second file appears", async () =>
+    author.eval(`
+      const names = [...document.querySelectorAll(".filelist .path")].map((b) => b.textContent.trim());
+      return names.length === 2 ? names : null;
+    `),
+  );
+  check("a file can be added to the directory", Boolean(two), JSON.stringify(two));
+
+  await setText(author, '#let greeting = "from the library"\n');
+  await wait(300);
+
+  // Import it from the main file. Choosing a name in the list is what opens
+  // it, exactly as a person would.
+  await author.eval(`
+    const row = [...document.querySelectorAll(".filelist .path")].find((b) => b.textContent.trim() === "main.typ");
+    row.click();
+    return true;
+  `);
+  await wait(300);
+  await setText(author, '#import "lib.typ": greeting\n\n= A Modular Paper\n\n#greeting\n');
+
+  const imported = await until("the import renders", async () =>
+    (await author.evalInFrame("return document.body.innerText", paper.slug))?.includes(
+      "from the library",
+    ),
+  );
+  check("a typst document imports a file beside it and renders", imported);
+
+  // An error in the imported file is an error in *that* file, and choosing it
+  // opens the file it is in rather than pointing at a line of the main one.
+  await author.eval(`
+    const row = [...document.querySelectorAll(".filelist .path")].find((b) => b.textContent.trim() === "lib.typ");
+    row.click();
+    return true;
+  `);
+  await wait(300);
+  await setText(author, "#let greeting = undefined_name\n");
+  const badged = await until("the badge says what is wrong", async () => {
+    const text = await author.eval(`return document.body.innerText`);
+    return /error/i.test(text) ? text : null;
+  });
+  check("an error in an imported file is reported", Boolean(badged));
+
+  // Renaming keeps the words: the name moves and the text stays where it is.
+  await author.eval(`
+    const row = [...document.querySelectorAll(".filelist li")].find((li) => li.textContent.includes("lib.typ"));
+    row.querySelector('button[aria-label^="Rename"], button[title^="Rename"]')?.click();
+    return true;
+  `);
+  await author.eval(`
+    const field = document.querySelector(".filelist input.name");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(field, "helpers.typ");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return true;
+  `);
+  const renamed = await until("the rename lands", async () =>
+    author.eval(`
+      const names = [...document.querySelectorAll(".filelist .path")].map((b) => b.textContent.trim());
+      return names.includes("helpers.typ") ? names : null;
+    `),
+  );
+  check("a file can be renamed", Boolean(renamed), JSON.stringify(renamed));
+  const stillThere = await author.eval(`
+    return document.querySelector(".cm-content")?.innerText || "";
+  `);
+  check(
+    "a rename keeps the words and the editor stays bound to them",
+    stillThere.includes("undefined_name"),
+    stillThere.slice(0, 60),
+  );
+
+  // And the server holds the same directory, which is what a reader will be
+  // given and what a checkpoint will record.
+  const heldPaper = await fetch(`${BASE}/api/documents/${paper.slug}`, {
+    headers: { cookie: `komodoc_session=${alice}` },
+  }).then((r) => r.json());
+  check(
+    "the server records which file is the document",
+    heldPaper.main === "main.typ",
+    JSON.stringify(heldPaper.main),
+  );
+
+  /* ---------------------------------------------------------- the figures */
+
+  // A figure is the half of a directory a paper's bytes actually live in. The
+  // bytes never enter the shared document: they go to the store under their
+  // own digest, and what travels between browsers is a name and that digest.
+  //
+  // Driven through the control a person uses -- the file chooser in the file
+  // list, handed a real file the way a person hands it one -- rather than by
+  // calling the upload route, because the route is already covered by the
+  // Rust tests and what is not covered is the path from a chooser to a page.
+  const png = join(data, "one.png");
+  writeFileSync(
+    png,
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    ),
+  );
+
+  const illustrated = await publish(
+    {
+      title: "A Paper With A Figure",
+      source: "# A Paper With A Figure\n\n![the plot](one.png)\n",
+      source_format: "markdown",
+    },
+    alice,
+  );
+  const illustrator = await openTab(`${BASE}/docs/${illustrated.slug}`, [
+    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+  ]);
+  await until("the illustrated paper opens", async () =>
+    (await illustrator.eval(`return document.body.innerText`)).includes("A Paper With A Figure"),
+  );
+  await illustrator.eval(`
+    const open = [...document.querySelectorAll("button")].find((b) => /source|edit/i.test(b.title || b.textContent));
+    open?.click();
+    return true;
+  `);
+  await until("the editor is mounted", async () =>
+    Boolean(await illustrator.eval(`return Boolean(document.querySelector(".cm-content"))`)),
+  );
+
+  // Hand the chooser a file, which is what a person does.
+  await illustrator.send("DOM.enable");
+  const { root: pageRoot } = await illustrator.send("DOM.getDocument");
+  const { nodeId } = await illustrator.send("DOM.querySelector", {
+    nodeId: pageRoot.nodeId,
+    selector: ".filelist .chooser",
+  });
+  await illustrator.send("DOM.setFileInputFiles", { nodeId, files: [png] });
+
+  const inTheList = await until("the figure joins the directory", async () =>
+    illustrator.eval(`
+      const names = [...document.querySelectorAll(".filelist .path")].map((b) => b.textContent.trim());
+      return names.includes("one.png") ? names : null;
+    `),
+  );
+  check("a figure chosen from a disk joins the directory", Boolean(inTheList), JSON.stringify(inTheList));
+
+  // It reaches the page as a blob in this browser, never as the route it came
+  // from: a rendered page must not carry a credential.
+  const drawn = await until("the figure reaches the rendered page", async () =>
+    illustrator.evalInFrame(
+      `const img = document.querySelector("img"); return img ? img.src : null`,
+      illustrated.slug,
+    ),
+  );
+  check(
+    "a markdown figure is rewritten to a blob in this browser",
+    typeof drawn === "string" && drawn.startsWith("blob:"),
+    String(drawn).slice(0, 60),
+  );
+  // The bytes reached the store, under the digest of themselves: the URL the
+  // page fetched is the digest, and what comes back from it is the PNG that
+  // went in.
+  // The document's own asset route, not the shell's bundle -- both live under
+  // a path containing "/assets/", and matching the loose one made this check
+  // pass against a JavaScript chunk.
+  const figureRoute = `/api/documents/${illustrated.slug}/assets/`;
+  const asked = await until("the figure is fetched", async () =>
+    illustrator.requests.find((url) => url.includes(figureRoute)),
+  );
+  const stored = await fetch(asked, {
+    headers: { "x-komodoc-client": "1", cookie: `komodoc_session=${alice}` },
+  });
+  const back = Buffer.from(await stored.arrayBuffer());
+  check(
+    "the figure in the store is the file that was chosen",
+    stored.status === 200 && back.equals(readFileSync(png)),
+    `${stored.status}, ${back.length} bytes`,
+  );
+
+  // Fetched once. The URL carries the digest of the bytes, so a second render
+  // reads them from this browser rather than from the network.
+  const before = illustrator.requests.filter((url) => url.includes(figureRoute)).length;
+  await appendText(illustrator, "\n\nAnother sentence, forcing a re-render.\n");
+  await wait(1200);
+  const after = illustrator.requests.filter((url) => url.includes(figureRoute)).length;
+  check(
+    "a figure already fetched is not fetched again on the next render",
+    after === before && before >= 1,
+    `${before} then ${after}`,
+  );
 }
 
 /* ------------------------------------------------------------------ report */

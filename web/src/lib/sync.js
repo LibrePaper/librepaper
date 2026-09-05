@@ -211,9 +211,15 @@ export function documentPlaceFor(source, caret, rendered, format) {
 // offset for a caret rather than a scroll. The rendered text has no lines to
 // speak of -- it is one long run -- so what is tried instead is a little
 // further along it each time, which lands past whatever could not be matched.
-export function sourcePlaceFor(rendered, at, source, format) {
+export function sourcePlaceFor(rendered, at, source, format, { exact = false } = {}) {
   const { text: haystack, from } = flattened(source, format);
-  for (let step = 0; step <= NEARBY_LINES; step++) {
+  // `exact` asks only the first question -- are these very words in this
+  // text -- and skips the widening search around it. It exists because the
+  // widening is what makes a search across several files meaningless: every
+  // file has *something* within six hundred characters of anywhere, so the
+  // first file tried would always answer and the rest would never be asked.
+  const reach = exact ? 0 : NEARBY_LINES;
+  for (let step = 0; step <= reach; step++) {
     for (const start of step === 0 ? [at] : [at - step * WINDOW, at + step * WINDOW]) {
       if (start < 0 || start >= rendered.length) continue;
       const wanted = phrase(rendered, start, false);
@@ -223,6 +229,40 @@ export function sourcePlaceFor(rendered, at, source, format) {
       // flattened copy says the match came from -- not where it was found in
       // the copy, which is a position in a text nobody is looking at.
       if (found) return from[found.at];
+    }
+  }
+  return null;
+}
+
+// A document is a directory, so a place in the rendered page can be in any
+// file in it: the caret for a paragraph a reader clicked may belong to a
+// chapter the editor is not showing. The lock is therefore keyed by file as
+// well as by position -- it says which file, and where in it.
+//
+// The order files are tried in is the answer to "where is it most likely",
+// not an arbitrary sweep: the file on screen first, because a reader usually
+// clicks near what they are editing; then the main file, which is most of a
+// short paper; then the rest, sorted, so the answer does not depend on the
+// order a map happened to iterate in. The first file whose words match wins,
+// and a phrase that appears in two files is ambiguous in the document as
+// well -- `findOnce` refuses it there for the same reason.
+export function sourcePlaceInTree(rendered, at, tree, { open = "", formatOf } = {}) {
+  const paths = Object.keys(tree.texts || {});
+  const ordered = [
+    ...(open && tree.texts[open] !== undefined ? [open] : []),
+    ...(tree.main && tree.main !== open ? [tree.main] : []),
+    ...paths.filter((path) => path !== open && path !== tree.main).sort(),
+  ];
+  // Two passes, and the order of them is the whole of why this works. The
+  // first asks each file whether it contains these very words; only if no
+  // file does does the second let each file search around the place, the way
+  // it does for a one-file document. Without that, the widening search in the
+  // first file answers every question and no other file is ever reached.
+  for (const strict of [true, false]) {
+    for (const path of ordered) {
+      const format = formatOf ? formatOf(path) : "";
+      const found = sourcePlaceFor(rendered, at, tree.texts[path], format, { exact: strict });
+      if (found !== null) return { path, at: found };
     }
   }
   return null;

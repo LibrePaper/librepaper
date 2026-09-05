@@ -279,6 +279,27 @@ pub struct Session {
     pub last_checkpoint: String,
     /// What the source is written in, which travels with every checkpoint.
     pub format: String,
+    /// The tree the last checkpoint recorded, so the next one can say which
+    /// paths moved without reading it back. Empty on a cold room, and filled
+    /// from storage by the first checkpoint that needs it.
+    pub last_tree: Option<crate::history::Tree>,
+    /// The text digests this server has already written under
+    /// `history/<slug>/blobs/`. A chapter untouched between twenty
+    /// checkpoints is written once, and a room that was evicted and brought
+    /// back writes each of its texts once more -- the same bytes to the same
+    /// key, which costs a write and changes nothing.
+    pub blobs_written: std::collections::HashSet<String>,
+    /// Every asset this document holds, by digest, and what it costs. Read
+    /// once when the room is loaded and added to by each upload, because a
+    /// checkpoint has to record what a figure weighs and the shared document
+    /// carries only its name.
+    pub asset_sizes: HashMap<String, i64>,
+    /// When each asset was written here, for the grace period. Uploading a
+    /// figure and naming it are two requests, and an asset pruned in between
+    /// is one somebody had just successfully uploaded. Held in memory only:
+    /// the gap it covers is seconds, and a server that restarted in the middle
+    /// of it has lost the upload anyway.
+    pub asset_written_at: HashMap<String, i64>,
 }
 
 pub struct RoomState {
@@ -434,6 +455,10 @@ impl RoomSet {
                     last_checkpoint_at: 0,
                     last_checkpoint: String::new(),
                     format: String::new(),
+                    last_tree: None,
+                    blobs_written: std::collections::HashSet::new(),
+                    asset_sizes: HashMap::new(),
+                    asset_written_at: HashMap::new(),
                 },
                 manifest: Manifest::default(),
                 touched: now_unix(),
@@ -465,10 +490,17 @@ impl RoomSet {
             .await;
         // The history goes with the document, which is what destroy has
         // promised in the README since before there was a history to delete.
-        if let Ok(found) = self.blobs.list(&crate::blob::history_prefix(slug)).await {
-            let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
-            if !keys.is_empty() {
-                let _ = self.blobs.delete(&keys).await;
+        // So do its figures: they are the document's, stored under its slug
+        // and referred to by nothing else.
+        for prefix in [
+            crate::blob::history_prefix(slug),
+            crate::blob::asset_prefix(slug),
+        ] {
+            if let Ok(found) = self.blobs.list(&prefix).await {
+                let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
+                if !keys.is_empty() {
+                    let _ = self.blobs.delete(&keys).await;
+                }
             }
         }
         self.rooms.lock().await.remove(slug);
@@ -610,6 +642,10 @@ impl Room {
         if let Some(point) = state.manifest.latest() {
             state.session.last_checkpoint = point.sha.clone();
         }
+        let named = entry
+            .as_ref()
+            .map(|entry| entry.main.clone())
+            .unwrap_or_default();
         match stored {
             Some((raw, at)) => {
                 state.session_version = at;
@@ -622,13 +658,60 @@ impl Room {
             }
             None => {
                 if let Some((source, format)) = seed {
-                    state.session.format = format;
-                    session::replace_text(&state.session.doc, &source);
+                    state.session.format = format.clone();
+                    // A seeded document is a directory of one file from the
+                    // start: `replace_text` makes the file, and the migration
+                    // below only ever has work to do for a session that was
+                    // written before there were directories.
+                    session::migrate(&state.session.doc, &main_path_for(&named, &format));
+                    session::replace_text(
+                        &state.session.doc,
+                        &source,
+                        &main_path_for(&named, &format),
+                    );
                     // Seeded, not edited: what is in the document is what
                     // storage already says, so there is nothing to write back
                     // until somebody types.
                     state.session.dirty = false;
                 }
+            }
+        }
+        // The migration, once per document, the first time this code loads a
+        // session that was written when a document was one text. It is done
+        // here rather than lazily on the first write so that everything after
+        // it -- the ceiling, the repair, the checkpoint -- sees a directory
+        // and never has to ask which shape it is looking at.
+        let format = state.session.format.clone();
+        if session::migrate(&state.session.doc, &main_path_for(&named, &format)) {
+            state.session.dirty = true;
+        }
+        drop(state);
+        self.load_asset_sizes().await;
+    }
+
+    /// What each of this document's figures weighs, read once when the room is
+    /// loaded. The shared document carries a figure's name and digest and not
+    /// its size, and a checkpoint has to record what the document costs -- so
+    /// the answer is read from where the bytes are, which is the store.
+    ///
+    /// One listing per room rather than one request per figure, and a failure
+    /// is not fatal: a size this does not know reads as zero, which
+    /// under-counts a quota rather than refusing a document.
+    async fn load_asset_sizes(&self) {
+        let Ok(found) = self
+            .blobs
+            .list(&crate::blob::asset_prefix(&self.slug))
+            .await
+        else {
+            return;
+        };
+        let mut state = self.state.lock().await;
+        for object in found {
+            if let Some(sha) = object.key.rsplit('/').next() {
+                state
+                    .session
+                    .asset_sizes
+                    .insert(sha.to_string(), object.size);
             }
         }
     }
@@ -1071,7 +1154,16 @@ impl Room {
     pub async fn set_source(&self, source: &str, format: &str) -> Vec<u8> {
         let mut state = self.state.lock().await;
         let before = session::encode_vector(&state.session.doc);
-        session::replace_text(&state.session.doc, source);
+        // What the main file is called, for the one case where there is not
+        // one yet: a document being published for the first time. It follows
+        // from what the document is written in, which is the same name the
+        // migration gives a document that predates directories.
+        let named = if format.is_empty() {
+            state.session.format.clone()
+        } else {
+            format.to_string()
+        };
+        session::replace_text(&state.session.doc, source, &main_path_for("", &named));
         if !format.is_empty() {
             state.session.format = format.to_string();
         }
@@ -1127,15 +1219,44 @@ impl Room {
                 return Applied::Refuse("too many updates");
             }
         }
-        match session::admit_update(&state.session.doc, update, self.config.max_html) {
+        match session::admit_update(
+            &state.session.doc,
+            update,
+            self.config.max_document,
+            self.config.max_files,
+        ) {
             session::Admission::Malformed => return Applied::Ignored,
             session::Admission::TooLarge => {
                 return Applied::Refuse("this document has reached its size limit")
+            }
+            session::Admission::TooMany => {
+                return Applied::Refuse("this document has reached its file limit")
             }
             session::Admission::Fits => {}
         }
         if session::apply_update(&state.session.doc, update).is_err() {
             return Applied::Ignored;
+        }
+        // Taken after the peer's update rather than before it, so that what is
+        // relayed below is the correction alone and not the peer's own work
+        // sent back to it a second time.
+        let before = session::encode_vector(&state.session.doc);
+        // Every key in the shared document is a string an editor can set, so
+        // what one wrote is checked before anybody else is shown it. A fault
+        // here is put right rather than refused: bytes are the bill and a
+        // socket that spends them is closed, but a path the rules refuse is a
+        // mistake a person can see, and closing their socket over it would
+        // lose the rest of what they typed. What the repair changed is relayed
+        // as the server's own update, after the peer's, so every browser --
+        // the one that wrote the bad path included -- ends at the same
+        // document.
+        let put_right = session::repair(&state.session.doc, &self.config.paths());
+        if !put_right.is_empty() {
+            if let Ok(correction) = session::encode_diff(&state.session.doc, &before) {
+                let payload =
+                    json!({"type": "y-update", "update": encode_update(&correction)}).to_string();
+                send_to_all(&mut state, None, &payload);
+            }
         }
         // Counted only once the update is one this document actually took. A
         // refused update must not be acknowledged by the next write, and it
@@ -1199,15 +1320,17 @@ impl Room {
     /// SHA of the checkpoint that now stands for the current text, or None
     /// when the request was deferred.
     ///
-    /// The order of writes is the one `01-SPEC-history.md` sets, so that a
-    /// crash leaves nothing worse than an untidy history: the checkpoint
-    /// object, then the session state, then the index entry, then the
-    /// manifest. A manifest missing its newest entry is repaired by the next
-    /// checkpoint, which finds the object present and names it as `parent` --
-    /// `repair` below is that.
+    /// The order of writes is the one `01-SPEC-history.md` sets, with the text
+    /// blobs in front of it, so that a crash leaves nothing worse than an
+    /// untidy history: the blobs, then the tree, then the session state, then
+    /// the index entry, then the manifest. Nothing ever names an object that
+    /// is not there; what a crash can leave is an object nothing names, which
+    /// costs storage and loses nothing. A manifest missing its newest entry is
+    /// repaired by the next checkpoint, which finds the object present and
+    /// names it as `parent` -- `repair` below is that.
     pub async fn checkpoint(&self, why: &str, by: &str) -> Result<Option<String>, String> {
         let now = now_unix();
-        let (source, format, last, deferred) = {
+        let (tree, bodies, format, last, deferred) = {
             let mut state = self.state.lock().await;
             // A deliberate write inside the defer window is not refused; it
             // waits, and is taken when the window passes, if the text still
@@ -1218,10 +1341,18 @@ impl Room {
                 && now - state.session.last_checkpoint_at < CHECKPOINT_DEFER_SECONDS
             {
                 state.session.asked = Some((why.to_string(), by.to_string()));
-                (String::new(), String::new(), String::new(), true)
-            } else {
                 (
-                    session::text_of(&state.session.doc),
+                    crate::history::Tree::default(),
+                    HashMap::new(),
+                    String::new(),
+                    String::new(),
+                    true,
+                )
+            } else {
+                let (tree, bodies) = tree_of(&state.session.doc, &state.session.asset_sizes);
+                (
+                    tree,
+                    bodies,
                     state.session.format.clone(),
                     state.session.last_checkpoint.clone(),
                     false,
@@ -1232,7 +1363,7 @@ impl Room {
             return Ok(None);
         }
 
-        let sha = crate::store::digest_of(&source);
+        let sha = tree.digest();
         // Quiet after quiet costs nothing: the same text is the same
         // checkpoint, and a checkpoint already in the manifest is not written
         // again and adds no entry.
@@ -1249,17 +1380,45 @@ impl Room {
             return Err("this room is held by another server".into());
         }
 
-        // 1. the checkpoint object.
+        // 1. the text blobs, before anything names them. A digest already
+        //    written is not written again, which is what makes a chapter
+        //    untouched between twenty checkpoints cost one object.
+        let unwritten: Vec<(String, String)> = {
+            let state = self.state.lock().await;
+            bodies
+                .iter()
+                .filter(|(digest, _)| !state.session.blobs_written.contains(*digest))
+                .map(|(digest, body)| (digest.clone(), body.clone()))
+                .collect()
+        };
+        for (digest, body) in &unwritten {
+            self.blobs
+                .put(
+                    &crate::blob::blob_key(&self.slug, digest),
+                    body.clone().into_bytes(),
+                    "text/plain; charset=utf-8",
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+        {
+            let mut state = self.state.lock().await;
+            for (digest, _) in &unwritten {
+                state.session.blobs_written.insert(digest.clone());
+            }
+        }
+
+        // 2. the tree, which names them.
         self.blobs
             .put(
                 &checkpoint_key(&self.slug, &sha),
-                source.clone().into_bytes(),
-                "text/plain; charset=utf-8",
+                tree.to_bytes(),
+                "application/json; charset=utf-8",
             )
             .await
             .map_err(|err| err.to_string())?;
 
-        // 2. the session state, so a restart comes back at or after the
+        // 3. the session state, so a restart comes back at or after the
         //    checkpoint rather than before it.
         let state_bytes = {
             let state = self.state.lock().await;
@@ -1275,6 +1434,12 @@ impl Room {
             state.session_version = version;
             written?;
         }
+
+        // What the parent recorded, so this entry can say which paths moved.
+        // Held in memory from one checkpoint to the next; read back only on
+        // the first checkpoint after a cold start, which is the only time
+        // this server has not seen the parent itself.
+        let parent_tree = self.parent_tree().await;
 
         // The manifest, in memory: the repair first, then this checkpoint.
         let (manifest, shed, size) = {
@@ -1293,11 +1458,14 @@ impl Room {
                 by: by.to_string(),
                 why: why.to_string(),
                 source_format: format,
-                size: source.len() as i64,
+                size: tree.size(),
                 label: String::new(),
                 commit: String::new(),
                 dirty: false,
+                tree: true,
+                changed: tree.changed_from(parent_tree.as_ref()),
             });
+            state.session.last_tree = Some(tree.clone());
             state.session.last_checkpoint = sha.clone();
             state.session.last_checkpoint_at = now;
             (state.manifest.clone(), Vec::<String>::new(), session_size)
@@ -1316,8 +1484,14 @@ impl Room {
                 && (ceiling < 0 || manifest.bytes() <= ceiling)
         }));
 
-        // 3. the index entry, then 4. the manifest.
-        self.record_size(size + manifest.bytes(), Some(&sha)).await;
+        // 4. the index entry, then 5. the manifest.
+        // What the document costs: the live session, its history, and its
+        // figures. The quota counts each object once -- a text blob and an
+        // asset are each charged where they are stored, and the tree that
+        // names them is bookkeeping rather than a third copy.
+        let assets = self.assets_bytes().await;
+        self.record_size(size + manifest.bytes() + assets, Some(&sha))
+            .await;
         {
             let mut state = self.state.lock().await;
             let body = serde_json::to_vec(&manifest).map_err(|err| err.to_string())?;
@@ -1340,6 +1514,11 @@ impl Room {
                 .collect();
             let _ = self.blobs.delete(&keys).await;
         }
+        // The figures nothing refers to any more, once the tree and the
+        // manifest that name what is kept are both written. This order is
+        // what makes a crash leave an unreferenced object rather than a tree
+        // pointing at one that is gone.
+        self.prune_assets().await;
         // The migration's one and only cleanup. A document stored the old way
         // has a rendered page and a source under the old keys; both are copies
         // of what is now a checkpoint, and this is the first moment at which
@@ -1367,12 +1546,21 @@ impl Room {
         {
             return;
         }
-        let size = self
+        let raw = self
             .blobs
             .get(&checkpoint_key(&self.slug, last))
             .await
-            .map(|raw| raw.len() as i64)
-            .unwrap_or(0);
+            .unwrap_or_default();
+        // Whether what was recovered is a tree is answered by the object
+        // itself, since a checkpoint written by this code and one written
+        // before there were directories sit under the same key. Reading it as
+        // a tree is the test: a source that happens to parse as this exact
+        // JSON shape is not a source anybody wrote.
+        let recovered: Option<crate::history::Tree> = serde_json::from_slice(&raw).ok();
+        let size = match &recovered {
+            Some(tree) => tree.size(),
+            None => raw.len() as i64,
+        };
         let parent = state
             .manifest
             .latest()
@@ -1389,7 +1577,75 @@ impl Room {
             label: String::new(),
             commit: String::new(),
             dirty: false,
+            tree: recovered.is_some(),
+            changed: Vec::new(),
         });
+    }
+
+    /// The tree the newest checkpoint recorded, for the sake of the `changed`
+    /// list on the next one. Kept in memory between checkpoints; read back
+    /// only after a cold start, and read as a one-file tree when the entry is
+    /// from before a document was a directory.
+    async fn parent_tree(&self) -> Option<crate::history::Tree> {
+        let (held, point, path, id) = {
+            let state = self.state.lock().await;
+            (
+                state.session.last_tree.clone(),
+                state.manifest.latest().cloned(),
+                session::main_path(&state.session.doc),
+                session::main_id(&state.session.doc),
+            )
+        };
+        if held.is_some() {
+            return held;
+        }
+        let point = point?;
+        crate::history::load_tree(self.blobs.as_ref(), &self.slug, &point, &path, &id)
+            .await
+            .ok()
+    }
+
+    /// Puts the document back to what a checkpoint recorded: every text and
+    /// every asset at once, so a chapter and the file that includes it can
+    /// never come back out of step. Returns the update to relay.
+    #[allow(dead_code)] // the route that offers it to a reader is step 6
+    pub async fn restore(&self, point: &Checkpoint) -> Result<Vec<u8>, String> {
+        let (path, id) = {
+            let state = self.state.lock().await;
+            (
+                session::main_path(&state.session.doc),
+                session::main_id(&state.session.doc),
+            )
+        };
+        let tree =
+            crate::history::load_tree(self.blobs.as_ref(), &self.slug, point, &path, &id).await?;
+        // Every text the tree names, before the document is touched: a restore
+        // that got half the files would be worse than one that was refused.
+        let mut bodies = HashMap::new();
+        for entry in tree.files.values() {
+            if entry.kind != "text" || bodies.contains_key(&entry.sha) {
+                continue;
+            }
+            let raw = if point.tree {
+                self.blobs
+                    .get(&crate::blob::blob_key(&self.slug, &entry.sha))
+                    .await
+            } else {
+                // A checkpoint from before directories is its own text.
+                self.blobs
+                    .get(&checkpoint_key(&self.slug, point.sha.as_str()))
+                    .await
+            }
+            .map_err(|err| err.to_string())?;
+            bodies.insert(entry.sha.clone(), String::from_utf8_lossy(&raw).to_string());
+        }
+        let mut state = self.state.lock().await;
+        let before = session::encode_vector(&state.session.doc);
+        session::restore(&state.session.doc, &tree, &bodies);
+        state.session.dirty = true;
+        state.session.updated_at = now_unix();
+        Ok(session::encode_diff(&state.session.doc, &before)
+            .unwrap_or_else(|_| session::encode_state(&state.session.doc)))
     }
 
     /// The most this document's session and history may occupy before it
@@ -1414,13 +1670,204 @@ impl Room {
         let Some(store) = self.store.get() else {
             return;
         };
-        let format = self.state.lock().await.session.format.clone();
-        if let Err(err) = store.record_history(&self.slug, sha, size, &format).await {
+        let (format, main) = {
+            let state = self.state.lock().await;
+            (
+                state.session.format.clone(),
+                session::main_path(&state.session.doc),
+            )
+        };
+        if let Err(err) = store
+            .record_history(&self.slug, sha, size, &format, &main)
+            .await
+        {
             eprintln!(
                 "warning: could not record the history of {}: {err}",
                 self.slug
             );
         }
+    }
+
+    /// The document's directory as a checkpoint would record it. What the
+    /// timeline reads, and what a test asks when it wants to know the name the
+    /// next checkpoint will have.
+    #[allow(dead_code)] // the timeline that reads it is step 6; the tests ask now
+    pub async fn tree(&self) -> crate::history::Tree {
+        let state = self.state.lock().await;
+        tree_of(&state.session.doc, &state.session.asset_sizes).0
+    }
+
+    /* ------------------------------------------------------------- assets */
+
+    /// What this document's figures come to, which is what `max_assets` bounds
+    /// and what the owner's quota is charged for.
+    pub async fn assets_bytes(&self) -> i64 {
+        self.state.lock().await.session.asset_sizes.values().sum()
+    }
+
+    /// Stores a figure and answers with its digest. The name is the client's
+    /// to give -- it sets `assets[path]` in the shared document afterwards --
+    /// and the bytes are the server's to keep.
+    ///
+    /// Bytes the document already has are not written again: the same figure
+    /// uploaded twice is one object, and the second upload costs a hash.
+    pub async fn put_asset(
+        &self,
+        body: Vec<u8>,
+        ceilings: (i64, i64),
+    ) -> Result<(String, i64), String> {
+        let (max_asset, max_assets) = ceilings;
+        let size = body.len() as i64;
+        if size == 0 {
+            return Err("that file is empty".into());
+        }
+        if size > max_asset {
+            return Err(format!(
+                "that figure is larger than the {} MB one file may be",
+                max_asset >> 20
+            ));
+        }
+        let sha = crate::store::digest_of_bytes(&body);
+        {
+            let state = self.state.lock().await;
+            if let Some(known) = state.session.asset_sizes.get(&sha) {
+                // Already here. Nothing is written and nothing is charged: the
+                // same bytes under the same name are the same object.
+                return Ok((sha, *known));
+            }
+            let held: i64 = state.session.asset_sizes.values().sum();
+            if held + size > max_assets {
+                return Err(format!(
+                    "this document has reached the {} MB it may keep in figures",
+                    max_assets >> 20
+                ));
+            }
+        }
+        if !self.hold().await {
+            return Err("this room is held by another server".into());
+        }
+        self.blobs
+            .put(
+                &crate::blob::asset_key(&self.slug, &sha),
+                body,
+                "application/octet-stream",
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        {
+            let mut state = self.state.lock().await;
+            state.session.asset_sizes.insert(sha.clone(), size);
+            state
+                .session
+                .asset_written_at
+                .insert(sha.clone(), now_unix());
+        }
+        // What the document costs has changed, and the index is what the
+        // quota is decided from.
+        self.record_size_now().await;
+        Ok((sha, size))
+    }
+
+    /// A figure's bytes, for whoever may read the document.
+    pub async fn read_asset(&self, sha: &str) -> Option<Vec<u8>> {
+        self.blobs
+            .get(&crate::blob::asset_key(&self.slug, sha))
+            .await
+            .ok()
+    }
+
+    /// Drops the figures nothing refers to any more: neither the live document
+    /// nor any checkpoint the manifest still holds.
+    ///
+    /// Run after the new tree and manifest are written, never before, so that
+    /// a crash leaves an object nothing names -- which costs storage and loses
+    /// nothing -- rather than a tree naming an object that is gone.
+    ///
+    /// An object younger than the grace period is kept whatever the document
+    /// says about it, because uploading a figure and naming it are two
+    /// requests and pruning between them would delete what somebody had just
+    /// uploaded.
+    async fn prune_assets(&self) {
+        let now = now_unix();
+        let grace = self.config.asset_grace;
+        let (live, trees, written_at) = {
+            let state = self.state.lock().await;
+            let live: std::collections::HashSet<String> = session::assets_of(&state.session.doc)
+                .into_values()
+                .collect();
+            let trees: Vec<Checkpoint> = state.manifest.checkpoints.clone();
+            (live, trees, state.session.asset_written_at.clone())
+        };
+        // Every digest any surviving checkpoint names. A restore has to find
+        // its figures where the tree says they are.
+        let mut kept = live;
+        for point in &trees {
+            if !point.tree {
+                continue; // a checkpoint from before directories names none
+            }
+            let (path, id) = {
+                let state = self.state.lock().await;
+                (
+                    session::main_path(&state.session.doc),
+                    session::main_id(&state.session.doc),
+                )
+            };
+            if let Ok(tree) =
+                crate::history::load_tree(self.blobs.as_ref(), &self.slug, point, &path, &id).await
+            {
+                for entry in tree.files.values() {
+                    if entry.kind == "asset" {
+                        kept.insert(entry.sha.clone());
+                    }
+                }
+            }
+        }
+        let Ok(found) = self
+            .blobs
+            .list(&crate::blob::asset_prefix(&self.slug))
+            .await
+        else {
+            return;
+        };
+        let mut gone = Vec::new();
+        for object in found {
+            let Some(sha) = object.key.rsplit('/').next() else {
+                continue;
+            };
+            if kept.contains(sha) {
+                continue;
+            }
+            if written_at.get(sha).is_some_and(|at| now - at < grace) {
+                continue;
+            }
+            gone.push((object.key.clone(), sha.to_string()));
+        }
+        if gone.is_empty() {
+            return;
+        }
+        let keys: Vec<String> = gone.iter().map(|(key, _)| key.clone()).collect();
+        if self.blobs.delete(&keys).await.is_ok() {
+            let mut state = self.state.lock().await;
+            for (_, sha) in gone {
+                state.session.asset_sizes.remove(&sha);
+                state.session.asset_written_at.remove(&sha);
+            }
+        }
+    }
+
+    /// Records what this document costs as it stands, without a checkpoint:
+    /// what an asset upload changes.
+    async fn record_size_now(&self) {
+        let (session_size, history) = {
+            let state = self.state.lock().await;
+            (
+                session::encode_state(&state.session.doc).len() as i64,
+                state.manifest.bytes(),
+            )
+        };
+        let assets = self.assets_bytes().await;
+        self.record_size(session_size + history + assets, None)
+            .await;
     }
 
     /// The manifest, for the timeline and for the tests.
@@ -1478,6 +1925,74 @@ impl Room {
     pub async fn editors(&self) -> usize {
         self.state.lock().await.sockets.len()
     }
+}
+
+/// The document's directory as a checkpoint records it, and the bytes of each
+/// text by digest -- which is what the blobs are written from, so that two
+/// files with the same contents are one object and a file that did not change
+/// is not written again.
+pub fn tree_of(
+    doc: &yrs::Doc,
+    asset_sizes: &HashMap<String, i64>,
+) -> (crate::history::Tree, HashMap<String, String>) {
+    use crate::history::{Tree, TreeEntry};
+    let ids = session::paths_of(doc);
+    let mut by_path: HashMap<String, String> = HashMap::new();
+    for (id, path) in &ids {
+        by_path.insert(path.clone(), id.clone());
+    }
+    let mut files = std::collections::BTreeMap::new();
+    let mut bodies = HashMap::new();
+    for (path, body) in session::texts_of(doc) {
+        let sha = crate::store::digest_of(&body);
+        files.insert(
+            path.clone(),
+            TreeEntry {
+                kind: "text".to_string(),
+                id: by_path.get(&path).cloned().unwrap_or_default(),
+                sha: sha.clone(),
+                size: body.len() as i64,
+            },
+        );
+        bodies.insert(sha, body);
+    }
+    for (path, sha) in session::assets_of(doc) {
+        files.insert(
+            path,
+            TreeEntry {
+                kind: "asset".to_string(),
+                id: String::new(),
+                // What a figure costs is known where its bytes are, not in the
+                // shared document, which carries only its name and digest.
+                size: asset_sizes.get(&sha).copied().unwrap_or(0),
+                sha,
+            },
+        );
+    }
+    (
+        Tree {
+            main: session::main_path(doc),
+            files,
+        },
+        bodies,
+    )
+}
+
+/// What to call the one file a migrated document turns out to have. The index
+/// entry's own `main` if it has one; otherwise the name its format implies,
+/// which is what every document published before directories was called on
+/// the laptop it came from.
+pub fn main_path_for(named: &str, format: &str) -> String {
+    if !named.is_empty() {
+        return named.to_string();
+    }
+    match format {
+        "typst" => "main.typ",
+        "markdown" => "main.md",
+        "html" => "main.html",
+        _ => "main.txt",
+    }
+    .to_string()
 }
 
 /// Base64, which is how a binary update travels on a JSON socket.

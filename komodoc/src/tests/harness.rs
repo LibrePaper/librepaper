@@ -651,3 +651,27 @@ pub async fn test_server_checking(
     let TestServerParts { instance, dir } = parts;
     serve_instance(Arc::new(instance), dir).await
 }
+
+/// The words one checkpoint holds, whichever shape it is in.
+///
+/// A checkpoint is a tree: an object naming every path and the digest of what
+/// was at it, with each text beside it under `history/<slug>/blobs/<digest>`.
+/// A checkpoint written before a document was a directory is the text itself,
+/// and reads back that way here -- which is the same allowance the timeline
+/// makes, so a test that asks "what did this checkpoint say" gets an answer
+/// across the change rather than one shape of it.
+pub async fn checkpoint_text(blobs: &dyn crate::blob::BlobStore, slug: &str, sha: &str) -> String {
+    let raw = blobs
+        .get(&crate::blob::checkpoint_key(slug, sha))
+        .await
+        .expect("the checkpoint object");
+    let Ok(tree) = serde_json::from_slice::<crate::history::Tree>(&raw) else {
+        return String::from_utf8_lossy(&raw).to_string();
+    };
+    let entry = tree.files.get(&tree.main).expect("the main file");
+    let body = blobs
+        .get(&crate::blob::blob_key(slug, &entry.sha))
+        .await
+        .expect("the text the tree names");
+    String::from_utf8_lossy(&body).to_string()
+}

@@ -139,6 +139,62 @@ impl Browser {
             .collect()
     }
 
+    /* ------------------------------------------------------- the directory */
+
+    /// Makes a file: a `Y.Text` inside the `files` map under `file`, with its
+    /// path beside it. `file` is an id, never a path.
+    pub fn make_file(&mut self, id: &str, file: &str, path: &str, body: &str) {
+        self.call(json!({"op": "make_file", "id": id, "file": file, "path": path, "body": body}));
+    }
+
+    pub fn file_insert(&mut self, id: &str, file: &str, index: u32, text: &str) {
+        self.call(
+            json!({"op": "file_insert", "id": id, "file": file, "index": index, "text": text}),
+        );
+    }
+
+    pub fn file_delete(&mut self, id: &str, file: &str, index: u32, length: u32) {
+        self.call(
+            json!({"op": "file_delete", "id": id, "file": file, "index": index, "length": length}),
+        );
+    }
+
+    /// The text at an id, or None when this peer has no such file.
+    pub fn file_text(&mut self, id: &str, file: &str) -> Option<String> {
+        self.call(json!({"op": "file_text", "id": id, "file": file}))["text"]
+            .as_str()
+            .map(str::to_string)
+    }
+
+    /// The length Yjs reports for one file, in UTF-16 code units.
+    pub fn file_length(&mut self, id: &str, file: &str) -> u32 {
+        self.call(json!({"op": "file_length", "id": id, "file": file}))["length"]
+            .as_u64()
+            .unwrap() as u32
+    }
+
+    pub fn rename(&mut self, id: &str, file: &str, path: &str) {
+        self.call(json!({"op": "rename", "id": id, "file": file, "path": path}));
+    }
+
+    pub fn remove_file(&mut self, id: &str, file: &str) {
+        self.call(json!({"op": "remove_file", "id": id, "file": file}));
+    }
+
+    pub fn set_asset(&mut self, id: &str, path: &str, sha: &str) {
+        self.call(json!({"op": "set_asset", "id": id, "path": path, "sha": sha}));
+    }
+
+    pub fn set_main(&mut self, id: &str, file: &str) {
+        self.call(json!({"op": "set_main", "id": id, "file": file}));
+    }
+
+    /// The whole directory as this peer holds it: paths by id, texts by id,
+    /// assets by path, and the main file's id.
+    pub fn tree(&mut self, id: &str) -> Value {
+        self.call(json!({"op": "tree", "id": id}))
+    }
+
     pub fn awareness(&mut self, id: &str, name: &str) -> Vec<u8> {
         decode(&self.call(json!({"op": "awareness", "id": id, "name": name}))["update"])
     }
@@ -432,4 +488,230 @@ fn a_restart_keeps_what_was_persisted_and_takes_what_was_missed() {
     let mine = browser.vector("a");
     browser.apply("a", &server_state(&doc, Some(&mine)));
     assert_eq!(browser.text("a"), server_text(&doc));
+}
+
+/* ------------------------------------------------- the directory, both ways */
+
+/// A map of texts is a shape the two implementations have to agree about on
+/// its own. An update that *creates* a nested type is not an update that edits
+/// one: yrs has to read the text Yjs put inside a map as a text, and Yjs has
+/// to read the one yrs put there. Everything a document is now rests on that,
+/// so it is tested rather than assumed.
+#[test]
+fn a_map_of_texts_travels_from_the_browser_to_the_server() {
+    needs_browser!();
+    let mut browser = Browser::start();
+    let doc = server_doc();
+
+    browser.make_file("a", "f1", "main.tex", "\\input{chapters/03}\n");
+    browser.make_file("a", "f2", "chapters/03.tex", "The third chapter.\n");
+    browser.set_main("a", "f1");
+    for update in browser.outbox("a") {
+        server_apply(&doc, &update);
+    }
+
+    let texts = session::texts_of(&doc);
+    assert_eq!(texts.len(), 2, "the server sees {texts:?}");
+    assert_eq!(texts["main.tex"], "\\input{chapters/03}\n");
+    assert_eq!(texts["chapters/03.tex"], "The third chapter.\n");
+    assert_eq!(session::main_path(&doc), "main.tex");
+    // And the main file is the one the server reads as "the source", which is
+    // what every renderer and every checkpoint is given.
+    assert_eq!(server_text(&doc), "\\input{chapters/03}\n");
+}
+
+#[test]
+fn a_map_of_texts_travels_from_the_server_to_the_browser() {
+    needs_browser!();
+    let mut browser = Browser::start();
+    let doc = server_doc();
+    let main = session::put_text(&doc, "main.typ", "= A paper\n");
+    session::put_text(&doc, "refs.bib", "@book{a,title={A}}\n");
+    session::set_main(&doc, &main);
+
+    browser.apply("b", &server_state(&doc, None));
+    let tree = browser.tree("b");
+    let texts = &tree["texts"];
+    assert_eq!(texts[&main], "= A paper\n");
+    assert_eq!(tree["paths"][&main], "main.typ");
+    assert_eq!(tree["main"], main);
+    // The browser reads the main file as its text, which is what the editor
+    // binds to and what the preview renders.
+    assert_eq!(browser.text("b"), "= A paper\n");
+}
+
+/// Two peers typing in one file inside the map converge, and typing in two
+/// different files never meets at all -- which is the whole reason the files
+/// are separate texts rather than one text with markers in it.
+#[test]
+fn edits_inside_two_files_do_not_meet() {
+    needs_browser!();
+    let mut browser = Browser::start();
+    let doc = server_doc();
+    let main = session::put_text(&doc, "main.tex", "main\n");
+    let chapter = session::put_text(&doc, "chapters/03.tex", "chapter\n");
+    session::set_main(&doc, &main);
+    let state = server_state(&doc, None);
+    browser.apply("one", &state);
+    browser.apply("two", &state);
+
+    // One peer types in the main file, the other in the chapter, at the same
+    // offset. Neither lands in the other's file.
+    browser.file_insert("one", &main, 0, "A: ");
+    browser.file_insert("two", &chapter, 0, "B: ");
+    for update in browser.outbox("one") {
+        server_apply(&doc, &update);
+    }
+    for update in browser.outbox("two") {
+        server_apply(&doc, &update);
+    }
+
+    let texts = session::texts_of(&doc);
+    assert_eq!(texts["main.tex"], "A: main\n");
+    assert_eq!(texts["chapters/03.tex"], "B: chapter\n");
+
+    // A deletion inside one file is a change like any other, and reaches only
+    // that file: a delete that leaked across would show as words vanishing out
+    // of a chapter nobody had open.
+    browser.file_delete("one", &main, 0, 3);
+    for update in browser.outbox("one") {
+        server_apply(&doc, &update);
+    }
+    let texts = session::texts_of(&doc);
+    assert_eq!(texts["main.tex"], "main\n");
+    assert_eq!(texts["chapters/03.tex"], "B: chapter\n");
+}
+
+/// A rename moves a name and leaves the words alone. This is the whole reason
+/// texts are keyed by an id: a keystroke made into the file at the moment it
+/// is renamed lands in the text it was always going to land in, rather than
+/// in a text no key reaches.
+#[test]
+fn a_rename_keeps_the_text_and_the_keystrokes_made_during_it() {
+    needs_browser!();
+    let mut browser = Browser::start();
+    let doc = server_doc();
+    let id = session::put_text(&doc, "draft.md", "words\n");
+    session::set_main(&doc, &id);
+    browser.apply("one", &server_state(&doc, None));
+
+    // One peer renames while the other types into the file being renamed.
+    browser.rename("one", &id, "final.md");
+    browser.file_insert("one", &id, 5, " and more");
+    for update in browser.outbox("one") {
+        server_apply(&doc, &update);
+    }
+
+    let texts = session::texts_of(&doc);
+    assert_eq!(texts.len(), 1);
+    assert_eq!(
+        texts["final.md"], "words and more\n",
+        "the keystroke should have landed in the renamed file"
+    );
+}
+
+/// Positions inside a mapped text are UTF-16 code units on both sides, the
+/// same as they were when a document was one text. A text inside a map is
+/// still a text, and the offset arithmetic must not have quietly changed with
+/// the container.
+#[test]
+fn positions_inside_a_mapped_text_are_utf16_code_units() {
+    needs_browser!();
+    let mut browser = Browser::start();
+    let doc = server_doc();
+
+    // An astral character is two code units in a browser and one scalar in
+    // Rust: an index past it is where the two implementations disagree if
+    // anything does.
+    browser.make_file("a", "f1", "notes.md", "e\u{301}\u{1F600}x");
+    browser.set_main("a", "f1");
+    for update in browser.outbox("a") {
+        server_apply(&doc, &update);
+    }
+    assert_eq!(browser.file_length("a", "f1"), 5);
+
+    // The server inserts at the end, counting the way the browser counts.
+    let inserted = {
+        let scratch = server_doc();
+        server_apply(&scratch, &server_state(&doc, None));
+        let before = server_vector(&scratch);
+        session::put_text(&scratch, "notes.md", "e\u{301}\u{1F600}x!");
+        server_state(&scratch, Some(&before))
+    };
+    browser.apply("a", &inserted);
+    // Decomposed, exactly as it was written. Paths are normalised to NFC
+    // because two spellings of one filename are one file on a disk; a
+    // document's *words* are not, because what somebody typed is what they
+    // meant and no layer here is entitled to respell it.
+    assert_eq!(
+        browser.file_text("a", "f1").as_deref(),
+        Some("e\u{301}\u{1F600}x!")
+    );
+}
+
+/// A browser still running the bundle from before the deploy writes to the
+/// retired `source` text. What it wrote is folded into the main file and its
+/// socket stays open: closing it would lose the rest of what that person is
+/// typing, and they have done nothing wrong.
+#[test]
+fn what_a_browser_on_the_old_bundle_writes_is_not_lost() {
+    needs_browser!();
+    let mut browser = Browser::start();
+    let doc = server_doc();
+    let id = session::put_text(&doc, "main.md", "the server's copy\n");
+    session::set_main(&doc, &id);
+
+    // The old bundle has no maps at all, so it writes where it was taught to.
+    // `text` on a peer that has never seen the directory is the retired text.
+    browser.insert("old", 0, "typed on the old bundle\n");
+    for update in browser.outbox("old") {
+        server_apply(&doc, &update);
+    }
+    let done = session::repair(&doc, &crate::config::Configuration::default().paths());
+    assert!(done.contains(&session::Repair::Folded), "{done:?}");
+    assert_eq!(session::text_of(&doc), "typed on the old bundle\n");
+
+    // And the correction reaches that browser, which then sees one document
+    // rather than two halves of one.
+    browser.apply("old", &server_state(&doc, None));
+    assert_eq!(browser.text("old"), "typed on the old bundle\n");
+}
+
+/// An asset is a path and a digest in the shared document, and nothing else:
+/// the bytes never enter the CRDT. Both sides have to read that map the same
+/// way, since it is what says which figure sits where.
+#[test]
+fn the_asset_map_travels() {
+    needs_browser!();
+    let mut browser = Browser::start();
+    let doc = server_doc();
+    let id = session::put_text(&doc, "main.typ", "#image(\"fig/one.png\")\n");
+    session::set_main(&doc, &id);
+
+    browser.apply("b", &server_state(&doc, None));
+    browser.set_asset("b", "fig/one.png", "c41e9a0");
+    for update in browser.outbox("b") {
+        server_apply(&doc, &update);
+    }
+    assert_eq!(session::assets_of(&doc)["fig/one.png"], "c41e9a0");
+}
+
+/// Deleting a file takes its text and its name together, on both sides.
+#[test]
+fn a_deleted_file_is_gone_on_both_sides() {
+    needs_browser!();
+    let mut browser = Browser::start();
+    let doc = server_doc();
+    let main = session::put_text(&doc, "main.tex", "main\n");
+    let gone = session::put_text(&doc, "scratch.tex", "temporary\n");
+    session::set_main(&doc, &main);
+    browser.apply("b", &server_state(&doc, None));
+
+    browser.remove_file("b", &gone);
+    for update in browser.outbox("b") {
+        server_apply(&doc, &update);
+    }
+    let texts = session::texts_of(&doc);
+    assert_eq!(texts.len(), 1);
+    assert!(texts.contains_key("main.tex"));
 }

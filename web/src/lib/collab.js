@@ -42,6 +42,15 @@ const decode = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
 // so a person keeps the same colour for as long as they are in it.
 const COLOURS = ["#2f5bd0", "#c2410c", "#15803d", "#7c3aed", "#be123c", "#0e7490"];
 
+// An id for a file: twelve hex characters, which is what `session.rs` mints
+// and enough randomness that two people creating a file at the same instant
+// do not collide.
+function mintId() {
+  const bytes = new Uint8Array(6);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /// Joins the document's session. `send` puts a message on the room's socket;
 /// `onPeers` is told how many people are in it; `onState` is told whenever the
 /// answer to "is this browser's work safe" changes.
@@ -50,8 +59,56 @@ const COLOURS = ["#2f5bd0", "#c2410c", "#15803d", "#7c3aed", "#be123c", "#0e7490
 /// change it.
 export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
   const doc = new Y.Doc();
-  const text = doc.getText("source");
+  // A document is a directory: `files` holds one Y.Text per file under an id
+  // of its own, `paths` says what each of them is called, and `meta.main`
+  // names the one the renderer is run on. Keying the texts by id rather than
+  // by path is what makes a rename free -- the name moves and the text stays
+  // where it is, so a keystroke made during a rename lands where it was always
+  // going to land.
+  const files = doc.getMap("files");
+  const paths = doc.getMap("paths");
+  // Path to digest. An asset's bytes are never in the shared document -- they
+  // are in the store, under their own digest -- so what travels here is the
+  // name somebody gave it and what is at that name.
+  const assets = doc.getMap("assets");
+  const meta = doc.getMap("meta");
+  // The text every document was before it was a directory. It is read here and
+  // never written: a session the server has not migrated yet arrives with the
+  // maps empty and this full, and the editor has to show something. The server
+  // migrates it the first time it loads it, and what this browser then sees is
+  // the same words under a name.
+  const legacy = doc.getText("source");
   const awareness = new Awareness(doc);
+
+  // The text the editor and the preview are following, and who is following
+  // it. Which text that is can change under them -- when the maps arrive from
+  // the server, or when somebody names a different main file -- so the
+  // watchers are held here and moved across rather than re-registered by every
+  // caller.
+  let bound = null;
+  const watchers = new Set();
+  const swaps = new Set();
+
+  function mainText() {
+    const id = meta.get("main");
+    const text = id ? files.get(id) : null;
+    return text instanceof Y.Text ? text : legacy;
+  }
+
+  function rebind() {
+    const next = mainText();
+    if (next === bound) return;
+    for (const watcher of watchers) {
+      bound?.unobserve(watcher);
+      next.observe(watcher);
+    }
+    bound = next;
+    for (const swap of swaps) swap();
+  }
+
+  files.observe(rebind);
+  meta.observe(rebind);
+  rebind();
 
   // Updates this browser has made and the server has not yet said are durable,
   // by the number they were sent under.
@@ -127,10 +184,170 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
 
   return {
     doc,
-    text,
+    files,
+    paths,
+    meta,
     awareness,
+    /// The main file's text as it stands. A getter rather than a field,
+    /// because which text that is is not known until the session arrives.
+    get text() {
+      return bound;
+    },
     get joined() {
       return joined;
+    },
+
+    /// The path the main file is known by, which is what its format is read
+    /// from. Empty until the maps arrive.
+    mainPath() {
+      const id = meta.get("main");
+      return (id && paths.get(id)) || "";
+    },
+
+    /// The main file's id, which is what the editor opens on and what a
+    /// diagnostic with no file of its own belongs to.
+    mainId() {
+      return meta.get("main") || "";
+    },
+
+    /// Follows the main file's text, across the text itself being swapped for
+    /// another -- which happens once on every document migrated from before
+    /// there were directories, and again whenever somebody names a different
+    /// main file.
+    watchSource(watcher) {
+      watchers.add(watcher);
+      bound?.observe(watcher);
+    },
+
+    /* --------------------------------------------------------- the directory */
+
+    /// Every file in the document: its id, its path, and whether it is the
+    /// main one. Sorted with the main file first and the rest by path, which
+    /// is the order the file list shows and the order a person reads a paper
+    /// in.
+    list() {
+      const id = meta.get("main");
+      const texts = [...paths.entries()]
+        .filter(([file]) => files.get(file) instanceof Y.Text)
+        .map(([file, path]) => ({ id: file, path, kind: "text", main: file === id }));
+      const figures = [...assets.entries()].map(([path, sha]) => ({
+        id: path,
+        path,
+        sha,
+        kind: "asset",
+        main: false,
+      }));
+      return [...texts, ...figures].sort((a, b) => {
+        if (a.main !== b.main) return a.main ? -1 : 1;
+        return a.path.localeCompare(b.path);
+      });
+    },
+
+    /// The whole directory as a renderer takes it. Assets are the digests
+    /// only: their bytes are not in the shared document, and whoever renders
+    /// fetches them.
+    tree() {
+      const texts = {};
+      for (const [file, text] of files.entries()) {
+        const path = paths.get(file);
+        if (path && text instanceof Y.Text) texts[path] = text.toString();
+      }
+      const digests = {};
+      for (const [path, sha] of assets.entries()) digests[path] = sha;
+      return { main: this.mainPath(), texts, digests };
+    },
+
+    /// The text at a path, for the caller that has a path and not an id --
+    /// which is what a diagnostic carries.
+    idOf(path) {
+      for (const [file, at] of paths.entries()) if (at === path) return file;
+      return "";
+    },
+
+    textOf(id) {
+      const text = files.get(id);
+      return text instanceof Y.Text ? text : null;
+    },
+
+    /// Makes a file. One transaction, so no peer ever sees a text without the
+    /// name it is known by.
+    addText(path, body = "") {
+      const id = mintId();
+      doc.transact(() => {
+        files.set(id, new Y.Text(body));
+        paths.set(id, path);
+      });
+      return id;
+    },
+
+    /// Renames a file, which moves a string and leaves the words where they
+    /// are. This is why the texts are keyed by an id: somebody typing into
+    /// this file at this moment keeps what they typed.
+    renameFile(id, path) {
+      paths.set(id, path);
+    },
+
+    /// Removes a file, its name with it. The main file is never removed here;
+    /// the file list refuses it, because a document has to be something.
+    removeFile(id) {
+      doc.transact(() => {
+        files.delete(id);
+        paths.delete(id);
+      });
+    },
+
+    removeAsset(path) {
+      assets.delete(path);
+    },
+
+    putAsset(path, sha) {
+      assets.set(path, sha);
+    },
+
+    /// Names the main file: the one a renderer is run on, and the one the
+    /// document's format is read from.
+    setMain(id) {
+      meta.set("main", id);
+    },
+
+    /// Called whenever the directory changes -- a file added, renamed,
+    /// removed, or made the main one -- so the list can be redrawn.
+    onFiles(watcher) {
+      files.observe(watcher);
+      paths.observe(watcher);
+      assets.observe(watcher);
+      meta.observe(watcher);
+    },
+
+    /// Says which file this browser's caret is in, so the file list can show
+    /// who is where. The caret's own position is published by y-codemirror
+    /// against the text it was made in, so it already paints in the right
+    /// file; this is for the list.
+    inFile(id) {
+      awareness.setLocalStateField("file", id);
+    },
+
+    /// Who is in which file: an id to the initials of the people in it.
+    whereEveryoneIs() {
+      const by = new Map();
+      for (const [client, state] of awareness.getStates()) {
+        if (client === doc.clientID || !state?.file) continue;
+        const name = state?.user?.name || "?";
+        const initials = name
+          .split(/\s+/)
+          .filter(Boolean)
+          .slice(0, 2)
+          .map((word) => word[0].toUpperCase())
+          .join("");
+        by.set(state.file, [...(by.get(state.file) || []), initials]);
+      }
+      return by;
+    },
+
+    /// Called when the text being followed is a different text, so whoever is
+    /// bound to it can bind again.
+    onSwap(swap) {
+      swaps.add(swap);
     },
 
     /// What to send to join, or to rejoin: what this browser already has, so
@@ -185,7 +402,7 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
     },
 
     text_() {
-      return text.toString();
+      return bound ? bound.toString() : "";
     },
 
     /// Says who this is, for the label on their caret.

@@ -331,7 +331,7 @@ async fn a_reader_receives_the_document_and_cannot_change_it() {
 async fn concurrent_updates_cannot_pass_the_size_limit() {
     needs_browser!();
     let config = Configuration {
-        max_html: 2048,
+        max_document: 2048,
         ..Configuration::default()
     };
     let server = test_server_with(
@@ -440,11 +440,24 @@ async fn a_manifest_missing_its_newest_entry_is_repaired() {
     let lost = "# My Paper\n\nThe checkpoint the manifest never heard of.\n";
     room.set_source(lost, "markdown").await;
     blobs.refuse_writes_to(&history_index_key(&slug));
+    // The name a checkpoint of this document would have, which is the digest
+    // of its tree rather than of its text: a checkpoint is the whole
+    // directory, and the text sits beside it under its own digest.
+    let lost_sha = room.tree().await.digest();
     assert!(room.checkpoint("quiet", "vincent").await.is_err());
-    let lost_sha = crate::store::digest_of(lost);
     assert!(
         blobs.get(&checkpoint_key(&slug, &lost_sha)).await.is_ok(),
         "the checkpoint object was never written"
+    );
+    assert!(
+        blobs
+            .get(&crate::blob::blob_key(
+                &slug,
+                &crate::store::digest_of(lost)
+            ))
+            .await
+            .is_ok(),
+        "the text the checkpoint names was never written"
     );
     assert!(
         !crate::history::load(blobs.as_ref(), &slug)
@@ -526,15 +539,9 @@ async fn a_comment_lands_on_a_checkpoint_that_contains_its_quotation() {
         .latest()
         .cloned()
         .expect("a checkpoint");
-    let bytes = server
-        .instance
-        .store
-        .blobs
-        .get(&checkpoint_key(&slug, &newest.sha))
-        .await
-        .expect("the checkpoint object");
+    let bytes = checkpoint_text(server.instance.store.blobs.as_ref(), &slug, &newest.sha).await;
     assert!(
-        String::from_utf8_lossy(&bytes).contains("a sentence to quote"),
+        bytes.contains("a sentence to quote"),
         "the comment's checkpoint does not contain what it quotes"
     );
     assert_eq!(newest.why, "comment");
@@ -838,11 +845,24 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
         .await
         .expect("a checkpoint")
         .expect("not deferred");
+    // The checkpoint is the tree, and the words are in the blob it names. A
+    // migrated document is a directory of one file, so what a reader of the
+    // history gets back is exactly what was published, one indirection along.
+    let tree: crate::history::Tree = serde_json::from_slice(
+        &instance
+            .store
+            .blobs
+            .get(&checkpoint_key(slug, &sha))
+            .await
+            .unwrap(),
+    )
+    .expect("the checkpoint is a tree");
+    assert_eq!(tree.main, "main.md");
     assert_eq!(
         instance
             .store
             .blobs
-            .get(&checkpoint_key(slug, &sha))
+            .get(&crate::blob::blob_key(slug, &tree.files[&tree.main].sha))
             .await
             .map(|raw| String::from_utf8_lossy(&raw).to_string())
             .unwrap(),
@@ -1163,7 +1183,7 @@ async fn a_refused_update_leaves_the_text_and_the_accepted_edits_alone() {
     let ceiling = 4096;
     let server = test_server_with(
         Configuration {
-            max_html: ceiling,
+            max_document: ceiling,
             ..Configuration::default()
         },
         crate::auth::Policy::parse(TEST_PUBLISHER),
@@ -1247,7 +1267,7 @@ async fn a_refused_update_is_still_refused_after_a_reconnect_and_a_restart() {
     needs_browser!();
     let ceiling = 4096;
     let config = Configuration {
-        max_html: ceiling,
+        max_document: ceiling,
         ..Configuration::default()
     };
     let server = test_server_with(
@@ -1329,7 +1349,7 @@ fn admission_costs_a_comparison_on_a_large_document() {
     // A realistic large source: a megabyte of prose, inserted the way an
     // import would arrive rather than character by character.
     let prose = "The quick brown fox jumps over the lazy dog. ".repeat(24_000);
-    crate::session::replace_text(&doc, &prose);
+    crate::session::replace_text(&doc, &prose, "main.md");
     let held = crate::session::text_of(&doc).len();
     assert!(held > 1_000_000, "the fixture is only {held} bytes");
 
@@ -1350,7 +1370,7 @@ fn admission_costs_a_comparison_on_a_large_document() {
     let started = std::time::Instant::now();
     for _ in 0..100 {
         assert_eq!(
-            crate::session::admit_update(&doc, &keystroke, ceiling),
+            crate::session::admit_update(&doc, &keystroke, ceiling, usize::MAX),
             crate::session::Admission::Fits
         );
     }
@@ -1372,7 +1392,7 @@ fn admission_costs_a_comparison_on_a_large_document() {
     };
     let started = std::time::Instant::now();
     assert_eq!(
-        crate::session::admit_update(&doc, &overreach, ceiling),
+        crate::session::admit_update(&doc, &overreach, ceiling, usize::MAX),
         crate::session::Admission::TooLarge
     );
     let rehearsed = started.elapsed();

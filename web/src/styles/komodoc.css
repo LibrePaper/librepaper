@@ -56,7 +56,94 @@ main.reader {
   min-height: 0;
   min-width: 0;
   display: grid;
+  /* The file list sits above the editor and takes only what it needs; the
+     editor takes the rest, which is what keeps a document of twelve files
+     from squeezing the text somebody is writing. */
+  grid-template-rows: auto minmax(0, 1fr);
   border-right: 1px solid var(--color-surface-200-800);
+}
+
+/* ------------------------------------------------------------- the files */
+
+/* The document is a directory, and this is it: paths shown as paths, main
+   file first, the rest sorted. No folder tree -- a paper has a dozen files,
+   and a tree is for hundreds. */
+.filelist {
+  border-bottom: 1px solid var(--color-surface-200-800);
+  font-size: var(--text-sm);
+}
+.filelist ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* Long enough for a paper, scrolling past that rather than pushing the
+     editor off the bottom of the pane. */
+  max-height: --spacing(48);
+  overflow-y: auto;
+}
+.filelist li {
+  display: flex;
+  align-items: center;
+  gap: --spacing(2);
+  padding-inline: --spacing(3);
+}
+.filelist li.open {
+  background: var(--color-surface-100-900);
+}
+.filelist .path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  padding-block: --spacing(1);
+  cursor: pointer;
+}
+/* The main file is the document; the rest are its parts. */
+.filelist li.mainfile .path {
+  font-weight: 600;
+}
+.filelist .who {
+  color: var(--color-surface-600-400);
+  font-variant: all-small-caps;
+}
+/* The tools appear on the row being pointed at or edited, so twelve files
+   are a list and not a wall of buttons. They stay for a keyboard, which
+   reaches them by focus and never by hover. */
+.filelist .filetools {
+  display: flex;
+  visibility: hidden;
+}
+.filelist li:hover .filetools,
+.filelist li:focus-within .filetools {
+  visibility: visible;
+}
+.filelist .name {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding-block: --spacing(1);
+  border: 0;
+  border-bottom: 1px solid var(--color-primary-500);
+  background: none;
+  color: inherit;
+}
+.filelist .addfile {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: --spacing(1) --spacing(3);
+  color: var(--color-surface-600-400);
+  cursor: pointer;
+}
+.filelist .addfile:hover {
+  color: inherit;
+}
+.filelist .refusal {
+  margin: 0;
+  padding: --spacing(1) --spacing(3);
+  color: var(--color-error-500);
 }
 .viewport {
   flex: 1 1 auto;
@@ -438,4 +525,36 @@ main.reader.source-right .sidebar {
 .grip-aside svg {
   width: --spacing(3);
   height: --spacing(3);
+}
+
+/* A figure, where the editor would be. An image is shown as itself and a PDF
+   through the browser's own viewer, which gives the first page without this
+   application carrying a PDF renderer of its own. */
+.figureview {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  overflow: auto;
+  padding: --spacing(4);
+  background: var(--color-surface-100-900);
+}
+.figureview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.figureview object {
+  width: 100%;
+  height: 100%;
+  min-height: --spacing(96);
+  border: 0;
+}
+
+/* The two ways to add to a directory, side by side: a text is named, a figure
+   is chosen from a disk. */
+.filelist .filetools-row {
+  display: flex;
+}
+.filelist .chooser {
+  display: none;
 }

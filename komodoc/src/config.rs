@@ -7,7 +7,39 @@ use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Configuration {
-    pub max_html: usize,
+    /// The sum of every text in a document and of every key naming one. A
+    /// paper split into thirty files is allowed exactly what a paper in one
+    /// file is allowed, which is why this bounds the sum rather than each
+    /// text. It was `max_html` when a document was one text, and the shell
+    /// still reads it under that name.
+    #[serde(rename = "max_html")]
+    pub max_document: usize,
+    /// How many files one document may hold, across its texts and its assets.
+    /// A paper has a dozen; a directory of two hundred is somebody using a
+    /// document as a filesystem.
+    pub max_files: usize,
+    /// The longest one path may be, in bytes.
+    pub max_path: usize,
+    /// What the figures of one document may come to, and what one of them may
+    /// be. Assets are where the bytes of a paper actually go -- a directory of
+    /// figures is an order of magnitude larger than its text -- so they get
+    /// ceilings of their own beside `max_document` rather than sharing it, and
+    /// they count against the owner's quota like everything else stored.
+    pub max_assets: i64,
+    pub max_asset: i64,
+    /// How long an asset nothing refers to is kept before it is pruned. It
+    /// exists because uploading and naming are two requests: the bytes are
+    /// stored, and the digest is written into the shared document a moment
+    /// later. An asset pruned in that moment would be one somebody had just
+    /// successfully uploaded.
+    pub asset_grace: i64,
+    /// Which extensions name a file a person edits, which name bytes nobody
+    /// edits in place, and which name what a compiler wrote -- and a document
+    /// keeps what a person wrote. Rules rather than constants, so a deployment
+    /// can widen or narrow them without a build.
+    pub text_extensions: Vec<String>,
+    pub asset_extensions: Vec<String>,
+    pub derived_extensions: Vec<String>,
     pub max_comments: usize,
     pub rate_per_hour: i64,
     pub caps: CapLimit,
@@ -135,7 +167,54 @@ pub struct CapLimit {
 impl Default for Configuration {
     fn default() -> Self {
         Configuration {
-            max_html: 4 * 1024 * 1024,
+            max_document: 4 * 1024 * 1024,
+            max_files: 200,
+            max_path: 200,
+            max_assets: 32 * 1024 * 1024,
+            max_asset: 8 * 1024 * 1024,
+            asset_grace: 3600,
+            text_extensions: [
+                ".tex",
+                ".typ",
+                ".md",
+                ".markdown",
+                ".bib",
+                ".sty",
+                ".cls",
+                ".bst",
+                ".txt",
+                ".csv",
+                ".json",
+                ".yml",
+                ".yaml",
+                ".html",
+                ".css",
+            ]
+            .map(String::from)
+            .to_vec(),
+            asset_extensions: [
+                ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".pdf", ".otf", ".ttf", ".woff",
+                ".woff2",
+            ]
+            .map(String::from)
+            .to_vec(),
+            derived_extensions: [
+                ".aux",
+                ".bbl",
+                ".blg",
+                ".log",
+                ".out",
+                ".toc",
+                ".fls",
+                ".fdb_latexmk",
+                ".synctex.gz",
+                ".lof",
+                ".lot",
+                ".nav",
+                ".snm",
+            ]
+            .map(String::from)
+            .to_vec(),
             max_comments: 500,
             rate_per_hour: 20,
             storage: StorageLimit {
@@ -207,7 +286,27 @@ impl Configuration {
         if !(1..=100).contains(&megabytes) {
             return Err("--max-size must be between 1 and 100 MB".into());
         }
-        self.max_html = megabytes * 1024 * 1024;
+        self.max_document = megabytes * 1024 * 1024;
+        Ok(())
+    }
+
+    /// Overrides what the figures of one document may come to, in megabytes.
+    /// Zero leaves the default alone.
+    ///
+    /// Worth setting low on a deployment anybody may publish to. Figures are
+    /// where the bytes of a paper actually go, and while they count against
+    /// `--quota` like everything else, this is what stops one document from
+    /// spending a publisher's whole allowance on images.
+    pub fn set_max_assets(&mut self, megabytes: i64) -> Result<(), String> {
+        if megabytes == 0 {
+            return Ok(());
+        }
+        if !(1..=1024).contains(&megabytes) {
+            return Err("--max-assets must be between 1 and 1024 MB".into());
+        }
+        self.max_assets = megabytes * 1024 * 1024;
+        // One figure may never be more than all of them.
+        self.max_asset = self.max_asset.min(self.max_assets);
         Ok(())
     }
 
