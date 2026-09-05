@@ -1152,18 +1152,25 @@ impl Room {
     ///
     /// Returns the update to relay, which is what the sockets are sent.
     pub async fn set_source(&self, source: &str, format: &str) -> Vec<u8> {
+        self.set_main_file(source, format, "").await
+    }
+
+    /// The same, naming the main file. A directory publish knows what its
+    /// document is called; a one-file publish does not and takes the name its
+    /// format implies.
+    pub async fn set_main_file(&self, source: &str, format: &str, named: &str) -> Vec<u8> {
         let mut state = self.state.lock().await;
         let before = session::encode_vector(&state.session.doc);
         // What the main file is called, for the one case where there is not
         // one yet: a document being published for the first time. It follows
         // from what the document is written in, which is the same name the
         // migration gives a document that predates directories.
-        let named = if format.is_empty() {
+        let implied = if format.is_empty() {
             state.session.format.clone()
         } else {
             format.to_string()
         };
-        session::replace_text(&state.session.doc, source, &main_path_for("", &named));
+        session::replace_text(&state.session.doc, source, &main_path_for(named, &implied));
         if !format.is_empty() {
             state.session.format = format.to_string();
         }
@@ -1695,6 +1702,24 @@ impl Room {
     pub async fn tree(&self) -> crate::history::Tree {
         let state = self.state.lock().await;
         tree_of(&state.session.doc, &state.session.asset_sizes).0
+    }
+
+    /// Puts a text at a path in the document, beside whatever is already
+    /// there. What a directory publish adds each of its chapters with.
+    pub async fn add_text(&self, path: &str, body: &str) {
+        let mut state = self.state.lock().await;
+        session::put_text(&state.session.doc, path, body);
+        state.session.dirty = true;
+        state.session.updated_at = now_unix();
+    }
+
+    /// Names a figure in the document, at a path. The bytes are already in the
+    /// store; this is what makes them a figure of this document.
+    pub async fn name_asset(&self, path: &str, sha: &str) {
+        let mut state = self.state.lock().await;
+        session::put_asset(&state.session.doc, path, sha);
+        state.session.dirty = true;
+        state.session.updated_at = now_unix();
     }
 
     /* ------------------------------------------------------------- assets */

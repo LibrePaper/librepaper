@@ -511,3 +511,159 @@ fn a_restore_of_a_one_file_tree_reaches_a_directory() {
     assert_eq!(session::text_of(&doc), "then\n");
     assert_eq!(session::main_path(&doc), "main.typ");
 }
+
+/* ------------------------------------------------------- publishing a directory */
+
+/// A directory on disk, for the walk to find things in.
+fn scratch(files: &[(&str, &[u8])]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (at, bytes) in files {
+        let path = dir.path().join(at);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(&path, bytes).expect("write");
+    }
+    dir
+}
+
+#[test]
+fn the_walk_leaves_behind_what_is_not_part_of_a_document() {
+    let dir = scratch(&[
+        ("main.typ", b"= A paper\n"),
+        ("chapters/03.typ", b"third\n"),
+        ("refs.bib", b"@book{a}\n"),
+        ("fig/one.png", b"\x89PNG"),
+        // The output of the document itself, which a compiler wrote.
+        ("main.pdf", b"%PDF-1.4"),
+        // A dotfile, and a file inside a dot directory.
+        (".env", b"SECRET=1\n"),
+        (".git/config", b"[core]\n"),
+    ]);
+    let found = crate::cli::files_under(dir.path(), "main", &|_| false);
+    assert_eq!(
+        found,
+        vec![
+            "chapters/03.typ".to_string(),
+            "fig/one.png".to_string(),
+            "main.typ".to_string(),
+            "refs.bib".to_string(),
+        ],
+        "the walk kept something it should not have, or dropped something it should not"
+    );
+}
+
+#[test]
+fn the_walk_skips_what_git_ignores() {
+    let dir = scratch(&[
+        ("main.typ", b"= A paper\n"),
+        ("scratch.txt", b"working notes\n"),
+    ]);
+    // A real working tree, because what is ignored is asked of git rather than
+    // worked out from the file: precedence, nesting and the global config are
+    // git's own, and reimplementing them is a way to disagree with it.
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .output()
+    };
+    if git(&["init", "-q"]).is_err() {
+        eprintln!("skipping: no git on this machine");
+        return;
+    }
+    std::fs::write(dir.path().join(".gitignore"), "scratch.txt\n").unwrap();
+
+    let found = crate::cli::files_under(dir.path(), "main", &crate::cli::git_ignores(dir.path()));
+    assert_eq!(found, vec!["main.typ".to_string()], "{found:?}");
+}
+
+#[test]
+fn which_file_is_the_document() {
+    // The only text at the top level whose extension is a format this renders.
+    let one = vec![
+        "chapters/03.typ".to_string(),
+        "main.typ".to_string(),
+        "refs.bib".to_string(),
+    ];
+    assert_eq!(crate::cli::main_file(&one, "").unwrap(), "main.typ");
+
+    // Two candidates and neither called `main`: a refusal that lists them,
+    // because guessing wrong here publishes the wrong document.
+    let several = vec!["paper.typ".to_string(), "notes.md".to_string()];
+    let refused = crate::cli::main_file(&several, "").unwrap_err();
+    assert!(refused.contains("--main"), "{refused}");
+    assert!(
+        refused.contains("paper.typ") && refused.contains("notes.md"),
+        "{refused}"
+    );
+
+    // Unless one of them is called `main`, which is what an author means by it.
+    let named = vec!["paper.typ".to_string(), "main.typ".to_string()];
+    assert_eq!(crate::cli::main_file(&named, "").unwrap(), "main.typ");
+
+    // Asked for by name, and refused when it is not there.
+    assert_eq!(
+        crate::cli::main_file(&several, "notes.md").unwrap(),
+        "notes.md"
+    );
+    assert!(crate::cli::main_file(&several, "absent.typ").is_err());
+
+    // A directory with nothing that could be a document.
+    let none = vec!["refs.bib".to_string(), "fig/one.png".to_string()];
+    assert!(crate::cli::main_file(&none, "")
+        .unwrap_err()
+        .contains("no document"));
+}
+
+#[test]
+fn a_compile_says_which_siblings_it_read() {
+    // This is what lets `publish <file>` warn that the document it just
+    // compiled will not compile for a reader: it read files that are not
+    // being sent.
+    let dir = scratch(&[
+        ("main.typ", b"#import \"lib.typ\": word\n= T\n#word\n"),
+        ("lib.typ", b"#let word = \"sibling\"\n"),
+    ]);
+    let main = dir.path().join("main.typ");
+    let source = std::fs::read_to_string(&main).unwrap();
+    let (compiled, read) = crate::render::read_and_note(&main, &source, "T");
+    assert!(compiled.page.is_some(), "the fixture does not compile");
+    assert_eq!(read, vec!["lib.typ".to_string()]);
+
+    // And a document that reads nothing says so, which is what stops the hint
+    // appearing on every ordinary publish.
+    let alone = scratch(&[("main.typ", b"= T\n\nJust prose.\n")]);
+    let path = alone.path().join("main.typ");
+    let (_, none) =
+        crate::render::read_and_note(&path, &std::fs::read_to_string(&path).unwrap(), "T");
+    assert!(none.is_empty(), "{none:?}");
+}
+
+#[test]
+fn a_document_named_without_a_directory_compiles() {
+    // `Path::new("paper.typ").parent()` is `Some("")`, not `None`, and an
+    // empty path cannot be made absolute. So `komodoc publish paper.typ`, run
+    // from the directory the file is in -- which is how anybody would run it
+    // -- failed with "cannot make an empty path absolute" and reported the
+    // document as one that did not compile.
+    let dir = scratch(&[
+        ("main.typ", b"#import \"lib.typ\": word\n= T\n#word\n"),
+        ("lib.typ", b"#let word = \"sibling\"\n"),
+    ]);
+    let here = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(dir.path()).expect("cd");
+    let (compiled, read) = crate::render::read_and_note(
+        std::path::Path::new("main.typ"),
+        "#import \"lib.typ\": word\n= T\n#word\n",
+        "T",
+    );
+    std::env::set_current_dir(here).expect("cd back");
+    assert!(
+        compiled.page.is_some(),
+        "a file named with no directory did not compile: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(read, vec!["lib.typ".to_string()]);
+}

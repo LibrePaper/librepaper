@@ -120,6 +120,33 @@ text into the live document and marks a checkpoint in its history. It never
 conflicts with someone editing in the browser: their words and yours end up in
 the same document, the way two browsers' do.
 
+#### A paper is usually several files
+
+A document is a directory, so publish the directory:
+
+```sh
+komodoc publish paper/ --title "My Paper"
+```
+
+Everything in it goes: the chapters, the `.bib`, the figures. Three things are
+left behind — names beginning with a dot, the main file's own `.pdf`, and
+whatever git ignores, since a `.gitignore` is the author's own statement of
+what is derived. Which file is the document is the one text at the top level
+that Komodoc renders, or `main.*`; when neither settles it, `--main` does:
+
+```sh
+komodoc publish paper/ --main chapters/thesis.typ
+```
+
+Publishing a single file that reads its neighbours says so rather than
+publishing a document that compiles here and nowhere else — a reader renders
+it themselves, and would get the error you never saw:
+
+```
+paper.typ reads lib.typ and refs.bib; publish the directory to send them along:
+  komodoc publish .
+```
+
 ### List
 
 List the documents visible to your account. Each row shows a short ID (at

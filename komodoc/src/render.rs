@@ -44,16 +44,52 @@ pub fn render_markdown_document(source: &str, title: &str) -> String {
 /// nothing above it, which a reader that refuses to leave the root is what
 /// enforces.
 pub fn render_typst_document(file: &Path, source: &str, title: &str) -> Compiled {
-    let root = match std::path::absolute(file.parent().unwrap_or(Path::new("."))) {
+    read_and_note(file, source, title).0
+}
+
+/// The same, and what the compile asked for beside it.
+///
+/// A document that imports a chapter or cites a bibliography reads files it
+/// was never handed explicitly, and on a laptop it finds them: the file's own
+/// directory is the root. Published as one file, those siblings are not there
+/// and the document that compiled here does not compile for a reader. Knowing
+/// which files were read is what lets `publish` say so, which is the whole
+/// reason the closure records rather than merely answering.
+pub fn read_and_note(file: &Path, source: &str, title: &str) -> (Compiled, Vec<String>) {
+    // `Path::new("paper.typ").parent()` is `Some("")` rather than `None`, and
+    // an empty path cannot be made absolute -- so `komodoc publish paper.typ`,
+    // run from the directory the file is in, failed with "cannot make an empty
+    // path absolute" and reported the document as not compiling. The empty
+    // parent is the current directory, which is what it always meant.
+    let beside = file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let root = match std::path::absolute(beside.unwrap_or(Path::new("."))) {
         Ok(root) => root,
-        Err(err) => return Compiled::failed(err.to_string()),
+        Err(err) => return (Compiled::failed(err.to_string()), Vec::new()),
     };
     let name = file
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let reader = move |path: &Path| -> Option<Vec<u8>> { read_within(&root, path) };
-    typst::render(source, title, &name, &reader, typst::Today::now())
+    let asked: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let compiled = {
+        let reader = |path: &Path| -> Option<Vec<u8>> {
+            let found = read_within(&root, path);
+            if found.is_some() {
+                let at = path.to_string_lossy().to_string();
+                let mut seen = asked.lock().unwrap_or_else(|held| held.into_inner());
+                if at != name && !seen.contains(&at) {
+                    seen.push(at);
+                }
+            }
+            found
+        };
+        typst::render(source, title, &name, &reader, typst::Today::now())
+    };
+    let mut read = asked.into_inner().unwrap_or_default();
+    read.sort();
+    (compiled, read)
 }
 
 /// Prints what a compile had to say the way every editor since `grep -n`

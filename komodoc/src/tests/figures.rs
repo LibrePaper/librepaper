@@ -440,3 +440,154 @@ async fn destroying_a_document_takes_its_figures() {
         .unwrap();
     assert!(left.is_empty(), "destroy left {left:?}");
 }
+
+/* --------------------------------------------------- publishing a directory */
+
+/// Sends a directory the way `komodoc publish <dir>` does: one multipart
+/// request, a part per file named by its path, and a `main` field saying
+/// which of them is the document.
+async fn post_directory(
+    cookie: &str,
+    base: &str,
+    title: &str,
+    main: &str,
+    files: &[(&str, &[u8])],
+) -> (u16, Value) {
+    let mut form = reqwest::multipart::Form::new()
+        .text("title", title.to_string())
+        .text("main", main.to_string());
+    for (at, bytes) in files {
+        form = form.part(
+            "file",
+            reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(at.to_string()),
+        );
+    }
+    let mut request = client()
+        .post(format!("{base}/api/documents"))
+        .header("x-komodoc-client", "1")
+        .multipart(form);
+    if !cookie.is_empty() {
+        request = request.header("cookie", cookie);
+    }
+    let response = request.send().await.expect("a response");
+    let status = response.status().as_u16();
+    let raw = response.bytes().await.unwrap_or_default();
+    (status, serde_json::from_slice(&raw).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn a_whole_directory_arrives_as_one_document() {
+    let server = new_test_server().await;
+    let cookie = session_as(TEST_PUBLISHER);
+    let (status, document) = post_directory(
+        &cookie,
+        &server.url,
+        "A Modular Paper",
+        "paper.typ",
+        &[
+            (
+                "paper.typ",
+                b"#import \"lib.typ\": word\n= A Modular Paper\n#word\n",
+            ),
+            ("lib.typ", b"#let word = \"sibling\"\n"),
+            ("chapters/03.typ", b"The third chapter.\n"),
+            ("refs.bib", b"@book{a,title={A}}\n"),
+            ("fig/one.png", b"\x89PNG\r\n\x1a\nIHDR"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 201, "{document}");
+    let slug = text(&document, "slug");
+
+    // Every text is in the shared document, under the name it was sent as,
+    // and the figure is named beside its digest rather than being in it.
+    let room = server.instance.rooms.get(&slug).await;
+    let state = room.state.lock().await;
+    let texts = crate::session::texts_of(&state.session.doc);
+    assert_eq!(
+        texts.keys().collect::<Vec<_>>(),
+        vec!["chapters/03.typ", "lib.typ", "paper.typ", "refs.bib"]
+    );
+    assert_eq!(texts["lib.typ"], "#let word = \"sibling\"\n");
+    assert_eq!(crate::session::main_path(&state.session.doc), "paper.typ");
+    let figures = crate::session::assets_of(&state.session.doc);
+    assert_eq!(figures.len(), 1);
+    let sha = figures["fig/one.png"].clone();
+    drop(state);
+
+    // And the figure's bytes are in the store, under their own digest.
+    assert_eq!(
+        room.read_asset(&sha).await.as_deref(),
+        Some(&b"\x89PNG\r\n\x1a\nIHDR"[..])
+    );
+
+    // The index says which file is the document, so a reader that has not
+    // joined the session yet still knows what it is looking at.
+    let entry = server
+        .instance
+        .store
+        .get(&slug)
+        .await
+        .expect("in the index");
+    assert_eq!(entry.main, "paper.typ");
+    assert_eq!(entry.source_format, "typst");
+}
+
+#[tokio::test]
+async fn a_directory_whose_main_file_is_not_in_it_is_refused() {
+    let server = new_test_server().await;
+    let (status, said) = post_directory(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        "A Paper",
+        "absent.typ",
+        &[("paper.typ", b"= A Paper\n")],
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
+    assert!(text(&said, "error").contains("absent.typ"), "{said}");
+}
+
+#[tokio::test]
+async fn a_directory_carrying_a_path_the_rules_refuse_is_refused_by_name() {
+    let server = new_test_server().await;
+    for bad in [
+        "../escape.typ",
+        "fig/../secret.png",
+        "main.aux",
+        "notes.rtf",
+    ] {
+        let (status, said) = post_directory(
+            &session_as(TEST_PUBLISHER),
+            &server.url,
+            "A Paper",
+            "paper.typ",
+            &[("paper.typ", b"= A Paper\n"), (bad, b"whatever\n")],
+        )
+        .await;
+        assert_eq!(status, 400, "{bad} was taken: {said}");
+        assert!(
+            text(&said, "error").contains(bad),
+            "the refusal should name the file: {said}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_one_file_publish_is_still_a_directory_of_one_file() {
+    // The shape this route has always taken, unchanged: no `main` field and
+    // one part. What it produces is a directory with one file in it.
+    let server = new_test_server().await;
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
+    let entry = server
+        .instance
+        .store
+        .get(&slug)
+        .await
+        .expect("in the index");
+    assert_eq!(entry.main, "main.html");
+    let room = server.instance.rooms.get(&slug).await;
+    let state = room.state.lock().await;
+    assert_eq!(crate::session::texts_of(&state.session.doc).len(), 1);
+}

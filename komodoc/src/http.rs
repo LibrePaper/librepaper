@@ -134,3 +134,51 @@ pub fn truncate(text: &str, limit: usize) -> String {
     }
     text[..end].to_string()
 }
+
+/// A whole directory, as one multipart request: a part per file, each named
+/// by its path within the document, plus the title and which file is the main
+/// one.
+///
+/// Multipart rather than JSON because a figure is bytes, and base64 in a JSON
+/// body would cost a third of every image on the wire. The same marker header
+/// and the same bearer as `post_json`.
+pub async fn post_directory(
+    target: &str,
+    title: &str,
+    slug: &str,
+    main: &str,
+    files: Vec<(String, Vec<u8>)>,
+    token: &str,
+    timeout: Duration,
+) -> Result<(u16, Value), String> {
+    let mut form = reqwest::multipart::Form::new()
+        .text("title", title.to_string())
+        .text("main", main.to_string());
+    if !slug.is_empty() {
+        form = form.text("slug", slug.to_string());
+    }
+    for (path, bytes) in files {
+        // The path is the filename of the part: what the document knows the
+        // file as, which is not always what it is called on this disk.
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(path);
+        form = form.part("file", part);
+    }
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|err| format!("could not build a client: {err}"))?;
+    let mut request = client
+        .post(target)
+        .header("x-komodoc-client", "cli")
+        .multipart(form);
+    if !token.is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("could not reach {target}: {err}"))?;
+    let status = response.status().as_u16();
+    let raw = response.bytes().await.unwrap_or_default();
+    Ok((status, decode(&raw)))
+}

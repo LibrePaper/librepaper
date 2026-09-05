@@ -8,10 +8,12 @@ use serde_json::{json, Value};
 
 use crate::auth::{login_for, GITHUB_DEVICE, GITHUB_TOKEN};
 use crate::config::Configuration;
-use crate::http::{detail_of, get_json, get_with_token, post_json, send, text, truncate};
+use crate::http::{
+    detail_of, get_json, get_with_token, post_directory, post_json, send, text, truncate,
+};
 use crate::render::{
-    counted, is_html, is_markdown, is_typst, render_typst_document, report, title_from_html,
-    title_from_markdown, title_from_typst,
+    counted, is_html, is_markdown, is_typst, read_and_note, render_typst_document, report,
+    title_from_html, title_from_markdown, title_from_typst,
 };
 use crate::util::{die, is_terminal_stdin, is_terminal_stdout, read_line};
 
@@ -223,14 +225,311 @@ async fn poll_for_token(client_id: &str, code: &DeviceCode) -> Result<String, St
 
 /* ------------------------------------------------------------- publish */
 
-pub async fn publish(file: &str, mut title: String, slug: String, server_flag: String) {
+/// The files of a directory, as the document will know them: relative paths,
+/// `/`-separated, with what does not belong left behind.
+///
+/// Three things are skipped, and each for its own reason. A name beginning
+/// with a dot is not part of a document -- `.git`, `.DS_Store`, an editor's
+/// swap file. The main file's own output is what a compiler wrote, and a
+/// document keeps what a person wrote. And whatever git ignores is the
+/// author's own statement of what is derived, which is a better list than any
+/// this could invent.
+pub fn files_under(root: &Path, main_stem: &str, ignored: &dyn Fn(&Path) -> bool) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            // The output of the document itself. A `paper.pdf` beside
+            // `paper.typ` is what the last compile produced, and uploading it
+            // would put a derived file in a store that keeps sources.
+            if !main_stem.is_empty() && name == format!("{main_stem}.pdf") {
+                continue;
+            }
+            if ignored(&path) {
+                continue;
+            }
+            if let Ok(relative) = path.strip_prefix(root) {
+                let mut at = String::new();
+                for part in relative.components() {
+                    if let std::path::Component::Normal(piece) = part {
+                        if !at.is_empty() {
+                            at.push('/');
+                        }
+                        at.push_str(&piece.to_string_lossy());
+                    }
+                }
+                if !at.is_empty() {
+                    found.push(at);
+                }
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// What git ignores under this directory, asked of git rather than worked out
+/// from `.gitignore` -- which has precedence rules, nested files and a global
+/// config, and reimplementing them would be a way to disagree with git rather
+/// than to agree with it.
+///
+/// A directory that is not in a working tree, or a machine with no git,
+/// ignores nothing and says so: silently uploading what an author expected to
+/// be skipped is worse than uploading it and telling them.
+pub fn git_ignores(root: &Path) -> Box<dyn Fn(&Path) -> bool> {
+    let inside = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output();
+    let usable = matches!(&inside, Ok(out) if out.status.success());
+    if !usable {
+        if inside.is_err() {
+            eprintln!("note: git is not on the path, so nothing is skipped as ignored");
+        }
+        return Box::new(|_| false);
+    }
+    let root = root.to_path_buf();
+    Box::new(move |path: &Path| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["check-ignore", "-q"])
+            .arg(path)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Which file is the document. Named with `--main`, or worked out: the one
+/// text at the top level whose extension is a format this renders, or
+/// `main.*`. Anything else is a refusal that lists what it was choosing
+/// between, because guessing wrong here publishes the wrong document.
+pub fn main_file(files: &[String], asked: &str) -> Result<String, String> {
+    if !asked.is_empty() {
+        let wanted = crate::paths::normalise(asked);
+        if !files.contains(&wanted) {
+            return Err(format!("--main {asked} is not a file in that directory"));
+        }
+        return Ok(wanted);
+    }
+    let top: Vec<&String> = files
+        .iter()
+        .filter(|path| !path.contains('/'))
+        .filter(|path| is_typst(path) || is_markdown(path) || is_html(path))
+        .collect();
+    if top.len() == 1 {
+        return Ok(top[0].clone());
+    }
+    if let Some(named) = top.iter().find(|path| {
+        Path::new(path)
+            .file_stem()
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("main"))
+    }) {
+        return Ok((*named).clone());
+    }
+    if top.is_empty() {
+        return Err("that directory holds no document to publish".into());
+    }
+    Err(format!(
+        "several files could be the document; name one with --main:\n  {}",
+        top.iter()
+            .map(|path| path.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    ))
+}
+
+pub async fn publish(file: &str, title: String, slug: String, server_flag: String, main: String) {
     let path = Path::new(file);
     let Ok(info) = std::fs::metadata(path) else {
         die(format!("file not found: {file}"))
     };
     if info.is_dir() {
-        die(format!("file not found: {file}"));
+        return publish_directory(path, title, slug, server_flag, main).await;
     }
+    if !main.is_empty() {
+        die("--main names a file inside a directory; publish the directory to use it");
+    }
+    publish_file(file, title, slug, server_flag).await
+}
+
+/// A directory, as one document: every file in it that belongs, with one of
+/// them named as the document itself.
+async fn publish_directory(
+    root: &Path,
+    mut title: String,
+    slug: String,
+    server_flag: String,
+    main: String,
+) {
+    let config = Configuration::default();
+    let rules = config.paths();
+    // The main file first, since what it is called decides what is skipped as
+    // its output. Worked out from the whole listing, so `--main` can name a
+    // file the rules would otherwise have to be asked about twice.
+    let listed = files_under(root, "", &git_ignores(root));
+    let main = main_file(&listed, &main).unwrap_or_else(|why| die(why));
+    let stem = Path::new(&main)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let paths = files_under(root, &stem, &git_ignores(root));
+
+    // Every path checked before anything is read, so a refusal names the file
+    // rather than arriving after a megabyte has been sent.
+    let mut texts = 0usize;
+    let mut figures = 0i64;
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for at in &paths {
+        let kind = match crate::paths::check(&rules, at) {
+            Ok(kind) => kind,
+            // A file the rules refuse is said and skipped rather than fatal: a
+            // directory usually has something in it that is not part of the
+            // document, and refusing the whole publish over a stray file would
+            // be unhelpful.
+            Err(why) => {
+                eprintln!("skipping {why}");
+                continue;
+            }
+        };
+        let bytes = std::fs::read(root.join(at))
+            .unwrap_or_else(|err| die(format!("could not read {at}: {err}")));
+        match kind {
+            crate::paths::Kind::Text => {
+                if std::str::from_utf8(&bytes).is_err() {
+                    eprintln!("skipping {at}: it is not valid UTF-8 text");
+                    continue;
+                }
+                texts += bytes.len();
+            }
+            crate::paths::Kind::Asset => {
+                if bytes.len() as i64 > config.max_asset {
+                    die(format!(
+                        "{at} is larger than the {} MB one figure may be",
+                        config.max_asset >> 20
+                    ));
+                }
+                figures += bytes.len() as i64;
+            }
+        }
+        files.push((at.clone(), bytes));
+    }
+    if texts > config.max_document {
+        die(format!(
+            "the texts of that directory come to more than the {} MB a document may be",
+            config.max_document / (1024 * 1024)
+        ));
+    }
+    if figures > config.max_assets {
+        die(format!(
+            "the figures of that directory come to more than the {} MB a document may keep",
+            config.max_assets >> 20
+        ));
+    }
+    if files.len() > config.max_files {
+        die(format!(
+            "that directory holds {} files; a document may hold {}",
+            files.len(),
+            config.max_files
+        ));
+    }
+
+    // The document compiles, or nothing is sent: `publish` exists to make a
+    // document readable, and one that does not compile is not one. It is
+    // compiled against the directory it will be stored as, so an import that
+    // works here works there.
+    let source = files
+        .iter()
+        .find(|(at, _)| *at == main)
+        .map(|(_, bytes)| String::from_utf8_lossy(bytes).to_string())
+        .unwrap_or_default();
+    let source_format = if is_typst(&main) {
+        if title.is_empty() {
+            title = title_from_typst(&source);
+        }
+        let compiled = render_typst_document(&root.join(&main), &source, &title_or(&title, &main));
+        report(&compiled.diagnostics, &main);
+        if compiled.page.is_none() {
+            die(format!(
+                "{main} did not compile ({})",
+                counted(compiled.errors().count().max(1), "error")
+            ))
+        }
+        "typst"
+    } else if is_markdown(&main) {
+        if title.is_empty() {
+            title = title_from_markdown(&source);
+        }
+        "markdown"
+    } else {
+        if title.is_empty() {
+            title = title_from_html(&source);
+        }
+        "html"
+    };
+    let _ = source_format;
+    if title.is_empty() {
+        title = title_or("", &main);
+    }
+
+    eprintln!(
+        "publishing {} ({}, {} KiB of text{})",
+        main,
+        counted(files.len(), "file"),
+        texts / 1024,
+        if figures == 0 {
+            String::new()
+        } else {
+            format!(", {} KiB of figures", figures / 1024)
+        }
+    );
+
+    let server = server_from(&server_flag);
+    let (status, document) = post_directory(
+        &format!("{server}/api/documents"),
+        &title,
+        &slug,
+        &main,
+        files,
+        &stored_token(),
+        Duration::from_secs(600),
+    )
+    .await
+    .unwrap_or_else(|err| die(err));
+    if status != 201 {
+        die(format!(
+            "upload failed ({status}): {}",
+            detail_of(&document)
+        ));
+    }
+    let link = format!("{server}{}", text(&document, "url"));
+    println!("{link}");
+    if is_terminal_stdout() {
+        eprintln!(
+            "\nShare this link; anyone with it can comment, no account needed.\n\
+             To publish a revision to the same link:\n  komodoc publish {} --slug {}",
+            root.display(),
+            text(&document, "slug")
+        );
+    }
+}
+
+async fn publish_file(file: &str, mut title: String, slug: String, server_flag: String) {
+    let path = Path::new(file);
     let base_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -271,11 +570,27 @@ pub async fn publish(file: &str, mut title: String, slug: String, server_flag: S
             // The first heading names the document, before the filename does.
             title = title_from_typst(&html);
         }
-        let compiled = render_typst_document(path, &html, &title_or(&title, file));
+        let (compiled, siblings) = read_and_note(path, &html, &title_or(&title, file));
         // Every diagnostic, where it is, and nothing uploaded if any of them
         // is an error: `publish` exists to make a document readable, and a
         // document that does not compile is not one.
         report(&compiled.diagnostics, &base_name);
+        // A document that read its siblings compiles here and nowhere else.
+        // Published as one file it arrives without them, and the reader --
+        // who renders it themselves -- gets the error the author never saw.
+        // Said before the upload rather than discovered afterwards.
+        if !siblings.is_empty() {
+            let directory = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            eprintln!(
+                "\n{base_name} reads {}; publish the directory to send them along:\n  \
+                 komodoc publish {}",
+                siblings.join(" and "),
+                directory.display()
+            );
+        }
         let errors = compiled.errors().count();
         let warnings = compiled.warnings().count();
         if compiled.page.is_none() {

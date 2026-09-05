@@ -145,7 +145,7 @@ enum Command {
     Logout,
     /// Publish a document and print its link
     Publish {
-        /// The HTML, markdown or typst file to publish
+        /// The HTML, markdown or typst file to publish, or a directory holding one
         file: String,
         /// Display title; defaults to the first heading, then the filename
         #[arg(long, value_name = "TITLE")]
@@ -153,6 +153,9 @@ enum Command {
         /// Full existing slug to replace, keeping link and comments
         #[arg(long, value_name = "SLUG")]
         slug: Option<String>,
+        /// Which file in a directory is the document
+        #[arg(long, value_name = "PATH")]
+        main: Option<String>,
         /// Deployment URL; defaults to $KOMODOC_SERVER
         #[arg(long, value_name = "URL")]
         server: Option<String>,
@@ -275,6 +278,7 @@ async fn main() {
             file,
             title,
             slug,
+            main,
             server,
         } => {
             cli::publish(
@@ -282,6 +286,7 @@ async fn main() {
                 title.unwrap_or_default(),
                 slug.unwrap_or_default(),
                 server.unwrap_or_default(),
+                main.unwrap_or_default(),
             )
             .await
         }

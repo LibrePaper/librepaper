@@ -1182,14 +1182,18 @@ impl Server {
             .store
             .put(Publication {
                 slug: key.clone(),
-                title: parsed.title,
+                title: parsed.title.clone(),
                 source: parsed.source.clone(),
                 source_format: parsed.source_format.clone(),
-                // One file, so a directory of one file: what it is called
-                // follows from what it is written in, which is the same name
-                // the migration gives a document published before there were
-                // directories.
-                main: crate::room::main_path_for("", &parsed.source_format),
+                // What a directory publish named, or -- for one file, which is
+                // a directory of one file -- the name its format implies,
+                // which is what the migration gives a document published
+                // before there were directories.
+                main: if parsed.main.is_empty() {
+                    crate::room::main_path_for("", &parsed.source_format)
+                } else {
+                    parsed.main.clone()
+                },
                 owner: who.key,
                 owner_id: who.id,
                 owner_name: who.name,
@@ -1208,7 +1212,16 @@ impl Server {
         // checkpoint is the source it was published with. Written here rather
         // than by the store, because it is the room that owns the document.
         let room = self.rooms.get(&key).await;
-        room.set_source(&parsed.source, &parsed.source_format).await;
+        room.set_main_file(&parsed.source, &parsed.source_format, &parsed.main)
+            .await;
+        // The rest of the directory, if a whole one was published. The texts
+        // go into the shared document beside the main file; the figures go to
+        // the store under their digests and are named in it.
+        if !parsed.files.is_empty() {
+            if let Err(why) = self.fill_directory(&room, &parsed).await {
+                eprintln!("warning: could not store every file of {key}: {why}");
+            }
+        }
         // The checkpoint names itself, and what it is named is the digest of
         // the tree rather than of the source: a document is a directory, so
         // what the index points at is the directory this document was at. The
@@ -1298,6 +1311,10 @@ impl Server {
         let max_document = self.config.max_document;
         let content_type = header_of(request.headers(), "content-type").unwrap_or_default();
         let (mut title, mut slug, mut html) = (String::new(), String::new(), String::new());
+        // A whole directory: the main file's name, and every other file in it.
+        // Both stay empty for the one-file publish this route has always taken.
+        let mut main = String::new();
+        let mut sent: Vec<(String, Vec<u8>)> = Vec::new();
         let (mut source, mut source_format) = (String::new(), String::new());
 
         if content_type.contains("multipart/form-data") {
@@ -1333,8 +1350,14 @@ impl Server {
                 match name.as_str() {
                     "title" => title = field.text().await.unwrap_or_default(),
                     "slug" => slug = field.text().await.unwrap_or_default(),
+                    // Which file is the document. A directory sends it; a
+                    // single file does not, and is named by its own filename.
+                    "main" => main = field.text().await.unwrap_or_default(),
                     "file" => {
-                        filename = field.file_name().unwrap_or_default().to_string();
+                        // A directory arrives as several of these, each named
+                        // by its path within the document. One of them is the
+                        // one-file publish this route has always taken.
+                        let at = field.file_name().unwrap_or_default().to_string();
                         let bytes = match field.bytes().await {
                             Ok(bytes) => bytes,
                             Err(_) => {
@@ -1347,17 +1370,53 @@ impl Server {
                                 return Err(write_json(400, &json!({"error": "bad upload"})));
                             }
                         };
-                        html = String::from_utf8_lossy(&bytes[..bytes.len().min(max_document + 1)])
-                            .to_string();
+                        sent.push((at, bytes.to_vec()));
                     }
                     _ => {}
                 }
+            }
+            // Which of them is the document, and what the rest are. A single
+            // part is what this route has always taken and keeps its meaning;
+            // several is a directory, and one of them has to be named.
+            if sent.len() == 1 && main.is_empty() {
+                let (at, bytes) = &sent[0];
+                filename = at.clone();
+                html = String::from_utf8_lossy(&bytes[..bytes.len().min(max_document + 1)])
+                    .to_string();
+                sent.clear();
+            } else if !sent.is_empty() {
+                let wanted = if main.is_empty() {
+                    sent[0].0.clone()
+                } else {
+                    main.clone()
+                };
+                let Some(at) = sent.iter().position(|(path, _)| *path == wanted) else {
+                    return Err(write_json(
+                        400,
+                        &json!({"error": format!("the main file {wanted} is not among the files sent")}),
+                    ));
+                };
+                let (path, bytes) = sent.remove(at);
+                main = path.clone();
+                filename = path;
+                html = String::from_utf8_lossy(&bytes[..bytes.len().min(max_document + 1)])
+                    .to_string();
             }
             // Markdown dropped on the page is stored as markdown. It is not
             // rendered here and never was worth rendering here: the browser
             // showing it renders it, with the same module the editor previews
             // with.
-            if !filename.is_empty() && is_markdown(&filename) {
+            if !filename.is_empty() && crate::render::is_typst(&filename) {
+                // A directory whose main file is typst. The upload form has
+                // never offered one -- it takes what a browser can drop -- but
+                // `publish <directory>` sends what the author has, and a paper
+                // in typst is the ordinary case it was built for.
+                if title.trim().is_empty() {
+                    title = crate::render::title_from_typst(&html);
+                }
+                source = html.clone();
+                source_format = "typst".to_string();
+            } else if !filename.is_empty() && is_markdown(&filename) {
                 if title.trim().is_empty() {
                     title = title_from_markdown(&html);
                 }
@@ -1446,12 +1505,115 @@ impl Server {
         if title.chars().count() > self.config.max_title {
             return Err(write_json(400, &json!({"error": "title too long"})));
         }
+        // Every path a directory sent, checked before any of it is stored. The
+        // command line refuses these first so the reason arrives on the
+        // laptop; this is the enforcement, and it is the same rule.
+        let mut kept = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if !main.is_empty() {
+            match crate::paths::check(&self.config.paths(), &main) {
+                Ok(crate::paths::Kind::Text) => {}
+                Ok(crate::paths::Kind::Asset) => {
+                    return Err(write_json(
+                        400,
+                        &json!({"error": format!("{main} cannot be the main file; it is a figure")}),
+                    ))
+                }
+                Err(why) => return Err(write_json(400, &json!({"error": why}))),
+            }
+            seen.insert(crate::paths::collision_key(&main));
+        }
+        for (path, bytes) in sent {
+            let kind = match crate::paths::check(&self.config.paths(), &path) {
+                Ok(kind) => kind,
+                Err(why) => return Err(write_json(400, &json!({"error": why}))),
+            };
+            if !seen.insert(crate::paths::collision_key(&path)) {
+                return Err(write_json(
+                    400,
+                    &json!({"error": format!("{path}: two files cannot share one name")}),
+                ));
+            }
+            kept.push((crate::paths::normalise(&path), kind, bytes));
+        }
+        if seen.len() > self.config.max_files {
+            return Err(write_json(
+                413,
+                &json!({"error": format!("a document may hold {} files", self.config.max_files)}),
+            ));
+        }
+        // The texts are measured together with the main file, because that is
+        // what the ceiling bounds: a paper split into thirty files is allowed
+        // exactly what a paper in one file is allowed.
+        let texts: usize = kept
+            .iter()
+            .filter(|(_, kind, _)| *kind == crate::paths::Kind::Text)
+            .map(|(_, _, bytes)| bytes.len())
+            .sum();
+        if source.len() + texts > max_document {
+            return Err(write_json(413, &json!({"error": "document too large"})));
+        }
+        let figures: i64 = kept
+            .iter()
+            .filter(|(_, kind, _)| *kind == crate::paths::Kind::Asset)
+            .map(|(_, _, bytes)| bytes.len() as i64)
+            .sum();
+        if figures > self.config.max_assets {
+            return Err(write_json(
+                413,
+                &json!({"error": format!(
+                    "this document has reached the {} MB it may keep in figures",
+                    self.config.max_assets >> 20
+                )}),
+            ));
+        }
+
         Ok(Upload {
             title,
             slug,
             source,
             source_format,
+            main,
+            files: kept
+                .into_iter()
+                .map(|(path, _, bytes)| (path, bytes))
+                .collect(),
         })
+    }
+
+    /// Puts the rest of a published directory where it belongs: every text
+    /// into the shared document, every figure into the store with its name
+    /// written beside its digest.
+    ///
+    /// The main file is already in the session -- `set_source` put it there --
+    /// so this adds the others and names none of them the document. A failure
+    /// is reported rather than fatal: the document exists and is readable, and
+    /// a chapter that did not make it is one somebody can add.
+    async fn fill_directory(&self, room: &Room, parsed: &Upload) -> Result<(), String> {
+        for (path, bytes) in &parsed.files {
+            match crate::paths::check(&self.config.paths(), path) {
+                Ok(crate::paths::Kind::Text) => {
+                    let Ok(body) = std::str::from_utf8(bytes) else {
+                        // A text that is not UTF-8 is not a text. It is left
+                        // out rather than stored as something it is not.
+                        eprintln!("warning: {path} is not valid UTF-8 and was not stored");
+                        continue;
+                    };
+                    room.add_text(path, body).await;
+                }
+                Ok(crate::paths::Kind::Asset) => {
+                    let (sha, _) = room
+                        .put_asset(
+                            bytes.clone(),
+                            (self.config.max_asset, self.config.max_assets),
+                        )
+                        .await?;
+                    room.name_asset(path, &sha).await;
+                }
+                Err(why) => return Err(why),
+            }
+        }
+        Ok(())
     }
 
     /* -------------------------------------------------------------- assets */
@@ -2538,6 +2700,13 @@ struct Upload {
     /// here: nothing derived is stored.
     source: String,
     source_format: String,
+    /// What the main file is called. A publish of one file is a directory of
+    /// one file, and this is its name in it.
+    main: String,
+    /// The rest of the directory, when a whole one was published: every file
+    /// but the main one, by path. Texts are UTF-8 and go into the shared
+    /// document; the rest are figures and go to the store under their digest.
+    files: Vec<(String, Vec<u8>)>,
 }
 
 /// What one call to the share route asks for. Every field is optional, and
