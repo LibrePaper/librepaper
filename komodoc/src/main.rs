@@ -45,7 +45,7 @@ pub const VERSION: &str = match option_env!("KOMODOC_VERSION") {
 #[command(name = "komodoc", version = VERSION, about = "host HTML, markdown and typst documents that readers can annotate", long_about = None)]
 #[command(
     after_help = "Serving needs a GitHub OAuth app (github.com/settings/developers) and
---publishers saying which GitHub logins may publish. Publishing needs neither,
+--publishers saying who may publish. Publishing needs neither,
 only the server and a sign-in:
 
     export KOMODOC_SERVER=https://komodoc.example.org
@@ -132,11 +132,8 @@ impl ServiceFlags {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sign in with GitHub (device flow)
+    /// Sign in through a deployment, in a browser
     Login {
-        /// GitHub OAuth app client id; asked of the deployment when absent
-        #[arg(long, value_name = "ID")]
-        client_id: Option<String>,
         /// Deployment URL; defaults to $KOMODOC_SERVER
         #[arg(long, value_name = "URL")]
         server: Option<String>,
@@ -270,9 +267,7 @@ enum Command {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Login { client_id, server } => {
-            cli::login(client_id.unwrap_or_default(), server.unwrap_or_default()).await
-        }
+        Command::Login { server } => cli::login(server.unwrap_or_default()).await,
         Command::Logout => cli::logout(),
         Command::Publish {
             file,

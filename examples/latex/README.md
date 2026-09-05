@@ -25,6 +25,13 @@ them. What each is for:
   engine produced; the engines disagree, because what a TeX gets round to
   reporting before it stops is not the same on all of them. No pages.
 
+- **`packages/`** — not part of the corpus the parser and the
+  distributions are held to. It asks for `booktabs`, `siunitx`, `tikz`
+  and `biblatex`, which is what an ordinary paper asks for and the four
+  above do not, and it exists to measure a package set rather than a
+  compiler. Two pages on a TeX Live; `MEASUREMENTS.md` records what it
+  can and cannot do on SwiftLaTeX pdfTeX.
+
 - **`xetex/`** — a document that needs XeTeX: `fontspec`, and Greek and
   Cyrillic in the source rather than as macros. It is how a pdfTeX-only
   distribution is shown refusing cleanly, with the error `fontspec`

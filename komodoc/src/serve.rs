@@ -151,6 +151,7 @@ pub async fn serve(options: ServeOptions) {
     let app = GithubApp {
         client_id: first_of(&[&options.client_id, &env("KOMODOC_GITHUB_CLIENT_ID")]),
         client_secret: first_of(&[&options.client_secret, &env("KOMODOC_GITHUB_CLIENT_SECRET")]),
+        ..GithubApp::default()
     };
     // Google has no flags: a client secret belongs in the environment, and the
     // README already tells operators to keep it there.

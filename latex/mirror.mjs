@@ -21,6 +21,7 @@
 //
 //     node latex/mirror.mjs [--out latex/mirror] [--only <distribution>]
 //     node latex/mirror.mjs --packages <name>...   # add SwiftLaTeX packages
+//     node latex/mirror.mjs --scheme [<collection>...]  # a whole package set
 //
 // The second form is the answer to a problem the spec did not foresee.
 // SwiftLaTeX's engines do not carry TeX Live at all. They call out to a
@@ -49,6 +50,7 @@ import {
 import { dirname, join, extname, basename } from "node:path";
 import { DISTRIBUTIONS, SWIFTLATEX_RELEASE, BUSYTEX_RELEASE } from "./distributions.mjs";
 import { unzip } from "./unzip.mjs";
+import { SCHEME, addScheme } from "./scheme.mjs";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
 const REPO = dirname(HERE);
@@ -63,6 +65,7 @@ const flag = (name, fallback) => {
 const OUT = flag("--out", join(REPO, "latex", "mirror"));
 const ONLY = flag("--only", null);
 const PACKAGES = argv.indexOf("--packages");
+const SCHEME_AT = argv.indexOf("--scheme");
 
 /* ----------------------------------------------------------- the manifest */
 
@@ -291,6 +294,24 @@ async function mirror() {
       0,
     );
     writeManifest(manifest);
+  }
+
+  // A whole package set, by TeX Live collection rather than by what the
+  // corpus asked for. See `scheme.mjs` for why the mirror needs one and where
+  // the two halves of the answer come from.
+  if (SCHEME_AT >= 0) {
+    const named = argv.slice(SCHEME_AT + 1).filter((one) => !one.startsWith("--"));
+    const collections = named.length ? named : SCHEME;
+    const { per, skipped, absent } = await addScheme(collections, OUT, readManifest(), writeManifest);
+    for (const [name, tally] of Object.entries(per)) {
+      console.log(`mirror: ${name.padEnd(18)} ${tally.files} files, ${mb(tally.bytes)}`);
+    }
+    const files = Object.values(per).reduce((sum, one) => sum + one.files, 0);
+    const bytes = Object.values(per).reduce((sum, one) => sum + one.bytes, 0);
+    console.log(`mirror: ${"scheme total".padEnd(18)} ${files} files, ${mb(bytes)}`);
+    console.log(
+      `mirror: ${skipped} files pdfTeX has no format code for, ${absent} not installed here`,
+    );
   }
 
   if (PACKAGES >= 0) {

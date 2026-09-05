@@ -370,6 +370,7 @@ async fn a_server_backed_by_a_bucket() {
         GithubApp {
             client_id: "test-client".into(),
             client_secret: "test-secret".into(),
+            ..GithubApp::default()
         },
         TEST_KEY.to_vec(),
         config.clone(),

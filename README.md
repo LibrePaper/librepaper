@@ -94,11 +94,28 @@ In the examples below, we use the environment variables and omit the flag.
 
 ### Authenticate
 
-Sign in once with GitHub using the device flow:
+Sign in once, through the deployment rather than through any one provider:
 
 ```sh
 komodoc login
 ```
+
+It prints an address and an eight-character code:
+
+```text
+  Open https://docs.example.org/auth/device?code=K7QD4XPM
+  and enter the code:  K7QD4XPM
+```
+
+Open that page in any browser, on any machine, and sign in there with whichever
+provider the deployment offers — GitHub, Google, or both. The page names the
+code and the account it would sign in, and nothing happens until you press
+*Approve*, so a link somebody else sends you cannot put your account on their
+terminal.
+
+The token that comes back is the deployment's own and lasts ninety days.
+`komodoc logout` deletes it. It cannot be revoked one at a time: rotating the
+server's session key signs every browser and every terminal out at once.
 
 ### Publish
 
@@ -475,27 +492,34 @@ to stop depending on a cookie is to sign in before clearing it.
 
 Two flags say who may do what.
 `--publishers` says who may upload documents, and `--commenters` who may
-annotate them. Both accept a comma-separated list of GitHub logins:
+annotate them. Both accept a comma-separated list of names:
 
 ```sh
-komodoc serve --publishers alice,bob --commenters anyone
+komodoc serve --publishers alice,anne@example.org --commenters @example.org
 ```
 
-Besides a list, each flag takes two keywords:
+A name is a GitHub login, a Google account's verified email address, or a whole
+domain of them; the shape of the entry is what decides which, so the forms mix
+freely in one list. Besides a list, each flag takes two keywords:
 
 | Value | Meaning |
 | --- | --- |
-| `alice,bob` | only these GitHub accounts |
-| `any` | any signed-in GitHub account |
+| `alice` | the GitHub login `alice` |
+| `alice@example.org` | the Google account whose verified email is that address |
+| `@example.org` | any Google account on that domain |
+| `any` | any signed-in account, on either provider |
 | `anyone` | no sign-in at all |
+
+A domain matches the part after the `@` exactly, so `@example.org` admits
+`alice@example.org` and not `alice@mail.example.org`.
 
 `--publishers` has no default: the server insists you say who may publish.
 `anyone` is allowed, which is what makes the local trial above work without any
-GitHub setup; on a host the internet can reach, name the accounts instead.
+OAuth setup; on a host the internet can reach, name the accounts instead.
 `--commenters` defaults to `anyone`,
 so readers can annotate a document straight from its link; use `any` to
-attribute every comment to a GitHub account, or a list to keep a draft among
-named reviewers.
+attribute every comment to an account, or a list to keep a draft among named
+reviewers.
 
 Both flags apply to every document alike, and both are ceilings rather than the
 last word: a document may name its own coauthors and reviewers with
@@ -508,13 +532,12 @@ offering the choice.
 
 ### GitHub OAuth
 
-Komodoc signs people in with GitHub, so any server that asks anyone to sign in
-needs an OAuth app of its own. A server where both `--publishers` and
-`--commenters` are `anyone` never asks, and runs without one.
+A server that asks anyone to sign in needs at least one OAuth client of its
+own, GitHub's or Google's. A server where both `--publishers` and
+`--commenters` are `anyone` never asks, and runs without either.
 
 Create the app at [github.com/settings/developers](https://github.com/settings/developers)
-(New OAuth App) with **Device Flow enabled**, which is what `komodoc login`
-uses at the terminal. Point its two URLs at the server's own address — the
+(New OAuth App). Point its two URLs at the server's own address — the
 public HTTPS address it sits behind, with the same `/auth/callback` path:
 
 ```text
@@ -530,7 +553,11 @@ export KOMODOC_GITHUB_CLIENT_ID="..."
 export KOMODOC_GITHUB_CLIENT_SECRET="..."
 ```
 
-Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `KOMODOC_GOOGLE_CLIENT_ID` and `KOMODOC_GOOGLE_CLIENT_SECRET`.
+Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `KOMODOC_GOOGLE_CLIENT_ID` and `KOMODOC_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review — but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
+
+Signing in cannot be undone one account at a time. `komodoc logout` deletes a
+terminal's token, and rotating the server's session key signs every browser and
+every terminal out at once.
 
 ## Environment variables
 
@@ -538,19 +565,25 @@ Readers can sign in with Google instead, or as well: create a *Web application* 
 GitHub API only to obtain your public login name; it does not collect your email,
 repositories, or other profile data.
 
+[^google-data]: Komodoc reads the verified email address on a Google account,
+the account identifier, and the profile name. The address is what
+`--publishers`, `--commenters` and a grant by name are matched against, and
+where a retention notice is sent; it is shown to no other reader anywhere.
+Other readers see the profile name.
+
 Flags take precedence over their corresponding environment variables.
 
 | Variable | Purpose |
 | --- | --- |
 | `KOMODOC_SERVER` | Default server for `login`, `publish`, `list`, `export`, and document deletion |
-| `KOMODOC_TOKEN` | GitHub token to use instead of `komodoc login` |
+| `KOMODOC_TOKEN` | A token to use instead of the one `komodoc login` stores; a GitHub token works too |
 | `KOMODOC_DATA` | Directory `serve` and `seed` use for documents and comments (default `komodoc-data`) |
 | `KOMODOC_GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
 | `KOMODOC_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
 | `KOMODOC_GOOGLE_CLIENT_ID` | Google OAuth client ID, for signing in with Google |
 | `KOMODOC_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `KOMODOC_PUBLISHERS` | GitHub accounts allowed to publish |
-| `KOMODOC_COMMENTERS` | Who may comment: `anyone`, `any`, or a list of GitHub accounts |
+| `KOMODOC_PUBLISHERS` | Who may publish: `anyone`, `any`, or a list of logins, addresses and domains |
+| `KOMODOC_COMMENTERS` | Who may comment: `anyone`, `any`, or a list of logins, addresses and domains |
 | `KOMODOC_EXPIRE_AFTER` | Automatically delete documents after a duration such as `24h` or `30d` |
 | `KOMODOC_EXPIRE_FROM` | Start retention at `updated` (default) or `created` |
 | `KOMODOC_VERSION` | Version selected by the installer |

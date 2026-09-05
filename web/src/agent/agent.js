@@ -499,6 +499,16 @@
     //
     // innerHTML does not run scripts, so a preview never executes anything.
     if (message.type === "preview") {
+      // A LaTeX document arrives as PDF bytes rather than as HTML, and the
+      // page it arrives on -- the viewer of `05-SPEC-latex.md` step 4 -- draws
+      // it itself into a text layer of ordinary spans. Nothing below applies
+      // to that: there is no markup to parse and no body to replace, and
+      // doing either would wipe the pages out from under the viewer. That is
+      // the whole of the agent's knowledge of PDFs. Drawing the pages mutates
+      // the body, so the observer at the bottom of this file republishes the
+      // text exactly as it does for a document that builds itself in
+      // JavaScript -- one code path for "the document changed", not two.
+      if (message.pdf) return;
       const parsed = new DOMParser().parseFromString(String(message.html || ""), "text/html");
       // The frame this arrives in is an empty shell -- nothing rendered is
       // stored any more, so there is no page whose styles the body could

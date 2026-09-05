@@ -6,11 +6,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::auth::{login_for, GITHUB_DEVICE, GITHUB_TOKEN};
 use crate::config::Configuration;
-use crate::http::{
-    detail_of, get_json, get_with_token, post_directory, post_json, send, text, truncate,
-};
+use crate::http::{detail_of, get_json, get_with_token, post_directory, post_json, text};
 use crate::render::{
     counted, is_html, is_markdown, is_typst, read_and_note, render_typst_document, report,
     title_from_html, title_from_markdown, title_from_typst,
@@ -30,12 +27,14 @@ pub fn server_from(flag: &str) -> String {
 
 /* --------------------------------------------------------------- login */
 
-// The CLI signs in with GitHub's device flow: it asks for a code, you type
-// that code into a browser anywhere, and the token lands here. No callback URL
-// and no local web server, so it works over SSH and on a machine with no
-// browser of its own.
+// The CLI signs in through the deployment, not through a provider: it asks the
+// server for a code, you open the URL it prints and approve there with
+// whichever provider that deployment offers, and the token lands here. No
+// callback URL and no local web server, so it works over SSH and on a machine
+// with no browser of its own -- and adding a provider to a deployment adds it
+// to `login` with no new flag and no new release of this binary.
 
-/// Where the GitHub token is cached, following XDG.
+/// Where the token is cached, following XDG.
 pub fn token_path() -> PathBuf {
     let base = match std::env::var("XDG_CONFIG_HOME") {
         Ok(base) if !base.is_empty() => PathBuf::from(base),
@@ -50,8 +49,10 @@ pub fn token_path() -> PathBuf {
     base.join("komodoc").join("token")
 }
 
-/// The GitHub token to send, from the environment or the cache written by
-/// `komodoc login`.
+/// The token to send, from the environment or the cache written by
+/// `komodoc login`. A `KOMODOC_TOKEN` holding a GitHub token still works: the
+/// server tells the two apart by the `kmd_` prefix and verifies each its own
+/// way.
 pub fn stored_token() -> String {
     if let Ok(token) = std::env::var("KOMODOC_TOKEN") {
         if !token.trim().is_empty() {
@@ -72,56 +73,51 @@ pub fn require_token() -> String {
     token
 }
 
-pub async fn login(mut client_id: String, server_flag: String) {
-    if client_id.is_empty() {
-        // The deployment knows its own client id, and it is not a secret.
-        let server = server_from(&server_flag);
-        if let Ok((200, payload)) = get_json(
-            &format!("{server}/api/auth/config"),
-            Duration::from_secs(30),
-        )
-        .await
-        {
-            client_id = text(&payload, "client_id");
-        }
-        if client_id.is_empty() {
-            die("could not find the GitHub client id.\n  Pass it with --client-id, or point --server at your deployment.");
-        }
-    }
-
-    let code = request_device_code(&client_id)
+pub async fn login(server_flag: String) {
+    let server = server_from(&server_flag);
+    let code = request_device_code(&server)
         .await
         .unwrap_or_else(|err| die(format!("could not start the sign-in: {err}")));
     eprintln!(
         "\n  Open {}\n  and enter the code:  {}\n",
-        code.verification_uri, code.user_code
+        code.verification_url, code.user_code
     );
     eprint!("  waiting for you to approve it");
 
-    let token = poll_for_token(&client_id, &code).await;
+    let token = poll_for_token(&server, &code).await;
     eprintln!();
     let token = token.unwrap_or_else(|err| die(err));
 
-    let who = login_for(&token).await.unwrap_or_else(|err| {
-        die(format!(
-            "signed in, but GitHub would not say who you are: {err}"
-        ))
-    });
+    // Who the token says you are. It is this deployment's own token, so the
+    // deployment is the only thing that can answer, and it costs one call.
+    let who =
+        match get_with_token(&format!("{server}/api/me"), &token, Duration::from_secs(30)).await {
+            Ok((200, payload)) => text(&payload, "name"),
+            _ => String::new(),
+        };
 
     let path = token_path();
+    write_token(&path, &token).unwrap_or_else(|err| die(err));
+    println!("signed in as {who}");
+    eprintln!("  token stored in {}", path.display());
+}
+
+/// Writes the token where the next command will look for it, readable by
+/// nobody else: it is a bearer, so the file permissions are the whole of its
+/// protection at rest.
+pub fn write_token(path: &Path, token: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .unwrap_or_else(|err| die(format!("could not create {}: {err}", parent.display())));
+            .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
     }
-    std::fs::write(&path, format!("{token}\n"))
-        .unwrap_or_else(|err| die(format!("could not write {}: {err}", path.display())));
+    std::fs::write(path, format!("{token}\n"))
+        .map_err(|err| format!("could not write {}: {err}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
-    println!("signed in as {}", who.name);
-    eprintln!("  token stored in {}", path.display());
+    Ok(())
 }
 
 pub fn logout() {
@@ -133,44 +129,39 @@ pub fn logout() {
     }
 }
 
-struct DeviceCode {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    expires_in: u64,
-    interval: u64,
+pub struct DeviceCode {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_url: String,
+    pub expires_in: u64,
+    pub interval: u64,
 }
 
-async fn request_device_code(client_id: &str) -> Result<DeviceCode, String> {
-    let body = serde_json::to_vec(&json!({"client_id": client_id, "scope": ""}))
-        .map_err(|e| e.to_string())?;
-    let (status, raw) = send(
-        reqwest::Method::POST,
-        GITHUB_DEVICE,
-        &[
-            ("content-type", "application/json"),
-            ("accept", "application/json"),
-        ],
-        Some(body),
+pub async fn request_device_code(server: &str) -> Result<DeviceCode, String> {
+    // No bearer: the terminal has no token yet, which is the whole reason it
+    // is asking.
+    let (status, payload) = post_json(
+        &format!("{server}/api/auth/device"),
+        &json!({}),
+        "",
         Duration::from_secs(30),
     )
     .await?;
-    let payload: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
     let device_code = text(&payload, "device_code");
     if device_code.is_empty() {
         return Err(format!(
-            "github returned {status}: {}",
-            truncate(&String::from_utf8_lossy(&raw), 200)
+            "{server} returned {status}: {}",
+            detail_of(&payload)
         ));
     }
     Ok(DeviceCode {
         device_code,
         user_code: text(&payload, "user_code"),
-        verification_uri: text(&payload, "verification_uri"),
+        verification_url: text(&payload, "verification_url"),
         expires_in: payload
             .get("expires_in")
             .and_then(Value::as_u64)
-            .unwrap_or(0),
+            .unwrap_or(600),
         interval: payload
             .get("interval")
             .and_then(Value::as_u64)
@@ -179,45 +170,33 @@ async fn request_device_code(client_id: &str) -> Result<DeviceCode, String> {
     })
 }
 
-/// Waits for the code to be approved, at the interval GitHub asks for and no
-/// faster: polling too eagerly earns a slow_down.
-async fn poll_for_token(client_id: &str, code: &DeviceCode) -> Result<String, String> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(code.expires_in.max(300));
-    let mut interval = Duration::from_secs(code.interval);
+/// Waits for the code to be approved, at the interval the server asks for and
+/// no faster. The deadline is the server's own expiry, so a code the server
+/// has already forgotten is not polled for after it says so.
+pub async fn poll_for_token(server: &str, code: &DeviceCode) -> Result<String, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(code.expires_in.max(60));
+    let interval = Duration::from_secs(code.interval);
     while std::time::Instant::now() < deadline {
         tokio::time::sleep(interval).await;
         eprint!(".");
-        let body = serde_json::to_vec(&json!({
-            "client_id": client_id, "device_code": code.device_code,
-            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-        }))
-        .map_err(|e| e.to_string())?;
-        let Ok((_, raw)) = send(
-            reqwest::Method::POST,
-            GITHUB_TOKEN,
-            &[
-                ("content-type", "application/json"),
-                ("accept", "application/json"),
-            ],
-            Some(body),
+        let Ok((_, reply)) = post_json(
+            &format!("{server}/api/auth/device/token"),
+            &json!({"device_code": code.device_code}),
+            "",
             Duration::from_secs(30),
         )
         .await
         else {
             continue;
         };
-        let Ok(reply) = serde_json::from_slice::<Value>(&raw) else {
-            continue;
-        };
-        let token = text(&reply, "access_token");
+        let token = text(&reply, "token");
         if !token.is_empty() {
             return Ok(token);
         }
         match text(&reply, "error").as_str() {
             "authorization_pending" | "" => {}
-            "slow_down" => interval += Duration::from_secs(5),
-            "access_denied" => return Err("sign-in was denied".into()),
-            other => return Err(format!("github said: {other}")),
+            "expired_token" => return Err("the code expired before it was approved".into()),
+            other => return Err(format!("the server said: {other}")),
         }
     }
     Err("the code expired before it was approved".into())
