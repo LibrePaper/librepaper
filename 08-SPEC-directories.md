@@ -90,7 +90,9 @@ A path is relative, `/`-separated, UTF-8, and normalised: no leading `/`,
 no empty segment, no `.` or `..` segment, no segment beginning with `.`,
 at most `max_path` bytes and at most eight segments. Two paths that
 differ only in case are refused, not because the store minds but because
-a sync client on macOS or Windows would write them to the same file. The
+a sync client on macOS or Windows would write them to the same file. A
+path is NFC-normalised on the way in, because macOS writes NFD, and the
+same name would otherwise be two keys. The
 server enforces all of this on every route that takes a path, and the
 shell and the command line check first so a refusal is explained on the
 laptop rather than by a status code.
@@ -113,30 +115,55 @@ output, is skipped by name by `publish` and `sync`, below.
 
 ### The main file
 
-The index entry gains `main`, the path of the main file, and
-`source_format` is derived from its extension as it is derived from the
-uploaded file's today. Changing the main file is an editor's act on the
-document's endpoint, not a CRDT operation, because the server needs it to
-render a checkpoint and to accept a sync client, and because it changes
-once a year.
+The shared document records which text is the main file, in the `meta`
+map below, and the index entry mirrors it as `main`, the path, so that a
+listing and `source_format` -- derived from its extension as it is derived
+from the uploaded file's today -- need not open the session. The server
+holds the document, so it reads `main` from the same place every peer
+does. An earlier draft kept it on the index entry alone, which left a
+rename of the main file in the session with no way to reach the entry,
+and a change of main on the entry with no way to reach the peers.
+Changing the main file is a set on `meta`, offered in the editor's file
+list and by `publish --main`.
 
 ## In the session
 
 ### The shared document
 
-The Yjs document holds two maps instead of one text:
+The Yjs document holds four maps instead of one text:
 
 | name | type | contents |
 | --- | --- | --- |
-| `files` | `Y.Map` of `Y.Text` | path to the text at it |
+| `files` | `Y.Map` of `Y.Text` | id to the text |
+| `paths` | `Y.Map` of string | id to the path the text is at |
 | `assets` | `Y.Map` of string | path to the digest of the asset at it |
+| `meta` | `Y.Map` of string | `main`, the id of the main file |
+
+Texts are keyed by an id, not by a path, and the path is a value beside
+the text. An id is minted by whoever creates the text -- twelve random
+characters, the way a comment id is -- and never changes. The reason is
+what a rename would otherwise cost. Yjs has no rename: a text keyed by
+its path is renamed by deleting one key and setting another with a copy
+of the text, and every edit any peer makes into the old text before it
+learns of the rename lands in a text no key reaches. That window is not
+an instant. The browser keeps the document in IndexedDB and sends its
+whole state on reconnect (`web/src/lib/collab.js`), so a coauthor who
+edits a chapter for an hour on a train while it is renamed loses the
+hour. With the path as a value, a rename is one set on `paths`, and the
+edits in flight land in the text they were always in. Two peers creating
+a file at the same path at the same moment get two texts with two ids
+and a collision the server resolves, below, instead of one text silently
+replacing the other.
+
+Assets stay keyed by path: the value is a digest, the bytes are in the
+store, and a set that loses to a concurrent set loses a name, not work.
 
 `source` is retired. The server migrates a session the first time it loads
 it under the new code: if `files` is empty and `source` is not, the text
-moves into `files[main]` in one transaction and the session state is
-rewritten. Nothing is done to `history/`; see "Checkpoints". The rollback
-caveat `TODO.md` already records for the layout migration applies here
-too and is not made worse.
+moves into `files[<id>]` with `paths[<id>]` the main path and `meta.main`
+the id, in one transaction, and the session state is rewritten. Nothing is
+done to `history/`; see "Checkpoints". The rollback caveat `TODO.md` already
+records for the layout migration applies here too and is not made worse.
 
 One room, one socket, one awareness, one shared document: this is why the
 files are a map in one document rather than a room each. A checkpoint of
@@ -144,17 +171,15 @@ the tree is a read of one document at one instant. Two people typing in
 two chapters never touch the same `Y.Text`, so parallel editing of a
 modular paper is free rather than a merge. And the socket protocol does
 not change: `y-open`, `y-state`, `y-update`, `y-awareness`, `y-ack`,
-`y-checkpoint` and `y-peers` carry a document with two maps in it as they
+`y-checkpoint` and `y-peers` carry a document with four maps in it as they
 carried one with a text, and `04-SPEC-sync.md`'s table stands.
 
-Creating a text is a `set` on `files`; deleting is a `delete`; renaming is
-a delete and a set carrying the whole text, in one transaction, because
-Yjs has no rename. A keystroke another peer makes into the old text during
-that instant lands in a text no key reaches and is lost. It is rare, it is
-a keystroke, and the checkpoint before the rename has the file; the risk
-is recorded below and not engineered away.
+Creating a text is a `set` on `files` and on `paths` with a fresh id, in
+one transaction; deleting is a `delete` from both; renaming is a `set` on
+`paths` alone.
 
-Awareness gains `file` beside `user`: the path the peer's caret is in.
+Awareness gains `file` beside `user`: the id of the text the peer's caret
+is in.
 The caret positions `y-codemirror.next` publishes are relative to the
 `Y.Text` they were made in, so they already paint only in the right file;
 `file` is for the file list, which shows who is in which chapter.
@@ -169,6 +194,41 @@ bounds that sum: a paper split into thirty files is allowed exactly what a
 paper in one file is allowed. A new rule `max_files` bounds the number of
 keys across both maps; an update that would pass it is refused the way one
 that passes the byte ceiling is.
+
+### What the server refuses, and what it repairs
+
+An update that would carry the texts past `max_document` or the keys past
+`max_files` is refused the way an oversized update is refused today
+(`session::admit_update`): it never touches the document, and the socket
+that sent it is closed. That is the right answer for size and the wrong
+one for everything else. A closed socket reconnects with backoff and sends
+its whole state again, because that is what keeps a disconnection from
+losing anything (`web/src/lib/room.js`), so an update the server will
+never accept comes back on every reconnect for as long as the browser
+keeps it. A tab holding the old bundle across the deploy, writing to
+`source`, would be locked out until its IndexedDB was cleared; so would
+any peer with one malformed path.
+
+So a structural fault is admitted and repaired rather than refused. The
+server applies the update, then in a transaction of its own puts the
+document right, and relays that as the ordinary `y-update` it is. Four
+repairs:
+
+- a write to `source` after migration: what was written is folded into
+  the main text the way `replace_text` folds a publish, and `source` is
+  emptied;
+- a path in `paths`, or a key in `assets`, that fails the path rules: the
+  text is given a path made from its id, `unnamed-<id>.txt`, and the
+  asset key is deleted, so nothing is lost and the file list shows what
+  happened;
+- two ids whose paths are the same, or differ only in case, which no
+  per-update check can catch because each of two concurrent sets was
+  valid on its own: the one the server applied second gets its path
+  suffixed, `refs (2).bib`, and the file list shows both;
+- a `meta.main` that names no text: reset to the first text by path.
+
+The old bundle is why this belongs to step 1 and not to a later one: step
+1 is what retires `source`.
 
 ### Readers
 
@@ -218,8 +278,12 @@ checkpoint's tree names its digest. The retention pass that
 checkpoints past the ceilings, also lists the digests the surviving trees
 and the live map name and deletes the rest under `assets/<slug>/`. Order
 of writes: the new tree and manifest first, then the pruning, so a crash
-leaves an unreferenced object and never a missing one. `remove` deletes
-`assets/<slug>/` with everything else.
+leaves an unreferenced object and never a missing one. An object is also
+kept while it is younger than `asset_grace`, because a `PUT` answers
+before the client sets the map, and a checkpoint taken in that gap would
+otherwise prune the digest the client is about to name. `remove` deletes
+`assets/<slug>/` with everything else; `transfer` hands them over with the
+document, and the bytes move from one owner's quota to the other's.
 
 ## Checkpoints
 
@@ -230,10 +294,10 @@ keys:
 {
   "main": "main.tex",
   "files": {
-    "chapters/03.tex": { "kind": "text", "sha": "8b03d77…", "size": 14022 },
+    "chapters/03.tex": { "kind": "text", "id": "k3f9qz2m7w1p", "sha": "8b03d77…", "size": 14022 },
     "fig/one.png":     { "kind": "asset", "sha": "c41e9a0…", "size": 88123 },
-    "main.tex":        { "kind": "text", "sha": "4f2a91c…", "size": 2210 },
-    "refs.bib":        { "kind": "text", "sha": "e7710bd…", "size": 31877 }
+    "main.tex":        { "kind": "text", "id": "a8d1x0c4nv6r", "sha": "4f2a91c…", "size": 2210 },
+    "refs.bib":        { "kind": "text", "id": "p2mw7ye5hq9t", "sha": "e7710bd…", "size": 31877 }
   }
 }
 ```
@@ -244,17 +308,24 @@ keys:
 | `history/<slug>/blobs/<sha>` | one text, by the digest of its bytes |
 | `assets/<slug>/<sha>` | one asset, by the digest of its bytes; not copied into history |
 
-Old checkpoints are not rewritten. A manifest entry without `tree` is read
-as a tree of one text at the path `main` with the entry's own `sha`, so
-the timeline shows one continuous history across the change and a restore
-of an old checkpoint is a tree of one file. The manifest entry gains
-`"tree": true` and `"changed": ["chapters/03.tex", "refs.bib"]`, the paths
-whose digest differs from the parent's, so the timeline can say what moved
-without opening two trees. `size` is the sum over the tree, assets
-included, because it is what the quota is measured against. `parent`,
-`why`, `by`, `label`, `commit` and `dirty` mean what they meant; `commit`
-and `dirty` describe the directory's working tree, which is what they
-always described.
+A text entry carries its id, so a restore sets the text it names rather
+than a new one, and a peer editing it keeps their place.
+
+Old checkpoints are not rewritten. A manifest entry without `tree` is
+read as a tree of one text at the path `main`, with the id the migration
+gave the main text and the entry's own `sha`, so the timeline shows one
+continuous history across the change and a restore of an old checkpoint
+is a tree of one file. The manifest entry gains `"tree": true` and
+`"changed": ["chapters/03.tex", "refs.bib"]`, the paths whose digest
+differs from the parent's, so the timeline can say what moved without
+opening two trees. `size` is the sum over the tree, assets included,
+and is what the timeline shows. It is not what the quota is measured
+against: an unchanged figure appears in every tree and is stored once,
+and fifty checkpoints must not charge fifty figures. The quota counts
+the objects under `history/<slug>/blobs/` and `assets/<slug>/` once each,
+plus the session state and the manifest. `parent`, `why`, `by`, `label`,
+`commit` and `dirty` mean what they meant; `commit` and `dirty` describe
+the directory's working tree, which is what they always described.
 
 Taking a checkpoint writes the text blobs that are new, then the tree,
 then the session state, then the index entry, then the manifest -- the
@@ -281,19 +352,27 @@ caller is new. An asset not yet fetched is awaited before the first
 compile that needs it, and the previous page stays up meanwhile, as it
 does for any render in progress.
 
-Typst needs nothing further. `#import`, `#include`, `#bibliography` and
-`#image` all go through `World::file` and `World::source`, and
-`typst-html` writes an image into the page as a base64 data URL
-(`rules.rs`, `WebImage::to_base64_url`), so the rendered page carries its
-figures and the frame fetches nothing. Fonts are the exception: the
+Typst needs nothing further. `#import`, `#include`, `#bibliography`
+and `#image` all go through `World::file` and `World::source`, and
+`typst-html` writes an image into the page as a base64 data URL (`rules.rs`,
+`WebImage::to_base64_url`), a PDF figure among them, since `typst-svg`
+turns `ImageKind::Pdf` into SVG on the way. So the rendered page carries
+its figures and the frame fetches nothing. Fonts are the exception: the
 engine's font book is built once from `typst_assets`, and a `.otf` in the
-directory is stored and versioned but not yet offered to typst. That is a
-step of its own, recorded under "Open questions".
+directory is stored and versioned but not yet offered to typst. That is
+a step of its own, recorded under "Open questions".
 
-Markdown is given the asset map and rewrites a relative `src` in an image
-to the asset's `GET` URL. The engine's markdown renderer gains a resolver
-argument for that one purpose. Whether to inline instead, as typst does,
-is an open question below.
+Markdown is given a resolver from a relative `src` to a URL, and the
+engine's markdown renderer gains that one argument. The URL is neither
+the asset's `GET` route nor a data URL. An `<img>` cannot send the token a
+private document's route takes, so the route would need the token in the
+query, inside a rendered page, under an `immutable` cache; and a data
+URL, which typst uses for reasons of its own, would make every
+keystroke's re-render carry every figure. Instead the shell fetches each
+asset once with the token, as the state route is fetched, keeps it in
+Cache Storage, and hands the renderer a `blob:` URL under the frame's
+origin. Typst is handed the same bytes for `add_file`. Nothing rendered
+carries a token, and nothing is fetched twice.
 
 HTML stays self-contained. A directory whose main file is `.html` is
 allowed, but the identity renderer rewrites nothing in it, and
@@ -353,7 +432,9 @@ Given a directory, `publish` sends everything in it that passes the path
 and extension rules, less three things: files and directories whose name
 begins with `.`; the main file's own output, `<main stem>.pdf`; and, when
 the directory is inside a git working tree, whatever git ignores, because
-`.gitignore` is the author's own statement of what is derived. The main
+`.gitignore` is the author's own statement of what is derived; when `git`
+is not on the path, nothing is ignored, and the command says so before it
+sends. The main
 file is `--main`, else the only text at the top level whose extension is
 a document format, else `main.*`, else a refusal that lists the
 candidates. Ceilings are checked before anything is sent, and a refusal
@@ -380,11 +461,11 @@ komodoc sync c9k paper/
 ```
 
 The directory form of `04-SPEC-sync.md`. Every accepted file under the
-directory is bound to its key in the maps, and the watcher covers the
-tree. A text that changes on disk is reconciled into its `Y.Text` as that
-spec describes for one file; a text that appears is added; one that
-disappears is deleted from the map, which is a deliberate act and marks a
-checkpoint like a save does. An asset that changes is uploaded and its
+directory is bound to its id, or to its path for an asset, and the watcher
+covers the tree. A text that changes on disk is reconciled into its `Y.Text`
+as that spec describes for one file; a text that appears is added; one that
+disappears is deleted from the map, which is a deliberate act and marks
+a checkpoint like a save does. An asset that changes is uploaded and its
 digest set. In the other direction, a text set in the session is written
 to disk, a deleted one is removed, and an asset whose digest changes is
 fetched and written, with the digest-and-rename discipline the spec has
@@ -400,9 +481,10 @@ The one-file form, `komodoc sync c9k paper.tex`, is unchanged.
 | `max_document` | 4 MB, today's `max_html` | the sum of every text and every key |
 | `max_files` | 200 | keys across both maps |
 | `max_assets` | 32 MB | the sum of asset objects under one document |
-| `max_asset` | `max_assets` | one asset |
+| `max_asset` | 8 MB | one asset |
+| `asset_grace` | 1 hour | how long an unreferenced asset outlives its `PUT` |
 | `max_path` | 200 bytes | one path |
-| `storage.per_owner` | as today | now including assets and text blobs |
+| `storage.per_owner` | as today | now including assets and text blobs, each object once |
 | `storage.uploads_per_hour` | as today | now including asset PUTs |
 
 The sandbox sets `max_assets` lower than the default and its value is
@@ -436,10 +518,14 @@ self-hoster with a bucket raises it.
 1. **The tree in the session.** `files` and `assets` maps, the migration
    of `source`, the ceiling on the sum and `max_files`, the tree
    checkpoint with `blobs/`, `tree` and `changed` in the manifest, restore
-   of a tree, `main` on the index entry. One-file directories only, so
-   nothing visible changes. Tests: migration and rollback reading, a
-   Yrs/Yjs interoperability test for a map of texts, the write order under
-   a crash, a restore across the old and new entry shapes.
+   of a tree, `main` in `meta` and mirrored on the index entry, and the
+   four repairs. One-file directories only, so nothing visible changes
+   -- but the wire shape changes under live tabs, which is why the
+   repairs are here. Tests: migration and rollback reading, a Yrs/Yjs
+   interoperability test for a map of texts, the write order under a
+   crash, a restore across the old and new entry shapes, an old bundle
+   writing `source` after migration and losing nothing, two concurrent
+   creates at one path.
 2. **Texts in the browser.** The file selector, per-file editor states,
    add, rename and delete, `file` in awareness, `clear_files` and
    `add_file` before every compile, diagnostics that open their file.
@@ -463,11 +549,10 @@ figures. Step 4 gives the author with a toolchain the same. Nothing after
 
 ## Risks
 
-- **A rename during a keystroke.** Described above: a peer's edit into the
-  old text during the rename transaction is unreachable afterwards.
-  Bounded by the rarity, by the size of what is lost, and by the
-  checkpoint the rename itself does not prevent. If it turns out to bite,
-  the remedy is a server-mediated rename, not a change to the model.
+- **Two files at one path.** Two peers create `refs.bib` at the same
+  moment, or two renames land on one name. Neither loses a byte, because
+  texts are keyed by id; what they get is the server's suffix, a file list
+  that shows both, and a rename to settle it.
 - **A state that readers must download.** Every text reaches every
   reader. Bounded by `max_document`, which is the same bound a one-file
   document has today, and by the HTTP path for state above the message
@@ -477,19 +562,21 @@ figures. Step 4 gives the author with a toolchain the same. Nothing after
   quota, `uploads_per_hour`, pruning to what retained checkpoints name,
   and the sandbox's expiry.
 - **Paths from a hostile peer.** A key in `files` is a string any editor
-  can set, and the sync client writes keys to disk. Bounded by validating
-  every path on the server before it enters the document and in the sync
-  client before it touches the filesystem, and by refusing anything the
-  rules above refuse.
+  can set, and the sync client writes keys to disk. Bounded by the server
+  repairing any path that fails the rules the moment it enters the
+  document, and by the sync client validating again before it touches the
+  filesystem.
 - **Case-insensitive disks.** A directory with `Fig.png` and `fig.png` is
-  refused before it becomes a sync client overwriting one with the other.
+  refused by `publish` and suffixed by the server before it becomes a sync
+  client overwriting one with the other.
 - **First render waits on fetches.** A document with many figures renders
   its first page after they arrive. Bounded by the previous page staying
   up, by Cache Storage across sessions, and by in-memory reuse across
   keystrokes.
 - **The retired `source` text.** A browser holding an old bundle in a tab
   across the deploy would write to a text nobody reads. Bounded by the
-  server refusing updates that touch `source` once a session is migrated.
+  server folding a write to `source` into the main text once a session is
+  migrated, so the tab loses nothing and is locked out of nothing.
 
 ## Non-goals
 
@@ -512,30 +599,34 @@ figures. Step 4 gives the author with a toolchain the same. Nothing after
   anchoring of comments do not change, and a reader is not shown a
   directory.
 - Texts are a `Y.Map` of `Y.Text` in the one shared document the room
-  already has; there is one room per document, not per file.
+  already has, keyed by a stable id with the path as a value, so a rename
+  is one set and nothing in flight is lost; there is one room per
+  document, not per file.
 - Assets are stored by digest under the slug and never enter the CRDT; the
   shared document holds their paths and digests only. The same bytes in
   two documents are stored twice.
-- The main file is declared on the index entry. Includes are not parsed.
+- The main file is declared in the shared document and mirrored on the
+  index entry. Includes are not parsed.
 - A checkpoint is a tree named by its digest; text blobs live under
   `history/<slug>/blobs/`; old checkpoints are read as one-file trees and
   never rewritten.
-- Kinds follow from extension lists in `config`; derived files, dotfiles,
-  unnormalised paths and case-colliding paths are refused at the server.
+- Kinds follow from extension lists in `config`; derived files, dotfiles
+  and unnormalised paths are refused at the routes and repaired in the
+  session; case-colliding paths are suffixed. Size is refused; structure
+  is repaired.
 - `max_document` bounds the sum of the texts; assets have their own
   ceilings and count against the owner's quota.
 - `publish <file>` stays a one-file directory and says when the compile
   read siblings.
 - This reverses `05-SPEC-latex.md`'s "a document is one file".
+- Assets reach a renderer as bytes fetched once with the token and kept in
+  Cache Storage; markdown gets a `blob:` URL, never the route and never a
+  data URL.
 
 ## Open questions
 
 - **The sandbox's `max_assets`.** Measured in step 3 against the bill,
   with the memory that cost bounding comes before every other concern.
-- **Markdown images: rewrite or inline.** A URL keeps the page light and
-  needs a token on a private document; a data URL matches typst and makes
-  a keystroke re-render carry every figure. Proposed: rewrite, and
-  revisit if the token path is awkward in the frame.
 - **Fonts for typst.** Accepting `.otf` and `.ttf` as assets is cheap;
   offering them to typst means building the font book per compile from
   the static faces plus the directory's. Deferred to a step after 3, once
