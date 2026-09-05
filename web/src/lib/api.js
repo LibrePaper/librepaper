@@ -15,7 +15,26 @@ async function json(response) {
   return response.json();
 }
 
+// The link key a reader arrived with, presented on every request for that
+// document. A header rather than a query parameter, so it never reaches an
+// access log; a browser cannot set one cross-origin without a preflight the
+// server never grants, so this is proof it came from this page.
+export const KEY_HEADER = "X-Komodoc-Key";
+
+export const keyHeaders = (key) => (key ? { [KEY_HEADER]: key } : {});
+
 export const get = (path) => fetch(path).then(json);
+
+/// A read on behalf of somebody holding a link.
+export const getKeyed = (path, key) => fetch(path, { headers: keyHeaders(key) }).then(json);
+
+/// A write on behalf of somebody holding a link.
+export const postKeyed = (path, body, key) =>
+  fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...SHELL_HEADERS, ...keyHeaders(key) },
+    body: JSON.stringify(body ?? {}),
+  }).then(json);
 
 export const getPrivate = (path) => fetch(path, { headers: SHELL_HEADERS }).then(json);
 

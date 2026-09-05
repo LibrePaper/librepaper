@@ -109,6 +109,13 @@ pub struct Comment {
     /// shape for the same reason as `Reply::author`.
     #[serde(default, skip_serializing)]
     pub author: String,
+    /// The digest of the link this comment arrived on, empty for a commenter
+    /// by name. It is what lets an owner group a blind reviewer's remarks
+    /// without either reviewer having signed anything, and it is not exported:
+    /// the export is the reviewer's words, not the mechanics of how they
+    /// arrived. Kept off every client-bound shape, as `author` is.
+    #[serde(default, skip_serializing)]
+    pub via: String,
 }
 
 /// What lands on disk, one object per document. Author is excluded from a
@@ -130,6 +137,9 @@ fn to_stored(items: &[Comment]) -> Value {
                 let mut stored = json!(item);
                 if !item.author.is_empty() {
                     stored["author"] = json!(item.author);
+                }
+                if !item.via.is_empty() {
+                    stored["via"] = json!(item.via);
                 }
                 stored["replies"] = Value::Array(
                     item.replies
@@ -867,6 +877,7 @@ impl Room {
         incoming: Message,
         address: &str,
         author: &str,
+        via: &str,
         is_owner: bool,
     ) -> (Value, bool) {
         let mut state = self.state.lock().await;
@@ -1020,6 +1031,7 @@ impl Room {
                     resolved_at: None,
                     replies: Vec::new(),
                     author: author.to_string(),
+                    via: via.to_string(),
                 };
                 state.comments.push(added.clone());
                 if self.save(&mut state).await.is_err() {

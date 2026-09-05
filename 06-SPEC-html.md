@@ -105,7 +105,7 @@ step between the author's tools and the readers. `04-SPEC-sync.md` needs an
 `.html` example and nothing else.
 
 **Diagnostics.** HTML never fails to render. The list is empty, as it is
-for markdown (`02-SPEC-diagnostics.md`), and the surfaces are inert.
+for markdown, and the surfaces are inert.
 
 **The landing page and the README.** The editable-or-not marker goes,
 because everything is editable; the extension shown on each row stays,
@@ -173,7 +173,7 @@ for a document whose scripts are heavy.
   now editable as HTML, which is more than it was.
 - **`04-SPEC-sync.md`.** One `.html` example, and the observation that
   `quarto render` under `sync` is a publish.
-- **`02-SPEC-diagnostics.md`.** "Markdown never produces a diagnostic"
+- **Diagnostics.** "Markdown never produces a diagnostic"
   becomes "markdown and HTML".
 - **The Rust host and engine.** The renderer list includes HTML as an
   identity renderer, with no separate HTML WASM download.
@@ -224,8 +224,9 @@ for a document whose scripts are heavy.
 
 All five steps, on the Rust host. The identity renderer lives in
 `engine/src/html.rs` and is reached in the browser by a short-circuit in
-`renderers.js` that fetches nothing. `01-SPEC-history.md` is not built, so
-what changed is the source endpoint rather than a durable session.
+`renderers.js` that fetches nothing. It was written before the durable
+session landed, so what changed here is the source endpoint rather than the
+session itself.
 
 **The renderer.** `html::render` is the identity, `html::title_of` scans for
 `<title>` and then `<h1>` without an HTML parser and decodes the entities a

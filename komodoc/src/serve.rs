@@ -29,6 +29,7 @@ pub struct ServeOptions {
     pub client_secret: String,
     pub publishers: String,
     pub commenters: String,
+    pub no_listing: bool,
     pub expire_after: String,
     pub expire_from: String,
     pub config: Configuration,
@@ -143,6 +144,10 @@ pub async fn serve(options: ServeOptions) {
         commenters.clone(),
     );
     instance.direct_reads = options.storage.direct_reads;
+    // An operator who wants no public front page at all. A document that asks
+    // to be `listed` behaves as `link` under it, and the share dialog does not
+    // offer the choice.
+    instance.listing = !options.no_listing;
     let instance = Arc::new(instance);
 
     println!("komodoc serving http://localhost{address}");

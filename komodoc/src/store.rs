@@ -53,6 +53,96 @@ pub struct IndexEntry {
     /// Empty means there is no source to reopen.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_format: String,
+    /// Who may read: `link` (anyone with the link -- the default, written as
+    /// empty), `private` (the people named on the document, in any role), or
+    /// `listed` (anyone with the link, and shown on the landing page to
+    /// everyone). Discoverability and access are one value rather than a flag
+    /// each, because the combination two flags would allow and this does not
+    /// -- a private document that is listed -- means nothing.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub visibility: String,
+    /// The accounts this document names, by role. A grant by name is keyed on
+    /// the GitHub numeric id, exactly as ownership is, so it survives a rename
+    /// and follows the person across browsers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub editors: Vec<Grant>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commenters: Vec<Grant>,
+    /// The links that carry a role. Only the digest of each key is kept: the
+    /// key is shown once, when the link is made, and never again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<LinkGrant>,
+}
+
+/// One account named on a document. The login is kept for display; the id is
+/// what the grant is matched on.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Grant {
+    pub id: String,
+    pub login: String,
+    #[serde(default)]
+    pub since: String,
+}
+
+/// One link that carries a role. `hash` is the SHA-256 of the key in hex, and
+/// `until` is an expiry -- empty for none -- past which the link answers as no
+/// link at all.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LinkGrant {
+    pub hash: String,
+    pub role: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub since: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub until: String,
+}
+
+impl LinkGrant {
+    /// Whether this link still stands. An `until` that is not a timestamp is
+    /// treated as expired rather than as absent: a date nothing here can read
+    /// is not a reason to keep answering.
+    pub fn live_at(&self, now: i64) -> bool {
+        if self.until.is_empty() {
+            return true;
+        }
+        parse_timestamp(&self.until).is_some_and(|until| now < until)
+    }
+
+    pub fn granted(&self) -> Role {
+        Role::parse(&self.role).unwrap_or(Role::Reader)
+    }
+}
+
+/// The three visibilities, spelled as the index writes them.
+pub const VISIBILITY_LINK: &str = "link";
+pub const VISIBILITY_PRIVATE: &str = "private";
+pub const VISIBILITY_LISTED: &str = "listed";
+
+/// Whether a word is one of the three.
+pub fn is_visibility(value: &str) -> bool {
+    matches!(
+        value,
+        VISIBILITY_LINK | VISIBILITY_PRIVATE | VISIBILITY_LISTED
+    )
+}
+
+/// The most a document may open each role to one caller, which is what the
+/// deployment's own switches say. `--publishers` and `--commenters` are
+/// ceilings: a document may only ever be stricter than its server, so a grant
+/// recorded while a switch was wide stops answering when the switch narrows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ceiling {
+    /// Whether this caller may comment here at all.
+    pub comment: bool,
+    /// Whether this caller may publish here, and so be named an editor.
+    pub edit: bool,
+    /// Whether the switch is open to callers with no account, which is what a
+    /// link is: it names nobody, so it may only carry a role the switch grants
+    /// without a sign-in.
+    pub link_comment: bool,
+    pub link_edit: bool,
 }
 
 impl IndexEntry {
@@ -79,16 +169,97 @@ impl IndexEntry {
     /// somebody is the owner, and this answers what they may do, which is the
     /// question the routes were really asking.
     ///
-    /// `may_comment` is the deployment's own switch, which is a ceiling: a
-    /// document may be stricter than its server and never wider.
-    pub fn role_of(&self, owner_key: &str, caller_id: &str, may_comment: bool) -> Role {
+    /// A caller is named by their owner key and, when signed in, their GitHub
+    /// numeric id; `link_hash` is the digest of the key their request carried,
+    /// or "" for none. `ceiling` is the deployment's own switches, which a
+    /// document may be stricter than and never wider: a grant the switch does
+    /// not allow this caller is still recorded, and simply is not honoured.
+    pub fn role_of(
+        &self,
+        owner_key: &str,
+        caller_id: &str,
+        link_hash: &str,
+        ceiling: Ceiling,
+        now: i64,
+    ) -> Role {
         if self.owned_by(owner_key, caller_id) {
-            Role::Owner
-        } else if may_comment {
-            Role::Commenter
-        } else {
-            Role::Reader
+            return Role::Owner;
         }
+        let mut role = Role::Reader;
+        // A named editor whom `--publishers` no longer allows keeps whatever
+        // `--commenters` still gives them, rather than dropping to a reader.
+        if let Some(named) = self.named_role(caller_id) {
+            if named == Role::Editor && ceiling.edit {
+                role = role.max(Role::Editor);
+            } else if ceiling.comment {
+                role = role.max(Role::Commenter);
+            }
+        }
+        if let Some(by_link) = self.link_role(link_hash, now) {
+            if by_link == Role::Editor && ceiling.link_edit {
+                role = role.max(Role::Editor);
+            } else if ceiling.link_comment {
+                role = role.max(Role::Commenter);
+            }
+        }
+        // The server's open comment switch is a grant to everyone who reaches
+        // the document, which is what it has always meant.
+        if ceiling.comment {
+            role = role.max(Role::Commenter);
+        }
+        role
+    }
+
+    /// The role this document names an account for, if any. A grant by name
+    /// never matches a caller with no account, whose id is empty.
+    pub fn named_role(&self, caller_id: &str) -> Option<Role> {
+        if caller_id.is_empty() {
+            return None;
+        }
+        if self.editors.iter().any(|grant| grant.id == caller_id) {
+            return Some(Role::Editor);
+        }
+        if self.commenters.iter().any(|grant| grant.id == caller_id) {
+            return Some(Role::Commenter);
+        }
+        None
+    }
+
+    /// The role a link carries, when the document knows its hash and it has
+    /// not expired. Revoking is deleting the row; an expired link answers the
+    /// same way a revoked one does, as no link at all.
+    pub fn link_role(&self, link_hash: &str, now: i64) -> Option<Role> {
+        if link_hash.is_empty() {
+            return None;
+        }
+        self.links
+            .iter()
+            .find(|link| link.hash == link_hash && link.live_at(now))
+            .map(LinkGrant::granted)
+    }
+
+    /// Whether a caller is on this document at all: its owner, named in any
+    /// role, or holding a live link. This is the question `private` asks.
+    pub fn names(&self, owner_key: &str, caller_id: &str, link_hash: &str, now: i64) -> bool {
+        self.owned_by(owner_key, caller_id)
+            || self.named_role(caller_id).is_some()
+            || self.link_role(link_hash, now).is_some()
+    }
+
+    /// The visibility, with the default spelled out.
+    pub fn visibility(&self) -> &str {
+        if self.visibility.is_empty() {
+            VISIBILITY_LINK
+        } else {
+            &self.visibility
+        }
+    }
+
+    /// Whether a caller may read this document at all. Reading has never had a
+    /// switch, so everyone who can reach a document may read it -- except that
+    /// a `private` one is read by the people named on it and nobody else.
+    pub fn readable_by(&self, owner_key: &str, caller_id: &str, link_hash: &str, now: i64) -> bool {
+        self.visibility() != VISIBILITY_PRIVATE || self.names(owner_key, caller_id, link_hash, now)
     }
 
     /// When this document expires from, as seconds since the epoch.
@@ -107,11 +278,6 @@ impl IndexEntry {
 /// and owning and is held today by the owner alone, until a document can name
 /// somebody.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-// `Editor` is a rung nobody stands on yet: the owner is the only editor a
-// document can have until it can name one, and the rung exists so the gates
-// can ask the question they mean ("may this caller edit") rather than the one
-// that happens to answer it today ("does this caller own it").
-#[allow(dead_code)]
 pub enum Role {
     Reader,
     Commenter,
@@ -126,6 +292,19 @@ impl Role {
             Role::Commenter => "commenter",
             Role::Editor => "editor",
             Role::Owner => "owner",
+        }
+    }
+
+    /// The role a grant names, or None for a word that is not one a document
+    /// hands out. Only two rungs parse: nobody is granted `reader`, since
+    /// reading is what reaching the document already gives, and nobody is
+    /// granted `owner`, since the owner is one account and `transfer` is how
+    /// that moves.
+    pub fn parse(value: &str) -> Option<Role> {
+        match value {
+            "commenter" => Some(Role::Commenter),
+            "editor" => Some(Role::Editor),
+            _ => None,
         }
     }
 
@@ -200,6 +379,15 @@ pub struct Publication {
 #[derive(Debug)]
 pub enum PutError {
     Quota { status: u16, message: &'static str },
+    Storage(String),
+}
+
+/// Why `modify` did not: the document is not there, the change refused itself
+/// with a message meant for the caller, or storage would not take it.
+#[derive(Debug)]
+pub enum ModifyError {
+    NotFound,
+    Refused(String),
     Storage(String),
 }
 
@@ -290,6 +478,8 @@ impl Store {
             owner = existing.publisher.clone();
             owner_id = existing.publisher_id.clone();
         }
+        // Who a document is shared with is not changed by its text changing.
+        let shared = state.entries.get(&v.slug).cloned().unwrap_or_default();
         let entry = IndexEntry {
             slug: v.slug.clone(),
             title: v.title,
@@ -304,6 +494,10 @@ impl Store {
             publisher: owner.to_lowercase(),
             publisher_id: owner_id,
             source_format: v.source_format,
+            visibility: shared.visibility,
+            editors: shared.editors,
+            commenters: shared.commenters,
+            links: shared.links,
         };
         let previous = state.entries.insert(v.slug.clone(), entry.clone());
         let mut written = self.save_locked(&mut state).await;
@@ -431,6 +625,62 @@ impl Store {
             return Err(err.to_string());
         }
         Ok(())
+    }
+
+    /// Rewrites one entry -- whom it is shared with, who owns it -- under the
+    /// same lock every other index write takes. The change is applied to a
+    /// copy, so a refused write leaves the entry exactly as it was, and the
+    /// closure may refuse it itself, which is how a grant the deployment's
+    /// switches forbid is turned away without anything being written.
+    pub async fn modify<F>(&self, slug: &str, change: F) -> Result<IndexEntry, ModifyError>
+    where
+        F: FnOnce(&mut IndexEntry) -> Result<(), String>,
+    {
+        let mut state = self.state.lock().await;
+        let Some(entry) = state.entries.get(slug).cloned() else {
+            return Err(ModifyError::NotFound);
+        };
+        let mut updated = entry.clone();
+        change(&mut updated).map_err(ModifyError::Refused)?;
+        state.entries.insert(slug.to_string(), updated.clone());
+        if let Err(err) = self.save_locked(&mut state).await {
+            state.entries.insert(slug.to_string(), entry);
+            return Err(ModifyError::Storage(err.to_string()));
+        }
+        Ok(updated)
+    }
+
+    /// Hands a visitor's documents to the account that has just signed in:
+    /// every entry whose publisher is that visitor key is rewritten to the
+    /// login and the numeric id, and the quota moves with them, since the
+    /// quota is counted by publisher. A document with no publisher at all is
+    /// nobody's to adopt and stays as it is. Returns how many moved.
+    pub async fn adopt(&self, visitor_key: &str, login: &str, id: &str) -> Result<usize, String> {
+        if visitor_key.is_empty() || login.is_empty() {
+            return Ok(0);
+        }
+        let mut state = self.state.lock().await;
+        let mine: Vec<String> = state
+            .entries
+            .values()
+            .filter(|entry| !entry.publisher.is_empty() && entry.publisher == visitor_key)
+            .map(|entry| entry.slug.clone())
+            .collect();
+        if mine.is_empty() {
+            return Ok(0);
+        }
+        let before = state.entries.clone();
+        for slug in &mine {
+            if let Some(entry) = state.entries.get_mut(slug) {
+                entry.publisher = login.to_lowercase();
+                entry.publisher_id = id.to_string();
+            }
+        }
+        if let Err(err) = self.save_locked(&mut state).await {
+            state.entries = before;
+            return Err(err.to_string());
+        }
+        Ok(mine.len())
     }
 
     /// How many bytes this document may occupy before it carries its owner or

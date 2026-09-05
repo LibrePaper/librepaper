@@ -7,9 +7,9 @@
 // people's comments as they arrive, which is worth saying -- but only once it
 // has lasted longer than a blip, and only while it is true.
 
-import { SHELL_HEADERS } from "./api.js";
+import { SHELL_HEADERS, keyHeaders } from "./api.js";
 
-export function openRoom(slug, { onMessage, onConnected }) {
+export function openRoom(slug, { onMessage, onConnected, key = "" }) {
   let socket = null;
   let backoff = 500;
   let dropped = null;
@@ -26,7 +26,11 @@ export function openRoom(slug, { onMessage, onConnected }) {
 
   function connect() {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
-    socket = new WebSocket(`${scheme}://${location.host}/ws/${slug}`);
+    // The one request a browser cannot put a header on, so the link key rides
+    // in the query string here. Over TLS that is seen by this server and by
+    // nobody else, and what the server logs is the digest.
+    const query = key ? `?k=${encodeURIComponent(key)}` : "";
+    socket = new WebSocket(`${scheme}://${location.host}/ws/${slug}${query}`);
     socket.onopen = () => {
       backoff = 500;
       connected(true);
@@ -52,7 +56,7 @@ export function openRoom(slug, { onMessage, onConnected }) {
       }
       fetch(`/api/documents/${slug}/comments`, {
         method: "POST",
-        headers: { "content-type": "application/json", ...SHELL_HEADERS },
+        headers: { "content-type": "application/json", ...SHELL_HEADERS, ...keyHeaders(key) },
         body: JSON.stringify(message),
       })
         .then((response) => response.json())

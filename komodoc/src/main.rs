@@ -72,6 +72,9 @@ struct ServiceFlags {
     /// Who may comment: 'anyone' (default), 'any' GitHub account, or a list of logins
     #[arg(long, value_name = "WHO")]
     commenters: Option<String>,
+    /// Never list documents on the front page, whatever a document asks for
+    #[arg(long)]
+    no_listing: bool,
     /// Largest document accepted, in megabytes (default 4)
     #[arg(long, value_name = "MB", default_value_t = 0)]
     max_size: usize,
@@ -177,6 +180,48 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
+    /// Show or change who a document is shared with
+    Share {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// Name a GitHub account as an editor: they may edit the source and
+        /// the history, and delete any comment
+        #[arg(long, value_name = "LOGIN")]
+        editor: Option<String>,
+        /// Name a GitHub account as a commenter
+        #[arg(long, value_name = "LOGIN")]
+        commenter: Option<String>,
+        /// Mint a link carrying a role: 'commenter' or 'editor'. Its key is
+        /// printed once and never again
+        #[arg(long, value_name = "ROLE")]
+        link: Option<String>,
+        /// What to call the new link, for telling reviewers apart
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
+        /// When the new link stops working, such as 180d; 'never' for no expiry
+        #[arg(long, value_name = "DURATION")]
+        until: Option<String>,
+        /// Who may read: 'link' (default), 'private', or 'listed'
+        #[arg(long, value_name = "WHO")]
+        visibility: Option<String>,
+        /// Take away a grant: a GitHub login, or a link's id
+        #[arg(long, value_name = "WHO")]
+        revoke: Option<String>,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
+    /// Hand a document, its history and its quota to another account
+    Transfer {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// The GitHub login to hand it to
+        to: String,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
     /// Annotations as W3C JSON-LD or markdown
     Export {
         /// A full slug, or one of the short handles `list` prints
@@ -246,6 +291,7 @@ async fn main() {
                 client_secret: service.client_secret.unwrap_or_default(),
                 publishers: service.publishers.unwrap_or_default(),
                 commenters: service.commenters.unwrap_or_default(),
+                no_listing: service.no_listing,
                 expire_after: service.expire_after.unwrap_or_default(),
                 expire_from: service.expire_from.unwrap_or_default(),
                 config,
@@ -257,6 +303,36 @@ async fn main() {
             cli::comment_document(&id, server.unwrap_or_default()).await
         }
         Command::Edit { id, server } => cli::edit_document(&id, server.unwrap_or_default()).await,
+        Command::Share {
+            id,
+            editor,
+            commenter,
+            link,
+            label,
+            until,
+            visibility,
+            revoke,
+            server,
+        } => {
+            cli::share_document(
+                &id,
+                server.unwrap_or_default(),
+                editor.unwrap_or_default(),
+                commenter.unwrap_or_default(),
+                link.unwrap_or_default(),
+                label.unwrap_or_default(),
+                until.unwrap_or_default(),
+                visibility.unwrap_or_default(),
+                revoke.unwrap_or_default(),
+            )
+            .await
+        }
+        Command::Transfer {
+            id,
+            to,
+            server,
+            yes,
+        } => cli::transfer_document(&id, &to, server.unwrap_or_default(), yes).await,
         Command::Export {
             id,
             format,

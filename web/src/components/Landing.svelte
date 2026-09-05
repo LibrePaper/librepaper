@@ -100,6 +100,11 @@
     write(FAVORITES, [...next]);
   }
 
+  // A document shared with you by name is in your list, and is not yours to
+  // delete. Only what you own can be selected, so the Delete button is never
+  // offered for somebody else's document.
+  const mine = (doc) => !doc.role || doc.role === "owner";
+
   function tick(slug, on) {
     const next = new Set(selected);
     on ? next.add(slug) : next.delete(slug);
@@ -108,7 +113,7 @@
 
   function tickAll(on) {
     const next = new Set(selected);
-    for (const doc of shown) (on ? next.add(doc.slug) : next.delete(doc.slug));
+    for (const doc of shown.filter(mine)) (on ? next.add(doc.slug) : next.delete(doc.slug));
     selected = next;
   }
 
@@ -404,13 +409,15 @@
               {#each shown as doc (doc.slug)}
                 <tr>
                   <td>
-                    <input
-                      type="checkbox"
-                      class="checkbox"
-                      aria-label="Select {doc.title}"
-                      checked={selected.has(doc.slug)}
-                      onchange={(event) => tick(doc.slug, event.currentTarget.checked)}
-                    />
+                    {#if mine(doc)}
+                      <input
+                        type="checkbox"
+                        class="checkbox"
+                        aria-label="Select {doc.title}"
+                        checked={selected.has(doc.slug)}
+                        onchange={(event) => tick(doc.slug, event.currentTarget.checked)}
+                      />
+                    {/if}
                   </td>
                   <td>
                     <IconButton
@@ -436,6 +443,22 @@
                       >
                         {({ markdown: ".md", typst: ".typ" })[doc.source_format] || ".html"}
                       </span>
+                      <!-- What you hold on somebody else's document. Your own
+                           say nothing: everything unmarked here is yours. -->
+                      {#if !mine(doc)}
+                        <span class="badge preset-tonal-secondary text-xs" title="Shared with you">
+                          {doc.role}
+                        </span>
+                      {/if}
+                      {#if doc.visibility === "private"}
+                        <span class="badge preset-tonal-surface text-xs" title="Only people named on it may read this">
+                          private
+                        </span>
+                      {:else if doc.visibility === "listed"}
+                        <span class="badge preset-tonal-surface text-xs" title="On the front page for everyone">
+                          listed
+                        </span>
+                      {/if}
                       <CopyLink
                         href={new URL(`/docs/${doc.slug}`, location.origin).href}
                         label="Copy the link to {doc.title}"

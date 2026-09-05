@@ -7,8 +7,18 @@
   import * as diagnosticsRule from "../lib/diagnostics.js";
   import * as collab from "../lib/collab.js";
   import { openRoom } from "../lib/room.js";
-  import { me as whoami, signInHref } from "../lib/api.js";
-  import { AUTHOR, LAYOUT, LINKED, SOURCE_SIDE, markViewed, read, write } from "../lib/storage.js";
+  import { keyHeaders, me as whoami, signInHref } from "../lib/api.js";
+  import {
+    AUTHOR,
+    LAYOUT,
+    LINKED,
+    SOURCE_SIDE,
+    linkFor,
+    markViewed,
+    read,
+    takeKeyFromFragment,
+    write,
+  } from "../lib/storage.js";
   import { LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
 
   import { Menu } from "@skeletonlabs/skeleton-svelte";
@@ -17,6 +27,7 @@
   import IconButton from "./IconButton.svelte";
   import ControlGroup from "./ControlGroup.svelte";
   import CopyLink from "./CopyLink.svelte";
+  import Share from "./Share.svelte";
   import Modal from "./Modal.svelte";
   import Toasts from "./Toasts.svelte";
   import Row from "./layout/Row.svelte";
@@ -27,6 +38,12 @@
 
   const SLUG = location.pathname.split("/").pop();
 
+  // The key a reader arrived with, taken out of the fragment before anything
+  // asks the server a question. A fragment never leaves the browser, so this
+  // is the one part of the URL a link key can safely travel in; from here it
+  // is kept under the slug and presented on every request for this document.
+  const KEY = takeKeyFromFragment(SLUG);
+
   /* ------------------------------------------------------------ the document */
 
   let doc = $state({});
@@ -36,6 +53,12 @@
   let identity = $derived(me.login || "");
   let canModerate = $derived(Boolean(doc.can_moderate));
   let connected = $state(true);
+  // Sharing is the owner's; seeing who else is in the room is anyone's who is
+  // named on the document. A reader who arrived by link is offered neither,
+  // which is most of the point of a blind review.
+  let sharingOpen = $state(false);
+  let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
+  let visibility = $state("");
 
   // Whether this browser's work is safe, which is a different question from
   // whether the socket is up. `pending` counts the updates the server has not
@@ -504,7 +527,14 @@
   // An editor previewing an HTML document still gets the inert preview, which
   // is what the source pane has always shown and what keystroke-speed feedback
   // requires; the two are different jobs.
-  const paintsTheFrame = $derived(editing || sourceFormat !== "html");
+  //
+  // A private document is the other exception, and in the other direction: the
+  // documents origin shares no cookie with this one, so it has no identity to
+  // check `private` against and never serves such a document's bytes. What
+  // arrives there is the empty shell, so this page paints it whatever its
+  // format -- and an HTML document's own scripts do not run, because painting
+  // sets innerHTML. A document that needs them is one to share by link.
+  const paintsTheFrame = $derived(editing || sourceFormat !== "html" || visibility === "private");
 
   // What the frame was showing the last time it was loaded, so a reload
   // happens when the document has changed and not merely because somebody's
@@ -787,7 +817,7 @@
 
   $effect(() => {
     markViewed(SLUG);
-    room = openRoom(SLUG, { onMessage: receive, onConnected: reconnected });
+    room = openRoom(SLUG, { onMessage: receive, onConnected: reconnected, key: KEY });
 
     whoami().then((who) => {
       me = who;
@@ -797,10 +827,11 @@
       }
     });
 
-    fetch(`/api/documents/${SLUG}`)
+    fetch(`/api/documents/${SLUG}`, { headers: keyHeaders(KEY) })
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error("not found"))))
       .then((found) => {
         doc = found;
+        visibility = found.visibility || "link";
         document.title = `${found.title} · Komodoc`;
         docsOrigin = found.docs_origin || location.origin;
         // The frame is an empty page with the agent in it, on the documents
@@ -808,7 +839,19 @@
         frameSrc = `${docsOrigin}/raw/${SLUG}/`;
         prepare(found);
       })
-      .catch(() => (doc = { title: "Document not found" }));
+      // A private document answers a stranger exactly as a missing one does,
+      // which tells a stranger nothing -- and tells a named reader who has not
+      // signed in nothing either. That is what this line is for: the page was
+      // opened at a real link, so the honest thing to say is both.
+      .catch(() => {
+        doc = { title: "Document not found" };
+        say(
+          me.can_sign_in && !identity
+            ? "not found — sign in, if this was shared with you"
+            : "not found",
+          true,
+        );
+      });
 
     return () => {
       // The session on the server ends when the last person in it
@@ -957,10 +1000,33 @@
           </small>
         {/if}
       {/if}
-      <CopyLink label="Copy the link to this document" />
+      <!-- Sharing is the copy-link button grown up: copying the link is still
+           the first thing inside it. Somebody with no place on the document
+           gets the plain copy button, which is all it ever was for them. -->
+      {#if canSeeSharing}
+        <IconButton
+          icon="users"
+          label="Share this document"
+          title="Share"
+          onclick={() => (sharingOpen = true)}
+        />
+      {:else}
+        <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
+      {/if}
     </Row>
   {/snippet}
 </Nav>
+
+<Share
+  bind:open={sharingOpen}
+  slug={SLUG}
+  onvisibility={(chosen) => {
+    // Making a document private changes where its bytes come from, so the
+    // frame is reloaded rather than left showing what it was served before.
+    visibility = chosen;
+    if (docsOrigin) frameSrc = `${docsOrigin}/raw/${SLUG}/?v=${++framedGeneration}`;
+  }}
+/>
 
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}

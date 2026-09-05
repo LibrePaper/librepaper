@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::assets::load_shell;
-use crate::auth::{now_unix, sign_session, GithubApp, Identity, Policy, SESSION_COOKIE};
+use crate::auth::{now_unix, sign_session, Accounts, GithubApp, Identity, Policy, SESSION_COOKIE};
 use crate::blob::FsStore;
 use crate::config::Configuration;
 use crate::room::RoomSet;
@@ -31,6 +31,27 @@ pub struct TestServer {
     pub dir: tempfile::TempDir,
 }
 
+/// The account directory the tests use in place of GitHub, which they have no
+/// network to ask. A login is its own numeric id here, exactly as
+/// `session_as` mints one, so a grant by name matches the cookie a test signs
+/// in with. `nobody` is the login that does not exist, for the path where
+/// GitHub has never heard of the name.
+pub struct TestAccounts;
+
+#[async_trait::async_trait]
+impl Accounts for TestAccounts {
+    async fn lookup(&self, login: &str) -> Option<Identity> {
+        let login = login.trim().trim_start_matches('@').to_lowercase();
+        if login.is_empty() || login == "nobody" {
+            return None;
+        }
+        Some(Identity {
+            id: login.clone(),
+            login,
+        })
+    }
+}
+
 pub async fn new_test_server() -> TestServer {
     test_server_with(
         Configuration::default(),
@@ -47,6 +68,18 @@ pub async fn test_server_with(
     commenters: Policy,
     with_app: bool,
 ) -> TestServer {
+    test_server_tuned(config, publishers, commenters, with_app, true).await
+}
+
+/// The same, for a deployment whose operator has turned the public front page
+/// off with `--no-listing`.
+pub async fn test_server_tuned(
+    config: Configuration,
+    publishers: Policy,
+    commenters: Policy,
+    with_app: bool,
+    listing: bool,
+) -> TestServer {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let config = Arc::new(config);
     let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
@@ -62,7 +95,7 @@ pub async fn test_server_with(
     } else {
         GithubApp::default()
     };
-    let server = Server::new(
+    let mut server = Server::new(
         store,
         rooms,
         load_shell(&config).expect("the shell loads"),
@@ -72,6 +105,8 @@ pub async fn test_server_with(
         publishers,
         commenters,
     );
+    server.accounts = Arc::new(TestAccounts);
+    server.listing = listing;
     serve_instance(Arc::new(server), dir).await
 }
 
@@ -115,7 +150,7 @@ pub async fn server_over_blobs(
         .await
         .expect("the store opens");
     let rooms = RoomSet::new(blobs, config.clone());
-    let instance = Arc::new(Server::new(
+    let mut instance = Server::new(
         store,
         rooms,
         load_shell(&config).expect("the shell loads"),
@@ -127,7 +162,9 @@ pub async fn server_over_blobs(
         config,
         Policy::parse(TEST_PUBLISHER),
         Policy::parse("anyone"),
-    ));
+    );
+    instance.accounts = Arc::new(TestAccounts);
+    let instance = Arc::new(instance);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("a free port");
@@ -210,6 +247,42 @@ pub async fn raw_post(
     }
     for (name, value) in headers {
         request = request.header(name, value);
+    }
+    let response = request.send().await.expect("a response");
+    let status = response.status().as_u16();
+    let body = response.bytes().await.unwrap_or_default();
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+/// A write carrying a link key, the way the reader presents one: as a header
+/// on `fetch`, which a hostile origin cannot set.
+pub async fn post_keyed(
+    cookie: &str,
+    key: &str,
+    base: &str,
+    path: &str,
+    payload: Value,
+) -> (u16, Value) {
+    let mut headers = HashMap::new();
+    headers.insert("content-type", "application/json".to_string());
+    headers.insert("x-komodoc-client", "1".to_string());
+    if !cookie.is_empty() {
+        headers.insert("cookie", cookie.to_string());
+    }
+    if !key.is_empty() {
+        headers.insert(crate::server::LINK_HEADER, key.to_string());
+    }
+    raw_post(base, path, headers, payload).await
+}
+
+/// A read carrying a link key.
+pub async fn get_json_keyed(cookie: &str, key: &str, base: &str, path: &str) -> (u16, Value) {
+    let mut request = client().get(format!("{base}{path}"));
+    if !cookie.is_empty() {
+        request = request.header("cookie", cookie);
+    }
+    if !key.is_empty() {
+        request = request.header(crate::server::LINK_HEADER, key);
     }
     let response = request.send().await.expect("a response");
     let status = response.status().as_u16();

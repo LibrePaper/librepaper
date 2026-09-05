@@ -77,6 +77,22 @@ pub async fn post_json(
     Ok((status, decode(&raw)))
 }
 
+/// A GET that says who is asking, for the routes that answer differently to
+/// different people. Same bearer and same marker header as `post_json`.
+pub async fn get_with_token(
+    target: &str,
+    token: &str,
+    timeout: Duration,
+) -> Result<(u16, Value), String> {
+    let bearer = format!("Bearer {token}");
+    let mut headers = vec![("x-komodoc-client", "cli")];
+    if !token.is_empty() {
+        headers.push(("authorization", bearer.as_str()));
+    }
+    let (status, raw) = send(reqwest::Method::GET, target, &headers, None, timeout).await?;
+    Ok((status, decode(&raw)))
+}
+
 /// A plain GET, decoded when it is JSON.
 pub async fn get_json(target: &str, timeout: Duration) -> Result<(u16, Value), String> {
     let (status, raw) = send(reqwest::Method::GET, target, &[], None, timeout).await?;

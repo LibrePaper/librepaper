@@ -32,6 +32,39 @@ export const LINKED = "komodoc-linked";
 // editor lands where they left it.
 export const LAYOUT = "komodoc-layout";
 export const SOURCE_SIDE = "komodoc-source-side";
+// The link keys this browser has been given, by slug. A key is a secret, and
+// this is the right place for one: it is per browser, so opening the link on a
+// phone means pasting it again, and it is cleared with everything else.
+export const KEYS = "komodoc-keys";
+
+/// Takes the key out of the URL fragment, keeps it, and cleans the address
+/// bar. A fragment is never sent to a server, so the key lands in nobody's
+/// access log and on no Referer header; once it is here, the visible URL has
+/// no reason to keep carrying it, and "Copy link" puts it back.
+export function takeKeyFromFragment(slug) {
+  const found = /(?:^|[#&])k=([^&]+)/.exec(location.hash || "");
+  if (!found) return keyFor(slug);
+  const key = decodeURIComponent(found[1]);
+  const keys = read(KEYS, {});
+  keys[slug] = key;
+  write(KEYS, keys);
+  history.replaceState(null, "", location.pathname + location.search);
+  return key;
+}
+
+/// The key this browser holds for a document, or "" for none.
+export function keyFor(slug) {
+  const keys = read(KEYS, {});
+  return typeof keys[slug] === "string" ? keys[slug] : "";
+}
+
+/// The link to hand somebody: the one that was shared, key and all, so a link
+/// copied from the reader is the link that was given.
+export function linkFor(slug) {
+  const key = keyFor(slug);
+  const here = new URL(`/docs/${slug}`, location.origin).href;
+  return key ? `${here}#k=${encodeURIComponent(key)}` : here;
+}
 
 /// Notes that this document was opened just now, which is what the landing
 /// page sorts by.

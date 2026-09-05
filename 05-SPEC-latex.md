@@ -5,7 +5,7 @@ compiler workers and PDF storage routes. It is written against the
 editor `01-SPEC-history.md` describes, where readers render the text
 themselves, and it makes one exception to that spec's "nothing derived is
 stored", stated and bounded below. It reuses the diagnostic shape
-of `02-SPEC-diagnostics.md` and the preview frame of the reader as it stands.
+of `engine/src/diagnostic.rs` and the preview frame of the reader as it stands.
 
 ## The problem
 
@@ -82,7 +82,7 @@ started a compile on every pause would spend the whole session behind. So
 the debounce is longer, the pane says a compile is running and how long the
 last one took, the last page that compiled stays up while the next one
 runs, and errors come from the log parsed into the diagnostic shape
-`02-SPEC-diagnostics.md` defines, so the underline and the gutter mark are the
+`engine/src/diagnostic.rs` defines, so the underline and the gutter mark are the
 same ones typst errors get.
 
 Markdown and typst documents are untouched by everything below. The format
@@ -183,7 +183,7 @@ Warning:` are warnings with the line number when the log gives one and
 with a table-driven test suite of logs collected in step 1, and it is
 expected to miss things: a log line it does not recognise is not an error,
 and the raw log is one click from the badge for whatever the parser did
-not catch. The diagnostic shape is `02-SPEC-diagnostics.md`'s, unchanged, with
+not catch. The diagnostic shape is `engine/src/diagnostic.rs`'s, unchanged, with
 `file` empty for the document and the included file's name otherwise.
 
 A rendering that references files the document does not have -- an
@@ -390,7 +390,7 @@ project to have LaTeX.
 - Renderings are stored, as the one exception to "nothing derived is
   stored", keyed by the checkpoint SHA, pruned to the newest plus the
   labelled, counted against the quota, and never required of a reader.
-- The log is parsed in JavaScript into `02-SPEC-diagnostics.md`'s shape, and
+- The log is parsed in JavaScript into `engine/src/diagnostic.rs`'s shape, and
   a line the parser does not recognise is not an error.
 - A document is one file. `filecontents*` is how a bibliography rides
   along.

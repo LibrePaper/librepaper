@@ -1,6 +1,6 @@
-// The timing rule in `02-SPEC-diagnostics.md`, against a clock the test owns.
+// The diagnostic timing rule, against a clock the test owns.
 //
-// The two cases the spec names by name: a render that fails at 60 ms and
+// The two cases that matter: a render that fails at 60 ms and
 // succeeds at 200 ms never paints, and one that fails at 60 ms and is left
 // alone paints at 400 ms -- four hundred from the keystroke, not from the
 // render that noticed it.

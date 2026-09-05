@@ -30,7 +30,7 @@ once it exists. `05-SPEC-latex.md` lists files beside the document under
 its non-goals and offers `filecontents*` as the way a bibliography rides
 along. `06-SPEC-html.md` keeps the note that a typst document needing files
 beside it is published as HTML until the project exists. And
-`02-SPEC-diagnostics.md` fills a `file` field for spans in imported files
+the engine fills a `file` field for spans in imported files
 and admits that in the browser it is always empty.
 
 LaTeX makes the gap the ordinary case rather than the edge. A paper is
@@ -416,7 +416,7 @@ self-hoster with a bucket raises it.
   `history/<slug>/blobs/`; old entries are read as one-file trees. The
   index entry gains `main`, and `size` sums the tree. The diff step
   becomes per file.
-- **`02-SPEC-diagnostics.md`.** "In the browser it is always empty" is
+- **Diagnostics.** "In the browser it is always empty" is
   struck; `file` is filled and the editor opens it.
 - **`03-SPEC-sharing.md`.** Editors upload assets; readers fetch them
   under the document's visibility; assets count against the owner's quota.

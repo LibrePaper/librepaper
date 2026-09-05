@@ -23,8 +23,8 @@ use tokio::sync::mpsc;
 use crate::assets::{renderers, ShellFile};
 use crate::auth::{
     cookie_name, now_unix, random_token, read_session, read_visitor, sign_session, sign_visitor,
-    GithubApp, Identity, Policy, TokenCache, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
-    VISITOR_COOKIE,
+    Accounts, GithubAccounts, GithubApp, Identity, Policy, TokenCache, SESSION_COOKIE,
+    SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use crate::blob::document_key;
 use crate::config::Configuration;
@@ -35,7 +35,10 @@ use crate::render::{is_html, is_markdown, title_from_html, title_from_markdown};
 use crate::room::{
     decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet,
 };
-use crate::store::{random_suffix, slugify, IndexEntry, Publication, PutError, Store};
+use crate::store::{
+    is_visibility, random_suffix, slugify, Ceiling, Grant, IndexEntry, LinkGrant, ModifyError,
+    Publication, PutError, Role, Store, VISIBILITY_LISTED, VISIBILITY_PRIVATE,
+};
 use crate::util::clean;
 
 /// How much room a multipart upload gets beyond the document itself for part
@@ -56,7 +59,45 @@ pub struct Server {
     pub config: Arc<Configuration>,
     pub publishers: Policy,
     pub commenters: Policy,
+    /// Who a GitHub login is, for a grant by name. GitHub in a running
+    /// deployment; a stand-in in the tests, which have no network.
+    pub accounts: Arc<dyn Accounts>,
+    /// Whether the landing page lists anything at all. `--no-listing` is the
+    /// operator saying this deployment has no public front page, and a
+    /// document marked `listed` behaves as `link` under it.
+    pub listing: bool,
     sockets: AtomicU64,
+}
+
+/// The header a browser presents a link key on, and the query parameter the
+/// socket carries it in -- the one place a browser cannot set a header. The
+/// key itself never reaches a log: what is recorded anywhere is its hash.
+pub const LINK_HEADER: &str = "x-komodoc-key";
+pub const LINK_PARAM: &str = "k";
+
+/// How long a new link lasts unless something shorter is asked for. A round of
+/// review has an end, and a link that lives for ever is a leak waiting for a
+/// forwarded email; the dialog offers to renew, which mints a new key.
+pub const LINK_DEFAULT_SECONDS: i64 = 180 * 24 * 3600;
+
+/// Everything a request says about who is asking, resolved once: the account,
+/// the key their uploads belong to, the link they came in on, and the role
+/// those add up to on the document at hand.
+#[derive(Clone, Debug)]
+pub struct Viewer {
+    pub id: Identity,
+    pub key: String,
+    /// The digest of the link key this request carried, or "" for none. This
+    /// is what a comment records as `via`, so a blind reviewer's comments can
+    /// be told apart without anyone having signed anything.
+    pub link: String,
+    pub role: Role,
+}
+
+impl Viewer {
+    pub fn at_least(&self, wanted: Role) -> bool {
+        self.role.at_least(wanted)
+    }
 }
 
 /// What an authorized write is attributed to: the owner key a document's
@@ -67,6 +108,19 @@ pub struct Server {
 pub struct Caller {
     pub key: String,
     pub id: String,
+    /// The GitHub login behind that id, empty for a caller who is not signed
+    /// in. Kept because the deployment's switches are written in terms of
+    /// logins, and a listing has to say what each row may be done with.
+    pub login: String,
+}
+
+impl Caller {
+    fn identity(&self) -> Identity {
+        Identity {
+            login: self.login.clone(),
+            id: self.id.clone(),
+        }
+    }
 }
 
 /// Keeps a browser's key from ever colliding with a GitHub login, which
@@ -103,6 +157,8 @@ impl Server {
             config,
             publishers,
             commenters,
+            accounts: Arc::new(GithubAccounts),
+            listing: true,
             sockets: AtomicU64::new(1),
         }
     }
@@ -205,6 +261,74 @@ impl Server {
         String::new()
     }
 
+    /// The most this deployment's switches will let a document give one
+    /// caller. `--publishers` governs editing, because an editor puts content
+    /// on the server; `--commenters` governs commenting. The `link_*` halves
+    /// ask the same switches about a caller with no account at all, which is
+    /// what a link is: it carries a role and names nobody, so it may only
+    /// carry what the switch grants without a sign-in.
+    pub fn ceiling_for(&self, id: &Identity) -> Ceiling {
+        Ceiling {
+            comment: self.commenters.allows(&id.login),
+            edit: self.publishers.allows(&id.login),
+            link_comment: self.commenters.public,
+            link_edit: self.publishers.public,
+        }
+    }
+
+    /// The digest of the link key a request carried, or "" for none. A browser
+    /// presents it as a header on `fetch` and as a query parameter on the
+    /// socket, which is the one place it cannot set a header. Only the digest
+    /// is ever kept or compared, so the key itself lives in one browser and
+    /// nowhere else.
+    pub fn link_hash(&self, headers: &HeaderMap, query: Option<&str>) -> String {
+        let mut key = header_of(headers, LINK_HEADER).unwrap_or_default();
+        if key.is_empty() {
+            if let Some(query) = query {
+                key = url::form_urlencoded::parse(query.as_bytes())
+                    .find(|(name, _)| name == LINK_PARAM)
+                    .map(|(_, value)| value.to_string())
+                    .unwrap_or_default();
+            }
+        }
+        hash_link_key(&key)
+    }
+
+    /// Who is asking, and what they may do here. Every gate goes through this,
+    /// so the answer to "what may this caller do to this document" is worked
+    /// out in one place from the identity, the link, and the switches.
+    pub async fn viewer(
+        &self,
+        entry: &IndexEntry,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+    ) -> Viewer {
+        let id = self.whoami(headers, arrival).await;
+        let key = self.owner(headers, arrival, &id);
+        let link = self.link_hash(headers, query);
+        let role = entry.role_of(
+            &key,
+            &id.id,
+            &link,
+            self.ceiling_for(&id),
+            crate::clock::now_unix(),
+        );
+        Viewer {
+            id,
+            key,
+            link,
+            role,
+        }
+    }
+
+    /// Whether a caller may read this document at all. A `private` one is read
+    /// by the people named on it and by nobody else; every other document is
+    /// read by whoever has its link, which is how it has always been.
+    pub fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
+        entry.readable_by(&who.key, &who.id.id, &who.link, crate::clock::now_unix())
+    }
+
     /// Answers the request itself when the caller may not publish, and
     /// otherwise returns the key and id that own whatever that caller uploads.
     // The error is a whole response, which is the point: a refusal says what
@@ -217,6 +341,7 @@ impl Server {
             return Ok(Caller {
                 key: self.owner(headers, arrival, &id),
                 id: id.id,
+                login: id.login,
             });
         }
         if !id.is_signed_in() {
@@ -232,12 +357,50 @@ impl Server {
     }
 
     /// Narrows a listing to what one caller should see: the reserved examples,
-    /// the documents that predate ownership, and their own uploads.
+    /// the documents that predate ownership, their own uploads, everything
+    /// shared with them by name, and everything `listed`.
+    ///
+    /// A document shared by link is not here, and cannot be: the link lives in
+    /// one browser rather than on an account, so that browser's own list is
+    /// where it belongs. Under `--no-listing` there is no public front page,
+    /// so `listed` behaves as `link` and adds nothing.
     pub fn visible(&self, entries: Vec<IndexEntry>, who: &Caller) -> Vec<IndexEntry> {
         entries
             .into_iter()
-            .filter(|entry| entry.example || entry.owned_by(&who.key, &who.id))
+            .filter(|entry| {
+                entry.example
+                    || entry.owned_by(&who.key, &who.id)
+                    || entry.named_role(&who.id).is_some()
+                    || (self.listing && entry.visibility() == VISIBILITY_LISTED)
+            })
             .collect()
+    }
+
+    /// One row of a listing: what the document is, and what this caller holds
+    /// on it. The grants themselves are not here -- who else a document is
+    /// shared with is the share dialog's answer and the owner's business, and
+    /// a listing that carried link digests would put them in every reader's
+    /// browser.
+    fn listing_row(&self, entry: &IndexEntry, who: &Caller) -> Value {
+        let role = entry.role_of(
+            &who.key,
+            &who.id,
+            "",
+            self.ceiling_for(&who.identity()),
+            crate::clock::now_unix(),
+        );
+        json!({
+            "slug": entry.slug,
+            "title": entry.title,
+            "sha": entry.sha,
+            "created_at": entry.created_at,
+            "updated_at": entry.updated_at,
+            "example": entry.example,
+            "size": entry.size,
+            "source_format": entry.source_format,
+            "visibility": entry.visibility(),
+            "role": role.as_str(),
+        })
     }
 
     /// Enforces the comment policy, then hands the message to the room. When
@@ -248,11 +411,15 @@ impl Server {
         room: &Room,
         mut incoming: RoomMessage,
         address: &str,
-        id: &Identity,
+        who: &Viewer,
         author: &str,
-        is_owner: bool,
     ) -> (Value, bool) {
-        if !self.commenters.allows(&id.login) {
+        let id = &who.id;
+        // The rung, not the switch: a document may name a commenter on a
+        // deployment whose switch names nobody, and may be closed to a caller
+        // the switch would have allowed.
+        let is_owner = who.at_least(Role::Editor);
+        if !who.at_least(Role::Commenter) {
             let reason = if id.is_signed_in() {
                 format!(
                     "@{} may not comment here; this deployment allows {}",
@@ -292,7 +459,11 @@ impl Server {
                 );
             }
         }
-        room.apply(incoming, address, author, is_owner).await
+        // Which link the remark came in on, so an owner can tell reviewer two
+        // from reviewer three without either having signed anything. Empty for
+        // a commenter by name.
+        room.apply(incoming, address, author, &who.link, is_owner)
+            .await
     }
 }
 
@@ -415,7 +586,11 @@ async fn handle(
             Ok(who) => who,
             Err(response) => return response,
         };
-        let documents = server.visible(server.store.list().await, &who);
+        let documents: Vec<Value> = server
+            .visible(server.store.list().await, &who)
+            .iter()
+            .map(|entry| server.listing_row(entry, &who))
+            .collect();
         return write_json(200, &json!({"documents": documents}));
     }
 
@@ -439,12 +614,27 @@ async fn handle(
         }
     }
 
+    // Who a document is shared with. Reading it takes a place on the document;
+    // changing it takes the owner, because sharing is not delegated.
+    if let ["api", "documents", slug, "share"] = parts[..] {
+        return server.handle_share(request, &arrival, slug).await;
+    }
+
+    // Handing a document to somebody else, with its history, its comments and
+    // its quota. Behind its own route because it is not a grant: it is the one
+    // change that leaves the caller with nothing.
+    if let ["api", "documents", slug, "transfer"] = parts[..] {
+        if method == Method::POST {
+            return server.handle_transfer(request, &arrival, slug).await;
+        }
+    }
+
     // The editable source of a document, for whoever may replace it. Only the
     // publisher can act on it, so only the publisher is shown it.
     if let ["api", "documents", slug, "source"] = parts[..] {
         if method == Method::GET {
             return server
-                .handle_source(request.headers(), &arrival, slug)
+                .handle_source(request.headers(), &arrival, slug, request.uri().query())
                 .await;
         }
     }
@@ -454,14 +644,18 @@ async fn handle(
             let Some(entry) = server.store.get(slug).await else {
                 return write_json(404, &json!({"error": "not found"}));
             };
-            let id = server.whoami(request.headers(), &arrival).await;
+            let who = server
+                .viewer(&entry, request.headers(), &arrival, request.uri().query())
+                .await;
+            // A private document is not somebody else's to know exists, so a
+            // stranger gets what a missing document gets. The reader page
+            // turns that into "sign in, if this was shared with you".
+            if !server.may_read(&entry, &who) {
+                return write_json(404, &json!({"error": "not found"}));
+            }
             let (total, open) = server.rooms.get(slug).await.counts().await;
-            let role = entry.role_of(
-                &server.owner(request.headers(), &arrival, &id),
-                &id.id,
-                server.commenters.allows(&id.login),
-            );
-            let owned = role.at_least(crate::store::Role::Editor);
+            let role = who.role;
+            let owned = role.at_least(Role::Editor);
             return write_json(
                 200,
                 &json!({
@@ -481,9 +675,20 @@ async fn handle(
                     // above. `can_edit` and `can_moderate` are the same answer
                     // in the older shape, kept so a cached page still works.
                     "role": role.as_str(),
+                    // Who may read this document, which is a property of the
+                    // document rather than a role anyone holds. The reader
+                    // needs it because a private document is painted into the
+                    // frame rather than served into it -- see `serve_shell`.
+                    "visibility": entry.visibility(),
+                    // Whether the Share dialog is offered, and whether it is
+                    // the owner's to change. Somebody named on the document
+                    // sees who else is in the room; a reader who arrived by
+                    // link sees no Share button at all.
+                    "can_share": role.at_least(Role::Owner),
+                    "can_see_sharing": role.at_least(Role::Owner)
+                        || entry.named_role(&who.id.id).is_some(),
                     // Whether this caller may replace the document, which is what
-                    // an editor does on save. Here that is the same question as
-                    // owning it.
+                    // an editor does on save.
                     "can_edit": owned,
                     // Where the reader should frame this document from, and the
                     // only origin it will accept messages from.
@@ -569,17 +774,23 @@ impl Server {
             return plain(404, "not found");
         };
         let headers = request.headers().clone();
-        let id = self.whoami(&headers, arrival).await;
+        // A browser cannot set a header on a socket handshake, so the link key
+        // rides in the query string. Over TLS that is seen by this server and
+        // by nobody else, and what is logged anywhere is the digest.
+        let query = request.uri().query().map(str::to_string);
+        let who = self
+            .viewer(&entry, &headers, arrival, query.as_deref())
+            .await;
+        // A private document answers a stranger exactly as a missing one does,
+        // here as everywhere else.
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let id = who.id.clone();
         let author = self.comment_author(&headers, arrival, &id);
         // What this caller may do here, asked once: the `y-*` gate and the
         // moderation of anyone else's comment are both the editor rung.
-        let is_owner = entry
-            .role_of(
-                &self.owner(&headers, arrival, &id),
-                &id.id,
-                self.commenters.allows(&id.login),
-            )
-            .at_least(crate::store::Role::Editor);
+        let is_owner = who.at_least(Role::Editor);
         let address = client_address(peer, &headers);
 
         let (mut parts, _body) = request.into_parts();
@@ -593,7 +804,7 @@ impl Server {
             .max_message_size(1 << 20)
             .on_upgrade(move |socket| async move {
                 server
-                    .run_socket(socket, room, address, id, author, is_owner)
+                    .run_socket(socket, room, address, who, author, is_owner)
                     .await;
             })
             .into_response()
@@ -604,7 +815,7 @@ impl Server {
         socket: WebSocket,
         room: Arc<Room>,
         address: String,
-        id: Identity,
+        who: Viewer,
         author: String,
         is_owner: bool,
     ) {
@@ -754,7 +965,7 @@ impl Server {
             }
 
             let (result, ok) = self
-                .apply_from(&room, incoming, &address, &id, &author, is_owner)
+                .apply_from(&room, incoming, &address, &who, &author)
                 .await;
             if !ok {
                 if tx.send(Outgoing::Text(result.to_string())).await.is_err() {
@@ -808,15 +1019,15 @@ impl Server {
         };
         let room = self.rooms.get(slug).await;
         let headers = request.headers().clone();
-        let id = self.whoami(&headers, arrival).await;
-        let author = self.comment_author(&headers, arrival, &id);
-        let is_owner = entry
-            .role_of(
-                &self.owner(&headers, arrival, &id),
-                &id.id,
-                self.commenters.allows(&id.login),
-            )
-            .at_least(crate::store::Role::Editor);
+        let query = request.uri().query().map(str::to_string);
+        let who = self
+            .viewer(&entry, &headers, arrival, query.as_deref())
+            .await;
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        let author = self.comment_author(&headers, arrival, &who.id);
+        let is_owner = who.at_least(Role::Editor);
 
         match *request.method() {
             Method::GET => write_json(
@@ -835,7 +1046,7 @@ impl Server {
                 };
                 let address = client_address(peer, &headers);
                 let (result, ok) = self
-                    .apply_from(&room, incoming, &address, &id, &author, is_owner)
+                    .apply_from(&room, incoming, &address, &who, &author)
                     .await;
                 if ok {
                     room.broadcast(&result).await;
@@ -1185,7 +1396,14 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        if self.store.get(slug).await.is_none() {
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        // The signature says this link was minted here; it does not say who is
+        // holding it. Who may read is asked again, from the request itself,
+        // which is the same rule the socket answers `y-open` under.
+        let who = self.viewer(&entry, headers, arrival, query).await;
+        if !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
         let fields: HashMap<String, String> = query
@@ -1221,13 +1439,25 @@ impl Server {
 
     /// The source of a document, which is the document. Readable by anyone
     /// who may read it.
-    async fn handle_source(&self, _headers: &HeaderMap, _arrival: &Arrival, slug: &str) -> Reply {
+    async fn handle_source(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
         let Some(entry) = self.store.get(slug).await else {
             return write_json(404, &json!({"error": "not found"}));
         };
+        // "Anyone who may read the document" is the reader role as this spec
+        // defines it, which for a private document is the people named on it.
+        let who = self.viewer(&entry, headers, arrival, query).await;
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
         // The source is readable by anyone who may read the document. It has
         // to be: the browser cannot render what it is not given, and nothing
         // rendered is stored any more. `01-SPEC-history.md` accepts that and
@@ -1257,6 +1487,341 @@ impl Server {
                 "format": format, "source": source,
             }),
         )
+    }
+
+    /// Who a document is shared with, and -- for its owner -- the changes to
+    /// that. Reading takes a place on the document by name, so a commenter can
+    /// see who else is in the room; a reader who arrived by link is not shown
+    /// the other reviewers, which is most of the point of a blind review.
+    /// Writing takes the owner: an editor cannot share, because the owner is
+    /// the one whose quota and whose name are on the document.
+    async fn handle_share(&self, request: Request<Body>, arrival: &Arrival, slug: &str) -> Reply {
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return write_json(404, &json!({"error": "not found"}));
+        };
+        let headers = request.headers().clone();
+        let method = request.method().clone();
+        let query = request.uri().query().map(str::to_string);
+        let who = self
+            .viewer(&entry, &headers, arrival, query.as_deref())
+            .await;
+        let owner = who.at_least(Role::Owner);
+        // Everything here answers 404 rather than 403 to a caller with no
+        // place on the document, on the same reasoning the delete route
+        // follows: a guessed slug should not tell you it is there.
+        if !owner && entry.named_role(&who.id.id).is_none() {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        if method == Method::GET {
+            return write_json(200, &self.sharing_json(&entry, owner));
+        }
+        if method != Method::POST {
+            return plain(405, "method not allowed");
+        }
+        if cross_site_refused(&headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if !owner {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+
+        let Ok(body) = to_bytes(request.into_body(), 1 << 16).await else {
+            return write_json(400, &json!({"error": "bad request"}));
+        };
+        let Ok(asked) = serde_json::from_slice::<ShareRequest>(&body) else {
+            return write_json(400, &json!({"error": "bad request"}));
+        };
+
+        // A grant by name needs the account behind the name, because a grant
+        // is keyed on the numeric id: a login can be renamed and the id
+        // cannot. That is one question to GitHub, asked before anything is
+        // written.
+        let mut named: Option<(Identity, Role)> = None;
+        if let Some(grant) = &asked.grant {
+            let Some(role) = Role::parse(&grant.role) else {
+                return write_json(400, &json!({"error": "a grant is 'commenter' or 'editor'"}));
+            };
+            let Some(account) = self.accounts.lookup(&grant.login).await else {
+                return write_json(
+                    404,
+                    &json!({"error": format!("github has no account called @{}", clean(grant.login.trim().trim_start_matches('@'), 64))}),
+                );
+            };
+            if let Err(refusal) = self.grant_allowed(&account, role) {
+                return write_json(403, &json!({"error": refusal}));
+            }
+            named = Some((account, role));
+        }
+
+        // A new link's key exists for exactly as long as this response: the
+        // document keeps its digest, and there is no second chance to read it.
+        let mut minted: Option<(String, LinkGrant)> = None;
+        if let Some(wanted) = &asked.link {
+            let Some(role) = Role::parse(&wanted.role) else {
+                return write_json(400, &json!({"error": "a link is 'commenter' or 'editor'"}));
+            };
+            if let Err(refusal) = self.link_allowed(role) {
+                return write_json(403, &json!({"error": refusal}));
+            }
+            let until = match link_expiry(&wanted.until) {
+                Ok(until) => until,
+                Err(message) => return write_json(400, &json!({"error": message})),
+            };
+            let key = mint_link_key();
+            minted = Some((
+                key.clone(),
+                LinkGrant {
+                    hash: hash_link_key(&key),
+                    role: role.as_str().to_string(),
+                    label: clean(wanted.label.trim(), 80),
+                    since: crate::clock::timestamp(),
+                    until,
+                },
+            ));
+        }
+
+        if let Some(visibility) = &asked.visibility {
+            if !is_visibility(visibility) {
+                return write_json(
+                    400,
+                    &json!({"error": "visibility is 'link', 'private' or 'listed'"}),
+                );
+            }
+            if visibility == VISIBILITY_LISTED && !self.listing {
+                return write_json(
+                    403,
+                    &json!({"error": "this deployment has no public listing"}),
+                );
+            }
+        }
+
+        let revoke = asked.revoke.clone().unwrap_or_default();
+        let updated = self
+            .store
+            .modify(slug, |entry| {
+                if let Some(visibility) = &asked.visibility {
+                    entry.visibility = visibility.clone();
+                }
+                if let Some((account, role)) = &named {
+                    // One person holds one role here, so a re-grant moves them
+                    // rather than leaving them on two rows.
+                    entry.editors.retain(|grant| grant.id != account.id);
+                    entry.commenters.retain(|grant| grant.id != account.id);
+                    let grant = Grant {
+                        id: account.id.clone(),
+                        login: account.login.clone(),
+                        since: crate::clock::timestamp(),
+                    };
+                    match role {
+                        Role::Editor => entry.editors.push(grant),
+                        _ => entry.commenters.push(grant),
+                    }
+                }
+                if !revoke.trim().is_empty() && !revoke_from(entry, revoke.trim()) {
+                    return Err(format!("nothing shared with {:?} to revoke", revoke.trim()));
+                }
+                if let Some((_, link)) = &minted {
+                    entry.links.push(link.clone());
+                }
+                Ok(())
+            })
+            .await;
+        let entry = match updated {
+            Ok(entry) => entry,
+            Err(ModifyError::NotFound) => return write_json(404, &json!({"error": "not found"})),
+            Err(ModifyError::Refused(message)) => {
+                return write_json(400, &json!({"error": message}))
+            }
+            Err(ModifyError::Storage(err)) => {
+                eprintln!("could not record the sharing of {slug}: {err}");
+                return write_json(500, &json!({"error": "could not record the change"}));
+            }
+        };
+        let mut answer = self.sharing_json(&entry, true);
+        if let Some((key, link)) = minted {
+            // Shown once, and said to be: the document holds the digest and
+            // nothing that could recover the key.
+            answer["key"] = json!(key);
+            answer["key_id"] = json!(link_id(&link.hash));
+        }
+        write_json(200, &answer)
+    }
+
+    /// Everything the share dialog draws: the document's visibility, the
+    /// people on it, the links, and what this deployment's switches will let
+    /// the owner offer. A link's key is never here -- only what it is called
+    /// and when it stops working.
+    fn sharing_json(&self, entry: &IndexEntry, owner: bool) -> Value {
+        let now = crate::clock::now_unix();
+        let people = |grants: &Vec<Grant>| -> Vec<Value> {
+            grants
+                .iter()
+                .map(|grant| json!({"login": grant.login, "id": grant.id, "since": grant.since}))
+                .collect()
+        };
+        let links: Vec<Value> = entry
+            .links
+            .iter()
+            .map(|link| {
+                json!({
+                    "id": link_id(&link.hash),
+                    "role": link.role,
+                    "label": link.label,
+                    "since": link.since,
+                    "until": link.until,
+                    "expired": !link.live_at(now),
+                })
+            })
+            .collect();
+        json!({
+            "slug": entry.slug,
+            "visibility": entry.visibility(),
+            // A visitor's key names a browser rather than a person, and is the
+            // same value that owns their other uploads, so it is not a thing to
+            // print: the dialog says "this browser" instead.
+            "owner": {
+                "login": if entry.publisher.starts_with(VISITOR_PREFIX) {
+                    String::new()
+                } else {
+                    entry.publisher.clone()
+                },
+                "id": entry.publisher_id,
+                "visitor": entry.publisher.starts_with(VISITOR_PREFIX),
+            },
+            "editors": people(&entry.editors),
+            "commenters": people(&entry.commenters),
+            // The links are the owner's business: a commenter reading this
+            // dialog sees who is named, not how many strangers hold a key.
+            "links": if owner { json!(links) } else { json!([]) },
+            // Whether this caller may change any of it, which is the
+            // difference between the dialog and a read-only view of it.
+            "can_share": owner,
+            // What the deployment's switches allow, so the dialog offers only
+            // the choices that would actually be accepted.
+            "publishers": self.publishers.describe(),
+            "commenters_policy": self.commenters.describe(),
+            "link_editor": self.publishers.public,
+            "link_commenter": self.commenters.public,
+            "listing": self.listing,
+        })
+    }
+
+    /// Whether the deployment's switches allow this account to be named in
+    /// this role. The refusal names the switch, because the answer to it is
+    /// the operator's flag rather than anything about the document.
+    fn grant_allowed(&self, account: &Identity, role: Role) -> Result<(), String> {
+        match role {
+            Role::Editor if !self.publishers.allows(&account.login) => Err(format!(
+                "@{} may not edit here; this deployment's --publishers allows {}",
+                account.login,
+                self.publishers.describe()
+            )),
+            Role::Commenter if !self.commenters.allows(&account.login) => Err(format!(
+                "@{} may not comment here; this deployment's --commenters allows {}",
+                account.login,
+                self.commenters.describe()
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// The same question for a link, which names nobody: it may only carry a
+    /// role the switch grants without a sign-in. This is where "a link cannot
+    /// make an editor unless the server lets anyone publish" falls out -- an
+    /// edit made under a link has no name behind it, and the history would
+    /// record `by: nobody`.
+    fn link_allowed(&self, role: Role) -> Result<(), String> {
+        match role {
+            Role::Editor if !self.publishers.public => Err(format!(
+                "a link cannot edit here; this deployment's --publishers allows {}",
+                self.publishers.describe()
+            )),
+            Role::Commenter if !self.commenters.public => Err(format!(
+                "a link cannot comment here; this deployment's --commenters allows {}",
+                self.commenters.describe()
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Hands a document to another account: its history, its comments and its
+    /// quota go with it, because all three are counted against the publisher.
+    /// The new owner must satisfy `--publishers`, since they are about to be
+    /// the person putting this document on the server.
+    async fn handle_transfer(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        if cross_site_refused(request.headers(), arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return write_json(404, &json!({"error": "not found"}));
+        };
+        let headers = request.headers().clone();
+        let who = self.viewer(&entry, &headers, arrival, None).await;
+        if !who.at_least(Role::Owner) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        let Ok(body) = to_bytes(request.into_body(), 1 << 16).await else {
+            return write_json(400, &json!({"error": "bad request"}));
+        };
+        #[derive(Deserialize, Default)]
+        struct Body_ {
+            #[serde(default)]
+            to: String,
+        }
+        let asked: Body_ = serde_json::from_slice(&body).unwrap_or_default();
+        if asked.to.trim().is_empty() {
+            return write_json(400, &json!({"error": "name the account to transfer to"}));
+        }
+        let Some(account) = self.accounts.lookup(&asked.to).await else {
+            return write_json(
+                404,
+                &json!({"error": format!("github has no account called @{}", clean(asked.to.trim().trim_start_matches('@'), 64))}),
+            );
+        };
+        if !self.publishers.allows(&account.login) {
+            return write_json(
+                403,
+                &json!({"error": format!(
+                    "@{} may not publish here; this deployment's --publishers allows {}",
+                    account.login, self.publishers.describe()
+                )}),
+            );
+        }
+        let moved = self
+            .store
+            .modify(slug, |entry| {
+                entry.publisher = account.login.clone();
+                entry.publisher_id = account.id.clone();
+                // The new owner holds everything by owning it, so a grant to
+                // them is a row that no longer says anything.
+                entry.editors.retain(|grant| grant.id != account.id);
+                entry.commenters.retain(|grant| grant.id != account.id);
+                Ok(())
+            })
+            .await;
+        match moved {
+            Ok(entry) => write_json(
+                200,
+                &json!({"slug": entry.slug, "owner": entry.publisher, "title": entry.title}),
+            ),
+            Err(ModifyError::NotFound) => write_json(404, &json!({"error": "not found"})),
+            Err(ModifyError::Refused(message)) => write_json(400, &json!({"error": message})),
+            Err(ModifyError::Storage(err)) => {
+                eprintln!("could not transfer {slug}: {err}");
+                write_json(500, &json!({"error": "could not record the change"}))
+            }
+        }
     }
 
     async fn handle_delete(&self, headers: &HeaderMap, arrival: &Arrival, slug: &str) -> Reply {
@@ -1295,9 +1860,12 @@ impl Server {
     /// thing on either side that touches the DOM. What changed is where the
     /// HTML comes from.
     async fn serve_shell(&self, arrival: &Arrival, slug: &str) -> Reply {
-        if !self.valid_slug(slug) || self.store.get(slug).await.is_none() {
+        if !self.valid_slug(slug) {
             return plain(404, "not found");
         }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
         let reader = arrival.reader_origin();
         // A document whose format is `html` is sent as it is. It has to be:
         // its renderer is the identity, and a notebook or a Quarto page
@@ -1307,9 +1875,20 @@ impl Server {
         // reader sees an edit to it on their next load rather than as it is
         // typed. Every other format is rendered by the browser into the empty
         // shell below.
+        //
+        // A private document is the exception, and has to be. This origin
+        // shares no cookie with the reader's -- that is the whole point of the
+        // split -- so there is no identity here to check `private` against,
+        // and bytes served from here are served to whoever asks. So a private
+        // document is never sent from here whatever its format: it gets the
+        // empty shell, and the reader paints it in over the channel that does
+        // carry an identity. The cost is that a private HTML document's own
+        // scripts do not run, because painting sets innerHTML; a document that
+        // needs them is one to publish with the link rather than privately.
         let room = self.rooms.get(slug).await;
         let format = room.format().await;
-        let page = if format.is_empty() || format == "html" {
+        let private = entry.visibility() == VISIBILITY_PRIVATE;
+        let page = if !private && (format.is_empty() || format == "html") {
             room.source().await.into_bytes()
         } else {
             b"<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
@@ -1338,6 +1917,16 @@ impl Server {
 
     async fn serve_document(&self, arrival: &Arrival, slug: &str, digest: &str) -> Reply {
         if !self.valid_slug(slug) || !is_sha(digest) {
+            return plain(404, "not found");
+        }
+        // As in `serve_shell`: this origin has no identity to check `private`
+        // against, so a private document is not served from it at all.
+        if self
+            .store
+            .get(slug)
+            .await
+            .is_some_and(|entry| entry.visibility() == VISIBILITY_PRIVATE)
+        {
             return plain(404, "not found");
         }
         // Where the bytes come from is a separate question from what this
@@ -1459,6 +2048,22 @@ impl Server {
                     Ok(who) => who,
                     Err(_) => return Some(plain(502, "github would not say who you are")),
                 };
+                // What this browser uploaded before it signed in is now this
+                // account's: the publisher is rewritten and the quota moves
+                // with it. This is the answer to "I cleared my cookies and my
+                // documents are gone", which the README could only warn about.
+                // A document with no publisher at all is nobody's and is left
+                // alone. A failure here is not a reason to refuse the sign-in:
+                // the documents are still readable at their links, and the
+                // next sign-in adopts them.
+                let visitor = self.owner(headers, arrival, &Identity::anonymous());
+                if !visitor.is_empty() {
+                    match self.store.adopt(&visitor, &who.login, &who.id).await {
+                        Ok(0) => {}
+                        Ok(moved) => println!("adopted {moved} document(s) for @{}", who.login),
+                        Err(err) => eprintln!("could not adopt @{}'s documents: {err}", who.login),
+                    }
+                }
                 let mut response = redirect(&local_path(&next));
                 let session = sign_session(
                     &self.key,
@@ -1572,6 +2177,111 @@ struct Upload {
     /// here: nothing derived is stored.
     source: String,
     source_format: String,
+}
+
+/// What one call to the share route asks for. Every field is optional, and
+/// several may arrive together: the dialog changes visibility and adds a
+/// person in one round trip when somebody does both.
+#[derive(Deserialize, Default)]
+struct ShareRequest {
+    #[serde(default)]
+    visibility: Option<String>,
+    #[serde(default)]
+    grant: Option<NamedGrant>,
+    /// A login, or the first characters of a link's id.
+    #[serde(default)]
+    revoke: Option<String>,
+    #[serde(default)]
+    link: Option<LinkRequest>,
+}
+
+#[derive(Deserialize, Default)]
+struct NamedGrant {
+    #[serde(default)]
+    login: String,
+    #[serde(default)]
+    role: String,
+}
+
+#[derive(Deserialize, Default)]
+struct LinkRequest {
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    label: String,
+    /// A duration such as `180d` or `24h`, `never` for a link that does not
+    /// expire, or absent for the default.
+    #[serde(default)]
+    until: String,
+}
+
+/// What a link is called in the dialog and on the command line: the first
+/// characters of its digest, which is the only thing about it the document
+/// keeps. Long enough that two links on one document do not collide, short
+/// enough to type into `--revoke`.
+pub fn link_id(hash: &str) -> String {
+    hash.chars().take(12).collect()
+}
+
+/// When a new link stops working. Absent means the default, `never` means it
+/// does not expire, and anything else is a duration the retention flag already
+/// knows how to read.
+fn link_expiry(asked: &str) -> Result<String, String> {
+    let asked = asked.trim();
+    if asked.eq_ignore_ascii_case("never") {
+        return Ok(String::new());
+    }
+    let seconds = if asked.is_empty() {
+        LINK_DEFAULT_SECONDS
+    } else {
+        crate::retention::parse_retention(asked)
+            .map_err(|_| "an expiry is a duration such as 180d or 24h, or 'never'".to_string())?
+    };
+    if seconds <= 0 {
+        return Err("an expiry is a duration such as 180d or 24h, or 'never'".to_string());
+    }
+    Ok(crate::clock::format_unix(
+        crate::clock::now_unix() + seconds,
+    ))
+}
+
+/// Removes one grant, by the login it names or by the first characters of a
+/// link's id. Returns whether anything went, so a revoke that matched nothing
+/// says so rather than reporting success.
+fn revoke_from(entry: &mut IndexEntry, asked: &str) -> bool {
+    let login = asked.trim_start_matches('@').to_lowercase();
+    let before = entry.editors.len() + entry.commenters.len() + entry.links.len();
+    entry
+        .editors
+        .retain(|grant| !grant.login.eq_ignore_ascii_case(&login));
+    entry
+        .commenters
+        .retain(|grant| !grant.login.eq_ignore_ascii_case(&login));
+    // A prefix, so the id `list` prints is enough; but not a single character,
+    // which would revoke more than whoever typed it meant.
+    if asked.len() >= 4 {
+        entry
+            .links
+            .retain(|link| !link.hash.starts_with(&asked.to_lowercase()));
+    }
+    before != entry.editors.len() + entry.commenters.len() + entry.links.len()
+}
+
+/// The digest a link key is known by. Empty in, empty out: no link at all is
+/// not the same question as a link that does not match.
+pub fn hash_link_key(key: &str) -> String {
+    let key = key.trim();
+    if key.is_empty() {
+        return String::new();
+    }
+    hex::encode(Sha256::digest(key.as_bytes()))
+}
+
+/// A new link key: 256 bits from the same source every other secret here comes
+/// from, well past the 128 the spec asks for. It is returned once, to be shown
+/// once; the document keeps only its digest.
+pub fn mint_link_key() -> String {
+    hex::encode(crate::auth::random_bytes(32))
 }
 
 pub fn slug_pattern(config: &Configuration) -> regex::Regex {

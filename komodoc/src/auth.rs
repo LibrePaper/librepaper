@@ -425,6 +425,46 @@ pub async fn login_for(token: &str) -> Result<Identity, String> {
     })
 }
 
+/// Turns a GitHub login into the account behind it. A grant by name is keyed
+/// on the numeric id -- a login can be renamed, the id cannot -- so naming a
+/// coauthor means asking GitHub who that name is. It is a trait rather than a
+/// function so the tests can answer without a network.
+#[async_trait::async_trait]
+pub trait Accounts: Send + Sync {
+    async fn lookup(&self, login: &str) -> Option<Identity>;
+}
+
+/// The real one: GitHub's public user endpoint, which needs no token.
+pub struct GithubAccounts;
+
+#[async_trait::async_trait]
+impl Accounts for GithubAccounts {
+    async fn lookup(&self, login: &str) -> Option<Identity> {
+        let login = login.trim().trim_start_matches('@');
+        if login.is_empty() || !login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return None;
+        }
+        let response = client()
+            .get(format!("https://api.github.com/users/{login}"))
+            .header("user-agent", USER_AGENT)
+            .header("accept", "application/vnd.github+json")
+            .send()
+            .await
+            .ok()?;
+        if response.status().as_u16() != 200 {
+            return None;
+        }
+        let user: GithubUser = response.json().await.ok()?;
+        if user.login.is_empty() {
+            return None;
+        }
+        Some(Identity {
+            login: user.login.to_lowercase(),
+            id: user.id.to_string(),
+        })
+    }
+}
+
 /// Keeps bearer tokens from costing a GitHub call per request. Positive
 /// answers are cached longer than negative ones, so a token that is revoked or
 /// was never valid does not sit trusted for as long as one that is.

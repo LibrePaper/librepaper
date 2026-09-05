@@ -407,6 +407,128 @@ async function run() {
     20000,
   );
   check("a document that does not compile says so rather than showing nothing", told, told || "");
+
+  /* --- 6. sharing: the key's path through the browser ---------------------- */
+
+  // The half of `03-SPEC-sharing.md` that only a browser can check: a key
+  // arriving in the fragment, being kept, being cleaned out of the address
+  // bar, and being presented on every later request for that document.
+  const alice = sessionCookie("alice");
+  const shared = await publish(
+    { title: "Under Review", source: "# Under Review\n\nThe draft.\n", source_format: "markdown" },
+    alice,
+  );
+  const minted = await fetch(`${BASE}/api/documents/${shared.slug}/share`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-komodoc-client": "1",
+      cookie: `komodoc_session=${alice}`,
+    },
+    body: JSON.stringify({ link: { role: "commenter", label: "reviewer 2" } }),
+  }).then((r) => r.json());
+  check("the share route mints a key", Boolean(minted.key), JSON.stringify(minted).slice(0, 120));
+
+  // A reviewer's browser: no account, and the key in the fragment.
+  const reviewer = await openTab(`${BASE}/docs/${shared.slug}#k=${minted.key}`, [], {
+    ownProfile: true,
+  });
+  const kept = await until("the key is kept and the bar cleaned", async () => {
+    const state = await reviewer.eval(`
+      return {
+        hash: location.hash,
+        stored: JSON.parse(localStorage.getItem("komodoc-keys") || "{}")["${shared.slug}"] || "",
+        text: document.body.innerText,
+      };
+    `);
+    return state.stored && state.text.includes("Under Review") ? state : null;
+  });
+  check("a link key is taken from the fragment and kept in this browser", kept?.stored === minted.key);
+  check(
+    "the visible URL is cleaned once the key is stored",
+    kept && kept.hash === "",
+    kept ? `hash: ${kept.hash}` : "",
+  );
+
+  // And it is presented on the requests that follow, which is what makes the
+  // role real rather than remembered.
+  const asReviewer = await until("the role arrives", async () => {
+    const role = await reviewer.eval(`
+      const response = await fetch("/api/documents/${shared.slug}", {
+        headers: { "X-Komodoc-Key": JSON.parse(localStorage.getItem("komodoc-keys"))["${shared.slug}"] },
+      });
+      return (await response.json()).role;
+    `);
+    return role || null;
+  });
+  check("the key carries its role on every later request", asReviewer === "commenter", asReviewer || "");
+
+  // Copying the link puts the key back, so a link copied here is the link
+  // that was shared.
+  const copied = await reviewer.eval(`
+    const keys = JSON.parse(localStorage.getItem("komodoc-keys"));
+    return location.origin + "/docs/${shared.slug}#k=" + encodeURIComponent(keys["${shared.slug}"]);
+  `);
+  check("the copied link carries the key back", copied.endsWith(`#k=${minted.key}`));
+
+  /* --- 7. a private HTML document is painted rather than served ------------ */
+
+  // The documents origin holds no sign-in, so it never serves a private
+  // document's bytes. The reader paints them in over the socket instead, which
+  // is the one path that carries an identity -- at the cost of the document's
+  // own scripts, which is what the second check below pins.
+  const secretPage =
+    '<!doctype html><html><head><title>Private Draft</title></head><body>' +
+    '<h1>Private Draft</h1><p id="p">the private text</p>' +
+    '<script>document.title = "a script ran"</script></body></html>';
+  const secret = await publish(
+    { title: "Private Draft", source: secretPage, source_format: "html" },
+    alice,
+  );
+  await fetch(`${BASE}/api/documents/${secret.slug}/share`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-komodoc-client": "1",
+      cookie: `komodoc_session=${alice}`,
+    },
+    body: JSON.stringify({ visibility: "private" }),
+  });
+
+  const bare = await fetch(`${BASE}/raw/${secret.slug}/`, {
+    headers: { host: `docs.localhost:${PORT}` },
+    redirect: "manual",
+  })
+    .then((r) => r.text())
+    .catch(() => "");
+  check(
+    "the documents origin serves no private document's text",
+    !bare.includes("the private text"),
+    bare.slice(0, 80),
+  );
+
+  const ownerOfSecret = await openTab(`${BASE}/docs/${secret.slug}`, [
+    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+  ]);
+  const shown = await until("the private document is painted", async () =>
+    (await ownerOfSecret.evalInFrame("return document.body.innerText", secret.slug))?.includes(
+      "the private text",
+    ),
+  );
+  check(
+    "a private document is painted into the frame by the reader",
+    shown,
+    shown ? "" : `console: ${ownerOfSecret.console.slice(-3).join(" | ")}`,
+  );
+
+  // A stranger gets what a deleted document gets, and is told the one useful
+  // thing: that signing in might help.
+  const stranger = await openTab(`${BASE}/docs/${secret.slug}`, [], { ownProfile: true });
+  const refused = await until("the stranger is refused", async () => {
+    const text = await stranger.eval(`return document.body.innerText`);
+    return text.includes("not found") ? text : null;
+  });
+  check("a private document tells a stranger nothing", Boolean(refused), (refused || "").slice(0, 90));
 }
 
 /* ------------------------------------------------------------------ report */

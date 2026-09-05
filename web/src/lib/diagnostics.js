@@ -1,7 +1,7 @@
 // When a diagnostic is painted.
 //
 // Half of what a compiler calls an error is a construct that is not finished
-// being typed, so `02-SPEC-diagnostics.md` asks for an asymmetry: from clean
+// being typed, so diagnostics are painted with an asymmetry: from clean
 // to red at reading speed, from red to clean at typing speed. A diagnostic is
 // painted only once the source has been quiet for `delay`, **measured from the
 // keystroke** rather than from the render that noticed it -- a render takes as

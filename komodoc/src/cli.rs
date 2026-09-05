@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::auth::{login_for, GITHUB_DEVICE, GITHUB_TOKEN};
 use crate::config::Configuration;
-use crate::http::{detail_of, get_json, post_json, send, text, truncate};
+use crate::http::{detail_of, get_json, get_with_token, post_json, send, text, truncate};
 use crate::render::{
     counted, is_html, is_markdown, is_typst, render_typst_document, report, title_from_html,
     title_from_markdown, title_from_typst,
@@ -410,8 +410,17 @@ pub async fn list_documents(server_flag: String) {
         let mut updated = text(document, "updated_at");
         updated.truncate(10);
         let slug = text(document, "slug");
+        // A document shared with you by name is in your list, and says what
+        // you hold on it. Your own say nothing: everything here without a mark
+        // is yours, which is what this listing has always meant.
+        let role = text(document, "role");
+        let held = if role == "owner" || role.is_empty() {
+            String::new()
+        } else {
+            format!("  ({role})")
+        };
         println!(
-            "{:<width$}  {}  {}",
+            "{:<width$}  {}  {}{held}",
             ids.get(&slug).cloned().unwrap_or_default(),
             updated,
             text(document, "title")
@@ -555,6 +564,173 @@ pub fn open_url(target: &str) {
     if let Err(err) = std::process::Command::new(command).args(args).spawn() {
         die(format!("could not open {target}: {err}"));
     }
+}
+
+/* --------------------------------------------------------------- sharing */
+
+// Rights live on the document rather than in the server's flags: a document
+// names its coauthors and its reviewers, and the flags are the ceiling it may
+// not open past. These commands are that, on the command line.
+
+/// `komodoc share c9k` with nothing else prints what the document says; with a
+/// flag, changes it and prints the result.
+#[allow(clippy::too_many_arguments)] // one flag per thing a share can change
+pub async fn share_document(
+    identifier: &str,
+    server_flag: String,
+    editor: String,
+    commenter: String,
+    link: String,
+    label: String,
+    until: String,
+    visibility: String,
+    revoke: String,
+) {
+    let server = server_from(&server_flag);
+    let slug = resolve_identifier(identifier, &server).await;
+    let target = format!("{server}/api/documents/{slug}/share");
+
+    let mut change = json!({});
+    if !editor.is_empty() {
+        change["grant"] = json!({"login": editor, "role": "editor"});
+    }
+    if !commenter.is_empty() {
+        if change.get("grant").is_some() {
+            die("name one person at a time: --editor or --commenter");
+        }
+        change["grant"] = json!({"login": commenter, "role": "commenter"});
+    }
+    if !link.is_empty() {
+        change["link"] = json!({"role": link, "label": label, "until": until});
+    } else if !label.is_empty() || !until.is_empty() {
+        die("--label and --until describe a link; pass --link commenter or --link editor");
+    }
+    if !visibility.is_empty() {
+        change["visibility"] = json!(visibility);
+    }
+    if !revoke.is_empty() {
+        change["revoke"] = json!(revoke);
+    }
+
+    // Nothing to change is a request to see what is there, which needs no
+    // write and no confirmation.
+    let asking = change.as_object().is_some_and(|fields| fields.is_empty());
+    let (status, payload) = if asking {
+        get_with_token(&target, &require_token(), Duration::from_secs(60))
+            .await
+            .unwrap_or_else(|err| die(err))
+    } else {
+        post_json(&target, &change, &require_token(), Duration::from_secs(60))
+            .await
+            .unwrap_or_else(|err| die(err))
+    };
+    if status != 200 {
+        die(format!("share failed ({status}): {}", detail_of(&payload)));
+    }
+
+    // A new link's key is in this response and nowhere else, so it is printed
+    // before anything that might scroll it away, and said to be the only time.
+    if let Some(key) = payload.get("key").and_then(Value::as_str) {
+        println!("{server}/docs/{slug}#k={key}");
+        eprintln!("\n  This link is shown once and cannot be shown again.");
+        eprintln!(
+            "  Revoke it with:  komodoc share {identifier} --revoke {}\n",
+            text(&payload, "key_id")
+        );
+    }
+    print_sharing(&payload, &slug);
+}
+
+fn print_sharing(payload: &Value, slug: &str) {
+    println!("{slug}  {}", text(payload, "visibility"));
+    let owner = payload
+        .get("owner")
+        .map(|owner| text(owner, "login"))
+        .unwrap_or_default();
+    println!(
+        "  owner       {}",
+        if owner.is_empty() {
+            "nobody in particular".to_string()
+        } else {
+            format!("@{owner}")
+        }
+    );
+    for (field, role) in [("editors", "editor"), ("commenters", "commenter")] {
+        for grant in payload
+            .get(field)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let mut since = text(&grant, "since");
+            since.truncate(10);
+            println!("  {role:<11} @{}  {since}", text(&grant, "login"));
+        }
+    }
+    for link in payload
+        .get("links")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        let mut until = text(&link, "until");
+        until.truncate(10);
+        let state = if link.get("expired") == Some(&Value::Bool(true)) {
+            "expired".to_string()
+        } else if until.is_empty() {
+            "no expiry".to_string()
+        } else {
+            format!("until {until}")
+        };
+        let label = text(&link, "label");
+        println!(
+            "  link        {}  {}  {state}{}",
+            text(&link, "id"),
+            text(&link, "role"),
+            if label.is_empty() {
+                String::new()
+            } else {
+                format!("  {label:?}")
+            }
+        );
+    }
+}
+
+/// Hands a document to somebody else: its history, its comments and its quota
+/// go with it. Confirmed like `destroy`, because it is the one other change
+/// that leaves the caller with nothing.
+pub async fn transfer_document(identifier: &str, to: &str, server_flag: String, yes: bool) {
+    let server = server_from(&server_flag);
+    let slug = resolve_identifier(identifier, &server).await;
+    println!("About to transfer on {server}:");
+    println!("  {slug}");
+    println!("  to @{to}, with its history, its comments and its storage quota");
+    println!("\nYou stop being its owner. Only @{to} can share or delete it after this.");
+    if !yes {
+        if !is_terminal_stdin() {
+            die("refusing to transfer without a terminal to confirm at; pass --yes if you are certain");
+        }
+        eprint!("\nType '{slug}' to confirm: ");
+        if read_line() != slug {
+            println!("aborted, nothing was transferred");
+            return;
+        }
+    }
+    let (status, payload) = post_json(
+        &format!("{server}/api/documents/{slug}/transfer"),
+        &json!({"to": to}),
+        &require_token(),
+        Duration::from_secs(60),
+    )
+    .await
+    .unwrap_or_else(|err| die(err));
+    if status != 200 {
+        die(format!(
+            "transfer failed ({status}): {}",
+            detail_of(&payload)
+        ));
+    }
+    println!("{slug} now belongs to @{}", text(&payload, "owner"));
 }
 
 /* ------------------------------------------------------------- destroy */

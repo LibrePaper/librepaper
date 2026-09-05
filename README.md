@@ -142,6 +142,71 @@ c9k  2026-09-04  Markdown: What a Regression Table Is Hiding
 72w  2026-09-04  HTML: A Short Style Guide for Quantitative Writing
 ```
 
+### Share
+
+A document says who may do what to it. There are four roles, as a ladder, each
+including the ones beneath it:
+
+| Role | May |
+| --- | --- |
+| reader | open the document and read its comments |
+| commenter | comment, reply, resolve; delete their own |
+| editor | edit the source; delete any comment |
+| owner | share, transfer, destroy |
+
+Everyone who has the link is a reader, and the server's `--commenters` makes
+them commenters where it is open. Beyond that, a document names people:
+
+```sh
+komodoc share c9k                              # print who it is shared with
+komodoc share c9k --editor annegrandchamp      # a coauthor, by GitHub account
+komodoc share c9k --commenter rmcelreath
+komodoc share c9k --revoke annegrandchamp
+```
+
+A grant by name is to a GitHub account, recorded by its numeric id, so it
+survives a rename and follows the person across browsers. Reviewers of a paper
+often have no GitHub account, and a blind reviewer must not be named at all, so
+a role can also travel in a link:
+
+```sh
+komodoc share c9k --link commenter --label "reviewer 2" --until 180d
+```
+
+That prints one URL with a key in its fragment. A fragment is never sent to a
+server, so the key lands in no access log and on no `Referer` header; the
+document stores only its digest, which is why the key is shown once and cannot
+be shown again. Links expire after six months unless `--until` says otherwise,
+and `komodoc share c9k --revoke <id>` ends one early. A link names nobody, so it
+can only carry a role the deployment already allows without a sign-in: on a
+server that names its publishers, a link cannot edit.
+
+Who may read is a property of the document rather than a role anyone holds:
+
+```sh
+komodoc share c9k --visibility private   # only the people named on it
+komodoc share c9k --visibility listed    # anyone with the link, and on the front page
+komodoc share c9k --visibility link      # anyone with the link; the default
+```
+
+A private document answers a stranger exactly as a deleted one does. Its text
+is painted into the reading frame rather than served to it, because the
+documents host holds no sign-in of yours to check — so a private HTML document's
+own scripts do not run. Publish such a document by link instead.
+
+The owner is one account, because the storage quota and `destroy` both need an
+answer to "whose". Handing it on is its own command, confirmed the way
+`destroy` is:
+
+```sh
+komodoc transfer c9k alice
+```
+
+The document, its history, its comments and its storage quota all move. An
+editor cannot share: the owner is the one whose quota and whose name are on the
+document. In the browser, all of this is the **Share** button in the reader,
+and `komodoc list` marks the documents shared with you with the role you hold.
+
 ### Comment
 
 Open a listed document in your browser for commenting. The ID is the one `list`
@@ -367,7 +432,9 @@ komodoc serve --max-size 8 --quota 500 --storage 10240
 
 Under `--publishers anyone` (see [Rights](#rights)), a browser's quota is tied
 to a cookie rather than an account, so clearing cookies gets a new one;
-`--storage` is the bound that actually holds under that policy.
+`--storage` is the bound that actually holds under that policy. Signing in
+moves what that browser published onto the account, quota and all, so the way
+to stop depending on a cookie is to sign in before clearing it.
 
 ### Rights
 
@@ -394,6 +461,15 @@ GitHub setup; on a host the internet can reach, name the accounts instead.
 so readers can annotate a document straight from its link; use `any` to
 attribute every comment to a GitHub account, or a list to keep a draft among
 named reviewers.
+
+Both flags apply to every document alike, and both are ceilings rather than the
+last word: a document may name its own coauthors and reviewers with
+[Share](#share), and may only ever be stricter than the server it is on.
+Nothing a document says can widen `--publishers` or `--commenters`.
+
+`--no-listing` turns the public front page off. A document whose owner marked
+it `listed` then behaves as an ordinary link, and the share dialog stops
+offering the choice.
 
 ### GitHub OAuth
 
