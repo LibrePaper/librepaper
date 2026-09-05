@@ -2360,8 +2360,9 @@ impl Server {
                     }),
                 ))
             }
-            // The client id is public by design; the CLI asks for it so `login`
-            // needs no configuration of its own.
+            // Kept one release for a CLI from before the terminal flow, which
+            // asks for this before starting GitHub's own device flow. Nothing
+            // in this binary reads it any more.
             "/api/auth/config" => Some(write_json(200, &json!({"client_id": self.app.client_id}))),
             // What this deployment will accept, so the upload page can refuse a
             // 30 MB mistake before it is sent rather than after.
