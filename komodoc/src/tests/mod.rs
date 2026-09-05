@@ -8,6 +8,7 @@ pub use harness::*;
 mod assets;
 mod auth;
 mod blob;
+mod directories;
 pub mod edit;
 mod export;
 mod hardening;

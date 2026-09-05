@@ -430,6 +430,11 @@
   let editor = $state(null);
   let session = $state(null);
   let editing = $state(false);
+  // Which text the editor is bound to. It changes once on a document migrated
+  // from before there were directories: the words arrive in the retired text
+  // and the session then holds them in a file. Keying the component on this is
+  // what binds it to the file rather than to what the file used to be.
+  let sourceEpoch = $state(0);
   let mayEdit = $state(false);
   let sourceFormat = $state("");
   let state = $state(""); // what the editor is saying about itself
@@ -758,7 +763,11 @@
       slug: SLUG,
       mayEdit,
     });
-    session.text.observe(sourceChanged);
+    session.watchSource(sourceChanged);
+    // The text the editor is bound to is not the text it was bound to when a
+    // migrated document's maps arrive. Re-keying the component is what makes
+    // it bind again; the words do not change, only which type holds them.
+    session.onSwap(() => (sourceEpoch += 1));
     room.send(session.open());
     void document_;
   }
@@ -1034,8 +1043,10 @@
   {#if shown.source}
     <section class="editorpane">
       {#if Editor}
-        <Editor bind:this={editor} {session} format={sourceFormat}
-                onchange={sourceChanged} oncaret={followCaret} onsave={reportPersistence} />
+        {#key sourceEpoch}
+          <Editor bind:this={editor} {session} format={sourceFormat}
+                  onchange={sourceChanged} oncaret={followCaret} onsave={reportPersistence} />
+        {/key}
       {/if}
     </section>
   {/if}

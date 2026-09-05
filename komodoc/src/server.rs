@@ -1128,6 +1128,11 @@ impl Server {
                 title: parsed.title,
                 source: parsed.source.clone(),
                 source_format: parsed.source_format.clone(),
+                // One file, so a directory of one file: what it is called
+                // follows from what it is written in, which is the same name
+                // the migration gives a document published before there were
+                // directories.
+                main: crate::room::main_path_for("", &parsed.source_format),
                 owner: who.key,
                 owner_id: who.id,
             })
@@ -1146,13 +1151,23 @@ impl Server {
         // than by the store, because it is the room that owns the document.
         let room = self.rooms.get(&key).await;
         room.set_source(&parsed.source, &parsed.source_format).await;
-        if let Err(err) = room.checkpoint("cli", &entry.publisher).await {
-            eprintln!("warning: could not checkpoint {key}: {err}");
-        }
+        // The checkpoint names itself, and what it is named is the digest of
+        // the tree rather than of the source: a document is a directory, so
+        // what the index points at is the directory this document was at. The
+        // entry `put` returned was written before the tree existed, which is
+        // why the answer takes the checkpoint's own name over it.
+        let sha = match room.checkpoint("cli", &entry.publisher).await {
+            Ok(Some(sha)) => sha,
+            Ok(None) => entry.sha.clone(),
+            Err(err) => {
+                eprintln!("warning: could not checkpoint {key}: {err}");
+                entry.sha.clone()
+            }
+        };
         write_json(
             201,
             &json!({
-                "slug": entry.slug, "title": entry.title, "sha": entry.sha,
+                "slug": entry.slug, "title": entry.title, "sha": sha,
                 "created_at": entry.created_at, "updated_at": entry.updated_at,
                 "url": format!("/docs/{}", entry.slug),
             }),
@@ -1170,7 +1185,7 @@ impl Server {
         who: &Caller,
         existing: &IndexEntry,
     ) -> Result<IndexEntry, Reply> {
-        if parsed.source.len() > self.config.max_html {
+        if parsed.source.len() > self.config.max_document {
             return Err(write_json(
                 413,
                 &json!({"error": "that document is too large"}),
@@ -1222,7 +1237,7 @@ impl Server {
     /// store what comes back.
     #[allow(clippy::result_large_err)] // as publisher: the error is a response
     async fn read_upload(&self, request: Request<Body>) -> Result<Upload, Reply> {
-        let max_html = self.config.max_html;
+        let max_document = self.config.max_document;
         let content_type = header_of(request.headers(), "content-type").unwrap_or_default();
         let (mut title, mut slug, mut html) = (String::new(), String::new(), String::new());
         let (mut source, mut source_format) = (String::new(), String::new());
@@ -1232,7 +1247,7 @@ impl Server {
             // this an oversized body would be read in full before the HTML
             // limit below is even consulted. The slack covers the part headers
             // and the other fields.
-            let ceiling = max_html + MULTIPART_SLACK;
+            let ceiling = max_document + MULTIPART_SLACK;
             let declared = header_of(request.headers(), "content-length")
                 .and_then(|v| v.parse::<usize>().ok());
             let (parts, body) = request.into_parts();
@@ -1274,7 +1289,7 @@ impl Server {
                                 return Err(write_json(400, &json!({"error": "bad upload"})));
                             }
                         };
-                        html = String::from_utf8_lossy(&bytes[..bytes.len().min(max_html + 1)])
+                        html = String::from_utf8_lossy(&bytes[..bytes.len().min(max_document + 1)])
                             .to_string();
                     }
                     _ => {}
@@ -1304,7 +1319,7 @@ impl Server {
             // be larger than the document limit; the real check is on the
             // decoded html below. Refusing early keeps a huge body from being
             // read at all, and says why rather than failing to parse.
-            let ceiling = max_html * 2 + 1024;
+            let ceiling = max_document * 2 + 1024;
             if let Some(length) =
                 header_of(request.headers(), "content-length").and_then(|v| v.parse::<usize>().ok())
             {
@@ -1354,7 +1369,7 @@ impl Server {
                 &json!({"error": "this deployment cannot store a document in that format"}),
             ));
         }
-        if source.len() > max_html {
+        if source.len() > max_document {
             return Err(write_json(413, &json!({"error": "document too large"})));
         }
 

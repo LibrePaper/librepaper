@@ -11,6 +11,7 @@ mod export;
 mod history;
 mod http;
 mod origins;
+mod paths;
 mod render;
 mod retention;
 mod room;

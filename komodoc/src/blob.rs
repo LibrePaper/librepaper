@@ -327,9 +327,18 @@ pub fn session_key(slug: &str) -> String {
 pub fn history_index_key(slug: &str) -> String {
     format!("history/{slug}/index.json")
 }
-/// One checkpoint: the source bytes, named by their own sha256.
+/// One checkpoint: the tree, named by its own sha256. For a document
+/// checkpointed before a document was a directory, the source bytes
+/// themselves, which is why nothing here needs rewriting -- an entry the
+/// manifest does not mark as a tree is read as a tree of one file.
 pub fn checkpoint_key(slug: &str, sha: &str) -> String {
     format!("history/{slug}/{sha}")
+}
+/// One text a checkpoint names, by the digest of its bytes. Every tree that
+/// mentions that digest shares this one object, so a chapter untouched between
+/// twenty checkpoints is stored once.
+pub fn blob_key(slug: &str, sha: &str) -> String {
+    format!("history/{slug}/blobs/{sha}")
 }
 pub fn history_prefix(slug: &str) -> String {
     format!("history/{slug}/")

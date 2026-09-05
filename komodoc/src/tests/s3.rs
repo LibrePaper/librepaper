@@ -437,12 +437,8 @@ async fn a_server_backed_by_a_bucket() {
     // The document itself is the checkpoint the index names, which a fresh
     // server reads from the bucket without having to hold anything.
     assert_eq!(
-        second
-            .blobs
-            .get(&crate::blob::checkpoint_key(&slug, &entry.sha))
-            .await
-            .unwrap(),
-        markdown.as_bytes()
+        crate::tests::checkpoint_text(second.blobs.as_ref(), &slug, &entry.sha).await,
+        markdown
     );
 
     // And deleting takes komodoc's keys and nothing else.

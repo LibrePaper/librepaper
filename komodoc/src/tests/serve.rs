@@ -356,7 +356,10 @@ async fn unknown_paths_get_the_not_found_page() {
 #[tokio::test]
 async fn oversized_upload_is_refused_by_size() {
     let server = new_test_server().await;
-    let html = format!("<p>{}</p>", "x".repeat(Configuration::default().max_html));
+    let html = format!(
+        "<p>{}</p>",
+        "x".repeat(Configuration::default().max_document)
+    );
     let (status, payload) = post(
         &server.url,
         "/api/documents",

@@ -101,14 +101,8 @@ async fn a_document_is_charged_for_its_source_and_its_history() {
         .expect("the document is in the index");
     // The first checkpoint is the source it was published with, and the index
     // names it.
-    let checkpoint = server
-        .instance
-        .store
-        .blobs
-        .get(&crate::blob::checkpoint_key(&slug, &entry.sha))
-        .await
-        .expect("the source is stored as a checkpoint");
-    assert_eq!(String::from_utf8_lossy(&checkpoint), TEST_MARKDOWN);
+    let checkpoint = checkpoint_text(server.instance.store.blobs.as_ref(), &slug, &entry.sha).await;
+    assert_eq!(checkpoint, TEST_MARKDOWN);
     // Size is the live document plus the checkpoint. It is more than the
     // source alone, because the session state carries the CRDT's bookkeeping,
     // and far less than a rendered page would have added.
@@ -305,7 +299,17 @@ async fn an_html_document_is_stored_once() {
         .get(&crate::blob::checkpoint_key(&slug, &entry.sha))
         .await
         .expect("stored as a checkpoint");
-    assert_eq!(String::from_utf8_lossy(&checkpoint), page);
+    // The checkpoint is the directory; the page is the one file in it.
+    let tree: crate::history::Tree =
+        serde_json::from_slice(&checkpoint).expect("the checkpoint is a tree");
+    let stored = server
+        .instance
+        .store
+        .blobs
+        .get(&crate::blob::blob_key(&slug, &tree.files[&tree.main].sha))
+        .await
+        .expect("the page it names");
+    assert_eq!(String::from_utf8_lossy(&stored), page);
     let found = server
         .instance
         .store

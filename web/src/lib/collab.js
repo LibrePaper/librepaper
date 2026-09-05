@@ -50,8 +50,52 @@ const COLOURS = ["#2f5bd0", "#c2410c", "#15803d", "#7c3aed", "#be123c", "#0e7490
 /// change it.
 export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
   const doc = new Y.Doc();
-  const text = doc.getText("source");
+  // A document is a directory: `files` holds one Y.Text per file under an id
+  // of its own, `paths` says what each of them is called, and `meta.main`
+  // names the one the renderer is run on. Keying the texts by id rather than
+  // by path is what makes a rename free -- the name moves and the text stays
+  // where it is, so a keystroke made during a rename lands where it was always
+  // going to land.
+  const files = doc.getMap("files");
+  const paths = doc.getMap("paths");
+  const meta = doc.getMap("meta");
+  // The text every document was before it was a directory. It is read here and
+  // never written: a session the server has not migrated yet arrives with the
+  // maps empty and this full, and the editor has to show something. The server
+  // migrates it the first time it loads it, and what this browser then sees is
+  // the same words under a name.
+  const legacy = doc.getText("source");
   const awareness = new Awareness(doc);
+
+  // The text the editor and the preview are following, and who is following
+  // it. Which text that is can change under them -- when the maps arrive from
+  // the server, or when somebody names a different main file -- so the
+  // watchers are held here and moved across rather than re-registered by every
+  // caller.
+  let bound = null;
+  const watchers = new Set();
+  const swaps = new Set();
+
+  function mainText() {
+    const id = meta.get("main");
+    const text = id ? files.get(id) : null;
+    return text instanceof Y.Text ? text : legacy;
+  }
+
+  function rebind() {
+    const next = mainText();
+    if (next === bound) return;
+    for (const watcher of watchers) {
+      bound?.unobserve(watcher);
+      next.observe(watcher);
+    }
+    bound = next;
+    for (const swap of swaps) swap();
+  }
+
+  files.observe(rebind);
+  meta.observe(rebind);
+  rebind();
 
   // Updates this browser has made and the server has not yet said are durable,
   // by the number they were sent under.
@@ -127,10 +171,39 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
 
   return {
     doc,
-    text,
+    files,
+    paths,
+    meta,
     awareness,
+    /// The main file's text as it stands. A getter rather than a field,
+    /// because which text that is is not known until the session arrives.
+    get text() {
+      return bound;
+    },
     get joined() {
       return joined;
+    },
+
+    /// The path the main file is known by, which is what its format is read
+    /// from. Empty until the maps arrive.
+    mainPath() {
+      const id = meta.get("main");
+      return (id && paths.get(id)) || "";
+    },
+
+    /// Follows the main file's text, across the text itself being swapped for
+    /// another -- which happens once on every document migrated from before
+    /// there were directories, and again whenever somebody names a different
+    /// main file.
+    watchSource(watcher) {
+      watchers.add(watcher);
+      bound?.observe(watcher);
+    },
+
+    /// Called when the text being followed is a different text, so whoever is
+    /// bound to it can bind again.
+    onSwap(swap) {
+      swaps.add(swap);
     },
 
     /// What to send to join, or to rejoin: what this browser already has, so
@@ -185,7 +258,7 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
     },
 
     text_() {
-      return text.toString();
+      return bound ? bound.toString() : "";
     },
 
     /// Says who this is, for the label on their caret.

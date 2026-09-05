@@ -53,6 +53,15 @@ pub struct IndexEntry {
     /// Empty means there is no source to reopen.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_format: String,
+    /// The path of the document's main file: the one a renderer is run on, and
+    /// the one `source_format` is derived from. A document is a directory, and
+    /// which of its files is the document is declared rather than discovered --
+    /// `\include` and `#import` are not parsed, because TeX cannot be resolved
+    /// statically and a guess that is wrong is worse than a list. Empty on an
+    /// entry written before there were directories, which reads as the one
+    /// file such a document has.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub main: String,
     /// Who may read: `link` (anyone with the link -- the default, written as
     /// empty), `private` (the people named on the document, in any role), or
     /// `listed` (anyone with the link, and shown on the landing page to
@@ -369,6 +378,9 @@ pub struct Publication {
     /// source and the identity for its renderer.
     pub source: String,
     pub source_format: String,
+    /// The path of the main file. A publish of one file is a directory of one
+    /// file, and this is what it is called in it.
+    pub main: String,
     pub owner: String,
     pub owner_id: String,
 }
@@ -494,6 +506,7 @@ impl Store {
             publisher: owner.to_lowercase(),
             publisher_id: owner_id,
             source_format: v.source_format,
+            main: v.main,
             visibility: shared.visibility,
             editors: shared.editors,
             commenters: shared.commenters,
@@ -570,6 +583,7 @@ impl Store {
         sha: Option<&str>,
         size: i64,
         format: &str,
+        main: &str,
     ) -> Result<(), String> {
         let mut state = self.state.lock().await;
         let Some(entry) = state.entries.get(slug).cloned() else {
@@ -584,6 +598,12 @@ impl Store {
         if !format.is_empty() {
             updated.source_format = format.to_string();
         }
+        // Which file is the main one lives in the shared document, where an
+        // editor changes it; the index keeps a copy because the landing page
+        // and the routes read the entry and never open the session.
+        if !main.is_empty() {
+            updated.main = main.to_string();
+        }
         if let Some(sha) = sha {
             updated.sha = sha.to_string();
             updated.updated_at = timestamp();
@@ -591,6 +611,7 @@ impl Store {
         if updated.size == entry.size
             && updated.sha == entry.sha
             && updated.source_format == entry.source_format
+            && updated.main == entry.main
         {
             return Ok(());
         }
