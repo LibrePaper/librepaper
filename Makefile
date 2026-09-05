@@ -26,7 +26,7 @@ WEB     := $(shell find web/src web/public -type f) $(wildcard web/*.html web/pa
 SOURCES := $(shell find engine komodoc -type f -not -path '*/target/*') Cargo.toml README.md
 
 .DEFAULT_GOAL := help
-.PHONY: help build test serve seed examples kill clean snapshot wasm typst fmt web
+.PHONY: help build test smoke serve seed examples kill clean snapshot wasm typst fmt web
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -54,6 +54,14 @@ test: $(WASM) $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cargo fmt --check
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@cargo test --workspace
+
+# The rendered reader, in a real browser. Not part of `test`: it needs the
+# built binary and a chromium, and it starts a server of its own on a
+# temporary directory. It touches no deployment and no data but its own.
+smoke: $(BIN)  ## Drive the reader in headless chromium (needs chromium)
+	@command -v chromium >/dev/null || command -v google-chrome >/dev/null || \
+		{ echo "no chromium to drive; skipping the browser smoke test"; exit 0; }
+	@bun web/scripts/browser-smoke.mjs $(BIN)
 
 fmt:  ## Format every crate
 	@cargo fmt

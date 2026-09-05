@@ -4,6 +4,7 @@
   import { anchorAll, flatten } from "../lib/anchor.js";
   import * as sync from "../lib/sync.js";
   import * as renderers from "../lib/renderers.js";
+  import * as diagnosticsRule from "../lib/diagnostics.js";
   import * as collab from "../lib/collab.js";
   import { openRoom } from "../lib/room.js";
   import { me as whoami, signInHref } from "../lib/api.js";
@@ -449,16 +450,15 @@
   let painted = 0;
   let previewTimer = null;
 
-  // What the last compile said, and the timer that paints it. Half of what a
-  // compiler calls an error is a construct that is not finished being typed,
-  // so a diagnostic appears only after the source has been quiet for longer
-  // than the render debounce -- and a render that succeeds clears every one of
-  // them the moment it lands. From clean to red at reading speed, from red to
-  // clean at typing speed.
-  const DIAGNOSTIC_DELAY = 400;
+  // What the last compile said. When it is painted is `diagnostics.js`'s
+  // rule, and the wait it counts is from the keystroke rather than from the
+  // render that noticed the error, so a slow render does not add its own
+  // length to it. From clean to red at reading speed, from red to clean at
+  // typing speed.
   let diagnostics = $state([]);
-  let held = [];
-  let diagnosticTimer = null;
+  const diagnosticPainter = diagnosticsRule.painter({
+    paint: (list) => paintDiagnostics(list),
+  });
   // Whether the frame has ever shown a page. Until it has, a document that
   // does not compile has nothing to keep on the screen.
   let everPainted = false;
@@ -496,12 +496,44 @@
   // A document whose format is `html` is served into the frame as the page it
   // is, so that the scripts a notebook or a Quarto page carries actually run.
   // Painting over it from here would replace a live page with an inert copy of
-  // itself, so a reader leaves the frame alone; an editor still previews,
-  // which is what the source pane is for and has always been inert.
+  // itself -- `innerHTML` runs no scripts -- so a reader never paints one. It
+  // still sees changes: the frame is served from the live document, so
+  // reloading it is showing the current text, and `refreshFramedPage` below
+  // does that when the text has actually moved and the typing has stopped.
+  //
+  // An editor previewing an HTML document still gets the inert preview, which
+  // is what the source pane has always shown and what keystroke-speed feedback
+  // requires; the two are different jobs.
   const paintsTheFrame = $derived(editing || sourceFormat !== "html");
 
+  // What the frame was showing the last time it was loaded, so a reload
+  // happens when the document has changed and not merely because somebody's
+  // caret moved. Seeded on the first join: the frame was served from the same
+  // live document a moment earlier.
+  let framedSource = null;
+  let framedGeneration = 0;
+
+  function refreshFramedPage() {
+    if (paintsTheFrame || !session || !docsOrigin) return;
+    const source = session.text.toString();
+    if (framedSource === null) {
+      framedSource = source;
+      return;
+    }
+    if (source === framedSource) return;
+    framedSource = source;
+    // A new URL is what makes the frame load again. The response is `no-store`
+    // and the path is the document's own, so this is the same page from the
+    // same origin under the same CSP -- the scripts it carries run exactly as
+    // they did on the first load.
+    frameSrc = `${docsOrigin}/raw/${SLUG}/?v=${++framedGeneration}`;
+  }
+
   async function paintPreview() {
-    if (!paintsTheFrame) return;
+    if (!paintsTheFrame) {
+      refreshFramedPage();
+      return;
+    }
     const mine = ++issued;
     const source = session ? session.text.toString() : "";
     try {
@@ -513,7 +545,6 @@
       // A slower render that resolves late must not paint over a newer one.
       if (mine <= painted) return;
       painted = mine;
-      held = said || [];
       if (html !== null) {
         // The page is what the document says now, so every error said about an
         // earlier state of it is cleared at once. The warnings that came with
@@ -522,18 +553,12 @@
         // keystroke.
         tell({ type: "preview", html });
         everPainted = true;
-        clearTimeout(diagnosticTimer);
-        const warnings = held.filter((d) => d.severity === "warning");
-        paintDiagnostics([]);
-        if (warnings.length) {
-          diagnosticTimer = setTimeout(() => paintDiagnostics(warnings), DIAGNOSTIC_DELAY);
-        }
+        diagnosticPainter.rendered({ page: html, diagnostics: said || [] });
         return;
       }
       // No page: the last one that compiled stays up, and what is said is that
       // it does not compile now, and where -- once the typing has stopped.
-      clearTimeout(diagnosticTimer);
-      diagnosticTimer = setTimeout(() => paintDiagnostics(held), DIAGNOSTIC_DELAY);
+      diagnosticPainter.rendered({ page: null, diagnostics: said || [] });
       // Unless nothing was ever painted, which is what someone who opens the
       // editor on a document that does not compile sees. Then the frame shows
       // the engine's page saying so, with the list on it, styled like a
@@ -558,6 +583,8 @@
   const READER_DEBOUNCE = 1000;
 
   function sourceChanged() {
+    // The keystroke, which is what the diagnostic wait is measured from.
+    diagnosticPainter.typed();
     clearTimeout(previewTimer);
     previewTimer = setTimeout(paintPreview, editing ? 60 : READER_DEBOUNCE);
   }

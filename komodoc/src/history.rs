@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::blob::{history_index_key, BlobError, BlobStore};
+use crate::blob::{history_index_key, BlobError, BlobStore, BlobVersion};
 
 /// One entry in the manifest. The field names are the ones
 /// `01-SPEC-history.md` writes, because the manifest is served to the browser
@@ -90,24 +90,30 @@ impl Manifest {
     }
 }
 
-/// Reads a document's manifest. No manifest is an empty one, which is how a
-/// document with no history yet reads; a manifest that exists and cannot be
-/// parsed is an error, because carrying on would write a near-empty one over
-/// a real history.
-pub async fn load(blobs: &dyn BlobStore, slug: &str) -> Result<Manifest, String> {
-    match blobs.get(&history_index_key(slug)).await {
-        Err(BlobError::NotFound) => Ok(Manifest::default()),
+/// Reads a document's manifest, with the version it was read at. No manifest
+/// is an empty one, which is how a document with no history yet reads; a
+/// manifest that exists and cannot be parsed is an error, because carrying on
+/// would write a near-empty one over a real history.
+pub async fn load_versioned(
+    blobs: &dyn BlobStore,
+    slug: &str,
+) -> Result<(Manifest, BlobVersion), String> {
+    match blobs.get_versioned(&history_index_key(slug)).await {
+        Err(BlobError::NotFound) => Ok((Manifest::default(), BlobVersion::new())),
         Err(err) => Err(err.to_string()),
-        Ok(raw) => serde_json::from_slice(&raw).map_err(|err| {
-            format!("the history of {slug} is not readable ({err}); move it aside to start empty")
-        }),
+        Ok((raw, at)) => {
+            let manifest = serde_json::from_slice(&raw).map_err(|err| {
+                format!(
+                    "the history of {slug} is not readable ({err}); move it aside to start empty"
+                )
+            })?;
+            Ok((manifest, at))
+        }
     }
 }
 
-pub async fn save(blobs: &dyn BlobStore, slug: &str, manifest: &Manifest) -> Result<(), String> {
-    let body = serde_json::to_vec(manifest).map_err(|err| err.to_string())?;
-    blobs
-        .put(&history_index_key(slug), body, "application/json")
-        .await
-        .map_err(|err| err.to_string())
+/// The manifest alone, for the callers that are only reading it.
+#[allow(dead_code)] // the tests and the timeline read the manifest alone
+pub async fn load(blobs: &dyn BlobStore, slug: &str) -> Result<Manifest, String> {
+    Ok(load_versioned(blobs, slug).await?.0)
 }

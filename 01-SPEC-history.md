@@ -715,9 +715,14 @@ rendered document.
 document is exactly the kind that carries its own -- a notebook's plots, a
 Quarto page's figures. So `/raw/<slug>/` answers an `html` document with the
 document, agent injected, as it always did; every other format gets the empty
-shell. The price is that a reader sees an edit to an HTML document on their
-next load rather than as it is typed, which is the trade this makes rather
-than showing a live page as an inert copy of itself. `Publication` lost `html`, `digest`
+shell. A reader of an HTML document still sees changes: the frame is served from the
+live document, so reloading it is showing the current text, and the reader
+reloads it when the text has actually moved and the typing has stopped. The
+price is a second of latency and a reload rather than a repaint -- the scripts
+run again, and the reader loses their place -- which is the trade against
+showing a live page as an inert copy of itself. `make smoke` checks in a real
+browser that the scripts run, that an edit reaches a second reader, and that
+they still run after the reload. `Publication` lost `html`, `digest`
 and `base_sha`; `PutError::Stale` and `prune_other_versions` are gone;
 `POST /api/documents` on an existing slug diffs the source into the live
 session and takes a checkpoint, so two publishes never conflict. The source
@@ -741,7 +746,12 @@ nor the server.
 ### Migration
 
 Nothing existing is rewritten until a document is first opened, and nothing is
-removed until its source is durable as a checkpoint. `Room::load_session` seeds
+removed until its source is durable as a checkpoint. That is the rollback
+boundary, and it is per document and crossed early: before a document's first
+checkpoint the previous release reads it unchanged, and after it the old
+objects are gone and only this release can read the document. `TODO.md` gives
+the boundary and the backup and recovery procedure in full. It is not
+rollback-safe once a document has been checkpointed. `Room::load_session` seeds
 from `sources/<slug>/<sha>`, from the unversioned `sources/<slug>`, or -- for a
 document published as HTML, which never had a stored source -- from the page
 itself; the first checkpoint after that writes `history/<slug>/<sha>` and
@@ -750,6 +760,20 @@ itself; the first checkpoint after that writes `history/<slug>/<sha>` and
 `example`, and `source_format` are untouched throughout, and
 `/raw/<slug>/<sha>.html` keeps answering for as long as an old object is there,
 so a link written down before this still resolves.
+
+### Verified in a browser
+
+`web/scripts/browser-smoke.mjs`, behind `make smoke`, drives headless Chromium
+over the DevTools protocol against a real `komodoc serve` on a temporary
+directory. Twelve checks, and they are the ones the protocol tests cannot
+make: an editor's browser renders the source into the frame and what is typed
+reaches it; a reader renders the document, is given no editor, and sees an
+edit arrive without reloading; an HTML document's own scripts run, an edit
+reaches a second reader, and the scripts still run afterwards; the toolbar
+says "offline" rather than "saved" when the socket is cut, and what was typed
+while it was down reaches the server when it comes back; a document that does
+not compile says so. Typing goes through real key and text events rather than
+through CodeMirror's internals.
 
 ### What is not built
 
@@ -760,12 +784,28 @@ does not yet record which. `02-SPEC-diagnostics.md`'s reader fallback to the
 last checkpoint that compiles waits on the same endpoint, and until it exists a
 reader joining a document that does not compile is shown the diagnostics page.
 
-Two limits are worth knowing. The size ceiling is enforced by applying an
-update and trimming the overflow back rather than by refusing the update
-before it is applied: the room's text never stays over the ceiling and the
-offending socket is closed, but the spec's "not applied and not relayed" is
-approximated rather than met, because deciding it beforehand would mean
-decoding and measuring every update against a clone of the document. And the
-lock is still the advisory room lock: two servers on one bucket find out they
-are second and go read-only, which is what this spec inherited, not the fenced
-writer lease the constraints ask for.
+The size ceiling is decided before the document is touched, as the spec asks:
+`session::admit_update` answers by a bound in the ordinary case -- a v1 update
+carries its inserted text inside itself, so the result is at most the current
+text plus the update's own length -- and rehearses the update on a scratch copy
+only when the bound cannot decide. A refused update is never applied and never
+relayed, and the socket that sent it is closed. On a megabyte of prose a
+keystroke costs 18 µs to admit and the rehearsal 44 ms, and the rehearsal is
+only ever paid on the path where a socket is about to be closed.
+
+Ownership is enforced rather than advisory. `take_room_lease` is a renewable
+lease carrying an epoch that rises every time it changes hands, so a server
+that stalled long enough to be taken over finds out at its next renewal instead
+of writing over the new holder; and a holder stops writing a guard's width
+before its lease could be taken, rather than trusting its own clock against
+somebody else's. Behind the lease, every object a room owns -- the session, the
+manifest, the comments -- is written with compare-and-swap against the version
+this server last saw, so a former owner's write is refused by storage itself.
+Deployment-wide quota admission is serialised the same way: a `put` whose index
+write loses the swap re-reads the index and decides the quota again against the
+one that won, so two processes sharing a bucket cannot both spend the last of
+it.
+
+What that does not cover is a store with no conditional writes. `--single-writer`
+asserts exactly that, and with it asserted the fencing is the operator's
+promise rather than the bucket's.

@@ -55,6 +55,60 @@ pub fn apply_update(doc: &Doc, update: &[u8]) -> Result<(), String> {
     txn.apply_update(update).map_err(|err| err.to_string())
 }
 
+/// What `admit_update` decided about an update that arrived on a socket.
+#[derive(Debug, PartialEq)]
+pub enum Admission {
+    /// It applies, and leaves the source inside the ceiling.
+    Fits,
+    /// Applying it would carry the source past the ceiling. Nothing has been
+    /// applied: the document is exactly as it was.
+    TooLarge,
+    /// It is not a v1 update at all.
+    Malformed,
+}
+
+/// Decides whether an update may be applied, **without applying it**. The
+/// document a socket writes to is the document every reader is looking at, so
+/// an update that would carry it past its size ceiling must never touch it --
+/// not even to be trimmed back afterwards, which would relay a correction
+/// nobody made and leave the text over the ceiling in between.
+///
+/// Two paths, because the exact answer is not free:
+///
+/// * **The bound.** A v1 update carries every inserted string inside itself,
+///   so the text after applying is at most the text before plus the update's
+///   own byte length; deletions only shrink it. When that bound is inside the
+///   ceiling -- which it is for every keystroke of every document that is not
+///   already near its limit -- nothing more is needed, and admission costs one
+///   comparison.
+/// * **The rehearsal.** Only when the bound is exceeded is the exact answer
+///   worth buying: the update is applied to a scratch copy of the document and
+///   the result measured. That is one encode and one decode of the document,
+///   and it happens on the path where a socket is about to be closed anyway.
+pub fn admit_update(doc: &Doc, update: &[u8], ceiling: usize) -> Admission {
+    if Update::decode_v1(update).is_err() {
+        return Admission::Malformed;
+    }
+    let current = text_of(doc).len();
+    if current.saturating_add(update.len()) <= ceiling {
+        return Admission::Fits;
+    }
+    // The bound was not enough to decide. Rehearse it somewhere that is not
+    // the document.
+    let scratch = new_doc();
+    if apply_update(&scratch, &encode_state(doc)).is_err() {
+        return Admission::Malformed;
+    }
+    if apply_update(&scratch, update).is_err() {
+        return Admission::Malformed;
+    }
+    if text_of(&scratch).len() > ceiling {
+        Admission::TooLarge
+    } else {
+        Admission::Fits
+    }
+}
+
 /// Everything the document holds, as one v1 update: what `sessions/<slug>`
 /// stores and what a cold join is answered with.
 pub fn encode_state(doc: &Doc) -> Vec<u8> {
@@ -108,33 +162,4 @@ pub fn replace_text(doc: &Doc, wanted: &str) {
     if !inserted.is_empty() {
         text.insert(&mut txn, head as u32, &inserted);
     }
-}
-
-/// Cuts the source back to `ceiling` bytes, from the end, and says whether
-/// anything was cut. The room's ceiling is on the UTF-8 bytes of the source,
-/// because that is what a publish was measured in and what storage is billed
-/// for; the cut itself is made on a code-unit boundary the document can
-/// express.
-pub fn truncate_to(doc: &Doc, ceiling: usize) -> bool {
-    let current = text_of(doc);
-    if current.len() <= ceiling {
-        return false;
-    }
-    // The longest prefix that fits, on a character boundary.
-    let mut end = ceiling.min(current.len());
-    while end > 0 && !current.is_char_boundary(end) {
-        end -= 1;
-    }
-    let keep = current[..end].encode_utf16().count();
-    let text = doc.get_or_insert_text(SOURCE);
-    let total = {
-        let txn = doc.transact();
-        text.len(&txn)
-    };
-    if total as usize <= keep {
-        return false;
-    }
-    let mut txn = doc.transact_mut();
-    text.remove_range(&mut txn, keep as u32, total - keep as u32);
-    true
 }

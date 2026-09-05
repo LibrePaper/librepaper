@@ -360,27 +360,65 @@ pub async fn clear_storage(blobs: &dyn BlobStore) {
 
 /* ----------------------------------------------------------- room locks */
 
-/// A room is the one piece of state a second server must not write behind the
-/// first one's back: the in-memory copy is authoritative while anyone is
-/// connected, so two servers on one bucket would each save over the other's
-/// comments without either noticing.
+/// A room is the state a second server must not write behind the first one's
+/// back: the in-memory copy is authoritative while anyone is connected, so two
+/// servers on one bucket would each save over the other's document.
 ///
-/// The lock is one object holding who holds it and when they last said so. It
-/// is not a distributed lock and does not pretend to be -- it is how a second
-/// server finds out it is second, and refuses, instead of quietly
-/// interleaving.
+/// This is a **renewable, fenced writer lease**, and the fencing is the half
+/// that matters. The lease object says who holds it, when they last said so,
+/// and which epoch they hold -- a number that goes up every time the lease
+/// changes hands. A holder renews well before the lease could go stale, and
+/// stops writing on its own once it is too old to be sure, without having to
+/// ask anybody.
+///
+/// A lease alone is still only a claim, though, because a process can stall
+/// between deciding it holds the lease and its write landing. So the lease is
+/// backed by conditional writes: every object a room owns is written with
+/// compare-and-swap against the version this server last saw, and a write that
+/// loses is proof that somebody else owns the room. That is what makes the
+/// ownership enforced rather than advisory -- a former holder that wakes up
+/// late cannot write, because storage itself refuses it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RoomLock {
     #[serde(default)]
     pub holder: String,
     #[serde(default)]
     pub taken: String,
+    /// Goes up by one every time the lease is taken by somebody new. A holder
+    /// that renews keeps its epoch; a holder whose epoch has moved on has been
+    /// fenced out and must never write again.
+    #[serde(default)]
+    pub epoch: u64,
 }
 
-/// How long a lock outlives its holder's last word, in seconds. A server that
+/// How long a lease outlives its holder's last word, in seconds. A server that
 /// was killed leaves one behind, and nobody should have to delete an object by
 /// hand to restart their own deployment.
 pub const LOCK_STALE_SECONDS: i64 = 5 * 60;
+
+/// How far before a lease could be taken from us we stop trusting it. It has
+/// to cover the worst clock disagreement between two servers plus the longest
+/// a write can take to land, because the whole point is that a holder stops
+/// writing strictly before anybody else could start.
+pub const LEASE_GUARD_SECONDS: i64 = 60;
+
+/// What a server holds on a room. `held` is false when somebody else has it,
+/// in which case the room can be read and served but never written.
+#[derive(Clone, Debug, Default)]
+pub struct Lease {
+    pub held: bool,
+    pub holder: String,
+    pub epoch: u64,
+    /// When this lease was last written, as seconds since the epoch.
+    pub taken_at: i64,
+}
+
+impl Lease {
+    /// The last moment at which writing under this lease is certainly safe.
+    pub fn safe_until(&self) -> i64 {
+        self.taken_at + LOCK_STALE_SECONDS - LEASE_GUARD_SECONDS
+    }
+}
 
 /// Releases the locks a batch command took. A lock means "a server is writing
 /// this room right now", so a command that has finished holding one would
@@ -393,39 +431,106 @@ pub async fn release_room_locks(blobs: &dyn BlobStore, slugs: &[String]) {
     }
 }
 
-/// Claims the right to write this room, or says who already has it. An
-/// expired lock is taken over: the holder is gone. Returns whether it is held
-/// by the caller, and who holds it.
-pub async fn take_room_lock(blobs: &dyn BlobStore, slug: &str, holder: &str) -> (bool, String) {
+/// Claims or renews the lease on a room. An expired lease is taken over -- its
+/// holder is gone -- and taking it over raises the epoch, which fences the old
+/// holder out for good.
+///
+/// `expect_epoch` is what a renewal asserts: a holder renewing its own lease
+/// passes the epoch it believes it has, and is refused if the lease has moved
+/// on without it. A first claim passes `None`.
+pub async fn take_room_lease(
+    blobs: &dyn BlobStore,
+    slug: &str,
+    holder: &str,
+    expect_epoch: Option<u64>,
+) -> Lease {
     let key = room_lock_key(slug);
-    let at = match blobs.get_versioned(&key).await {
+    let now = crate::clock::now_unix();
+    let (at, epoch) = match blobs.get_versioned(&key).await {
         Ok((raw, at)) => {
             let held: RoomLock = serde_json::from_slice(&raw).unwrap_or_default();
             let fresh = parse_timestamp(&held.taken)
-                .map(|taken| crate::clock::now_unix() - taken < LOCK_STALE_SECONDS)
+                .map(|taken| now - taken < LOCK_STALE_SECONDS)
                 .unwrap_or(false);
             if fresh && held.holder != holder {
-                return (false, held.holder);
+                return Lease {
+                    held: false,
+                    holder: held.holder,
+                    epoch: held.epoch,
+                    taken_at: now,
+                };
             }
-            at
+            // A renewal that finds a different epoch than the one it believes
+            // it holds has been fenced out: somebody took the lease, and
+            // whatever this server has been doing since is not authoritative.
+            if let Some(mine) = expect_epoch {
+                if held.epoch != mine {
+                    return Lease {
+                        held: false,
+                        holder: held.holder,
+                        epoch: held.epoch,
+                        taken_at: now,
+                    };
+                }
+            }
+            // Taking over a stale lease is a change of hands, and raises the
+            // epoch; renewing our own keeps it.
+            let epoch = if held.holder == holder {
+                held.epoch
+            } else {
+                held.epoch + 1
+            };
+            (at, epoch)
         }
-        Err(BlobError::NotFound) => String::new(),
+        Err(BlobError::NotFound) => (String::new(), 1),
         // Storage that cannot be read from is not storage that should be
-        // written to blindly, but a lock is not worth refusing to serve over.
-        Err(_) => return (true, String::new()),
+        // written to blindly, but a lease is not worth refusing to serve over.
+        Err(_) => {
+            return Lease {
+                held: true,
+                holder: holder.to_string(),
+                epoch: expect_epoch.unwrap_or(0),
+                taken_at: now,
+            }
+        }
     };
 
     let mine = RoomLock {
         holder: holder.to_string(),
         taken: timestamp(),
+        epoch,
     };
     let Ok(body) = serde_json::to_vec(&mine) else {
-        return (true, String::new());
+        return Lease {
+            held: true,
+            holder: holder.to_string(),
+            epoch,
+            taken_at: now,
+        };
     };
     match blobs.swap(&key, body, &at).await {
-        Ok(_) => (true, holder.to_string()),
-        Err(BlobError::Conflict) => (false, "another server".to_string()),
-        // Storage without conditional writes; the assertion stands.
-        Err(_) => (true, String::new()),
+        Ok(_) => Lease {
+            held: true,
+            holder: holder.to_string(),
+            epoch,
+            taken_at: now,
+        },
+        // Somebody wrote the lease between our reading it and our writing it,
+        // which means somebody else is claiming this room.
+        Err(BlobError::Conflict) => Lease {
+            held: false,
+            holder: "another server".to_string(),
+            epoch,
+            taken_at: now,
+        },
+        // Storage without conditional writes; the assertion stands, and the
+        // conditional writes on the room's own objects are what actually
+        // enforce it.
+        Err(_) => Lease {
+            held: true,
+            holder: holder.to_string(),
+            epoch,
+            taken_at: now,
+        },
     }
 }

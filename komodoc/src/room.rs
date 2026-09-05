@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::blob::{
-    checkpoint_key, room_key, room_lock_key, session_key, take_room_lock, BlobError, BlobStore,
-    LOCK_STALE_SECONDS,
+    checkpoint_key, room_key, room_lock_key, session_key, take_room_lease, BlobError, BlobStore,
+    BlobVersion, Lease, LOCK_STALE_SECONDS,
 };
 use crate::clock::{now_unix, timestamp};
 use crate::config::{Configuration, CHECKPOINT_DEFER_SECONDS};
@@ -284,6 +284,14 @@ pub struct RoomState {
     /// When a socket was last attached or detached, which is what says an idle
     /// room may be evicted.
     pub touched: i64,
+    /// The versions this server last saw of the three objects a room owns.
+    /// Every write of them is conditional on these, so a write that loses is
+    /// proof that another process owns the room -- which is what makes the
+    /// lease enforced rather than advisory. Empty means "there was nothing
+    /// there", which is how a document with no session or no comments starts.
+    pub session_version: BlobVersion,
+    pub manifest_version: BlobVersion,
+    pub comments_version: BlobVersion,
 }
 
 /// How old this server's claim on a room may get before a write renews it.
@@ -300,12 +308,12 @@ pub struct Room {
     /// when the room is loaded, and again if a renewal ever finds the lock in
     /// somebody else's hands.
     read_only: std::sync::atomic::AtomicBool,
-    /// This server's name in the lock, and when it last said so. A lock is
+    /// This server's name in the lease, and the lease it holds. A lease is
     /// takeable again once it has gone stale, so holding a room in memory for
     /// longer than that without renewing would let a second server take it and
-    /// leave both writing the whole comment list over each other.
+    /// leave both writing the whole document over each other.
     holder: String,
-    renewed: Mutex<i64>,
+    lease: Mutex<Lease>,
     /// The index, for the half of a checkpoint that is bookkeeping: the size a
     /// document's history counts against its owner's quota, and the digest of
     /// the newest checkpoint. Set once, after the store exists, because the
@@ -346,7 +354,12 @@ fn this_server() -> String {
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "server".to_string());
-    format!("{host}/{}", std::process::id())
+    // The random tail is what makes two of these distinguishable when a pid
+    // cannot tell them apart -- a second `RoomSet` in one process, or a pid
+    // reused after a restart. A holder that another holder can be mistaken for
+    // is a lease that renews when it should have been refused.
+    let token = hex::encode(crate::auth::random_bytes(4));
+    format!("{host}/{}/{token}", std::process::id())
 }
 
 impl RoomSet {
@@ -379,19 +392,23 @@ impl RoomSet {
             evict_idle(&mut rooms, self.config.session.rooms_max).await;
         }
         // Taken before anything is read, so a second server writing the same
-        // bucket finds out it is second rather than interleaving its comments
+        // bucket finds out it is second rather than interleaving its writes
         // with the first one's.
-        let (held, by) = take_room_lock(self.blobs.as_ref(), slug, &self.holder).await;
-        if !held {
-            eprintln!("warning: {slug} is being written by {by}; comments here are read-only in this server");
+        let lease = take_room_lease(self.blobs.as_ref(), slug, &self.holder, None).await;
+        if !lease.held {
+            eprintln!(
+                "warning: the lease on {slug} is held by {} at epoch {}; this server serves it \
+                 read-only",
+                lease.holder, lease.epoch
+            );
         }
         let room = Arc::new(Room {
             slug: slug.to_string(),
             blobs: self.blobs.clone(),
             config: self.config.clone(),
-            read_only: std::sync::atomic::AtomicBool::new(!held),
+            read_only: std::sync::atomic::AtomicBool::new(!lease.held),
             holder: self.holder.clone(),
-            renewed: Mutex::new(now_unix()),
+            lease: Mutex::new(lease),
             store: self.store.clone(),
             state: Mutex::new(RoomState {
                 seq: 0,
@@ -410,6 +427,9 @@ impl RoomSet {
                 },
                 manifest: Manifest::default(),
                 touched: now_unix(),
+                session_version: BlobVersion::new(),
+                manifest_version: BlobVersion::new(),
+                comments_version: BlobVersion::new(),
             }),
         });
         room.load().await;
@@ -508,12 +528,15 @@ impl RoomSet {
 
 impl Room {
     async fn load(&self) {
-        if let Ok(raw) = self.blobs.get(&room_key(&self.slug)).await {
+        // Read with its version, because every write of it is conditional on
+        // the version this server last saw.
+        if let Ok((raw, at)) = self.blobs.get_versioned(&room_key(&self.slug)).await {
             if let Ok(stored) = serde_json::from_slice::<RoomState_>(&raw) {
                 let mut state = self.state.lock().await;
                 state.seq = stored.seq;
                 state.comments = stored.comments;
                 state.comments.sort_by_key(|item| item.seq);
+                state.comments_version = at;
             }
         }
         self.load_session().await;
@@ -529,7 +552,7 @@ impl Room {
     /// anybody opens it. Nothing is rewritten until then, so a deployment that
     /// is rolled back loses nothing.
     async fn load_session(&self) {
-        let manifest = history::load(self.blobs.as_ref(), &self.slug)
+        let (manifest, manifest_at) = history::load_versioned(self.blobs.as_ref(), &self.slug)
             .await
             .unwrap_or_default();
         let entry = match self.store.get() {
@@ -547,8 +570,8 @@ impl Room {
             })
             .unwrap_or_default();
 
-        let stored = match self.blobs.get(&session_key(&self.slug)).await {
-            Ok(raw) => Some(raw),
+        let stored = match self.blobs.get_versioned(&session_key(&self.slug)).await {
+            Ok((raw, at)) => Some((raw, at)),
             Err(BlobError::NotFound) => None,
             Err(err) => {
                 // Storage that cannot be read is not storage to seed over: a
@@ -572,12 +595,14 @@ impl Room {
 
         let mut state = self.state.lock().await;
         state.manifest = manifest;
+        state.manifest_version = manifest_at;
         state.session.format = format;
         if let Some(point) = state.manifest.latest() {
             state.session.last_checkpoint = point.sha.clone();
         }
         match stored {
-            Some(raw) => {
+            Some((raw, at)) => {
+                state.session_version = at;
                 if let Err(err) = session::apply_update(&state.session.doc, &raw) {
                     eprintln!(
                         "warning: the session for {} is unreadable ({err})",
@@ -613,21 +638,31 @@ impl Room {
     ) -> Option<(String, String)> {
         let store = self.store.get()?;
         let entry = entry?;
+        let source = if entry.source_format.is_empty() || entry.source_format == "html" {
+            None
+        } else {
+            store.read_source(&self.slug).await.ok()
+        };
+        if let Some(raw) = source {
+            return Some((
+                String::from_utf8_lossy(&raw).to_string(),
+                entry.source_format.clone(),
+            ));
+        }
+        // Nothing under the old keys either. That is the ordinary state of a
+        // document that has just been created -- the index entry exists and
+        // the session is about to be seeded by whoever created it -- so it is
+        // not worth a word. Only a document that had a source and lost it
+        // falls through to its page, and that is worth saying.
+        let page = store.read(&self.slug, &entry.sha).await.ok()?;
         if !entry.source_format.is_empty() && entry.source_format != "html" {
-            if let Ok(raw) = store.read_source(&self.slug).await {
-                return Some((
-                    String::from_utf8_lossy(&raw).to_string(),
-                    entry.source_format.clone(),
-                ));
-            }
             eprintln!(
                 "warning: {} has no stored {} source; it opens as the page it was published as",
                 self.slug, entry.source_format
             );
         }
-        let raw = store.read(&self.slug, &entry.sha).await.ok()?;
         Some((
-            String::from_utf8_lossy(&raw).to_string(),
+            String::from_utf8_lossy(&page).to_string(),
             "html".to_string(),
         ))
     }
@@ -641,46 +676,93 @@ impl Room {
         self.read_only.load(Ordering::Relaxed)
     }
 
-    /// Says whether this server may still write the room, renewing the lock
+    /// Says whether this server may still write the room, renewing the lease
     /// when it is old enough to be worth saying so again. Renewal is on the
     /// write path rather than on a timer: a room nobody is writing does not
     /// need holding, and a room being written is asked about often enough.
     ///
-    /// A renewal that finds somebody else in the lock makes the room read-only
-    /// for good. Their copy is the live one, and continuing to write ours
-    /// would put half of each thread in the stored list.
+    /// Two things make this a lease rather than a claim. A renewal asserts the
+    /// epoch this server believes it holds, so a server that was fenced out
+    /// while it was stalled finds out instead of writing over the new holder.
+    /// And past `Lease::safe_until` -- a guard's width before the lease could
+    /// be taken from us -- writing is refused unless a renewal succeeds first,
+    /// so a holder stops strictly before anybody else could start, without
+    /// having to trust its own idea of the time against theirs.
+    ///
+    /// Losing the lease makes the room read-only for good. The other server's
+    /// copy is the live one, and continuing to write ours would put half of
+    /// each thread in the stored list.
     async fn hold(&self) -> bool {
         if self.read_only() {
             return false;
         }
         let now = now_unix();
-        let mut renewed = self.renewed.lock().await;
-        if now - *renewed < RENEW_AFTER_SECONDS {
+        let mut lease = self.lease.lock().await;
+        // Fresh, and not near the edge: no need to ask storage anything.
+        if now - lease.taken_at < RENEW_AFTER_SECONDS && now < lease.safe_until() {
             return true;
         }
-        let (held, by) = take_room_lock(self.blobs.as_ref(), &self.slug, &self.holder).await;
-        if !held {
+        let renewed = take_room_lease(
+            self.blobs.as_ref(),
+            &self.slug,
+            &self.holder,
+            Some(lease.epoch),
+        )
+        .await;
+        if !renewed.held {
             eprintln!(
-                "warning: {} was taken by {by}; comments here are read-only from now on",
-                self.slug
+                "warning: the lease on {} is held by {} at epoch {}; this server is read-only \
+                 for it from now on",
+                self.slug, renewed.holder, renewed.epoch
             );
             self.read_only.store(true, Ordering::Relaxed);
             return false;
         }
-        *renewed = now;
+        *lease = renewed;
         true
     }
 
-    pub async fn save(&self, state: &RoomState) -> Result<(), String> {
+    /// Writes an object this room owns, and only over the version this server
+    /// last saw. This is the enforcement behind the lease: a write that loses
+    /// the compare-and-swap is proof that another process owns the room, and
+    /// this one stops writing rather than finding out later. `version` is
+    /// updated in place on success.
+    async fn write_owned(
+        &self,
+        key: &str,
+        body: Vec<u8>,
+        version: &mut BlobVersion,
+    ) -> Result<(), String> {
+        match self.blobs.swap(key, body, version).await {
+            Ok(at) => {
+                *version = at;
+                Ok(())
+            }
+            Err(BlobError::Conflict) => {
+                eprintln!(
+                    "warning: {key} was written by another server; this one is read-only for {} \
+                     from now on",
+                    self.slug
+                );
+                self.read_only.store(true, Ordering::Relaxed);
+                Err("this room is written by another server".into())
+            }
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    pub async fn save(&self, state: &mut RoomState) -> Result<(), String> {
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
         let raw = json!({"seq": state.seq, "comments": to_stored(&state.comments)});
         let body = serde_json::to_vec(&raw).map_err(|err| err.to_string())?;
-        self.blobs
-            .put(&room_key(&self.slug), body, "application/json")
-            .await
-            .map_err(|err| err.to_string())
+        let mut version = std::mem::take(&mut state.comments_version);
+        let result = self
+            .write_owned(&room_key(&self.slug), body, &mut version)
+            .await;
+        state.comments_version = version;
+        result
     }
 
     /// Every comment, for seeding and for the tests that read a room back.
@@ -822,7 +904,7 @@ impl Room {
             );
             state.comments[index].resolved = incoming.resolved;
             state.comments[index].resolved_at = incoming.resolved.then(timestamp);
-            if self.save(&state).await.is_err() {
+            if self.save(&mut state).await.is_err() {
                 state.comments[index].resolved = was_resolved;
                 state.comments[index].resolved_at = was_resolved_at;
                 return fail(UNSAVED);
@@ -849,7 +931,7 @@ impl Room {
                 return fail("you may only delete your own comments");
             }
             let removed = state.comments.remove(index);
-            if self.save(&state).await.is_err() {
+            if self.save(&mut state).await.is_err() {
                 state.comments.insert(index, removed);
                 return fail(UNSAVED);
             }
@@ -894,7 +976,7 @@ impl Room {
                     author: author.to_string(),
                 };
                 state.comments[index].replies.push(added.clone());
-                if self.save(&state).await.is_err() {
+                if self.save(&mut state).await.is_err() {
                     state.comments[index].replies.pop();
                     return fail(UNSAVED);
                 }
@@ -940,7 +1022,7 @@ impl Room {
                     author: author.to_string(),
                 };
                 state.comments.push(added.clone());
-                if self.save(&state).await.is_err() {
+                if self.save(&mut state).await.is_err() {
                     state.comments.pop();
                     state.seq -= 1;
                     return fail(UNSAVED);
@@ -1004,11 +1086,15 @@ impl Room {
     /// update is applied here before it is relayed, and what is relayed is
     /// what was applied.
     ///
-    /// The size ceiling is enforced on the text rather than on the update: an
-    /// update that carries the source past `max_html` is trimmed back at once
-    /// and the socket that sent it is closed, so the room's text never exceeds
-    /// what a publish could have sent and no number of concurrent writers can
-    /// talk their way past the quota between them.
+    /// The size ceiling is decided before the document is touched. An update
+    /// that would carry the source past `max_html` is never applied and never
+    /// relayed, and the socket that sent it is closed with the reason; the
+    /// text every other peer is looking at does not move, not even for the
+    /// instant a trim-afterwards would have taken. `session::admit_update`
+    /// answers by a bound in the ordinary case and by rehearsing the update on
+    /// a scratch copy only when the bound cannot decide, so no number of
+    /// concurrent writers can talk their way past the quota between them and
+    /// the common path costs a comparison.
     pub async fn receive_update(&self, socket: u64, update: &[u8], seq: i64, by: &str) -> Applied {
         let mut state = self.state.lock().await;
         let now = now_unix();
@@ -1028,30 +1114,28 @@ impl Room {
             if peer.updates > self.config.session.updates_per_minute {
                 return Applied::Refuse("too many updates");
             }
-            if seq > peer.sent {
-                peer.sent = seq;
+        }
+        match session::admit_update(&state.session.doc, update, self.config.max_html) {
+            session::Admission::Malformed => return Applied::Ignored,
+            session::Admission::TooLarge => {
+                return Applied::Refuse("this document has reached its size limit")
             }
+            session::Admission::Fits => {}
         }
         if session::apply_update(&state.session.doc, update).is_err() {
             return Applied::Ignored;
         }
+        // Counted only once the update is one this document actually took. A
+        // refused update must not be acknowledged by the next write, and it
+        // would be if it had moved this socket's high-water mark.
+        if let Some(peer) = state.sockets.get_mut(&socket) {
+            if seq > peer.sent {
+                peer.sent = seq;
+            }
+        }
         state.session.dirty = true;
         state.session.updated_at = now;
         state.session.by = by.to_string();
-
-        let length = session::text_of(&state.session.doc).len();
-        if length > self.config.max_html {
-            let trimmed = session::truncate_to(&state.session.doc, self.config.max_html);
-            if trimmed {
-                // The correction is a change like any other and goes to
-                // everybody, including the socket about to be closed.
-                let whole = session::encode_state(&state.session.doc);
-                let payload =
-                    json!({"type": "y-update", "update": encode_update(&whole)}).to_string();
-                send_to_all(&mut state, None, &payload);
-            }
-            return Applied::Refuse("this document has reached its size limit");
-        }
         Applied::Relay
     }
 
@@ -1073,10 +1157,12 @@ impl Room {
             .iter()
             .map(|(id, peer)| (*id, peer.sent))
             .collect();
-        self.blobs
-            .put(&session_key(&self.slug), body, "application/octet-stream")
-            .await
-            .map_err(|err| err.to_string())?;
+        let mut version = std::mem::take(&mut state.session_version);
+        let written = self
+            .write_owned(&session_key(&self.slug), body, &mut version)
+            .await;
+        state.session_version = version;
+        written?;
         state.session.dirty = false;
         for (id, seq) in durable {
             let Some(peer) = state.sockets.get_mut(&id) else {
@@ -1168,14 +1254,15 @@ impl Room {
             session::encode_state(&state.session.doc)
         };
         let session_size = state_bytes.len() as i64;
-        self.blobs
-            .put(
-                &session_key(&self.slug),
-                state_bytes,
-                "application/octet-stream",
-            )
-            .await
-            .map_err(|err| err.to_string())?;
+        {
+            let mut state = self.state.lock().await;
+            let mut version = std::mem::take(&mut state.session_version);
+            let written = self
+                .write_owned(&session_key(&self.slug), state_bytes, &mut version)
+                .await;
+            state.session_version = version;
+            written?;
+        }
 
         // The manifest, in memory: the repair first, then this checkpoint.
         let (manifest, shed, size) = {
@@ -1219,9 +1306,19 @@ impl Room {
 
         // 3. the index entry, then 4. the manifest.
         self.record_size(size + manifest.bytes(), Some(&sha)).await;
-        history::save(self.blobs.as_ref(), &self.slug, &manifest).await?;
         {
             let mut state = self.state.lock().await;
+            let body = serde_json::to_vec(&manifest).map_err(|err| err.to_string())?;
+            let mut version = std::mem::take(&mut state.manifest_version);
+            let written = self
+                .write_owned(
+                    &crate::blob::history_index_key(&self.slug),
+                    body,
+                    &mut version,
+                )
+                .await;
+            state.manifest_version = version;
+            written?;
             state.manifest = manifest;
         }
         if !shed.is_empty() {

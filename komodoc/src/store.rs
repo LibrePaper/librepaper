@@ -306,7 +306,32 @@ impl Store {
             source_format: v.source_format,
         };
         let previous = state.entries.insert(v.slug.clone(), entry.clone());
-        if let Err(err) = self.save_locked(&mut state).await {
+        let mut written = self.save_locked(&mut state).await;
+        // Another process moved the index between our reading it and our
+        // writing it. The quota was decided against an index that no longer
+        // exists, so it is decided again against the one that does -- which is
+        // what stops two deployments sharing a bucket from both admitting the
+        // last of a quota. One retry: a second conflict means the index is
+        // busier than this write is worth.
+        if matches!(written, Err(BlobError::Conflict)) {
+            if let Err(err) = self.reload_locked(&mut state, &v.slug).await {
+                state.entries.remove(&v.slug);
+                return Err(PutError::Storage(err));
+            }
+            let mut without = state.entries.clone();
+            without.remove(&v.slug);
+            let fresh = StoreState {
+                entries: without,
+                index_version: state.index_version.clone(),
+            };
+            if let Err(refused) = self.admit(&fresh, &v.slug, &entry.publisher, size, now_unix()) {
+                state.entries.remove(&v.slug);
+                let _ = self.save_locked(&mut state).await;
+                return Err(refused);
+            }
+            written = self.save_locked(&mut state).await;
+        }
+        if let Err(err) = written {
             // The index naming the document is not durable, so the document
             // does not exist as far as any later run is concerned. Undo the
             // in-memory half rather than report a success that will vanish.
@@ -560,6 +585,25 @@ impl Store {
             .swap(INDEX_KEY, raw, &state.index_version)
             .await?;
         state.index_version = at;
+        Ok(())
+    }
+
+    /// Re-reads the index into these entries, keeping this process's own
+    /// pending change to `slug`. Called when a write loses the
+    /// compare-and-swap: another process moved the index, so the quota
+    /// decision that was made against the old one has to be made again against
+    /// the new one. That is what serializes admission deployment-wide -- a
+    /// decision is only ever committed against the index it was made from.
+    async fn reload_locked(&self, state: &mut StoreState, slug: &str) -> Result<(), String> {
+        let (entries, at) = load_index(self.blobs.as_ref()).await?;
+        let mine = state.entries.get(slug).cloned();
+        state.entries = entries;
+        state.index_version = at;
+        if let Some(mine) = mine {
+            state.entries.insert(slug.to_string(), mine);
+        } else {
+            state.entries.remove(slug);
+        }
         Ok(())
     }
 }

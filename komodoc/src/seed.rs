@@ -406,7 +406,7 @@ pub async fn seed_annotations(
         state.seq += 1;
         written.seq = state.seq;
         state.comments.push(written);
-        if let Err(err) = room.save(&state).await {
+        if let Err(err) = room.save(&mut state).await {
             die(format!(
                 "could not write the seeded comments for {}: {err}",
                 room.slug

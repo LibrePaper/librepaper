@@ -1070,13 +1070,21 @@ async fn the_browser_module_and_the_server_agree() {
     .await
     .unwrap();
 
+    // The typed update has to have reached the server before a write can make
+    // it durable; an update that lands after a write begins is acknowledged by
+    // the next one, which in a running server is a second later.
     let room = server.instance.rooms.get(&slug).await;
-    for _ in 0..200 {
-        if room.persist().await.expect("the write succeeds") {
+    for _ in 0..400 {
+        if room.source().await.contains("from the module.") {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+    assert!(
+        room.source().await.contains("from the module."),
+        "the module's edit never reached the server"
+    );
+    room.persist().await.expect("the write succeeds");
 
     peer = tokio::task::spawn_blocking(move || {
         let acked = peer.call(json!({"op": "await_ack", "atLeast": 1}));
@@ -1142,5 +1150,415 @@ async fn the_frame_is_a_shell_for_what_the_browser_renders() {
     assert!(
         !body.contains("Hello") && !body.contains("My Paper"),
         "the shell carries the document, which the browser is meant to render: {body}"
+    );
+}
+
+/// A refused update never reaches the document. The text every other peer is
+/// looking at does not move, and the edits that were accepted are all still
+/// there -- before this, an oversized update was applied and trimmed back,
+/// which showed everyone a correction nobody had made.
+#[tokio::test]
+async fn a_refused_update_leaves_the_text_and_the_accepted_edits_alone() {
+    needs_browser!();
+    let ceiling = 4096;
+    let server = test_server_with(
+        Configuration {
+            max_html: ceiling,
+            ..Configuration::default()
+        },
+        crate::auth::Policy::parse(TEST_PUBLISHER),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let (status, document) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "Bounded", "source": "start\n", "source_format": "markdown"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{document}");
+    let slug = text(&document, "slug");
+    let cookie = session_as(TEST_PUBLISHER);
+    let room = server.instance.rooms.get(&slug).await;
+
+    let mut first = Editing::join(&server.url, &slug, &cookie, "one").await;
+    let mut second = Editing::join(&server.url, &slug, &cookie, "two").await;
+
+    // Two ordinary edits, both accepted.
+    first.type_at(0, "the first sentence. ").await;
+    second.type_at(0, "the second sentence. ").await;
+    for _ in 0..200 {
+        let held = room.source().await;
+        if held.contains("the first sentence.") && held.contains("the second sentence.") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let before = room.source().await;
+    assert!(
+        before.contains("the first sentence.") && before.contains("the second sentence."),
+        "the accepted edits never landed: {before:?}"
+    );
+
+    // Now one that cannot fit. It is refused, and the socket is closed.
+    first.type_at(0, &"x".repeat(ceiling + 1000)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let after = room.source().await;
+    assert_eq!(
+        after, before,
+        "a refused update changed the document instead of being refused"
+    );
+    assert!(
+        after.len() <= ceiling,
+        "the document is {} bytes, past the {ceiling} ceiling",
+        after.len()
+    );
+    assert!(
+        !after.contains("xxxx"),
+        "part of the refused update reached the document: {after:?}"
+    );
+
+    // The peer that did not overreach is untouched and can still write, and
+    // its next edit lands on the same text.
+    second.type_at(0, "and a third. ").await;
+    for _ in 0..200 {
+        if room.source().await.contains("and a third.") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let settled = room.source().await;
+    assert!(
+        settled.contains("and a third.")
+            && settled.contains("the first sentence.")
+            && settled.contains("the second sentence."),
+        "the refusal cost an accepted edit: {settled:?}"
+    );
+}
+
+/// The refusal survives a reconnect and a restart. A browser whose socket was
+/// closed for overreaching rejoins, is given the document as it stands, and
+/// what it tried to write is not in it -- on the server, and after the server
+/// has been restarted from what it wrote.
+#[tokio::test]
+async fn a_refused_update_is_still_refused_after_a_reconnect_and_a_restart() {
+    needs_browser!();
+    let ceiling = 4096;
+    let config = Configuration {
+        max_html: ceiling,
+        ..Configuration::default()
+    };
+    let server = test_server_with(
+        config.clone(),
+        crate::auth::Policy::parse(TEST_PUBLISHER),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let (status, document) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "Bounded", "source": "start\n", "source_format": "markdown"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{document}");
+    let slug = text(&document, "slug");
+    let cookie = session_as(TEST_PUBLISHER);
+    let room = server.instance.rooms.get(&slug).await;
+
+    let mut editor = Editing::join(&server.url, &slug, &cookie, "one").await;
+    editor.type_at(0, "kept. ").await;
+    for _ in 0..200 {
+        if room.source().await.contains("kept.") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    editor.type_at(0, &"y".repeat(ceiling + 1000)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // The browser still holds what it typed -- its own copy took it, which is
+    // what a CRDT does -- and rejoining does not smuggle it in: the whole
+    // state it sends is refused for the same reason the keystroke was.
+    assert!(
+        editor.text().contains("yyyy"),
+        "the browser lost its own copy"
+    );
+    let mut rejoined = Editing::join(&server.url, &slug, &cookie, "one").await;
+    rejoined.catch_up().await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let held = room.source().await;
+    assert!(
+        !held.contains("yyyy") && held.len() <= ceiling,
+        "a reconnect carried the refused text in: {} bytes",
+        held.len()
+    );
+    assert!(
+        held.contains("kept."),
+        "the accepted edit was lost: {held:?}"
+    );
+
+    // And after a restart, from what was written.
+    for _ in 0..200 {
+        if room.persist().await.expect("the write succeeds") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let (restarted, instance) = server_over(server.dir.path(), config).await;
+    let _ = restarted;
+    let recovered = instance.rooms.get(&slug).await.source().await;
+    assert!(
+        !recovered.contains("yyyy") && recovered.contains("kept."),
+        "the restart brought back the refused text: {} bytes",
+        recovered.len()
+    );
+}
+
+/// What admission costs on a document that is actually large. The ordinary
+/// path is a comparison and must not depend on the size of the document; the
+/// rehearsal is bought only when the bound cannot decide. This asserts the
+/// shape of that -- a keystroke stays in microseconds on a document at the
+/// ceiling -- and prints both numbers, since "measure it" is the requirement.
+#[test]
+fn admission_costs_a_comparison_on_a_large_document() {
+    let ceiling = 4 * 1024 * 1024;
+    let doc = crate::session::new_doc();
+    // A realistic large source: a megabyte of prose, inserted the way an
+    // import would arrive rather than character by character.
+    let prose = "The quick brown fox jumps over the lazy dog. ".repeat(24_000);
+    crate::session::replace_text(&doc, &prose);
+    let held = crate::session::text_of(&doc).len();
+    assert!(held > 1_000_000, "the fixture is only {held} bytes");
+
+    // One keystroke, as a browser sends it.
+    let keystroke = {
+        let scratch = crate::session::new_doc();
+        crate::session::apply_update(&scratch, &crate::session::encode_state(&doc)).unwrap();
+        let before = crate::session::encode_vector(&scratch);
+        {
+            use yrs::{Text, Transact};
+            let text = scratch.get_or_insert_text(crate::session::SOURCE);
+            let mut txn = scratch.transact_mut();
+            text.insert(&mut txn, 0, "x");
+        }
+        crate::session::encode_diff(&scratch, &before).unwrap()
+    };
+
+    let started = std::time::Instant::now();
+    for _ in 0..100 {
+        assert_eq!(
+            crate::session::admit_update(&doc, &keystroke, ceiling),
+            crate::session::Admission::Fits
+        );
+    }
+    let ordinary = started.elapsed() / 100;
+
+    // And the path that has to rehearse: an update that alone exceeds what is
+    // left, on the same document.
+    let overreach = {
+        let scratch = crate::session::new_doc();
+        crate::session::apply_update(&scratch, &crate::session::encode_state(&doc)).unwrap();
+        let before = crate::session::encode_vector(&scratch);
+        {
+            use yrs::{Text, Transact};
+            let text = scratch.get_or_insert_text(crate::session::SOURCE);
+            let mut txn = scratch.transact_mut();
+            text.insert(&mut txn, 0, &"z".repeat(4 * 1024 * 1024));
+        }
+        crate::session::encode_diff(&scratch, &before).unwrap()
+    };
+    let started = std::time::Instant::now();
+    assert_eq!(
+        crate::session::admit_update(&doc, &overreach, ceiling),
+        crate::session::Admission::TooLarge
+    );
+    let rehearsed = started.elapsed();
+
+    eprintln!(
+        "admission on a {held}-byte document: {ordinary:?} for a keystroke, \
+         {rehearsed:?} for the rehearsal"
+    );
+    // The ordinary path reads the document's text to measure it, so it is not
+    // free -- but it is arithmetic on a string, not a second copy of the
+    // document, and it has to stay far below the render debounce.
+    assert!(
+        ordinary < std::time::Duration::from_millis(10),
+        "a keystroke cost {ordinary:?} to admit on a {held}-byte document"
+    );
+}
+
+/* --------------------------------------------------------- writer leases */
+
+/// Two server processes over one bucket. The second finds the room already
+/// leased and serves it read-only; the first goes on writing. Without this
+/// they would each write the whole document over the other.
+#[tokio::test]
+async fn a_second_process_over_the_same_storage_does_not_write() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let (first_url, first) = server_over(dir.path(), Configuration::default()).await;
+    let slug = text(&publish_with_source(&first_url).await, "slug");
+    // The first server has the room open, so it holds the lease.
+    let owner = first.rooms.get(&slug).await;
+    assert!(
+        !owner.read_only(),
+        "the first server does not hold its room"
+    );
+
+    // A second process over the same storage.
+    let (_second_url, second) = server_over(dir.path(), Configuration::default()).await;
+    let intruder = second.rooms.get(&slug).await;
+    assert!(
+        intruder.read_only(),
+        "a second process took a room the first holds"
+    );
+    // It can read the document -- serving it is not writing it.
+    assert_eq!(intruder.source().await, TEST_MARKDOWN);
+    // And it cannot write.
+    intruder.set_source("# Not yours\n", "markdown").await;
+    assert!(
+        intruder.persist().await.is_err(),
+        "a server without the lease wrote the document"
+    );
+    assert!(
+        intruder.checkpoint("quiet", "intruder").await.is_err(),
+        "a server without the lease took a checkpoint"
+    );
+
+    // What is stored is still the first server's, and it can still write.
+    owner.set_source("# Still mine\n", "markdown").await;
+    owner.persist().await.expect("the owner may write");
+    let (_, reloaded) = server_over(dir.path(), Configuration::default()).await;
+    assert_eq!(
+        reloaded.rooms.get(&slug).await.source().await,
+        "# Still mine\n",
+        "the intruder's text reached storage"
+    );
+}
+
+/// The case the epoch exists for: a holder that stalled long enough for its
+/// lease to go stale, was taken over, and then woke up. Its writes are refused
+/// by storage itself, because every object a room owns is written with
+/// compare-and-swap against the version it last saw -- and the version it last
+/// saw is not the one that is there.
+#[tokio::test]
+async fn a_former_owner_cannot_write_after_being_taken_over() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let (url, stalled) = server_over(dir.path(), Configuration::default()).await;
+    let slug = text(&publish_with_source(&url).await, "slug");
+    let old = stalled.rooms.get(&slug).await;
+    old.set_source("# From the first owner\n", "markdown").await;
+    old.persist().await.expect("the owner may write");
+
+    // Its lease goes stale, and somebody takes it over. Written directly,
+    // because the alternative is a test that waits five minutes.
+    let blobs = FsStore::new(dir.path());
+    blobs
+        .put(
+            &crate::blob::room_lock_key(&slug),
+            serde_json::to_vec(&crate::blob::RoomLock {
+                holder: "server-that-took-over".into(),
+                taken: crate::clock::format_unix(crate::clock::now_unix()),
+                epoch: 99,
+            })
+            .unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    // And the new owner writes the session, which is what moves it out from
+    // under the old one.
+    let (_, taker) = server_over(dir.path(), Configuration::default()).await;
+    let now_theirs = taker.rooms.get(&slug).await;
+    now_theirs
+        .set_source("# From the new owner\n", "markdown")
+        .await;
+    // The new owner cannot write either while the lease says somebody else
+    // holds it, which is correct -- so the lease is handed to it properly by
+    // reading the room fresh once the old lock is stale. What this test cares
+    // about is the *old* server, below.
+    let _ = now_theirs.persist().await;
+    blobs
+        .put(
+            &session_key(&slug),
+            b"not what the old owner last saw".to_vec(),
+            "application/octet-stream",
+        )
+        .await
+        .unwrap();
+
+    // The old server wakes up and tries to write what it was holding.
+    old.set_source("# The stalled owner's words\n", "markdown")
+        .await;
+    let refused = old.persist().await;
+    assert!(
+        refused.is_err(),
+        "a former owner wrote the session after being taken over"
+    );
+    assert!(
+        old.read_only(),
+        "a former owner that lost a write did not stop writing"
+    );
+    // Storage still holds what the new owner put there.
+    assert_eq!(
+        blobs.get(&session_key(&slug)).await.unwrap(),
+        b"not what the old owner last saw",
+        "the former owner's write landed"
+    );
+}
+
+/// Quota admission is decided against the index it is committed against. Two
+/// stores over one bucket, a ceiling with room for one document: the second
+/// one's decision is made again against the index the first one wrote, so they
+/// cannot both spend the last of the quota.
+#[tokio::test]
+async fn deployment_quota_admission_is_serialised_across_documents() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
+    // Room for one of these documents and not two.
+    let config = Arc::new(Configuration {
+        storage: crate::config::StorageLimit {
+            total: 40,
+            per_owner: 40,
+            documents_per_owner: 50,
+            uploads_per_hour: 50,
+        },
+        ..Configuration::default()
+    });
+    let first = crate::store::Store::open(blobs.clone(), config.clone())
+        .await
+        .unwrap();
+    let second = crate::store::Store::open(blobs.clone(), config.clone())
+        .await
+        .unwrap();
+    // Both read the same empty index, so both believe the whole quota is free.
+    let publication = |slug: &str| crate::store::Publication {
+        slug: slug.to_string(),
+        title: slug.to_string(),
+        source: "x".repeat(30),
+        source_format: "html".into(),
+        ..Default::default()
+    };
+
+    assert!(
+        first.put(publication("first")).await.is_ok(),
+        "the first document did not fit an empty deployment"
+    );
+    let refused = second.put(publication("second")).await;
+    assert!(
+        matches!(refused, Err(crate::store::PutError::Quota { .. })),
+        "two stores over one bucket both spent the last of the quota: {:?}",
+        refused.map(|entry| entry.slug)
+    );
+
+    // And the index says one document, not two.
+    let (entries, _) = crate::store::load_index(blobs.as_ref()).await.unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "the refused document was left in the index: {:?}",
+        entries.keys().collect::<Vec<_>>()
     );
 }

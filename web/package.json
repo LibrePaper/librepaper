@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node scripts/check-vocabulary.js && vite build && vite build --config vite.agent.config.js",
     "dev": "vite build --watch",
-    "check": "node scripts/check-vocabulary.js && node scripts/check-sync.js"
+    "check": "node scripts/check-vocabulary.js && node scripts/check-diagnostics.mjs && node scripts/check-sync.js"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

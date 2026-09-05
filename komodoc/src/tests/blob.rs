@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::blob::{
     clear_storage, document_key, document_prefix, legacy_source_key, room_key, room_lock_key,
-    source_key, take_room_lock, version_of, BlobError, BlobStore, FsStore, RoomLock, INDEX_KEY,
-    LOCK_STALE_SECONDS,
+    source_key, take_room_lease, version_of, BlobError, BlobStore, FsStore, RoomLock, INDEX_KEY,
+    LEASE_GUARD_SECONDS, LOCK_STALE_SECONDS,
 };
 use crate::clock::{format_unix, now_unix};
 use crate::storage::migrate_legacy_source;
@@ -217,37 +217,40 @@ async fn a_key_cannot_escape_the_directory() {
         "a key wrote outside the storage directory"
     );
 }
-
-/* ------------------------------------------------------------ room locks */
+/* ----------------------------------------------------------- room leases */
 
 // Two servers on one bucket must not both write the same room: the in-memory
 // copy is authoritative while anyone is connected, so the second would save
-// over the first's comments without either noticing.
+// over the first's document without either noticing.
 #[tokio::test]
 async fn a_room_is_held_by_one_server() {
     let dir = tempfile::tempdir().unwrap();
     let blobs = FsStore::new(dir.path());
-    assert!(
-        take_room_lock(&blobs, "a-paper", "server-one").await.0,
-        "the first server could not take the lock"
+    let first = take_room_lease(&blobs, "a-paper", "server-one", None).await;
+    assert!(first.held, "the first server could not take the lease");
+    let second = take_room_lease(&blobs, "a-paper", "server-two", None).await;
+    assert!(!second.held, "a second server took a lease the first holds");
+    assert_eq!(
+        second.holder, "server-one",
+        "the refusal named the wrong holder"
     );
-    let (held, by) = take_room_lock(&blobs, "a-paper", "server-two").await;
-    assert!(!held, "a second server took a lock the first one holds");
-    assert_eq!(by, "server-one", "the refusal named the wrong holder");
-    // The holder may say so again: refreshing is not contention.
-    assert!(
-        take_room_lock(&blobs, "a-paper", "server-one").await.0,
-        "the holder could not refresh its own lock"
-    );
+    // The holder may say so again: renewing is not contention, and keeps the
+    // epoch, because the lease has not changed hands.
+    let renewed = take_room_lease(&blobs, "a-paper", "server-one", Some(first.epoch)).await;
+    assert!(renewed.held, "the holder could not renew its own lease");
+    assert_eq!(renewed.epoch, first.epoch, "renewing raised the epoch");
 }
 
+// A lease whose holder is gone is taken over -- and taking it over raises the
+// epoch, which is what fences the old holder out.
 #[tokio::test]
-async fn a_stale_room_lock_is_taken_over() {
+async fn a_stale_lease_is_taken_over_and_raises_the_epoch() {
     let dir = tempfile::tempdir().unwrap();
     let blobs = FsStore::new(dir.path());
     let old = RoomLock {
         holder: "server-that-died".into(),
         taken: format_unix(now_unix() - 2 * LOCK_STALE_SECONDS),
+        epoch: 7,
     };
     blobs
         .put(
@@ -257,9 +260,41 @@ async fn a_stale_room_lock_is_taken_over() {
         )
         .await
         .unwrap();
+    let taken = take_room_lease(&blobs, "a-paper", "server-two", None).await;
     assert!(
-        take_room_lock(&blobs, "a-paper", "server-two").await.0,
-        "a lock whose holder is long gone was not taken over"
+        taken.held,
+        "a lease whose holder is long gone was not taken over"
+    );
+    assert_eq!(taken.epoch, 8, "taking over did not raise the epoch");
+
+    // The server that died coming back is the case the epoch exists for: its
+    // renewal asserts the epoch it remembers, and is refused.
+    let stale = take_room_lease(&blobs, "a-paper", "server-that-died", Some(7)).await;
+    assert!(
+        !stale.held,
+        "a former holder renewed a lease that had moved on without it"
+    );
+    assert_eq!(stale.epoch, 8);
+}
+
+// A lease is not a promise about the future: it is only good until a guard's
+// width before it could be taken, so a holder stops writing strictly before
+// anybody else could start.
+#[test]
+fn a_lease_stops_being_safe_before_it_can_be_taken() {
+    let lease = crate::blob::Lease {
+        held: true,
+        holder: "server-one".into(),
+        epoch: 1,
+        taken_at: 1_000,
+    };
+    assert_eq!(
+        lease.safe_until(),
+        1_000 + LOCK_STALE_SECONDS - LEASE_GUARD_SECONDS
+    );
+    assert!(
+        lease.safe_until() < 1_000 + LOCK_STALE_SECONDS,
+        "a holder trusts its lease right up to the moment it can be taken"
     );
 }
 

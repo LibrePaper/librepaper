@@ -496,8 +496,11 @@ async fn a_second_writer_cannot_clobber_the_index() {
         .unwrap();
 
     // A second server that read the index before that write still holds the
-    // version it read, and its own write must be refused rather than silently
-    // dropping the first server's document.
+    // version it read. Its write loses the compare-and-swap, which is the
+    // point: it must not land on top of the index it never saw. What it does
+    // instead is re-read the index and decide again against the one that
+    // exists -- so the write succeeds, the quota was judged against the real
+    // total, and the first server's document is untouched.
     let stale = Store::open(Arc::new(S3Store::new(&options)), config.clone())
         .await
         .unwrap();
@@ -512,8 +515,8 @@ async fn a_second_writer_cannot_clobber_the_index() {
                 ..Default::default()
             })
             .await
-            .is_err(),
-        "a write against a version the index has moved past was accepted"
+            .is_ok(),
+        "a write that lost the compare-and-swap was not retried against the index that won"
     );
 
     // The first document is still there, which is the whole point.
@@ -523,6 +526,10 @@ async fn a_second_writer_cannot_clobber_the_index() {
     assert!(
         after.get("a-paper").await.is_some(),
         "the first document was lost"
+    );
+    assert!(
+        after.get("b-paper").await.is_some(),
+        "the retried write never landed"
     );
 }
 

@@ -1,7 +1,8 @@
 # SPEC: compiler errors, shown where they are
 
-Status: built, steps 1 to 6. Step 6 landed with `01-SPEC-history.md` steps 1
-to 4, which made readers render. See "What was built" at the end. It stands on its own, but it is
+Status: built, steps 1 to 6, and verified in a real browser (`make smoke`).
+Step 6 landed with `01-SPEC-history.md` steps 1 to 4, which made readers
+render. See "What was built" at the end. It stands on its own, but it is
 written for the editor `01-SPEC-history.md` describes, where readers render the
 text themselves; the two places that spec changes what this one does are
 marked.
@@ -357,7 +358,13 @@ when a compile fails and nothing has ever been painted, which is what someone
 who opens the editor on a document that does not compile sees.
 
 **The reader.** Step 6, once `01-SPEC-history.md` made readers render their own
-text. A reader keeps the last page that compiled and is told nothing else: no
+text. The four hundred milliseconds are now measured from the keystroke, as
+this spec says: `web/src/lib/diagnostics.js` holds the rule, and
+`web/scripts/check-diagnostics.mjs` runs it against a clock the test owns --
+including the two cases named in step 4, a failure at 60 ms that succeeds at
+200 ms painting nothing and one left alone painting at 400.
+
+A reader keeps the last page that compiled and is told nothing else: no
 badge, no underline, no panel. `paintDiagnostics` returns without doing
 anything unless the source pane is open, so a compile failure in somebody
 else's editing session never reaches a reader who cannot act on it, while the
@@ -370,8 +377,4 @@ What is not built: the better answer for that cold join, which is to fall back
 to the latest checkpoint that compiles. `01-SPEC-history.md` owns the
 checkpoints and its step 5 is what would expose them to the browser; until
 then the diagnostics page is what a cold join gets, as this spec said it would
-be. Two details also differ from what is written above: the four hundred
-milliseconds are measured from the render finishing rather than from the
-keystroke, so the wait is that much longer than the number says; and there is
-no fixture test of the timing, only of the engine, the command line and the
-editor's placement of a span.
+be. 
