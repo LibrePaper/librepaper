@@ -18,11 +18,12 @@
 //! use these numbers without converting anything.
 //!
 //! Nothing here knows about Yrs, Tokio, the store or the room. It is a pure
-//! function over three strings.
+//! function over three strings, in a crate of its own so that the binary and
+//! the engine -- which exports it to the browser for the timeline's per-file
+//! diff -- can both reach it.
 
-// Nothing wires this in yet; step 3 of `04-SPEC-sync.md` is the module and its
-// tests, and the mirror that calls it comes after.
-#![allow(dead_code)]
+#[cfg(test)]
+mod tests;
 
 /// One replacement in the old text: delete `delete` UTF-16 units at `at`, then
 /// insert `insert`. Edits from `diff` are sorted by `at` and never overlap, so

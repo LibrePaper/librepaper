@@ -28,9 +28,9 @@ Three specs have walked up to this and stopped. `04-SPEC-sync.md` names it
 as "a project rather than a file" and says the sync client can feed one
 once it exists. `05-SPEC-latex.md` lists files beside the document under
 its non-goals and offers `filecontents*` as the way a bibliography rides
-along. `06-SPEC-html.md` keeps the note that a typst document needing files
-beside it is published as HTML until the project exists. And
-the engine fills a `file` field for spans in imported files
+along. The history spec's open questions keep the note that a typst
+document needing files beside it is published as HTML until the project
+exists. And the engine fills a `file` field for spans in imported files
 and admits that in the browser it is always empty.
 
 LaTeX makes the gap the ordinary case rather than the edge. A paper is
@@ -376,7 +376,7 @@ carries a token, and nothing is fetched twice.
 
 HTML stays self-contained. A directory whose main file is `.html` is
 allowed, but the identity renderer rewrites nothing in it, and
-`06-SPEC-html.md`'s advice to render with resources embedded stands. A
+the README's advice to render with resources embedded stands. A
 Quarto output directory is a different and larger question and is a
 non-goal here.
 
@@ -508,8 +508,6 @@ self-hoster with a bucket raises it.
   The non-goal "files beside the document" and the decision "a document is
   one file; `filecontents*` is how a bibliography rides along" are
   reversed by this spec; `filecontents*` keeps working.
-- **`06-SPEC-html.md`.** HTML stays self-contained. The note about typst
-  documents published as HTML until the project exists is resolved.
 - **The Rust host and the `host/` port.** The keys above are the layout
   for both; `rules.js` carries the new rules beside `config.rs`.
 

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 komodoc-engine = { path = "../engine" }
+komodoc-text = { path = "../text" }
 
 # The server. WebSockets come with axum, so nothing here frames them by hand.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal"] }

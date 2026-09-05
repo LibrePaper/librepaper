@@ -106,3 +106,19 @@ be read by hand; the checkpoints are.
   not covered: a store with no conditional writes at all. `--single-writer`
   asserts exactly that, and with it asserted the fencing is the operator's
   promise rather than the bucket's.
+
+# HTML as a source, left open
+
+HTML is a source format like markdown and typst: the identity renderer in
+`engine/src/html.rs`, its own row in the formats table, the caret lock's
+flattening in `sync.js`. Two questions from that work were left unanswered:
+
+- A megabyte-long `data:` URI in an HTML source is a megabyte-long line in
+  CodeMirror, and slow. The answer is presentation only -- a replacing
+  decoration that shows an inert chip saying what the URI is and how big,
+  editable around and not inside -- and it is a day's work nobody has asked
+  for yet.
+- The render debounce is sixty milliseconds for every format. A notebook that
+  takes a second to boot on every paint may want a longer pause, or a paint
+  only on a pause in typing; whether that is a per-format constant or
+  something measured from the previous paint is not decided.

@@ -78,7 +78,7 @@ komodoc sync c9k paper.html
 
 beside a Makefile that runs `quarto render` turns every render into a write
 of the file, and so into a checkpoint, with no step between the author's
-tools and the readers (`06-SPEC-html.md`).
+tools and the readers.
 
 Only an editor of a document may edit its source, in the browser and here:
 its owner, and whoever the owner has named (`03-SPEC-sharing.md`). The command

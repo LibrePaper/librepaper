@@ -1387,8 +1387,8 @@ impl Server {
         // itself. A caller that sends only HTML -- a page dropped on the
         // upload form, or a client written against the older API -- has sent a
         // document whose source is that HTML and whose renderer is the
-        // identity, which is what `html` has meant as a format since
-        // `06-SPEC-html.md`.
+        // identity, which is what `html` has meant since it became a source
+        // format like the other two.
         if source.is_empty() && !html.trim().is_empty() {
             source = html;
             source_format = "html".to_string();

@@ -13,7 +13,6 @@ pub mod edit;
 mod export;
 mod hardening;
 mod history;
-mod merge;
 mod ownership;
 mod quota;
 mod retention;

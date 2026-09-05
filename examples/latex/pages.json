@@ -1,0 +1,22 @@
+{
+  "article": {
+    "engine": "pdflatex",
+    "pages": 3,
+    "synctex": true
+  },
+  "paper": {
+    "engine": "pdflatex",
+    "pages": 4,
+    "synctex": true
+  },
+  "broken": {
+    "engine": "pdflatex",
+    "pages": 0,
+    "synctex": false
+  },
+  "xetex": {
+    "engine": "xelatex",
+    "pages": 1,
+    "synctex": true
+  }
+}

@@ -1,8 +1,9 @@
-# Komodoc: two crates. `engine` renders markdown and typst, natively and as
-# WebAssembly; `komodoc` is the binary -- the command line and the server.
+# Komodoc: three crates. `engine` renders markdown and typst, natively and as
+# WebAssembly; `text` holds the word diff and merge that both the binary and
+# the engine need; `komodoc` is the binary -- the command line and the server.
 [workspace]
 resolver = "2"
-members = ["engine", "komodoc"]
+members = ["engine", "text", "komodoc"]
 
 [profile.release]
 opt-level = 3
