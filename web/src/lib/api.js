@@ -62,7 +62,11 @@ export const upload = (form) =>
 export const config = () => get("/api/config");
 
 /// Who you are, which decides what every page is: what you may publish, what
-/// you may comment on, and whether there is anything to sign in to.
+/// you may comment on, and which providers there are to sign in with. The
+/// answer carries `provider`, `handle` and `name`: the handle is what the
+/// deployment's switches match and is your own to see, the name is what other
+/// readers see, and for a Google account those are deliberately not the same
+/// string. `providers` is empty on a deployment with no sign-in at all.
 export const me = () => get("/api/me").catch(() => ({}));
 
 export async function signOut() {
@@ -72,4 +76,7 @@ export async function signOut() {
   location.reload();
 }
 
+/// The one door. Which providers this deployment has is the server's business:
+/// this address is a redirect when there is one and a choice when there are
+/// two, so no page has to render a button per provider.
 export const signInHref = () => `/auth/login?next=${encodeURIComponent(location.pathname)}`;

@@ -390,7 +390,7 @@ async fn bearer_token_rejected_when_app_unconfigured() {
         .unwrap();
     let payload: serde_json::Value = response.json().await.unwrap();
     assert_eq!(
-        payload["login"], "",
+        payload["handle"], "",
         "a bearer token was trusted with no OAuth app configured: {payload}"
     );
 }
@@ -416,7 +416,7 @@ async fn https_requests_only_read_the_host_prefixed_session_cookie() {
     };
     let plain = get(session_as(TEST_PUBLISHER)).await;
     assert_eq!(
-        plain["login"], "",
+        plain["handle"], "",
         "a plain-named session cookie was read on an HTTPS request: {plain}"
     );
     let prefixed = get(format!(
@@ -425,7 +425,7 @@ async fn https_requests_only_read_the_host_prefixed_session_cookie() {
     ))
     .await;
     assert_eq!(
-        prefixed["login"], TEST_PUBLISHER,
+        prefixed["handle"], TEST_PUBLISHER,
         "the __Host- session cookie was not read on an HTTPS request: {prefixed}"
     );
 }

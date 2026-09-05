@@ -15,7 +15,7 @@ async fn upload_needs_a_signed_in_publisher() {
     )
     .await;
     assert_eq!(status, 401, "anonymous upload got {status} {payload}");
-    assert_eq!(text(&payload, "error"), "sign in with GitHub to publish");
+    assert_eq!(text(&payload, "error"), "sign in to publish");
 
     // Signed in, but not one of the allowed logins.
     let (status, payload) = post_as(
@@ -26,7 +26,7 @@ async fn upload_needs_a_signed_in_publisher() {
     )
     .await;
     assert_eq!(status, 403, "stranger's upload got {status} {payload}");
-    assert!(text(&payload, "error").contains("@stranger may not publish"));
+    assert!(text(&payload, "error").contains("stranger may not publish"));
 
     // A forged cookie is not a sign-in.
     let (status, _) = post_as(

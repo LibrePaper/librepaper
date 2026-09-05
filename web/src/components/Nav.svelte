@@ -29,12 +29,18 @@
          icons rather than a phrase in the middle of the bar, which is width
          the document title wanted and a shape nothing else in the bar had. -->
     <IconButton icon="help" label="Documentation" href="/documentation" />
-    {#if me.login}
-      <small class="text-surface-600-400 whitespace-nowrap">@{me.login}</small>
+    <!-- A GitHub account is its login, and the @ is what says so. A Google
+         account is a profile name, which is not a handle and does not wear
+         one; its email is its handle and is shown to nobody, here least of
+         all. -->
+    {#if me.name}
+      <small class="text-surface-600-400 whitespace-nowrap"
+        >{me.provider === "github" ? `@${me.name}` : me.name}</small
+      >
       <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={signOut}>
         Sign out
       </button>
-    {:else if me.can_sign_in}
+    {:else if me.providers?.length}
       <a role="button" class="btn btn-sm preset-filled-primary-500" href={signInHref()}>Sign in</a>
     {/if}
   </Row>

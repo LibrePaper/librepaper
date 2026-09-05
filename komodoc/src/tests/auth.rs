@@ -1,5 +1,5 @@
 use base64::Engine;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::*;
 use crate::auth::{now_unix, read_session, sign, sign_session, Identity, Policy, TokenCache};
@@ -8,11 +8,13 @@ use crate::util::first_of;
 
 #[test]
 fn policies() {
-    for (value, login, allowed) in [
+    for (value, handle, allowed) in [
         ("anyone", "", true),
         ("anyone", "someone", true),
         ("any", "", false),
+        // `any` is any signed-in account on any provider, not any GitHub one.
         ("any", "someone", true),
+        ("any", "someone@example.org", true),
         ("vincent", "vincent", true),
         ("vincent", "Vincent", true), // GitHub logins are case-insensitive
         ("vincent", "stranger", false),
@@ -20,24 +22,118 @@ fn policies() {
         ("alice, bob", "bob", true),
         ("alice, bob", "carol", false),
         ("", "anyone at all", false), // unconfigured allows nobody
+        // An address admits that address, on either casing.
+        ("alice@example.org", "alice@example.org", true),
+        ("alice@example.org", "Alice@Example.ORG", true),
+        ("Alice@Example.ORG", "alice@example.org", true),
+        ("alice@example.org", "bob@example.org", false),
+        // A domain admits the domain exactly, and not a subdomain of it.
+        ("@example.org", "alice@example.org", true),
+        ("@example.org", "alice@mail.example.org", false),
+        ("@example.org", "alice@notexample.org", false),
+        ("@example.org", "alice", false),
+        // A list of logins never admits a Google account, and a list of
+        // addresses never admits a GitHub one.
+        ("alice,bob", "alice@example.org", false),
+        ("alice@example.org,@umontreal.ca", "alice", false),
+        // The three forms mix in one list.
+        ("vincent, alice@example.org, @umontreal.ca", "vincent", true),
+        (
+            "vincent, alice@example.org, @umontreal.ca",
+            "alice@example.org",
+            true,
+        ),
+        (
+            "vincent, alice@example.org, @umontreal.ca",
+            "anne@umontreal.ca",
+            true,
+        ),
+        (
+            "vincent, alice@example.org, @umontreal.ca",
+            "anne@mcgill.ca",
+            false,
+        ),
     ] {
         assert_eq!(
-            Policy::parse(value).allows(login),
+            Policy::parse(value).allows(handle),
             allowed,
-            "Policy::parse({value:?}).allows({login:?})"
+            "Policy::parse({value:?}).allows({handle:?})"
         );
     }
+}
+
+// The switches are asked about a whole identity everywhere it matters, so the
+// handle a Google account is matched on is its verified email and the name it
+// is shown under is not consulted at all.
+#[test]
+fn policies_match_the_handle_not_the_name() {
+    let google = Identity::google("10769", "Anne.Grandchamp@UMontreal.CA", "Anne Grandchamp");
+    assert_eq!(google.handle, "anne.grandchamp@umontreal.ca");
+    assert_eq!(google.name, "Anne Grandchamp");
+    assert_eq!(google.id, "google:10769");
+    assert!(Policy::parse("@umontreal.ca").allows(&google.handle));
+    assert!(Policy::parse("anne.grandchamp@umontreal.ca").allows(&google.handle));
+    assert!(
+        !Policy::parse("anne grandchamp").allows(&google.handle),
+        "a policy matched the profile name"
+    );
+
+    // No name from Google: the local part of the address stands in, and the
+    // address is still the handle.
+    let unnamed = Identity::google("2", "jean@example.org", "");
+    assert_eq!(unnamed.name, "jean");
+    assert_eq!(unnamed.handle, "jean@example.org");
+}
+
+// A bare stored id means GitHub, and a Google sub that happens to be the same
+// decimal string is a different person.
+#[test]
+fn stored_ids_are_qualified_as_github() {
+    use crate::store::IndexEntry;
+    let mut entry = IndexEntry {
+        publisher: "vincent".into(),
+        publisher_id: "583231".into(),
+        ..IndexEntry::default()
+    };
+    assert!(
+        entry.owned_by("", "github:583231"),
+        "a bare stored id did not match its qualified caller"
+    );
+    assert!(
+        !entry.owned_by("", "google:583231"),
+        "a Google sub matched a GitHub id with the same number"
+    );
+    assert!(!entry.owned_by("", ""), "an anonymous caller owned it");
+
+    // A newly written id is already qualified, and reads back unchanged.
+    entry.publisher_id = "google:583231".into();
+    assert!(entry.owned_by("", "google:583231"));
+    assert!(!entry.owned_by("", "github:583231"));
 }
 
 #[test]
 fn session_cookies() {
     let key = b"0123456789abcdef0123456789abcdef";
-    let id = Identity {
-        login: "vincent".into(),
-        id: "42".into(),
-    };
+    let id = Identity::github("vincent", "42");
+    assert_eq!(id.id, "github:42");
     let valid = sign_session(key, &id, now_unix() + 3600);
     assert_eq!(read_session(key, &valid), id);
+
+    // The same round trip for a Google account, whose name is neither the
+    // handle nor derivable from it, so the cookie has to carry it.
+    let google = Identity::google("10769", "anne@umontreal.ca", "Anne Grandchamp");
+    assert_eq!(
+        read_session(key, &sign_session(key, &google, now_unix() + 3600)),
+        google
+    );
+
+    // A profile name containing the field separator survives the round trip:
+    // the expiry is taken off the end, so the name may hold anything.
+    let barred = Identity::google("3", "x@example.org", "Jean | Tremblay");
+    assert_eq!(
+        read_session(key, &sign_session(key, &barred, now_unix() + 3600)).name,
+        "Jean | Tremblay"
+    );
     assert!(
         !read_session(key, &sign_session(key, &id, now_unix() - 3600)).is_signed_in(),
         "an expired session was accepted"
@@ -53,8 +149,8 @@ fn session_cookies() {
         !read_session(key, &tampered).is_signed_in(),
         "a tampered cookie was accepted"
     );
-    // The old cookie shape carried only login|expiry. It must not be accepted
-    // as though the missing id were merely empty.
+    // The oldest cookie shape carried only login|expiry. It must not be
+    // accepted as though the missing id were merely empty.
     let old_payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(format!("vincent|{}", now_unix() + 3600));
     let old_cookie = format!("{old_payload}.{}", sign(key, &old_payload));
@@ -62,6 +158,18 @@ fn session_cookies() {
         !read_session(key, &old_cookie).is_signed_in(),
         "an old two-field cookie was accepted"
     );
+
+    // The three-field shape is a session an earlier server wrote, which was
+    // necessarily GitHub. Nothing is missing from it, only implied, so it is
+    // read as a GitHub session until it expires.
+    let three = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(format!("vincent|42|{}", now_unix() + 3600));
+    let three_cookie = format!("{three}.{}", sign(key, &three));
+    let who = read_session(key, &three_cookie);
+    assert_eq!(who, Identity::github("vincent", "42"));
+    assert_eq!(who.provider, "github");
+    assert_eq!(who.id, "github:42", "a legacy id was not qualified");
+    assert_eq!(who.name, "vincent", "a legacy session lost its name");
 }
 
 #[tokio::test]
@@ -79,7 +187,7 @@ async fn comment_policy_refuses_and_attributes() {
 
     let (status, payload) = post_as("", &server.url, &path, comment.clone()).await;
     assert_eq!(status, 400, "anonymous comment got {status} {payload}");
-    assert_eq!(text(&payload, "message"), "sign in with GitHub to comment");
+    assert_eq!(text(&payload, "message"), "sign in to comment");
 
     // Signed in: the name on the comment is the verified login, not the one
     // the client asked for.
@@ -96,10 +204,7 @@ async fn token_cache_caches_positive_and_negative_answers() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let cache = TokenCache::new();
     let calls = std::sync::Arc::new(AtomicUsize::new(0));
-    let good = Identity {
-        login: "vincent".into(),
-        id: "1".into(),
-    };
+    let good = Identity::github("vincent", "1");
     let check = |calls: std::sync::Arc<AtomicUsize>, good: Identity| {
         move |token: String| {
             calls.fetch_add(1, Ordering::SeqCst);
@@ -151,9 +256,14 @@ async fn token_cache_caches_positive_and_negative_answers() {
 fn describe_policy() {
     for (value, want) in [
         ("anyone", "anyone"),
-        ("any", "any GitHub account"),
-        ("vincent", "@vincent"),
-        ("alice,bob", "@alice, @bob"),
+        ("any", "any signed-in account"),
+        // The entries are shown as they were written: an address and a domain
+        // already carry the @ that tells them from a login.
+        ("vincent", "vincent"),
+        ("alice,bob", "alice, bob"),
+        ("alice@example.org", "alice@example.org"),
+        ("@umontreal.ca", "@umontreal.ca"),
+        ("alice, @umontreal.ca", "alice, @umontreal.ca"),
         ("", "nobody (unconfigured)"),
     ] {
         assert_eq!(Policy::parse(value).describe(), want);
@@ -174,18 +284,413 @@ async fn auth_endpoints() {
 
     let (status, payload) = get_json_as(&session_as(TEST_PUBLISHER), &server.url, "/api/me").await;
     assert!(
-        status == 200 && payload["login"] == TEST_PUBLISHER && payload["can_publish"] == true,
+        status == 200
+            && payload["provider"] == "github"
+            && payload["handle"] == TEST_PUBLISHER
+            && payload["name"] == TEST_PUBLISHER
+            && payload["can_publish"] == true,
         "{payload}"
     );
     let (status, payload) = get_json(&server.url, "/api/me").await;
     assert!(
-        status == 200 && payload["login"] == "" && payload["can_publish"] == false,
+        status == 200
+            && payload["provider"] == ""
+            && payload["handle"] == ""
+            && payload["name"] == ""
+            && payload["can_publish"] == false,
         "{payload}"
     );
     assert!(
         text(&payload, "publishers").contains(TEST_PUBLISHER),
         "/api/me should say who may publish"
     );
+    // The page asks what it may offer, not whether one particular provider is
+    // configured.
+    assert_eq!(payload["providers"], json!(["github"]), "{payload}");
+}
+
+// A Google account is named to other readers by its profile name, and keyed
+// on its qualified sub. Its email is the handle the switches match, and it
+// reaches nobody but its owner.
+#[tokio::test]
+async fn a_google_account_comments_under_its_name() {
+    let server = test_server_with(
+        Configuration::default(),
+        Policy::parse(TEST_PUBLISHER),
+        Policy::parse("@umontreal.ca"),
+        true,
+    )
+    .await;
+    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let path = format!("/api/documents/{slug}/comments");
+    let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor"});
+
+    let anne = google_session_as("10769", "anne@umontreal.ca", "Anne Grandchamp");
+    let (status, payload) = post_as(&anne, &server.url, &path, comment.clone()).await;
+    assert_eq!(
+        status, 200,
+        "a domain grant refused its own domain: {payload}"
+    );
+    assert_eq!(payload["comment"]["creator"], "Anne Grandchamp");
+    let body = serde_json::to_string(&payload).unwrap();
+    assert!(
+        !body.contains("anne@umontreal.ca"),
+        "a Google account's email reached a comment: {body}"
+    );
+
+    // A subdomain is not the domain, and the refusal names the switch rather
+    // than a provider.
+    let elsewhere = google_session_as("2", "bob@mail.umontreal.ca", "Bob");
+    let (status, payload) = post_as(&elsewhere, &server.url, &path, comment).await;
+    assert_eq!(status, 400, "a subdomain was admitted: {payload}");
+    assert_eq!(
+        text(&payload, "message"),
+        "bob@mail.umontreal.ca may not comment here; this deployment allows @umontreal.ca"
+    );
+}
+
+// The two accounts a domain policy and a login policy each admit are disjoint,
+// and ownership follows the id rather than the handle.
+#[tokio::test]
+async fn a_google_account_owns_what_it_published() {
+    let server = test_server_with(
+        Configuration::default(),
+        Policy::parse("@umontreal.ca"),
+        Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let anne = google_session_as("10769", "anne@umontreal.ca", "Anne Grandchamp");
+    let (status, payload) = post_as(
+        &anne,
+        &server.url,
+        "/api/documents",
+        json!({"title": "A paper", "source": "hello", "source_format": "markdown"}),
+    )
+    .await;
+    assert_eq!(status, 201, "a Google publisher was refused: {payload}");
+    let slug = text(&payload, "slug");
+    let entry = server
+        .instance
+        .store
+        .get(&slug)
+        .await
+        .expect("the document");
+    assert_eq!(entry.publisher_id, "google:10769");
+    assert!(entry.owned_by("", "google:10769"));
+    assert!(
+        !entry.owned_by("", "github:10769"),
+        "a GitHub id with the same number owned a Google account's document"
+    );
+
+    // A GitHub login is not on this deployment's list at all.
+    let (status, payload) = post_as(
+        &session_as("vincent"),
+        &server.url,
+        "/api/documents",
+        json!({"title": "Another", "source": "hello", "source_format": "markdown"}),
+    )
+    .await;
+    assert_eq!(
+        status, 403,
+        "a login-less policy admitted a login: {payload}"
+    );
+    assert_eq!(
+        text(&payload, "error"),
+        "vincent may not publish here; this deployment allows @umontreal.ca"
+    );
+}
+
+// Startup: one refusal and two warnings, each of which is about what a policy
+// asks for against what the deployment actually configured.
+#[test]
+fn startup_checks_the_providers_against_the_policies() {
+    use crate::serve::sign_in_advice;
+    let advice = |github, google, publishers, commenters| {
+        sign_in_advice(
+            github,
+            google,
+            &Policy::parse(publishers),
+            &Policy::parse(commenters),
+            ":8080",
+            8080,
+        )
+    };
+
+    // Nothing configured, and a policy that needs somebody signed in: the
+    // message lists both ways to get a provider.
+    let fatal = advice(false, false, "vincent", "anyone")
+        .fatal
+        .expect("a server that can sign nobody in should not start");
+    assert!(
+        fatal.contains("GITHUB_CLIENT_ID") && fatal.contains("GOOGLE_CLIENT_ID"),
+        "{fatal}"
+    );
+
+    // Either one on its own is enough.
+    assert!(advice(true, false, "vincent", "anyone").fatal.is_none());
+    assert!(advice(false, true, "@example.org", "anyone")
+        .fatal
+        .is_none());
+    // And a wholly public deployment needs neither.
+    assert!(advice(false, false, "anyone", "anyone").fatal.is_none());
+
+    // A login named with no GitHub app: one warning, and it starts.
+    let warnings = advice(false, true, "vincent", "anyone").warnings;
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("GitHub login"), "{warnings:?}");
+
+    // An address or a domain named with no Google client: the other warning.
+    let warnings = advice(true, false, "alice@example.org", "anyone").warnings;
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("email address or a domain"),
+        "{warnings:?}"
+    );
+    let warnings = advice(true, false, "vincent", "@example.org").warnings;
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("email address or a domain"),
+        "{warnings:?}"
+    );
+
+    // A list that names both kinds on a deployment with both providers is
+    // quiet, and so is `any`, which names nobody in particular.
+    assert!(advice(true, true, "vincent, @example.org", "anyone")
+        .warnings
+        .is_empty());
+    assert!(advice(true, false, "any", "anyone").warnings.is_empty());
+}
+
+/* --------------------------------------------------- signing in in a browser */
+
+/// A server with both providers, the Google half pointed at a stand-in that
+/// answers with `user` and insists on `verifier`.
+async fn server_with_google(user: Value, verifier: &str) -> (TestServer, GoogleStandIn) {
+    let google = google_stand_in(user, verifier).await;
+    let server = test_server_google(
+        Policy::parse("@example.org"),
+        Policy::parse("anyone"),
+        true,
+        &google,
+    )
+    .await;
+    // The stand-in is returned alongside, because it stops answering the
+    // moment it is dropped.
+    (server, google)
+}
+
+/// Signs in through the stand-in and returns the callback's response.
+async fn google_callback(base: &str, state: &str, verifier: &str, next: &str) -> reqwest::Response {
+    client()
+        .get(format!(
+            "{base}/auth/callback/google?code=a-code&state={state}"
+        ))
+        .header(
+            "cookie",
+            format!("{}={state}|{next}|{verifier}", crate::auth::STATE_COOKIE),
+        )
+        .send()
+        .await
+        .expect("the callback answers")
+}
+
+fn cookie_of(response: &reqwest::Response, name: &str) -> String {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find_map(|c| {
+            c.strip_prefix(&format!("{name}="))
+                .map(|rest| rest.split(';').next().unwrap_or_default().to_string())
+        })
+        .unwrap_or_default()
+}
+
+fn verified(name: &str) -> Value {
+    json!({"sub": "10769", "email": "Anne@Example.org", "email_verified": true, "name": name})
+}
+
+// The door: one provider is a redirect into it, two are a choice, none is the
+// 404 it has always been.
+#[tokio::test]
+async fn the_sign_in_door_offers_what_is_configured() {
+    // GitHub only, which is every deployment that exists today.
+    let github_only = new_test_server().await;
+    let response = client()
+        .get(format!("{}/auth/login?next=/docs/abc", github_only.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 302);
+    assert_eq!(
+        response.headers()["location"],
+        "/auth/login/github?next=%2Fdocs%2Fabc"
+    );
+
+    // No provider at all: nothing to sign in to, and the page says so.
+    let public = test_server_with(
+        Configuration::default(),
+        Policy::parse("anyone"),
+        Policy::parse("anyone"),
+        false,
+    )
+    .await;
+    let response = client()
+        .get(format!("{}/auth/login", public.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 404);
+
+    // Both: the choice, served from the shell like the 404 page.
+    let (both, _google) = server_with_google(verified("Anne"), "v").await;
+    let response = client()
+        .get(format!("{}/auth/login?next=/docs/abc", both.url))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert!(response.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/html"));
+    let (_, me) = get_json(&both.url, "/api/me").await;
+    assert_eq!(me["providers"], json!(["github", "google"]));
+}
+
+// The redirect into Google carries everything the callback will check: the
+// state, the challenge for the verifier that rides in the cookie, and the
+// prompt that lets somebody pick between two Google accounts.
+#[tokio::test]
+async fn the_google_redirect_carries_state_and_a_challenge() {
+    let (server, _google) = server_with_google(verified("Anne"), "v").await;
+    let response = client()
+        .get(format!("{}/auth/login/google?next=/docs/abc", server.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 302);
+    let target = response.headers()["location"].to_str().unwrap().to_string();
+    let sent: std::collections::HashMap<String, String> = url::Url::parse(&target)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect();
+    assert_eq!(sent["response_type"], "code");
+    assert_eq!(sent["scope"], "openid email profile");
+    assert_eq!(sent["code_challenge_method"], "S256");
+    assert_eq!(sent["prompt"], "select_account");
+    assert!(sent["redirect_uri"].ends_with("/auth/callback/google"));
+
+    // The verifier is in the cookie, and the challenge is its digest, so the
+    // server keeps nothing at all between the two halves of the flow.
+    let state_cookie = cookie_of(&response, crate::auth::STATE_COOKIE);
+    let mut fields = state_cookie.splitn(3, '|');
+    let state = fields.next().unwrap();
+    assert_eq!(fields.next().unwrap(), "%2Fdocs%2Fabc");
+    let verifier = fields.next().expect("no verifier in the state cookie");
+    assert_eq!(sent["state"], state);
+    assert_eq!(
+        sent["code_challenge"],
+        crate::auth::pkce_challenge(verifier)
+    );
+}
+
+// The callback, against the stand-in: a qualified id, the lowercased email as
+// the handle, the profile name as the name, and the next path honoured.
+#[tokio::test]
+async fn the_google_callback_signs_in() {
+    let (server, _google) = server_with_google(verified("Anne Grandchamp"), "the-verifier").await;
+    let response = google_callback(&server.url, "st", "the-verifier", "%2Fdocs%2Fabc").await;
+    assert_eq!(response.status().as_u16(), 302);
+    assert_eq!(response.headers()["location"], "/docs/abc");
+    let session = cookie_of(&response, crate::auth::SESSION_COOKIE);
+    let who = crate::auth::read_session(TEST_KEY, &session);
+    assert_eq!(who.provider, "google");
+    assert_eq!(who.id, "google:10769");
+    assert_eq!(who.handle, "anne@example.org");
+    assert_eq!(who.name, "Anne Grandchamp");
+
+    // No name from Google: the address's local part stands in.
+    let user = json!({"sub": "2", "email": "jean@example.org", "email_verified": true});
+    let (server, _google) = server_with_google(user, "v").await;
+    let response = google_callback(&server.url, "st", "v", "").await;
+    let session = cookie_of(&response, crate::auth::SESSION_COOKIE);
+    assert_eq!(crate::auth::read_session(TEST_KEY, &session).name, "jean");
+}
+
+// Everything the callback refuses. Each of these leaves the browser signed out.
+#[tokio::test]
+async fn the_google_callback_refuses() {
+    // An account with no verified address has no handle, so no policy could
+    // ever admit it and it is refused with a page that says why.
+    let unverified =
+        json!({"sub": "3", "email": "anne@example.org", "email_verified": false, "name": "Anne"});
+    let (server, _google) = server_with_google(unverified, "v").await;
+    let response = google_callback(&server.url, "st", "v", "").await;
+    assert_eq!(response.status().as_u16(), 403);
+    assert!(response.text().await.unwrap().contains("verified email"));
+
+    let (server, _google) = server_with_google(verified("Anne"), "the-verifier").await;
+
+    // A state that does not match the cookie is a link somebody else crafted.
+    let response = client()
+        .get(format!(
+            "{}/auth/callback/google?code=a-code&state=other",
+            server.url
+        ))
+        .header(
+            "cookie",
+            format!("{}=st||the-verifier", crate::auth::STATE_COOKIE),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+
+    // No state cookie at all.
+    let response = client()
+        .get(format!(
+            "{}/auth/callback/google?code=a-code&state=st",
+            server.url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+
+    // A cookie with no verifier in it did not start this flow.
+    let response = client()
+        .get(format!(
+            "{}/auth/callback/google?code=a-code&state=st",
+            server.url
+        ))
+        .header("cookie", format!("{}=st|", crate::auth::STATE_COOKIE))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+
+    // A verifier that does not match the challenge is refused by the exchange
+    // itself, which is the whole point of PKCE.
+    let response = google_callback(&server.url, "st", "another-verifier", "").await;
+    assert_eq!(response.status().as_u16(), 400);
+    assert!(response.text().await.unwrap().contains("google refused"));
+}
+
+// An off-origin `next` is refused exactly as GitHub's is: the redirect goes
+// home rather than to whatever host the query named.
+#[tokio::test]
+async fn the_google_callback_refuses_an_off_origin_next() {
+    let (server, _google) = server_with_google(verified("Anne"), "v").await;
+    let away =
+        url::form_urlencoded::byte_serialize(b"https://example.com/steal").collect::<String>();
+    let response = google_callback(&server.url, "st", "v", &away).await;
+    assert_eq!(response.status().as_u16(), 302);
+    assert_eq!(response.headers()["location"], "/");
 }
 
 #[tokio::test]
@@ -348,4 +853,106 @@ fn settings_may_be_quoted() {
     }
     // The first value that is not empty still wins.
     assert_eq!(first_of(&["", "\"second\"", "third"]), "second");
+}
+
+// The share dialog is read by everyone named on a document, and a Google
+// account's handle is its email address, which the spec shows to nobody. So
+// the dialog draws names and providers, and the handle reaches the owner
+// alone -- who typed it, and names it again to revoke.
+#[tokio::test]
+async fn a_google_owner_is_shown_by_name_and_never_by_email() {
+    let server = test_server_with(
+        Configuration::default(),
+        Policy::parse("@umontreal.ca, vincent"),
+        Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let anne = google_session_as("10769", "anne@umontreal.ca", "Anne Grandchamp");
+    let (status, payload) = post_as(
+        &anne,
+        &server.url,
+        "/api/documents",
+        json!({"title": "A paper", "source": "hello", "source_format": "markdown"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{payload}");
+    let slug = text(&payload, "slug");
+    let share = format!("/api/documents/{slug}/share");
+
+    // A grant by email is not available yet, and the refusal says so rather
+    // than asking GitHub about an address.
+    let (status, payload) = post_as(
+        &anne,
+        &server.url,
+        &share,
+        json!({"grant": {"login": "jean@umontreal.ca", "role": "editor"}}),
+    )
+    .await;
+    assert_eq!(status, 404, "{payload}");
+    assert!(
+        text(&payload, "error").contains("email address"),
+        "the refusal did not say why: {payload}"
+    );
+
+    let (status, payload) = post_as(
+        &anne,
+        &server.url,
+        &share,
+        json!({"grant": {"login": "vincent", "role": "editor"}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{payload}");
+
+    // The named editor sees a name and a provider, and no address anywhere.
+    let (status, payload) = get_json_as(&session_as("vincent"), &server.url, &share).await;
+    assert_eq!(status, 200, "{payload}");
+    let body = payload.to_string();
+    assert!(
+        !body.contains("anne@umontreal.ca"),
+        "the owner's email reached a named editor: {body}"
+    );
+    assert_eq!(text(&payload["owner"], "name"), "Anne Grandchamp");
+    assert_eq!(text(&payload["owner"], "provider"), "google");
+    assert_eq!(text(&payload["owner"], "login"), "");
+    assert_eq!(text(&payload["editors"][0], "name"), "vincent");
+    assert_eq!(text(&payload["editors"][0], "provider"), "github");
+    assert_eq!(text(&payload["editors"][0], "login"), "");
+
+    // The owner sees the handles, which are theirs to know and to revoke by.
+    let (status, payload) = get_json_as(&anne, &server.url, &share).await;
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(text(&payload["owner"], "login"), "anne@umontreal.ca");
+    assert_eq!(text(&payload["owner"], "name"), "Anne Grandchamp");
+    assert_eq!(text(&payload["editors"][0], "login"), "vincent");
+    let (status, payload) = post_as(&anne, &server.url, &share, json!({"revoke": "vincent"})).await;
+    assert_eq!(status, 200, "{payload}");
+    assert!(payload["editors"].as_array().is_some_and(Vec::is_empty));
+
+    // An entry from before names were recorded shows its login, which is a
+    // GitHub login and so is its name.
+    let entry = server
+        .instance
+        .store
+        .get(&slug)
+        .await
+        .expect("the document");
+    assert_eq!(entry.publisher_name, "Anne Grandchamp");
+    let legacy = crate::store::IndexEntry {
+        publisher: "alice".into(),
+        ..Default::default()
+    };
+    assert_eq!(legacy.owner_name(), "alice");
+}
+
+// Google does not issue addresses with a bar in them, but the session
+// cookie's payload is bar-separated and the address is a field of it, so an
+// account that somehow had one is refused rather than signed in as a cookie
+// whose fields had shifted.
+#[tokio::test]
+async fn the_google_callback_refuses_an_address_that_would_break_the_cookie() {
+    let odd = json!({"sub": "4", "email": "a|b@example.org", "email_verified": true, "name": "A"});
+    let (server, _google) = server_with_google(odd, "v").await;
+    let response = google_callback(&server.url, "st", "v", "").await;
+    assert_eq!(response.status().as_u16(), 403);
 }

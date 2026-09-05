@@ -58,6 +58,12 @@ impl Arrival {
     pub fn callback_url(&self) -> String {
         format!("{}://{}/auth/callback", self.scheme, self.host)
     }
+
+    /// Google's own callback. GitHub keeps the bare `/auth/callback` so that
+    /// no OAuth app already registered against it has to be edited.
+    pub fn google_callback_url(&self) -> String {
+        format!("{}://{}/auth/callback/google", self.scheme, self.host)
+    }
 }
 
 pub fn header(headers: &HeaderMap, name: &str) -> Option<String> {

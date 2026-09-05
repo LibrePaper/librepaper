@@ -43,6 +43,7 @@ export default defineConfig({
         reader: resolve(import.meta.dirname, "reader.html"),
         documentation: resolve(import.meta.dirname, "documentation.html"),
         notfound: resolve(import.meta.dirname, "404.html"),
+        signin: resolve(import.meta.dirname, "signin.html"),
       },
     },
     // The typst module is thirty megabytes; nothing here comes close, and a
