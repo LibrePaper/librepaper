@@ -94,7 +94,15 @@ class Tab {
         message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
         return;
       }
-      if (message.method === "Runtime.consoleAPICalled" || message.method === "Log.entryAdded") {
+      if (
+        message.method === "Runtime.consoleAPICalled" ||
+        message.method === "Log.entryAdded" ||
+        // An uncaught exception is the thing worth knowing when a page does
+        // not come up, and it arrives on its own channel rather than as a
+        // console message. Without this a broken component shows up only as
+        // "no editor mounted", which says what did not happen and not why.
+        message.method === "Runtime.exceptionThrown"
+      ) {
         this.console.push(JSON.stringify(message.params).slice(0, 400));
       }
     });
@@ -302,7 +310,11 @@ async function run() {
   const readerSees = await until("the reader renders", async () =>
     (await readerTab.evalInFrame("return document.body.innerText", owned.slug))?.includes("Original wording."),
   );
-  check("a reader renders the document without an editor", readerSees);
+  check(
+    "a reader renders the document without an editor",
+    readerSees,
+    readerSees ? "" : `console: ${readerTab.console.slice(-3).join(" | ")}`,
+  );
 
   const noSource = await readerTab.eval(`return !!document.querySelector(".cm-content")`);
   check("a reader is not given an editor", noSource === false);
@@ -529,6 +541,146 @@ async function run() {
     return text.includes("not found") ? text : null;
   });
   check("a private document tells a stranger nothing", Boolean(refused), (refused || "").slice(0, 90));
+
+  /* ------------------------------------------------------- the directory */
+
+  // A document is a directory, and the whole point of that is this: a file
+  // that imports another one renders. Until now the browser's file map stayed
+  // empty, so a typst document with an `#import` compiled on its author's
+  // laptop and nowhere else -- and since readers render for themselves, the
+  // reader got the error too.
+  const paper = await publish(
+    {
+      title: "A Modular Paper",
+      source: "= A Modular Paper\n\nThe opening paragraph.\n",
+      source_format: "typst",
+    },
+    alice,
+  );
+  const author = await openTab(`${BASE}/docs/${paper.slug}`, [
+    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+  ]);
+  await until("the paper is open", async () =>
+    (await author.eval(`return document.body.innerText`)).includes("A Modular Paper"),
+  );
+  await author.eval(`
+    const open = [...document.querySelectorAll("button")].find((b) => /source|edit/i.test(b.title || b.textContent));
+    open?.click();
+    return true;
+  `);
+  await until("the editor is mounted", async () =>
+    Boolean(await author.eval(`return Boolean(document.querySelector(".cm-content"))`)),
+  );
+
+  // The file list is there, with the one file this document has.
+  const listed = await until("the file list is drawn", async () =>
+    author.eval(`
+      const names = [...document.querySelectorAll(".filelist .path")].map((b) => b.textContent.trim());
+      return names.length ? names : null;
+    `),
+  );
+  check(
+    "a document of one file still shows its directory",
+    listed?.length === 1 && listed[0] === "main.typ",
+    JSON.stringify(listed),
+  );
+
+  // Add a second file, and write a function in it.
+  await author.eval(`
+    [...document.querySelectorAll(".filelist .addfile")][0].click();
+    return true;
+  `);
+  await author.eval(`
+    const field = document.querySelector(".filelist input.name");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(field, "lib.typ");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return true;
+  `);
+  const two = await until("the second file appears", async () =>
+    author.eval(`
+      const names = [...document.querySelectorAll(".filelist .path")].map((b) => b.textContent.trim());
+      return names.length === 2 ? names : null;
+    `),
+  );
+  check("a file can be added to the directory", Boolean(two), JSON.stringify(two));
+
+  await setText(author, '#let greeting = "from the library"\n');
+  await wait(300);
+
+  // Import it from the main file. Choosing a name in the list is what opens
+  // it, exactly as a person would.
+  await author.eval(`
+    const row = [...document.querySelectorAll(".filelist .path")].find((b) => b.textContent.trim() === "main.typ");
+    row.click();
+    return true;
+  `);
+  await wait(300);
+  await setText(author, '#import "lib.typ": greeting\n\n= A Modular Paper\n\n#greeting\n');
+
+  const imported = await until("the import renders", async () =>
+    (await author.evalInFrame("return document.body.innerText", paper.slug))?.includes(
+      "from the library",
+    ),
+  );
+  check("a typst document imports a file beside it and renders", imported);
+
+  // An error in the imported file is an error in *that* file, and choosing it
+  // opens the file it is in rather than pointing at a line of the main one.
+  await author.eval(`
+    const row = [...document.querySelectorAll(".filelist .path")].find((b) => b.textContent.trim() === "lib.typ");
+    row.click();
+    return true;
+  `);
+  await wait(300);
+  await setText(author, "#let greeting = undefined_name\n");
+  const badged = await until("the badge says what is wrong", async () => {
+    const text = await author.eval(`return document.body.innerText`);
+    return /error/i.test(text) ? text : null;
+  });
+  check("an error in an imported file is reported", Boolean(badged));
+
+  // Renaming keeps the words: the name moves and the text stays where it is.
+  await author.eval(`
+    const row = [...document.querySelectorAll(".filelist li")].find((li) => li.textContent.includes("lib.typ"));
+    row.querySelector('button[aria-label^="Rename"], button[title^="Rename"]')?.click();
+    return true;
+  `);
+  await author.eval(`
+    const field = document.querySelector(".filelist input.name");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(field, "helpers.typ");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return true;
+  `);
+  const renamed = await until("the rename lands", async () =>
+    author.eval(`
+      const names = [...document.querySelectorAll(".filelist .path")].map((b) => b.textContent.trim());
+      return names.includes("helpers.typ") ? names : null;
+    `),
+  );
+  check("a file can be renamed", Boolean(renamed), JSON.stringify(renamed));
+  const stillThere = await author.eval(`
+    return document.querySelector(".cm-content")?.innerText || "";
+  `);
+  check(
+    "a rename keeps the words and the editor stays bound to them",
+    stillThere.includes("undefined_name"),
+    stillThere.slice(0, 60),
+  );
+
+  // And the server holds the same directory, which is what a reader will be
+  // given and what a checkpoint will record.
+  const held = await fetch(`${BASE}/api/documents/${paper.slug}`, {
+    headers: { cookie: `komodoc_session=${alice}` },
+  }).then((r) => r.json());
+  check(
+    "the server records which file is the document",
+    held.main === "main.typ",
+    JSON.stringify(held.main),
+  );
 }
 
 /* ------------------------------------------------------------------ report */

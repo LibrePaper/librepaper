@@ -34,9 +34,16 @@ static mut SAID: Option<Vec<crate::diagnostic::Diagnostic>> = None;
 #[cfg(feature = "typst")]
 static mut TODAY: Option<crate::typst::Today> = None;
 /// The files the host has handed this module, which is the whole of what a
-/// document may read. Empty in a browser until several files can travel with a
-/// source; filled from the document's own directory on the command line.
+/// document may read. Filled from the document's own directory on the command
+/// line, and in a browser from the shared document: a document is a directory,
+/// and every text and figure in it is put here before a compile.
 static mut FILES: Option<Vec<(String, Vec<u8>)>> = None;
+/// What the main file is called, which is not decoration: a sibling resolves
+/// relative to it, so a main file at `chapters/paper.typ` reaches `lib.typ`
+/// beside it and not one at the root, and a diagnostic in an imported file is
+/// named against it. Unset means `main.typ`, which is what a document with one
+/// file has always been called here.
+static mut MAIN: Option<String> = None;
 
 /// Reserves `len` bytes for the caller to write a source into.
 #[no_mangle]
@@ -116,7 +123,8 @@ pub unsafe extern "C" fn compile(
 #[cfg(feature = "typst")]
 fn render(source: &str, title: &str) -> Compiled {
     let today = unsafe { *std::ptr::addr_of!(TODAY) };
-    crate::typst::render(source, title, "", &from_host, today)
+    let name = unsafe { (*std::ptr::addr_of!(MAIN)).clone() }.unwrap_or_default();
+    crate::typst::render(source, title, &name, &from_host, today)
 }
 
 /// Reads a file the host put in the map, and nothing else: there is no
@@ -166,10 +174,27 @@ pub unsafe extern "C" fn add_file(
 }
 
 /// Empties the map, which a host does before every document it compiles: the
-/// files of the last one are not the files of this one.
+/// files of the last one are not the files of this one. The main file's name
+/// goes with them, since it named a document that is no longer being compiled.
 #[no_mangle]
 pub extern "C" fn clear_files() {
-    unsafe { FILES = None }
+    unsafe {
+        FILES = None;
+        MAIN = None;
+    }
+}
+
+/// Names the main file, so that what it imports resolves relative to it and a
+/// diagnostic in another file is named against it. The host sets this with the
+/// files, before the compile; a host that does not gets `main.typ`, which is
+/// what a one-file document has always been called here.
+///
+/// # Safety
+/// The pointer and length must describe UTF-8 written into this module.
+#[no_mangle]
+pub unsafe extern "C" fn set_main(path: *const u8, len: usize) {
+    let name = text_at(path, len).to_string();
+    MAIN = if name.is_empty() { None } else { Some(name) };
 }
 
 /// The page to show where a document would be when the last compile produced

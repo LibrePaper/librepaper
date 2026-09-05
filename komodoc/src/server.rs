@@ -420,6 +420,7 @@ impl Server {
             "example": entry.example,
             "size": entry.size,
             "source_format": entry.source_format,
+            "main": entry.main,
             "visibility": entry.visibility(),
             "role": role.as_str(),
         })
@@ -690,6 +691,10 @@ async fn handle(
                     // the reader offers an editor for a document it can render
                     // again.
                     "source_format": entry.source_format,
+                    // Which file in the directory is the document. A reader
+                    // that has not joined the session yet has this and not the
+                    // maps, which is enough to name what it is rendering.
+                    "main": entry.main,
                     // Which of those this deployment can render again, and so
                     // offer an editor for.
                     "renderers": server.renderers(),

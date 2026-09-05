@@ -5,6 +5,7 @@
 // alone paints at 400 ms -- four hundred from the keystroke, not from the
 // render that noticed it.
 
+import { diagnose } from "./render.js";
 import { painter, DIAGNOSTIC_DELAY } from "../src/lib/diagnostics.js";
 
 let failures = 0;
@@ -173,8 +174,45 @@ function session() {
   );
 }
 
+// An error in a file the main one imports is an error in *that* file, and says
+// so. `08-SPEC-directories.md` struck the line in the engine that admitted
+// "in the browser it is always empty": the browser now hands the compiler the
+// whole directory, so a span in a chapter resolves to the chapter.
+//
+// This is the half of the rule the editor depends on to open the right file
+// when somebody clicks the badge. The other half -- that an unplaceable
+// diagnostic has line 0 whatever its file says -- is asserted beside it,
+// because the two are easy to confuse and the editor treats them differently.
+{
+  const said = diagnose(
+    "typst",
+    {
+      main: "main.typ",
+      texts: {
+        "main.typ": '#import "lib.typ": greet\n#greet()\n',
+        "lib.typ": "#let greet() = { undefined_here }\n",
+      },
+    },
+    "main.typ",
+  );
+  if (!said) {
+    console.log("diagnostics: no typst module built; skipping the imported-file case");
+  } else {
+    const errors = said.diagnostics.filter((one) => one.severity === "error");
+    check(
+      `an error in an imported file names it: ${errors[0]?.file}:${errors[0]?.line}`,
+      errors.length === 1 && errors[0].file === "lib.typ" && errors[0].line === 1,
+    );
+    const unplaceable = said.diagnostics.filter((one) => one.line === 0);
+    check(
+      "a diagnostic with no span has line 0, which is not the same as being in the main file",
+      unplaceable.every((one) => one.file === ""),
+    );
+  }
+}
+
 if (failures) {
   console.error(`diagnostics: ${failures} timing rule(s) broken`);
   process.exit(1);
 }
-console.log("diagnostics: the wait is measured from the keystroke");
+console.log("diagnostics: the wait is measured from the keystroke, and an error names its file");

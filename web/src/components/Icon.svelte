@@ -20,6 +20,18 @@
       ["path", "M16 13H8"],
       ["path", "M16 17H8"],
     ],
+    // Lucide's pencil, for renaming a file in the directory.
+    pencil: [
+      ["path", "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"],
+      ["path", "m15 5 4 4"],
+    ],
+    // Lucide's file-plus, for adding one.
+    "file-plus": [
+      ["path", "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"],
+      ["path", "M14 2v4a2 2 0 0 0 2 2h4"],
+      ["path", "M9 15h6"],
+      ["path", "M12 18v-6"],
+    ],
     lock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 10 0v4"]],
     unlock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 9.9-1"]],
     help: [
