@@ -13,7 +13,7 @@
 //!
 //! Every position out of this module -- in `Edit` and in `Conflict` alike --
 //! is a UTF-16 code unit offset, because that is what the document counts in
-//! (`session::edit_text` does the same arithmetic) and what a JavaScript
+//! (`session::replace_text` does the same arithmetic) and what a JavaScript
 //! string counts in. A caller holding a `yrs::Text` or a browser string can
 //! use these numbers without converting anything.
 //!
