@@ -229,7 +229,13 @@ impl Default for Configuration {
                 .to_vec(),
             // HTML is a source format like the other two, and its renderer is
             // the identity: there is no longer a document without a source.
-            source_formats: ["markdown", "typst", "html"].map(String::from).to_vec(),
+            // LaTeX is one with no renderer on this side at all -- the store
+            // keeps the source, and a browser that has fetched a distribution
+            // is the only thing anywhere that can make pages of it. Which is
+            // why `storable_source` and `renderers` are two questions.
+            source_formats: ["markdown", "typst", "html", "latex"]
+                .map(String::from)
+                .to_vec(),
             caps: CapLimit {
                 body: 5000,
                 creator: 80,

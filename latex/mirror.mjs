@@ -277,6 +277,9 @@ async function mirror() {
     if (ONLY && ONLY !== spec.name) continue;
     const entry = (manifest.distributions[spec.name] ||= {});
     entry.label = spec.label;
+    // Written on every run rather than only on a fetch, so flipping `shown` in
+    // `distributions.mjs` and re-running is enough to put one on the card.
+    entry.shown = spec.shown === true;
     entry.engines = spec.engines;
     entry.bibliography = spec.bibliography;
     entry.licence = spec.licence;

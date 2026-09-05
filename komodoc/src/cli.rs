@@ -459,6 +459,7 @@ async fn publish_directory(
         title = match crate::render::document_format(&main) {
             Some("markdown") => title_from_markdown(&source),
             Some("html") => title_from_html(&source),
+            Some("latex") => crate::render::title_from_latex(&source),
             _ => String::new(),
         };
     }
@@ -521,10 +522,10 @@ async fn publish_file(file: &str, mut title: String, slug: String, server_flag: 
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if extension != "html" && extension != "htm" && !is_markdown(file) && !is_typst(file) {
+    if extension != "html" && extension != "htm" && crate::render::document_format(file).is_none() {
         die(format!(
             "{base_name} is not a document Komodoc can serve.\n\n  \
-             It takes HTML, or markdown or typst, which it renders for you.\n  \
+             It takes HTML, markdown, typst or LaTeX.\n  \
              From Quarto:\n    quarto render paper.qmd --to html -M embed-resources:true"
         ));
     }
@@ -605,6 +606,24 @@ async fn publish_file(file: &str, mut title: String, slug: String, server_flag: 
         eprintln!("read {base_name} ({} KiB of markdown)", raw.len() / 1024);
         source = html;
         source_format = "markdown".to_string();
+    } else if crate::render::is_latex(file) {
+        // Nothing is rendered here, and nothing can be: Komodoc carries no TeX
+        // and no build embeds one. So this is the one format `publish` uploads
+        // without having compiled it first, and the check that a document
+        // compiles -- which is the reason `publish` compiles typst at all --
+        // happens in the first browser that opens it instead. Said plainly,
+        // because an author used to `publish` refusing a broken paper should
+        // not have to infer that this one is different.
+        if title.is_empty() {
+            title = crate::render::title_from_latex(&html);
+        }
+        eprintln!(
+            "read {base_name} ({} KiB of LaTeX; not compiled here -- \
+             the first browser to open it compiles it)",
+            raw.len() / 1024
+        );
+        source = html;
+        source_format = "latex".to_string();
     } else if !html.contains('<') {
         die(format!("{base_name} contains no HTML tags"));
     }

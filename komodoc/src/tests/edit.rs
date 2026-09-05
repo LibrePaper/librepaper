@@ -147,7 +147,7 @@ async fn an_unknown_source_format_is_refused() {
     let (status, document) = post(
         &server.url,
         "/api/documents",
-        json!({"title": "My Paper", "source": "\\documentclass{article}", "source_format": "latex"}),
+        json!({"title": "My Paper", "source": "a paper", "source_format": "docx"}),
     )
     .await;
     assert_eq!(status, 400, "{document}");

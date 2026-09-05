@@ -678,6 +678,7 @@ fn one_place_decides_what_a_filename_says_a_document_is() {
     // here, and this is the test that says so.
     for (name, format) in [
         ("main.typ", Some("typst")),
+        ("main.tex", Some("latex")),
         ("paper.md", Some("markdown")),
         ("notes.markdown", Some("markdown")),
         ("index.html", Some("html")),
