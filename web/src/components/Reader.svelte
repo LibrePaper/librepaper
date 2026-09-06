@@ -36,7 +36,7 @@
     takeKeyFromFragment,
     write,
   } from "../lib/storage.js";
-  import { LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
+  import { ACTIVITY_WIDTH, LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
 
   import { tick } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
@@ -80,7 +80,6 @@
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
   // named on the document. A reader who arrived by link is offered neither,
   // which is most of the point of a blind review.
-  let sharingOpen = $state(false);
   let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
   let visibility = $state("");
 
@@ -625,16 +624,13 @@
   let peers = $state(1);
   let linked = $state(read(LINKED, false) === true);
 
-  // What the toolbar says about durability. There is no save, so there is
-  // nothing to say while everything the socket carried has been written; the
-  // only things worth saying are that work is on its way, that it is being
-  // kept here for now, or that it is in neither place yet.
+  // Routine saving stays quiet; losing the connection still needs a warning.
   const persistenceBadge = $derived.by(() => {
     if (!mayEdit || !session) return "";
     if (!connected) {
       return persistence.local ? "offline, changes kept in this browser" : "offline";
     }
-    return persistence.pending ? "saving…" : "";
+    return "";
   });
 
   // A close is only worth interrupting when the work has reached neither this
@@ -1476,12 +1472,10 @@
     { id: "comments", says: "Comments" },
     { id: "history", says: "History" },
     { id: "diagnostics", says: "Diagnostics", editOnly: true },
+    { id: "share", says: "Share", sharingOnly: true },
   ];
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
   let panel = $state(PANELS.includes(read(PANEL, null)) ? read(PANEL, null) : "files");
-  // What the column reopens on. Closing it does not forget which panel was
-  // showing, or the button would reopen a column that had changed its mind.
-  let lastPanel = panel || "files";
 
   // Showing a panel; "" closes the column. Leaving the timeline is leaving it:
   // what the document pane shows goes back to the text as it stands, because
@@ -1494,14 +1488,10 @@
       if (!hadCheckpoint) navigationGeneration += 1;
     }
     panel = name;
-    if (name) lastPanel = name;
     if (remembered) write(PANEL, name);
     return name === "history" ? loadHistory() : Promise.resolve();
   }
 
-  function toggleColumn() {
-    showPanel(panel ? "" : lastPanel);
-  }
   // The source and the document are kept as a share of what they have between
   // them; the comment column is kept in pixels. Two units because they are two
   // different kinds of pane: half a window stays half when the window changes,
@@ -1630,6 +1620,7 @@
   let files = $state([]);
   let folders = $state([]);
   let openFile = $state("");
+  const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
   let peersByFile = $state(new Map());
   // The deployment's rules, which say what a path may be and what may sit at
   // one. Fetched rather than compiled in, so a deployment that widens its
@@ -1920,6 +1911,7 @@
     }
     mayEdit = Boolean(allowed);
     if (!mayEdit && panel === "diagnostics") showPanel("files", false);
+    if (!canSeeSharing && panel === "share") showPanel("files", false);
     renderers.warm(format);
     // localStorage remembers a preference, not a running worker. Restore the
     // worker before claiming that LaTeX is ready; if the distribution was
@@ -2048,8 +2040,7 @@
   // for it to do: the document is already durable. What it must not do is
   // claim that pending writes are saved, so it says what is actually true.
   function reportPersistence() {
-    // Pending and offline status already have a reactive badge. Copying them
-    // into a static message leaves a second "saving" behind after the ack.
+    // Never claim pending or disconnected writes have reached the server.
     if (!connected || persistence.pending) return;
     say("saved on the server");
     setTimeout(() => {
@@ -2083,9 +2074,9 @@
 
 <Nav {me}>
   {#snippet children()}
-    <IconButton icon="panel-left-open" label="Show or hide the sidebar"
-      title="Show or hide the sidebar" pressed={Boolean(panel)} onclick={toggleColumn} />
-    <span id="docTitle" class="text-surface-600-400 truncate text-sm">{doc.title ?? ""}</span>
+    <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
+      {toolbarPath ? basename(toolbarPath) : doc.title || "Komodoc"}
+    </span>
   {/snippet}
   {#snippet status()}
     {#if !connected}<small class="badge preset-tonal-warning" title="Reconnecting">reconnecting…</small>{/if}
@@ -2103,7 +2094,7 @@
     {/if}
   {/snippet}
   {#snippet tools()}
-    <Row gap={3}>
+    <Row gap={2}>
       <ControlGroup label="Layout">
         {#snippet children()}
           {#if editing}
@@ -2166,25 +2157,12 @@
         <IconButton icon="book" label="Choose a different TeX distribution" title="TeX distribution"
           pressed={cardOpen} onclick={() => (cardOpen = !cardOpen)} />
       {/if}
-      {#if canSeeSharing}
-        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (sharingOpen = true)}>Share</button>
-      {:else}
+      {#if !canSeeSharing}
         <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
       {/if}
     </Row>
   {/snippet}
 </Nav>
-
-<Share
-  bind:open={sharingOpen}
-  slug={SLUG}
-  onvisibility={(chosen) => {
-    // Making a document private changes where its bytes come from, so the
-    // frame is reloaded rather than left showing what it was served before.
-    visibility = chosen;
-    navigateFrame(true);
-  }}
-/>
 
 <PendingAnnotations items={unconfirmed}
   onretry={(id) => outbox.retry(id, (message) => room?.send(message))}
@@ -2192,21 +2170,21 @@
 
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
-      style="--komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="--komodoc-activity: {ACTIVITY_WIDTH}px; --komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- The column, first: the files, the comments or the history, chosen by
-       the tabs at its top. A file dropped anywhere on it joins the project. -->
-  {#if shown.comments}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <aside class="sidebar" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
-      <div class="paneltabs" role="tablist" aria-label="Sidebar tabs">
-        {#each TABS.filter((tab) => !tab.editOnly || editing) as tab (tab.id)}
-          <button type="button" role="tab" class="paneltab"
-                  aria-selected={panel === tab.id}
-                  onclick={() => showPanel(tab.id)}>
-            {tab.says}
-          </button>
+       the activity bar. A file dropped anywhere on it joins the project. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <aside class="sidebar" class:collapsed={!shown.comments} ondragover={(event) => event.preventDefault()} ondrop={dropped}>
+      <div class="sidebar-activity" role="group" aria-label="Sidebar sections">
+        {#each TABS.filter((tab) => (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing)) as tab (tab.id)}
+          <IconButton
+            icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "triangle-alert"}
+            label={tab.says} pressed={panel === tab.id}
+            onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
         {/each}
       </div>
+      {#if shown.comments}
+      <div class="sidebar-content">
       {#if panel === "files"}
         <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
                {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
@@ -2214,6 +2192,11 @@
                ondelete={deleteFiles} onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
+      {:else if panel === "share" && canSeeSharing}
+        <Share open inline slug={SLUG} onclose={() => showPanel("")} onvisibility={(chosen) => {
+          visibility = chosen;
+          navigateFrame(true);
+        }} />
       {:else if panel === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic} />
@@ -2244,7 +2227,10 @@
                   }}
                   onresolve={resolve} ondelete={askDelete} onreply={reply} />
       {/if}
+      </div>
+      {/if}
     </aside>
+  {#if shown.comments}
     <Grip pane={PANES.sidebar} label="Resize the left-hand column" panes={panes}
           onsize={(size) => setSize(PANES.sidebar, size)}
           onguide={(where) => (guide = where)}
@@ -2428,3 +2414,36 @@
 </Modal>
 
 <Toasts />
+
+<style>
+  .nav-document {
+    display: block;
+    max-width: min(38vw, 20rem);
+    color: var(--color-surface-700-300);
+    font-size: var(--text-sm);
+  }
+  .sidebar { flex-direction: row; }
+  .sidebar.collapsed { flex: 0 0 var(--komodoc-activity); }
+  .sidebar-activity {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing);
+    width: var(--komodoc-activity);
+    padding-block: calc(var(--spacing) * 3);
+  }
+  .sidebar-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  @media (max-width: 760px) {
+    .sidebar, .sidebar.collapsed { flex: none; flex-direction: column; }
+    .sidebar-activity { flex-direction: row; width: auto; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); }
+    .sidebar-content { overflow: visible; }
+  }
+</style>

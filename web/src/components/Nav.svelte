@@ -18,12 +18,13 @@
       <Logo />
       <strong class="wordmark"><span class="wordmark-komo">komo</span><span class="wordmark-doc">doc</span></strong>
     </a>
+    {#if children}<span class="nav-divider" aria-hidden="true">/</span>{/if}
     {@render children?.()}
   </div>
 
   {#if status}<div class="nav-status" role="status">{@render status()}</div>{/if}
 
-  <div class="nav-actions flex shrink-0 items-center gap-3">
+  <div class="nav-actions flex shrink-0 items-center gap-2">
     {@render tools?.()}
     <!-- The one link that is the same on every page: what Komodoc is and how
          to use it, from the project's own README. An icon among the other
@@ -46,3 +47,12 @@
     {/if}
   </div>
 </nav>
+
+<style>
+  .nav-divider { color: var(--color-surface-400-600); user-select: none; }
+  @media (max-width: 760px) {
+    .nav-identity { flex: 1; }
+    .nav-actions { gap: var(--spacing); }
+    .nav-actions > small { display: none; }
+  }
+</style>

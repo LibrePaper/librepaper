@@ -6,11 +6,9 @@
   // they are the same square with the icon at the same size, rather than each
   // place that wants one deciding again.
   //
-  // Three weights, which is the whole vocabulary: filled for the one action
-  // that changes the document, tonal for a state that is on, outlined for
-  // everything else -- and plain for a control that sits inside something
-  // else's frame, like a row of a table, where a border would draw a box
-  // around nothing.
+  // Four weights, which is the whole vocabulary: filled for the one action
+  // that changes the document, tonal for a state that is on, plain for ordinary
+  // actions, and outlined when an action needs extra emphasis.
   //
   // An icon without a word beside it has to say what it is. A title attribute
   // says it only to a mouse, after a wait the browser chooses, in a box the
@@ -36,8 +34,8 @@
     outlined: "preset-outlined-surface-300-700",
     plain: "",
   };
-  const preset = $derived(TONES[tone] ?? (pressed === true ? TONES.tonal : TONES.outlined));
-  const classes = $derived(`btn-icon ${size ?? ""} ${preset} ${colour ?? ""}`);
+  const preset = $derived(TONES[tone] ?? (pressed === true ? TONES.tonal : TONES.plain));
+  const classes = $derived(`btn-icon icon-control ${size ? "" : "icon-standard"} ${tone === "plain" || (tone === null && pressed !== true) ? "icon-plain" : ""} ${size ?? ""} ${preset} ${colour ?? ""}`);
 </script>
 
 <Tooltip openDelay={400} closeDelay={100} positioning={{ placement: "bottom" }}>
