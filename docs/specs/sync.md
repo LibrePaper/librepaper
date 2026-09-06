@@ -1,11 +1,12 @@
 # SPEC: `komodoc sync`, the file on disk as a peer in the session
 
-Status: the server's side is built and the client is not. The room holds
-the document as a `yrs::Doc`, speaks the protocol below, answers
-`y-checkpoint`, and the word diff and three-way merge the client needs are
-the `komodoc-text` crate in `text/`, with their tests. What is not built is
-the command itself: the peer, the mirror, the `base` bookkeeping around the
-merge, the lock file. Planned for the existing Rust command line with Tokio.
+Status: built, in `crates/komodoc/src/sync.rs`, with `crates/komodoc/src/tests/sync.rs` and
+the merge's own tests in `crates/text/src/tests.rs`. Yrs is the library on both
+sides of the Rust half and Yjs on the browser's, and the test suite joins a
+Yrs client to the real room over a real socket rather than assuming the shared
+encoding. Two things this spec describes are not in it and are noted where
+they come up: the automation client under "Follow-up", and the awareness entry
+that would put a name on this peer in the browser.
 
 ## The problem
 
@@ -131,11 +132,15 @@ client last ran becomes an edit of the document rather than a second copy of
 the same words. There is no seeding: the server has the document whether or
 not anyone is editing it.
 
-On `y-awareness`, apply it and print who joined or left. The client's own
-awareness entry is
+On `y-snapshot`, encode the full Yrs state as a v1 update with `replace: true`,
+which is what the browser does for an older server. On `y-awareness`, apply
+it and print who
+joined or left. The client's own awareness entry would be
 `{user: {name: "<login> (sync)", color}}`, so a caret label in the browser
-says where the other edits are coming from, even though the client has no
-caret to show.
+said where the other edits were coming from. Not built: awareness is who is
+here now, this client has no caret to show, and the entry would mean encoding
+Y.Awareness in Rust for one label. It is worth doing and it is not the
+command.
 
 If the socket drops, reconnect with backoff, send `y-open` again, and treat
 what comes back as above. Reconnecting is the ordinary case for a process
@@ -345,8 +350,10 @@ It is not a general file synchroniser. One file, one document, one session.
    lock file, the messages above, `--interval`. A section in the README
    under "CLI", after "Edit", which opens with what it is not.
 
-Steps 1 and 2 are a day each; 3, 4 and 5 are a day or two together now
-that the merge itself exists.
+All five are built. One deviation from step 5 is worth knowing: the README
+section sits after "Comment" and "Edit" rather than immediately after "Edit",
+and opens with what the command is for; what it is not is the last paragraph,
+where it reads better than as an apology at the top.
 
 ## Open questions
 
