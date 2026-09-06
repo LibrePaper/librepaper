@@ -91,17 +91,12 @@ The chosen distribution is stored in that browser and is not asked for
 again, for that document or any other; the card is reachable afterwards
 from the preview toolbar to switch.
 
-**The document is a PDF, and comments are anchored in the source.** LaTeX
-makes pages. The preview is the PDF the compiler produced, drawn by pdf.js
-in the same frame the HTML documents use, and pdf.js's text layer -- real
-text nodes positioned over the page -- is what the agent walks, so a
-selection on a LaTeX document is captured the same way as on a markdown
-one. What is recorded is the same as everywhere else (`docs/specs/history.md`,
-"Anchors"): the words in the `.tex` source are the anchor of record, and the
-quotation from the text layer is kept beside them for display. That is what
-lets a comment survive a rendering being pruned, a distribution changing
-the hyphenation, or a reader who has no rendering at all. No conversion of
-LaTeX to HTML is attempted, here or later.
+**The document is a PDF, and comments anchor into its text.** LaTeX makes
+pages. The preview is the PDF the compiler produced, drawn by pdf.js in the
+same frame the HTML documents use, and pdf.js's text layer -- real text
+nodes positioned over the page -- is what the agent walks, so a highlight
+on a LaTeX document is the same text-quote anchor as a highlight on a
+markdown one. No conversion of LaTeX to HTML is attempted, here or later.
 
 **Readers do not compile.** A reader who opens a LaTeX document sees a PDF
 that an editor's browser compiled, stored beside the checkpoint it was
@@ -244,12 +239,8 @@ editor with comments, and readers have renderings, without them.
   perfect: hyphens at line ends stay hyphens, ligatures may be one
   character or two depending on the font, and a page break is a gap in
   the sequence. Bounded by `viewer-check.mjs`'s miss rate, by the existing
-  tolerance of the anchoring, and by the source anchor: a highlight the
-  text layer cannot place is still a comment on a passage of the `.tex`,
-  shown on the card and reachable in the editor, rather than an orphan.
-  Mapping a text-layer selection back to the source misses more often
-  than it does for markdown -- macros, citations and mathematics are not
-  their own words -- and such a comment keeps only its quotation.
+  tolerance of the anchoring, and by the fact that a comment whose anchor
+  fails is orphaned rather than lost, as today.
 - **A distribution changing under us.** Each is a project with its own
   release cadence, and SwiftLaTeX in particular has been quiet for
   stretches. Bounded by the mirror: a Komodoc deployment fetches what we
@@ -298,8 +289,7 @@ editor with comments, and readers have renderings, without them.
 - Which distributions the card offers is a measurement, recorded as `shown`
   in the manifest, not an opinion in the reader.
 - The preview and the document are a PDF, drawn by pdf.js in the existing
-  frame. Comments are anchored in the source, as for every format, with the
-  text-layer quotation kept for display. There is no HTML.
+  frame, with comments anchored into its text layer. There is no HTML.
 - Renderings are stored, as the one exception to "nothing derived is
   stored", keyed by the checkpoint SHA, pruned to the newest plus the
   labelled, counted against the quota, and never required of a reader.
