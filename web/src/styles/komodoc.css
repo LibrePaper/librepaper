@@ -88,10 +88,6 @@ main.reader {
 
 /* ------------------------------------------------------------- the files */
 
-.filelist .who {
-  color: var(--color-surface-600-400);
-  font-variant: all-small-caps;
-}
 .filelist .name {
   flex: 1;
   min-width: 0;

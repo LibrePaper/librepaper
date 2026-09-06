@@ -9,7 +9,7 @@
   import { checkPath, collisionKey } from "../lib/paths.js";
   import { basename, parentPath, inside, nodeKey, fileTree, folderPaths, topEntries, checkPlacement, copyPath, droppedFiles } from "../lib/file-manager.js";
 
-  let { files = [], folders = [], open = "", peers = new Map(), mayEdit = false, rules = {},
+  let { files = [], folders = [], open = "", mayEdit = false, rules = {},
     onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onmain, onfigure, ontext, ondownload, ondownloaditem } = $props();
 
   let selected = $state([]);
@@ -259,7 +259,6 @@
     <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label="Save name" onclick={commit} /><IconButton icon="x" label="Cancel rename" onclick={reset} /></span>
   {:else}
     <span class="explorer-name">{node.name}</span>
-    <span class="who">{(peers.get(node.fileId) || []).slice(0, 3).join(" ")}</span>
   {/if}
 {/snippet}
 
