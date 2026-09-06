@@ -32,6 +32,9 @@ export const LINKED = "komodoc-linked";
 // editor lands where they left it.
 export const LAYOUT = "komodoc-layout";
 export const SOURCE_SIDE = "komodoc-source-side";
+// Which panel the column last showed -- the files, the comments or the history
+// -- or "" for closed. Absent on a first visit, which opens on the files.
+export const PANEL = "komodoc-panel";
 // The link keys this browser has been given, by slug. A key is a secret, and
 // this is the right place for one: it is per browser, so opening the link on a
 // phone means pasting it again, and it is cleared with everything else.

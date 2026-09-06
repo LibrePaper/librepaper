@@ -868,7 +868,12 @@ async fn handle(
             if !server.may_read(&entry, &who) {
                 return write_json(404, &json!({"error": "not found"}));
             }
-            let (total, open) = server.rooms.get(slug).await.counts().await;
+            let room = server.rooms.get(slug).await;
+            let (total, open) = room.counts().await;
+            // Every path in the directory, for the landing page's search: a
+            // project is found by the files in it as well as by its title.
+            // Paths only -- the digests are the timeline's business.
+            let files: Vec<String> = room.tree().await.files.into_keys().collect();
             let role = who.role;
             let owned = role.at_least(Role::Editor);
             return write_json(
@@ -877,6 +882,7 @@ async fn handle(
                     "slug": entry.slug, "title": entry.title, "sha": entry.sha,
                     "created_at": entry.created_at, "updated_at": entry.updated_at,
                     "comment_count": total, "open_count": open,
+                    "files": files,
                     // What the document was written in, when it kept its source:
                     // the reader offers an editor for a document it can render
                     // again.

@@ -84,8 +84,10 @@
   }
 </script>
 
-<aside class="sidebar timeline">
-  <header class="mb-3">
+<!-- One of the column's panels: the column itself, with the tabs that choose
+     between them, is the reader's. -->
+<div class="panel timeline">
+  <header class="mb-3 pt-3">
     <Row justify="between">
       <h3 class="h5">History</h3>
       {#if checkpoints.length}
@@ -130,7 +132,7 @@
       {/each}
     </ol>
   {/each}
-</aside>
+</div>
 
 {#snippet mark(point)}
   <li>

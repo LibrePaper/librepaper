@@ -65,7 +65,9 @@
   ];
 </script>
 
-<aside class="sidebar">
+<!-- One of the column's panels: the column itself, with the tabs that choose
+     between them, is the reader's. -->
+<div class="panel">
   <!-- The tools belong with the comments they make, and stay in view while the
        pane scrolls. Box draws on a figure, so a document with no figures has
        nothing for it to do; saying so is better than a button that silently
@@ -133,4 +135,4 @@
       />
     {/each}
   </div>
-</aside>
+</div>

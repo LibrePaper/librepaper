@@ -172,6 +172,13 @@ async fn republish_keeps_slug_and_comments() {
         json!(1),
         "comment did not survive the republish: {document}"
     );
+    // The directory's paths travel with the document, for the landing page's
+    // search: a project is found by its files as well as by its title.
+    assert_eq!(
+        document["files"],
+        json!(["main.html"]),
+        "the document endpoint should list the directory: {document}"
+    );
 }
 
 #[tokio::test]

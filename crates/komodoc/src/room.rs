@@ -1825,9 +1825,9 @@ impl Room {
     }
 
     /// The document's directory as a checkpoint would record it. What the
-    /// timeline reads, and what a test asks when it wants to know the name the
-    /// next checkpoint will have.
-    #[allow(dead_code)] // the timeline that reads it is step 6; the tests ask now
+    /// timeline reads, what the document endpoint lists the paths of, and what
+    /// a test asks when it wants to know the name the next checkpoint will
+    /// have.
     pub async fn tree(&self) -> crate::history::Tree {
         let state = self.state.lock().await;
         tree_of(&state.session.doc, &state.session.asset_sizes).0

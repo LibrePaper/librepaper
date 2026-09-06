@@ -3,14 +3,16 @@
 // There are three arrangements and one of them is showing: the source and the
 // document side by side, the source alone, or the document alone. Every one of
 // them shows something, so there is no arrangement to refuse and no last pane
-// to protect. The comments are not part of that: they are a column that is
-// either there or not, in reading and editing alike.
+// to protect. The column is not part of that: it holds the files, the
+// comments or the history, and it is either there or not, in reading and
+// editing alike. It sits at the left of the window, before whatever the
+// arrangement shows.
 //
 // The two kinds of pane are measured in two different units, because they are
 // two different kinds of thing. The source and the document share what is left
 // of the window, so their split is a fraction: half stays half when the window
-// is resized or the comments open, which a pixel width cannot do. A comment
-// card wants a readable width whatever the screen is, so the comment column is
+// is resized or the column opens, which a pixel width cannot do. A comment
+// card wants a readable width whatever the screen is, so the column is
 // pixels. Both are remembered per reader, not per document.
 
 import { read, write } from "./storage.js";
@@ -57,9 +59,11 @@ export const PANES = {
 export const stored = (pane) => Number(read(pane.key, 0)) || pane.reset;
 export const remember = (pane, size) => write(pane.key, size);
 
-/// What is on the screen, given the arrangement and whether the comments are
+/// What is on the screen, given the arrangement and whether the column is
 /// open. Editing decides whether there is a source at all: a document nobody
-/// can edit has one arrangement, and it is the document.
+/// can edit has one arrangement, and it is the document. `comments` is the
+/// column, whichever panel is in it: the layout only needs to know that the
+/// column is there, not what it holds.
 export function showing({ layout, comments, editing }) {
   return {
     source: editing && (layout === "split" || layout === "source"),
@@ -75,16 +79,16 @@ export function separators(state) {
 }
 
 /// What the source and the document have between them: the window, less the
-/// comments and every separator in it.
+/// column and every separator in it.
 export function surface(state) {
   const shown = showing(state);
   return state.width - separators(state) - (shown.comments ? clamp(PANES.sidebar, state) : 0);
 }
 
-/// The comment column, in pixels, within what the rest of the window can
+/// The column, in pixels, within what the rest of the window can
 /// spare -- which is what is left after the source and the document have the
 /// least each of them can be read at. A window too narrow for all three used
-/// to leave the comments their full width and crush the document to a strip;
+/// to leave the column its full width and crush the document to a strip;
 /// the column is the pane that gives way, down to its own minimum.
 function clampSidebar(width, state) {
   const shown = showing(state);
@@ -123,12 +127,12 @@ export function pixels(pane, state) {
 }
 
 /// A pointer at x, as a size for this pane, in the pane's own unit. Which edge
-/// it is measured from depends on where the pane sits: the comments are always
-/// last, and the source is on whichever side the reader put it.
+/// it is measured from depends on where the pane sits: the column is always
+/// first, and the source is on whichever side the reader put it.
 export function sizeAt(pane, x, state) {
-  if (!pane.fraction) return state.width - x;
+  if (!pane.fraction) return x;
   const room = surface(state);
-  const width = state.sourceSide === "left" ? x : rightEdge(state) - x;
+  const width = state.sourceSide === "left" ? x - leftEdge(state) : state.width - x;
   return snap(width / room, room);
 }
 
@@ -150,9 +154,9 @@ export function snapped(pane, size) {
 /// Where this pane's separator sits, for the line that follows the pointer
 /// while it is dragged.
 export function edgeAt(pane, size, state) {
-  if (!pane.fraction) return state.width - clampSidebar(size, state);
+  if (!pane.fraction) return clampSidebar(size, state);
   const width = clampShare(size, state) * surface(state);
-  return state.sourceSide === "left" ? width : rightEdge(state) - width;
+  return state.sourceSide === "left" ? leftEdge(state) + width : state.width - width;
 }
 
 /// A step of an arrow key, in the pane's own unit: about the same distance on
@@ -165,13 +169,13 @@ export function step(pane, state, forward) {
 /// Which arrow key makes this pane wider, since a separator is focusable and
 /// should move without a pointer.
 export function grows(pane, state) {
-  if (!pane.fraction) return "ArrowLeft";
+  if (!pane.fraction) return "ArrowRight";
   return state.sourceSide === "left" ? "ArrowRight" : "ArrowLeft";
 }
 
-// Where the source pane ends when it is on the right: the window, less the
-// comments and the separator before them.
-function rightEdge(state) {
+// Where the source and the document begin: after the column and the separator
+// beside it, when the column is open.
+function leftEdge(state) {
   const shown = showing(state);
-  return state.width - (shown.comments ? clamp(PANES.sidebar, state) + GRIP : 0);
+  return shown.comments ? clamp(PANES.sidebar, state) + GRIP : 0;
 }

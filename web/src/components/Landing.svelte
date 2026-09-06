@@ -1,5 +1,7 @@
 <script>
-  // The landing page: what you may publish, and what you have published.
+  // The landing page: what you may publish, and the projects you have. A
+  // project is a document and the directory around it -- its chapters and its
+  // figures -- and it is found here by any of them.
   import Nav from "./Nav.svelte";
   import CopyLink from "./CopyLink.svelte";
   import Icon from "./Icon.svelte";
@@ -18,6 +20,9 @@
   let config = $state({ max_document: 4 * 1024 * 1024, extensions: [".html", ".htm", ".md", ".markdown"] });
   let documents = $state([]);
   let counts = $state(new Map());
+  // Every path in each project, by slug. What a search matches besides the
+  // title, and what the Files column counts.
+  let paths = $state(new Map());
   let favorites = $state(new Set(read(FAVORITES, [])));
   let viewed = $state(read(VIEWED, {}));
   let selected = $state(new Set());
@@ -58,6 +63,7 @@
   function comparing(column, up) {
     const key = {
       title: (doc) => doc.title.toLowerCase(),
+      files: (doc) => paths.get(doc.slug)?.length ?? -1,
       comments: (doc) => counts.get(doc.slug) ?? -1,
       updated: (doc) => doc.updated_at,
       viewed: (doc) => viewed[doc.slug] || "",
@@ -70,14 +76,21 @@
     };
   }
 
+  // A project is found by its title or by any file in it. The file that
+  // matched is shown under the title, and opens the project on that file,
+  // because "where is the figure I called that" is the question a search for
+  // a path is asking.
+  function found(doc, needle) {
+    if (!needle) return { matches: true, path: "" };
+    if (doc.title.toLowerCase().includes(needle)) return { matches: true, path: "" };
+    const path = (paths.get(doc.slug) || []).find((each) => each.toLowerCase().includes(needle));
+    return { matches: Boolean(path), path: path || "" };
+  }
+
+  const needle = $derived(search.trim().toLowerCase());
   const shown = $derived.by(() => {
-    const needle = search.trim().toLowerCase();
     return documents
-      .filter(
-        (doc) =>
-          (tab === "all" || favorites.has(doc.slug)) &&
-          (!needle || doc.title.toLowerCase().includes(needle)),
-      )
+      .filter((doc) => (tab === "all" || favorites.has(doc.slug)) && found(doc, needle).matches)
       .sort(comparing(sortBy, ascending));
   });
 
@@ -121,24 +134,30 @@
     const listing = await fetch("/api/list", { method: "POST", headers: SHELL_HEADERS });
     if (!listing.ok) return;
     documents = (await listing.json()).documents;
-    // Counts live in each document's room rather than in the index, so they
-    // are fetched separately and the list picks them up when they land.
-    const found = new Map();
+    // Counts and directories live in each project's room rather than in the
+    // index, so they are fetched separately and the list picks them up when
+    // they land.
+    const counted = new Map();
+    const listed = new Map();
     await Promise.all(
       documents.map((doc) =>
         get(`/api/documents/${doc.slug}`)
-          .then((full) => found.set(doc.slug, full.comment_count))
+          .then((full) => {
+            counted.set(doc.slug, full.comment_count);
+            listed.set(doc.slug, Array.isArray(full.files) ? full.files : []);
+          })
           .catch(() => {}),
       ),
     );
-    counts = found;
+    counts = counted;
+    paths = listed;
   }
 
   async function deleteSelected() {
     const slugs = [...selected];
     if (!slugs.length) return;
     const plural = slugs.length === 1 ? "" : "s";
-    confirmText = `This permanently removes ${slugs.length} document${plural} and every comment on ${slugs.length === 1 ? "it" : "them"}. It cannot be undone.`;
+    confirmText = `This permanently removes ${slugs.length} project${plural}, every file in ${slugs.length === 1 ? "it" : "them"}, and every comment. It cannot be undone.`;
     pendingDeletion = slugs;
     confirming = true;
   }
@@ -268,7 +287,7 @@
     <header>
       <Hero />
       <p class="text-surface-600-400 text-center">
-        Publish a document, share its link, and collect comments on it.
+        Publish a document to start a project, share its link, and collect comments on it.
       </p>
     </header>
 
@@ -294,7 +313,7 @@
             ondrop={drop}
           >
             <Icon name="upload" size={28} />
-            <p class="text-lg">Drop a document here</p>
+            <p class="text-lg">Drop a document here to start a project</p>
             <button type="button" class="btn preset-filled-primary-500" onclick={() => fileInput.click()}>
               Choose a file
             </button>
@@ -331,7 +350,7 @@
                   Cancel
                 </button>
                 <button type="submit" class="btn preset-filled-primary-500" disabled={busy}>
-                  {busy ? "Adding…" : "Add document"}
+                  {busy ? "Creating…" : "Create project"}
                 </button>
               </Row>
             </Stack>
@@ -346,7 +365,7 @@
     {#if documents.length || me.can_publish}
       <Stack gap={3}>
         <Row gap={3} wrap justify="between">
-          <!-- Which documents, and which of those. The two are a filter over
+          <!-- Which projects, and which of those. The two are a filter over
                one list rather than two lists. -->
           <div class="btn-group preset-outlined-surface-300-700 flex-row p-1">
             <button
@@ -374,7 +393,8 @@
                 Delete
               </button>
             {/if}
-            <input class="input w-56" type="search" placeholder="Search titles" bind:value={search} />
+            <input class="input w-72" type="search" placeholder="Search projects by title or file"
+                   aria-label="Search projects by title or file" bind:value={search} />
           </Row>
         </Row>
 
@@ -386,14 +406,14 @@
                   <input
                     type="checkbox"
                     class="checkbox"
-                    aria-label="Select every document shown"
+                    aria-label="Select every project shown"
                     checked={shown.length > 0 && hereSelected === shown.length}
                     indeterminate={hereSelected > 0 && hereSelected < shown.length}
                     onchange={(event) => tickAll(event.currentTarget.checked)}
                   />
                 </th>
                 <th class="w-8"></th>
-                {#each [["title", "Title"], ["comments", "Comments"], ["updated", "Updated"], ["viewed", "Opened"]] as [column, name]}
+                {#each [["title", "Project"], ["files", "Files"], ["comments", "Comments"], ["updated", "Updated"], ["viewed", "Opened"]] as [column, name]}
                   <th>
                     <button
                       type="button"
@@ -436,6 +456,14 @@
                   <td>
                     <Row gap={2}>
                       <a class="anchor" href="/docs/{doc.slug}">{doc.title}</a>
+                      <!-- The file the search found, when it was not the
+                           title. Opening it opens the project on that file. -->
+                      {#if found(doc, needle).path}
+                        <a class="anchor text-surface-600-400 text-xs"
+                           href="/docs/{doc.slug}?file={encodeURIComponent(found(doc, needle).path)}">
+                          {found(doc, needle).path}
+                        </a>
+                      {/if}
                       <!-- What the document is written in. Every format is
                            editable -- HTML's renderer is the identity -- so
                            this says what it was written in and nothing more. -->
@@ -468,6 +496,7 @@
                       />
                     </Row>
                   </td>
+                  <td>{paths.has(doc.slug) ? paths.get(doc.slug).length : "—"}</td>
                   <td>{counts.has(doc.slug) ? counts.get(doc.slug) : "—"}</td>
                   <td class="whitespace-nowrap">{doc.updated_at.slice(0, 10)}</td>
                   <td class="whitespace-nowrap {viewed[doc.slug] ? '' : 'text-surface-400-600'}">
@@ -476,12 +505,12 @@
                 </tr>
               {:else}
                 <tr>
-                  <td colspan="6" class="text-surface-600-400 h-48 text-center align-middle">
+                  <td colspan="7" class="text-surface-600-400 h-48 text-center align-middle">
                     {documents.length === 0
-                      ? "No documents uploaded yet."
-                      : tab === "favorites" && !search.trim()
-                        ? "No favorites yet. Star a document to keep it here."
-                        : "No documents match that search."}
+                      ? "No projects yet."
+                      : tab === "favorites" && !needle
+                        ? "No favorites yet. Star a project to keep it here."
+                        : "No projects match that search."}
                   </td>
                 </tr>
               {/each}

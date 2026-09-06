@@ -12,6 +12,29 @@
     "panel-left": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M9 3v18"]],
     "panel-right": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M15 3v18"]],
     "columns-2": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M12 3v18"]],
+    // Lucide's panel-left-open, for the column at the left of the window. Not
+    // panel-left, which is the "source only" arrangement's and would say the
+    // wrong thing beside it.
+    "panel-left-open": [
+      ["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }],
+      ["path", "M9 3v18"],
+      ["path", "m14 9 3 3-3 3"],
+    ],
+    // Lucide's folder, image and download, for the files panel: the panel
+    // itself, a figure to add to it, and the directory as a zip.
+    folder: [
+      ["path", "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"],
+    ],
+    image: [
+      ["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2, ry: 2 }],
+      ["circle", { cx: 9, cy: 9, r: 2 }],
+      ["path", "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"],
+    ],
+    download: [
+      ["path", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"],
+      ["path", "m7 10 5 5 5-5"],
+      ["path", "M12 15V3"],
+    ],
     "message-square": [["path", "M22 17a2 2 0 0 1-2 2H6l-4 4V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"]],
     "file-text": [
       ["path", "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"],

@@ -23,6 +23,7 @@
     AUTHOR,
     LAYOUT,
     LINKED,
+    PANEL,
     SOURCE_SIDE,
     linkFor,
     markViewed,
@@ -32,6 +33,7 @@
   } from "../lib/storage.js";
   import { LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
 
+  import { tick } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
@@ -45,7 +47,7 @@
   import { problem as toastProblem } from "../lib/toast.svelte.js";
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
-  import Sidebar from "./Sidebar.svelte";
+  import Comments from "./Comments.svelte";
   import History from "./History.svelte";
   import Files from "./Files.svelte";
 
@@ -508,7 +510,6 @@
   // What this document used to say, and when. The manifest is fetched when the
   // panel is opened and not before: a reader who never asks for the history
   // costs no request for it.
-  let historyOpen = $state(false);
   let checkpoints = $state([]);
   let historyProblem = $state("");
   // The checkpoint being shown in the document pane, whole -- its tree and its
@@ -517,6 +518,10 @@
   // Which checkpoint the reader arrived asking for, out of the link somebody
   // sent them. Read once, because after that the panel is where the answer is.
   const ARRIVED_AT = new URLSearchParams(location.search).get("at") || "";
+  // And which file, when the landing page's search found the project by one
+  // of its files. Honoured once the directory has arrived, and once only.
+  const ARRIVED_FILE = new URLSearchParams(location.search).get("file") || "";
+  let arrivedFileOpened = false;
 
   async function loadHistory() {
     try {
@@ -525,21 +530,6 @@
     } catch (error) {
       historyProblem = error.message || "the history could not be read";
     }
-  }
-
-  // Closing the timeline is leaving it: what the document pane shows goes back
-  // to the text as it stands, because a page nobody can see the history behind
-  // is a page with no way back.
-  function closeHistory() {
-    historyOpen = false;
-    backToNow();
-  }
-
-  async function toggleHistory() {
-    if (historyOpen) return closeHistory();
-    historyOpen = true;
-    commentsOpen = false;
-    await loadHistory();
   }
 
   // A checkpoint as a renderer takes it. Its texts came with it; its figures
@@ -1169,7 +1159,38 @@
   // remembered and an editor reopened lands where they left it.
   let layout = $state(LAYOUTS.includes(read(LAYOUT, "split")) ? read(LAYOUT, "split") : "split");
   let sourceSide = $state(read(SOURCE_SIDE, "left") === "right" ? "right" : "left");
-  let commentsOpen = $state(true);
+
+  // The column at the left, and what is in it: the files, the comments or the
+  // history, or "" for closed. One value rather than a switch per panel,
+  // because the column shows one thing at a time. A first visit opens on the
+  // files -- the shape of the project is what a project space starts with --
+  // and every visit after that opens where the reader left it.
+  const TABS = [
+    { id: "files", says: "Files" },
+    { id: "comments", says: "Comments" },
+    { id: "history", says: "History" },
+  ];
+  const PANELS = ["", ...TABS.map((tab) => tab.id)];
+  let panel = $state(PANELS.includes(read(PANEL, null)) ? read(PANEL, null) : "files");
+  // What the column reopens on. Closing it does not forget which panel was
+  // showing, or the button would reopen a column that had changed its mind.
+  let lastPanel = panel || "files";
+
+  // Showing a panel; "" closes the column. Leaving the timeline is leaving it:
+  // what the document pane shows goes back to the text as it stands, because
+  // a page nobody can see the history behind is a page with no way back.
+  // Opening it is what fetches the manifest.
+  function showPanel(name, remembered = true) {
+    if (panel === "history" && name !== "history") backToNow();
+    panel = name;
+    if (name) lastPanel = name;
+    if (remembered) write(PANEL, name);
+    return name === "history" ? loadHistory() : Promise.resolve();
+  }
+
+  function toggleColumn() {
+    showPanel(panel ? "" : lastPanel);
+  }
   // The source and the document are kept as a share of what they have between
   // them; the comment column is kept in pixels. Two units because they are two
   // different kinds of pane: half a window stays half when the window changes,
@@ -1187,12 +1208,12 @@
   let width = $state(innerWidth);
 
   // What every measurement below is made against.
-  // The column to the right holds one of two things -- the comments or the
+  // The column holds one of three things -- the files, the comments or the
   // timeline -- so what the layout needs to know is whether it is there, not
   // which of them is in it.
   const panes = $derived({
     layout,
-    comments: commentsOpen || historyOpen,
+    comments: Boolean(panel),
     editing,
     sourceSide,
     sizes,
@@ -1235,13 +1256,6 @@
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
     if (what.startsWith("ratio-")) return setSize(PANES.editor, Number(what.slice(6)));
     if (what === "linked") return setLinked(!linked);
-  }
-
-  function toggleComments() {
-    commentsOpen = !commentsOpen;
-    // The two share a column, so showing one puts the other away rather than
-    // stacking them or splitting what is already the narrowest pane.
-    if (commentsOpen && historyOpen) closeHistory();
   }
 
   /* ------------------------------------------------------------------- boot */
@@ -1306,6 +1320,14 @@
     // falls back to the document itself.
     if (openFile && !files.some((file) => file.id === openFile)) openFile = "";
     if (!openFile) openFile = session.mainId();
+    // The file the link named, if the project has one by that name. An
+    // editor's source pane opens on it; a reader has no pane to open it in,
+    // and the list simply marks it.
+    if (ARRIVED_FILE && !arrivedFileOpened && files.length) {
+      arrivedFileOpened = true;
+      const named = files.find((file) => file.path === ARRIVED_FILE);
+      if (named) openTheFile(named);
+    }
     // The main file's name is the document's format, and it can change: a
     // document whose main file becomes a .typ is a typst document from that
     // moment.
@@ -1334,6 +1356,12 @@
     // nothing else to key it by.
     openFile = file.id;
     shownFigure = file.kind === "asset" ? file : null;
+    // Choosing a file is asking to see it, so an arrangement with no source
+    // pane makes room for one. Remembered like any other choice of layout.
+    if (mayEdit && layout === "document") {
+      layout = "split";
+      write(LAYOUT, layout);
+    }
   }
 
   // The figure being looked at, when the chosen file is one. Held rather than
@@ -1443,11 +1471,18 @@
   // a text becomes a file, a figure is uploaded, and a name that is neither is
   // refused by the same rules.
   let fileList = $state(null);
-  function dropped(event) {
+  async function dropped(event) {
     if (!mayEdit) return;
     event.preventDefault();
     const chosen = [...(event.dataTransfer?.files || [])];
-    if (chosen.length) fileList?.offer(chosen);
+    if (!chosen.length) return;
+    // The files panel is where a refusal is shown, so a drop on the comments
+    // brings it forward first.
+    if (panel !== "files") {
+      showPanel("files");
+      await tick();
+    }
+    fileList?.offer(chosen);
   }
 
   // The source pane. Nothing is fetched here and nothing is seeded: the text
@@ -1502,7 +1537,11 @@
     // opens the panel too, so that what is on the screen is explained by
     // something the reader can see and leave.
     if (ARRIVED_AT) {
-      toggleHistory().then(() => showCheckpoint(ARRIVED_AT));
+      showPanel("history", false).then(() => showCheckpoint(ARRIVED_AT));
+    } else if (panel === "history") {
+      // The column reopened where it was left, and this panel has to fetch
+      // what it shows.
+      loadHistory();
     }
   }
 
@@ -1608,6 +1647,15 @@
 
 <Nav {me}>
   {#snippet children()}
+    <!-- The column's switch sits over the column: at the left, before the
+         title. Which panel it opens on is the tabs' business, in the column. -->
+    <IconButton
+      icon="panel-left-open"
+      label="Show or hide the files, comments and history"
+      title="Files, comments and history"
+      pressed={Boolean(panel)}
+      onclick={toggleColumn}
+    />
     <span id="docTitle" class="text-surface-600-400 truncate text-sm">{doc.title ?? ""}</span>
     <!-- Silent while the socket is up: it only has something to say when the
          live updates have stopped. -->
@@ -1618,10 +1666,9 @@
 
   {#snippet tools()}
     <Row gap={3}>
-      <!-- What you are looking at. Two controls rather than three switches:
-           one arrangement of the source and the document, which only means
-           anything while editing, and the comments, which are a column that is
-           either there or not. -->
+      <!-- How the source and the document are arranged, which only means
+           anything while editing. The column is switched from the other end
+           of the bar, above where it opens. -->
       <ControlGroup label="Layout">
         {#snippet children()}
           {#if editing}
@@ -1670,20 +1717,6 @@
               </Menu.Positioner>
             </Menu>
           {/if}
-          <IconButton
-            icon="history"
-            label="Show or hide the history"
-            title="History"
-            pressed={historyOpen}
-            onclick={toggleHistory}
-          />
-          <IconButton
-            icon="message-square"
-            label="Show or hide the comments"
-            title="Comments"
-            pressed={commentsOpen}
-            onclick={toggleComments}
-          />
         {/snippet}
       </ControlGroup>
       <!-- The bar over an old version. It says which one is showing, because a
@@ -1789,19 +1822,47 @@
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       style="--komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
-  {#if shown.source}
+  <!-- The column, first: the files, the comments or the history, chosen by
+       the tabs at its top. A file dropped anywhere on it joins the project. -->
+  {#if shown.comments}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <section class="editorpane" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
-      <!-- The directory, above the file being edited. A document with one
-           file still has a list: it is one line, and it is where the control
-           to add a second one lives. -->
-      {#if files.length}
+    <aside class="sidebar" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
+      <div class="paneltabs" role="tablist" aria-label="Files, comments and history">
+        {#each TABS as tab (tab.id)}
+          <button type="button" role="tab" class="paneltab"
+                  aria-selected={panel === tab.id}
+                  onclick={() => showPanel(tab.id)}>
+            {tab.says}
+          </button>
+        {/each}
+      </div>
+      {#if panel === "files"}
         <Files bind:this={fileList} {files} open={openFile} peers={peersByFile}
                {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
                onrename={renameFile} onremove={removeFile} onmain={makeMain}
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} />
+      {:else if panel === "history"}
+        <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
+                 problem={historyProblem}
+                 onshow={showCheckpoint} onback={backToNow} onname={nameCheckpoint} />
+      {:else}
+        <Comments {comments} {figureAt} {identity} {canModerate} {tool} {went}
+                  hasFigures={figureAt.length > 0}
+                  ontool={chooseTool}
+                  onreveal={(comment) => tell({ type: "reveal", id: comment.id })}
+                  onresolve={resolve} ondelete={askDelete} onreply={reply} />
       {/if}
+    </aside>
+    <Grip pane={PANES.sidebar} label="Resize the left-hand column" panes={panes}
+          onsize={(size) => setSize(PANES.sidebar, size)}
+          onguide={(where) => (guide = where)}
+          ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }} />
+  {/if}
+
+  {#if shown.source}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <section class="editorpane" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
@@ -1868,24 +1929,6 @@
        would reload the document and lose the reader's place in it. -->
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
            away={!shown.document || showsCard || unrendered} />
-
-  {#if shown.comments}
-    <Grip pane={PANES.sidebar} label="Resize the right-hand column" panes={panes}
-          onsize={(size) => setSize(PANES.sidebar, size)}
-          onguide={(where) => (guide = where)}
-          ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }} />
-    {#if historyOpen}
-      <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
-               problem={historyProblem}
-               onshow={showCheckpoint} onback={backToNow} onname={nameCheckpoint} />
-    {:else}
-      <Sidebar {comments} {figureAt} {identity} {canModerate} {tool} {went}
-               hasFigures={figureAt.length > 0}
-               ontool={chooseTool}
-               onreveal={(comment) => tell({ type: "reveal", id: comment.id })}
-               onresolve={resolve} ondelete={askDelete} onreply={reply} />
-    {/if}
-  {/if}
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every

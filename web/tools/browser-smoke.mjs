@@ -601,7 +601,7 @@ async function run() {
 
   // Add a second file, and write a function in it.
   await author.eval(`
-    [...document.querySelectorAll(".filelist .addfile")][0].click();
+    document.querySelector('.filelist button[aria-label="Add a file"]').click();
     return true;
   `);
   await author.eval(`
@@ -814,8 +814,7 @@ async function run() {
     downloadPath: data,
   });
   await illustrator.eval(`
-    const button = [...document.querySelectorAll(".filelist .addfile")]
-      .find((b) => b.textContent.trim() === "Download");
+    const button = document.querySelector('.filelist button[aria-label^="Download"]');
     if (!button) throw new Error("no Download control");
     button.click();
     return true;
