@@ -61,6 +61,12 @@ export const DISTRIBUTIONS = [
     ],
     // Fetched one file at a time, by name, while a compile runs.
     packages: "pdftex",
+    // Measured, not estimated: `latex/corpus/MEASUREMENTS.md`. `upfront` in
+    // the manifest is what `choose` fetches; these two are what a compile
+    // fetches afterwards, which is most of the weight and is invisible until
+    // the card says it. `first` is a first document on a cold cache,
+    // `next` a second one. Bytes, from that file's tables.
+    measured: { first: 17380000, next: 260000 },
   },
   {
     name: "swiftlatex-xetex",
@@ -89,6 +95,12 @@ export const DISTRIBUTIONS = [
       { from: "zip", entry: "swiftlatexdvipdfm.wasm", as: "swiftlatexdvipdfm.wasm" },
     ],
     packages: "xetex",
+    // Measured, not estimated: `latex/corpus/MEASUREMENTS.md`. `upfront` in
+    // the manifest is what `choose` fetches; these two are what a compile
+    // fetches afterwards, which is most of the weight and is invisible until
+    // the card says it. `first` is a first document on a cold cache,
+    // `next` a second one. Bytes, from that file's tables.
+    measured: { first: 29540000, next: 100000 },
   },
   {
     name: "busytex",
@@ -114,6 +126,12 @@ export const DISTRIBUTIONS = [
       "ubuntu-texlive-science",
     ],
     packages: null,
+    // Measured, not estimated: `latex/corpus/MEASUREMENTS.md`. `upfront` in
+    // the manifest is what `choose` fetches; these two are what a compile
+    // fetches afterwards, which is most of the weight and is invisible until
+    // the card says it. `first` is a first document on a cold cache,
+    // `next` a second one. Bytes, from that file's tables.
+    measured: { first: 182730000, next: 0 },
   },
   {
     name: "texlyre-busytex",

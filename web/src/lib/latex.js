@@ -33,12 +33,23 @@
 // A compile takes seconds, so it runs in a Web Worker: at most one running
 // and one queued, and the queued one is always the latest tree.
 
-import { persist } from "./cache.js";
+import { cached, persist } from "./cache.js";
 
-/// Where the distributions are served from. `--latex <url>` replaces this in
-/// step 3; until then it is a constant the tests override, and it is the only
-/// origin a compile ever fetches from.
+/// Where the distributions are served from: this origin, always. `--latex`
+/// says where the *server* reads them from -- a bucket, or a directory on the
+/// machine it runs on -- and the server proxies them to here, so this is the
+/// only origin a compile ever fetches from and it is the one the page came
+/// from. The tests override it to point at a mirror served beside them.
 export const DEFAULT_BASE = "/latex/";
+
+/// How long the source has to be quiet before a compile starts.
+///
+/// Twenty-five times the typst delay, and still well under the compile
+/// itself: a LaTeX compile takes seconds, and a preview that started one on
+/// every pause would spend the whole session behind. A constant rather than a
+/// setting, because a setting nobody changes is a lie in the documentation.
+/// The reader imports this rather than keeping a number of its own.
+export const DEBOUNCE = 1500;
 
 /// Which browser storage remembers the choice. The spec asks for the choice
 /// to be kept for this browser rather than for this document, so the key
@@ -79,22 +90,42 @@ async function index() {
   return manifest;
 }
 
-/// The distributions this deployment can offer, with the measured sizes and
-/// the licence names, which is everything the card puts on a row. The sizes
-/// are bytes, measured by `latex/mirror.mjs`, not estimated here.
+/// The distributions this deployment offers, with the measured sizes and the
+/// licence names, which is everything the card puts on a row. The sizes are
+/// bytes, measured by `latex/tools/mirror.mjs`, not estimated here.
+///
+/// The list is what the manifest marks `shown`, and nothing here names a
+/// distribution. The worker can drive more than the card offers, on purpose:
+/// what a mirror carries and what an engine can actually compile are two
+/// questions, and `latex/corpus/MEASUREMENTS.md` records where the answers
+/// differ. A self-hoster who fixes a bundle turns one on by flipping that
+/// flag and rebuilding the mirror, with no build of Komodoc involved -- which
+/// only works while the decision lives in the manifest and not in this file.
 export async function available() {
   const list = await index();
-  return Object.entries(list.distributions).map(([id, one]) => ({
-    name: id,
-    label: one.label,
-    engines: one.engines,
-    bibliography: one.bibliography,
-    licence: one.licence,
-    trade: one.trade,
-    upfront: one.upfront,
-    // What a document may pull down later, over and above the up-front cost.
-    later: one.bundle_bytes || 0,
-  }));
+  return Object.entries(list.distributions)
+    .filter(([, one]) => one.shown === true)
+    .map(([id, one]) => ({
+      name: id,
+      label: one.label,
+      engines: one.engines,
+      bibliography: one.bibliography,
+      licence: one.licence,
+      trade: one.trade,
+      upfront: one.upfront,
+      // What a document may pull down later, over and above the up-front
+      // cost.
+      later: one.bundle_bytes || 0,
+      // The two measurements the up-front number alone would mislead about.
+      // Every distribution here defers most of its weight -- SwiftLaTeX
+      // fetches the LaTeX format and each package from *inside* the first
+      // compile, BusyTeX pulls its TeX Live down when a document arrives --
+      // so a card that printed `upfront` on its own would be off by an order
+      // of magnitude on the number a person actually waits for. `first` is a
+      // first document on a cold cache and `next` a second one.
+      first: one.measured?.first ?? 0,
+      next: one.measured?.next ?? 0,
+    }));
 }
 
 /// The distribution this browser chose, or null. Cheap and synchronous: the
@@ -110,9 +141,17 @@ export function chosen() {
 }
 
 /// Fetches, caches and loads a distribution, and remembers it for this
-/// browser. The promise resolves when a compile could start; the download is
-/// the long part and the caller shows a progress bar over it.
-export function choose(which) {
+/// browser. The promise resolves when a compile could start.
+///
+/// `onProgress({ done, total })` is called with bytes as the up-front files
+/// arrive, so the pane can show a bar over the wait rather than a spinner
+/// over an unknown. Only the up-front files are counted, and honestly: they
+/// are the ones this module fetches, and they are the ones whose sizes the
+/// manifest knows. What a compile fetches afterwards is fetched by the engine
+/// itself, over synchronous XHR from inside WebAssembly, where there is
+/// nothing here to count -- which is exactly the weight the card warns about
+/// in words instead.
+export function choose(which, onProgress) {
   if (loaded && name === which) return loaded;
   if (worker) worker.terminate();
   name = which;
@@ -126,10 +165,15 @@ export function choose(which) {
   // which the card says.
   persist();
 
-  loaded = index().then(
+  loaded = index()
+    .then(async (list) => {
+      if (!list.distributions[which]) throw new Error(`no distribution named ${which}`);
+      await warmUpFront(list.distributions[which], onProgress);
+      return list;
+    })
+    .then(
     (list) =>
       new Promise((resolve, reject) => {
-        if (!list.distributions[which]) throw new Error(`no distribution named ${which}`);
         // A module worker, so the glue and the log parser are ordinary
         // imports and the same files run under Vite and, unbundled, under
         // the headless check. Vite discovers this form and bundles the
@@ -149,7 +193,7 @@ export function choose(which) {
           distribution: list.distributions[which],
         });
       }),
-  );
+    );
   loaded.catch(() => {
     // A failed load must not poison the module: the card is shown again and
     // the reader may choose the same one or another.
@@ -157,6 +201,36 @@ export function choose(which) {
     name = null;
   });
   return loaded;
+}
+
+/// Pulls the up-front files down before the engine is started, so that the
+/// wait has a length a person can see.
+///
+/// The engine's own loader fetches these again the moment it starts, and gets
+/// them for nothing: they are served with a digest in the path and
+/// `immutable`, so the second fetch is answered out of the HTTP cache. Going
+/// through `cached` as well puts them in Cache Storage, which is what
+/// survives an eviction of the HTTP cache and is what `persist` was asked
+/// about.
+///
+/// A file that will not fetch is not raised here. The engine is about to try
+/// the same URL and will fail with a message about the thing it was actually
+/// doing, which is a better error than this loop could write.
+async function warmUpFront(distribution, onProgress) {
+  const files = Object.values(distribution.files || {});
+  const total = files.reduce((sum, one) => sum + (one.size || 0), 0);
+  let done = 0;
+  onProgress?.({ done, total });
+  for (const file of files) {
+    try {
+      const response = await cached(new URL(file.url, new URL(base, self.location.href)).href);
+      await response.arrayBuffer();
+    } catch {
+      /* the engine is about to ask for the same file and will say so */
+    }
+    done += file.size || 0;
+    onProgress?.({ done, total });
+  }
 }
 
 /// Compiles a tree and returns the PDF, the SyncTeX file, the raw log, the
