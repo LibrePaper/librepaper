@@ -1978,7 +1978,6 @@
     {#if viewing}<small class="badge preset-tonal-warning" title={new Date(viewing.at).toLocaleString()}>Showing {viewingName}</small>{/if}
     {#if renderedNote}<small class="badge preset-tonal-surface" title={renderedNote}>{renderedNote}</small>{/if}
     {#if editing}
-      {#if connected && persistence.joined && !persistence.pending}<small class="nav-saved" title="All changes are saved">Saved</small>{/if}
       {#if persistenceBadge}<small class="badge preset-tonal-warning" title={persistenceBadge}>{persistenceBadge}</small>{/if}
       {#if peers > 1}<small class="badge preset-tonal-secondary">{peers} editing</small>{/if}
       {#if compileBadge}<small class="badge preset-tonal-surface" title={compileBadge}><span class="spinner" aria-hidden="true"></span>{compileBadge}</small>{/if}
@@ -2302,7 +2301,6 @@
     color: var(--color-surface-700-300);
     font-size: var(--text-sm);
   }
-  .nav-saved { color: var(--color-surface-400-600); font-size: var(--text-xs); white-space: nowrap; }
   .sidebar { flex-direction: row; }
   .sidebar.collapsed { flex: 0 0 var(--komodoc-activity); }
   .sidebar-activity {
