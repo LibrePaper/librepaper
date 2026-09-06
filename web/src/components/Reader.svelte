@@ -515,16 +515,13 @@
   let peers = $state(1);
   let linked = $state(read(LINKED, false) === true);
 
-  // What the toolbar says about durability. There is no save, so there is
-  // nothing to say while everything the socket carried has been written; the
-  // only things worth saying are that work is on its way, that it is being
-  // kept here for now, or that it is in neither place yet.
+  // Routine saving stays quiet; losing the connection still needs a warning.
   const persistenceBadge = $derived.by(() => {
     if (!mayEdit || !session) return "";
     if (!connected) {
       return persistence.local ? "offline, changes kept in this browser" : "offline";
     }
-    return persistence.pending ? "saving…" : "";
+    return "";
   });
 
   // A close is only worth interrupting when the work has reached neither this
@@ -1934,8 +1931,7 @@
   // for it to do: the document is already durable. What it must not do is
   // claim that pending writes are saved, so it says what is actually true.
   function reportPersistence() {
-    // Pending and offline status already have a reactive badge. Copying them
-    // into a static message leaves a second "saving" behind after the ack.
+    // Never claim pending or disconnected writes have reached the server.
     if (!connected || persistence.pending) return;
     say("saved on the server");
     setTimeout(() => {
