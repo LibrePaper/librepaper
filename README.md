@@ -438,6 +438,41 @@ With `--s3-direct-reads`, a document's bytes are fetched by the reader's
 browser straight from the bucket rather than passing through the server. That
 needs a CORS rule on the bucket; the deployment prints the policy to paste.
 
+### History
+
+A document is never lost, and its past is never rewritten. The server takes a
+checkpoint when the typing stops, when the last editor leaves, whenever
+somebody comments, and whenever the document is published to; each one records
+the whole directory at that moment, so a chapter and the file that includes it
+can never come back out of step.
+
+```sh
+komodoc history c9k
+```
+
+```
+sha      at                    by                  why      label
+8b03d77  2026-09-03 09:12:40   vincentarelbundock  cli
+4f2a91c  2026-09-05 14:02:11   vincentarelbundock  cli      sent to the journal
+c07e1aa  2026-09-05 16:40:03   annegrandchamp      comment
+d1e0f42  2026-09-05 17:02:19   vincentarelbundock  left     *
+```
+
+Name a moment so it stands out, and so it is the last thing shed if a quota
+ever bites:
+
+```sh
+komodoc label c9k 4f2a91c "sent to the journal"
+komodoc label c9k 4f2a91c            # and to take the name off again
+```
+
+In the reader, the history button opens the same list beside the document, in
+reading and in editing alike. Picking a moment shows the document as it was at
+that moment, with a bar saying which one; "Back to now" leaves, and the copy
+button beside it gives a link that puts somebody else exactly where you are.
+A name can be given to any row from there too. Nothing on that screen changes
+the document: viewing the past is reading.
+
 ### Export
 
 Export annotations as readable Markdown. `export` takes the same ID `comment`

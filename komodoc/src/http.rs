@@ -77,6 +77,36 @@ pub async fn post_json(
     Ok((status, decode(&raw)))
 }
 
+/// The same, for a change to one field of something that already exists. The
+/// timeline's label is the only one, and it is a PATCH rather than a POST
+/// because everything else about a checkpoint stays as it was.
+pub async fn patch_json(
+    target: &str,
+    payload: &Value,
+    token: &str,
+    timeout: Duration,
+) -> Result<(u16, Value), String> {
+    let body = serde_json::to_vec(payload)
+        .map_err(|err| format!("could not encode the request: {err}"))?;
+    let bearer = format!("Bearer {token}");
+    let mut headers = vec![
+        ("content-type", "application/json"),
+        ("x-komodoc-client", "cli"),
+    ];
+    if !token.is_empty() {
+        headers.push(("authorization", bearer.as_str()));
+    }
+    let (status, raw) = send(
+        reqwest::Method::PATCH,
+        target,
+        &headers,
+        Some(body),
+        timeout,
+    )
+    .await?;
+    Ok((status, decode(&raw)))
+}
+
 /// A GET that says who is asking, for the routes that answer differently to
 /// different people. Same bearer and same marker header as `post_json`.
 pub async fn get_with_token(

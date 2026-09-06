@@ -246,6 +246,24 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// What a document used to say, and when
+    History {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
+    /// Name a checkpoint, so it stands out in the timeline
+    Label {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// The checkpoint, as the digest `history` prints or the start of it
+        sha: String,
+        /// What to call it; omit to take an existing name away
+        text: Option<String>,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
     /// Annotations as W3C JSON-LD or markdown
     Export {
         /// A full slug, or one of the short handles `list` prints
@@ -358,6 +376,23 @@ async fn main() {
             server,
             yes,
         } => cli::transfer_document(&id, &to, server.unwrap_or_default(), yes).await,
+        Command::History { id, server } => {
+            cli::history_document(&id, server.unwrap_or_default()).await
+        }
+        Command::Label {
+            id,
+            sha,
+            text,
+            server,
+        } => {
+            cli::label_checkpoint(
+                &id,
+                &sha,
+                text.unwrap_or_default(),
+                server.unwrap_or_default(),
+            )
+            .await
+        }
         Command::Export {
             id,
             format,

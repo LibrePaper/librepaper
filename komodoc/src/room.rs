@@ -1612,11 +1612,15 @@ impl Room {
             .ok()
     }
 
-    /// Puts the document back to what a checkpoint recorded: every text and
-    /// every asset at once, so a chapter and the file that includes it can
-    /// never come back out of step. Returns the update to relay.
-    #[allow(dead_code)] // the route that offers it to a reader is step 6
-    pub async fn restore(&self, point: &Checkpoint) -> Result<Vec<u8>, String> {
+    /// What one checkpoint said: its tree, and the text of every file in it by
+    /// digest. Read whole, before anything acts on it, because a caller that
+    /// got half the files would be worse off than one that was refused -- a
+    /// restore would leave a chapter and the file that includes it out of
+    /// step, and the timeline would show a document that never existed.
+    pub async fn checkpoint_texts(
+        &self,
+        point: &Checkpoint,
+    ) -> Result<(crate::history::Tree, HashMap<String, String>), String> {
         let (path, id) = {
             let state = self.state.lock().await;
             (
@@ -1626,8 +1630,6 @@ impl Room {
         };
         let tree =
             crate::history::load_tree(self.blobs.as_ref(), &self.slug, point, &path, &id).await?;
-        // Every text the tree names, before the document is touched: a restore
-        // that got half the files would be worse than one that was refused.
         let mut bodies = HashMap::new();
         for entry in tree.files.values() {
             if entry.kind != "text" || bodies.contains_key(&entry.sha) {
@@ -1646,6 +1648,58 @@ impl Room {
             .map_err(|err| err.to_string())?;
             bodies.insert(entry.sha.clone(), String::from_utf8_lossy(&raw).to_string());
         }
+        Ok((tree, bodies))
+    }
+
+    /// Names a checkpoint, or takes its name away when `label` is empty.
+    ///
+    /// This is the one write that changes a manifest entry after it is made,
+    /// and it changes exactly one field. Nothing else about a checkpoint is
+    /// ever rewritten: what it recorded is what it recorded, and a label is
+    /// somebody's remark about it rather than a claim about the text.
+    ///
+    /// `Ok(false)` means the manifest has no such checkpoint, which is a
+    /// 404 for the caller rather than a failure here.
+    pub async fn label(&self, sha: &str, label: &str) -> Result<bool, String> {
+        {
+            let state = self.state.lock().await;
+            if !state.manifest.has(sha) {
+                return Ok(false);
+            }
+        }
+        if !self.hold().await {
+            return Err("this room is held by another server".into());
+        }
+        let manifest = {
+            let mut state = self.state.lock().await;
+            for point in state.manifest.checkpoints.iter_mut() {
+                if point.sha == sha {
+                    point.label = label.to_string();
+                }
+            }
+            state.manifest.clone()
+        };
+        let body = serde_json::to_vec(&manifest).map_err(|err| err.to_string())?;
+        let mut state = self.state.lock().await;
+        let mut version = std::mem::take(&mut state.manifest_version);
+        let written = self
+            .write_owned(
+                &crate::blob::history_index_key(&self.slug),
+                body,
+                &mut version,
+            )
+            .await;
+        state.manifest_version = version;
+        written?;
+        Ok(true)
+    }
+
+    /// Puts the document back to what a checkpoint recorded: every text and
+    /// every asset at once, so a chapter and the file that includes it can
+    /// never come back out of step. Returns the update to relay.
+    #[allow(dead_code)] // the route that offers it to a reader is step 9
+    pub async fn restore(&self, point: &Checkpoint) -> Result<Vec<u8>, String> {
+        let (tree, bodies) = self.checkpoint_texts(point).await?;
         let mut state = self.state.lock().await;
         let before = session::encode_vector(&state.session.doc);
         session::restore(&state.session.doc, &tree, &bodies);

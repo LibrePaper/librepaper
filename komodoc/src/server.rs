@@ -47,6 +47,11 @@ use crate::util::clean;
 /// headers, the title, and the slug.
 const MULTIPART_SLACK: usize = 1 << 20;
 
+/// The longest a checkpoint's label may be, in characters. Long enough for
+/// "sent to the journal, second round" and short enough that the history panel
+/// is a list of names rather than of paragraphs.
+const MAX_LABEL: usize = 120;
+
 pub struct Server {
     pub store: Arc<Store>,
     pub rooms: RoomSet,
@@ -748,6 +753,21 @@ async fn handle(
             return server
                 .handle_history(request.headers(), &arrival, slug)
                 .await;
+        }
+    }
+
+    // One checkpoint: what the document said at that moment, every file of it.
+    // Read by whoever may read the document, on the same reasoning the
+    // manifest is -- and named by a `PATCH`, which takes an editor, because a
+    // label is a change to what the document says about itself.
+    if let ["api", "documents", slug, "history", sha] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_checkpoint(request.headers(), &arrival, slug, sha)
+                .await;
+        }
+        if method == Method::PATCH {
+            return server.handle_label(request, &arrival, slug, sha).await;
         }
     }
 
@@ -1748,6 +1768,137 @@ impl Server {
                 "checkpoints": manifest.checkpoints,
             }),
         )
+    }
+
+    /// What the document said at one checkpoint: every file it had, and the
+    /// text of each. This is what the panel shows in the document pane when a
+    /// reader picks a moment out of the timeline, and what the comment cards
+    /// look a passage up in.
+    ///
+    /// Texts only. A checkpoint records its figures by digest, and those are
+    /// already served, immutably, by the figures route -- so the tree names
+    /// them and the browser fetches the ones it needs, rather than this
+    /// answer carrying every image the document has ever had.
+    async fn handle_checkpoint(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        sha: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        // A digest and nothing else: this becomes a storage key.
+        if !is_sha(sha) {
+            return plain(404, "not found");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, headers, arrival, None).await;
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let room = self.rooms.get(slug).await;
+        let manifest = room.manifest().await;
+        // The manifest is the list of checkpoints this document has, and an
+        // object under the history prefix that the manifest does not name is
+        // not one of them -- a shed checkpoint whose object is still there,
+        // most likely. Asking the manifest rather than the store is what keeps
+        // the two from disagreeing.
+        let Some(point) = manifest
+            .checkpoints
+            .iter()
+            .find(|point| point.sha == sha)
+            .cloned()
+        else {
+            return plain(404, "not found");
+        };
+        let (tree, bodies) = match room.checkpoint_texts(&point).await {
+            Ok(found) => found,
+            Err(err) => return write_json(500, &json!({"error": err})),
+        };
+        let texts: HashMap<&str, &str> = tree
+            .files
+            .iter()
+            .filter(|(_, file)| file.kind == "text")
+            .filter_map(|(path, file)| {
+                bodies
+                    .get(&file.sha)
+                    .map(|body| (path.as_str(), body.as_str()))
+            })
+            .collect();
+        write_json(
+            200,
+            &json!({
+                "sha": point.sha,
+                "at": point.at,
+                "by": point.by,
+                "why": point.why,
+                "label": point.label,
+                "source_format": point.source_format,
+                "main": tree.main,
+                "files": tree.files,
+                "texts": texts,
+            }),
+        )
+    }
+
+    /// Names a checkpoint, or takes its name away.
+    ///
+    /// A `PATCH` because it changes one field of an entry that already exists,
+    /// and the only field of one that ever changes. It takes an editor: a
+    /// label is what the document says about its own past, and saying that is
+    /// the same right as changing the text.
+    async fn handle_label(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+        sha: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if !is_sha(sha) {
+            return plain(404, "not found");
+        }
+        if cross_site_refused(request.headers(), arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, request.headers(), arrival, None).await;
+        // As everywhere else: a document somebody may not change is not a
+        // document they need to learn the shape of.
+        if !who.at_least(Role::Editor) {
+            return plain(404, "not found");
+        }
+        let Ok(body) = to_bytes(request.into_body(), 8 * 1024).await else {
+            return write_json(413, &json!({"error": "that label is too long"}));
+        };
+        let asked: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        let label = asked
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        // Trimmed rather than refused, the way every other text a caller sends
+        // is: control characters out, one line, and short enough that the
+        // panel is a list of names rather than of paragraphs.
+        let label = crate::util::clean(label, MAX_LABEL);
+        let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+        let room = self.rooms.get(slug).await;
+        match room.label(sha, &label).await {
+            Ok(true) => write_json(200, &json!({"sha": sha, "label": label})),
+            Ok(false) => plain(404, "not found"),
+            Err(err) => write_json(500, &json!({"error": err})),
+        }
     }
 
     /* -------------------------------------------------------------- assets */
