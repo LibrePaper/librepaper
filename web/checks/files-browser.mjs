@@ -84,23 +84,28 @@ window.filesCheck = async () => {
   check(!document.querySelector('.explorer-root'), 'no redundant root row');
   check(!document.querySelector('.explorer-more'), 'no collapsed action menus');
   const titleBounds = document.querySelector('.explorer .panel-title').getBoundingClientRect();
-  for (const label of ['New file', 'New folder', 'Upload files', 'Collapse all folders', 'Download project', 'Rename selected item', 'Move selected items', 'Duplicate selected item', 'Set selected file as main', 'Download selected item', 'Delete selected items']) {
+  for (const label of ['New file', 'New folder', 'Upload files', 'Collapse all folders', 'Download project']) {
     const control = button(label);
     check(control && control.getClientRects().length, label + ' is visible');
     check(control.getBoundingClientRect().top >= titleBounds.bottom, label + ' is below the header');
     check(control.querySelector('svg path, svg rect'), label + ' has an actual icon');
   }
-  button('Rename selected item').click(); await flush();
-  check(button('Rename main.tex'), 'toolbar renames the open file without a context menu');
-  key(button('Rename main.tex'), 'Escape'); await flush();
+  check(!button('Rename selected item') && !button('Move selected items') && !button('Set selected file as main'), 'no redundant selection toolbar');
+  check(!document.querySelector('[aria-label="Main file"]'), 'no favorite-looking star');
+  row('main.tex').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); await flush();
+  await name('Rename main.tex', 'renamed-main.tex');
+  check(session.paths.get(main) === 'renamed-main.tex', 'double click renames a file');
+  row('renamed-main.tex').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); await flush();
+  await name('Rename renamed-main.tex', 'main.tex');
   check(row('main.tex').getBoundingClientRect().height <= 40, 'compact file rows');
   check(document.querySelector('.explorer-row svg').getBoundingClientRect().width <= 24, 'compact icons');
   button('New folder').click(); await flush(); await name('New folder name', 'new');
   check(session.folders().includes('new'), 'created empty folder');
   row('new').click(); await flush(); button('New folder').click(); await flush(); await name('New folder name', 'sub');
   check(session.folders().includes('new/sub'), 'created nested folder');
-  await menu('new/sub', 'Rename'); await name('Rename new/sub', 'renamed');
-  check(session.folders().includes('new/renamed'), 'renamed folder from menu');
+  row('new/sub').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); await flush();
+  await name('Rename new/sub', 'renamed');
+  check(session.folders().includes('new/renamed'), 'double click renames a folder');
   row('chapters').click(); await flush(); row('chapters/one.tex').click(); await flush();
   key(row('chapters/one.tex'), 'F2'); await flush(); await name('Rename chapters/one.tex', 'two.tex');
   check(session.paths.get(child) === 'chapters/two.tex', 'F2 renamed file');
@@ -135,6 +140,8 @@ window.filesCheck = async () => {
   component.$set({ mayEdit: false }); await flush();
   check(!button('New folder'), 'read-only toolbar');
   check(!document.querySelector('[draggable="true"]'), 'read-only drag disabled');
+  row('main.tex').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); await flush();
+  check(!button('Rename main.tex'), 'read-only double click cannot rename');
   return { passed: true, files: session.list().map((file) => file.path) };
 };
 window.sharingSetup = async () => {

@@ -39,14 +39,6 @@
   const deleting = $derived(dialog?.type === "delete" ? files.filter((file) => dialog.entries.some((entry) => entry.path === file.path || entry.kind === "folder" && inside(file.path, entry.path))) : []);
   const protectedSelection = $derived(deleting.some((file) => file.main));
   const openPath = $derived(files.find((file) => file.id === open)?.path);
-  const actionEntries = $derived(chosen.length ? chosen : (openPath ? entries.filter((entry) => entry.path === openPath) : []));
-  const singleActionEntry = $derived(actionEntries.length === 1 ? actionEntries[0] : null);
-  const canRename = $derived(mayEdit && actionEntries.length === 1);
-  const canMove = $derived(mayEdit && actionEntries.length > 0);
-  const canDuplicate = $derived(mayEdit && actionEntries.length === 1 && singleActionEntry?.kind !== "folder");
-  const canSetMain = $derived(mayEdit && actionEntries.length === 1 && singleActionEntry?.kind === "text" && !singleActionEntry.main);
-  const canDownload = $derived(actionEntries.length === 1);
-  const canDelete = $derived(mayEdit && actionEntries.length > 0 && !actionEntries.some((entry) => entry.main));
 
   onDestroy(() => { clearTimeout(hoverTimer); settleConflict?.(false); });
   // Follow an editor opened elsewhere (including diagnostics) into its folder.
@@ -123,19 +115,12 @@
       catch (error) { refusal = error.message; }
     }
   }
-  async function selectedAction(value) {
-    const targets = actionEntries;
-    const entry = singleActionEntry;
-    if (value === "download") { if (entry) ondownloaditem?.(entry); return; }
-    if (!mayEdit || !targets.length) return;
-    if (value === "rename" && entry) start("rename", entry, parentPath(entry.path));
-    if (value === "move") ask("move", targets);
-    if (value === "delete") ask("delete", targets);
-    if (value === "main" && entry) onmain?.(entry);
-    if (value === "duplicate" && entry) {
-      try { await onduplicate?.(entry, copyPath(entry.path, files, folders)); }
-      catch (error) { refusal = error.message; }
-    }
+  function renameOnDoubleClick(event, node) {
+    if (!mayEdit || editing || event.target.closest("input, button")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const entry = entryOf(node);
+    if (entry) start("rename", entry, parentPath(entry.path));
   }
   function keyed(event) {
     if (!mayEdit || event.target.closest("input, button, [role=menu]")) return;
@@ -232,14 +217,6 @@
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
         onchange={(event) => { const picked = [...event.target.files]; event.target.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
     {/snippet}
-    <div class="explorer-selection-actions" aria-label="Selected item actions">
-      <IconButton icon="pencil" label="Rename selected item" tone="plain" size="btn-icon-sm" disabled={!canRename} onclick={() => selectedAction("rename")} />
-      <IconButton icon="folder-input" label="Move selected items" tone="plain" size="btn-icon-sm" disabled={!canMove} onclick={() => selectedAction("move")} />
-      <IconButton icon="copy" label="Duplicate selected item" tone="plain" size="btn-icon-sm" disabled={!canDuplicate} onclick={() => selectedAction("duplicate")} />
-      <IconButton icon="star" label="Set selected file as main" tone="plain" size="btn-icon-sm" disabled={!canSetMain} onclick={() => selectedAction("main")} />
-      <IconButton icon="download" label="Download selected item" tone="plain" size="btn-icon-sm" disabled={!canDownload} onclick={() => selectedAction("download")} />
-      <IconButton icon="trash" label="Delete selected items" tone="plain" size="btn-icon-sm" disabled={!canDelete} onclick={() => selectedAction("delete")} />
-    </div>
     {#if chosen.length > 1 && mayEdit}
       <span class="panel-meta">{chosen.length} selected</span>
     {/if}
@@ -282,7 +259,6 @@
     <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label="Save name" onclick={commit} /><IconButton icon="x" label="Cancel rename" onclick={reset} /></span>
   {:else}
     <span class="explorer-name">{node.name}</span>
-    {#if node.main}<span title="Main file" aria-label="Main file"><Icon name="star" /></span>{/if}
     <span class="who">{(peers.get(node.fileId) || []).slice(0, 3).join(" ")}</span>
   {/if}
 {/snippet}
@@ -315,7 +291,8 @@
               <div {...attributes}>
                 <TreeView.BranchControl class="explorer-row {hover === node.path ? 'drop-target' : ''}" title={node.path}
                   draggable={mayEdit && !editing} ondragstart={(event) => dragStart(event, node)} ondragend={dragEnd}
-                  ondragover={(event) => dragOver(event, node.path)} ondrop={(event) => drop(event, node.path)}>
+                  ondragover={(event) => dragOver(event, node.path)} ondrop={(event) => drop(event, node.path)}
+                  ondblclick={(event) => renameOnDoubleClick(event, node)}>
                   {@render row(node)}
                 </TreeView.BranchControl>
               </div>
@@ -334,7 +311,8 @@
             <div {...attributes}>
               <TreeView.Item class="explorer-row {open === node.fileId ? 'explorer-open' : ''} {hover === parentPath(node.path) ? 'drop-target' : ''}" title={node.path}
                 draggable={mayEdit && !editing} ondragstart={(event) => dragStart(event, node)} ondragend={dragEnd}
-                ondragover={(event) => dragOver(event, parentPath(node.path))} ondrop={(event) => drop(event, parentPath(node.path))}>
+                ondragover={(event) => dragOver(event, parentPath(node.path))} ondrop={(event) => drop(event, parentPath(node.path))}
+                ondblclick={(event) => renameOnDoubleClick(event, node)}>
                 {@render row(node)}
               </TreeView.Item>
             </div>
@@ -381,12 +359,5 @@
     align-items: center;
     gap: calc(var(--spacing) * 1);
     flex-wrap: wrap;
-  }
-  .explorer-selection-actions {
-    display: flex;
-    align-items: center;
-    gap: calc(var(--spacing) * 1);
-    flex-wrap: wrap;
-    padding-top: calc(var(--spacing) * 2);
   }
 </style>
