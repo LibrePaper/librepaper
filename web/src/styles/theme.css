@@ -134,6 +134,7 @@
 	/* Sidebar typography and rhythm are shared by every panel. */
 	--panel-font-size: var(--text-sm);
 	--panel-line-height: 1.5;
+	--panel-title-size: var(--text-base);
 	--panel-title-weight: 600;
 	--panel-meta-size: var(--text-xs);
 	--panel-padding: calc(var(--spacing) * 4);

@@ -31,7 +31,6 @@
     listed: { label: "Publicly listed", detail: "Anyone can find this document on the project list and open it." },
   };
   const accessDetail = $derived(access[sharing?.visibility]?.detail || "");
-  const bareUrl = $derived(new URL(`/docs/${slug}`, location.origin).href);
   const dateOf = (iso) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   // The server answers a path, the way it does for a document's own url, so
   // the link handed to somebody is completed against this origin here.
@@ -120,23 +119,18 @@
             {#if sharing.listing}<option value="listed">{access.listed.label}</option>{/if}
           </select>
         </div>
-        {#if sharing.visibility !== "link"}<p class="panel-meta">{accessDetail}</p>{/if}
+        <p class="panel-meta">{sharing.visibility === "private" ? accessDetail : "Reading is also allowed without a share link. Choose Private to require one."}</p>
       </section>
 
       <div class="share-links space-y-6" aria-labelledby="links-heading">
         <h3 id="links-heading" class="panel-section-title">Share links</h3>
         {#each ROLES as role (role.id)}
           {@const link = sharing.links?.[role.id] || null}
-          {@const openToAll = role.id === "reader" && sharing.visibility !== "private"}
           {@const description = role.id === "reader" ? "Anyone with this link can view the document." : role.id === "commenter" ? "Anyone with this link can leave comments." : "Anyone with this link can edit the document."}
           <section class="share-section space-y-2" aria-labelledby="share-{role.id}-heading">
             <h4 id="share-{role.id}-heading" class="panel-section-title">{role.label}</h4>
             <p class="panel-muted">{description}</p>
-            {#if openToAll}
-              <div class="flex items-center justify-end gap-3">
-                <button type="button" class="btn btn-sm text-primary-500" disabled={busy} aria-label="Copy {role.label} link" onclick={() => copy(bareUrl, "Read link copied.")}>{copied === bareUrl ? "Copied" : "Copy link"}</button>
-              </div>
-            {:else if link?.key && !link.expired}
+            {#if link?.key && !link.expired}
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <p class="panel-meta min-w-0 truncate">{link.until ? `Expires ${dateOf(link.until)}` : "No expiry"}</p>
                 <div class="flex shrink-0 gap-2">

@@ -52,7 +52,8 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
 const key = (target, key) => target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
 const name = async (label, value) => { const input = button(label); check(input, 'missing input ' + label + ' inputs: ' + [...document.querySelectorAll('input')].map(x=>x.outerHTML).join(' ') + ' menus: ' + [...document.querySelectorAll('[role=menu][data-state=open]')].map(x=>x.outerHTML).join(' ')); input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })); key(input, 'Enter'); await flush(); };
 const menu = async (path, text) => {
-  button('Actions for ' + path).click(); await flush();
+  const target = row(path), bounds = target.getBoundingClientRect();
+  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: bounds.left + 40, clientY: bounds.top + 8 })); await flush();
   const item = [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent.trim().startsWith(text) && item.getClientRects().length);
   check(item, 'missing menu item ' + text); item.dispatchEvent(new PointerEvent('pointermove', { pointerType: 'mouse', bubbles: true })); await flush(); item.click(); await flush();
 };
@@ -81,6 +82,17 @@ window.filesCheck = async () => {
   await flush();
   check(document.querySelector('[role="tree"]'), 'Skeleton tree mounted');
   check(!document.querySelector('.explorer-root'), 'no redundant root row');
+  check(!document.querySelector('.explorer-more'), 'no collapsed action menus');
+  const titleBounds = document.querySelector('.explorer .panel-title').getBoundingClientRect();
+  for (const label of ['New file', 'New folder', 'Upload files', 'Collapse all folders', 'Download project', 'Rename selected item', 'Move selected items', 'Duplicate selected item', 'Set selected file as main', 'Download selected item', 'Delete selected items']) {
+    const control = button(label);
+    check(control && control.getClientRects().length, label + ' is visible');
+    check(control.getBoundingClientRect().top >= titleBounds.bottom, label + ' is below the header');
+    check(control.querySelector('svg path, svg rect'), label + ' has an actual icon');
+  }
+  button('Rename selected item').click(); await flush();
+  check(button('Rename main.tex'), 'toolbar renames the open file without a context menu');
+  key(button('Rename main.tex'), 'Escape'); await flush();
   check(row('main.tex').getBoundingClientRect().height <= 40, 'compact file rows');
   check(document.querySelector('.explorer-row svg').getBoundingClientRect().width <= 24, 'compact icons');
   button('New folder').click(); await flush(); await name('New folder name', 'new');
@@ -132,6 +144,7 @@ window.sharingSetup = async () => {
   document.body.style.paddingTop = '0';
   window.shareRequests = [];
   window.copiedLink = '';
+  let linkNumber = 0;
   let snapshot = { slug: 'paper', can_share: true, visibility: 'private', listing: true,
     owner: { name: 'Alice', provider: 'github' },
     links: { reader: null, commenter: null, editor: null },
@@ -144,9 +157,10 @@ window.sharingSetup = async () => {
     if (body.visibility === 'listed') return new Response(JSON.stringify({ error: 'Listing disabled' }), { status: 403 });
     if (body.visibility) snapshot.visibility = body.visibility;
     if (body.link) {
+      const token = body.link.role + "-token-" + (++linkNumber);
       snapshot.links = { ...snapshot.links, [body.link.role]: {
-        key: 'test-access-token',
-        url: 'https://example.test/docs/paper#k=test-access-token',
+        key: token,
+        url: 'https://example.test/docs/paper#k=' + token,
         until: body.link.until === 'never' ? null : '2027-03-05T00:00:00Z',
         expired: false,
       } };
@@ -187,7 +201,15 @@ window.sharingCheck = async () => {
   const currentAccess = document.querySelector('[aria-label="General access"]');
   currentAccess.value = 'link'; currentAccess.dispatchEvent(new Event('change', { bubbles: true })); await flush();
   button('Copy Read link').click(); await flush();
-  check(window.copiedLink.endsWith('/docs/paper'), 'public reading uses canonical URL');
+  check(window.copiedLink.includes('#k=reader-token-'), 'public documents still use revocable read links');
+  const previousReadLink = window.copiedLink;
+  button('Revoke Read link').click(); await flush();
+  check(!button('Copy Read link') && button('Create Read link'), 'read revocation restores creation');
+  check(window.shareRequests.at(-1).revoke === 'reader', 'read revocation uses the reader role');
+  check(currentAccess.value === 'link', 'revoking a read link does not silently change general access');
+  button('Create Read link').click(); await flush();
+  button('Copy Read link').click(); await flush();
+  check(window.copiedLink !== previousReadLink, 'recreating issues a new read link');
   currentAccess.value = 'listed'; currentAccess.dispatchEvent(new Event('change', { bubbles: true })); await flush();
   check(currentAccess.value === 'link', 'refused access change restores displayed setting');
   window.testShare.$set({ open: false }); await flush();
@@ -210,13 +232,13 @@ window.shareSidebarCheck = async () => {
   panel.style.width = '192px'; await flush();
   check(panel.scrollWidth <= panel.clientWidth + 1, 'controls wrap when workspace is narrow');
   button('Copy Read link').click(); await flush();
-  check(window.copiedLink.endsWith('/docs/paper'), 'sidebar copies the read link');
+  check(window.copiedLink.includes('#k=reader-token-'), 'sidebar copies the read link');
   check(!panel.textContent.includes('Document link'), 'no duplicate document link');
   check(!panel.querySelector('input[readonly]'), 'sidebar hides raw URL fields');
   const writeClipboard = navigator.clipboard.writeText;
   navigator.clipboard.writeText = async () => { throw new Error('blocked'); };
   button('Copy Read link').click(); await flush();
-  check(button('Link to copy manually')?.value.endsWith('/docs/paper'), 'blocked clipboard exposes selectable fallback');
+  check(button('Link to copy manually')?.value.includes('#k=reader-token-'), 'blocked clipboard exposes selectable fallback');
   navigator.clipboard.writeText = writeClipboard;
   button('Copy Read link').click(); await flush();
   check(!button('Link to copy manually'), 'successful copy hides manual fallback');
@@ -240,15 +262,16 @@ window.panelTypographyCheck = async () => {
     const action = host.querySelector('.panel-actions button');
     if (action) {
       const heading = title.getBoundingClientRect(), control = action.getBoundingClientRect();
-      check(Math.abs((heading.top + heading.bottom) / 2 - (control.top + control.bottom) / 2) < 1, 'panel actions share the title row');
+      check(control.top >= heading.bottom, 'panel actions appear below the title');
     }
     const bodyStyle = getComputedStyle(panel), titleStyle = getComputedStyle(title);
+    check(parseFloat(titleStyle.fontSize) > parseFloat(bodyStyle.fontSize), 'main panel title is slightly larger than panel text');
     samples.push({ body: [bodyStyle.fontFamily, bodyStyle.fontSize, bodyStyle.lineHeight, bodyStyle.padding], title: [titleStyle.fontFamily, titleStyle.fontSize, titleStyle.lineHeight, titleStyle.fontWeight] });
   }
   check(samples.every((sample) => JSON.stringify(sample) === JSON.stringify(samples[0])), 'all five sidebar panels have identical base typography, headings and padding');
-  document.documentElement.style.setProperty('--panel-font-size', '15px');
-  check(mounted.every(({ host }) => getComputedStyle(host.querySelector('.panel-title')).fontSize === '15px'), 'one token updates every panel heading');
-  document.documentElement.style.removeProperty('--panel-font-size');
+  document.documentElement.style.setProperty('--panel-title-size', '17px');
+  check(mounted.every(({ host }) => getComputedStyle(host.querySelector('.panel-title')).fontSize === '17px'), 'one token updates every panel heading');
+  document.documentElement.style.removeProperty('--panel-title-size');
   for (const { instance, host } of mounted) { instance.$destroy(); host.remove(); }
   return true;
 };

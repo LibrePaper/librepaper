@@ -8,6 +8,10 @@
   // rounded rectangle as a square-cornered path is what made these look like
   // icons from two different sets.
   const ICONS = {
+    "chevrons-up": [["path", "m17 11-5-5-5 5"], ["path", "m17 18-5-5-5 5"]],
+    copy: [["rect", { width: 14, height: 14, x: 8, y: 8, rx: 2, ry: 2 }], ["path", "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"]],
+    "folder-input": [["path", "M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"], ["path", "M2 13h10"], ["path", "m9 16 3-3-3-3"]],
+
     "triangle-alert": [
       ["path", "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"],
       ["path", "M12 9v4"],

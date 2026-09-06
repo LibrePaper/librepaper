@@ -140,11 +140,6 @@ main.reader {
 .explorer-row svg { width: --spacing(4); height: --spacing(4); flex-shrink: 0; }
 .explorer-chevron { width: --spacing(3); flex-shrink: 0; color: var(--color-surface-600-400); }
 .explorer-chevron svg { width: --spacing(3); height: --spacing(3); }
-.explorer-menu-button { width: --spacing(7); height: --spacing(7); border-radius: var(--radius-base); }
-.explorer-menu-button:hover, .explorer-more:hover { background: var(--color-surface-100-900); }
-.explorer-more { margin-left: auto; padding-inline: --spacing(2); border-radius: var(--radius-base); opacity: 0; }
-.explorer-row:hover .explorer-more, .explorer-row:focus-within .explorer-more, .explorer-more[data-state="open"] { opacity: 1; }
-@media (hover: none) { .explorer-more { opacity: 1; } }
 .viewport {
   flex: 1 1 auto;
   min-width: 0;
@@ -185,10 +180,12 @@ main.reader {
   font-size: var(--panel-font-size);
   line-height: var(--panel-line-height);
 }
-.panel-header { display: flex; flex-direction: column; gap: --spacing(2); margin-bottom: var(--panel-section-gap); }
+.panel-header { display: flex; flex-direction: column; gap: --spacing(2); margin-bottom: --spacing(3); }
 .panel-heading { display: flex; align-items: center; flex-wrap: wrap; gap: --spacing(2); min-height: --spacing(8); }
-.panel-title { margin: 0; margin-right: auto; font: inherit; font-weight: var(--panel-title-weight); }
-.panel-actions { display: flex; align-items: center; gap: --spacing(1); }
+.panel-title { margin: 0; margin-right: auto; font: inherit; font-size: var(--panel-title-size); font-weight: var(--panel-title-weight); }
+.panel-actions { display: flex; align-items: center; flex-wrap: wrap; gap: --spacing(1); margin-bottom: --spacing(4); }
+.panel-intro { margin-bottom: var(--panel-section-gap); }
+.panel-intro:empty { display: none; }
 .panel-section-title { font: inherit; font-weight: var(--panel-title-weight); }
 .panel-muted { color: var(--panel-muted); }
 .panel-meta { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }

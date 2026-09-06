@@ -39,6 +39,14 @@
   const deleting = $derived(dialog?.type === "delete" ? files.filter((file) => dialog.entries.some((entry) => entry.path === file.path || entry.kind === "folder" && inside(file.path, entry.path))) : []);
   const protectedSelection = $derived(deleting.some((file) => file.main));
   const openPath = $derived(files.find((file) => file.id === open)?.path);
+  const actionEntries = $derived(chosen.length ? chosen : (openPath ? entries.filter((entry) => entry.path === openPath) : []));
+  const singleActionEntry = $derived(actionEntries.length === 1 ? actionEntries[0] : null);
+  const canRename = $derived(mayEdit && actionEntries.length === 1);
+  const canMove = $derived(mayEdit && actionEntries.length > 0);
+  const canDuplicate = $derived(mayEdit && actionEntries.length === 1 && singleActionEntry?.kind !== "folder");
+  const canSetMain = $derived(mayEdit && actionEntries.length === 1 && singleActionEntry?.kind === "text" && !singleActionEntry.main);
+  const canDownload = $derived(actionEntries.length === 1);
+  const canDelete = $derived(mayEdit && actionEntries.length > 0 && !actionEntries.some((entry) => entry.main));
 
   onDestroy(() => { clearTimeout(hoverTimer); settleConflict?.(false); });
   // Follow an editor opened elsewhere (including diagnostics) into its folder.
@@ -111,6 +119,20 @@
     if (value === "upload") choose(entry.path);
     if (value === "main") onmain?.(entry);
     if (value === "duplicate") {
+      try { await onduplicate?.(entry, copyPath(entry.path, files, folders)); }
+      catch (error) { refusal = error.message; }
+    }
+  }
+  async function selectedAction(value) {
+    const targets = actionEntries;
+    const entry = singleActionEntry;
+    if (value === "download") { if (entry) ondownloaditem?.(entry); return; }
+    if (!mayEdit || !targets.length) return;
+    if (value === "rename" && entry) start("rename", entry, parentPath(entry.path));
+    if (value === "move") ask("move", targets);
+    if (value === "delete") ask("delete", targets);
+    if (value === "main" && entry) onmain?.(entry);
+    if (value === "duplicate" && entry) {
       try { await onduplicate?.(entry, copyPath(entry.path, files, folders)); }
       catch (error) { refusal = error.message; }
     }
@@ -198,39 +220,28 @@
   ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")} ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
   <PanelHeader title="Files">
     {#snippet actions()}
-      {#if mayEdit}
-        <div class="explorer-actions" aria-label="File actions">
+      <div class="explorer-actions" aria-label="File actions">
+        {#if mayEdit}
           <IconButton icon="file-plus" label="New file" tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
           <IconButton icon="folder-plus" label="New folder" tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
           <IconButton icon="upload" label="Upload files" tone="plain" size="btn-icon-sm" disabled={busy} onclick={() => choose()} />
-        </div>
-      {/if}
-      <Menu onSelect={({ value }) => {
-        if (value === "download") ondownload?.();
-        else if (value === "file") start("file");
-        else if (value === "folder") start("folder");
-        else if (value === "upload") choose();
-        else expanded = [];
-      }}>
-        <Menu.Trigger class="explorer-menu-button" aria-label="Project actions">⋯</Menu.Trigger>
-        <ExplorerMenu>
-          {#if mayEdit}
-            <Menu.Item value="file" class="menuitem">New file</Menu.Item>
-            <Menu.Item value="folder" class="menuitem">New folder</Menu.Item>
-            <Menu.Item value="upload" class="menuitem" disabled={busy}>Upload files</Menu.Item>
-          {/if}
-          <Menu.Item value="collapse" class="menuitem">Collapse all</Menu.Item>
-          <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
-        </ExplorerMenu>
-      </Menu>
+        {/if}
+        <IconButton icon="chevrons-up" label="Collapse all folders" tone="plain" size="btn-icon-sm" disabled={!expanded.length} onclick={() => expanded = []} />
+        <IconButton icon="download" label="Download project" tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />
+      </div>
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
         onchange={(event) => { const picked = [...event.target.files]; event.target.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
     {/snippet}
+    <div class="explorer-selection-actions" aria-label="Selected item actions">
+      <IconButton icon="pencil" label="Rename selected item" tone="plain" size="btn-icon-sm" disabled={!canRename} onclick={() => selectedAction("rename")} />
+      <IconButton icon="folder-input" label="Move selected items" tone="plain" size="btn-icon-sm" disabled={!canMove} onclick={() => selectedAction("move")} />
+      <IconButton icon="copy" label="Duplicate selected item" tone="plain" size="btn-icon-sm" disabled={!canDuplicate} onclick={() => selectedAction("duplicate")} />
+      <IconButton icon="star" label="Set selected file as main" tone="plain" size="btn-icon-sm" disabled={!canSetMain} onclick={() => selectedAction("main")} />
+      <IconButton icon="download" label="Download selected item" tone="plain" size="btn-icon-sm" disabled={!canDownload} onclick={() => selectedAction("download")} />
+      <IconButton icon="trash" label="Delete selected items" tone="plain" size="btn-icon-sm" disabled={!canDelete} onclick={() => selectedAction("delete")} />
+    </div>
     {#if chosen.length > 1 && mayEdit}
-      <div class="flex items-center gap-2"><span>{chosen.length} selected</span>
-        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => ask("move", chosen)}>Move to…</button>
-        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => ask("delete", chosen)}>Delete</button>
-      </div>
+      <span class="panel-meta">{chosen.length} selected</span>
     {/if}
     {#if busy}<p role="status">Uploading files…</p>{/if}
     {#if refusal && !dialog}<p class="refusal" role="alert">{refusal}</p>{/if}
@@ -273,7 +284,6 @@
     <span class="explorer-name">{node.name}</span>
     {#if node.main}<span title="Main file" aria-label="Main file"><Icon name="star" /></span>{/if}
     <span class="who">{(peers.get(node.fileId) || []).slice(0, 3).join(" ")}</span>
-    <Menu.Trigger class="explorer-more" aria-label="Actions for {node.path}" onclick={(event) => event.stopPropagation()} onkeydown={(event) => event.stopPropagation()}>⋯</Menu.Trigger>
   {/if}
 {/snippet}
 
@@ -366,23 +376,17 @@
 </Modal>
 
 <style>
-  /* Keep the compact actions available to keyboard and touch users while
-     leaving the Files heading visually quiet until it is being used. */
   .explorer-actions {
     display: flex;
     align-items: center;
     gap: calc(var(--spacing) * 1);
-    opacity: 0;
-    transition: opacity 120ms ease;
+    flex-wrap: wrap;
   }
-  .explorer :global(.panel-header:hover .explorer-actions),
-  .explorer :global(.panel-header:focus-within .explorer-actions) {
-    opacity: 1;
-  }
-  .explorer-actions :global(button:focus-visible) {
-    opacity: 1;
-  }
-  @media (hover: none) {
-    .explorer-actions { opacity: 1; }
+  .explorer-selection-actions {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--spacing) * 1);
+    flex-wrap: wrap;
+    padding-top: calc(var(--spacing) * 2);
   }
 </style>
