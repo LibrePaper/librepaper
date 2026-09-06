@@ -21,6 +21,7 @@
     "@codemirror/search": "^6.5.11",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.39.1",
+    "@replit/codemirror-vim": "^6.4.0",
     "@skeletonlabs/skeleton": "5",
     "@skeletonlabs/skeleton-svelte": "5",
     "@tailwindcss/vite": "4",

@@ -25,6 +25,7 @@
   } from "../lib/api.js";
   import {
     AUTHOR,
+    KEYMAP,
     LAYOUT,
     LINKED,
     PANEL,
@@ -1349,6 +1350,9 @@
   // remembered and an editor reopened lands where they left it.
   let layout = $state(LAYOUTS.includes(read(LAYOUT, "split")) ? read(LAYOUT, "split") : "split");
   let sourceSide = $state(read(SOURCE_SIDE, "left") === "right" ? "right" : "left");
+  // Which keys the editor answers to. A preference of the person at this
+  // browser, not of the document, and nobody's default but their own.
+  let keys = $state(read(KEYMAP, "default") === "vim" ? "vim" : "default");
 
   // The column at the left, and what is in it: the files, the comments or the
   // history, or "" for closed. One value rather than a switch per panel,
@@ -1444,6 +1448,18 @@
     write(SOURCE_SIDE, side);
   }
 
+  function setKeys(next) {
+    keys = next;
+    write(KEYMAP, next);
+  }
+
+  // What ":q" in Vim mode asks for: the document alone, set directly rather
+  // than reached by cycling, and remembered like any other choice of layout.
+  function showDocumentAlone() {
+    layout = "document";
+    write(LAYOUT, layout);
+  }
+
   // Everything the layout menu offers, named by what was chosen. The menu
   // reports the value of the line rather than each line calling back, so this
   // is the one place those names are read.
@@ -1451,6 +1467,7 @@
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
     if (what.startsWith("ratio-")) return setSize(PANES.editor, Number(what.slice(6)));
     if (what === "linked") return setLinked(!linked);
+    if (what === "keys") return setKeys(keys === "vim" ? "default" : "vim");
   }
 
   /* ------------------------------------------------------------------- boot */
@@ -2022,6 +2039,10 @@
                     <span class="w-4">{linked ? "✓" : ""}</span>
                     Keep in step
                   </Menu.Item>
+                  <Menu.Item value="keys" class="menuitem">
+                    <span class="w-4">{keys === "vim" ? "✓" : ""}</span>
+                    Vim keys
+                  </Menu.Item>
                 </Menu.Content>
               </Menu.Positioner>
             </Menu>
@@ -2125,8 +2146,8 @@
         </div>
       {:else if Editor}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={sourceFormat} file={openFile}
-                  oncaret={followCaret} onsave={reportPersistence}
+          <Editor bind:this={editor} {session} format={sourceFormat} file={openFile} {keys}
+                  oncaret={followCaret} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { openFile = id; shownFigure = null; }} />
         {/key}
       {/if}

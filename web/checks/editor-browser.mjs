@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -161,6 +161,34 @@ window.diagnosticsCheck = async () => {
   host.remove();
   return result;
 };
+
+// Switching Vim keys on and off must reconfigure the view in place: the same
+// EditorView, with the undo history it had.
+window.vimCheck = async () => {
+  await tick();
+  const view = EditorView.findFromDOM(document.querySelector(".cm-editor"));
+  const undo = undoDepth(view.state);
+  const settle = async (want) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (Boolean(document.querySelector(".cm-vim-panel")) === want) return true;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return false;
+  };
+  component.$set({ keys: "vim" });
+  const panelShown = await settle(true);
+  const onView = EditorView.findFromDOM(document.querySelector(".cm-editor"));
+  component.$set({ keys: "default" });
+  const panelGone = await settle(false);
+  const offView = EditorView.findFromDOM(document.querySelector(".cm-editor"));
+  return {
+    panelShown,
+    panelGone,
+    sameViewOn: view === onView,
+    sameViewOff: view === offView,
+    undoKept: undoDepth(offView.state) === undo,
+  };
+};
 window.editorCheckReady = true;
 `;
 
@@ -182,9 +210,10 @@ try {
   });
 
   server = createServer((request, response) => {
-    if (request.url === "/editor-check.js") {
+    const file = join(output, request.url.slice(1));
+    if (request.url !== "/" && existsSync(file)) {
       response.setHeader("Content-Type", "text/javascript");
-      response.end(readFileSync(join(output, "editor-check.js")));
+      response.end(readFileSync(file));
       return;
     }
     response.setHeader("Content-Type", "text/html");
@@ -282,6 +311,13 @@ try {
   assert.equal(cache.preview, "edited reseeded");
   assert.equal(cache.legacy, "unsent server");
   console.log("editor-browser: cache upgrade preserves offline edits and isolates recreated documents");
+  const vim = await evaluate("vimCheck()");
+  assert.equal(vim.panelShown, true, "turning Vim on did not draw its status panel");
+  assert.equal(vim.sameViewOn, true, "turning Vim on rebuilt the editor");
+  assert.equal(vim.panelGone, true, "turning Vim off left its status panel");
+  assert.equal(vim.sameViewOff, true, "turning Vim off rebuilt the editor");
+  assert.equal(vim.undoKept, true, "toggling Vim dropped the undo history");
+  console.log("editor-browser: vim keys toggle in place, keeping the view and its history");
 } finally {
   socket?.close();
   browser?.kill();
