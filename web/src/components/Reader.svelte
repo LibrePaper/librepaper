@@ -35,7 +35,7 @@
     takeKeyFromFragment,
     write,
   } from "../lib/storage.js";
-  import { LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
+  import { ACTIVITY_WIDTH, LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
 
   import { tick } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
@@ -1370,9 +1370,6 @@
   ];
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
   let panel = $state(PANELS.includes(read(PANEL, null)) ? read(PANEL, null) : "files");
-  // What the column reopens on. Closing it does not forget which panel was
-  // showing, or the button would reopen a column that had changed its mind.
-  let lastPanel = panel || "files";
 
   // Showing a panel; "" closes the column. Leaving the timeline is leaving it:
   // what the document pane shows goes back to the text as it stands, because
@@ -1385,14 +1382,10 @@
       if (!hadCheckpoint) navigationGeneration += 1;
     }
     panel = name;
-    if (name) lastPanel = name;
     if (remembered) write(PANEL, name);
     return name === "history" ? loadHistory() : Promise.resolve();
   }
 
-  function toggleColumn() {
-    showPanel(panel ? "" : lastPanel);
-  }
   // The source and the document are kept as a share of what they have between
   // them; the comment column is kept in pixels. Two units because they are two
   // different kinds of pane: half a window stays half when the window changes,
@@ -1978,8 +1971,6 @@
     <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
       {toolbarPath ? basename(toolbarPath) : doc.title || "Komodoc"}
     </span>
-    <IconButton icon="panel-left-open" label="Show or hide the sidebar"
-      title="Show or hide the sidebar" pressed={Boolean(panel)} tone="plain" onclick={toggleColumn} />
   {/snippet}
   {#snippet status()}
     {#if !connected}<small class="badge preset-tonal-warning" title="Reconnecting">reconnecting…</small>{/if}
@@ -2087,20 +2078,20 @@
 
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
-      style="--komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="--komodoc-activity: {ACTIVITY_WIDTH}px; --komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- The column, first: the files, the comments or the history, chosen by
        the activity bar. A file dropped anywhere on it joins the project. -->
-  {#if shown.comments}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <aside class="sidebar" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <aside class="sidebar" class:collapsed={!shown.comments} ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <div class="sidebar-activity" role="group" aria-label="Sidebar sections">
         {#each TABS.filter((tab) => !tab.editOnly || editing) as tab (tab.id)}
           <IconButton
             icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : "box"}
             label={tab.says} pressed={panel === tab.id}
-            onclick={() => showPanel(tab.id)} />
+            onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
         {/each}
       </div>
+      {#if shown.comments}
       <div class="sidebar-content">
       {#if panel === "files"}
         <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
@@ -2124,7 +2115,9 @@
                   onresolve={resolve} ondelete={askDelete} onreply={reply} />
       {/if}
       </div>
+      {/if}
     </aside>
+  {#if shown.comments}
     <Grip pane={PANES.sidebar} label="Resize the left-hand column" panes={panes}
           onsize={(size) => setSize(PANES.sidebar, size)}
           onguide={(where) => (guide = where)}
@@ -2318,13 +2311,14 @@
   }
   .nav-saved { color: var(--color-surface-400-600); font-size: var(--text-xs); white-space: nowrap; }
   .sidebar { flex-direction: row; }
+  .sidebar.collapsed { flex: 0 0 var(--komodoc-activity); }
   .sidebar-activity {
     display: flex;
     flex: none;
     flex-direction: column;
     align-items: center;
     gap: var(--spacing);
-    width: calc(var(--spacing) * 12);
+    width: var(--komodoc-activity);
     padding-block: calc(var(--spacing) * 3);
   }
   .sidebar-content {
@@ -2336,7 +2330,7 @@
     overflow: hidden;
   }
   @media (max-width: 760px) {
-    .sidebar { flex-direction: column; }
+    .sidebar, .sidebar.collapsed { flex: none; flex-direction: column; }
     .sidebar-activity { flex-direction: row; width: auto; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); }
     .sidebar-content { overflow: visible; }
   }

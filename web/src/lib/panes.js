@@ -23,6 +23,9 @@ export const DOCUMENT_MIN = 360;
 // The width of a separator, which is room neither pane has.
 export const GRIP = 6;
 
+// The activity icons remain available when the sidebar content is closed.
+export const ACTIVITY_WIDTH = 48;
+
 export const LAYOUTS = ["split", "source", "document"];
 
 // The ratios a drag sticks to, and the ones the menu offers by name. The two
@@ -82,7 +85,7 @@ export function separators(state) {
 /// column and every separator in it.
 export function surface(state) {
   const shown = showing(state);
-  return state.width - separators(state) - (shown.comments ? clamp(PANES.sidebar, state) : 0);
+  return state.width - separators(state) - (shown.comments ? clamp(PANES.sidebar, state) : ACTIVITY_WIDTH);
 }
 
 /// The column, in pixels, within what the rest of the window can
@@ -177,5 +180,5 @@ export function grows(pane, state) {
 // beside it, when the column is open.
 function leftEdge(state) {
   const shown = showing(state);
-  return shown.comments ? clamp(PANES.sidebar, state) + GRIP : 0;
+  return shown.comments ? clamp(PANES.sidebar, state) + GRIP : ACTIVITY_WIDTH;
 }
