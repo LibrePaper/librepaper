@@ -32,3 +32,10 @@
     </Portal>
   {/snippet}
 </Menu.Context>
+
+<style>
+  .explorer-menu {
+    border: 1px solid var(--color-divider);
+    border-radius: var(--radius-base);
+  }
+</style>

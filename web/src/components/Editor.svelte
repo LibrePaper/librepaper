@@ -65,7 +65,7 @@
   import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-  import { syntaxHighlighting, defaultHighlightStyle, StreamLanguage } from "@codemirror/language";
+  import { syntaxHighlighting, HighlightStyle, defaultHighlightStyle, StreamLanguage } from "@codemirror/language";
   import { markdown } from "@codemirror/lang-markdown";
   import { html as htmlLanguage } from "@codemirror/lang-html";
   import {
@@ -80,6 +80,12 @@
   import { untrack } from "svelte";
 
   let { session, format, file = "", keys = "default", onchange, oncaret, onfilechange, onsave, onquit } = $props();
+
+  const sourceHighlightStyle = HighlightStyle.define(
+    defaultHighlightStyle.specs.map((rule) =>
+      rule.fontWeight === "bold" ? { ...rule, fontWeight: "600" } : rule,
+    ),
+  );
 
   let host = $state(null);
   let view = null;
@@ -272,7 +278,7 @@
         drawSelection(),
         highlightActiveLine(),
         highlightSelectionMatches(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        syntaxHighlighting(sourceHighlightStyle, { fallback: true }),
         languageOf(path, format),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws.

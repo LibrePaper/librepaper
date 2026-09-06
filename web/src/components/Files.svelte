@@ -199,13 +199,26 @@
     <div class="flex items-center gap-1">
       <h3 class="explorer-title mr-auto">Files</h3>
       {#if mayEdit}
-        <IconButton icon="file-plus" label="New file" tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
-        <IconButton icon="folder-plus" label="New folder" tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
-        <IconButton icon="upload" label="Upload files" tone="plain" size="btn-icon-sm" disabled={busy} onclick={() => choose()} />
+        <div class="explorer-actions" aria-label="File actions">
+          <IconButton icon="file-plus" label="New file" tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
+          <IconButton icon="folder-plus" label="New folder" tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
+          <IconButton icon="upload" label="Upload files" tone="plain" size="btn-icon-sm" disabled={busy} onclick={() => choose()} />
+        </div>
       {/if}
-      <Menu onSelect={({ value }) => { if (value === "download") ondownload?.(); else expanded = []; }}>
+      <Menu onSelect={({ value }) => {
+        if (value === "download") ondownload?.();
+        else if (value === "file") start("file");
+        else if (value === "folder") start("folder");
+        else if (value === "upload") choose();
+        else expanded = [];
+      }}>
         <Menu.Trigger class="explorer-menu-button" aria-label="Project actions">⋯</Menu.Trigger>
         <ExplorerMenu>
+          {#if mayEdit}
+            <Menu.Item value="file" class="menuitem">New file</Menu.Item>
+            <Menu.Item value="folder" class="menuitem">New folder</Menu.Item>
+            <Menu.Item value="upload" class="menuitem" disabled={busy}>Upload files</Menu.Item>
+          {/if}
           <Menu.Item value="collapse" class="menuitem">Collapse all</Menu.Item>
           <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
         </ExplorerMenu>
@@ -351,3 +364,25 @@
     <button class="btn preset-filled-primary-500" onclick={() => resolveConflict(true)}>Keep both</button>
   {/snippet}
 </Modal>
+
+<style>
+  /* Keep the compact actions available to keyboard and touch users while
+     leaving the Files heading visually quiet until it is being used. */
+  .explorer-actions {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--spacing) * 1);
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .explorer header:hover .explorer-actions,
+  .explorer header:focus-within .explorer-actions {
+    opacity: 1;
+  }
+  .explorer-actions :global(button:focus-visible) {
+    opacity: 1;
+  }
+  @media (hover: none) {
+    .explorer-actions { opacity: 1; }
+  }
+</style>

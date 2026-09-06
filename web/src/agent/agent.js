@@ -41,15 +41,46 @@
   // taken, and the title: nothing else in a head is this frame's to run.
   let installed = "";
   let installedNodes = [];
+  // Live previews sit in a reading canvas owned by the shell. Keep this style
+  // separate from the document's own stylesheet so published pages and
+  // typst's generated rules remain untouched. adoptStyles keeps it appended
+  // after the document styles and it only applies while previewing flow HTML.
+  const previewCanvasStyle = `
+    html.komodoc-preview.komodoc-flow { background: #f6f6f4; }
+    html.komodoc-preview.komodoc-flow body {
+      box-sizing: border-box;
+      width: min(800px, calc(100vw - 32px));
+      max-width: 800px;
+      margin: 32px auto 64px;
+      padding: 32px 40px;
+      background: #fff;
+    }
+    @media (max-width: 640px) {
+      html.komodoc-preview.komodoc-flow body {
+        width: calc(100vw - 24px);
+        margin: 16px auto 40px;
+        padding: 24px 20px;
+      }
+    }
+  `;
+  const previewStyle = document.createElement("style");
+  previewStyle.dataset.komodocPreview = "canvas";
+  previewStyle.textContent = previewCanvasStyle;
   function adoptStyles(parsed) {
+    document.documentElement.classList.add("komodoc-preview");
+    document.documentElement.classList.toggle("komodoc-flow", !parsed.body.querySelector(":scope > svg.typst-doc"));
     const wanted = [...parsed.head.querySelectorAll("style, link[rel~='stylesheet' i]")];
     const markup = wanted.map((node) => node.outerHTML).join("");
-    if (markup === installed) return;
-    installed = markup;
-    for (const node of installedNodes) node.remove();
-    installedNodes = wanted.map((node) => document.head.appendChild(node.cloneNode(true)));
+    if (markup !== installed) {
+      installed = markup;
+      for (const node of installedNodes) node.remove();
+      installedNodes = wanted.map((node) => document.head.appendChild(node.cloneNode(true)));
+    }
     const title = parsed.head.querySelector("title");
     if (title) document.title = title.textContent || "";
+    // Re-append after replacing document styles, and also on the fast path
+    // above, so this override always wins the cascade.
+    document.head.appendChild(previewStyle);
   }
 
   // One tint per tool, so what a mark means is legible without opening the
@@ -222,8 +253,8 @@
           b.end - b.start < a.end - a.start ? b : a,
         );
         const shade = live.length
-          ? wash(tintOf(inner.motivation), live.length)
-          : wash(NEUTRAL, 1);
+          ? wash(tintOf(inner.motivation), live.length, 0.42)
+          : wash(NEUTRAL, 1, 0.24);
         mark.style.cssText = `background:${shade};color:inherit;cursor:pointer`;
         range.surroundContents(mark);
         // The same innermost annotation the colour came from is the one a click

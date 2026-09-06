@@ -24,7 +24,7 @@ body > nav {
   z-index: 10;
   height: var(--komodoc-bar);
   padding-inline: --spacing(4);
-  border-bottom: 1px solid var(--color-surface-200-800);
+  border-bottom: 1px solid var(--color-divider);
   background: color-mix(in srgb, var(--color-shell) 94%, transparent);
   backdrop-filter: blur(12px);
 }
@@ -83,7 +83,7 @@ main.reader {
   /* One row, which the editor -- or the figure standing in for it -- fills. A
      grid rather than a block so that min-height: 0 reaches what is in it. */
   grid-template-rows: minmax(0, 1fr);
-  border-right: 1px solid var(--color-surface-200-800);
+  border-right: 1px solid var(--color-divider);
 }
 
 /* ------------------------------------------------------------- the files */
@@ -123,14 +123,14 @@ main.reader {
   width: 100%;
   padding-block: --spacing(1);
   padding-inline: --spacing(2);
-  border-radius: var(--radius-base);
+  border-radius: 0;
   text-align: left;
   cursor: pointer;
 }
-.explorer-row { padding-left: calc((var(--depth, 1) - 1) * --spacing(4)); }
-.explorer-row:hover, .explorer-open { background: var(--color-surface-100-900); }
-.explorer-row[data-selected] { background: var(--color-primary-100-900); }
-.explorer [data-part="branch"][data-selected] > [data-part="context-trigger"] .explorer-row { background: var(--color-primary-100-900); }
+.explorer-row { padding-left: calc(--spacing(2) + (var(--depth, 1) - 1) * --spacing(4)); }
+.explorer-row:hover, .explorer-open { background: var(--color-row-hover); }
+.explorer-row[data-selected] { background: var(--color-row-selected); box-shadow: inset 2px 0 var(--color-primary-500); }
+.explorer [data-part="branch"][data-selected] > [data-part="context-trigger"] .explorer-row { background: var(--color-row-selected); box-shadow: inset 2px 0 var(--color-primary-500); }
 .explorer-row:focus-visible, .explorer [data-part="branch"]:focus-visible > [data-part="context-trigger"] .explorer-row {
   outline: 2px solid var(--color-primary-500);
   outline-offset: -2px;
@@ -149,7 +149,7 @@ main.reader {
 .viewport {
   flex: 1 1 auto;
   min-width: 0;
-  background: var(--color-shell);
+  background: var(--color-preview);
 }
 .viewport iframe {
   /* The document takes whatever the grip leaves it: the reader sets the split,
@@ -163,44 +163,19 @@ main.reader {
 /* The tools stay in view while the comments scroll under them, so they need a
    ground of their own -- the shell's, not a shade of it. */
 .toolrow {
-  background: var(--color-shell);
+  background: var(--color-sidebar);
 }
 /* The column, at the left of the window: the tabs, then whichever panel they
    chose. The panel is what scrolls, so the tabs stay where they are, and a
    sticky row inside a panel has the panel to stick to. */
 .sidebar {
+  background: var(--color-sidebar);
   flex: 0 0 var(--komodoc-sidebar);
   display: flex;
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--color-surface-200-800);
-}
-.paneltabs {
-  display: flex;
-  flex-wrap: wrap;
-  flex: none;
-  gap: --spacing(1);
-  padding: --spacing(2) --spacing(3) 0;
-  border-bottom: 1px solid var(--color-surface-200-800);
-}
-.paneltab {
-  flex-shrink: 0;
-  padding: --spacing(1) --spacing(2);
-  margin-bottom: -1px;
-  border-bottom: 2px solid transparent;
-  font-size: var(--text-sm);
-  color: var(--color-surface-600-400);
-  cursor: pointer;
-}
-.paneltab:hover {
-  color: inherit;
-}
-/* The one showing is the one written in ink. */
-.paneltab[aria-selected="true"] {
-  color: inherit;
-  font-weight: 600;
-  border-bottom-color: var(--color-primary-500);
+  border-right: 1px solid var(--color-divider);
 }
 .panel {
   flex: 1 1 auto;
@@ -227,7 +202,7 @@ main.reader {
 /* The day stays in view while its marks scroll under it, so it needs a ground
    of its own -- the shell's, as the comment tools have. */
 .timeline-day {
-  background: var(--color-shell);
+  background: var(--color-sidebar);
 }
 .timeline-point {
   display: flex;
@@ -336,7 +311,7 @@ main.reader.source-right .grip-editor {
 main.reader.source-right .editorpane {
   order: 3;
   border-right: 0;
-  border-left: 1px solid var(--color-surface-200-800);
+  border-left: 1px solid var(--color-divider);
 }
 
 /* ------------------------------------------------------------------- grips */
@@ -382,8 +357,8 @@ main.reader.source-right .editorpane {
   min-height: 0;
   background: var(--color-shell);
   color: var(--color-surface-950-50);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-family: var(--font-editor);
+  font-size: 14px;
   line-height: 1.6;
 }
 /* The pane already has a border, and the focus ring belongs to the window
@@ -399,26 +374,30 @@ main.reader.source-right .editorpane {
   line-height: inherit;
 }
 .cm-editor .cm-content {
-  padding-block: --spacing(4);
+  padding: --spacing(4) --spacing(4) --spacing(4) --spacing(2);
   caret-color: var(--color-primary-500);
 }
 /* Line numbers are furniture: present, and quieter than the text. */
 .cm-editor .cm-gutters {
   background: var(--color-shell);
-  border-right: 1px solid var(--color-surface-200-800);
-  color: var(--color-surface-400-600);
+  border: 0;
+  padding-left: --spacing(3);
+  color: var(--color-line-number);
+}
+.cm-editor .cm-lineNumbers .cm-gutterElement {
+  padding-inline: --spacing(2);
 }
 .cm-editor .cm-activeLineGutter,
 .cm-editor .cm-activeLine {
-  background: color-mix(in srgb, var(--color-tertiary-500) 12%, transparent);
+  background: color-mix(in srgb, var(--color-primary-500) 5%, transparent);
 }
 .cm-editor .cm-selectionBackground,
 .cm-editor.cm-focused .cm-selectionBackground,
 .cm-editor .cm-content ::selection {
-  background: color-mix(in srgb, var(--color-tertiary-500) 40%, transparent);
+  background: color-mix(in srgb, var(--color-primary-500) 18%, transparent);
 }
 .cm-editor .cm-searchMatch {
-  background: color-mix(in srgb, var(--color-tertiary-500) 35%, transparent);
+  background: color-mix(in srgb, var(--color-primary-500) 14%, transparent);
 }
 .cm-editor .cm-panels {
   background: var(--color-surface-100-900);
@@ -724,3 +703,8 @@ main.reader.source-right .editorpane {
 .filelist .chooser {
   display: none;
 }
+
+/* Shared controls use the same shape; ordinary icon actions stay quiet. */
+.icon-standard { --btn-size: 1.0625rem; }
+.icon-plain:hover:not(:disabled) { background: var(--color-row-hover); }
+.icon-control:focus-visible { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }

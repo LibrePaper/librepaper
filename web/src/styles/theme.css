@@ -123,11 +123,15 @@
 	--typo-anchor--text-decoration-line: none;
 	--typo-anchor--hover--text-decoration-line: underline;
 
-	/* What the shell is painted on. White, rather than the palest step of the
-	   surface ramp: a bar, an editor and a column of comments are all paper,
-	   and the ramp is for the lines drawn on paper and the ink written on it.
-	   A grey ground made every one of them look like a disabled control. */
+	/* Quiet, distinct surfaces give each workspace pane a clear role. */
 	--color-shell: light-dark(#ffffff, var(--color-surface-950));
+	--color-sidebar: #f7f8f7;
+	--color-preview: #f6f6f4;
+	--color-divider: #e5e8e6;
+	--color-row-hover: #f0f2f1;
+	--color-row-selected: #eef3f0;
+	--color-line-number: #8d9691;
+	--font-editor: "JetBrains Mono", "IBM Plex Mono", "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
 	--color-root-bg-light: #ffffff;
 	--color-root-bg-dark: var(--color-surface-950);

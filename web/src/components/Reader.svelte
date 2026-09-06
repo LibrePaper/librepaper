@@ -1521,6 +1521,7 @@
   let files = $state([]);
   let folders = $state([]);
   let openFile = $state("");
+  const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
   let peersByFile = $state(new Map());
   // The deployment's rules, which say what a path may be and what may sit at
   // one. Fetched rather than compiled in, so a deployment that widens its
@@ -1974,15 +1975,18 @@
 
 <Nav {me}>
   {#snippet children()}
+    <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
+      {toolbarPath ? basename(toolbarPath) : doc.title || "Komodoc"}
+    </span>
     <IconButton icon="panel-left-open" label="Show or hide the sidebar"
-      title="Show or hide the sidebar" pressed={Boolean(panel)} onclick={toggleColumn} />
-    <span id="docTitle" class="text-surface-600-400 truncate text-sm">{doc.title ?? ""}</span>
+      title="Show or hide the sidebar" pressed={Boolean(panel)} tone="plain" onclick={toggleColumn} />
   {/snippet}
   {#snippet status()}
     {#if !connected}<small class="badge preset-tonal-warning" title="Reconnecting">reconnecting…</small>{/if}
     {#if viewing}<small class="badge preset-tonal-warning" title={new Date(viewing.at).toLocaleString()}>Showing {viewingName}</small>{/if}
     {#if renderedNote}<small class="badge preset-tonal-surface" title={renderedNote}>{renderedNote}</small>{/if}
     {#if editing}
+      {#if connected && persistence.joined && !persistence.pending}<small class="nav-saved" title="All changes are saved">Saved</small>{/if}
       {#if persistenceBadge}<small class="badge preset-tonal-warning" title={persistenceBadge}>{persistenceBadge}</small>{/if}
       {#if peers > 1}<small class="badge preset-tonal-secondary">{peers} editing</small>{/if}
       {#if compileBadge}<small class="badge preset-tonal-surface" title={compileBadge}><span class="spinner" aria-hidden="true"></span>{compileBadge}</small>{/if}
@@ -1994,7 +1998,7 @@
     {/if}
   {/snippet}
   {#snippet tools()}
-    <Row gap={3}>
+    <Row gap={2}>
       <ControlGroup label="Layout">
         {#snippet children()}
           {#if editing}
@@ -2058,7 +2062,7 @@
           pressed={cardOpen} onclick={() => (cardOpen = !cardOpen)} />
       {/if}
       {#if canSeeSharing}
-        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (sharingOpen = true)}>Share</button>
+        <button type="button" class="btn btn-sm h-8 preset-filled-primary-500" onclick={() => (sharingOpen = true)}>Share</button>
       {:else}
         <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
       {/if}
@@ -2085,19 +2089,19 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       style="--komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- The column, first: the files, the comments or the history, chosen by
-       the tabs at its top. A file dropped anywhere on it joins the project. -->
+       the activity bar. A file dropped anywhere on it joins the project. -->
   {#if shown.comments}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <aside class="sidebar" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
-      <div class="paneltabs" role="tablist" aria-label="Sidebar tabs">
+      <div class="sidebar-activity" role="group" aria-label="Sidebar sections">
         {#each TABS.filter((tab) => !tab.editOnly || editing) as tab (tab.id)}
-          <button type="button" role="tab" class="paneltab"
-                  aria-selected={panel === tab.id}
-                  onclick={() => showPanel(tab.id)}>
-            {tab.says}
-          </button>
+          <IconButton
+            icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : "box"}
+            label={tab.says} pressed={panel === tab.id}
+            onclick={() => showPanel(tab.id)} />
         {/each}
       </div>
+      <div class="sidebar-content">
       {#if panel === "files"}
         <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
                {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
@@ -2119,6 +2123,7 @@
                   onreveal={(comment) => tell({ type: "reveal", id: comment.id })}
                   onresolve={resolve} ondelete={askDelete} onreply={reply} />
       {/if}
+      </div>
     </aside>
     <Grip pane={PANES.sidebar} label="Resize the left-hand column" panes={panes}
           onsize={(size) => setSize(PANES.sidebar, size)}
@@ -2303,3 +2308,36 @@
 </Modal>
 
 <Toasts />
+
+<style>
+  .nav-document {
+    display: block;
+    max-width: min(38vw, 20rem);
+    color: var(--color-surface-700-300);
+    font-size: var(--text-sm);
+  }
+  .nav-saved { color: var(--color-surface-400-600); font-size: var(--text-xs); white-space: nowrap; }
+  .sidebar { flex-direction: row; }
+  .sidebar-activity {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing);
+    width: calc(var(--spacing) * 12);
+    padding-block: calc(var(--spacing) * 3);
+  }
+  .sidebar-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  @media (max-width: 760px) {
+    .sidebar { flex-direction: column; }
+    .sidebar-activity { flex-direction: row; width: auto; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); }
+    .sidebar-content { overflow: visible; }
+  }
+</style>

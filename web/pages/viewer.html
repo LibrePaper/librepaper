@@ -11,11 +11,12 @@
       dozen rules a selectable text layer actually needs are the dozen below.
     -->
     <style>
-      html { background: #52525b; }
+      html { background: #f6f6f4; }
       body { margin: 0; }
-      .note { color: #e4e4e7; font: 14px system-ui, sans-serif; padding: 2rem; }
-      main { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px; }
-      .page { position: relative; background: #fff; box-shadow: 0 1px 6px rgb(0 0 0 / 0.4); overflow: hidden; }
+      .note { color: #52525b; font: 14px system-ui, sans-serif; padding: 2rem; }
+      main { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 24px 16px 48px; }
+      main > .pages { display: flex; flex-direction: column; gap: 24px; }
+      .page { position: relative; background: #fff; box-shadow: 0 1px 5px rgb(24 31 28 / 0.14); overflow: hidden; }
       .page canvas { display: block; }
       .textLayer {
         position: absolute;
