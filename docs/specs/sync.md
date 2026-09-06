@@ -247,9 +247,10 @@ of the document to disagree. There is one.
 ## Follow-up: automation clients as peers
 
 The peer module also backs a komodoc subcommand and small library for a
-headless automation client. This follows the sync command and the scoped
-credentials in `docs/specs/sharing.md`; it is not another name for the annotation
-script in `web/src/agent`.
+headless automation client. This follows the sync command and the `--key`
+flag `docs/specs/sharing.md` gives the command line, since its credential is a
+comment or edit link rather than a person's sign-in; it is not another name
+for the annotation script in `web/src/agent`.
 
 The client joins the same Yjs session to read and edit source, and uses the
 room's `comment`, `reply`, `resolve`, and `delete` messages for annotations.
@@ -260,7 +261,8 @@ API with different concurrency rules.
 
 Provide an authenticated snapshot GET for the current source and annotations
 so a client can inspect a document before joining. Its read authorization is
-the same as the document's, including private visibility and token scope.
+the same as the document's, including private visibility and the role the
+link carries.
 The snapshot is a read aid, not a substitute for the Yjs synchronization
 handshake before writing. Keep source and annotation reads within one room
 snapshot and include the source SHA so the client can identify what it saw.
@@ -272,8 +274,9 @@ does. LaTeX rendering, when needed, follows `docs/specs/latex.md` rather than
 creating an automation-only server renderer.
 
 Tests cover a browser and an automation client editing concurrently,
-annotation creation and resolution with the token's author identity, a
-snapshot refused outside its document scope, and edits surviving the last
+annotation creation and resolution attributed the way the link attributes --
+to the signed-in account behind it, or to the link's pseudonym -- a snapshot
+refused with a link minted for another document, and edits surviving the last
 headless peer leaving and the server restarting.
 
 ## Edge cases, and what is decided about each

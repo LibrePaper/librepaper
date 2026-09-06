@@ -32,12 +32,42 @@ There is no separate token for a script or a bot: a comment link or an edit
 link is the bearer credential, the same one a person pastes into a browser.
 Minting one for a person and one for a script is the same command, and
 revoking a compromised script's access is the same rotation that kills a
-leaked human link. What is still open is the pair of things that would make a
-link fit a machine caller specifically, rather than whichever person a human
-happened to forward it to: a rate budget of its own, separate from a human
-reader's, and a label, so an owner reading `komodoc share`'s listing can tell
-"the CI link" from "the one I sent the reviewer" instead of two identical
-rows.
+leaked human link. The server already takes the key from the `x-komodoc-key`
+header as well as from the URL, and `IndexEntry::role_of` answers for it the
+way it answers for a cookie. Three things are left, in the order to build
+them.
+
+**The command line cannot present a link.** Every command authenticates with
+the provider bearer token and nothing else: `cli.rs` and `http.rs` never send
+`x-komodoc-key`. So a script can use a link over raw HTTP or on the socket
+upgrade, but not through `komodoc sync`, `komodoc comment` or any other
+command, which is where a script would want to use it. Add `--key`, taking
+either the bare key or the whole link URL it came in, and set the header on
+every request and on the socket upgrade. With `--key` and no bearer, the
+caller is whoever the link says; with both, the link authorizes and the
+account attributes, as in the browser. A test runs `sync` and `comment` with a
+key and no sign-in, and checks that a rotated key is refused on both HTTP and
+an open socket.
+
+**A label.** `LinkGrant.label` in `store.rs` exists and is never written; it is
+marked legacy. Make it live: the share change accepts `label` inside `link`
+beside `role` and `until`, `komodoc share --link <role>` takes `--label`,
+`format_role_row` prints it, and the dialog gets a label input beside the
+expiry and shows it on the row. A label survives a rotation of the same role
+and is dropped on revoke. A document holds one link per role, so a label
+tells the roles' links apart by what they are for -- "CI" on the edit link,
+"reviewer" on the comment link -- and is a memo, not a way to have two
+comment links; several links per role is a different model and is not
+proposed.
+
+**A rate budget per link.** `Room::rate_ok` keys on the caller's address
+alone. When a request carries a link key, the rate key becomes the link's
+hash instead, so a link forwarded to a department shares one budget and a
+script has its own rather than borrowing its host's. A `budget` on
+`LinkGrant`, comments per hour, empty for the address limit, set through the
+same share change and CLI flag as the label. Tests: two addresses on one
+link share a budget, the budget resets on the hour, and a link past its
+budget still reads.
 
 ## A front page for `listed` documents
 
@@ -53,10 +83,6 @@ needs a route that answers without a publisher, and the front page to show it.
 - **A `--link-lifetime` ceiling.** Links expire at six months by default and
   `--until never` is allowed for an owner who wants none. No operator ceiling
   was added; there is nothing yet asking for one.
-- **Rate limits by link.** Comments are rate-limited by address. A link is a
-  better key for one reviewer and a worse one for a link forwarded to a
-  department; left as address until it hurts. This is the same gap the
-  automation section above wants closed for a machine caller specifically.
 - **A private HTML document's own scripts do not run.** A private document is
   never served from the documents origin — that origin shares no cookie and so
   has no identity to check `private` against — so the reader paints the text in
