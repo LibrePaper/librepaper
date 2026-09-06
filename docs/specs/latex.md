@@ -223,16 +223,6 @@ the compiler already produces.
 
 ## Steps
 
-3. **The card and the compiling state.** Built. The preview pane's three states in
-   the reader, drawn from `available()` and `chosen()`; the debounce, the
-   badge, the last-page-stays rule; the `preview` message with the bytes to
-   the viewer. The reader opens a `.tex` document in the editor with the
-   card in the pane when `/api/config` says `latex: true`, and offers the
-   source otherwise. `latex.js`'s `DEFAULT_BASE` of `/latex/` is what a
-   deployment serves, so nothing points the module anywhere else.
-5. **Renderings.** Built. The `PUT`, the acceptance rules, the quota, the pruning,
-   the "rendered from an earlier version" line. A reader who never chose a
-   distribution reads a rendering and comments on it.
 6. **SyncTeX.** Both directions, on a distribution that returns one.
 7. **Optional local command-line compilation.** Validate a local runner
    for the browser compiler artifacts, its installation requirements, and
@@ -240,9 +230,8 @@ the compiler already produces.
    upload renderings under the same rules as the browser. Source-only
    publishing does not depend on this step.
 
-Step 3 gives an author a LaTeX editor with comments and no readers; step 5
-gives them readers. Nothing after 5 is required for the project to have
-LaTeX.
+Neither step is required for the project to have LaTeX: an author has an
+editor with comments, and readers have renderings, without them.
 
 ## Risks
 

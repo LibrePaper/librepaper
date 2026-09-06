@@ -327,34 +327,6 @@ measured against, and what it would replace only for people who ask.
 
 It is not a general file synchroniser. One file, one document, one session.
 
-## Steps
-
-1. **The peer.** Yrs, a Tokio WebSocket client, the message types
-   above, state on open, snapshot on request, awareness in and out,
-   reconnect. A test runs the server in-process, joins two clients through
-   it, and checks that an insert on one is the text of the other, that the
-   second to join receives the state, and that a client which reconnects
-   after the server restarts has lost nothing. Nothing touches disk yet.
-2. **The mirror, one direction each.** Session to disk with atomic writes
-   and echo suppression; disk to session as a minimal diff. Tests drive the
-   watcher with real writes into a temporary directory and assert on the
-   document; and drive the document and assert on the file.
-3. **The merge, wired.** `komodoc_text::merge` in the disk-to-session path
-   with `base` bookkeeping, and a test in which an actual Yjs browser peer
-   edits while the file holds a stale copy.
-4. **The checkpoint.** `y-checkpoint` sent after a file write, debounced. A
-   test writes the file and checks that the manifest gains one entry whose
-   bytes are the document's text, and that a second write of the same text
-   gains none.
-5. **The command.** The subcommand in the executable, ownership check, the
-   lock file, the messages above, `--interval`. A section in the README
-   under "CLI", after "Edit", which opens with what it is not.
-
-All five are built. One deviation from step 5 is worth knowing: the README
-section sits after "Comment" and "Edit" rather than immediately after "Edit",
-and opens with what the command is for; what it is not is the last paragraph,
-where it reads better than as an apology at the top.
-
 ## Open questions
 
 - **Cursor positions.** An editor that speaks LSP knows where its cursor is.

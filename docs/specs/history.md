@@ -157,12 +157,10 @@ checkpoint, so the author can find it; it is not a way to push or pull.
 
 ## Steps
 
-8. **What changed since.** The word-level diff is built, as the
-   `komodoc-text` crate (`text/`), which `komodoc sync`'s merge also uses;
-   what remains is its WASM export from the engine, the list beside the
-   comments, anchoring hunks by quotation, the per-file diff behind a
-   changed path in the panel, and the replacement text on the card and in
-   the response.
+8. **What changed since.** The word-level diff's WASM export from the
+   engine, the list beside the comments, anchoring hunks by quotation, the
+   per-file diff behind a changed path in the panel, and the replacement
+   text on the card and in the response.
 9. **Diff and restore.** The merge view in the editor, `komodoc diff`,
    `komodoc restore`, the route and the panel's "Restore" that call
    `Room::restore`, and "Copy link" on a checkpoint.
