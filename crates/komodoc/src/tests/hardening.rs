@@ -495,7 +495,7 @@ async fn comment_author_is_persisted_but_never_sent_to_clients() {
         ..Message::default()
     };
     let (result, ok) = current
-        .apply(incoming, "", "github:vincent", "", false)
+        .apply(incoming, "", "github:vincent", "", None, false)
         .await;
     assert!(ok, "comment was refused: {result}");
     // A broadcast marshals the comment directly; it must carry no author.

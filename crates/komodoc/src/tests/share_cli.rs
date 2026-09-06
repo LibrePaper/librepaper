@@ -37,6 +37,23 @@ fn a_live_link_row_shows_the_full_link_and_its_expiry() {
     assert!(row.contains("expires 2026-07-01"), "{row}");
 }
 
+/// Labels and custom comment budgets are visible in the same role row as the
+/// key they describe.
+#[test]
+fn a_link_row_shows_its_label_and_budget() {
+    let link = json!({
+        "key": "abc123",
+        "url": "/docs/c9k#k=abc123",
+        "until": "",
+        "label": "Review bot",
+        "budget": 12,
+        "expired": false,
+    });
+    let row = crate::cli::format_role_row("commenter", &link, "https://example.com");
+    assert!(row.contains("[Review bot]"), "{row}");
+    assert!(row.contains("12 comments/hour"), "{row}");
+}
+
 /// A link with no `until` reads as having no expiry, not as blank.
 #[test]
 fn a_link_with_no_until_says_no_expiry() {

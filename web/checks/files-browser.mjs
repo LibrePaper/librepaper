@@ -167,6 +167,8 @@ window.sharingSetup = async () => {
         key: token,
         url: 'https://example.test/docs/paper#k=' + token,
         until: body.link.until === 'never' ? null : '2027-03-05T00:00:00Z',
+        label: body.link.label || '',
+        budget: body.link.budget,
         expired: false,
       } };
     }
@@ -194,7 +196,14 @@ window.sharingCheck = async () => {
   button('Create Read link').click(); await flush();
   button('Copy Read link').click(); await flush();
   check(window.copiedLink.includes('#k=reader-token-'), 'a read link carries its key');
+  const editLabel = button('Edit link label');
+  editLabel.value = 'CI'; editLabel.dispatchEvent(new Event('input', { bubbles: true }));
+  const editBudget = button('Edit link budget');
+  editBudget.value = '8'; editBudget.dispatchEvent(new Event('input', { bubbles: true }));
   button('Create Edit link').click(); await flush();
+  check(window.shareRequests.at(-1).link.label === 'CI', 'the link label reaches the share change');
+  check(window.shareRequests.at(-1).link.budget === 8, 'the link budget reaches the share change');
+  check(document.body.textContent.includes('CI') && document.body.textContent.includes('8 comments/hour'), 'link metadata is shown on its row');
   check(button('Copy Edit link'), 'new edit link can be copied');
   button('Copy Edit link').click(); await flush();
   check(window.copiedLink.includes('#k='), 'copies access token link');
@@ -206,6 +215,7 @@ window.sharingCheck = async () => {
   check(button('Copy Edit link'), 'replacement link can be copied');
   button('Revoke Edit link').click(); await flush();
   check(!button('Copy Edit link') && button('Create Edit link'), 'revoking restores link creation');
+  check(button('Edit link label').value === '' && button('Edit link budget').value === '', 'revoking drops link metadata');
   button('Copy Read link').click(); await flush();
   const previousReadLink = window.copiedLink;
   button('Revoke Read link').click(); await flush();

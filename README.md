@@ -204,6 +204,7 @@ given an expiry. Minting one is the whole act of sharing:
 komodoc share c9k                       # print the owner's link and every role's link
 komodoc share c9k --link comment        # mint (or rotate) the comment link
 komodoc share c9k --link edit --until 30d
+komodoc share c9k --link comment --label "Review bot" --budget 20
 komodoc share c9k --revoke edit         # turn the edit link off
 ```
 
@@ -215,6 +216,14 @@ Links expire after six months unless `--until` says otherwise (`--until never`
 for one that does not). `komodoc publish` mints the read link when it creates
 a document and prints that, with no expiry, so what it prints is the thing to
 send; revoke it and the document is yours alone until you mint another.
+
+A link may have a label, which is only the owner's memo about what the one
+role link is for, and a comments-per-hour budget. Every person or machine
+holding that link shares its budget, even from different addresses; without
+`--budget`, the deployment's ordinary comment limit applies. The label
+survives a rotation unless another is supplied, and both values disappear
+when the link is revoked. The same controls are beside each role in the
+browser's **Share** pane.
 
 A read link is read-only, whatever `--commenters` says: the switch is a
 ceiling on what a link may carry, not a grant to whoever reaches the document.

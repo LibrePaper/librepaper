@@ -800,6 +800,277 @@ async fn sharing_json_keys_the_links_by_role() {
     assert!(sharing["links"]["reader"].is_null());
 }
 
+// A link's label is an owner's memo, and its budget is the shared hourly
+// allowance for every caller holding that key. Rotating without another label
+// keeps the memo; revoking drops the whole row and therefore both fields.
+#[tokio::test]
+async fn link_metadata_is_stored_preserved_and_revoked_with_the_link() {
+    let server = open_server().await;
+    let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let (status, made) = share(
+        &server.url,
+        "alice",
+        &slug,
+        json!({"link": {"role": "commenter", "label": "Review bot", "budget": 2}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{made}");
+    assert_eq!(text(&made["links"]["commenter"], "label"), "Review bot");
+    assert_eq!(made["links"]["commenter"]["budget"], 2);
+
+    let old_key = text(&made, "key");
+    let (status, rotated) = share(
+        &server.url,
+        "alice",
+        &slug,
+        json!({"link": {"role": "commenter", "budget": 3}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{rotated}");
+    assert_ne!(text(&rotated, "key"), old_key);
+    assert_eq!(text(&rotated["links"]["commenter"], "label"), "Review bot");
+    assert_eq!(rotated["links"]["commenter"]["budget"], 3);
+
+    let (status, cleared) = share(
+        &server.url,
+        "alice",
+        &slug,
+        json!({"link": {"role": "commenter", "label": ""}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{cleared}");
+    assert_eq!(text(&cleared["links"]["commenter"], "label"), "");
+    assert!(cleared["links"]["commenter"]["budget"].is_null());
+
+    let (status, revoked) =
+        share(&server.url, "alice", &slug, json!({"revoke": "commenter"})).await;
+    assert_eq!(status, 200, "{revoked}");
+    assert!(revoked["links"]["commenter"].is_null());
+}
+
+// Zero is a useful budget for a temporarily read-only machine link; negative
+// counts are not budgets. Leaving the field out uses the deployment limit.
+#[tokio::test]
+async fn link_budget_boundaries_are_enforced() {
+    let server = test_server_with(
+        Configuration {
+            rate_per_hour: 1,
+            ..Configuration::default()
+        },
+        Policy::parse("any"),
+        Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let (status, invalid) = share(
+        &server.url,
+        "alice",
+        &slug,
+        json!({"link": {"role": "commenter", "budget": -1}}),
+    )
+    .await;
+    assert_eq!(status, 400, "a negative budget was accepted: {invalid}");
+
+    let (status, zero) = share(
+        &server.url,
+        "alice",
+        &slug,
+        json!({"link": {"role": "commenter", "budget": 0}}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let zero = text(&zero, "key");
+    assert!(!zero.is_empty());
+    let path = format!("/api/documents/{slug}/comments");
+    assert_eq!(
+        post_keyed(
+            "",
+            &zero,
+            &server.url,
+            &path,
+            json!({"type": "comment", "exact": "Alice Paper", "body": "blocked"})
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(
+        get_json_keyed(
+            "",
+            &zero,
+            &server.url,
+            &format!("/api/documents/{slug}/source")
+        )
+        .await
+        .0,
+        200
+    );
+
+    let (status, ordinary) = share(
+        &server.url,
+        "alice",
+        &slug,
+        json!({"link": {"role": "commenter"}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{ordinary}");
+    let ordinary = text(&ordinary, "key");
+    assert_eq!(
+        post_keyed(
+            "",
+            &ordinary,
+            &server.url,
+            &path,
+            json!({"type": "comment", "exact": "Alice Paper", "body": "allowed"})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        post_keyed(
+            "",
+            &ordinary,
+            &server.url,
+            &path,
+            json!({"type": "comment", "exact": "Alice Paper", "body": "limited"})
+        )
+        .await
+        .0,
+        400
+    );
+    assert_ne!(zero, ordinary);
+}
+
+// The link, rather than the host using it, is the rate-limit identity. Its
+// counter turns over with the clock hour, and exhausting it does not affect
+// the link's read permission.
+#[tokio::test]
+async fn a_link_budget_is_shared_between_addresses_and_resets_each_hour() {
+    let server = open_server().await;
+    let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let (status, made) = share(
+        &server.url,
+        "alice",
+        &slug,
+        json!({"link": {"role": "commenter", "budget": 2}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{made}");
+    let key = text(&made, "key");
+    let link = crate::server::hash_link_key(&key);
+    let room = server.instance.rooms.get(&slug).await;
+    let path = format!("/api/documents/{slug}/comments");
+    for body in ["http one", "http two"] {
+        let (status, answer) = post_keyed(
+            "",
+            &key,
+            &server.url,
+            &path,
+            json!({"type": "comment", "exact": "Alice Paper", "body": body}),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "the server did not apply the link budget: {answer}"
+        );
+    }
+    let (status, refused) = post_keyed(
+        "",
+        &key,
+        &server.url,
+        &path,
+        json!({"type": "comment", "exact": "Alice Paper", "body": "http three"}),
+    )
+    .await;
+    assert_eq!(status, 400, "the server ignored the link budget: {refused}");
+    let (status, source) = get_json_keyed(
+        "",
+        &key,
+        &server.url,
+        &format!("/api/documents/{slug}/source"),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "a link past its comment budget could not read: {source}"
+    );
+    room.state.lock().await.rate.clear();
+
+    let comment = |body: &str| crate::room::Message {
+        kind: "comment".into(),
+        exact: "Alice Paper".into(),
+        body: body.into(),
+        ..Default::default()
+    };
+
+    let (_, first) = room
+        .apply(
+            comment("one"),
+            "192.0.2.1",
+            "visitor:one",
+            &link,
+            Some(2),
+            false,
+        )
+        .await;
+    let (_, second) = room
+        .apply(
+            comment("two"),
+            "198.51.100.2",
+            "visitor:two",
+            &link,
+            Some(2),
+            false,
+        )
+        .await;
+    let (refused, third) = room
+        .apply(
+            comment("three"),
+            "203.0.113.3",
+            "visitor:three",
+            &link,
+            Some(2),
+            false,
+        )
+        .await;
+    assert!(first && second, "the link's first two slots were refused");
+    assert!(!third, "different addresses received separate link budgets");
+    assert_eq!(
+        text(&refused, "message"),
+        "too many comments from this link; try later"
+    );
+
+    // Put the full counter in the preceding hour. The next action must remove
+    // it and begin a fresh bucket for the current hour.
+    let hour = crate::clock::now_unix() / 3600;
+    {
+        let mut state = room.state.lock().await;
+        state.rate.clear();
+        state.rate.insert(format!("link:{link}:{}", hour - 1), 2);
+    }
+    let (_, reset) = room
+        .apply(
+            comment("new hour"),
+            "203.0.113.3",
+            "visitor:three",
+            &link,
+            Some(2),
+            false,
+        )
+        .await;
+    assert!(reset, "the preceding hour's link budget did not reset");
+    {
+        let state = room.state.lock().await;
+        assert!(!state
+            .rate
+            .keys()
+            .any(|key| key.ends_with(&format!(":{}", hour - 1))));
+        assert_eq!(state.rate.get(&format!("link:{link}:{hour}")), Some(&1));
+    }
+}
+
 /* ------------------------------------------------------ visitor adoption */
 
 // A browser that publishes without signing in owns what it uploaded; when it

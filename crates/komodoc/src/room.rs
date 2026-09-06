@@ -1201,18 +1201,31 @@ impl Room {
         send_to_all(&mut state, skip, &message);
     }
 
-    /// Counts writes per address per hour, and forgets older hours as it goes
-    /// rather than accumulating an entry per address per hour.
-    fn rate_ok(&self, state: &mut RoomState, address: &str) -> bool {
-        if address.is_empty() {
+    /// Counts comment actions per caller per clock hour. A live link is the
+    /// caller when one was presented, so two hosts using the same machine or
+    /// human link share its budget. Without a link, the caller remains the
+    /// network address. Older hours are forgotten as the clock advances.
+    fn rate_ok(
+        &self,
+        state: &mut RoomState,
+        address: &str,
+        link: &str,
+        budget: Option<i64>,
+    ) -> bool {
+        if address.is_empty() && link.is_empty() {
             return true;
         }
         let hour = now_unix() / 3600;
-        let key = format!("{}:{hour}", rate_key(address));
+        let caller = if link.is_empty() {
+            format!("address:{}", rate_key(address))
+        } else {
+            format!("link:{link}")
+        };
+        let key = format!("{caller}:{hour}");
         let suffix = format!(":{hour}");
         state.rate.retain(|existing, _| existing.ends_with(&suffix));
         let count = state.rate.get(&key).copied().unwrap_or(0);
-        if count + 1 > self.config.rate_per_hour {
+        if count >= budget.unwrap_or(self.config.rate_per_hour) {
             return false;
         }
         state.rate.insert(key, count + 1);
@@ -1230,6 +1243,7 @@ impl Room {
         address: &str,
         author: &str,
         via: &str,
+        budget: Option<i64>,
         is_owner: bool,
     ) -> (Value, bool) {
         let mut state = self.state.lock().await;
@@ -1294,8 +1308,9 @@ impl Room {
         // Resolving and deleting cost a slot too, the same as posting: a
         // caller who could resolve or delete without limit could still make a
         // thread unusable, just by different means than flooding it with text.
-        if !self.rate_ok(&mut state, address) {
-            return fail("too many comments from this address; try later");
+        if !self.rate_ok(&mut state, address, via, budget) {
+            let source = if via.is_empty() { "address" } else { "link" };
+            return fail(&format!("too many comments from this {source}; try later"));
         }
 
         if incoming.kind == "resolve" {

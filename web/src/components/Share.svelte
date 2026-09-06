@@ -18,6 +18,8 @@
   // The expiry chosen for a link that does not exist yet, kept per role so
   // opening the dialog does not make Comment forget what Edit's select said.
   let until = $state({ reader: "180d", commenter: "180d", editor: "180d" });
+  let labels = $state({ reader: "", commenter: "", editor: "" });
+  let budgets = $state({ reader: "", commenter: "", editor: "" });
 
   const ROLES = [
     { id: "reader", label: "Read" },
@@ -29,6 +31,14 @@
   // the link handed to somebody is completed against this origin here.
   const fullUrl = (path) => new URL(path, location.origin).href;
 
+  function rememberLinkSettings(answer) {
+    for (const role of ROLES) {
+      const link = answer?.links?.[role.id];
+      labels[role.id] = link?.label || "";
+      budgets[role.id] = link?.budget ?? "";
+    }
+  }
+
   async function load(documentSlug) {
     const request = ++generation;
     loading = true;
@@ -39,6 +49,7 @@
       const answer = await getPrivate(`/api/documents/${documentSlug}/share`);
       if (request !== generation) return;
       sharing = answer;
+      rememberLinkSettings(answer);
     } catch (failure) {
       if (request === generation) error = failure.message || "Could not load sharing settings.";
     } finally {
@@ -66,6 +77,7 @@
       if (documentSlug !== slug || request !== generation) return false;
       copyFallback = "";
       sharing = answer;
+      rememberLinkSettings(answer);
       feedback = message;
       return true;
     } catch (failure) {
@@ -74,8 +86,14 @@
     } finally { busy = false; }
   }
 
-  const createLink = (role) => change({ link: { role, until: until[role] } }, "Access link created.");
-  const resetLink = (role) => change({ link: { role, until: until[role] } }, "Access link reset. The old link no longer works.");
+  const linkChange = (role) => ({ link: {
+    role,
+    until: until[role],
+    label: labels[role],
+    budget: budgets[role] == null || budgets[role] === "" ? null : Number(budgets[role]),
+  } });
+  const createLink = (role) => change(linkChange(role), "Access link created.");
+  const resetLink = (role) => change(linkChange(role), "Access link reset. The old link no longer works.");
   const revokeLink = (role) => change({ revoke: role }, "");
   const revokePerson = (person) => change({ revoke: person.login }, `Access removed for ${person.login}.`);
 
@@ -105,28 +123,35 @@
             <h4 id="share-{role.id}-heading" class="panel-section-title">{role.label}</h4>
             <p class="panel-muted">{description}</p>
             {#if link?.key && !link.expired}
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <p class="panel-meta min-w-0 truncate">{link.until ? `Expires ${dateOf(link.until)}` : "No expiry"}</p>
-                <div class="flex shrink-0 gap-2">
-                  <button type="button" class="btn btn-sm text-primary-500" disabled={busy} aria-label="Copy {role.label} link" onclick={() => copy(fullUrl(link.url), role.label + " link copied.")}>{copied === fullUrl(link.url) ? "Copied" : "Copy link"}</button>
-                  <button type="button" class="btn btn-sm" disabled={busy} aria-label="Revoke {role.label} link" onclick={() => revokeLink(role.id)}>Revoke</button>
-                </div>
-              </div>
-            {:else}
-              {#if link}<p class="panel-muted">{link.expired ? "This link has expired." : "This is an older link format."}</p>{/if}
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <label class="flex flex-wrap items-center gap-2 panel-meta">Expires in
-                  <select class="select share-select w-auto" aria-label="{role.label} link expiry" bind:value={until[role.id]} disabled={busy}>
+              <p class="panel-meta min-w-0 truncate">
+                {link.label || "Unlabelled"} · {link.until ? `Expires ${dateOf(link.until)}` : "No expiry"}{link.budget == null ? "" : ` · ${link.budget} comments/hour`}
+              </p>
+            {:else if link}
+              <p class="panel-muted">{link.expired ? "This link has expired." : "This is an older link format."}</p>
+            {/if}
+            <div class="share-fields">
+              <label class="share-setting panel-meta">Label
+                <input class="input share-input" aria-label="{role.label} link label" maxlength="80" placeholder={role.id === "editor" ? "CI" : "Reviewer"} bind:value={labels[role.id]} disabled={busy} />
+              </label>
+              <label class="share-setting panel-meta">Expires in
+                <select class="select share-select" aria-label="{role.label} link expiry" bind:value={until[role.id]} disabled={busy}>
                   <option value="7d">7 days</option>
                   <option value="30d">30 days</option>
                   <option value="180d">6 months</option>
                   <option value="never">Never</option>
-                  </select>
+                </select>
+              </label>
+              {#if role.id !== "reader"}
+                <label class="share-setting panel-meta">Comments/hour
+                  <input class="input share-input" type="number" min="0" step="1" aria-label="{role.label} link budget" placeholder="Server default" bind:value={budgets[role.id]} disabled={busy} />
                 </label>
-                <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={busy} aria-label="{link ? 'Replace' : 'Create'} {role.label} link" onclick={() => link ? resetLink(role.id) : createLink(role.id)}>{link ? "Replace link" : "Create link"}</button>
-                {#if link}<button type="button" class="btn btn-sm" disabled={busy} aria-label="Revoke {role.label} link" onclick={() => revokeLink(role.id)}>Revoke</button>{/if}
-              </div>
-            {/if}
+              {/if}
+            </div>
+            <div class="flex flex-wrap justify-end gap-2">
+              {#if link?.key && !link.expired}<button type="button" class="btn btn-sm text-primary-500" disabled={busy} aria-label="Copy {role.label} link" onclick={() => copy(fullUrl(link.url), role.label + " link copied.")}>{copied === fullUrl(link.url) ? "Copied" : "Copy link"}</button>{/if}
+              <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={busy} aria-label="{link ? 'Replace' : 'Create'} {role.label} link" onclick={() => link ? resetLink(role.id) : createLink(role.id)}>{link ? "Replace link" : "Create link"}</button>
+              {#if link}<button type="button" class="btn btn-sm" disabled={busy} aria-label="Revoke {role.label} link" onclick={() => revokeLink(role.id)}>Revoke</button>{/if}
+            </div>
             {#if role.id === "editor" && sharing.edit_needs_signin}<p class="panel-muted">Editors must sign in.</p>{/if}
             {#if role.id === "commenter" && sharing.comment_needs_signin}<p class="panel-muted">Commenters must sign in.</p>{/if}
           </section>
@@ -178,5 +203,8 @@
 <style>
   .share-sidebar :global(select) { max-width: 100%; }
   .share-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); }
+  .share-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: calc(var(--spacing) * 2); }
+  .share-setting { display: grid; gap: var(--spacing); }
+  .share-input, .share-select { width: 100%; min-width: 0; }
   .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-surface-400-600); font-size: var(--panel-meta-size); }
 </style>

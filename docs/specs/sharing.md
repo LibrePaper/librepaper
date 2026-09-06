@@ -19,6 +19,15 @@ rotated or revoked. Named grants by login are legacy, honoured and revocable
 but never created. `IndexEntry::role_of` and `readable_by` in `store.rs` are
 the whole of the decision, and every route asks them.
 
+Each role's link may carry an owner's label and a comments-per-hour budget.
+The label is a memo -- "CI" or "reviewer" -- rather than another identity or
+another link, survives rotation when no replacement label is given, and is
+dropped with the link on revoke. A caller presenting a live link is rate
+limited by that link's hash rather than its network address, so every machine
+or person sharing the link also shares its budget. An absent budget uses the
+deployment's ordinary comment limit. Exhausting the budget stops comment
+actions but never reading.
+
 The documents origin, which serves an HTML document's page into the frame so
 its scripts run, holds no identity. The reader fetches a token from
 `/api/documents/<slug>/frame` on the origin that does -- signed for the slug,
@@ -30,57 +39,6 @@ link, on `comment`, `edit`, `sync`, `history` and `export`, as the
 `x-komodoc-key` header on every request and on the socket upgrade; with a
 key and no sign-in the caller is whoever the link says, and with both the
 link authorizes and the account attributes, as in the browser.
-
-What follows is what is left.
-
-## A machine's link
-
-A script or a bot holds a comment or edit link, the same credential a person
-pastes into a browser, and `--key` is how it presents one. Two things would
-make a link fit a machine caller specifically, rather than whichever person a
-human happened to forward it to.
-
-**A label.** `LinkGrant.label` in `store.rs` exists and is never written; it
-is marked legacy. Make it live: the share change accepts `label` inside
-`link` beside `role` and `until`, `komodoc share --link <role>` takes
-`--label`, `format_role_row` prints it, and the dialog gets a label input
-beside the expiry and shows it on the row. A label survives a rotation of the
-same role and is dropped on revoke. A document holds one link per role, so a
-label tells the roles' links apart by what they are for -- "CI" on the edit
-link, "reviewer" on the comment link -- and is a memo, not a way to have two
-comment links; several links per role is a different model and is not
-proposed.
-
-**A rate budget per link.** `Room::rate_ok` keys on the caller's address
-alone. When a request carries a link key, the rate key becomes the link's
-hash instead, so a link forwarded to a department shares one budget and a
-script has its own rather than borrowing its host's. A `budget` on
-`LinkGrant`, comments per hour, empty for the address limit, set through the
-same share change and CLI flag as the label. Tests: two addresses on one
-link share a budget, the budget resets on the hour, and a link past its
-budget still reads.
-
-## A front page
-
-`--no-listing` exists and today it hides the reserved examples from anyone
-who holds nothing on them; nothing else was ever listed to strangers. If a
-front page for other people's documents is wanted, it is a per-document
-opt-in that publishes the read link -- a checkbox in the share pane, shown
-only where the deployment allows listing -- and a route that answers without
-a publisher. It is not a third kind of access, since reading is a link's to
-give and the front page would hand that link out.
-
-## Open questions still open
-
-- **A `--link-lifetime` ceiling.** Links expire at six months by default,
-  `--until never` is allowed for an owner who wants none, and the read link
-  `publish` mints has none. No operator ceiling was added; there is nothing
-  yet asking for one.
-- **The read link `publish` mints.** It is the least a link can be, which is
-  why it is the one minted unasked. A deployment whose whole purpose is
-  collecting comments may want `publish` to mint the comment link instead,
-  or as well; the hint `publish` prints says how to mint one, and that is the
-  answer until somebody asks for the other.
 
 ## What it is not
 

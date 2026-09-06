@@ -249,6 +249,14 @@ enum Command {
         /// expiry
         #[arg(long, value_name = "DURATION")]
         until: Option<String>,
+        /// A memo describing what this role's link is used for, such as 'CI'.
+        /// It survives later rotations unless another label is supplied
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
+        /// Comment actions this link may make per clock hour. Omit to use the
+        /// deployment's ordinary comment limit
+        #[arg(long, value_name = "COUNT")]
+        budget: Option<i64>,
         /// Turn off a role's link ('read', 'comment', or 'edit'), or take
         /// away a legacy login
         #[arg(long, value_name = "ROLE")]
@@ -401,6 +409,8 @@ pub async fn main() {
             id,
             link,
             until,
+            label,
+            budget,
             revoke,
             server,
         } => {
@@ -409,6 +419,8 @@ pub async fn main() {
                 server.unwrap_or_default(),
                 link.unwrap_or_default(),
                 until.unwrap_or_default(),
+                label,
+                budget,
                 revoke.unwrap_or_default(),
             )
             .await

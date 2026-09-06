@@ -152,9 +152,10 @@ impl Grant {
 /// link at all. `key` is the key itself, kept so the owner can copy the link
 /// again rather than only ever seeing it once; a link written before this
 /// field existed has an empty one and cannot be shown again, which is what
-/// "legacy link, reset to get a new one" means. `label` is legacy too: a new
-/// link is never given one, but an old one still deserialises with whatever
-/// it was labelled.
+/// "legacy link, reset to get a new one" means. `label` is the owner's memo
+/// for the link, and still deserialises labels written by older versions.
+/// `budget` is the number of comment actions this link may make in one clock
+/// hour; absent uses the deployment's ordinary numeric comment limit.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LinkGrant {
     pub hash: String,
@@ -163,6 +164,8 @@ pub struct LinkGrant {
     pub key: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<i64>,
     #[serde(default)]
     pub since: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -315,13 +318,19 @@ impl IndexEntry {
     /// not expired. Revoking is deleting the row; an expired link answers the
     /// same way a revoked one does, as no link at all.
     pub fn link_role(&self, link_hash: &str, now: i64) -> Option<Role> {
+        self.live_link(link_hash, now).map(LinkGrant::granted)
+    }
+
+    /// The live link matching a presented digest. Keeping this lookup beside
+    /// `link_role` makes link metadata such as its rate budget come from the
+    /// same row that grants access.
+    pub fn live_link(&self, link_hash: &str, now: i64) -> Option<&LinkGrant> {
         if link_hash.is_empty() {
             return None;
         }
         self.links
             .iter()
             .find(|link| link.hash == link_hash && link.live_at(now))
-            .map(LinkGrant::granted)
     }
 
     /// The link that carries a role, live or not. The dead one still matters:

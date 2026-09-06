@@ -1181,6 +1181,8 @@ pub async fn share_document(
     server_flag: String,
     link: String,
     until: String,
+    label: Option<String>,
+    budget: Option<i64>,
     revoke: String,
 ) {
     let server = server_from(&server_flag);
@@ -1192,9 +1194,12 @@ pub async fn share_document(
     if !link.is_empty() {
         let role = parse_link_role(&link).unwrap_or_else(|err| die(err));
         minted_role = Some(role);
-        change["link"] = json!({"role": role, "until": until});
-    } else if !until.is_empty() {
-        die("--until describes a link; pass --link read, --link comment, or --link edit");
+        change["link"] = json!({"role": role, "until": until, "budget": budget});
+        if let Some(label) = label {
+            change["link"]["label"] = json!(label);
+        }
+    } else if !until.is_empty() || label.is_some() || budget.is_some() {
+        die("--until, --label and --budget describe a link; pass --link read, --link comment, or --link edit");
     }
     if !revoke.is_empty() {
         change["revoke"] = json!(revoke);
@@ -1267,7 +1272,18 @@ pub(crate) fn format_role_row(role: &str, link: &Value, server: &str) -> String 
     } else {
         format!("expires {until}")
     };
-    format!("  {role:<8} {server}{url}   {state}")
+    let label = text(link, "label");
+    let label = if label.is_empty() {
+        String::new()
+    } else {
+        format!(" [{label}]")
+    };
+    let budget = link
+        .get("budget")
+        .and_then(Value::as_i64)
+        .map(|budget| format!("   {budget} comments/hour"))
+        .unwrap_or_default();
+    format!("  {role:<8}{label} {server}{url}   {state}{budget}")
 }
 
 /// The full listing `komodoc share` with no flags prints, one line per entry:

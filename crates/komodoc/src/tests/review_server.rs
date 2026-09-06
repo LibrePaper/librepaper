@@ -475,6 +475,86 @@ async fn review_revoking_the_read_link_closes_open_sockets() {
     expect_close(&mut socket).await;
 }
 
+/// Link metadata must be retired even when the account behind the socket can
+/// still read and comment through a legacy named grant. Otherwise the socket
+/// would keep charging actions to a revoked link's cached budget forever.
+#[tokio::test]
+async fn revoking_a_link_closes_a_named_commenters_keyed_socket() {
+    let server = test_server_with(
+        Configuration::default(),
+        crate::auth::Policy::parse("any"),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let (status, entry) = post_as(
+        &session_as("alice"),
+        &server.url,
+        "/api/documents",
+        json!({"title": "Doc", "source": "hello", "source_format": "markdown"}),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let slug = text(&entry, "slug");
+    let key = text(&entry, "share_url")
+        .rsplit("#k=")
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    server
+        .instance
+        .store
+        .modify(&slug, |entry| {
+            entry.commenters.push(crate::store::Grant {
+                id: "github:bob".into(),
+                login: "bob".into(),
+                since: crate::clock::timestamp(),
+                name: "Bob".into(),
+            });
+            Ok(())
+        })
+        .await
+        .expect("the legacy grant is recorded");
+
+    let mut socket = dial_websocket_with(
+        &server.url,
+        &slug,
+        &format!(
+            "Cookie: {}\r\n{}: {key}\r\n",
+            session_as("bob"),
+            crate::server::LINK_HEADER
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(socket.read().await["type"], "hello");
+
+    assert_eq!(
+        post_as(
+            &session_as("alice"),
+            &server.url,
+            &format!("/api/documents/{slug}/share"),
+            json!({"revoke": "reader"})
+        )
+        .await
+        .0,
+        200
+    );
+    // Bob remains a commenter, but only a freshly authorized unkeyed socket
+    // may now act as one.
+    assert_eq!(
+        get_json_as(
+            &session_as("bob"),
+            &server.url,
+            &format!("/api/documents/{slug}")
+        )
+        .await
+        .0,
+        200
+    );
+    expect_close(&mut socket).await;
+}
+
 /// R01: transferring a document away must close the former owner's own
 /// socket -- a transfer leaves them named on the document only if they
 /// happen to also hold a grant, so their rung drops from owner to whatever a

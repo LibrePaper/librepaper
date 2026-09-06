@@ -590,18 +590,18 @@ async fn browser_submission_retries_are_idempotent_and_author_scoped() {
         ..Default::default()
     };
     let (first, ok) = room
-        .apply(request.clone(), "", "visitor:alice", "", false)
+        .apply(request.clone(), "", "visitor:alice", "", None, false)
         .await;
     assert!(ok);
     assert_eq!(first["comment"]["id"], request.temp_id);
     let (again, ok) = room
-        .apply(request.clone(), "", "visitor:alice", "", false)
+        .apply(request.clone(), "", "visitor:alice", "", None, false)
         .await;
     assert!(ok);
     assert_eq!(first, again);
     assert_eq!(room.counts().await.0, 1);
     let (_, ok) = room
-        .apply(request.clone(), "", "visitor:bob", "", true)
+        .apply(request.clone(), "", "visitor:bob", "", None, true)
         .await;
     assert!(
         !ok,
@@ -615,10 +615,12 @@ async fn browser_submission_retries_are_idempotent_and_author_scoped() {
         ..Default::default()
     };
     let (first, ok) = room
-        .apply(reply.clone(), "", "visitor:alice", "", false)
+        .apply(reply.clone(), "", "visitor:alice", "", None, false)
         .await;
     assert!(ok);
-    let (again, ok) = room.apply(reply, "", "visitor:alice", "", false).await;
+    let (again, ok) = room
+        .apply(reply, "", "visitor:alice", "", None, false)
+        .await;
     assert!(ok);
     assert_eq!(first, again);
 }

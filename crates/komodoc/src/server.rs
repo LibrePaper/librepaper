@@ -164,14 +164,17 @@ pub struct Server {
 /// One live socket's handshake inputs, kept so `reauthorize` can rerun
 /// `handle_socket`'s authorization exactly as it ran at attach: the same
 /// headers, the same query string (the link key a browser cannot send as a
-/// header rides here), and the rung -- "may edit" -- that authorization
-/// produced, so a later change to it can be told apart from no change at all.
+/// header rides here), and the resolved role/link metadata that authorization
+/// produced, so a later change to any of it can be told apart from no change.
+#[derive(Clone)]
 struct Connection {
     slug: String,
     headers: HeaderMap,
     arrival: Arrival,
     query: Option<String>,
     is_owner: bool,
+    link: String,
+    comment_budget: Option<i64>,
     tx: Sender,
 }
 
@@ -194,6 +197,7 @@ fn frame_claim(slug: &str, until: i64) -> String {
 /// review has an end, and a link that lives for ever is a leak waiting for a
 /// forwarded email; the dialog offers to renew, which mints a new key.
 pub const LINK_DEFAULT_SECONDS: i64 = 180 * 24 * 3600;
+const MAX_LINK_LABEL: usize = 80;
 
 /// Everything a request says about who is asking, resolved once: the account,
 /// the key their uploads belong to, the link they came in on, and the role
@@ -206,6 +210,10 @@ pub struct Viewer {
     /// is what a comment records as `via`, so a blind reviewer's comments can
     /// be told apart without anyone having signed anything.
     pub link: String,
+    /// A live link's own hourly comment ceiling. The rate key is the link
+    /// digest whenever `link` is present; absent uses the deployment's
+    /// ordinary comment ceiling for that key.
+    pub comment_budget: Option<i64>,
     pub role: Role,
 }
 
@@ -468,18 +476,20 @@ impl Server {
     ) -> Viewer {
         let id = self.whoami(headers, arrival).await;
         let key = self.owner(headers, arrival, &id);
-        let link = self.link_hash(headers, query);
-        let role = entry.role_of(
-            &key,
-            &id.id,
-            &link,
-            self.ceiling_for(&id),
-            crate::clock::now_unix(),
-        );
+        let presented_link = self.link_hash(headers, query);
+        let now = crate::clock::now_unix();
+        let role = entry.role_of(&key, &id.id, &presented_link, self.ceiling_for(&id), now);
+        // Only a live row supplies rate metadata or a `via` attribution. A
+        // signed-in caller cannot attach an invented key merely to obtain a
+        // fresh rate bucket.
+        let link = entry.live_link(&presented_link, now);
+        let comment_budget = link.and_then(|grant| grant.budget);
+        let link = link.map(|grant| grant.hash.clone()).unwrap_or_default();
         Viewer {
             id,
             key,
             link,
+            comment_budget,
             role,
         }
     }
@@ -646,8 +656,15 @@ impl Server {
         // Which link the remark came in on, so an owner can tell reviewer two
         // from reviewer three without either having signed anything. Empty for
         // a commenter by name.
-        room.apply(incoming, address, author, &who.link, is_owner)
-            .await
+        room.apply(
+            incoming,
+            address,
+            author,
+            &who.link,
+            who.comment_budget,
+            is_owner,
+        )
+        .await
     }
 }
 
@@ -1238,6 +1255,8 @@ impl Server {
                 arrival,
                 query,
                 is_owner,
+                link: who.link.clone(),
+                comment_budget: who.comment_budget,
                 tx: tx.clone(),
             },
         );
@@ -1515,30 +1534,29 @@ impl Server {
         // Snapshot the affected connections and drop the registry lock before
         // awaiting anything, so a slow lookup here never blocks another
         // socket attaching or detaching.
-        let snapshot: Vec<(u64, HeaderMap, Arrival, Option<String>, bool, Sender)> = {
+        let snapshot: Vec<(u64, Connection)> = {
             let connections = self.connections.lock().await;
             connections
                 .iter()
                 .filter(|(_, connection)| connection.slug == slug)
-                .map(|(id, connection)| {
-                    (
-                        *id,
-                        connection.headers.clone(),
-                        connection.arrival.clone(),
-                        connection.query.clone(),
-                        connection.is_owner,
-                        connection.tx.clone(),
-                    )
-                })
+                .map(|(id, connection)| (*id, connection.clone()))
                 .collect()
         };
-        for (socket_id, headers, arrival, query, was_owner, tx) in snapshot {
+        for (socket_id, connection) in snapshot {
             let allowed = match &entry {
                 Some(entry) => {
                     let who = self
-                        .viewer(entry, &headers, &arrival, query.as_deref())
+                        .viewer(
+                            entry,
+                            &connection.headers,
+                            &connection.arrival,
+                            connection.query.as_deref(),
+                        )
                         .await;
-                    self.may_read(entry, &who) && who.at_least(Role::Editor) == was_owner
+                    self.may_read(entry, &who)
+                        && who.at_least(Role::Editor) == connection.is_owner
+                        && who.link == connection.link
+                        && who.comment_budget == connection.comment_budget
                 }
                 // The document itself is gone: nothing left on it to read.
                 None => false,
@@ -1551,7 +1569,8 @@ impl Server {
             // dropped from the room instead, which stops every broadcast to
             // it at once, and `run_socket`'s housekeeping cuts the transport
             // within the second.
-            if tx
+            if connection
+                .tx
                 .try_send(Outgoing::Close("access changed; reconnect"))
                 .is_err()
             {
@@ -3138,6 +3157,16 @@ impl Server {
                 Ok(until) => until,
                 Err(message) => return write_json(400, &json!({"error": message})),
             };
+            if wanted.budget.is_some_and(|budget| budget < 0) {
+                return write_json(
+                    400,
+                    &json!({"error": "a link budget is a non-negative number of comments per hour"}),
+                );
+            }
+            let label = wanted
+                .label
+                .as_deref()
+                .map(|label| clean(label, MAX_LINK_LABEL).trim().to_string());
             let key = mint_link_key();
             minted = Some((
                 key.clone(),
@@ -3147,7 +3176,8 @@ impl Server {
                     key: key.clone(),
                     since: crate::clock::timestamp(),
                     until,
-                    ..Default::default()
+                    label: label.unwrap_or_default(),
+                    budget: wanted.budget,
                 },
             ));
         }
@@ -3172,7 +3202,21 @@ impl Server {
                     entry.prune_guests(now);
                 }
                 if let Some((_, link)) = &minted {
-                    entry.set_link(link.clone());
+                    let mut link = link.clone();
+                    // CLI callers may rotate a key without repeating its
+                    // memo. An explicit empty label clears it; an omitted one
+                    // preserves it. A missing budget returns to the ordinary
+                    // deployment limit.
+                    if let Some(existing) = entry.link_for(link.granted()) {
+                        if asked
+                            .link
+                            .as_ref()
+                            .is_some_and(|wanted| wanted.label.is_none())
+                        {
+                            link.label.clone_from(&existing.label);
+                        }
+                    }
+                    entry.set_link(link);
                     // A rotated link's old hash names nothing any more, so a
                     // guest recorded against it is not a guest of this
                     // document's link any longer either.
@@ -3245,6 +3289,8 @@ impl Server {
                 "url": url,
                 "since": link.since,
                 "until": link.until,
+                "label": link.label,
+                "budget": link.budget,
                 "expired": !link.live_at(now),
             })
         };
@@ -4032,6 +4078,14 @@ struct LinkRequest {
     /// expire, or absent for the default.
     #[serde(default)]
     until: String,
+    /// A memo for the owner, not an identity or an additional grant. Omitted
+    /// on rotation preserves the current label; an empty string clears it.
+    #[serde(default)]
+    label: Option<String>,
+    /// Comment actions per clock hour for this link. Omitted uses the
+    /// deployment's ordinary comment limit.
+    #[serde(default)]
+    budget: Option<i64>,
 }
 
 /// The word a link's role or a revoke may be spelled with. The document
