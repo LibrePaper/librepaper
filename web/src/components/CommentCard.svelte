@@ -1,4 +1,6 @@
 <script>
+  import { tick } from "svelte";
+  import IconButton from "./IconButton.svelte";
   import Row from "./layout/Row.svelte";
 
   // One annotation, and everything said about it.
@@ -30,6 +32,7 @@
   let quoteOpen = $state(false);
   let replying = $state(false);
   let replyBody = $state("");
+  let replyField = $state(null);
   const replyName = $derived(identity || commentingAs);
 
   const collapsed = $derived(Boolean(comment.resolved) && !expanded);
@@ -77,6 +80,7 @@
     if (!replyBody.trim()) return;
     onreply?.(comment, replyBody, replyName);
     replyBody = "";
+    replying = false;
   }
 </script>
 
@@ -186,38 +190,36 @@
   {/if}
 
   <Row gap={1} justify="end">
-    <button
-      type="button"
-      class="btn btn-sm preset-outlined-surface-300-700"
+    <IconButton
+      icon="check"
+      label={comment.resolved ? "Reopen" : "Resolve"}
+      pressed={Boolean(comment.resolved)}
       onclick={(e) => {
         e.stopPropagation();
         expanded = false;
         onresolve?.(comment);
       }}
-    >
-      {comment.resolved ? "Reopen" : "Resolve"}
-    </button>
-    <button
-      type="button"
-      class="btn btn-sm preset-outlined-surface-300-700"
-      onclick={(e) => {
+    />
+    <IconButton
+      icon="reply"
+      label="Reply"
+      onclick={async (e) => {
         e.stopPropagation();
-        replying = !replying;
+        replying = true;
+        await tick();
+        replyField?.focus();
       }}
-    >
-      Reply
-    </button>
+    />
     {#if deletable}
-      <button
-        type="button"
-        class="btn btn-sm preset-outlined-error-500"
+      <IconButton
+        icon="trash"
+        label="Delete"
+        colour="text-error-500"
         onclick={(e) => {
           e.stopPropagation();
           ondelete?.(comment);
         }}
-      >
-        Delete
-      </button>
+      />
     {/if}
   </Row>
 
@@ -226,20 +228,27 @@
       {#if !identity}
         <p class="panel-meta">replying as {commentingAs}</p>
       {/if}
-      <!-- The box exists because somebody just clicked Reply, so the caret
-           belongs in it. The rule is about a page that takes the focus on
-           load, which this is not. -->
-      <!-- svelte-ignore a11y_autofocus -->
       <textarea
         class="textarea"
+        aria-label="Reply"
         placeholder="Reply"
         rows="2"
         maxlength="5000"
         required
-        autofocus
+        bind:this={replyField}
         bind:value={replyBody}
       ></textarea>
-      <button type="submit" class="btn btn-sm preset-filled-primary-500 self-end">Add reply</button>
+      <Row gap={2} justify="end">
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-300-700"
+          onclick={() => {
+            replyBody = "";
+            replying = false;
+          }}
+        >Cancel</button>
+        <button type="submit" class="btn btn-sm preset-filled-primary-500">Submit</button>
+      </Row>
     </form>
   {/if}
 </article>

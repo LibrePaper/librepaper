@@ -91,6 +91,7 @@
       ["path", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"],
     ],
     check: [["path", "M20 6 9 17l-5-5"]],
+    reply: [["path", "M7 17 2 12l5-5"], ["path", "M2 12h12a8 8 0 0 1 8 8"]],
     // Lucide's history, for the timeline.
     history: [
       ["path", "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"],
