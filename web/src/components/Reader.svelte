@@ -350,7 +350,13 @@
       // server had a say; the list is re-fetched so the optimistic change goes
       // back out.
       if (event.comment_id) {
-        fetch(`/api/documents/${SLUG}/comments`)
+        // The same headers every other call carries. Reading comments does not
+        // ask for the marker, but it does ask who is reading: without the link
+        // key a reader who arrived by one is a stranger here, and the catch
+        // below would swallow the 404 and leave the list uncorrected.
+        fetch(`/api/documents/${SLUG}/comments`, {
+          headers: { ...SHELL_HEADERS, ...keyHeaders(KEY) },
+        })
           .then((response) => response.json())
           .then((data) => receive({ type: "hello", comments: data.comments }))
           .catch(() => {});
