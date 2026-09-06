@@ -133,6 +133,7 @@ window.sharingSetup = async () => {
     owner: { name: 'Alice', provider: 'github' },
     links: { reader: null, commenter: null, editor: null },
     edit_needs_signin: false, comment_needs_signin: false };
+  window.expireShareLink = (role) => { snapshot.links[role].expired = true; };
   window.fetch = async (_url, options = {}) => {
     if (options.method !== 'POST') return new Response(JSON.stringify(snapshot));
     const body = JSON.parse(options.body);
@@ -161,47 +162,62 @@ window.sharingSetup = async () => {
   await flush();
 };
 window.sharingCheck = async () => {
-  const visibleButton = (text) => [...document.querySelectorAll('button')].find((element) => element.textContent.trim() === text && element.getClientRects().length);
-  check(document.querySelector('[aria-label="General access"]').value === 'private', 'restricted access shown');
-  const copy = visibleButton('Copy link');
-  const rect = copy.getBoundingClientRect();
-  check(rect.top >= 0 && rect.bottom <= innerHeight, 'copy action visible on short viewport');
-  copy.click(); await flush(); check(window.copiedLink.endsWith('/docs/paper'), 'copies document link');
-  const editSection = document.querySelector('[aria-label="Edit link expiry"]').closest('section');
-  [...editSection.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Create').click();
-  await flush();
-  const link = document.querySelector('[aria-label="Edit link"]');
-  check(link?.value.includes('#k='), 'new access link available');
-  visibleButton('Copy').click(); await flush(); check(window.copiedLink === link.value, 'copies access token link');
-  const editLinkSection = link.closest('section');
-  [...editLinkSection.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Turn off').click();
-  await flush();
-  check(!document.querySelector('[aria-label="Edit link"]'), 'revoked key removed');
-  const visibility = document.querySelector('[aria-label="General access"]');
-  visibility.value = 'listed'; visibility.dispatchEvent(new Event('change', { bubbles: true })); await flush();
-  check(visibility.value === 'private', 'refused access change restores displayed setting');
-  visibleButton('Done').click(); await flush();
+  const access = document.querySelector('[aria-label="General access"]');
+  check(access.value === 'private', 'restricted access shown');
+  check(!button('Copy Read link'), 'private document needs a read link before copying');
+  check(!document.querySelector('input[readonly]'), 'raw URLs are hidden');
+  button('Create Read link').click(); await flush();
+  button('Copy Read link').click(); await flush();
+  check(window.copiedLink.includes('#k='), 'private read link grants access');
+  button('Create Edit link').click(); await flush();
+  check(button('Copy Edit link'), 'new edit link can be copied');
+  button('Copy Edit link').click(); await flush();
+  check(window.copiedLink.includes('#k='), 'copies access token link');
+  window.expireShareLink('editor');
+  window.testShare.$set({ open: false }); await flush();
+  window.testShare.$set({ open: true }); await flush();
+  check(button('Replace Edit link'), 'expired links offer replacement');
+  button('Replace Edit link').click(); await flush();
+  check(button('Copy Edit link'), 'replacement link can be copied');
+  button('Revoke Edit link').click(); await flush();
+  check(!button('Copy Edit link') && button('Create Edit link'), 'revoking restores link creation');
+  const currentAccess = document.querySelector('[aria-label="General access"]');
+  currentAccess.value = 'link'; currentAccess.dispatchEvent(new Event('change', { bubbles: true })); await flush();
+  button('Copy Read link').click(); await flush();
+  check(window.copiedLink.endsWith('/docs/paper'), 'public reading uses canonical URL');
+  currentAccess.value = 'listed'; currentAccess.dispatchEvent(new Event('change', { bubbles: true })); await flush();
+  check(currentAccess.value === 'link', 'refused access change restores displayed setting');
+  window.testShare.$set({ open: false }); await flush();
   const status = document.querySelector('.nav-status').getBoundingClientRect();
   const actions = document.querySelector('.nav-actions').getBoundingClientRect();
-  check(status.right <= actions.left, 'warnings do not split or overlap action icons');
-  check(!document.querySelector('.nav-actions .badge'), 'status outside action group');
+  check(status.right <= actions.left, 'warnings do not overlap action icons');
   return true;
 };
 
 window.shareSidebarCheck = async () => {
-  window.testShare.$set({ open: true, inline: true });
+  window.testShare.$set({ open: true, inline: true, onclose: () => window.testShare.$set({ open: false }) });
   await flush();
   const panel = document.querySelector('.share-sidebar');
   check(panel && !panel.closest('[role="dialog"]'), 'sharing opens inside a panel');
-  panel.style.width = '192px';
+  panel.style.width = '384px';
   panel.style.height = '320px';
   await flush();
-  check(panel.scrollWidth <= panel.clientWidth + 1, 'sharing controls fit the minimum sidebar width');
+  check(panel.scrollWidth <= panel.clientWidth + 1, 'sharing controls fit the fixed sidebar width');
   check(panel.scrollHeight > panel.clientHeight, 'long sharing settings scroll in the panel');
-  const copy = [...panel.querySelectorAll('button')].find((item) => item.textContent.trim() === 'Copy link');
-  copy.click(); await flush();
-  check(window.copiedLink.endsWith('/docs/paper'), 'sidebar copies the document link');
-  check(panel.querySelector('[aria-label="General access"]'), 'sidebar exposes access settings');
+  panel.style.width = '192px'; await flush();
+  check(panel.scrollWidth <= panel.clientWidth + 1, 'controls wrap when workspace is narrow');
+  button('Copy Read link').click(); await flush();
+  check(window.copiedLink.endsWith('/docs/paper'), 'sidebar copies the read link');
+  check(!panel.textContent.includes('Document link'), 'no duplicate document link');
+  check(!panel.querySelector('input[readonly]'), 'sidebar hides raw URL fields');
+  const writeClipboard = navigator.clipboard.writeText;
+  navigator.clipboard.writeText = async () => { throw new Error('blocked'); };
+  button('Copy Read link').click(); await flush();
+  check(button('Link to copy manually')?.value.endsWith('/docs/paper'), 'blocked clipboard exposes selectable fallback');
+  navigator.clipboard.writeText = writeClipboard;
+  button('Copy Read link').click(); await flush();
+  check(!button('Link to copy manually'), 'successful copy hides manual fallback');
+  check(button('Close sharing'), 'sidebar offers close control');
   return true;
 };
 
@@ -237,7 +253,7 @@ try {
       return;
     }
     response.setHeader("Content-Type", "text/html");
-    response.end('<link rel="stylesheet" href="/files-check.css"><body style="width:340px;height:720px"><script type="module" src="/files-check.js"></script></body>');
+    response.end('<!doctype html><html data-theme="komodoc"><head><link rel="stylesheet" href="/files-check.css"></head><body style="width:340px;height:720px"><script type="module" src="/files-check.js"></script></body></html>');
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -331,6 +347,12 @@ try {
   await send("Emulation.setDeviceMetricsOverride", { width: 780, height: 437, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate("sharingCheck()"), true);
   assert.equal(await evaluate("shareSidebarCheck()"), true);
+  if (process.env.SHARE_SCREENSHOT) {
+    await send("Emulation.setDeviceMetricsOverride", { width: 900, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate("document.querySelector('.share-sidebar').style.cssText = 'width:384px;height:800px;background:var(--color-sidebar)' ");
+    const shot = await send("Page.captureScreenshot", { format: "png" });
+    writeFileSync(process.env.SHARE_SCREENSHOT, Buffer.from(shot.result.data, "base64"));
+  }
   console.log("files-browser: creation, nesting, rename, keyboard, drag/drop, move dialog, duplication, delete, uploads, collisions, read-only, sharing and navbar passed");
 } finally {
   socket?.close();

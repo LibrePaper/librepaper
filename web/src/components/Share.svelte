@@ -2,9 +2,9 @@
   import { onDestroy } from "svelte";
   import Modal from "./Modal.svelte";
   import { getPrivate, post } from "../lib/api.js";
-  import { linkFor } from "../lib/storage.js";
+  import IconButton from "./IconButton.svelte";
 
-  let { open = $bindable(false), slug, onvisibility, inline = false } = $props();
+  let { open = $bindable(false), slug, onvisibility, onclose, inline = false } = $props();
   let sharing = $state(null);
   let busy = $state(false);
   let loading = $state(false);
@@ -12,6 +12,7 @@
   let feedback = $state("");
   let generation = 0;
   let copied = $state("");
+  let copyFallback = $state("");
   let copyTimer;
   onDestroy(() => clearTimeout(copyTimer));
   // The expiry chosen for a link that does not exist yet, kept per role so
@@ -24,13 +25,13 @@
     { id: "editor", label: "Edit" },
   ];
   const access = {
-    private: { label: "Only people with a link", detail: "Only people who hold a live link may open this document." },
-    link: { label: "Anyone with the URL", detail: "Anyone with the document URL can open it." },
-    listed: { label: "Anyone, and listed on the front page", detail: "Anyone can find this document on the project list and open it." },
+    private: { label: "Private", detail: "Only people who hold a live link may open this document." },
+    link: { label: "Anyone with the link", detail: "Anyone with the document URL can open it." },
+    listed: { label: "Publicly listed", detail: "Anyone can find this document on the project list and open it." },
   };
   const accessDetail = $derived(access[sharing?.visibility]?.detail || "");
   const bareUrl = $derived(new URL(`/docs/${slug}`, location.origin).href);
-  const dateOf = (iso) => (iso || "").slice(0, 10);
+  const dateOf = (iso) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   // The server answers a path, the way it does for a document's own url, so
   // the link handed to somebody is completed against this origin here.
   const fullUrl = (path) => new URL(path, location.origin).href;
@@ -38,6 +39,7 @@
   async function load(documentSlug) {
     const request = ++generation;
     loading = true;
+    copyFallback = "";
     error = "";
     feedback = "";
     try {
@@ -69,6 +71,7 @@
     try {
       const answer = await post(`/api/documents/${documentSlug}/share`, body);
       if (documentSlug !== slug || request !== generation) return false;
+      copyFallback = "";
       const previous = sharing.visibility;
       sharing = answer;
       if (answer.visibility !== previous) onvisibility?.(answer.visibility);
@@ -92,20 +95,21 @@
       clearTimeout(copyTimer);
       copyTimer = setTimeout(() => (copied = ""), 1800);
       feedback = label;
+      copyFallback = "";
       error = "";
-    } catch { error = "Copy was blocked. Select the link field and copy it manually."; }
+    } catch { copyFallback = value; error = "Copy was blocked. Select this link and copy it manually."; }
   }
 </script>
 
 {#snippet content()}
-  <div class="share-panel space-y-5">
+  <div class="share-panel space-y-6">
     {#if loading}
       <p class="text-surface-600-400" role="status">Loading sharing settings…</p>
     {:else if sharing}
-      <section class="share-access space-y-2" aria-labelledby="access-heading">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <h3 id="access-heading" class="font-semibold">General access</h3>
-          <select class="select share-field w-auto" aria-label="General access" value={sharing.visibility} disabled={busy}
+      <section class="share-section space-y-2" aria-labelledby="access-heading">
+        <h3 id="access-heading" class="font-semibold">General access</h3>
+        <div>
+          <select class="select share-select w-full" aria-label="General access" value={sharing.visibility} disabled={busy}
             onchange={async (event) => {
               const field = event.currentTarget;
               if (!await change({ visibility: field.value }, "General access updated.")) field.value = sharing.visibility;
@@ -115,44 +119,43 @@
             {#if sharing.listing}<option value="listed">{access.listed.label}</option>{/if}
           </select>
         </div>
-        <p class="text-surface-600-400">{accessDetail}</p>
+        {#if sharing.visibility !== "link"}<p class="text-surface-400-600 text-xs">{accessDetail}</p>{/if}
       </section>
 
-      <div class="space-y-4">
+      <div class="share-links space-y-6" aria-labelledby="links-heading">
+        <h3 id="links-heading" class="font-semibold">Share links</h3>
         {#each ROLES as role (role.id)}
           {@const link = sharing.links?.[role.id] || null}
           {@const openToAll = role.id === "reader" && sharing.visibility !== "private"}
-          <section class="share-access space-y-2" aria-labelledby="share-{role.id}-heading">
-            <h3 id="share-{role.id}-heading" class="font-medium">{role.label}</h3>
+          {@const description = role.id === "reader" ? "Anyone with this link can view the document." : role.id === "commenter" ? "Anyone with this link can leave comments." : "Anyone with this link can edit the document."}
+          <section class="share-section space-y-2" aria-labelledby="share-{role.id}-heading">
+            <h4 id="share-{role.id}-heading" class="font-semibold">{role.label}</h4>
+            <p class="text-surface-600-400">{description}</p>
             {#if openToAll}
-              <div class="flex gap-2">
-                <input class="input share-field min-w-0 flex-1" readonly value={bareUrl} aria-label="{role.label} link" onclick={(event) => event.currentTarget.select()} />
-                <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={busy} onclick={() => copy(bareUrl)}>{copied === bareUrl ? "Copied" : "Copy"}</button>
+              <div class="flex items-center justify-end gap-3">
+                <button type="button" class="btn btn-sm text-primary-500" disabled={busy} aria-label="Copy {role.label} link" onclick={() => copy(bareUrl, "Read link copied.")}>{copied === bareUrl ? "Copied" : "Copy link"}</button>
               </div>
-              <p class="text-surface-600-400">Everyone with the URL can read.</p>
-            {:else if link}
-              {#if link.key}
-                <div class="flex gap-2">
-                  <input class="input share-field min-w-0 flex-1" readonly value={fullUrl(link.url)} aria-label="{role.label} link" onclick={(event) => event.currentTarget.select()} />
-                  <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={busy} onclick={() => copy(fullUrl(link.url))}>{copied === fullUrl(link.url) ? "Copied" : "Copy"}</button>
+            {:else if link?.key && !link.expired}
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <p class="text-surface-600-400 min-w-0 truncate">{link.until ? `Expires ${dateOf(link.until)}` : "No expiry"}</p>
+                <div class="flex shrink-0 gap-2">
+                  <button type="button" class="btn btn-sm text-primary-500" disabled={busy} aria-label="Copy {role.label} link" onclick={() => copy(fullUrl(link.url), role.label + " link copied.")}>{copied === fullUrl(link.url) ? "Copied" : "Copy link"}</button>
+                  <button type="button" class="btn btn-sm" disabled={busy} aria-label="Revoke {role.label} link" onclick={() => revokeLink(role.id)}>Revoke</button>
                 </div>
-                <p class="text-surface-600-400">{link.expired ? "Expired" : link.until ? `Expires ${dateOf(link.until)}` : "No expiry"}</p>
-              {:else}
-                <p class="text-surface-600-400">Legacy link, reset to get a new one.</p>
-              {/if}
-              <div class="flex gap-2">
-                <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={busy} onclick={() => resetLink(role.id)}>Reset</button>
-                <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={busy} onclick={() => revokeLink(role.id)}>Turn off</button>
               </div>
             {:else}
-              <div class="flex flex-wrap items-center gap-2">
-                <select class="select share-field w-auto" aria-label="{role.label} link expiry" bind:value={until[role.id]} disabled={busy}>
+              {#if link}<p class="text-surface-600-400">{link.expired ? "This link has expired." : "This is an older link format."}</p>{/if}
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <label class="flex flex-wrap items-center gap-2 text-surface-400-600 text-xs">Expires in
+                  <select class="select share-select w-auto" aria-label="{role.label} link expiry" bind:value={until[role.id]} disabled={busy}>
                   <option value="7d">7 days</option>
                   <option value="30d">30 days</option>
                   <option value="180d">6 months</option>
                   <option value="never">Never</option>
-                </select>
-                <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={busy} onclick={() => createLink(role.id)}>Create</button>
+                  </select>
+                </label>
+                <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={busy} aria-label="{link ? 'Replace' : 'Create'} {role.label} link" onclick={() => link ? resetLink(role.id) : createLink(role.id)}>{link ? "Replace link" : "Create link"}</button>
+                {#if link}<button type="button" class="btn btn-sm" disabled={busy} aria-label="Revoke {role.label} link" onclick={() => revokeLink(role.id)}>Revoke</button>{/if}
               </div>
             {/if}
             {#if role.id === "editor" && sharing.edit_needs_signin}<p class="text-surface-600-400">Editors must sign in.</p>{/if}
@@ -162,7 +165,7 @@
       </div>
 
       {#if sharing.legacy}
-        <section class="share-access space-y-2" aria-labelledby="legacy-heading">
+        <section class="share-section space-y-2" aria-labelledby="legacy-heading">
           <h3 id="legacy-heading" class="font-semibold">People (legacy)</h3>
           <div class="share-people" aria-label="Legacy people with access">
             {#each [...(sharing.legacy.editors || []).map((person) => ({ ...person, role: "Can edit" })), ...(sharing.legacy.commenters || []).map((person) => ({ ...person, role: "Can comment" }))] as person}
@@ -181,36 +184,35 @@
       <p class="text-error-600-400" role="alert">{error}</p>
       {#if !sharing && !loading}<button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => load(slug)}>Try again</button>{/if}
     {/if}
+    {#if copyFallback}
+      <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label="Link to copy manually" value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>
+    {/if}
     {#if feedback}<p class="text-surface-600-400" role="status">{feedback}</p>{/if}
   </div>
 {/snippet}
 
 {#snippet footer()}
-    <div class="share-panel w-full space-y-2 border-t border-surface-200-800 pt-3">
-      <label for="share-document-link" class="font-medium">Document link</label>
-      <div class="flex gap-2">
-        <input id="share-document-link" class="input share-field min-w-0 flex-1" readonly value={linkFor(slug)} onclick={(event) => event.currentTarget.select()} />
-        <button type="button" class="btn btn-sm preset-filled-primary-500" onclick={() => copy(linkFor(slug))}>{copied === linkFor(slug) ? "Copied" : "Copy link"}</button>
-      </div>
-      <div class="flex items-center justify-between gap-3">
-        <p class="text-surface-600-400">{sharing?.visibility === "private" ? "Copying this link does not grant additional access." : "Share this URL to open the document."}</p>
-        {#if !inline}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (open = false)}>Done</button>{/if}
-      </div>
-    </div>
+  <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (open = false)}>Done</button>
 {/snippet}
 
 {#if inline}
   <section class="panel share-sidebar space-y-4 pt-4" aria-label="Share document">
-    <h3 class="text-sm font-semibold">Share</h3>
+    <header class="flex items-center justify-between">
+      <h3 class="text-sm font-semibold">Share</h3>
+      <IconButton icon="x" label="Close sharing" tone="plain" size="btn-icon-sm" onclick={() => { open = false; onclose?.(); }} />
+    </header>
     {@render content()}
-    {@render footer()}
   </section>
 {:else}
-  <Modal bind:open title="Share document" wide {footer}>
+  <Modal bind:open title="Share document" onclose={onclose} {footer}>
     {@render content()}
   </Modal>
 {/if}
 
 <style>
+  .share-sidebar { padding: calc(var(--spacing) * 6); }
   .share-sidebar :global(select) { max-width: 100%; }
+  .share-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); }
+  .share-links { border-top: 1px solid var(--color-divider); padding-top: calc(var(--spacing) * 6); }
+  .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-surface-400-600); font-size: var(--text-xs); }
 </style>
