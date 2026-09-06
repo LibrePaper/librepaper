@@ -237,6 +237,11 @@ window.panelTypographyCheck = async () => {
     const panel = host.querySelector('.panel');
     const title = host.querySelector('.panel-title');
     check(panel && title, 'every panel has a shared title');
+    const action = host.querySelector('.panel-actions button');
+    if (action) {
+      const heading = title.getBoundingClientRect(), control = action.getBoundingClientRect();
+      check(Math.abs((heading.top + heading.bottom) / 2 - (control.top + control.bottom) / 2) < 1, 'panel actions share the title row');
+    }
     const bodyStyle = getComputedStyle(panel), titleStyle = getComputedStyle(title);
     samples.push({ body: [bodyStyle.fontFamily, bodyStyle.fontSize, bodyStyle.lineHeight, bodyStyle.padding], title: [titleStyle.fontFamily, titleStyle.fontSize, titleStyle.lineHeight, titleStyle.fontWeight] });
   }

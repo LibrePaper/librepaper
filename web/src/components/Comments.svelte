@@ -73,22 +73,12 @@
     title="Comments"
     meta={comments.length ? `${open} open · ${comments.length} total` : undefined}
   >
-    {#if comments.length === 0}
-      <p class="panel-muted">
-        Highlight text in the document, then choose “Comment”.
-      </p>
-    {/if}
-  </PanelHeader>
-
-  <!-- The tools belong with the comments they make, and stay in view while the
-       pane scrolls. Box draws on a figure, so a document with no figures has
-       nothing for it to do; saying so is better than a button that silently
-       does nothing. -->
-  <div class="toolrow sticky top-0 z-1 pb-3">
-    <div class="tools flex gap-1" role="radiogroup" aria-label="Annotation tool">
+    {#snippet actions()}
+      <div class="tools flex gap-1" role="radiogroup" aria-label="Annotation tool">
       {#each TOOLS as item}
         <IconButton
           icon={item.icon}
+          size="btn-icon-sm"
           label={item.label}
           tool={item.id}
           pressed={tool === item.id}
@@ -99,8 +89,14 @@
           onclick={() => ontool?.(item.id)}
         />
       {/each}
-    </div>
-  </div>
+      </div>
+    {/snippet}
+    {#if comments.length === 0}
+      <p class="panel-muted">
+        Highlight text in the document, then choose “Comment”.
+      </p>
+    {/if}
+  </PanelHeader>
 
   {#if allTags.length}
     <div class="mb-3 flex flex-wrap gap-1">
