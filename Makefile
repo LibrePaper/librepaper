@@ -192,7 +192,9 @@ MIRROR ?= latex/mirror
 latex-push:  ## Push the LaTeX mirror to Cloudflare as a static-assets worker (run inside make secrets)
 	@test -f $(MIRROR)/manifest.json || { echo "no mirror at $(MIRROR); run node latex/tools/mirror.mjs"; exit 1; }
 	@test -n "$$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN is not set; run this inside make secrets"; exit 1; }
-	@printf 'busytex/\ntexlyre-busytex/\nswiftlatex-xetex/\n' > $(MIRROR)/.assetsignore
+	@# The three distributions the card does not show, and the download cache
+	@# mirror.mjs keeps beside them, which holds the release archives whole.
+	@printf '.cache/\nbusytex/\ntexlyre-busytex/\nswiftlatex-xetex/\n' > $(MIRROR)/.assetsignore
 	@printf '/*\n  Cache-Control: public, max-age=31536000, immutable\n/manifest.json\n  Cache-Control: no-store\n' > $(MIRROR)/_headers
 	@cd deploy/latex && bunx wrangler deploy
 	@echo "serve with: komodoc serve --latex https://komodoc-latex.<account>.workers.dev/"
