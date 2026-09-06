@@ -158,6 +158,21 @@ kill:  ## Stop a server started with make serve
 deploy: seed  ## Seed the examples and serve them on this machine, no sign-in, LaTeX on (LATEX=)
 	@$(MAKE) serve PUBLISHERS=anyone COMMENTERS=anyone LATEX_FLAG="--latex $(LATEX)"
 
+# The deployment keys -- the Cloudflare token, the endpoints, the GitHub app
+# -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the
+# shell that ran make, so `secrets` opens a subshell with them decrypted in
+# its environment; exit it to drop them. For one command instead of a shell:
+#
+#     sops exec-env deploy/keys.yaml 'wrangler deploy'
+KEYS ?= deploy/keys.yaml
+.PHONY: secrets
+
+secrets:  ## Open an interactive shell with the sops-encrypted deployment keys in its environment
+	@test -f $(KEYS) || { echo "no $(KEYS)"; exit 1; }
+	@test -t 0 || { echo "make secrets opens an interactive subshell and needs a terminal" >&2; echo "use: sops exec-env $(KEYS) '<command>'" >&2; exit 2; }
+	@echo "$(KEYS) is loaded in this shell; exit to drop it"
+	@sops exec-env $(KEYS) "$${SHELL:-/bin/sh}"
+
 # --- the web app -----------------------------------------------------------
 #
 # Svelte, Skeleton, CodeMirror and Yjs, bundled into the pages the binary
