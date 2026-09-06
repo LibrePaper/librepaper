@@ -34,9 +34,13 @@ pub fn server_from(flag: &str) -> String {
 // with no browser of its own -- and adding a provider to a deployment adds it
 // to `login` with no new flag and no new release of this binary.
 
-/// Where the token is cached, following XDG.
-pub fn token_path() -> PathBuf {
-    let base = match std::env::var("XDG_CONFIG_HOME") {
+/// The config directory to read and write under, following XDG. This is the
+/// only place any of the token helpers below touches the environment, so
+/// everything else can be pure and tested by handing it a base directory
+/// directly rather than mutating `$HOME` or `$XDG_CONFIG_HOME` for the whole
+/// process.
+fn config_home() -> PathBuf {
+    match std::env::var("XDG_CONFIG_HOME") {
         Ok(base) if !base.is_empty() => PathBuf::from(base),
         _ => {
             let home = std::env::var("HOME")
@@ -45,28 +49,171 @@ pub fn token_path() -> PathBuf {
                 .unwrap_or_else(|| die("no home directory to store the token in"));
             Path::new(&home).join(".config")
         }
-    };
-    base.join("komodoc").join("token")
+    }
 }
 
-/// The token to send, from the environment or the cache written by
-/// `komodoc login`. A `KOMODOC_TOKEN` holding a GitHub token still works: the
-/// server tells the two apart by the `kmd_` prefix and verifies each its own
-/// way.
-pub fn stored_token() -> String {
-    if let Ok(token) = std::env::var("KOMODOC_TOKEN") {
+/// Where every komodoc file lives under the config directory.
+fn komodoc_dir(base: &Path) -> PathBuf {
+    base.join("komodoc")
+}
+
+/// The single unscoped file `login` used to write before tokens were cached
+/// per deployment. It is honoured only for the default server -- see
+/// `stored_token_at` -- and removed once its token has been migrated into the
+/// scoped cache, so it either holds the default server's token or does not
+/// exist.
+pub(crate) fn legacy_token_path(base: &Path) -> PathBuf {
+    komodoc_dir(base).join("token")
+}
+
+/// One JSON object mapping a normalized server origin to the bearer token
+/// `login` received from it. Scoped by origin, not by the literal `--server`
+/// string, so `https://x.example` and `https://x.example/` share a cache
+/// entry and a request never carries one deployment's token to another.
+pub(crate) fn tokens_path(base: &Path) -> PathBuf {
+    komodoc_dir(base).join("tokens.json")
+}
+
+/// Normalizes a server into the origin its cached token is filed under:
+/// scheme, host and port, with the scheme's default port made explicit so an
+/// address with and without an explicit `:443` resolve to the same entry. A
+/// string that does not parse as a URL is lowercased and trimmed instead of
+/// failing -- every value handed to `--server` needs a cache key, valid URL
+/// or not.
+fn origin_of(server: &str) -> String {
+    match url::Url::parse(server) {
+        Ok(url) if url.host_str().is_some() => format!(
+            "{}://{}:{}",
+            url.scheme(),
+            url.host_str().unwrap_or_default(),
+            url.port_or_known_default().unwrap_or(0)
+        ),
+        _ => server.trim().trim_end_matches('/').to_lowercase(),
+    }
+}
+
+/// The default server: the one `server_from("")` resolves to. Used only to
+/// decide whether the legacy unscoped token could belong to `server` --
+/// never to choose a server for a command that was given one explicitly.
+fn default_server() -> String {
+    std::env::var("KOMODOC_SERVER")
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// All cached tokens, keyed by origin. A missing or unreadable file is the
+/// same as no tokens cached yet, which is not worth failing a command over.
+fn load_tokens(base: &Path) -> std::collections::HashMap<String, String> {
+    std::fs::read_to_string(tokens_path(base))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_tokens(
+    base: &Path,
+    tokens: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let path = tokens_path(base);
+    let body = serde_json::to_string_pretty(tokens)
+        .map_err(|err| format!("could not encode {}: {err}", path.display()))?;
+    // `write_token` is the general "write this text where nobody else can
+    // read it" primitive, not only the one `login` used to use for a lone
+    // bearer string; a trailing newline on a JSON file is harmless.
+    write_token(&path, &body)
+}
+
+/// The token cached for one server's origin, or "" if there is none. The
+/// legacy unscoped file is consulted only when `server`'s origin is the
+/// default server it predates -- it is never forwarded to a different
+/// deployment, which is the bug this replaces.
+pub(crate) fn stored_token_at(base: &Path, server: &str, default_server: &str) -> String {
+    let origin = origin_of(server);
+    if let Some(token) = load_tokens(base).get(&origin) {
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if origin == origin_of(default_server) {
+        if let Ok(raw) = std::fs::read_to_string(legacy_token_path(base)) {
+            let trimmed = raw.trim().to_string();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
+    }
+    String::new()
+}
+
+/// Caches `token` under `server`'s origin. When that origin is the default
+/// server, the legacy unscoped file -- the only thing that could have been
+/// caching a token for it before -- is migrated away: its content, if any, is
+/// now superseded by this scoped entry, and leaving it in place would let a
+/// stale copy resurface if the scoped cache were ever cleared.
+pub(crate) fn store_token_at(
+    base: &Path,
+    server: &str,
+    default_server: &str,
+    token: &str,
+) -> Result<(), String> {
+    let origin = origin_of(server);
+    let mut tokens = load_tokens(base);
+    tokens.insert(origin.clone(), token.to_string());
+    save_tokens(base, &tokens)?;
+    if origin == origin_of(default_server) {
+        let legacy = legacy_token_path(base);
+        if legacy.exists() {
+            std::fs::remove_file(&legacy)
+                .map_err(|err| format!("could not remove {}: {err}", legacy.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// The token to send to `server`: `$KOMODOC_TOKEN` if it is set, or whatever
+/// `komodoc login` cached for that server's own origin.
+///
+/// `KOMODOC_TOKEN` is explicit and is sent to whichever server was selected,
+/// wherever that is -- it is a bearer a shell script hands the CLI on
+/// purpose, and there is nothing here to scope it against. The cache, by
+/// contrast, is scoped to the server's origin precisely so that signing in to
+/// one deployment never sends its token to another. A `KOMODOC_TOKEN` holding
+/// a GitHub token still works: the server tells the two apart by the `kmd_`
+/// prefix and verifies each its own way.
+pub fn stored_token_for(server: &str) -> String {
+    let env_token = std::env::var("KOMODOC_TOKEN").ok();
+    stored_token_with(
+        &config_home(),
+        server,
+        &default_server(),
+        env_token.as_deref(),
+    )
+}
+
+/// The pure core of `stored_token_for`: everything above it does is read the
+/// environment and the config directory, which is factored out here so the
+/// precedence between an explicit `KOMODOC_TOKEN` and the scoped cache can be
+/// tested by passing values in, rather than by mutating the process
+/// environment a test binary's threads share.
+pub(crate) fn stored_token_with(
+    base: &Path,
+    server: &str,
+    default_server: &str,
+    env_token: Option<&str>,
+) -> String {
+    if let Some(token) = env_token {
         if !token.trim().is_empty() {
             return token.trim().to_string();
         }
     }
-    std::fs::read_to_string(token_path())
-        .map(|raw| raw.trim().to_string())
-        .unwrap_or_default()
+    stored_token_at(base, server, default_server)
 }
 
 /// What every command that writes needs.
-pub fn require_token() -> String {
-    let token = stored_token();
+pub fn require_token_for(server: &str) -> String {
+    let token = stored_token_for(server);
     if token.is_empty() {
         die("not signed in. Run:\n    komodoc login");
     }
@@ -96,36 +243,67 @@ pub async fn login(server_flag: String) {
             _ => String::new(),
         };
 
-    let path = token_path();
-    write_token(&path, &token).unwrap_or_else(|err| die(err));
+    let base = config_home();
+    store_token_at(&base, &server, &default_server(), &token).unwrap_or_else(|err| die(err));
     println!("signed in as {who}");
-    eprintln!("  token stored in {}", path.display());
+    eprintln!("  token stored in {}", tokens_path(&base).display());
 }
 
-/// Writes the token where the next command will look for it, readable by
-/// nobody else: it is a bearer, so the file permissions are the whole of its
-/// protection at rest.
-pub fn write_token(path: &Path, token: &str) -> Result<(), String> {
+/// Writes bytes to a path only its owner can read, from the moment the file
+/// is created -- there is no window where a broader mode briefly applies --
+/// and fixes the permissions of a file that already existed under a looser
+/// one. A bearer token's file permissions are the whole of its protection at
+/// rest, so a failure to set them is reported rather than swallowed.
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
     }
-    std::fs::write(path, format!("{token}\n"))
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|err| format!("could not create {}: {err}", path.display()))?;
+    use std::io::Write;
+    file.write_all(bytes)
         .map_err(|err| format!("could not write {}: {err}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|err| format!("could not set permissions on {}: {err}", path.display()))?;
     }
     Ok(())
 }
 
+/// Writes the token where the next command will look for it, readable by
+/// nobody else. Kept as a thin wrapper over `write_private_file` because
+/// tests write a token to an arbitrary path directly, without going through
+/// `login`'s scoped cache.
+pub fn write_token(path: &Path, token: &str) -> Result<(), String> {
+    write_private_file(path, format!("{token}\n").as_bytes())
+}
+
+/// Signs out of every cached deployment at once: `logout` takes no `--server`
+/// of its own, so there is no single origin to clear selectively.
 pub fn logout() {
-    let path = token_path();
-    match std::fs::remove_file(&path) {
-        Ok(()) => println!("signed out"),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => println!("not signed in"),
-        Err(err) => die(format!("could not remove {}: {err}", path.display())),
+    let base = config_home();
+    let cleared_scoped = std::fs::remove_file(tokens_path(&base)).is_ok();
+    let legacy = legacy_token_path(&base);
+    let cleared_legacy = match std::fs::remove_file(&legacy) {
+        Ok(()) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => die(format!("could not remove {}: {err}", legacy.display())),
+    };
+    if cleared_scoped || cleared_legacy {
+        println!("signed out");
+    } else {
+        println!("not signed in");
     }
 }
 
@@ -213,8 +391,23 @@ pub async fn poll_for_token(server: &str, code: &DeviceCode) -> Result<String, S
 /// document keeps what a person wrote. And whatever git ignores is the
 /// author's own statement of what is derived, which is a better list than any
 /// this could invent.
+///
+/// A subdirectory is followed even when it is a symlink -- it is the
+/// author's own directory, and refusing to follow it would be a stranger
+/// surprise than following it. But each is followed at most once by its
+/// resolved (canonicalized) location, so a symlink cycle terminates instead
+/// of being walked forever, and one that resolves outside `root` is left out
+/// and named on stderr instead of silently published: uploading what an
+/// author expected to be private is worse than uploading it and saying so.
 pub fn files_under(root: &Path, main_stem: &str, ignored: &dyn Fn(&Path) -> bool) -> Vec<String> {
     let mut found = Vec::new();
+    let Ok(canonical_root) = root.canonicalize() else {
+        // A root that cannot be resolved (does not exist, a broken symlink)
+        // has nothing under it worth walking.
+        return found;
+    };
+    let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    visited.insert(canonical_root.clone());
     let mut stack = vec![root.to_path_buf()];
     while let Some(directory) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&directory) else {
@@ -227,7 +420,26 @@ pub fn files_under(root: &Path, main_stem: &str, ignored: &dyn Fn(&Path) -> bool
                 continue;
             }
             if path.is_dir() {
-                stack.push(path);
+                match path.canonicalize() {
+                    Ok(resolved) if resolved.starts_with(&canonical_root) => {
+                        // `insert` returns false for a location already
+                        // visited -- an ancestor symlink cycle, or two links
+                        // to the same place -- which is exactly when this
+                        // must not be walked again.
+                        if visited.insert(resolved) {
+                            stack.push(path);
+                        }
+                    }
+                    Ok(_) => {
+                        eprintln!(
+                            "note: skipping {} (a symlink resolving outside {})",
+                            path.display(),
+                            root.display()
+                        );
+                    }
+                    // A broken symlink resolves to nothing worth walking.
+                    Err(_) => {}
+                }
                 continue;
             }
             // The output of the document itself. A `paper.pdf` beside
@@ -282,11 +494,20 @@ pub fn git_ignores(root: &Path) -> Box<dyn Fn(&Path) -> bool> {
     }
     let root = root.to_path_buf();
     Box::new(move |path: &Path| {
+        // `git -C root` runs with `root` as its working directory, so the
+        // path handed to `check-ignore` must be relative to `root` too --
+        // otherwise, with a relative root such as `paper`, a root-prefixed
+        // path like `paper/private.txt` is resolved against that working
+        // directory as `paper/paper/private.txt`, and a root-anchored
+        // pattern such as `/private.txt` never matches. `--` ends option
+        // parsing first, so a filename beginning with `-` is not read as a
+        // flag.
+        let relative = path.strip_prefix(&root).unwrap_or(path);
         std::process::Command::new("git")
             .arg("-C")
             .arg(&root)
-            .args(["check-ignore", "-q"])
-            .arg(path)
+            .args(["check-ignore", "-q", "--"])
+            .arg(relative)
             .status()
             .map(|status| status.success())
             .unwrap_or(false)
@@ -486,7 +707,7 @@ async fn publish_directory(
         &slug,
         &main,
         files,
-        &stored_token(),
+        &stored_token_for(&server),
         Duration::from_secs(600),
     )
     .await
@@ -656,7 +877,7 @@ async fn publish_file(file: &str, mut title: String, slug: String, server_flag: 
         // readable and a document that does not compile is not one -- but what
         // it produces is a check, not a payload.
         &json!({"title": title, "slug": slug, "source": source, "source_format": source_format}),
-        &stored_token(),
+        &stored_token_for(&server),
         Duration::from_secs(300),
     )
     .await
@@ -698,7 +919,7 @@ pub async fn list_documents(server_flag: String) {
     let (status, payload) = post_json(
         &format!("{server}/api/list"),
         &json!({}),
-        &require_token(),
+        &require_token_for(&server),
         Duration::from_secs(60),
     )
     .await
@@ -821,7 +1042,7 @@ pub async fn resolve_identifier(identifier: &str, server: &str) -> String {
     let (status, payload) = post_json(
         &format!("{server}/api/list"),
         &json!({}),
-        &require_token(),
+        &require_token_for(server),
         Duration::from_secs(60),
     )
     .await
@@ -930,13 +1151,22 @@ pub async fn share_document(
     // write and no confirmation.
     let asking = change.as_object().is_some_and(|fields| fields.is_empty());
     let (status, payload) = if asking {
-        get_with_token(&target, &require_token(), Duration::from_secs(60))
-            .await
-            .unwrap_or_else(|err| die(err))
+        get_with_token(
+            &target,
+            &require_token_for(&server),
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap_or_else(|err| die(err))
     } else {
-        post_json(&target, &change, &require_token(), Duration::from_secs(60))
-            .await
-            .unwrap_or_else(|err| die(err))
+        post_json(
+            &target,
+            &change,
+            &require_token_for(&server),
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap_or_else(|err| die(err))
     };
     if status != 200 {
         die(format!("share failed ({status}): {}", detail_of(&payload)));
@@ -1033,7 +1263,7 @@ pub async fn transfer_document(identifier: &str, to: &str, server_flag: String, 
     let (status, payload) = post_json(
         &format!("{server}/api/documents/{slug}/transfer"),
         &json!({"to": to}),
-        &require_token(),
+        &require_token_for(&server),
         Duration::from_secs(60),
     )
     .await
@@ -1055,8 +1285,14 @@ pub async fn destroy_document(identifier: &str, server_flag: String, yes: bool) 
     // below still asks for the whole slug: this is the one irreversible
     // command, and a three-character answer is too easy to give.
     let slug = resolve_identifier(identifier, &server).await;
-    let (status, document) = get_json(
+    // Authenticated, not `get_json`: an owner's own document can be private,
+    // and an unauthenticated read of it gets the same 404 a stranger would --
+    // which used to stop `destroy` here before it ever reached the delete
+    // route it already carries a token to. A document with no owner still
+    // answers to an empty token the same as before.
+    let (status, document) = get_with_token(
         &format!("{server}/api/documents/{slug}"),
+        &stored_token_for(&server),
         Duration::from_secs(30),
     )
     .await
@@ -1088,7 +1324,7 @@ pub async fn destroy_document(identifier: &str, server_flag: String, yes: bool) 
     let (status, payload) = post_json(
         &format!("{server}/api/documents/{slug}/delete"),
         &json!({}),
-        &require_token(),
+        &require_token_for(&server),
         Duration::from_secs(120),
     )
     .await
@@ -1112,7 +1348,7 @@ pub async fn history_document(identifier: &str, server_flag: String) {
     let slug = resolve_identifier(identifier, &server).await;
     let (status, payload) = get_with_token(
         &format!("{server}/api/documents/{slug}/history"),
-        &stored_token(),
+        &stored_token_for(&server),
         Duration::from_secs(60),
     )
     .await
@@ -1170,7 +1406,7 @@ pub async fn history_document(identifier: &str, server_flag: String) {
 pub async fn label_checkpoint(identifier: &str, sha: &str, label: String, server_flag: String) {
     let server = server_from(&server_flag);
     let slug = resolve_identifier(identifier, &server).await;
-    let token = require_token();
+    let token = require_token_for(&server);
     let (status, payload) = get_with_token(
         &format!("{server}/api/documents/{slug}/history"),
         &token,

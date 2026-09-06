@@ -148,6 +148,11 @@ impl Mirror {
         let Some(path) = safe_path(path) else {
             return missing();
         };
+        if let Mirror::Upstream { base, .. } = self {
+            if !request_stays_under_base(base, &path) {
+                return missing();
+            }
+        }
         let cache_control = if path == MANIFEST {
             // The only file whose URL carries no digest, and so the only one an
             // updated mirror changes in place.
@@ -215,12 +220,24 @@ fn missing() -> Served {
 /// checking; then every component has to be an ordinary name. A path that
 /// leaves the mirror does not get a cleaned-up version of itself, it gets a
 /// 404, because there is no legitimate request that needs cleaning.
+///
+/// A single decode is not the end of it: `%252e%252e` decodes to `%2e%2e`,
+/// which still reads as an ordinary filename here but is `..` again to
+/// whatever parses it next -- namely `url::Url`, building the upstream
+/// request in `get`. Every legitimate mirror path is `manifest.json` or a
+/// digest-named file (see `latex/tools/mirror.mjs`), and neither ever
+/// contains a literal `%`, so a `%` surviving the one decode this function
+/// does is refused outright rather than decoded again.
 fn safe_path(raw: &str) -> Option<String> {
     let decoded = percent_encoding::percent_decode_str(raw)
         .decode_utf8()
         .ok()?
         .to_string();
-    if decoded.is_empty() || decoded.contains('\0') || decoded.contains('\\') {
+    if decoded.is_empty()
+        || decoded.contains('\0')
+        || decoded.contains('\\')
+        || decoded.contains('%')
+    {
         return None;
     }
     let mut out = String::new();
@@ -241,6 +258,26 @@ fn safe_path(raw: &str) -> Option<String> {
         return None;
     }
     Some(out)
+}
+
+/// A second, independent gate for the `Upstream` variant only: parse the
+/// exact URL `get` is about to send, and refuse it unless it is still on the
+/// base's origin and its path still starts with the base's path. `safe_path`
+/// already keeps ordinary requests from carrying `..` or an encoded `..`
+/// through to this parse, but this check does not rely on that -- it looks at
+/// what `url::Url` actually resolved, which is the thing a browser-facing
+/// proxy must agree with regardless of how the path got here.
+fn request_stays_under_base(base: &str, path: &str) -> bool {
+    let Ok(base_url) = url::Url::parse(base) else {
+        return false;
+    };
+    let Ok(request_url) = url::Url::parse(&format!("{base}{path}")) else {
+        return false;
+    };
+    if request_url.origin() != base_url.origin() {
+        return false;
+    }
+    request_url.path().starts_with(base_url.path())
 }
 
 /// What each kind of file in a mirror is. Only the loader and the module have

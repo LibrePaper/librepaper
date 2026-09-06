@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::blob::{clear_storage, release_room_locks};
-use crate::cli::{server_from, stored_token};
+use crate::cli::{server_from, stored_token_for};
 use crate::clock::timestamp;
 use crate::config::Configuration;
 use crate::http::{detail_of, get_json, post_json, text};
@@ -153,7 +153,7 @@ pub async fn seed_into(
 /// demonstration state, not an additive publishing operation.
 pub async fn seed_remote(server_flag: String, documents: &[SeedDocument]) {
     let server = server_from(&server_flag);
-    let token = stored_token();
+    let token = stored_token_for(&server);
     let examples_enabled =
         match get_json(&format!("{server}/api/me"), Duration::from_secs(30)).await {
             Ok((200, capabilities)) => capabilities

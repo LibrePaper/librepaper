@@ -14,7 +14,7 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::blob::{BlobStore, SESSION_KEY_KEY};
+use crate::blob::{BlobError, BlobStore, SESSION_KEY_KEY};
 use crate::http::{client, USER_AGENT};
 
 pub const GITHUB_AUTHORIZE: &str = "https://github.com/login/oauth/authorize";
@@ -381,28 +381,75 @@ pub fn read_visitor(key: &[u8], cookie: &str) -> String {
 /// reader out on every deploy. It is a secret in the operator's own storage,
 /// which is the same trust the documents are already under.
 pub async fn session_key(blobs: &dyn BlobStore) -> Result<Vec<u8>, String> {
-    if let Ok(raw) = blobs.get(SESSION_KEY_KEY).await {
-        if let Ok(key) = hex::decode(String::from_utf8_lossy(&raw).trim()) {
-            if key.len() == 32 {
-                return Ok(key);
-            }
+    match blobs.get(SESSION_KEY_KEY).await {
+        // A key is already there: use it, or refuse to run over it. Either
+        // way this is not the "nothing has ever been written" case that
+        // justifies minting a replacement -- a byte flipped in storage, or a
+        // read that came back short, must not look like an empty deployment.
+        Ok(raw) => {
+            return decode_session_key(&raw).ok_or_else(|| {
+                format!(
+                    "the session key stored at {} is not readable; refusing to replace it",
+                    blobs.describe()
+                )
+            });
+        }
+        // The one case that means "nobody has ever put a key here".
+        Err(BlobError::NotFound) => {}
+        // Anything else -- a timeout, a permissions error, a bucket that is
+        // momentarily unreachable -- must not be treated as "there is no
+        // key yet". Doing so is exactly how a transient GET failure used to
+        // rotate the deployment's signing key and sign everyone out; failing
+        // startup here is the safe answer instead.
+        Err(err) => {
+            return Err(format!(
+                "could not read the session key from {}: {err}",
+                blobs.describe()
+            ));
         }
     }
     let key = random_bytes(32);
-    blobs
-        .put(
-            SESSION_KEY_KEY,
-            hex::encode(&key).into_bytes(),
-            "text/plain",
-        )
+    // Created with a compare-and-set against absence (the empty `expect`),
+    // not an unconditional `put`, so two servers starting at once cannot each
+    // write their own key and disagree forever: the loser re-reads and uses
+    // whichever key actually won.
+    match blobs
+        .swap(SESSION_KEY_KEY, hex::encode(&key).into_bytes(), "")
         .await
-        .map_err(|err| {
-            format!(
-                "could not write the session key to {}: {err}",
-                blobs.describe()
-            )
-        })?;
-    Ok(key)
+    {
+        Ok(_) => Ok(key),
+        Err(BlobError::Conflict) => {
+            let raw = blobs.get(SESSION_KEY_KEY).await.map_err(|err| {
+                format!(
+                    "could not read the session key from {} after losing its creation: {err}",
+                    blobs.describe()
+                )
+            })?;
+            decode_session_key(&raw).ok_or_else(|| {
+                format!(
+                    "the session key stored at {} is not readable; refusing to replace it",
+                    blobs.describe()
+                )
+            })
+        }
+        Err(err) => Err(format!(
+            "could not write the session key to {}: {err}",
+            blobs.describe()
+        )),
+    }
+}
+
+/// Parses the hex-encoded 32-byte key `session_key` stores, or `None` for
+/// anything else -- truncated, non-hex, the wrong length. A malformed value
+/// is never "as good as absent": that equivalence is what let a transient
+/// read failure look identical to an empty deployment.
+fn decode_session_key(raw: &[u8]) -> Option<Vec<u8>> {
+    let key = hex::decode(String::from_utf8_lossy(raw).trim()).ok()?;
+    if key.len() == 32 {
+        Some(key)
+    } else {
+        None
+    }
 }
 
 pub fn random_bytes(n: usize) -> Vec<u8> {
@@ -766,8 +813,17 @@ impl Accounts for GithubAccounts {
 /// Keeps bearer tokens from costing a GitHub call per request. Positive
 /// answers are cached longer than negative ones, so a token that is revoked or
 /// was never valid does not sit trusted for as long as one that is.
+///
+/// Every distinct token this server is ever shown earns an entry, including
+/// one nobody will present again -- such as one of a stream of invalid bearer
+/// tokens from an attacker. Nothing here relies on the same token being
+/// looked up often enough to make an LRU worthwhile, so the cache instead
+/// bounds itself by sweeping what has expired on every insert and, failing
+/// that, evicting whatever is closest to expiring anyway.
 pub struct TokenCache {
     entries: Mutex<HashMap<String, CachedToken>>,
+    positive_ttl: Duration,
+    negative_ttl: Duration,
 }
 
 struct CachedToken {
@@ -778,6 +834,13 @@ struct CachedToken {
 pub const TOKEN_POSITIVE_TTL: Duration = Duration::from_secs(10 * 60);
 pub const TOKEN_NEGATIVE_TTL: Duration = Duration::from_secs(60);
 
+/// Hard cap on distinct token digests held at once. A deployment ordinarily
+/// has at most a few hundred users, so a few thousand entries is generous
+/// headroom for legitimate traffic while keeping the worst case -- a flood of
+/// distinct invalid bearer tokens -- a small, fixed amount of memory instead
+/// of one that grows with an attacker's request rate.
+pub const TOKEN_CACHE_CAP: usize = 4096;
+
 impl Default for TokenCache {
     fn default() -> Self {
         TokenCache::new()
@@ -786,9 +849,30 @@ impl Default for TokenCache {
 
 impl TokenCache {
     pub fn new() -> TokenCache {
+        TokenCache::with_ttls(TOKEN_POSITIVE_TTL, TOKEN_NEGATIVE_TTL)
+    }
+
+    fn with_ttls(positive_ttl: Duration, negative_ttl: Duration) -> TokenCache {
         TokenCache {
             entries: Mutex::new(HashMap::new()),
+            positive_ttl,
+            negative_ttl,
         }
+    }
+
+    /// A cache whose lifetimes are configurable, so a test can watch an entry
+    /// actually expire and get swept without waiting out the real ten-minute
+    /// and one-minute TTLs production uses.
+    #[cfg(test)]
+    pub fn for_test(positive_ttl: Duration, negative_ttl: Duration) -> TokenCache {
+        TokenCache::with_ttls(positive_ttl, negative_ttl)
+    }
+
+    /// How many token digests are currently held, for a test to check against
+    /// the cap.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.lock().expect("token cache poisoned").len()
     }
 
     /// Resolves a bearer token to an identity, caching the answer keyed by a
@@ -814,16 +898,35 @@ impl TokenCache {
         }
         let identity = check(token.to_string()).await;
         let ttl = if identity.is_some() {
-            TOKEN_POSITIVE_TTL
+            self.positive_ttl
         } else {
-            TOKEN_NEGATIVE_TTL
+            self.negative_ttl
         };
         let mut entries = self.entries.lock().expect("token cache poisoned");
+        let now = Instant::now();
+        // Sweep what has expired first: a cache that is only ever asked about
+        // distinct tokens still bounds itself between evictions, rather than
+        // growing until the cap alone is doing the work.
+        entries.retain(|_, cached| cached.expires > now);
+        // The sweep is not a guarantee -- everything still live counts
+        // against the cap -- so evict the entries soonest to expire anyway
+        // until there is room. They are the closest to being swept on their
+        // own, so removing them loses the least useful cached answer.
+        while entries.len() >= TOKEN_CACHE_CAP {
+            let Some(soonest) = entries
+                .iter()
+                .min_by_key(|(_, cached)| cached.expires)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            entries.remove(&soonest);
+        }
         entries.insert(
             key,
             CachedToken {
                 identity: identity.clone(),
-                expires: Instant::now() + ttl,
+                expires: now + ttl,
             },
         );
         identity.unwrap_or_default()

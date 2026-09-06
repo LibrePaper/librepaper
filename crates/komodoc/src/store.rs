@@ -4,6 +4,23 @@
 //! Where those bytes live is not its business -- see blob.rs. What is here is
 //! the interesting half: who owns a document, what a deployment will hold, and
 //! the compare-and-swap that keeps the index honest when two writes race.
+//!
+//! **Coherence model.** Each `Store` keeps its own copy of the index in
+//! memory and consults only that copy on an ordinary read. A single active
+//! writer per deployment is what this is built for, and there the in-memory
+//! copy is always current, because nothing else ever moves the index out
+//! from under it. A second instance sharing the same storage -- two live
+//! HTTP servers behind one bucket -- does not see the first instance's
+//! writes as they happen; it *converges*, not instantly, at two specific
+//! moments: a write of its own that loses the compare-and-swap reloads the
+//! winning index and retries once, and a `get` that misses reloads before
+//! answering not-found, so a document created elsewhere becomes visible.
+//! Between those moments a second instance can still authorize a read or a
+//! grant against an index the first has already moved past. That is a
+//! deliberate trade -- correctness on every write and on every miss, without
+//! putting a storage round trip on every hit -- and it means anything that
+//! must observe a revocation the instant it lands belongs on the instance
+//! that made it, not on this best-effort convergence.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -383,7 +400,18 @@ pub struct StoreState {
     /// say what it expects to be replacing. Empty means "there was no index",
     /// which is how a fresh store starts.
     pub index_version: BlobVersion,
+    /// When the index was last re-read from storage because a lookup missed.
+    /// A miss is the one read that goes to storage, and a stranger guessing
+    /// slugs would otherwise turn every 404 into a download of the whole
+    /// index; this is what keeps that to one download per `REFRESH_EVERY`.
+    pub refreshed_at: Option<std::time::Instant>,
 }
+
+/// The least time between two reloads of the index prompted by misses. Long
+/// enough that a scan of made-up slugs costs the bucket one read per window
+/// rather than one per request; short enough that a document created on
+/// another instance shows up here within the time it takes to paste its link.
+pub const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Reads index.json, with the version it was read at. No index yet is an
 /// empty store, which is how a fresh one starts. An index that exists but
@@ -471,11 +499,39 @@ impl Store {
             state: Mutex::new(StoreState {
                 entries,
                 index_version,
+                refreshed_at: None,
             }),
         })
     }
 
+    /// A document by slug, or nothing if this deployment has none by that
+    /// name. A miss is retried once against storage before it is trusted: on
+    /// a single-writer deployment the extra check costs one round trip that
+    /// always confirms the miss, but on a shared bucket it is what makes a
+    /// document another instance just created visible here without every hit
+    /// -- the overwhelming majority of calls -- paying for a reload it does
+    /// not need.
     pub async fn get(&self, slug: &str) -> Option<IndexEntry> {
+        {
+            let mut state = self.state.lock().await;
+            if let Some(entry) = state.entries.get(slug).cloned() {
+                return Some(entry);
+            }
+            // A miss that follows another miss closely is answered from
+            // memory: the index was re-read moments ago, and a burst of
+            // guessed slugs must not become a burst of downloads.
+            let now = std::time::Instant::now();
+            if state
+                .refreshed_at
+                .is_some_and(|at| now.duration_since(at) < REFRESH_EVERY)
+            {
+                return None;
+            }
+            state.refreshed_at = Some(now);
+        }
+        if self.refresh().await.is_err() {
+            return None;
+        }
         self.state.lock().await.entries.get(slug).cloned()
     }
 
@@ -579,6 +635,7 @@ impl Store {
             let fresh = StoreState {
                 entries: without,
                 index_version: state.index_version.clone(),
+                refreshed_at: state.refreshed_at,
             };
             if let Err(refused) = self.admit(&fresh, &v.slug, &entry.publisher, size, now_unix()) {
                 state.entries.remove(&v.slug);
@@ -635,44 +692,60 @@ impl Store {
         main: &str,
     ) -> Result<(), String> {
         let mut state = self.state.lock().await;
-        let Some(entry) = state.entries.get(slug).cloned() else {
-            return Ok(());
-        };
-        let mut updated = entry.clone();
-        updated.size = size;
-        // The room is the authority on what the document is written in: a
-        // migrated document whose source was gone opens as the page it was
-        // published as, and the index has to say so or the browser fetches a
-        // renderer for a format the document is not in.
-        if !format.is_empty() {
-            updated.source_format = format.to_string();
+        let mut retried = false;
+        loop {
+            let Some(entry) = state.entries.get(slug).cloned() else {
+                return Ok(());
+            };
+            let mut updated = entry.clone();
+            updated.size = size;
+            // The room is the authority on what the document is written in: a
+            // migrated document whose source was gone opens as the page it was
+            // published as, and the index has to say so or the browser fetches a
+            // renderer for a format the document is not in.
+            if !format.is_empty() {
+                updated.source_format = format.to_string();
+            }
+            // Which file is the main one lives in the shared document, where an
+            // editor changes it; the index keeps a copy because the landing page
+            // and the routes read the entry and never open the session.
+            if !main.is_empty() {
+                updated.main = main.to_string();
+            }
+            if let Some(sha) = sha {
+                updated.sha = sha.to_string();
+                updated.updated_at = timestamp();
+            }
+            if updated.size == entry.size
+                && updated.sha == entry.sha
+                && updated.source_format == entry.source_format
+                && updated.main == entry.main
+            {
+                return Ok(());
+            }
+            state.entries.insert(slug.to_string(), updated);
+            match self.save_locked(&mut state).await {
+                Ok(()) => return Ok(()),
+                Err(BlobError::Conflict) if !retried => {
+                    // Another instance moved the index first -- most likely
+                    // its own checkpoint for a different document. Reload
+                    // what it left and recompute this update against that,
+                    // once, rather than dropping a size or a checkpoint sha
+                    // that will make the next quota decision, or the next
+                    // reader, wrong until someone notices.
+                    state.entries.insert(slug.to_string(), entry);
+                    self.refresh_locked(&mut state).await?;
+                    retried = true;
+                }
+                Err(err) => {
+                    // The index did not move, so neither does the copy of it in
+                    // memory: a size recorded here and nowhere else would make the
+                    // next quota decision from a number no later run can see.
+                    state.entries.insert(slug.to_string(), entry);
+                    return Err(err.to_string());
+                }
+            }
         }
-        // Which file is the main one lives in the shared document, where an
-        // editor changes it; the index keeps a copy because the landing page
-        // and the routes read the entry and never open the session.
-        if !main.is_empty() {
-            updated.main = main.to_string();
-        }
-        if let Some(sha) = sha {
-            updated.sha = sha.to_string();
-            updated.updated_at = timestamp();
-        }
-        if updated.size == entry.size
-            && updated.sha == entry.sha
-            && updated.source_format == entry.source_format
-            && updated.main == entry.main
-        {
-            return Ok(());
-        }
-        state.entries.insert(slug.to_string(), updated);
-        if let Err(err) = self.save_locked(&mut state).await {
-            // The index did not move, so neither does the copy of it in
-            // memory: a size recorded here and nowhere else would make the
-            // next quota decision from a number no later run can see.
-            state.entries.insert(slug.to_string(), entry);
-            return Err(err.to_string());
-        }
-        Ok(())
     }
 
     /// Renames a document. A publish onto an existing slug is an edit into its
@@ -680,21 +753,31 @@ impl Store {
     /// the index entry such a publish still changes.
     pub async fn rename(&self, slug: &str, title: &str) -> Result<(), String> {
         let mut state = self.state.lock().await;
-        let Some(entry) = state.entries.get(slug).cloned() else {
-            return Ok(());
-        };
-        if entry.title == title || title.is_empty() {
-            return Ok(());
+        let mut retried = false;
+        loop {
+            let Some(entry) = state.entries.get(slug).cloned() else {
+                return Ok(());
+            };
+            if entry.title == title || title.is_empty() {
+                return Ok(());
+            }
+            let mut updated = entry.clone();
+            updated.title = title.to_string();
+            updated.updated_at = timestamp();
+            state.entries.insert(slug.to_string(), updated);
+            match self.save_locked(&mut state).await {
+                Ok(()) => return Ok(()),
+                Err(BlobError::Conflict) if !retried => {
+                    state.entries.insert(slug.to_string(), entry);
+                    self.refresh_locked(&mut state).await?;
+                    retried = true;
+                }
+                Err(err) => {
+                    state.entries.insert(slug.to_string(), entry);
+                    return Err(err.to_string());
+                }
+            }
         }
-        let mut updated = entry.clone();
-        updated.title = title.to_string();
-        updated.updated_at = timestamp();
-        state.entries.insert(slug.to_string(), updated);
-        if let Err(err) = self.save_locked(&mut state).await {
-            state.entries.insert(slug.to_string(), entry);
-            return Err(err.to_string());
-        }
-        Ok(())
     }
 
     /// Rewrites one entry -- whom it is shared with, who owns it -- under the
@@ -702,22 +785,47 @@ impl Store {
     /// copy, so a refused write leaves the entry exactly as it was, and the
     /// closure may refuse it itself, which is how a grant the deployment's
     /// switches forbid is turned away without anything being written.
+    ///
+    /// `change` may run twice: once against the entry this instance had, and
+    /// -- only if that save loses the compare-and-swap to a write from
+    /// another instance -- once more against the entry the winner left
+    /// behind. It must therefore be a plain function of the entry it is
+    /// given, not of anything captured that a second run would repeat, which
+    /// every caller in this codebase already is.
     pub async fn modify<F>(&self, slug: &str, change: F) -> Result<IndexEntry, ModifyError>
     where
-        F: FnOnce(&mut IndexEntry) -> Result<(), String>,
+        F: Fn(&mut IndexEntry) -> Result<(), String>,
     {
         let mut state = self.state.lock().await;
-        let Some(entry) = state.entries.get(slug).cloned() else {
-            return Err(ModifyError::NotFound);
-        };
-        let mut updated = entry.clone();
-        change(&mut updated).map_err(ModifyError::Refused)?;
-        state.entries.insert(slug.to_string(), updated.clone());
-        if let Err(err) = self.save_locked(&mut state).await {
-            state.entries.insert(slug.to_string(), entry);
-            return Err(ModifyError::Storage(err.to_string()));
+        let mut retried = false;
+        loop {
+            let Some(entry) = state.entries.get(slug).cloned() else {
+                return Err(ModifyError::NotFound);
+            };
+            let mut updated = entry.clone();
+            change(&mut updated).map_err(ModifyError::Refused)?;
+            state.entries.insert(slug.to_string(), updated.clone());
+            match self.save_locked(&mut state).await {
+                Ok(()) => return Ok(updated),
+                Err(BlobError::Conflict) if !retried => {
+                    // Another instance moved the index first -- maybe with
+                    // exactly the revocation or grant this call is racing.
+                    // Reload what it left and retry this edit against that,
+                    // once, instead of reporting a conflict the caller has no
+                    // way to act on and leaving this instance's index stale
+                    // for every read after this one too.
+                    state.entries.insert(slug.to_string(), entry);
+                    if let Err(err) = self.refresh_locked(&mut state).await {
+                        return Err(ModifyError::Storage(err));
+                    }
+                    retried = true;
+                }
+                Err(err) => {
+                    state.entries.insert(slug.to_string(), entry);
+                    return Err(ModifyError::Storage(err.to_string()));
+                }
+            }
         }
-        Ok(updated)
     }
 
     /// Hands a visitor's documents to the account that has just signed in:
@@ -736,28 +844,43 @@ impl Store {
             return Ok(0);
         }
         let mut state = self.state.lock().await;
-        let mine: Vec<String> = state
-            .entries
-            .values()
-            .filter(|entry| !entry.publisher.is_empty() && entry.publisher == visitor_key)
-            .map(|entry| entry.slug.clone())
-            .collect();
-        if mine.is_empty() {
-            return Ok(0);
-        }
-        let before = state.entries.clone();
-        for slug in &mine {
-            if let Some(entry) = state.entries.get_mut(slug) {
-                entry.publisher = login.to_lowercase();
-                entry.publisher_id = id.to_string();
-                entry.publisher_name = name.to_string();
+        let mut retried = false;
+        loop {
+            let mine: Vec<String> = state
+                .entries
+                .values()
+                .filter(|entry| !entry.publisher.is_empty() && entry.publisher == visitor_key)
+                .map(|entry| entry.slug.clone())
+                .collect();
+            if mine.is_empty() {
+                return Ok(0);
+            }
+            let before = state.entries.clone();
+            for slug in &mine {
+                if let Some(entry) = state.entries.get_mut(slug) {
+                    entry.publisher = login.to_lowercase();
+                    entry.publisher_id = id.to_string();
+                    entry.publisher_name = name.to_string();
+                }
+            }
+            match self.save_locked(&mut state).await {
+                Ok(()) => return Ok(mine.len()),
+                Err(BlobError::Conflict) if !retried => {
+                    // Reload and recompute which documents are still the
+                    // visitor's to adopt: another instance may have already
+                    // moved some of them, or none, and the answer has to come
+                    // from what is actually stored, not from this instance's
+                    // now-stale guess.
+                    state.entries = before;
+                    self.refresh_locked(&mut state).await?;
+                    retried = true;
+                }
+                Err(err) => {
+                    state.entries = before;
+                    return Err(err.to_string());
+                }
             }
         }
-        if let Err(err) = self.save_locked(&mut state).await {
-            state.entries = before;
-            return Err(err.to_string());
-        }
-        Ok(mine.len())
     }
 
     /// How many bytes this document may occupy before it carries its owner or
@@ -891,11 +1014,21 @@ impl Store {
             .await;
 
         let mut state = self.state.lock().await;
-        state.entries.remove(slug);
-        self.save_locked(&mut state)
-            .await
-            .map_err(|err| err.to_string())?;
-        Ok(removed)
+        let mut retried = false;
+        loop {
+            state.entries.remove(slug);
+            match self.save_locked(&mut state).await {
+                Ok(()) => return Ok(removed),
+                Err(BlobError::Conflict) if !retried => {
+                    // Removing an already-removed slug is still the outcome
+                    // asked for, so there is nothing to reapply here beyond
+                    // reloading and removing again against what is current.
+                    self.refresh_locked(&mut state).await?;
+                    retried = true;
+                }
+                Err(err) => return Err(err.to_string()),
+            }
+        }
     }
 
     /// Writes the index, and only over the version these entries were read
@@ -932,6 +1065,56 @@ impl Store {
             state.entries.remove(slug);
         }
         Ok(())
+    }
+
+    /// Reloads the index from storage into `state`, unconditionally. Unlike
+    /// `reload_locked`, which keeps this process's own not-yet-durable value
+    /// for the one document it was admitting, this discards everything held
+    /// in memory: it is what every other losing write retries against, since
+    /// the value to redo the edit on is whatever the winner actually left,
+    /// not this instance's guess at it.
+    async fn refresh_locked(&self, state: &mut StoreState) -> Result<(), String> {
+        let (entries, at) = load_index(self.blobs.as_ref()).await?;
+        state.entries = entries;
+        state.index_version = at;
+        Ok(())
+    }
+
+    /// Reloads the index if the copy in storage has moved past the one this
+    /// process is holding, and does nothing at all -- not even a parse -- if
+    /// it has not. `get` calls this on a miss, which is the read-side half of
+    /// catching up with another instance sharing the same storage: a document
+    /// published there becomes visible here, at the cost of one read that, on
+    /// the single-writer deployment this store is built for, always confirms
+    /// there was nothing to catch up on.
+    pub async fn refresh(&self) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        match self.blobs.get_versioned(INDEX_KEY).await {
+            Ok((raw, at)) => {
+                if at == state.index_version {
+                    return Ok(());
+                }
+                let entries: HashMap<String, IndexEntry> =
+                    serde_json::from_slice(&raw).map_err(|err| {
+                        format!(
+                            "the index in {} is not readable ({err}); move it aside to start empty",
+                            self.blobs.describe()
+                        )
+                    })?;
+                state.entries = entries;
+                state.index_version = at;
+                Ok(())
+            }
+            // No index in storage is not news this process should act on:
+            // either there never was one, and memory is already empty, or it
+            // went missing under a running deployment, and forgetting every
+            // document here would only make that worse. What is held stays.
+            Err(BlobError::NotFound) => Ok(()),
+            Err(err) => Err(format!(
+                "could not read the index from {}: {err}",
+                self.blobs.describe()
+            )),
+        }
     }
 }
 

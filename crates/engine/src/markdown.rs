@@ -119,7 +119,21 @@ fn rewrite_images(html: &str, assets: Resolve) -> String {
             || decoded.starts_with("blob:")
             || decoded.starts_with('/')
             || decoded.starts_with('#');
-        match (external, assets(&decoded)) {
+        // Comrak percent-encodes a markdown image destination before this
+        // function ever sees it -- `fig/my plot.png` arrives as
+        // `fig/my%20plot.png` -- but the document's asset map is keyed by the
+        // actual filename on disk. Only the path component is decoded, and
+        // only for a destination this function is about to hand to the
+        // resolver: a query or fragment is not part of a filename and stays
+        // as written, and a destination that fails to decode as UTF-8 is
+        // looked up by its raw, still-encoded spelling rather than dropped.
+        let lookup = if external {
+            decoded.clone()
+        } else {
+            let (path_only, _query_or_fragment) = split_path_query_fragment(&decoded);
+            percent_decode_path(path_only)
+        };
+        match (external, assets(&lookup)) {
             (false, Some(url)) => out.push_str(&crate::page::escape(&url)),
             _ => out.push_str(path),
         }
@@ -127,6 +141,51 @@ fn rewrite_images(html: &str, assets: Resolve) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Splits a URL-shaped string at its first `?` or `#`, so the path can be
+/// decoded without touching a query string or fragment that happens to
+/// follow it.
+fn split_path_query_fragment(s: &str) -> (&str, &str) {
+    match s.find(['?', '#']) {
+        Some(i) => (&s[..i], &s[i..]),
+        None => (s, ""),
+    }
+}
+
+/// A small, dependency-free percent-decoder for the path component of a
+/// markdown image destination. This crate builds for `wasm32-unknown-unknown`
+/// as well as natively, so a decoder here stays plain byte arithmetic rather
+/// than reaching for a crate that may not carry the same feature set on both
+/// targets. A destination that decodes to invalid UTF-8 is returned
+/// unchanged: a raw, still-encoded lookup that fails is no worse than the bug
+/// this is fixing, and it is never worse than a panic.
+fn percent_decode_path(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// One hex nibble, or nothing if the byte is not one.
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// The same, in the shape every renderer answers in. Comrak has no failure

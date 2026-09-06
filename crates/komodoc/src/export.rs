@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::cli::{resolve_identifier, server_from};
 use crate::config::Configuration;
-use crate::http::{get_json, get_with_token, send};
+use crate::http::{get_with_token, send};
 use crate::room::Comment;
 use crate::util::die;
 
@@ -99,8 +99,14 @@ pub async fn export_document(
     let server = server_from(&server_flag);
     let slug = resolve_identifier(identifier, &server).await;
 
-    let (status, document) = get_json(
+    // Every read here says who is asking. A private document answers a
+    // stranger as a missing one does, so an owner exporting their own private
+    // paper would otherwise be told it does not exist. An empty token sends
+    // no bearer, which is what a public export by an anonymous caller is.
+    let token = crate::cli::stored_token_for(&server);
+    let (status, document) = get_with_token(
         &format!("{server}/api/documents/{slug}"),
+        &token,
         Duration::from_secs(30),
     )
     .await
@@ -114,10 +120,15 @@ pub async fn export_document(
         .unwrap_or_default()
         .to_string();
 
+    let bearer = format!("Bearer {token}");
+    let mut headers = vec![("x-komodoc-client", "cli")];
+    if !token.is_empty() {
+        headers.push(("authorization", bearer.as_str()));
+    }
     let (status, raw) = send(
         reqwest::Method::GET,
         &format!("{server}/api/documents/{slug}/comments"),
-        &[],
+        &headers,
         None,
         Duration::from_secs(60),
     )
@@ -136,7 +147,6 @@ pub async fn export_document(
 
     let source = format!("{server}/docs/{slug}");
     let config = Configuration::default();
-    let token = crate::cli::stored_token();
 
     // `--since` is a question about the timeline, so it needs the timeline.
     // Nothing else here does, which is why it is fetched only when asked for.
@@ -396,20 +406,20 @@ pub fn render_response(
                     g(region.x),
                     g(region.y)
                 );
-                continue;
-            }
-
-            let _ = write!(out, "**Then:** “{}”\n\n", one_line(&item.exact));
-            // What the passage says now. The anchoring a reader uses is a
-            // match on the words themselves, so there are two answers it can
-            // give honestly: the passage is still there, or it is not. What
-            // replaced it is the word-level diff, step 8 of
-            // `docs/specs/history.md`, and is not built -- so it is not claimed.
-            if !now.is_empty() {
-                if holds(now, &item.exact) {
-                    let _ = write!(out, "**Now:** unchanged.\n\n");
-                } else {
-                    let _ = write!(out, "**Now:** no longer in the document.\n\n");
+            } else {
+                let _ = write!(out, "**Then:** “{}”\n\n", one_line(&item.exact));
+                // What the passage says now. The anchoring a reader uses is a
+                // match on the words themselves, so there are two answers it
+                // can give honestly: the passage is still there, or it is
+                // not. What replaced it is the word-level diff, step 8 of
+                // `docs/specs/history.md`, and is not built -- so it is not
+                // claimed.
+                if !now.is_empty() {
+                    if holds(now, &item.exact) {
+                        let _ = write!(out, "**Now:** unchanged.\n\n");
+                    } else {
+                        let _ = write!(out, "**Now:** no longer in the document.\n\n");
+                    }
                 }
             }
             // The thread, which is where the response is actually written. The

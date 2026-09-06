@@ -55,7 +55,11 @@ impl S3Store {
 
     /// `escape_path` returns a path that already starts with a slash, so the
     /// bucket is joined to it directly rather than with one of its own.
-    fn url(&self, key: &str) -> String {
+    ///
+    /// `pub(crate)` rather than private so a test can build the exact URL a
+    /// request goes out as and check it against what gets signed -- see
+    /// `canonical_path` below and `tests/review_misc.rs`.
+    pub(crate) fn url(&self, key: &str) -> String {
         format!(
             "{}/{}{}",
             self.endpoint,
@@ -127,7 +131,16 @@ impl S3Store {
             .collect();
         let canonical = [
             method.as_str().to_string(),
-            escape_path(parsed.path()),
+            // `target` was built by `url()`, which already ran the scoped key
+            // through `escape_path` once. `url::Url` keeps a percent-escape it
+            // is given rather than re-encoding it -- our escape set is a
+            // subset of characters `url` would encode anyway -- so
+            // `parsed.path()` is exactly that one encoding, not the raw key.
+            // Encoding it again here is what used to turn a space into
+            // `%2520` in the canonical request while the wire request only
+            // ever sent `%20`; using the same already-encoded path for both
+            // is what keeps the signature over what was actually sent.
+            canonical_path(&parsed),
             canonical_query(&query),
             signed_headers
                 .iter()
@@ -200,7 +213,10 @@ impl S3Store {
         };
         let canonical = [
             "GET".to_string(),
-            escape_path(target.path()),
+            // Same reasoning as in `send`: `target` came from `url()`, so
+            // `target.path()` is already singly encoded and must not be
+            // escaped a second time.
+            canonical_path(&target),
             canonical_query(&query),
             format!("host:{host}\n"),
             "host".to_string(),
@@ -566,6 +582,22 @@ pub fn escape_path(path: &str) -> String {
         .map(escape)
         .collect();
     format!("/{}", segments.join("/"))
+}
+
+/// The path SigV4 signs, for a request whose URL was built by `url()`.
+///
+/// `url()` runs the scoped key through `escape_path` once. `url::Url`
+/// preserves an escape it is given rather than re-encoding it -- `RESERVED`
+/// only leaves unreserved characters unescaped, a strict subset of what
+/// `url` itself would leave alone -- so `parsed.path()` here *is* that one
+/// encoding, byte for byte, not the raw key. Escaping it again is exactly
+/// the bug this function exists to not repeat: it would turn the `%20` the
+/// request actually carries into `%2520` in the string that gets signed,
+/// so the signature would cover a path nobody sent. Both `send` and
+/// `presign_get` route through this one function so there is a single place
+/// that can make that mistake.
+pub(crate) fn canonical_path(parsed: &url::Url) -> String {
+    parsed.path().to_string()
 }
 
 pub fn canonical_query(query: &[(String, String)]) -> String {

@@ -334,7 +334,8 @@ fn the_ceiling_is_on_the_sum_of_every_text() {
 #[test]
 fn a_document_may_hold_only_so_many_files() {
     let doc = one_file("main.typ", "");
-    let max_files = 4;
+    // A limit counts files, not keys: a text and its path are one file.
+    let max_files = 2;
 
     // The boundary: the update that reaches the limit is taken.
     let to_the_limit = {
@@ -347,7 +348,7 @@ fn a_document_may_hold_only_so_many_files() {
     assert_eq!(
         session::admit_update(&doc, &to_the_limit, 1 << 20, max_files),
         Admission::Fits,
-        "two files and their two paths are exactly four keys"
+        "two files are exactly the limit"
     );
     session::apply_update(&doc, &to_the_limit).unwrap();
 

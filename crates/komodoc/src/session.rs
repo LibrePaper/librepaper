@@ -49,8 +49,8 @@ use yrs::types::text::TextPrelim;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Doc, GetString, Map, MapRef, OffsetKind, Options, Out, ReadTxn, StateVector, Text, TextRef,
-    Transact, TransactionMut, Update,
+    Array, Doc, GetString, Map, MapRef, OffsetKind, Options, Out, ReadTxn, StateVector, Text,
+    TextRef, Transact, TransactionMut, Update,
 };
 
 use crate::paths::{self, Rules};
@@ -419,10 +419,66 @@ pub enum Admission {
     Malformed,
 }
 
-/// What the document costs: the bytes of every text plus the bytes of every
-/// key, and how many files there are. A paper split into thirty files is
-/// allowed exactly what a paper in one file is allowed, which is why this is
-/// a sum and not a ceiling per text.
+/// The byte cost of one value a map or array may hold. Recurses into nested
+/// maps and arrays so that an update cannot hide a payload a level down from
+/// where `measure` looks; every string this document could possibly retain
+/// -- a text body, a metadata value, a path, a digest, or a value nested
+/// inside one of those -- is charged somewhere.
+///
+/// A shared type this document's schema never uses (an XML fragment, a
+/// sub-document, an as-yet-undefined root a newer client named) has no cheap
+/// notion of "its bytes"; rather than skip it for free, it is charged an
+/// amount past any ceiling this deployment sets, so admitting one always
+/// falls back to the exact rehearsal instead of silently passing it through.
+fn value_bytes<T: ReadTxn>(txn: &T, value: &Out) -> usize {
+    match value {
+        Out::YText(text) => text.get_string(txn).len(),
+        Out::YXmlText(text) => text.get_string(txn).len(),
+        Out::Any(any) => any_bytes(any),
+        Out::YMap(map) => map
+            .iter(txn)
+            .map(|(key, value)| key.len() + value_bytes(txn, &value))
+            .sum(),
+        Out::YArray(array) => array.iter(txn).map(|value| value_bytes(txn, &value)).sum(),
+        Out::YXmlElement(_) | Out::YXmlFragment(_) | Out::YDoc(_) | Out::UndefinedRef(_) => {
+            usize::MAX / 64
+        }
+    }
+}
+
+/// The byte cost of a bare [`yrs::Any`], recursing into its arrays and maps
+/// for the same reason [`value_bytes`] does.
+fn any_bytes(any: &yrs::Any) -> usize {
+    match any {
+        yrs::Any::Null | yrs::Any::Undefined => 0,
+        yrs::Any::Bool(_) => 1,
+        yrs::Any::Number(_) | yrs::Any::BigInt(_) => 8,
+        yrs::Any::String(value) => value.len(),
+        yrs::Any::Buffer(value) => value.len(),
+        yrs::Any::Array(values) => values.iter().map(any_bytes).sum(),
+        yrs::Any::Map(map) => map
+            .iter()
+            .map(|(key, value)| key.len() + any_bytes(value))
+            .sum(),
+    }
+}
+
+/// What the document costs: the bytes of every retained string value plus the
+/// bytes of every key, and how many logical files there are. A paper split
+/// into thirty files is allowed exactly what a paper in one file is allowed,
+/// which is why this is a sum and not a ceiling per text.
+///
+/// Every value is charged, not only a text file's body: a metadata string, a
+/// path, an asset's digest, and anything an editor manages to put in a map or
+/// array nobody meant it to reach all cost the same bytes here that they cost
+/// the store once persisted. A root this document did not name itself is
+/// charged too, so a schema an older or newer client invents cannot hide a
+/// payload outside every map this function otherwise looks inside.
+///
+/// A file is counted once, at the entry that names it, not once per map that
+/// happens to mention its id: `files` and `paths` describe the same file,
+/// so counting both would let a document of `max_files / 2` legitimate files
+/// reject its own no-op edits.
 fn measure(doc: &Doc) -> (usize, usize) {
     let (files, path_map, assets, meta) = maps(doc);
     // Named before the transaction is taken, never inside it: asking a
@@ -431,30 +487,42 @@ fn measure(doc: &Doc) -> (usize, usize) {
     let source = doc.get_or_insert_text(SOURCE);
     let txn = doc.transact();
     let mut bytes = 0;
-    let mut keys = 0;
+    let mut files_count = 0;
     for (id, value) in files.iter(&txn) {
         bytes += id.len();
-        keys += 1;
-        if let Out::YText(text) = value {
-            bytes += text.get_string(&txn).len();
-        }
+        files_count += 1;
+        bytes += value_bytes(&txn, &value);
     }
-    for (id, _) in path_map.iter(&txn) {
+    for (id, value) in path_map.iter(&txn) {
         bytes += id.len();
-        keys += 1;
+        bytes += value_bytes(&txn, &value);
     }
-    for (path, _) in assets.iter(&txn) {
+    for (path, value) in assets.iter(&txn) {
         bytes += path.len();
-        keys += 1;
+        files_count += 1;
+        bytes += value_bytes(&txn, &value);
     }
-    for (key, _) in meta.iter(&txn) {
+    for (key, value) in meta.iter(&txn) {
         bytes += key.len();
+        bytes += value_bytes(&txn, &value);
     }
     // The retired text, so that a document being written by a browser on the
     // old bundle is measured for what it holds rather than for what it will
     // hold once the repair has folded it in.
     bytes += source.get_string(&txn).len();
-    (bytes, keys)
+    // Any root this schema did not name. `new_doc` names every root it uses
+    // up front for exactly this reason -- see its comment -- but an update
+    // decoded from a socket is not obliged to have come from this code, and
+    // a root nothing here reads is still bytes the store keeps.
+    let known: HashSet<&str> = [SOURCE, FILES, PATHS, ASSETS, META].into_iter().collect();
+    for (name, value) in txn.root_refs() {
+        if known.contains(name) {
+            continue;
+        }
+        bytes += name.len();
+        bytes += value_bytes(&txn, &value);
+    }
+    (bytes, files_count)
 }
 
 /// Decides whether an update may be applied, **without applying it**. The
@@ -476,15 +544,28 @@ fn measure(doc: &Doc) -> (usize, usize) {
 ///   the result measured. That is one encode and one decode of the document,
 ///   and it happens on the path where a socket is about to be closed anyway.
 ///
-/// The count of files has no such bound -- an update that adds a file is
-/// small -- so it is answered on the scratch copy whenever the document is
-/// already at its limit, which is the only time the answer can change.
+/// The count of files needs a bound of the same shape as the byte ceiling's,
+/// or the cheap branch below is unsound: encoding a new file (a `Y.Text` and
+/// its two map entries) takes strictly more than zero bytes, so a v1 update
+/// cannot create more new files than it has bytes. That bound is far looser
+/// than the byte one -- most updates are longer than `max_files` -- so in
+/// practice it only lets the cheap path decide `Fits` for updates too small
+/// to have added a file at all (a no-op replay, a short keystroke on an
+/// already-populated document). Anything else falls to the rehearsal below,
+/// which is exact. (Inspecting the decoded `yrs::Update` for map-item or
+/// new-type blocks would let more updates take the cheap path, but its block
+/// list is a private field of `yrs` 0.27 and not reachable from here.) Before
+/// this bound existed, the cheap path asked only whether the document's *old*
+/// file count was under the ceiling, which said nothing about how many files
+/// the update itself adds.
 pub fn admit_update(doc: &Doc, update: &[u8], ceiling: usize, max_files: usize) -> Admission {
     if Update::decode_v1(update).is_err() {
         return Admission::Malformed;
     }
-    let (bytes, keys) = measure(doc);
-    if bytes.saturating_add(update.len()) <= ceiling && keys < max_files {
+    let (bytes, files) = measure(doc);
+    let bytes_fit = bytes.saturating_add(update.len()) <= ceiling;
+    let files_fit = files.saturating_add(update.len()) <= max_files;
+    if bytes_fit && files_fit {
         return Admission::Fits;
     }
     // The bound was not enough to decide. Rehearse it somewhere that is not
@@ -496,10 +577,10 @@ pub fn admit_update(doc: &Doc, update: &[u8], ceiling: usize, max_files: usize) 
     if apply_update(&scratch, update).is_err() {
         return Admission::Malformed;
     }
-    let (bytes, keys) = measure(&scratch);
+    let (bytes, files) = measure(&scratch);
     if bytes > ceiling {
         Admission::TooLarge
-    } else if keys > max_files {
+    } else if files > max_files {
         Admission::TooMany
     } else {
         Admission::Fits
@@ -555,13 +636,26 @@ pub fn replace_text(doc: &Doc, wanted: &str, path: &str) {
 /// the file at that moment keeps their words and their caret.
 ///
 /// Positions are UTF-16 code units, because that is what the document counts
-/// in; the arithmetic below is over `u16` sequences for the same reason.
+/// in, but that is not the alphabet the boundary search below runs in --
+/// see why immediately after.
+///
+/// The common prefix and suffix are found over `char`s -- Unicode scalar
+/// values -- and never over raw UTF-16 code units. Two distinct astral
+/// characters (an emoji, say) can share a high surrogate or a low surrogate
+/// even though they are different scalars, so a boundary chosen by comparing
+/// code units can fall inside one of them. Yrs stores a surrogate pair as one
+/// indivisible element and panics if asked to delete only half of it, so that
+/// boundary must never be offered to it. Choosing boundaries between whole
+/// scalars first, and only then converting the counts on either side to the
+/// UTF-16 offsets `remove_range`/`insert` want, keeps every offset on a pair
+/// boundary by construction.
 fn edit_text(txn: &mut TransactionMut, text: &TextRef, wanted: &str) {
-    let current: Vec<u16> = text.get_string(txn).encode_utf16().collect();
-    let next: Vec<u16> = wanted.encode_utf16().collect();
-    if current == next {
+    let current = text.get_string(txn);
+    if current == wanted {
         return;
     }
+    let current: Vec<char> = current.chars().collect();
+    let next: Vec<char> = wanted.chars().collect();
     let mut head = 0;
     while head < current.len() && head < next.len() && current[head] == next[head] {
         head += 1;
@@ -573,13 +667,23 @@ fn edit_text(txn: &mut TransactionMut, text: &TextRef, wanted: &str) {
     {
         tail += 1;
     }
-    let removed = current.len() - head - tail;
-    let inserted = String::from_utf16_lossy(&next[head..next.len() - tail]);
+    // Translate the retained prefix/suffix, counted in scalars, into the
+    // UTF-16 offsets Yrs counts in. Each is a sum of `char::len_utf16` rather
+    // than a slice of the code-unit vector, so a boundary chosen above can
+    // never land inside a surrogate pair.
+    let head_units: usize = current[..head].iter().map(|c| c.len_utf16()).sum();
+    let tail_units: usize = current[current.len() - tail..]
+        .iter()
+        .map(|c| c.len_utf16())
+        .sum();
+    let current_units: usize = current.iter().map(|c| c.len_utf16()).sum();
+    let removed = current_units - head_units - tail_units;
+    let inserted: String = next[head..next.len() - tail].iter().collect();
     if removed > 0 {
-        text.remove_range(txn, head as u32, removed as u32);
+        text.remove_range(txn, head_units as u32, removed as u32);
     }
     if !inserted.is_empty() {
-        text.insert(txn, head as u32, &inserted);
+        text.insert(txn, head_units as u32, &inserted);
     }
 }
 

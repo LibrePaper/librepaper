@@ -31,7 +31,7 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::cli::{require_token, resolve_identifier, server_from};
+use crate::cli::{require_token_for, resolve_identifier, server_from};
 use crate::http::{detail_of, get_with_token, text};
 use crate::room::{decode_update, encode_update};
 use crate::session;
@@ -52,7 +52,7 @@ const RECONNECT_MOST: Duration = Duration::from_secs(30);
 pub async fn sync_document(identifier: &str, file: &str, server_flag: String, interval: String) {
     let server = server_from(&server_flag);
     let every = parse_interval(&interval).unwrap_or_else(|err| die(err));
-    let token = require_token();
+    let token = require_token_for(&server);
     let slug = resolve_identifier(identifier, &server).await;
 
     // Only an editor may change a document's source, in the browser and here.
@@ -130,6 +130,14 @@ pub struct Client {
     /// to disk, or last read from it without conflict. The `base` of the
     /// three-way merge.
     base: String,
+    /// Whether this client has ever finished a join. `false` until the first
+    /// one, so a file that already diverges from the session at that point is
+    /// read as the edit it plainly is rather than folded silently into
+    /// `base`. `true` after that, so a later join -- a reconnection -- merges
+    /// against the `base` the file and the session last agreed on instead of
+    /// replacing it with whatever the session became while the socket was
+    /// down, which is what `joined` below is for.
+    established: bool,
     /// The digest of what this client last wrote to the file, so the event its
     /// own write causes is not read back as an edit.
     wrote: String,
@@ -163,6 +171,7 @@ impl Client {
             outbox: Vec::new(),
             doc: session::new_doc(),
             base: String::new(),
+            established: false,
             wrote: String::new(),
             from_session: None,
             from_disk: None,
@@ -374,19 +383,42 @@ impl Client {
     /// idempotent, so it costs nothing when there was nothing to catch up, and
     /// it is strictly better than replaying the individual updates a dropped
     /// socket never acknowledged: it cannot miss one.
+    ///
+    /// A `y-state` arrives both on the first join and on every reconnection
+    /// after, and the two must not be reconciled the same way. On a first
+    /// join nothing has been agreed on yet, so the file's whole text is
+    /// rightly taken as the change it plainly is. On a reconnection `base`
+    /// still holds the last text the file and the session agreed on before
+    /// the socket dropped, and the session may well have moved on its own
+    /// while this client was away -- an author typing in a browser, a
+    /// restore. Replacing `base` with the state that just arrived, before
+    /// reconciling, would make that remote progress look like something the
+    /// file deliberately deleted: an untouched file, diffed against the new
+    /// remote text instead of the old base, is missing every word the
+    /// session gained, and the merge would carry those deletions right back
+    /// out to the server. So a reconnection reconciles against the base that
+    /// was already there, exactly as `read_file` does for an ordinary local
+    /// edit, and only `reconcile` -- once it has done that three-way merge --
+    /// moves `base` forward.
     fn joined(&mut self) -> Result<(), String> {
         let remote = session::text_of(&self.doc);
         match std::fs::read(&self.target) {
             Ok(raw) => {
                 let local = normalise(&raw)?;
-                // The file may have moved on since this client last ran, so
-                // what is on disk is an edit of the document rather than a
-                // second copy of the same words. `base` is empty on a first
-                // join, which makes the merge take the file's whole text as a
-                // change -- exactly right, since nothing here has agreed with
-                // anything yet.
-                self.base = remote.clone();
-                if local != remote {
+                if local == remote {
+                    // Nothing to reconcile: the file already says what the
+                    // session does, on a first join or a reconnection alike.
+                    self.base = remote;
+                } else if self.established {
+                    // A reconnection: merge against the base the file and the
+                    // session last agreed on, not against the state that just
+                    // arrived.
+                    self.reconcile(&local)?;
+                } else {
+                    // A first join: `base` is still empty, which makes the
+                    // merge take the file's whole text as a change -- exactly
+                    // right, since nothing here has agreed with anything yet.
+                    self.base = remote.clone();
                     self.reconcile(&local)?;
                 }
             }
@@ -398,6 +430,7 @@ impl Client {
             }
             Err(err) => return Err(format!("could not read {}: {err}", self.target.display())),
         }
+        self.established = true;
         let whole = session::encode_state(&self.doc);
         self.seq += 1;
         let seq = self.seq;
