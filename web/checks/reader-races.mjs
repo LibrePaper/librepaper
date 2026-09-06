@@ -18,7 +18,7 @@ const showCheckpoint = body("  async function showCheckpoint(sha)", "  async fun
 const backToNow = body("  function backToNow()", "  async function nameCheckpoint");
 const paintRendering = body("  async function paintRendering()", "  // The PDF this browser compiled");
 const deliverAndReplay = body("  function deliverPreview(payload)", "  // The kind of frame follows");
-const paintPreview = body("  async function paintPreview()", "  // Wait for a brief typing pause");
+const paintPreview = body("  async function paintPreview()", "  // Editors refresh at a bounded cadence");
 
 const deferred = () => {
   let resolve;
@@ -140,7 +140,7 @@ const context = (values) => vm.createContext({
   const ctx = context({
     displayedFormat: "latex", compilesHere: true, paintsTheFrame: true,
     issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
-    sourceGeneration: 0, latexPaintBusy: false, latexPaintQueued: false,
+    sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
     compiling: false, everPainted: true, latestPreview: old,
     sourceFormat: "latex", previewTimer: null, rendering: null,
     treeNow: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
@@ -163,7 +163,7 @@ const context = (values) => vm.createContext({
   await pending;
   assert.equal(ctx.latestPreview, old);
   assert.equal(sent.length, 0);
-  assert.equal(ctx.latexPaintBusy, false);
+  assert.equal(ctx.previewPaintBusy, false);
 }
 
 console.log("reader-races: all checks passed");
@@ -184,4 +184,117 @@ console.log("reader-races: all checks passed");
   vm.runInContext("filesChanged({})", ctx);
   assert.equal(refreshes, 2);
   assert.equal(changes, 3);
+}
+
+// A worker result still advances the preview after a keystroke. Requests made
+// during compilation coalesce into one render of the latest source.
+for (const invalidate of [null, "navigation", "main"]) {
+  const first = deferred();
+  const second = deferred();
+  const calls = [];
+  const delivered = [];
+  const diagnostics = [];
+  let text = "first";
+  let main = "main.md";
+  const ctx = context({
+    displayedFormat: "markdown", compilesHere: false, paintsTheFrame: true,
+    issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
+    sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
+    previewTimer: null, everPainted: true, latestPreview: null,
+    treeNow: () => ({ main, texts: { [main]: text }, digests: {} }),
+    headingOf: async () => "Title",
+    renderers: {
+      formatOf: () => "markdown",
+      render: (tree) => {
+        calls.push(tree);
+        return calls.length === 1 ? first.promise : second.promise;
+      },
+    },
+    deliverPreview: (payload) => delivered.push(payload.html),
+    diagnosticPainter: { rendered: (value) => diagnostics.push(value) },
+    say: (message) => assert.fail(message),
+  });
+  vm.runInContext(paintPreview, ctx);
+  const pending = vm.runInContext("paintPreview()", ctx);
+  await Promise.resolve();
+  text = "intermediate";
+  ctx.sourceGeneration++;
+  await vm.runInContext("paintPreview()", ctx);
+  text = "latest";
+  ctx.sourceGeneration++;
+  if (invalidate === "navigation") ctx.navigationGeneration++;
+  if (invalidate === "main") main = "other.md";
+  await vm.runInContext("paintPreview()", ctx);
+  assert.equal(calls.length, 1, "only one compile can be in flight");
+  first.resolve({ html: "first", diagnostics: [] });
+  await pending;
+  await new Promise(setImmediate);
+  assert.deepEqual(delivered, invalidate ? [] : ["first"]);
+  assert.equal(diagnostics.length, 0, "outdated diagnostics stay hidden");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].texts[main], "latest");
+  second.resolve({ html: "latest", diagnostics: [] });
+  await new Promise(setImmediate);
+  assert.equal(delivered.at(-1), "latest");
+  assert.equal(ctx.previewPaintBusy, false);
+}
+
+// Further keystrokes must not postpone an editor's already scheduled preview.
+{
+  let scheduled = 0;
+  const ctx = context({
+    sourceGeneration: 0, editing: true, sourceFormat: "markdown",
+    previewTimer: null, READER_DEBOUNCE: 1000,
+    diagnosticPainter: { typed: () => {} },
+    setTimeout: () => ++scheduled, clearTimeout: () => {}, paintPreview: () => {},
+  });
+  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
+  for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
+  assert.equal(scheduled, 1);
+  assert.equal(ctx.sourceGeneration, 10);
+}
+console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
+
+// Ctrl-S uses the existing reactive saving/offline badge. A static copy would
+// remain stuck after the server acknowledges the pending updates.
+{
+  const timers = [];
+  const ctx = context({
+    connected: true, persistence: { pending: 1, local: true }, state: "",
+    say: (value) => { ctx.state = value; }, setTimeout: (fn) => timers.push(fn),
+  });
+  vm.runInContext(body("  function reportPersistence()", "  // There is no save, so a close"), ctx);
+  vm.runInContext("reportPersistence()", ctx);
+  assert.equal(ctx.state, "");
+  ctx.persistence.pending = 0;
+  vm.runInContext("reportPersistence()", ctx);
+  assert.equal(ctx.state, "saved on the server");
+  timers.pop()();
+  assert.equal(ctx.state, "");
+  ctx.connected = false;
+  vm.runInContext("reportPersistence()", ctx);
+  assert.equal(ctx.state, "");
+}
+
+// A reconnect must check the document's creation before sending the old CRDT.
+for (const outcome of ["same", "recreated", "disconnected"]) {
+  const metadata = deferred();
+  const sent = [];
+  let reloads = 0;
+  const active = { joined: true, disconnected() { this.joined = false; }, open: () => ({ type: "y-open" }) };
+  const ctx = context({
+    rejoinRequest: 0, connected: true, session: active,
+    doc: { created_at: "first" }, SLUG: "example", KEY: "", keyHeaders: () => ({}),
+    fetch: () => metadata.promise, location: { reload: () => reloads++ },
+    room: { send: (message) => sent.push(message) }, outbox: { disconnected: () => {} },
+  });
+  vm.runInContext(body("  async function reconnected(up)", "  $effect(() => {\n    markViewed"), ctx);
+  const reconnecting = vm.runInContext("reconnected(true)", ctx);
+  assert.equal(active.joined, false);
+  assert.equal(sent.length, 0);
+  if (outcome === "disconnected") await vm.runInContext("reconnected(false)", ctx);
+  metadata.resolve({ ok: true, json: async () => ({ created_at: outcome === "recreated" ? "second" : "first" }) });
+  await reconnecting;
+  assert.equal(sent.length, outcome === "same" ? 1 : 0);
+  assert.equal(reloads, outcome === "recreated" ? 1 : 0);
 }

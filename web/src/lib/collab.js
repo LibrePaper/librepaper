@@ -26,6 +26,7 @@
 
 import * as Y from "yjs";
 import { IndexeddbPersistence } from "y-indexeddb";
+import { cacheName, restoreLegacyCache } from "./collab-cache.js";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate } from "y-protocols/awareness.js";
 import { SHELL_HEADERS, keyHeaders } from "./api.js";
 import { keyFor } from "./storage.js";
@@ -67,7 +68,7 @@ function mintId() {
 ///
 /// `mayEdit` is false for a reader, who joins to receive the text and never to
 /// change it.
-export function join({ send, onPeers, onState, name, slug, key = "", mayEdit = true }) {
+export function join({ send, onPeers, onState, name, slug, createdAt = "", key = "", mayEdit = true }) {
   const doc = new Y.Doc();
   // A document is a directory: `files` holds one Y.Text per file under an id
   // of its own, `paths` says what each of them is called, and `meta.main`
@@ -139,9 +140,10 @@ export function join({ send, onPeers, onState, name, slug, key = "", mayEdit = t
   // blocked -- is not a browser that cannot edit. It simply has nowhere to
   // keep the document, which is exactly what `local` is for saying.
   let store = null;
+  let legacyRestore = null;
   try {
     if (slug && mayEdit && typeof indexedDB !== "undefined") {
-      store = new IndexeddbPersistence(`komodoc-${slug}`, doc);
+      store = new IndexeddbPersistence(cacheName(slug, createdAt), doc);
       store.whenSynced.then(() => {
         local = true;
         report();
@@ -494,6 +496,10 @@ export function join({ send, onPeers, onState, name, slug, key = "", mayEdit = t
         Y.applyUpdate(doc, new Uint8Array(await response.arrayBuffer()), "remote");
       } else if (state.update) {
         Y.applyUpdate(doc, decode(state.update), "remote");
+      }
+      if (store && createdAt) {
+        legacyRestore ??= restoreLegacyCache(slug, doc);
+        await legacyRestore;
       }
       joined = true;
       // Whatever this browser has that the server may not: its own unsent

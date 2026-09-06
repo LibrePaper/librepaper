@@ -66,7 +66,7 @@ const tally = { total: 0, files: {} };
 const ROOTS = [
   ["/mirror/", MIRROR],
   ["/src/", join(REPO, "web", "src")],
-  ["/examples/", join(REPO, "examples", "latex")],
+  ["/examples/", join(REPO, "latex", "corpus")],
   ["/", join(REPO, "latex", "harness")],
 ];
 
