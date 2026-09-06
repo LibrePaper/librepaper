@@ -8,6 +8,11 @@
   // rounded rectangle as a square-cornered path is what made these look like
   // icons from two different sets.
   const ICONS = {
+    "triangle-alert": [
+      ["path", "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"],
+      ["path", "M12 9v4"],
+      ["path", "M12 17h.01"],
+    ],
     users: [
       ["path", "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"],
       ["path", "M16 3.128a4 4 0 0 1 0 7.744"],

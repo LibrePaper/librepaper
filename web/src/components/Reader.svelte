@@ -2069,7 +2069,7 @@
       <div class="sidebar-activity" role="group" aria-label="Sidebar sections">
         {#each TABS.filter((tab) => (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing)) as tab (tab.id)}
           <IconButton
-            icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "box"}
+            icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "triangle-alert"}
             label={tab.says} pressed={panel === tab.id}
             onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
         {/each}
