@@ -44,9 +44,13 @@ export function call(wasm, name, ...strings) {
   } finally {
     for (const { pointer, length } of written) wasm.dealloc(pointer, length);
   }
+  // Copy the output before reading any other ABI channel. A diagnostics call
+  // or a later compile may grow/replace WASM memory; retaining a view here
+  // would otherwise make the PDF silently change underneath the caller.
+  const out = wasm.output_ptr && length > 0
+    ? new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), length).slice()
+    : new Uint8Array();
   const decoder = new TextDecoder();
-  const out = new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), length);
-  const text = decoder.decode(out);
   // The second result channel: what the compiler had to say, as JSON, beside
   // the page rather than wrapped around it. A module built before it existed
   // says nothing, which reads as an empty list.
@@ -54,7 +58,7 @@ export function call(wasm, name, ...strings) {
   if (wasm.diagnostics && wasm.diagnostics_ptr) {
     const size = wasm.diagnostics();
     if (size > 0) {
-      const raw = new Uint8Array(wasm.memory.buffer, wasm.diagnostics_ptr(), size);
+      const raw = new Uint8Array(wasm.memory.buffer, wasm.diagnostics_ptr(), size).slice();
       try {
         diagnostics = JSON.parse(decoder.decode(raw)) || [];
       } catch {
@@ -62,7 +66,17 @@ export function call(wasm, name, ...strings) {
       }
     }
   }
-  return { text, ok: wasm.ok() !== 0, diagnostics };
+  // Old modules put a textual failure message in the output buffer and have
+  // no output_kind export. Treat their buffer as HTML for the worker's legacy
+  // diagnostic fallback; current modules explicitly return kind 0 on error.
+  const kind = wasm.output_kind ? wasm.output_kind() : 1;
+  return {
+    bytes: out,
+    text: kind === 1 ? decoder.decode(out) : "",
+    kind: kind === 2 ? "pdf" : kind === 1 ? "html" : null,
+    ok: wasm.ok() !== 0,
+    diagnostics,
+  };
 }
 
 export function handOver(wasm, tree) {
@@ -86,4 +100,3 @@ export function handOver(wasm, tree) {
   }
   if (wasm.set_main) call(wasm, "set_main", tree.main || "");
 }
-

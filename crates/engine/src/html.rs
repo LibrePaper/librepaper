@@ -132,7 +132,10 @@ mod tests {
         let source = "<!doctype html><title>A</title><p>hello</p>";
         assert_eq!(render(source, "Something Else"), source);
         let compiled = compile(source, "");
-        assert_eq!(compiled.page.as_deref(), Some(source));
+        assert_eq!(
+            compiled.output.as_ref().and_then(|output| output.html()),
+            Some(source)
+        );
         assert!(compiled.diagnostics.is_empty());
     }
 

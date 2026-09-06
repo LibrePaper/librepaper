@@ -42,7 +42,9 @@ help:  ## Display this help screen
 build: $(BIN)  ## Build dist/komodoc, with the shell and renderers embedded
 
 # Rebuilt whenever any source, page or renderer changes.
-$(BIN): $(SOURCES) $(WASM) $(SHELL_OUT)
+# Once the optional Typst module has been opted into, keep it in step with the
+# shell and native compiler. Otherwise a new binary can embed an old HTML ABI.
+$(BIN): $(SOURCES) $(WASM) $(wildcard $(TYPST)) $(SHELL_OUT)
 	@mkdir -p $(dir $@)
 	@cargo build --release -p komodoc
 	@cp target/release/komodoc $@
@@ -65,7 +67,7 @@ web/dist/README.md: README.md
 
 # The suite reads the built shell -- a test that asserts a page names its own
 # bundle needs that bundle to exist -- so the pages are built first.
-test: $(WASM) $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
+test: $(WASM) $(wildcard $(TYPST)) $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cd web && bun run check
 	@cargo fmt --check
 	@cargo clippy --workspace --all-targets -- -D warnings

@@ -135,8 +135,6 @@ pub struct Comment {
     pub source: Option<SourceAnchor>,
     #[serde(default)]
     pub body: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tags: Vec<String>,
     #[serde(default)]
     pub creator: String,
     #[serde(default)]
@@ -243,8 +241,6 @@ pub struct Message {
     pub motivation: String,
     #[serde(default)]
     pub body: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
     #[serde(default)]
     pub creator: String,
     #[serde(default)]
@@ -1492,7 +1488,6 @@ impl Room {
                         .flatten(),
                     region: spot,
                     body,
-                    tags: clean_tags(&incoming.tags, &config),
                     creator,
                     created: timestamp(),
                     resolved: false,
@@ -2584,6 +2579,61 @@ impl Room {
         Ok(size)
     }
 
+    /// Stores a rendering only while the live source still has the digest and
+    /// input identity the caller compiled. The source check and the rendering
+    /// registration share the room lock, so an edit cannot land between the
+    /// final check and the write and leave a stale PDF labelled current.
+    /// `Ok(None)` means the source moved while the request body was in flight.
+    pub async fn put_current_rendering(
+        &self,
+        sha: &str,
+        inputs: &str,
+        synctex: bool,
+        body: Vec<u8>,
+    ) -> Result<Option<i64>, String> {
+        let size = body.len() as i64;
+        if size == 0 {
+            return Err("that rendering is empty".into());
+        }
+        if !self.hold().await {
+            return Err("this room is held by another server".into());
+        }
+        let name = rendering_name(sha, synctex);
+        let (format, main) = {
+            let mut state = self.state.lock().await;
+            let current = tree_of(&state.session.doc, &state.session.asset_sizes).0;
+            if current.digest() != sha || current.input_digest() != inputs {
+                return Ok(None);
+            }
+            if let Some(known) = state.session.rendering_sizes.get(&name) {
+                return Ok(Some(*known));
+            }
+            let (key, kind) = if synctex {
+                (
+                    crate::blob::rendering_synctex_key(&self.slug, sha),
+                    "application/gzip",
+                )
+            } else {
+                (
+                    crate::blob::rendering_key(&self.slug, sha),
+                    "application/pdf",
+                )
+            };
+            self.blobs
+                .put(&key, body, kind)
+                .await
+                .map_err(|err| err.to_string())?;
+            state.session.rendering_sizes.insert(name.clone(), size);
+            state.session.rendering_written_at.insert(name, now_unix());
+            (
+                state.session.format.clone(),
+                session::main_path(&state.session.doc),
+            )
+        };
+        self.record_size_now(None, &format, &main).await;
+        Ok(Some(size))
+    }
+
     /// A rendering's bytes, for whoever may read the document.
     pub async fn read_rendering(&self, sha: &str, synctex: bool) -> Option<Vec<u8>> {
         let key = if synctex {
@@ -3152,24 +3202,6 @@ pub fn rate_key(address: &str) -> String {
             )
         }
     }
-}
-
-/// Normalises labels: lowercased, trimmed, deduplicated, capped in both length
-/// and number, so filtering by one of them is predictable.
-pub fn clean_tags(tags: &[String], config: &Configuration) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for tag in tags {
-        let label = clean(tag, config.caps.tag).trim().to_lowercase();
-        let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
-        if label.is_empty() || out.contains(&label) {
-            continue;
-        }
-        out.push(label);
-        if out.len() == config.max_tags {
-            break;
-        }
-    }
-    out
 }
 
 /// Keeps a rectangle only if it is one: inside the image, with a size worth

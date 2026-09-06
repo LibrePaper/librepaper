@@ -112,14 +112,13 @@ fn motivation_falls_back_to_the_default() {
 }
 
 #[test]
-fn export_carries_tags_and_highlights() {
+fn export_carries_comments_and_highlights() {
     let items = vec![
         Comment {
             id: "1".into(),
             motivation: "commenting".into(),
             exact: "the quick fox".into(),
             body: "clearer".into(),
-            tags: vec!["style".into(), "typo".into()],
             creator: "Vincent".into(),
             created: "2026-09-02T11:00:00Z".into(),
             ..Comment::default()
@@ -143,17 +142,7 @@ fn export_carries_tags_and_highlights() {
     .unwrap();
     let all = page["items"].as_array().unwrap();
 
-    // The remark and the two labels, each saying what it is for, which is how
-    // the spec expresses this.
-    let bodies = all[0]["body"].as_array().expect("three bodies");
-    assert_eq!(bodies.len(), 3, "{bodies:?}");
-    assert!(bodies
-        .iter()
-        .any(|b| b["value"] == "clearer" && b.get("purpose").is_none()));
-    assert_eq!(
-        bodies.iter().filter(|b| b["purpose"] == "tagging").count(),
-        2
-    );
+    assert_eq!(all[0]["body"]["value"], "clearer");
 
     // A highlight is a target with nothing said about it.
     assert!(

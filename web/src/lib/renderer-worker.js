@@ -3,8 +3,9 @@ import { load, call, handOver } from "./renderer-wasm.js";
 function render(wasm, tree, title) {
   handOver(wasm, tree);
   const source = tree.texts?.[tree.main] ?? "";
-  const { text, ok, diagnostics } = call(wasm, "compile", source, title);
-  if (ok) return { html: text, diagnostics };
+  const { bytes, text, kind, ok, diagnostics } = call(wasm, "compile", source, title);
+  if (ok && kind === "pdf") return { pdf: bytes.buffer, diagnostics };
+  if (ok && kind === "html") return { html: text, diagnostics };
   // A module built before the second result channel says nothing about why it
   // failed, and puts its message where the page would be. Rather than show
   // nothing at all, that message becomes a diagnostic with no place in the
@@ -12,7 +13,7 @@ function render(wasm, tree, title) {
   const said = diagnostics.length
     ? diagnostics
     : [{ severity: "error", message: text || "this document could not be compiled", hints: [], file: "", line: 0, column: 0, end_line: 0, end_column: 0 }];
-  return { html: null, diagnostics: said };
+  return { html: null, pdf: null, diagnostics: said };
 }
 
 // Keep ABI operations ordered even while the module is downloading.
@@ -26,7 +27,8 @@ self.onmessage = ({ data: { id, url, operation, args } }) => {
       else if (operation === "title") result = call(wasm, "title_of", args.source).text;
       else if (operation === "failure") result = wasm.failure_page ? call(wasm, "failure_page", args.title).text : null;
       else if (operation !== "warm") throw new Error(`Unknown renderer operation: ${operation}`);
-      self.postMessage({ id, result });
+      const transfer = result?.pdf instanceof ArrayBuffer ? [result.pdf] : [];
+      self.postMessage({ id, result }, transfer);
     } catch (error) {
       self.postMessage({ id, error: error.message || String(error) });
     }

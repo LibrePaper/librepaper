@@ -737,7 +737,7 @@ fn a_compile_says_which_siblings_it_read() {
     let main = dir.path().join("main.typ");
     let source = std::fs::read_to_string(&main).unwrap();
     let (compiled, read) = crate::render::read_and_note(&main, &source, "T");
-    assert!(compiled.page.is_some(), "the fixture does not compile");
+    assert!(compiled.output.is_some(), "the fixture does not compile");
     assert_eq!(read, vec!["lib.typ".to_string()]);
 
     // And a document that reads nothing says so, which is what stops the hint
@@ -769,9 +769,28 @@ fn a_document_named_without_a_directory_compiles() {
     );
     std::env::set_current_dir(here).expect("cd back");
     assert!(
-        compiled.page.is_some(),
+        compiled.output.is_some(),
         "a file named with no directory did not compile: {:?}",
         compiled.diagnostics
+    );
+    assert_eq!(read, vec!["lib.typ".to_string()]);
+}
+
+#[test]
+fn a_nested_main_compiles_against_the_captured_project_tree() {
+    let source = "#import \"../lib.typ\": word\n= T\n#word\n";
+    let files = vec![
+        ("chapters/main.typ".to_string(), source.as_bytes().to_vec()),
+        (
+            "lib.typ".to_string(),
+            b"#let word = \"project root\"\n".to_vec(),
+        ),
+    ];
+    let (compiled, read) =
+        crate::render::read_and_note_from_files("chapters/main.typ", source, "T", &files);
+    assert!(
+        compiled.output.is_some(),
+        "nested main did not compile: {compiled:?}"
     );
     assert_eq!(read, vec!["lib.typ".to_string()]);
 }

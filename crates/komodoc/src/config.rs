@@ -75,11 +75,6 @@ pub struct Configuration {
     pub motivations: Vec<String>,
     pub default_motivation: String,
 
-    /// How many labels one annotation may carry. Tags are what make a long
-    /// review navigable, but a dozen on one comment is a filing system, not a
-    /// label.
-    pub max_tags: usize,
-
     /// Caps a document title, in characters. Titles live in the index, which is
     /// read on nearly every request, so an unbounded title is a way to sink the
     /// whole deployment.
@@ -160,7 +155,6 @@ pub struct CapLimit {
     pub creator: usize,
     pub exact: usize,
     pub context: usize,
-    pub tag: usize,
 }
 
 impl Default for Configuration {
@@ -240,11 +234,9 @@ impl Default for Configuration {
                 creator: 80,
                 exact: 1000,
                 context: 64,
-                tag: 24,
             },
             motivations: ["commenting", "highlighting"].map(String::from).to_vec(),
             default_motivation: "commenting".to_string(),
-            max_tags: 6,
             max_title: 200,
             max_replies: 100,
             session: SessionLimit {

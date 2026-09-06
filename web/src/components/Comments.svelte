@@ -27,22 +27,6 @@
     onreply,
   } = $props();
 
-  // An empty set shows everything; an annotation matches if it carries every
-  // tag chosen.
-  let chosen = $state(new Set());
-
-  const allTags = $derived.by(() => {
-    const all = new Set();
-    for (const comment of comments) for (const tag of comment.tags || []) all.add(tag);
-    return [...all].sort();
-  });
-
-  function toggleTag(tag) {
-    const next = new Set(chosen);
-    next.has(tag) ? next.delete(tag) : next.add(tag);
-    chosen = next;
-  }
-
   function place(comment) {
     if (comment.region) {
       const at = figureAt[comment.region.image_index];
@@ -51,11 +35,7 @@
     return Number.isFinite(comment.start) ? comment.start : Infinity;
   }
 
-  const shown = $derived(
-    comments
-      .filter((comment) => [...chosen].every((tag) => (comment.tags || []).includes(tag)))
-      .sort((a, b) => place(a) - place(b) || a.seq - b.seq),
-  );
+  const shown = $derived([...comments].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
 
   const open = $derived(comments.filter((comment) => !comment.resolved).length);
 
@@ -98,20 +78,6 @@
     {/if}
   </PanelHeader>
 
-  {#if allTags.length}
-    <div class="mb-3 flex flex-wrap gap-1">
-      {#each allTags as tag}
-        <button
-          type="button"
-          class="chip {chosen.has(tag) ? 'preset-filled-primary-500' : 'preset-outlined-surface-300-700'}"
-          onclick={() => toggleTag(tag)}
-        >
-          {tag}
-        </button>
-      {/each}
-    </div>
-  {/if}
-
   <div id="comments" class="flex flex-col gap-3">
     {#each shown as comment (comment)}
       <CommentCard
@@ -120,7 +86,6 @@
         {commentingAs}
         {canModerate}
         went={went[comment.id] || null}
-        ontoggleTag={toggleTag}
         {onreveal}
         {onresolve}
         {ondelete}

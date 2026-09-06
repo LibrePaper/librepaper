@@ -173,6 +173,17 @@ pub fn render_typst_document(file: &Path, source: &str, title: &str) -> Compiled
     read_and_note(file, source, title).0
 }
 
+/// Takes ownership of the typed PDF emitted by the Typst backend. Keeping this
+/// at the host boundary prevents callers from accidentally treating binary
+/// PDF bytes as the legacy HTML `page` string.
+pub fn pdf_of(compiled: &Compiled) -> Option<Vec<u8>> {
+    compiled
+        .output
+        .as_ref()
+        .and_then(|rendered| rendered.pdf())
+        .map(ToOwned::to_owned)
+}
+
 /// The same, and what the compile asked for beside it.
 ///
 /// A document that imports a chapter or cites a bibliography reads files it
@@ -198,6 +209,23 @@ pub fn read_and_note(file: &Path, source: &str, title: &str) -> (Compiled, Vec<S
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
+    read_and_note_in_root(&root, &name, source, title)
+}
+
+/// Compiles a directory publish against the exact project root that will be
+/// uploaded. A nested main file still resolves imports from that root, and the
+/// engine receives its full relative path so dependency discovery matches the
+/// server's canonical tree.
+pub fn read_and_note_in_root(
+    root: &Path,
+    name: &str,
+    source: &str,
+    title: &str,
+) -> (Compiled, Vec<String>) {
+    let root = match std::path::absolute(root) {
+        Ok(root) => root,
+        Err(err) => return (Compiled::failed(err.to_string()), Vec::new()),
+    };
     let asked: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let compiled = {
         let reader = |path: &Path| -> Option<Vec<u8>> {
@@ -211,7 +239,41 @@ pub fn read_and_note(file: &Path, source: &str, title: &str) -> (Compiled, Vec<S
             }
             found
         };
-        typst::render(source, title, &name, &reader, typst::Today::now())
+        typst::render(source, title, name, &reader, typst::Today::now())
+    };
+    let mut read = asked.into_inner().unwrap_or_default();
+    read.sort();
+    (compiled, read)
+}
+
+/// The captured-file variant used by native directory publishing. The caller
+/// has already applied ignore and path rules, so compiling from this map keeps
+/// a file changing on disk from making the PDF disagree with the uploaded
+/// tree.
+pub fn read_and_note_from_files(
+    name: &str,
+    source: &str,
+    title: &str,
+    files: &[(String, Vec<u8>)],
+) -> (Compiled, Vec<String>) {
+    let captured: std::collections::HashMap<String, Vec<u8>> = files
+        .iter()
+        .map(|(path, bytes)| (crate::paths::normalise(path), bytes.clone()))
+        .collect();
+    let asked: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let compiled = {
+        let reader = |path: &Path| -> Option<Vec<u8>> {
+            let key = crate::paths::normalise(&path.to_string_lossy());
+            let found = captured.get(&key).cloned();
+            if found.is_some() && key != crate::paths::normalise(name) {
+                let mut seen = asked.lock().unwrap_or_else(|held| held.into_inner());
+                if !seen.contains(&key) {
+                    seen.push(key);
+                }
+            }
+            found
+        };
+        typst::render(source, title, name, &reader, typst::Today::now())
     };
     let mut read = asked.into_inner().unwrap_or_default();
     read.sort();
@@ -307,12 +369,12 @@ mod tests {
 
         let main = dir.path().join("main.typ");
         let page = render_typst_document(&main, &std::fs::read_to_string(&main).unwrap(), "T")
-            .into_result()
+            .into_pdf_result()
             .expect("compile");
-        assert!(page.contains("sibling"));
+        assert!(page.starts_with(b"%PDF"));
 
         let escaping = "#import \"../komodoc-above-the-root.typ\": word\n#word\n";
-        assert!(render_typst_document(&main, escaping, "T").page.is_none());
+        assert!(render_typst_document(&main, escaping, "T").output.is_none());
         let _ = std::fs::remove_file(above);
     }
 
@@ -328,7 +390,10 @@ mod tests {
         std::fs::write(&main, source).unwrap();
 
         let compiled = render_typst_document(&main, source, "T");
-        assert!(compiled.page.is_none(), "a broken document rendered a page");
+        assert!(
+            compiled.output.is_none(),
+            "a broken document rendered a page"
+        );
         let errors: Vec<String> = compiled
             .errors()
             .map(|diagnostic| diagnostic.to_line("paper.typ"))

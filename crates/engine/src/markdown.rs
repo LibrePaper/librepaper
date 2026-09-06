@@ -66,9 +66,9 @@ pub fn render_body(source: &str) -> String {
 /// only thing that knows where those bytes ended up, so it answers.
 ///
 /// Typst needs none of this: it reads a figure through the same file map it
-/// reads an import through, and `typst-html` writes the image into the page as
-/// a data URL. Markdown's images are HTML that comrak has already produced, so
-/// the rewriting happens after it rather than inside it.
+/// reads an import through and embeds it in the PDF. Markdown's images are
+/// HTML that comrak has already produced, so the rewriting happens after it
+/// rather than inside it.
 pub type Resolve<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// Nothing beside the document, which is what a one-file markdown source has

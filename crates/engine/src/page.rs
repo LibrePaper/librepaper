@@ -2,17 +2,13 @@
 //! HTML file with its styles inline, because a published document has to stand
 //! on its own -- no webfonts, no scripts, nothing to fetch.
 
-/// What a document Komodoc rendered looks like. One file, because more than
-/// one renderer needs it: markdown is rendered through this crate, and typst by
-/// the typst compiler, whose HTML export brings its own markup and no styling
-/// to speak of. Wrapping both in the same page is what stops a typst document
-/// looking like a different application from a markdown one.
+/// What an HTML document Komodoc rendered looks like. One file, because
+/// Markdown and authored HTML use this page; Typst documents are paged PDFs
+/// and use the PDF viewer instead.
 pub const DOCUMENT_CSS: &str = include_str!("../document.css");
 
 /// Wraps rendered body HTML in the standalone page a document is stored as.
-/// `head` is whatever the renderer needs of its own -- typst's HTML export
-/// carries the styles its maths depends on -- and goes after the shared
-/// stylesheet, so a renderer can override it.
+/// `head` is any renderer-specific stylesheet and goes after the shared sheet.
 pub fn page(title: &str, head: &str, body: &str) -> String {
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\

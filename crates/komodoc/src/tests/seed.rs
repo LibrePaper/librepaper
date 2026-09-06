@@ -147,10 +147,12 @@ async fn seeded_annotations_anchor() {
             crate::render::render_markdown_document(&source, document.title)
         } else if crate::render::is_typst(&document.file) {
             let compiled = crate::render::render_typst_document(&path, &source, document.title);
-            match compiled.page {
-                Some(rendered) => rendered,
-                None => panic!("{}: {}", document.file, compiled.message()),
+            if compiled.output.is_none() {
+                panic!("{}: {}", document.file, compiled.message());
             }
+            // Typst annotations are anchored by source quotation and are
+            // re-anchored into the stored PDF by the reader.
+            source.clone()
         } else if crate::render::is_latex(&document.file) {
             latex_prose(&source)
         } else {

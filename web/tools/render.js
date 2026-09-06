@@ -5,7 +5,10 @@
 // The renderers are the engine's, compiled to WebAssembly -- the same modules
 // the editor loads -- so this needs no toolchain of its own beyond what the
 // build already produces.
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 function load(name) {
   const path = new URL(`../dist/wasm/${name}.wasm`, import.meta.url);
@@ -31,8 +34,30 @@ function call(wasm, name, ...strings) {
   } finally {
     for (const { pointer, length } of written) wasm.dealloc(pointer, length);
   }
-  const out = new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), length);
-  return { text: new TextDecoder().decode(out), ok: wasm.ok() !== 0 };
+  const out = new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), length).slice();
+  const kind = wasm.output_kind ? wasm.output_kind() : 1;
+  return { bytes: out, text: new TextDecoder().decode(out), kind, ok: wasm.ok() !== 0 };
+}
+
+// Typst's browser output is a PDF, so the sync check uses the same extracted
+// text a PDF reader anchors against. Poppler is already a required dependency
+// of `check:typst-pdf`; keeping this independent parser here avoids decoding a
+// binary PDF as HTML and lets this check remain a Node-only source navigation
+// check.
+function pdfText(bytes, label) {
+  const directory = mkdtempSync(join(tmpdir(), "komodoc-sync-pdf-"));
+  const file = join(directory, "render.pdf");
+  try {
+    writeFileSync(file, bytes);
+    return execFileSync("pdftotext", ["-layout", file, "-"], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+    }).replace(/\s+/g, " ").trim();
+  } catch (error) {
+    throw new Error(`${label}: PDF text extraction needs pdftotext (${error.message})`);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 /// What the agent publishes from a rendered document: its visible text, with
@@ -76,9 +101,9 @@ const render = (name) => (source, file) => {
     for (const [path, bytes] of Object.entries(tree.assets)) call(wasm, "add_file", path, bytes);
     if (wasm.set_main) call(wasm, "set_main", tree.main || "");
   }
-  const { text, ok } = call(wasm, "compile", tree.texts[tree.main] ?? "", tree.main);
-  if (!ok) throw new Error(`${tree.main}: ${text}`);
-  return visibleText(text);
+  const result = call(wasm, "compile", tree.texts[tree.main] ?? "", tree.main);
+  if (!result.ok) throw new Error(`${tree.main}: ${result.text}`);
+  return result.kind === 2 ? pdfText(result.bytes, tree.main) : visibleText(result.text);
 };
 
 export const renderMarkdown = render("markdown");

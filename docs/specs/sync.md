@@ -86,8 +86,9 @@ snapshot and include the source SHA so the client can identify what it saw.
 The room persists edits under `docs/specs/history.md`, even with no browser
 attached. The older proposal that a peer render HTML for each save is
 superseded: this client edits source and requests checkpoints just as sync
-does. LaTeX rendering, when needed, follows `docs/specs/latex.md` rather than
-creating an automation-only server renderer.
+does. Typst's browser preview is a PDF and follows `docs/specs/typst-pdf.md`;
+LaTeX rendering, when needed, follows `docs/specs/latex.md`. Neither creates
+an automation-only server renderer.
 
 Tests cover a browser and an automation client editing concurrently,
 annotation creation and resolution attributed the way the link attributes --

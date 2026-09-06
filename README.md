@@ -331,12 +331,12 @@ checkpointed twice, and nothing is ever rewritten. Checkpoints are kept from
 the first version of this, and are what a restore, a diff and the timeline in
 the toolbar will be built on; none of those three exists yet.
 
-Rendering happens in the browser, by the same compiler the command line
-renders with, built for WebAssembly â for readers as much as for editors. The
-deployment stores the source and nothing rendered from it, so what a reader
-sees is by construction what the source says, and a live document costs the
-deployment no CPU and no bandwidth beyond relaying a few dozen bytes per
-keystroke.
+Rendering happens on clients. Markdown readers render HTML in the browser;
+Typst editors compile PDFs in a WebAssembly worker, using the same compiler
+as the command line. The deployment stores Typst and LaTeX PDFs under the
+digest of their source tree, so readers can view them without downloading a
+compiler. The server synchronizes source and stores artifacts; it does not
+compile documents.
 
 The formats, and they are not available in the same places:
 
@@ -353,16 +353,23 @@ no `typst` binary on your PATH, because the compiler is inside Komodoc, and it
 is the same one the editor runs â so a document cannot render one way when it
 is published and another way when it is edited.
 
-The typst module is thirty megabytes, typst itself and the fonts it sets
-documents in, so it is optional at build time and fetched only by someone who
-opens a typst document. Both modules are fetched once and cached for a year.
-Since nothing rendered is stored, a build without the typst module cannot show
-a typst document at all, and refuses to create one rather than storing a source
-nobody could read.
+The Typst module contains the compiler and embedded fonts. It is optional at
+build time and downloaded automatically when an editor needs it, without a
+TeX distribution chooser. Renderer URLs include their content digest and are
+cached for a year. A deployment without Typst WASM can still serve stored PDFs.
 
-Typst's HTML export is still marked experimental upstream, so complex
-documents may not survive it intact. Simple ones, including maths, come out as
-real HTML with MathML, which is what lets comments anchor into them at all.
+Typst uses its paged PDF exporter, preserving page layout, columns, headers,
+footers, and typography. The shared PDF viewer supplies selectable text for
+comments and highlights. Source navigation matches visible text; generated
+text and formulas can have no match. Existing project-file and package
+resolution limits still apply.
+
+The first successful PDF is stored immediately; later versions are stored
+after the source stays quiet or a checkpoint is named. A compile error keeps
+the last successful preview and shows diagnostics. Documents created through
+the source API, and older Typst documents without a stored PDF, show "Not yet
+rendered" until an editor compiles them. Native Typst publishing uploads its
+PDF when the compiled inputs match the published project.
 
 The typst renderer is built by `make typst`, which needs a Rust toolchain and
 is deliberately not part of `make build`. Without it Komodoc builds and runs
@@ -682,8 +689,8 @@ komodoc serve --max-size 8 --max-assets 16 --quota 500 --storage 10240
 
 A document is a directory, so `--max-size` bounds the sum of its texts and
 `--max-assets` bounds its figures. Both count against `--quota`; a figure is
-an upload and counts against `--uploads-per-hour` like any other. A LaTeX
-document also keeps the PDF an editor's browser compiled, so that a reader
+an upload and counts against `--uploads-per-hour` like any other. A Typst or
+LaTeX document also keeps the PDF a client compiled, so that a reader
 never has to compile one: `--max-size` bounds that PDF too, it counts against
 the quota and the hourly uploads like a figure, and only the newest one plus
 the named checkpoints' are kept. On a

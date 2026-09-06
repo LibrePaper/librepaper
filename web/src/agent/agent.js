@@ -349,6 +349,7 @@
 
   let tool = "commenting"; // set by the sidebar; only "region" draws on figures
   const digests = new WeakMap();
+  let regionsGeneration = 0;
 
   const images = () => [...document.images].filter((img) => img.width > 40 && img.height > 40);
 
@@ -416,6 +417,7 @@
 
   // Paint the rectangles the sidebar could place, one layer per image.
   async function paintRegions(regions) {
+    const mine = ++regionsGeneration;
     quietly(() => {
       document.querySelectorAll(".komodoc-regions").forEach((layer) => (layer.innerHTML = ""));
     });
@@ -423,7 +425,11 @@
     // The digests touch crypto.subtle, which is the slow part; running them
     // together rather than one at a time in a loop is free concurrency.
     const hexes = await Promise.all(found.map((image) => digestOf(image)));
+    if (mine !== regionsGeneration) return;
     const byDigest = new Map(found.map((image, i) => [hexes[i], image]));
+    const placed = [];
+    const unplaceable = [];
+    const pdf = Boolean(document.querySelector(".pages"));
 
     quietly(() => {
       for (const item of regions) {
@@ -431,7 +437,10 @@
         // a new image at the old position. Positional matching is reserved for
         // legacy annotations that never had an identity in the first place.
         const image = item.digest ? byDigest.get(item.digest) : found[item.index];
-        if (!image) continue;
+        if (!image) {
+          if (item.id != null) unplaceable.push(String(item.id));
+          continue;
+        }
         const box = document.createElement("span");
         box.dataset.komodoc = item.id;
         box.style.cssText =
@@ -441,8 +450,18 @@
           "pointer-events:auto;cursor:pointer;box-sizing:border-box";
         box.onclick = () => post({ type: "focus", id: item.id });
         layerFor(image).appendChild(box);
+        if (item.id != null) placed.push(String(item.id));
       }
     });
+    // A PDF has pages, not HTML image elements. Its old figure-region records
+    // remain in the comments, but there is no honest page/figure coordinate
+    // transform, so report them rather than attaching them to a whole page or
+    // to a different image. The same message also labels a missing HTML image
+    // until a later mutation makes it placeable.
+    if (unplaceable.length) {
+      post({ type: "regions-unplaceable", ids: unplaceable, reason: pdf ? "pdf" : "figure-unavailable" });
+    }
+    if (placed.length) post({ type: "regions-placeable", ids: placed });
   }
 
   // Dragging a rectangle on a figure, while the region tool is chosen.

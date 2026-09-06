@@ -4,7 +4,8 @@ Status: the compiler, the mirror, the viewer, the card and stored renderings
 are built and are no longer described here. `latex/` builds and serves the
 mirror, `web/src/lib/latex.js` and `web/src/lib/latex/` drive four
 distributions from a worker and read their logs, `web/src/entries/viewer.js`
-and `web/src/lib/pdf/` draw a PDF with comments anchored into its text layer,
+and `web/src/lib/pdf/` draw paged PDFs with comments anchored into their text
+layer,
 `crates/komodoc/src/latex.rs` is `--latex`, `web/src/components/LatexCard.svelte`
 is the card, and the renderings routes in `crates/komodoc/src/server.rs` with
 their storage and pruning in `crates/komodoc/src/room.rs` are what readers
@@ -24,10 +25,17 @@ editor with comments, and readers have renderings, without them.
 | `komodoc serve --latex <url-or-dir>` | where the mirror is. Defaults to the project's bucket, refuses plain `http:` at startup, and is served to browsers from `/latex/` on the deployment's own origin, so the list of packages a document asks for goes no further than the deployment that has the source. `/api/config` says `latex: true` when a mirror is configured |
 | `web/src/lib/latex.js` | `at(url)`, `available()`, `chosen()`, `choose(name)`, `compile(tree)` returning `{pdf, synctex, log, diagnostics}`. Cache Storage under the mirror's URL, persistence asked for once; at most one compile running and one queued, the queued one always the latest |
 | `web/src/lib/latex/worker.js`, `swiftlatex.js`, `busytex.js`, `texlyre.js`, `log.js` | the worker, the glue, one file per distribution, and the log parser, which emits `crates/engine/src/diagnostic.rs`'s shape and treats a line it does not recognise as nothing |
-| `web/src/entries/viewer.js`, `web/src/lib/pdf/` | the frame for a PDF, on the documents origin, taking the editor's `preview` message with `pdf` bytes where an HTML document has `html`; every page's canvas and text layer stacked in one scrolling document, the agent's table rebuilt as pages render, highlights painted in the text layer; `komodocViewer.pageForOffset` exposed for SyncTeX |
+| `web/src/entries/viewer.js`, `web/src/lib/pdf/` | the frame for a paged PDF, on the documents origin, taking the editor's `preview` message with `pdf` bytes where a flow document has `html`; every page's canvas and text layer stacked in one scrolling document, the agent's table rebuilt as pages render, highlights painted in the text layer; `komodocViewer.pageForOffset` exposed for SyncTeX |
 | `renderings/<slug>/<sha>` and `<sha>.synctex` | a rendering, the PDF an editor's browser compiled, keyed by the checkpoint it was compiled from; the SyncTeX file gzipped beside it when the compiler returned one. `PUT` by whoever may edit, readable by whoever may read, counted against the quota, pruned to the newest plus every labelled checkpoint |
 | `latex/corpus/` | the corpus, its logs per engine, `MEASUREMENTS.md`, and `pages.json` from a TeX Live on a desk |
 | `web/checks/latex-log.mjs`, `latex-check.mjs`, `viewer-check.mjs` | the parser over every log in the corpus; the distributions in headless Chromium against the mirror; the anchoring miss rate over a hyphenated line end, a page break inside a sentence, a footnote and a ligature |
+
+Text annotations survive a move between flow HTML and a paged PDF through
+their quotation and source selectors. Figure-region annotations are different:
+their stored image digest and index identify an HTML image, and the PDF viewer
+has no reliable image-to-page coordinate transform. Such a region is retained
+and labelled unavailable in the PDF rather than being attached to a whole page
+or silently moved to another figure.
 
 Of the four distributions only SwiftLaTeX pdfTeX is `shown`. The
 measurements found that SwiftLaTeX XeTeX's dvipdfmx has no font to embed and
@@ -44,8 +52,9 @@ no `make latex`.
 ## SyncTeX
 
 The reader already has a place-mapping between the source and the page for
-markdown and typst, `sync.sourcePlaceFor`, built on the text the engine
-emits. For a PDF the mapping is SyncTeX's, and the compiler writes it for
+Markdown and Typst, `sync.sourcePlaceFor`, built on the text the engine emits.
+Typst's PDF text layer uses that same text-based heuristic; it does not require
+SyncTeX. For LaTeX's PDF the mapping is SyncTeX's, and the compiler writes it for
 free where the engine can: `compile` returns `synctex` from TeXlyre's
 BusyTeX, whose pipeline runs with `-synctex=1`, and `null` from SwiftLaTeX,
 whose modules export no SyncTeX at all, and from BusyTeX, whose pipeline

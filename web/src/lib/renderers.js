@@ -42,6 +42,27 @@ export function available(format) {
   return format === "html" || Boolean(urls()[format]);
 }
 
+// The source format and the output painted by the reader are separate
+// concerns. Both LaTeX and Typst produce a paged PDF; Markdown and authored
+// HTML produce flow HTML. Keeping this mapping here prevents the reader from
+// accidentally using LaTeX's compiler chooser as a proxy for PDF support.
+export function outputKind(format) {
+  if (format === "latex" || format === "typst") return "pdf";
+  if (format === "markdown" || format === "html") return "html";
+  return "";
+}
+
+export function producesPdf(format) {
+  return outputKind(format) === "pdf";
+}
+
+// Whether this browser can compile a source document. Stored artifacts remain
+// readable when this is false; in particular a reader does not need Typst WASM
+// merely to open a PDF another editor already produced.
+export function compilerAvailable(format) {
+  return format === "latex" ? latexOffered : available(format);
+}
+
 function request(format, operation, args = {}) {
   const url = urls()[format];
   if (!url) return Promise.reject(new Error(`no renderer for ${format}`));
@@ -74,8 +95,8 @@ export function formatOf(path) {
 /// could not be fetched.
 ///
 /// A render carries `html` or `pdf`, never both, and the caller posts
-/// whichever it has: an HTML document is painted into the shell and a LaTeX
-/// one into the PDF frame, and that is the whole difference at this level.
+/// whichever it has: flow documents are painted into the shell and paged
+/// documents into the PDF frame, and that is the whole difference here.
 export async function render(tree, title) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = formatOf(tree.main);
@@ -94,7 +115,7 @@ export async function render(tree, title) {
   // assets/<sha>` out of anything rendered: on a private document that route
   // needs a credential, and a credential does not belong in a page.
   if (format === "latex") {
-    const { pdf, synctex, diagnostics, seconds } = await latex.compile(tree);
+    const { pdf, synctex, diagnostics, seconds, log } = await latex.compile(tree);
     // Keep the output channels explicit. In particular, a failed LaTeX
     // compile has no HTML page; `undefined` would look like a page to callers
     // that use a null check and could replace a previously good preview.
@@ -104,6 +125,9 @@ export async function render(tree, title) {
       synctex: synctex || null,
       diagnostics: diagnostics || [],
       seconds,
+      // The log travels too, for the one case the list is empty and the log
+      // is the only account of why there is no PDF.
+      log: log || "",
     };
   }
   // Checkpoints may be Svelte proxies, which cannot cross a worker boundary.
@@ -111,6 +135,19 @@ export async function render(tree, title) {
   return request(format, "render", {
     tree: { main: tree.main, texts: { ...tree.texts }, assets: { ...tree.assets }, urls: { ...tree.urls } },
     title,
+  }).then((result) => {
+    // The binary worker returns `{pdf, diagnostics}` for Typst. Normalize the
+    // owned bytes here so Reader never decodes a PDF through TextDecoder.
+    if (format === "typst") {
+      const pdf = result?.pdf;
+      return {
+        ...result,
+        html: null,
+        pdf: pdf == null ? null : pdf instanceof Uint8Array ? pdf : new Uint8Array(pdf),
+        diagnostics: result?.diagnostics || [],
+      };
+    }
+    return result;
   });
 }
 
@@ -122,7 +159,7 @@ export async function failurePage(title, format) {
   // No TeX makes a page out of a log. A LaTeX document that will not compile
   // keeps the last one that did, and shows nothing before there was one --
   // which is what the badge and the pane are for.
-  if (format === "latex") return null;
+  if (producesPdf(format)) return null;
   return request(format, "failure", { title });
 }
 

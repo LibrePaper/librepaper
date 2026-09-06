@@ -718,7 +718,8 @@ async fn handle(
                 .serve_shell(&arrival, slug, request.uri().query())
                 .await;
         }
-        // The PDF frame, for a document whose format is `latex`. It is the
+        // The PDF frame, for a document whose format is a paged source such as
+        // LaTeX or Typst. It is the
         // same shell as above in every way that confines a document -- same
         // CSP, same `frame-ancestors`, same agent, same `no-store` -- and
         // differs only in what it can be sent: a `preview` message carrying
@@ -2795,8 +2796,22 @@ impl Server {
         // is that moment; the SHA the live text would take becomes one here,
         // because a rendering of a moment nothing recorded is a rendering of
         // nothing.
+        let current_only =
+            header_of(request.headers(), "x-komodoc-current").is_some_and(|value| value == "1");
+        let expected_inputs = header_of(request.headers(), "x-komodoc-inputs").unwrap_or_default();
+        let current_tree = room.tree().await;
+        if current_only
+            && (current_tree.digest() != sha
+                || expected_inputs.is_empty()
+                || current_tree.input_digest() != expected_inputs)
+        {
+            return write_json(
+                409,
+                &json!({"error": "the source tree changed before its PDF could be stored"}),
+            );
+        }
         if !room.manifest().await.has(&sha) {
-            if room.tree().await.digest() != sha {
+            if current_tree.digest() != sha {
                 return write_json(
                     409,
                     &json!({"error": "that is not a checkpoint of this document, or the text has moved on"}),
@@ -2836,9 +2851,23 @@ impl Server {
                 }
             }
         }
-        match room.put_rendering(&sha, synctex, body.to_vec()).await {
-            Ok(size) => write_json(200, &json!({"sha": sha, "size": size})),
-            Err(why) => write_json(413, &json!({"error": why})),
+        if current_only {
+            match room
+                .put_current_rendering(&sha, &expected_inputs, synctex, body.to_vec())
+                .await
+            {
+                Ok(Some(size)) => write_json(200, &json!({"sha": sha, "size": size})),
+                Ok(None) => write_json(
+                    409,
+                    &json!({"error": "the source tree changed before its PDF could be stored"}),
+                ),
+                Err(why) => write_json(413, &json!({"error": why})),
+            }
+        } else {
+            match room.put_rendering(&sha, synctex, body.to_vec()).await {
+                Ok(size) => write_json(200, &json!({"sha": sha, "size": size})),
+                Err(why) => write_json(413, &json!({"error": why})),
+            }
         }
     }
 
@@ -2926,13 +2955,21 @@ impl Server {
             return plain(404, "not found");
         }
         let room = self.rooms.get(slug).await;
-        let live = room.tree().await.digest();
+        let current_tree = room.tree().await;
+        let live = current_tree.digest();
+        let inputs = current_tree.input_digest();
         match room.newest_rendering().await {
             Some((sha, at, current)) => write_json(
                 200,
-                &json!({"sha": sha, "at": at, "current": current, "live": live}),
+                &json!({
+                    "sha": sha,
+                    "at": at,
+                    "current": current,
+                    "live": live,
+                    "inputs": inputs
+                }),
             ),
-            None => write_json(200, &json!({"live": live})),
+            None => write_json(200, &json!({"live": live, "inputs": inputs})),
         }
     }
 
@@ -3530,7 +3567,7 @@ impl Server {
 
     /// The same frame, for a document that is a PDF.
     ///
-    /// A LaTeX document has no HTML to paint, so the empty shell above is the
+    /// A paged document has no HTML to paint, so the empty shell above is the
     /// wrong page for it: what arrives over the channel is PDF bytes, and
     /// something on this origin has to draw them. That something is
     /// `web/viewer.html`, a pdf.js viewer served from the shell, and this

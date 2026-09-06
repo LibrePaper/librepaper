@@ -8,11 +8,12 @@ use serde_json::{json, Value};
 
 use crate::config::Configuration;
 use crate::http::{
-    detail_of, get_as, get_json, get_with_token, post_directory, post_json, text, Credentials,
+    detail_of, get_as, get_json, get_with_token, post_directory, post_json, put_current_bytes,
+    text, Credentials,
 };
 use crate::render::{
-    counted, is_html, is_markdown, is_typst, read_and_note, render_typst_document, report,
-    title_from_html, title_from_markdown, title_from_typst,
+    counted, is_html, is_markdown, is_typst, pdf_of, read_and_note, read_and_note_from_files,
+    report, title_from_html, title_from_markdown, title_from_typst,
 };
 use crate::util::{die, is_terminal_stdin, is_terminal_stdout, read_line};
 
@@ -663,18 +664,25 @@ async fn publish_directory(
     // the server works it out again from the same name -- so this is only for
     // the title and, for typst, for the compile that says whether the document
     // is one a reader will be able to render.
+    let mut typst_pdf = None;
+    let mut typst_dependencies = Vec::new();
+    let mut typst_inputs = String::new();
     if is_typst(&main) {
         if title.is_empty() {
             title = title_from_typst(&source);
         }
-        let compiled = render_typst_document(&root.join(&main), &source, &title_or(&title, &main));
+        let (compiled, dependencies) =
+            read_and_note_from_files(&main, &source, &title_or(&title, &main), &files);
+        typst_dependencies = dependencies;
+        typst_inputs = input_digest_for_typst(&main, &files, &rules);
         report(&compiled.diagnostics, &main);
-        if compiled.page.is_none() {
+        if compiled.output.is_none() {
             die(format!(
                 "{main} did not compile ({})",
                 counted(compiled.errors().count().max(1), "error")
             ))
         }
+        typst_pdf = pdf_of(&compiled);
     } else if title.is_empty() {
         // A format with no heading scan of its own is named by its file, which
         // is what `title_or` below does anyway. Better that than running an
@@ -703,6 +711,10 @@ async fn publish_directory(
     );
 
     let server = server_from(&server_flag);
+    let uploaded_paths: std::collections::HashSet<String> = files
+        .iter()
+        .map(|(path, _)| crate::paths::normalise(path))
+        .collect();
     let (status, document) = post_directory(
         &format!("{server}/api/documents"),
         &title,
@@ -721,6 +733,21 @@ async fn publish_directory(
         ));
     }
     report_published(&server, &document, &format!("{}", root.display()));
+    if let Some(pdf) = typst_pdf {
+        let missing: Vec<String> = typst_dependencies
+            .iter()
+            .filter(|path| !uploaded_paths.contains(&crate::paths::normalise(path)))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            upload_typst_pdf(&server, &document, pdf, &typst_inputs).await;
+        } else {
+            eprintln!(
+                "warning: source published, but no PDF artifact was uploaded; the local compile read files not in the published tree: {}",
+                missing.join(", ")
+            );
+        }
+    }
 }
 
 /// What `publish` prints: the read link when the document has one, since
@@ -790,13 +817,33 @@ async fn publish_file(file: &str, mut title: String, slug: String, server_flag: 
     // Every format komodoc renders has one, HTML included: its renderer is the
     // identity, so an HTML document's source is the HTML it was published as.
     let (mut source, mut source_format) = (String::new(), String::new());
+    let mut typst_pdf = None;
+    let mut typst_inputs = String::new();
 
     if is_typst(file) {
         if title.is_empty() {
             // The first heading names the document, before the filename does.
             title = title_from_typst(&html);
         }
-        let (compiled, siblings) = read_and_note(path, &html, &title_or(&title, file));
+        // A one-file publish is stored under the canonical `main.typ` path.
+        // Compile that exact tree so a source that refers to its own filename
+        // cannot produce a PDF for a different input than the server stores.
+        let canonical_main = crate::room::main_path_for("", "typst");
+        let (original, discovered) = read_and_note(path, &html, &title_or(&title, file));
+        let (compiled, siblings) = if discovered.is_empty() {
+            (
+                read_and_note_from_files(
+                    &canonical_main,
+                    &html,
+                    &title_or(&title, file),
+                    &[(canonical_main.clone(), raw.clone())],
+                )
+                .0,
+                discovered,
+            )
+        } else {
+            (original, discovered)
+        };
         // Every diagnostic, where it is, and nothing uploaded if any of them
         // is an error: `publish` exists to make a document readable, and a
         // document that does not compile is not one.
@@ -819,11 +866,25 @@ async fn publish_file(file: &str, mut title: String, slug: String, server_flag: 
         }
         let errors = compiled.errors().count();
         let warnings = compiled.warnings().count();
-        if compiled.page.is_none() {
+        if compiled.output.is_none() {
             die(format!(
                 "{base_name} did not compile ({})",
                 counted(errors.max(1), "error")
             ))
+        }
+        if siblings.is_empty() {
+            typst_pdf = pdf_of(&compiled);
+            let config = Configuration::default();
+            typst_inputs = input_digest_for_typst(
+                &canonical_main,
+                &[(canonical_main.clone(), raw.clone())],
+                &config.paths(),
+            );
+        } else {
+            eprintln!(
+                "warning: source will be published without a PDF artifact because the local compile read files not included in this one-file publish: {}",
+                siblings.join(", ")
+            );
         }
         eprintln!(
             "rendered {base_name} ({} KiB of typst{})",
@@ -914,6 +975,123 @@ async fn publish_file(file: &str, mut title: String, slug: String, server_flag: 
     }
 
     report_published(&server, &document, file);
+    if let Some(pdf) = typst_pdf {
+        // A one-file publish is allowed to remain source-only when the local
+        // compile had imports beside it. The source is still useful, but the
+        // PDF must never be attached to a server tree that does not contain
+        // those inputs.
+        if source_format == "typst" {
+            upload_typst_pdf(&server, &document, pdf, &typst_inputs).await;
+        }
+    }
+}
+
+/// Uploads the native Typst PDF after the source tree has been accepted. The
+/// server's `live` digest is authoritative: a revision may be checkpointed
+/// lazily, and the response's historical `sha` can therefore lag the exact
+/// tree the upload just installed.
+async fn upload_typst_pdf(server: &str, document: &Value, pdf: Vec<u8>, expected_inputs: &str) {
+    let slug = text(document, "slug");
+    if slug.is_empty() {
+        eprintln!("warning: source published, but its PDF artifact has no document slug");
+        return;
+    }
+    let token = crate::cli::stored_token_for(server);
+    let (status, latest) = match get_with_token(
+        &format!("{server}/api/documents/{slug}/renderings/latest"),
+        &token,
+        Duration::from_secs(60),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            eprintln!(
+                "warning: source published, but could not find its live tree for the PDF: {err}"
+            );
+            return;
+        }
+    };
+    if status != 200 {
+        eprintln!(
+            "warning: source published, but could not find its live tree for the PDF: {}",
+            detail_of(&latest)
+        );
+        return;
+    }
+    let sha = text(&latest, "live");
+    if sha.is_empty() {
+        eprintln!(
+            "warning: source published, but the server returned no live tree digest for the PDF"
+        );
+        return;
+    }
+    if text(&latest, "inputs") != expected_inputs {
+        eprintln!(
+            "warning: source published, but its canonical file tree differs from the local Typst inputs; no PDF artifact was uploaded"
+        );
+        return;
+    }
+    let (status, reply) = match put_current_bytes(
+        &format!("{server}/api/documents/{slug}/renderings/{sha}"),
+        pdf,
+        &token,
+        "application/pdf",
+        expected_inputs,
+        Duration::from_secs(300),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            eprintln!("warning: source published, but PDF artifact upload failed: {err}");
+            return;
+        }
+    };
+    if status != 200 {
+        eprintln!(
+            "warning: source published, but PDF artifact upload failed ({}): {}\n  Retry by compiling the Typst source again and PUTting it to /api/documents/{slug}/renderings/{sha}",
+            status,
+            detail_of(&reply)
+        );
+    } else {
+        eprintln!("uploaded Typst PDF artifact for tree {sha}");
+    }
+}
+
+/// Builds the same source-input identity the server reports for a live room.
+/// Yjs item ids are intentionally omitted: they identify an editing history,
+/// while this digest identifies the exact main file and dependency bytes used
+/// by the native compiler.
+fn input_digest_for_typst(
+    main: &str,
+    files: &[(String, Vec<u8>)],
+    rules: &crate::paths::Rules<'_>,
+) -> String {
+    let mut tree = crate::history::Tree {
+        main: main.to_string(),
+        files: std::collections::BTreeMap::new(),
+    };
+    for (path, bytes) in files {
+        let kind = match crate::paths::check(rules, path) {
+            Ok(kind) => kind,
+            Err(_) => continue,
+        };
+        let kind = match kind {
+            crate::paths::Kind::Text => "text",
+            crate::paths::Kind::Asset => "asset",
+        };
+        tree.files.insert(
+            crate::paths::normalise(path),
+            crate::history::TreeEntry {
+                kind: kind.to_string(),
+                id: String::new(),
+                sha: crate::store::digest_of_bytes(bytes),
+                size: bytes.len() as i64,
+            },
+        );
+    }
+    tree.input_digest()
 }
 
 /// Falls back to the filename, the way an untitled document is named.

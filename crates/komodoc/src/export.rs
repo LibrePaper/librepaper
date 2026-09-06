@@ -17,23 +17,11 @@ use crate::util::die;
 
 pub const ANNOTATION_CONTEXT: &str = "http://www.w3.org/ns/anno.jsonld";
 
-/// The body of an annotation: the remark itself, and the labels on it as
-/// tagging bodies. A single body stays a single object rather than a list of
-/// one, which is what the spec's examples look like; a highlight has nothing
-/// to say, and the spec allows a body-less annotation.
+/// The body of an annotation. A highlight has nothing to say, and the spec
+/// allows a body-less annotation.
 fn bodies_for(item: &Comment) -> Option<Value> {
-    let mut bodies = Vec::new();
-    if !item.body.is_empty() {
-        bodies.push(json!({"type": "TextualBody", "value": item.body, "format": "text/plain"}));
-    }
-    for tag in &item.tags {
-        bodies.push(json!({"type": "TextualBody", "value": tag, "purpose": "tagging"}));
-    }
-    match bodies.len() {
-        0 => None,
-        1 => bodies.pop(),
-        _ => Some(Value::Array(bodies)),
-    }
+    (!item.body.is_empty())
+        .then(|| json!({"type": "TextualBody", "value": item.body, "format": "text/plain"}))
 }
 
 /// A quotation for an annotation on words, and a rectangle for one on part of
@@ -313,9 +301,6 @@ pub fn render_markdown(
             "\n---\n\n## {motivation} by {}{state}\n\n",
             item.creator
         );
-        if !item.tags.is_empty() {
-            let _ = write!(out, "`{}`\n\n", item.tags.join("` `"));
-        }
         if let Some(region) = &item.region {
             let _ = write!(
                 out,
@@ -557,7 +542,7 @@ fn typst_from(main: &str, texts: &serde_json::Map<String, Value>) -> Option<Stri
     let file = root.join(main);
     let compiled = crate::render::render_typst_document(&file, texts[main].as_str()?, "");
     let _ = std::fs::remove_dir_all(&root);
-    compiled.page
+    crate::render::pdf_of(&compiled).map(|_| texts[main].as_str().unwrap_or_default().to_string())
 }
 
 /// The manifest, oldest first, or an empty list when there is none to read.

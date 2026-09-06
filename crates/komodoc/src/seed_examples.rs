@@ -6,9 +6,9 @@
 //! carries a TeX.
 //!
 //! Between them the annotations use every kind there is: a remark, a bare
-//! highlight with no words at all, and a box drawn on a figure. Several carry
-//! tags, some have replies, and one is already resolved, so the sidebar shows
-//! what each state looks like.
+//! highlight with no words at all, and a box drawn on a figure. Some have
+//! replies, and one is already resolved, so the sidebar shows what each state
+//! looks like.
 //!
 //! Every `exact` below has to appear in the rendered HTML. `seed` says so when
 //! one does not, rather than writing an annotation that anchors nowhere.
@@ -20,14 +20,12 @@ fn note(
     motivation: &'static str,
     exact: &'static str,
     body: &'static str,
-    tags: &[&'static str],
     creator: &'static str,
 ) -> SeedAnnotation {
     SeedAnnotation {
         motivation,
         exact,
         body,
-        tags: tags.to_vec(),
         creator,
         ..SeedAnnotation::default()
     }
@@ -52,22 +50,22 @@ pub fn seed_documents() -> Vec<SeedDocument> {
             title: "Markdown: What a Regression Table Is Hiding",
             annotations: vec![
                 note("commenting", "every summary is a decision about what to leave out",
-                    "This is the thesis, and it arrives in the first sentence. Good.", &["framing"], "Vincent"),
+                    "This is the thesis, and it arrives in the first sentence. Good.", "Vincent"),
                 SeedAnnotation {
                     replies: vec!["Illustrative. I will make the numbers obviously round."],
                     ..note("commenting", "A model fit on 4,102 of 11,000 rows is a model of the 4,102.",
-                        "Is the 11,000 a real figure or an illustration? If it is illustrative, say so, because it reads as a specific study.", &["evidence"], "Reviewer")
+                        "Is the 11,000 a real figure or an illustration? If it is illustrative, say so, because it reads as a specific study.", "Reviewer")
                 },
-                note("highlighting", "A tight interval around a biased estimate is the most misleading object in applied statistics", "", &["teaching"], "Reviewer"),
+                note("highlighting", "A tight interval around a biased estimate is the most misleading object in applied statistics", "", "Reviewer"),
                 note("commenting", "Standard errors clustered at the wrong level are not conservative; they are simply wrong, and usually too small.",
-                    "Two claims in one sentence, and the second is the surprising one. Split them.", &["style"], "Vincent"),
+                    "Two claims in one sentence, and the second is the surprising one. Split them.", "Vincent"),
                 SeedAnnotation {
                     resolved: true,
                     ..note("commenting", "An effect that appears in the pooled data and in neither half is not a subtle effect.",
-                        "The most useful sentence in the note, and it is third in a numbered list where nobody will find it.", &["structure"], "Vincent")
+                        "The most useful sentence in the note, and it is third in a numbered list where nobody will find it.", "Vincent")
                 },
                 note("commenting", "A table that admits nothing is not a table without problems.",
-                    "A good closing line. It would be stronger still if the note gave one real example of a table doing this well.", &["exposition"], "Reviewer"),
+                    "A good closing line. It would be stronger still if the note gave one real example of a table doing this well.", "Reviewer"),
             ],
         },
         SeedDocument {
@@ -80,22 +78,22 @@ pub fn seed_documents() -> Vec<SeedDocument> {
             title: "Typst: What a Confidence Interval Does Not Say",
             annotations: vec![
                 note("commenting", "A confidence interval is a statement about a procedure, not about a parameter.",
-                    "The thesis, in the first sentence, where it belongs.", &["framing"], "Vincent"),
+                    "The thesis, in the first sentence, where it belongs.", "Vincent"),
                 SeedAnnotation {
                     replies: vec!["Fair. I will point at the specification-curve literature rather than leave it bare."],
                     ..note("commenting", "Sampling error is one source of uncertainty and rarely the largest.",
-                        "Rarely by what standard? This is the claim a sceptical reader will stop at, and it is asserted rather than shown.", &["evidence"], "Reviewer")
+                        "Rarely by what standard? This is the claim a sceptical reader will stop at, and it is asserted rather than shown.", "Reviewer")
                 },
-                note("highlighting", "The parameter is fixed; the interval is what moved.", "", &["teaching"], "Reviewer"),
+                note("highlighting", "The parameter is fixed; the interval is what moved.", "", "Reviewer"),
                 note("commenting", "It is the same significance test wearing a different coat.",
-                    "The metaphor is doing the work a sentence should. Say the thing.", &["style"], "Vincent"),
+                    "The metaphor is doing the work a sentence should. Say the thing.", "Vincent"),
                 SeedAnnotation {
                     resolved: true,
                     ..note("commenting", "Precision is expensive",
-                        "Three words carrying the most useful idea in the note, halfway down a section nobody will reach.", &["structure"], "Vincent")
+                        "Three words carrying the most useful idea in the note, halfway down a section nobody will reach.", "Vincent")
                 },
                 note("commenting", "no interval has ever covered that",
-                    "A good closing line, and it earns the whole note. Keep it.", &["exposition"], "Reviewer"),
+                    "A good closing line, and it earns the whole note. Keep it.", "Reviewer"),
             ],
         },
         SeedDocument {
@@ -109,25 +107,25 @@ pub fn seed_documents() -> Vec<SeedDocument> {
                 SeedAnnotation {
                     replies: vec!["Agreed. I would go further and say it belongs in the first line."],
                     ..note("commenting", "The approximation is the whole method",
-                        "This is the sentence the rest of the note hangs on. Worth putting it in the abstract too.", &["framing"], "Vincent")
+                        "This is the sentence the rest of the note hangs on. Worth putting it in the abstract too.", "Vincent")
                 },
                 note("commenting", "The bootstrap says nothing about that gap",
-                    "Is that strictly true? A bootstrap bias estimate exists, even if it is noisy. Perhaps: says nothing about that gap without further assumptions?", &["accuracy", "bias"], "Reviewer"),
-                note("highlighting", "the bootstrap distribution of the maximum is degenerate at the top", "", &["teaching"], "Vincent"),
+                    "Is that strictly true? A bootstrap bias estimate exists, even if it is noisy. Perhaps: says nothing about that gap without further assumptions?", "Reviewer"),
+                note("highlighting", "the bootstrap distribution of the maximum is degenerate at the top", "", "Vincent"),
                 note("commenting", "The interval is not wrong so much as over-confident",
-                    "Sharper, and avoids implying intent.", &["style"], "Reviewer"),
+                    "Sharper, and avoids implying intent.", "Reviewer"),
                 SeedAnnotation {
                     resolved: true,
                     replies: vec!["Moved it above the figure in the next draft."],
                     ..note("commenting", "no number of bootstrap replicates",
-                        "This is the most useful paragraph in the note. It is also the one most readers will skip, because it arrives after the plot.", &[], "Vincent")
+                        "This is the most useful paragraph in the note. It is also the one most readers will skip, because it arrives after the plot.", "Vincent")
                 },
                 // The first figure: the two densities, with the offset between
                 // them that the text is about.
                 SeedAnnotation {
                     region: region(0, 34.0, 12.0, 30.0, 62.0),
                     ..note("commenting", "",
-                        "The offset between the two peaks is the point of the figure, but nothing in the image says so. A short arrow and a label would carry it.", &["figures"], "Reviewer")
+                        "The offset between the two peaks is the point of the figure, but nothing in the image says so. A short arrow and a label would carry it.", "Reviewer")
                 },
             ],
         },
@@ -142,22 +140,22 @@ pub fn seed_documents() -> Vec<SeedDocument> {
             title: "LaTeX: What a Standard Error Assumes",
             annotations: vec![
                 note("commenting", "A standard error is not a property of an estimate.",
-                    "The thesis, first, in one sentence. The rest of the note is the argument for it.", &["framing"], "Vincent"),
+                    "The thesis, first, in one sentence. The rest of the note is the argument for it.", "Vincent"),
                 SeedAnnotation {
                     replies: vec!["It is a made-up table. I will say so in the caption."],
                     ..note("commenting", "The third row is nearly three times the first.",
-                        "Where do these numbers come from? If the table is illustrative, say so; a reader will take 0.117 as a result from somewhere.", &["evidence"], "Reviewer")
+                        "Where do these numbers come from? If the table is illustrative, say so; a reader will take 0.117 as a result from somewhere.", "Reviewer")
                 },
-                note("highlighting", "forty states are forty draws, however many people live in them", "", &["teaching"], "Reviewer"),
+                note("highlighting", "forty states are forty draws, however many people live in them", "", "Reviewer"),
                 note("commenting", "It is the difference between a result and a shrug",
-                    "The line lands, but \"shrug\" is doing the work a number should. Give the two intervals.", &["style"], "Vincent"),
+                    "The line lands, but \"shrug\" is doing the work a number should. Give the two intervals.", "Vincent"),
                 SeedAnnotation {
                     resolved: true,
                     ..note("commenting", "the level of clustering is a claim about the design, not a robustness check",
-                        "This is the most useful sentence in the note, and it is the second half of a paragraph in the third section. Promote it.", &["structure"], "Vincent")
+                        "This is the most useful sentence in the note, and it is the second half of a paragraph in the third section. Promote it.", "Vincent")
                 },
                 note("commenting", "a number that was printed because the software prints one",
-                    "A good closing line. Keep it.", &["exposition"], "Reviewer"),
+                    "A good closing line. Keep it.", "Reviewer"),
             ],
         },
     ]

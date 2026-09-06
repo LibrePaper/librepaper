@@ -8,7 +8,7 @@
 // renders rather than one per checkpoint -- which is the whole reason it is a
 // bisection and not a walk.
 
-import { wentAt } from "../src/lib/passages.js";
+import { textAt, wentAt } from "../src/lib/passages.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -99,6 +99,60 @@ const sourceComment = (revision) => ({
     position: null,
   },
 });
+
+// Historical Typst checkpoints already have a stored PDF. Passage lookup
+// must read that artifact directly, just like LaTeX, without trying to warm a
+// browser compiler or falling through to the HTML renderer.
+{
+  let compiled = 0;
+  let gathered = 0;
+  let pdfRead = 0;
+  const text = await textAt(
+    "slug",
+    "typst-checkpoint",
+    {},
+    {
+      history: { checkpoint: async () => ({ main: "main.typ", texts: { "main.typ": "#page" }, files: {} }) },
+      renderers: {
+        formatOf: () => "typst",
+        producesPdf: () => true,
+        render: async () => { compiled++; return { html: "<p>wrong path</p>" }; },
+      },
+      figures: { gather: async () => { gathered++; return { assets: {}, urls: {} }; } },
+      fetch: async () => ({ ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer }),
+      pdfText: async (bytes) => { pdfRead += bytes.byteLength; return "stored Typst page"; },
+    },
+  );
+  check("historical Typst passages read stored PDF text", text === "stored Typst page");
+  check("historical Typst passage lookup does not compile or gather figures", compiled === 0 && gathered === 0);
+  check("historical Typst passage lookup consumed the PDF artifact", pdfRead === 3);
+}
+
+// A missing rendering is unknown only for that attempt. Once the artifact is
+// uploaded, the same history lookup must retry it rather than serving a
+// permanently cached null; separate documents with the same checkpoint SHA
+// also have independent rendering caches.
+{
+  let available = false;
+  let fetches = 0;
+  const services = {
+    history: { checkpoint: async (slug) => ({ main: "main.typ", texts: { "main.typ": slug }, files: {} }) },
+    renderers: { formatOf: () => "typst", producesPdf: () => true },
+    fetch: async () => {
+      fetches++;
+      return available
+        ? { ok: true, arrayBuffer: async () => Uint8Array.of(9).buffer }
+        : { ok: false };
+    },
+    pdfText: async () => "recovered PDF text",
+  };
+  const missing = await textAt("retry-doc", "same-sha", {}, services);
+  available = true;
+  const recovered = await textAt("retry-doc", "same-sha", {}, services);
+  const otherDocument = await textAt("other-doc", "same-sha", {}, services);
+  check("a missing historical PDF is retried after it appears", missing === null && recovered === "recovered PDF text");
+  check("historical PDF cache keys include the document", otherDocument === "recovered PDF text" && fetches === 3);
+}
 
 /* ---------------------------------------------------------- source anchors */
 

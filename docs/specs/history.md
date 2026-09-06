@@ -184,8 +184,10 @@ out.
 - **Rendering on the server.** Excluded from this plan. Having the native
   engine in the executable does not put compilation in the request path.
   Rendering and visual diffs run on clients; the server handles permission
-  checks, synchronization, persistence, quotas, and retention. LaTeX
-  readers use the client-produced PDFs described in `docs/specs/latex.md`.
+  checks, synchronization, persistence, quotas, and retention. Typst and LaTeX
+  readers use client-produced PDFs, keyed by source-tree digest and retained
+  for the latest rendering and named checkpoints. See `docs/specs/typst-pdf.md`
+  and `docs/specs/latex.md`.
 - **The quiet interval.** Five minutes is a guess in both directions: long
   enough that a paragraph is a checkpoint and not each sentence of it,
   short enough that a session's worth of work is many points rather than

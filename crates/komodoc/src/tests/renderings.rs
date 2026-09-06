@@ -60,6 +60,29 @@ async fn put_rendering(
     (status, serde_json::from_slice(&raw).unwrap_or(Value::Null))
 }
 
+async fn put_current_rendering(
+    cookie: &str,
+    base: &str,
+    slug: &str,
+    name: &str,
+    inputs: &str,
+    body: Vec<u8>,
+) -> (u16, Value) {
+    let response = client()
+        .put(format!("{base}/api/documents/{slug}/renderings/{name}"))
+        .header("x-komodoc-client", "1")
+        .header("x-komodoc-current", "1")
+        .header("x-komodoc-inputs", inputs)
+        .header("cookie", cookie)
+        .body(body)
+        .send()
+        .await
+        .expect("a response");
+    let status = response.status().as_u16();
+    let raw = response.bytes().await.unwrap_or_default();
+    (status, serde_json::from_slice(&raw).unwrap_or(Value::Null))
+}
+
 async fn get_rendering(cookie: &str, base: &str, slug: &str, name: &str) -> (u16, Vec<u8>) {
     get_rendering_keyed(cookie, "", base, slug, name).await
 }
@@ -160,6 +183,113 @@ async fn a_rendering_goes_up_and_comes_back_and_makes_its_own_checkpoint() {
     let (status, back) = get_rendering_keyed("", &key, &server.url, &slug, &sha).await;
     assert_eq!(status, 200);
     assert_eq!(back, bytes, "what came back is not what went up");
+}
+
+/// Typst uses the same immutable rendering identity and authorization rules as
+/// LaTeX. The source can be created without a rendering, then an editor can
+/// attach the native PDF once its browser or CLI compiler succeeds.
+#[tokio::test]
+async fn a_typst_source_starts_unrendered_and_accepts_a_pdf_artifact() {
+    let server = new_test_server().await;
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    server
+        .instance
+        .rooms
+        .get(&slug)
+        .await
+        .set_source("= Typst paper\n\nA paged document.\n", "typst")
+        .await;
+    let (status, before) = get_latest_keyed("", &key, &server.url, &slug).await;
+    assert_eq!(status, 200);
+    assert!(
+        before["sha"].is_null(),
+        "a source-only Typst paper has a PDF"
+    );
+    let sha = text(&before, "live");
+    let bytes = pdf(42);
+    let (status, answer) = put_rendering(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &slug,
+        &sha,
+        bytes.clone(),
+    )
+    .await;
+    assert_eq!(status, 200, "{answer}");
+    let (status, back) = get_rendering_keyed("", &key, &server.url, &slug, &sha).await;
+    assert_eq!(status, 200);
+    assert_eq!(back, bytes);
+}
+
+/// Exercise the native publish flow end to end: the CLI compiles a real Typst
+/// document, publishes its source, and attaches the resulting PDF to the
+/// server tree through the guarded artifact endpoint.
+#[tokio::test]
+async fn native_cli_typst_publish_stores_a_real_pdf() {
+    let server = test_server_with(
+        Configuration::default(),
+        Policy::parse("anyone"),
+        Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let directory = tempfile::tempdir().expect("directory");
+    let file = directory.path().join("paper.typ");
+    std::fs::write(&file, "= Native PDF\n\nA real Typst artifact.\n").expect("source");
+    crate::cli::publish(
+        file.to_str().expect("path"),
+        String::new(),
+        String::new(),
+        server.url.clone(),
+        String::new(),
+    )
+    .await;
+    let entry = server
+        .instance
+        .store
+        .list()
+        .await
+        .into_iter()
+        .find(|entry| entry.source_format == "typst")
+        .expect("the CLI published a Typst entry");
+    let (status, latest) = get_latest("", &server.url, &entry.slug).await;
+    assert_eq!(status, 200);
+    let sha = text(&latest, "sha");
+    assert!(
+        !sha.is_empty(),
+        "native publish did not store a PDF: {latest}"
+    );
+    let (status, bytes) = get_rendering("", &server.url, &entry.slug, &sha).await;
+    assert_eq!(status, 200);
+    assert!(bytes.starts_with(b"%PDF"), "native artifact is not a PDF");
+}
+
+/// Native publishing asks for a current tree. A historical SHA is otherwise
+/// valid for browser history rendering, so the extra contract must reject a
+/// stale PDF even when its old checkpoint remains in the manifest.
+#[tokio::test]
+async fn a_current_artifact_cannot_be_attached_to_an_older_tree() {
+    let server = new_test_server().await;
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let cookie = session_as(TEST_PUBLISHER);
+    let old_sha = live_sha(&server, &slug).await;
+    put_rendering(&cookie, &server.url, &slug, &old_sha, pdf(51)).await;
+    server
+        .instance
+        .rooms
+        .get(&slug)
+        .await
+        .set_source("# My Paper\n\nA newer tree.\n", "markdown")
+        .await;
+    let (_, latest) = get_latest(&cookie, &server.url, &slug).await;
+    let inputs = text(&latest, "inputs");
+    assert!(!inputs.is_empty(), "latest did not identify its input tree");
+    let (status, answer) =
+        put_current_rendering(&cookie, &server.url, &slug, &old_sha, &inputs, pdf(52)).await;
+    assert_eq!(status, 409, "{answer}");
 }
 
 /// The SyncTeX file rides beside the PDF under the same name, and is fetched

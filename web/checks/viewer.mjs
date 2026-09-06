@@ -77,12 +77,13 @@ const HARNESS = `<!doctype html><meta charset="utf-8"><body>
 <script type="module">
 import { anchorOne, flatten } from "/src/lib/anchor.js";
 const frame = document.getElementById("frame");
-window.seen = { ready: [], selection: [] };
+window.seen = { ready: [], selection: [], regions: [] };
 addEventListener("message", (event) => {
   const message = event.data;
   if (!message || message.komodoc !== true) return;
   if (message.type === "ready") window.seen.ready.push(message.text);
   if (message.type === "selection") window.seen.selection.push(message.selector);
+  if (message.type === "regions-unplaceable") window.seen.regions.push(message);
 });
 window.sendPdf = async (path) => {
   const bytes = await fetch(path).then((r) => r.arrayBuffer());
@@ -98,6 +99,8 @@ window.anchor = (selector) => {
 };
 window.paint = (ranges) =>
   frame.contentWindow.postMessage({ komodoc: true, type: "highlight", ranges }, "*");
+window.paintRegions = (regions) =>
+  frame.contentWindow.postMessage({ komodoc: true, type: "regions", regions }, "*");
 window.doc = () => frame.contentDocument;
 window.ready = true;
 </script></body>`;
@@ -337,6 +340,22 @@ async function run() {
     "the viewer reports its page count for the caret lock to use",
     drawn.viewerPages === 3,
     String(drawn.viewerPages),
+  );
+
+  // HTML-era figure-region records remain records after a document moves to
+  // PDF, but the PDF text layer has no honest image-to-page coordinate map.
+  // The agent must preserve and label such a region instead of attaching it
+  // to page one or silently dropping it.
+  await tab.eval(`
+    window.seen.regions.length = 0;
+    window.paintRegions([{ id: "legacy-figure", digest: "old-image", index: 0, x: 10, y: 10, w: 20, h: 20 }]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  `);
+  const regionResult = await tab.eval(`return window.seen.regions.at(-1) || null;`);
+  check(
+    "an old figure region is explicitly unplaceable in a PDF",
+    regionResult?.reason === "pdf" && regionResult.ids.includes("legacy-figure"),
+    JSON.stringify(regionResult),
   );
 
   /* --- the joined text reads as prose ------------------------------------ */

@@ -1,9 +1,8 @@
-//! Typst, compiled to the page a document is stored as.
+//! Typst, compiled to the PDF document a document is stored as.
 //!
-//! The editor anchors comments into rendered text, so PDF and SVG are both
-//! useless to it: neither has text nodes to walk, and a comment has nothing to
-//! attach to. Typst's HTML export does have them, which is what makes a typst
-//! document annotable the way a markdown one is.
+//! PDF is the canonical Typst output. The editor uses pdf.js for its text
+//! layer, which keeps the same annotation and source-navigation data model as
+//! the other renderers while preserving Typst's paged layout.
 //!
 //! Everything the compiler may read is handed to it here. The main source is
 //! the document being edited; anything it imports is asked of a `Files`
@@ -22,9 +21,10 @@ use typst::foundations::{Bytes, Datetime, Duration};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
-use typst::{Feature, Features, Library, LibraryExt, World, WorldExt};
+use typst::{Library, LibraryExt, World, WorldExt};
+use typst_layout::PagedDocument;
 
-use crate::diagnostic::{Compiled, Diagnostic, Severity};
+use crate::diagnostic::{Compiled, Diagnostic, RenderedDocument, Severity};
 use crate::page;
 
 /// The compiler this crate is built against, for the version a publisher is
@@ -64,17 +64,10 @@ fn fonts() -> &'static Fonts {
     })
 }
 
-/// The library, built once. Typst's HTML export sits behind a feature flag,
-/// exactly as it does in the command-line compiler.
+/// The library, built once for Typst's normal paged output.
 fn library() -> &'static LazyHash<Library> {
     static LIBRARY: OnceLock<LazyHash<Library>> = OnceLock::new();
-    LIBRARY.get_or_init(|| {
-        LazyHash::new(
-            Library::builder()
-                .with_features(Features::from_iter([Feature::Html]))
-                .build(),
-        )
-    })
+    LIBRARY.get_or_init(|| LazyHash::new(Library::builder().build()))
 }
 
 /// One document, the files it may import, and the date.
@@ -181,51 +174,50 @@ impl Today {
     }
 }
 
-/// Compiles a source to the HTML typst exports: a whole page of its own, with
-/// the styling its maths needs. A document that does not compile is an
+/// Compiles a source to a PDF with Typst's paged layout. A document that does
+/// not compile is an
 /// ordinary state of an editor rather than an exceptional one, so a diagnostic
 /// comes back as an ordinary result and the caller decides how to show it.
-pub fn compile_html(source: &str, name: &str, files: Files, today: Option<Today>) -> Compiled {
+pub fn compile_pdf(source: &str, name: &str, files: Files, today: Option<Today>) -> Compiled {
     let world = DocumentWorld {
         main: Source::new(main_id(name), source.to_string()),
         files,
         today: today.and_then(|t| Datetime::from_ymd(t.year, t.month, t.day)),
     };
 
-    let compiled = typst::compile::<typst_html::HtmlDocument>(&world);
+    let compiled = typst::compile::<PagedDocument>(&world);
     let mut diagnostics = describe(&world, &compiled.warnings);
-    // HTML export is our chosen output format. Its unconditional status
-    // warning is not something an author can fix in their document.
-    diagnostics.retain(|diagnostic| {
-        !(diagnostic.severity == Severity::Warning
-            && diagnostic.line == 0
-            && diagnostic.message == "html export is under active development and incomplete")
-    });
-    let page = match compiled.output {
-        Ok(document) => {
-            match typst_html::html(&document, &typst_html::HtmlOptions { pretty: false }) {
-                Ok(html) => Some(html),
-                Err(errors) => {
-                    diagnostics.extend(describe(&world, &errors));
-                    None
-                }
+    let output = match compiled.output {
+        Ok(document) => match typst_pdf::pdf(&document, &typst_pdf::PdfOptions::default()) {
+            Ok(pdf) => Some(RenderedDocument::Pdf(pdf)),
+            Err(errors) => {
+                diagnostics.extend(describe(&world, &errors));
+                None
             }
-        }
+        },
         Err(errors) => {
             diagnostics.extend(describe(&world, &errors));
             None
         }
     };
+    // Each browser edit uses a fresh world, so retaining every source tree in
+    // Typst's global constrained-memoization cache grows WASM linearly. Keep
+    // one generation for immediate reuse while evicting older revisions after
+    // PDF export has finished using the layout.
+    typst::comemo::evict(1);
     // Errors first: a list read top to bottom, and a badge that jumps to the
     // first thing worth looking at.
     diagnostics.sort_by_key(|diagnostic| !diagnostic.is_error());
-    if page.is_none() && !diagnostics.iter().any(Diagnostic::is_error) {
+    if output.is_none() && !diagnostics.iter().any(Diagnostic::is_error) {
         diagnostics.push(Diagnostic::spanless(
             Severity::Error,
             "typst could not compile this",
         ));
     }
-    Compiled { page, diagnostics }
+    Compiled {
+        output,
+        diagnostics,
+    }
 }
 
 /// Turns typst's diagnostics into the shape every host reads, mapping each
@@ -291,10 +283,7 @@ fn place(source: &Source, byte: usize) -> (usize, usize) {
     )
 }
 
-/// Compiles a source to the page every Komodoc document is stored as, so a
-/// typst document and a markdown one look like the same application rather
-/// than two. What typst brings of its own -- the styling its maths is laid out
-/// by -- is kept, and placed after the shared stylesheet so it can override.
+/// Compiles a source to the PDF every Typst document is stored as.
 pub fn render(
     source: &str,
     title: &str,
@@ -302,36 +291,8 @@ pub fn render(
     files: Files,
     today: Option<Today>,
 ) -> Compiled {
-    let title = title.to_string();
-    compile_html(source, name, files, today).map_page(|rendered| wrap(&rendered, &title))
-}
-
-/// Puts typst's output in the shared page: its `<style>` blocks into the head,
-/// what it wrote between the body tags as the body.
-pub fn wrap(rendered: &str, title: &str) -> String {
-    let mut head = Vec::new();
-    let mut rest = rendered;
-    while let Some(start) = rest.find("<style>") {
-        let after = &rest[start..];
-        match after.find("</style>") {
-            Some(end) => {
-                head.push(&after[..end + "</style>".len()]);
-                rest = &after[end + "</style>".len()..];
-            }
-            None => break,
-        }
-    }
-    let body = body_of(rendered).unwrap_or(rendered);
-    page::page(title, &head.join("\n"), body)
-}
-
-/// What sits between `<body ...>` and the last `</body>`, if the output is a
-/// whole page.
-fn body_of(rendered: &str) -> Option<&str> {
-    let start = rendered.find("<body")?;
-    let open = start + rendered[start..].find('>')? + 1;
-    let close = rendered.rfind("</body>")?;
-    (close >= open).then(|| &rendered[open..close])
+    let _ = title;
+    compile_pdf(source, name, files, today)
 }
 
 /// Says whether a filename is one this renders.
@@ -349,81 +310,6 @@ pub fn title_of(source: &str) -> String {
 mod tests {
     use super::*;
 
-    // Prose with no maths in it still needs a font to be set in, which is why
-    // a text face is embedded alongside the maths one.
-    #[test]
-    fn prose_needs_no_maths() {
-        let html = compile_html(
-            "= Notes\n\nJust prose, no maths at all.\n",
-            "",
-            &no_files,
-            None,
-        )
-        .into_result()
-        .expect("typst could not compile prose");
-        assert!(
-            html.contains("Just prose"),
-            "the prose is not in the output"
-        );
-    }
-
-    // The editor anchors comments into text nodes, so what matters about the
-    // output is not that it exists but that it is text: headings as headings,
-    // emphasis as elements, maths as MathML rather than as pictures of maths.
-    #[test]
-    fn exports_html_a_comment_can_be_anchored_into() {
-        let html = compile_html(
-            "= A Paper\n\nProse with *emphasis* and a passage worth annotating.\n\n\
-             == Method\n\n$ sum_(k=1)^n k = (n(n+1))/2 $\n\nWe measured the thing.\n",
-            "",
-            &no_files,
-            None,
-        )
-        .into_result()
-        .expect("typst could not compile the sample");
-        for wanted in [
-            "<h2>A Paper</h2>",
-            "<strong>emphasis</strong>",
-            "worth annotating",
-            "We measured the thing.",
-            "<math",
-        ] {
-            assert!(html.contains(wanted), "the output is missing {wanted:?}");
-        }
-    }
-
-    // A typst document and a markdown one are the same application, so they
-    // are dressed in the same stylesheet -- and typst keeps the styling its
-    // maths needs, which nothing else provides.
-    #[test]
-    fn wears_the_shared_page_and_keeps_its_own_styling() {
-        let page = render("= T\n\n$ x^2 $\n", "T", "", &no_files, None)
-            .into_result()
-            .expect("compile");
-        assert!(page.starts_with("<!doctype html>"));
-        assert_eq!(
-            page.matches("<html").count(),
-            1,
-            "more than one document in the page"
-        );
-        assert!(
-            page.contains("max-width: 46rem"),
-            "not wearing the shared stylesheet"
-        );
-        assert!(
-            page.contains("<math"),
-            "the maths did not survive the wrapping"
-        );
-        let shared = page.find("max-width: 46rem").unwrap();
-        let own = page
-            .find("mtable")
-            .expect("typst's own styling was dropped");
-        assert!(
-            shared < own,
-            "typst's styling comes before the shared sheet, so it cannot override it"
-        );
-    }
-
     // A document may import what sits beside it, through the reader the host
     // supplies, and nothing the reader does not know.
     #[test]
@@ -431,18 +317,18 @@ mod tests {
         let files = |path: &Path| -> Option<Vec<u8>> {
             (path == Path::new("lib.typ")).then(|| b"#let greeting = \"hello from lib\"".to_vec())
         };
-        let html = compile_html(
+        let pdf = compile_pdf(
             "#import \"lib.typ\": greeting\n#greeting\n",
             "main.typ",
             &files,
             None,
         )
-        .into_result()
+        .into_pdf_result()
         .expect("the import did not resolve");
-        assert!(html.contains("hello from lib"));
+        assert!(pdf.starts_with(b"%PDF-"));
         assert!(
-            compile_html("#import \"missing.typ\": x\n", "main.typ", &files, None)
-                .page
+            compile_pdf("#import \"missing.typ\": x\n", "main.typ", &files, None)
+                .output
                 .is_none()
         );
     }
@@ -454,13 +340,13 @@ mod tests {
             month: 9,
             day: 4,
         };
-        let html = compile_html("#datetime.today().display()\n", "", &no_files, Some(today))
-            .into_result()
+        let pdf = compile_pdf("#datetime.today().display()\n", "", &no_files, Some(today))
+            .into_pdf_result()
             .expect("compile");
-        assert!(html.contains("2026-09-04"), "{html}");
+        assert!(pdf.starts_with(b"%PDF-"));
         assert!(
-            compile_html("#datetime.today().display()\n", "", &no_files, None)
-                .page
+            compile_pdf("#datetime.today().display()\n", "", &no_files, None)
+                .output
                 .is_none()
         );
         assert!(Today::now().is_some());
@@ -470,8 +356,8 @@ mod tests {
     // comes with the message.
     #[test]
     fn an_error_says_where_it_is() {
-        let compiled = compile_html("= T\n\nsome prose\n\n$x\n", "", &no_files, None);
-        assert!(compiled.page.is_none());
+        let compiled = compile_pdf("= T\n\nsome prose\n\n$x\n", "", &no_files, None);
+        assert!(compiled.output.is_none());
         let first = compiled.diagnostics.first().expect("no diagnostic");
         assert!(first.is_error());
         assert!(!first.message.is_empty());
@@ -489,8 +375,8 @@ mod tests {
         let files = |path: &Path| -> Option<Vec<u8>> {
             (path == Path::new("lib.typ")).then(|| b"#let x = colour\n".to_vec())
         };
-        let compiled = compile_html("#import \"lib.typ\": x\n#x\n", "main.typ", &files, None);
-        assert!(compiled.page.is_none());
+        let compiled = compile_pdf("#import \"lib.typ\": x\n#x\n", "main.typ", &files, None);
+        assert!(compiled.output.is_none());
         let first = compiled.diagnostics.first().expect("no diagnostic");
         assert_eq!(first.file, "lib.typ", "{first:?}");
         assert_eq!(first.line, 1, "{first:?}");
@@ -500,22 +386,19 @@ mod tests {
     // reported beside it.
     #[test]
     fn a_warning_comes_back_beside_a_page() {
-        let compiled = compile_html(
+        let compiled = compile_pdf(
             "#set text(font: \"No Such Font At All\")\n= T\n\nprose\n",
             "",
             &no_files,
             None,
         );
-        assert!(compiled.page.is_some(), "{:?}", compiled.diagnostics);
+        assert!(compiled.output.is_some(), "{:?}", compiled.diagnostics);
         assert!(
             compiled
                 .warnings()
                 .any(|warning| warning.message.contains("unknown font family")),
             "an unknown font family warned about nothing"
         );
-        assert!(compiled.diagnostics.iter().all(|diagnostic| {
-            diagnostic.message != "html export is under active development and incomplete"
-        }));
         assert_eq!(compiled.errors().count(), 0);
     }
 
@@ -525,7 +408,7 @@ mod tests {
     fn columns_count_utf16_units() {
         // An emoji is one character and two UTF-16 units; the `$` after it is
         // therefore at column 4, not 3.
-        let compiled = compile_html("= T\n\n🙂 $x\n", "", &no_files, None);
+        let compiled = compile_pdf("= T\n\n🙂 $x\n", "", &no_files, None);
         let first = compiled.diagnostics.first().expect("no diagnostic");
         assert_eq!(first.line, 3, "{first:?}");
         assert_eq!(first.column, 4, "{first:?}");
@@ -536,106 +419,5 @@ mod tests {
         assert_eq!(title_of("== Sub\n= The Title\n"), "The Title");
         assert!(is_typst("paper.TYP"));
         assert!(!is_typst("paper.md"));
-    }
-}
-
-#[cfg(test)]
-mod figure_tests {
-    use super::*;
-
-    /// A one-by-one PNG, as bytes: the smallest thing that is really a PNG.
-    fn png() -> Vec<u8> {
-        const BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-        let mut out = Vec::new();
-        let table: Vec<u8> =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".to_vec();
-        let mut buffer = 0u32;
-        let mut bits = 0u32;
-        for byte in BASE64.bytes() {
-            if byte == b'=' {
-                break;
-            }
-            let Some(value) = table.iter().position(|c| *c == byte) else {
-                continue;
-            };
-            buffer = (buffer << 6) | value as u32;
-            bits += 6;
-            if bits >= 8 {
-                bits -= 8;
-                out.push((buffer >> bits) as u8);
-            }
-        }
-        out
-    }
-
-    /// What a figure becomes in the page, which is what says whether a reader
-    /// gets one. `typst-html` writes an image into the document itself rather
-    /// than linking to it, so the frame fetches nothing -- and this is the
-    /// test of that claim rather than the assumption of it.
-    #[test]
-    fn a_png_figure_is_written_into_the_page() {
-        let bytes = png();
-        let files = |path: &Path| -> Option<Vec<u8>> {
-            (path == Path::new("fig/one.png")).then(|| bytes.clone())
-        };
-        let compiled = compile_html(
-            "#image(\"fig/one.png\", width: 10pt)\n",
-            "main.typ",
-            &files,
-            None,
-        );
-        let page = compiled.page.expect("a document with a figure in it");
-        assert!(
-            page.contains("data:image/png;base64,") || page.contains("<img"),
-            "the figure did not reach the page"
-        );
-        assert!(
-            !page.contains("fig/one.png"),
-            "the page refers to the figure by path, so a reader would have to fetch it"
-        );
-    }
-
-    /// The same question for a PDF figure, which is the one a paper actually
-    /// has. Recorded as a test because the answer decides whether a PDF figure
-    /// is usable at all in the browser, and it is not obvious from the outside.
-    #[test]
-    fn what_becomes_of_a_pdf_figure() {
-        let pdf: Vec<u8> = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
-             2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
-             3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 72 72]>>endobj\n\
-             trailer<</Root 1 0 R>>\n"
-            .to_vec();
-        let files = |path: &Path| -> Option<Vec<u8>> {
-            (path == Path::new("fig/plot.pdf")).then(|| pdf.clone())
-        };
-        let compiled = compile_html("#image(\"fig/plot.pdf\")\n", "main.typ", &files, None);
-        match compiled.page {
-            Some(page) => {
-                eprintln!(
-                    "a PDF figure compiles; the page carries {}",
-                    if page.contains("data:") {
-                        "a data URL"
-                    } else {
-                        "no data URL"
-                    }
-                );
-                assert!(
-                    !page.contains("fig/plot.pdf"),
-                    "a PDF figure reached the page by path rather than by value"
-                );
-                assert!(
-                    page.contains("data:") || page.contains("<svg"),
-                    "a PDF figure compiled but nothing of it reached the page"
-                );
-            }
-            None => {
-                // Typst refusing it is an answer too, and the one worth
-                // recording: a PDF figure that does not compile here is a
-                // figure an author has to convert, and the diagnostic says so.
-                let said: Vec<String> = compiled.errors().map(|e| e.message.clone()).collect();
-                assert!(!said.is_empty(), "no page and nothing said about why");
-                eprintln!("a PDF figure is refused by this typst: {said:?}");
-            }
-        }
     }
 }

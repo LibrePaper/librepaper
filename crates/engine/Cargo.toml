@@ -22,7 +22,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["markdown", "typst"]
 markdown = ["dep:comrak"]
-typst = ["dep:typst", "dep:typst-html", "dep:typst-assets", "dep:ecow"]
+typst = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-assets", "dep:ecow"]
 
 [dependencies]
 # CommonMark plus the GitHub extensions: tables, strikethrough, task lists,
@@ -31,7 +31,8 @@ comrak = { version = "0.54", default-features = false, optional = true }
 # Pinned together: the editor and whatever renders a typst document elsewhere
 # must be the same compiler, or the same source renders two ways.
 typst = { version = "=0.15.1", optional = true }
-typst-html = { version = "=0.15.1", optional = true }
+typst-layout = { version = "=0.15.1", optional = true }
+typst-pdf = { version = "=0.15.1", optional = true }
 # Typst's own default fonts, embedded, so a document compiles here exactly as
 # it does under the typst binary: the same faces, and the maths font without
 # which maths does not compile at all.

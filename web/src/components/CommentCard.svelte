@@ -13,7 +13,6 @@
     // when it has been looked up and there was an answer. Null otherwise, and
     // null for every comment whose passage is still in the document.
     went = null,
-    ontoggleTag,
     onreveal,
     onresolve,
     ondelete,
@@ -70,7 +69,7 @@
       expanded = true;
       return;
     }
-    if (!comment.orphaned) onreveal?.(comment);
+    if (!comment.orphaned && !comment.regionUnplaceable) onreveal?.(comment);
   }
 
   function submitReply(event) {
@@ -112,6 +111,13 @@
                is actually versioned -- still has them, so this is not lost,
                only unreachable from the page. -->
           <span class="badge preset-tonal-secondary">In the source, not on the page</span>
+        {/if}
+        {#if comment.regionUnplaceable}
+          <span class="badge preset-tonal-warning">
+            {comment.regionUnplaceableReason === "pdf"
+              ? "Figure region unavailable in this PDF"
+              : "Figure unavailable in this version"}
+          </span>
         {/if}
         <!-- The motivation is the W3C annotation type. Commenting is the
              default, so only the others are worth showing. -->
@@ -163,23 +169,6 @@
       {/if}
 
       {#if comment.body}<p>{comment.body}</p>{/if}
-
-      {#if comment.tags?.length}
-        <Row gap={1} wrap>
-          {#each comment.tags as tag}
-            <button
-              type="button"
-              class="chip preset-outlined-surface-300-700 text-xs"
-              onclick={(e) => {
-                e.stopPropagation();
-                ontoggleTag?.(tag);
-              }}
-            >
-              {tag}
-            </button>
-          {/each}
-        </Row>
-      {/if}
 
       <small class="panel-meta">{comment.creator} · {stamp(comment.created)}</small>
 

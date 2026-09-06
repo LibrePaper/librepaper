@@ -92,6 +92,17 @@ impl Tree {
         hex::encode(Sha256::digest(self.to_bytes()))
     }
 
+    /// The digest of the source inputs, independent of the Yjs item ids used
+    /// by a live room. Native artifact publishers use this to prove that the
+    /// PDF was compiled from the exact canonical file tree they uploaded.
+    pub fn input_digest(&self) -> String {
+        let mut canonical = self.clone();
+        for entry in canonical.files.values_mut() {
+            entry.id.clear();
+        }
+        canonical.digest()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
     }

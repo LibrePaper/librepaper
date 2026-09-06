@@ -9,7 +9,7 @@
   // One row, centred, with a gap: the vertical rhythm is decided here and
   // nowhere else, so a control added later cannot land half a line above its
   // neighbours.
-  let { me = {}, children, tools, status } = $props();
+  let { me = {}, children, tools, status, documentation = true } = $props();
 </script>
 
 <nav class="flex items-center justify-between gap-4">
@@ -30,7 +30,9 @@
          to use it, from the project's own README. An icon among the other
          icons rather than a phrase in the middle of the bar, which is width
          the document title wanted and a shape nothing else in the bar had. -->
-    <IconButton icon="help" label="Documentation" href="/documentation" />
+    {#if documentation}
+      <IconButton icon="help" label="Documentation" href="/documentation" />
+    {/if}
     <!-- A GitHub account is its login, and the @ is what says so. A Google
          account is a profile name, which is not a handle and does not wear
          one; its email is its handle and is shown to nobody, here least of

@@ -115,7 +115,12 @@ export async function render(bytes, root) {
       if (mine !== generation) return 0;
 
       starts.push(offset);
-      offset += rewrite(text.textDivs, content.items, number > 1);
+      rewrite(text.textDivs, content.items, number > 1);
+      // pdf.js may omit a content item from `textDivs` (for example a font
+      // run with no selectable glyphs). The agent anchors against the DOM it
+      // can actually walk, so page offsets must use that DOM length rather
+      // than the theoretical content-item total returned by rewrite().
+      offset += frame.textContent.length;
       page.cleanup();
     }
 

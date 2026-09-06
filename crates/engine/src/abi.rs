@@ -21,11 +21,13 @@
 //! with, so markdown.wasm and typst.wasm share a loader and differ only in
 //! what they do with a source.
 
-use crate::diagnostic::Compiled;
+use crate::diagnostic::{Compiled, RenderedDocument};
 
 /// Where the last result lives until the next call replaces it.
 static mut OUTPUT: Option<Vec<u8>> = None;
 static mut OK: bool = false;
+/// The format of `OUTPUT`: 0 = no output, 1 = HTML text, 2 = PDF bytes.
+static mut OUTPUT_KIND: u32 = 0;
 /// What the last compile had to say, as JSON, beside the page.
 static mut DIAGNOSTICS: Option<Vec<u8>> = None;
 /// And the same, kept as it was, so the page shown where a document would be
@@ -84,6 +86,7 @@ unsafe fn answer(result: Result<String, String>) -> usize {
     let length = bytes.len();
     OUTPUT = Some(bytes);
     OK = ok;
+    OUTPUT_KIND = u32::from(ok);
     length
 }
 
@@ -93,14 +96,16 @@ unsafe fn answer(result: Result<String, String>) -> usize {
 unsafe fn answer_compiled(compiled: Compiled) -> usize {
     DIAGNOSTICS = Some(compiled.diagnostics_json().into_bytes());
     SAID = Some(compiled.diagnostics.clone());
-    let (ok, text) = match compiled.page {
-        Some(page) => (true, page),
-        None => (false, String::new()),
+    let output = compiled.output;
+    let (ok, kind, bytes) = match output {
+        Some(RenderedDocument::Html(html)) => (true, 1, html.into_bytes()),
+        Some(RenderedDocument::Pdf(pdf)) => (true, 2, pdf),
+        None => (false, 0, Vec::new()),
     };
-    let bytes = text.into_bytes();
     let length = bytes.len();
     OUTPUT = Some(bytes);
     OK = ok;
+    OUTPUT_KIND = kind;
     length
 }
 
@@ -305,6 +310,14 @@ pub extern "C" fn output_ptr() -> *const u8 {
 #[no_mangle]
 pub extern "C" fn ok() -> u32 {
     unsafe { u32::from(*std::ptr::addr_of!(OK)) }
+}
+
+/// Which format `output_ptr()` points to: 0 means no output, 1 HTML, and 2
+/// PDF. The value is read after `compile` and before any call that replaces
+/// the output buffer.
+#[no_mangle]
+pub extern "C" fn output_kind() -> u32 {
+    unsafe { OUTPUT_KIND }
 }
 
 /// The length of what the last compile had to say, as a JSON list. Empty --

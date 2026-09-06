@@ -138,7 +138,7 @@ const context = (values) => vm.createContext({
   const sent = [];
   const old = { kind: "html", html: "<p>last good page</p>" };
   const ctx = context({
-    displayedFormat: "latex", compilesHere: true, paintsTheFrame: true,
+    displayedFormat: "latex", pdfOutput: true, compilesHere: true, paintsTheFrame: true,
     issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
     sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
     compiling: false, everPainted: true, latestPreview: old,
@@ -148,6 +148,7 @@ const context = (values) => vm.createContext({
     figures: { gather: async () => ({ assets: {}, urls: {} }) },
     renderers: {
       formatOf: () => "latex", render: () => rendered.promise,
+      producesPdf: () => true,
       failurePage: async () => "<p>failure</p>",
     },
     SHELL_HEADERS: {}, KEY: "key", SLUG: "doc", keyHeaders: () => {},
@@ -197,7 +198,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let text = "first";
   let main = "main.md";
   const ctx = context({
-    displayedFormat: "markdown", compilesHere: false, paintsTheFrame: true,
+    displayedFormat: "markdown", pdfOutput: false, compilesHere: false, paintsTheFrame: true,
     issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
     sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
     previewTimer: null, everPainted: true, latestPreview: null,
@@ -205,6 +206,7 @@ for (const invalidate of [null, "navigation", "main"]) {
     headingOf: async () => "Title",
     renderers: {
       formatOf: () => "markdown",
+      producesPdf: () => false,
       render: (tree) => {
         calls.push(tree);
         return calls.length === 1 ? first.promise : second.promise;
@@ -243,7 +245,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, editing: true, sourceFormat: "markdown",
+    sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false,
     previewTimer: null, READER_DEBOUNCE: 1000,
     diagnosticPainter: { typed: () => {} },
     setTimeout: () => ++scheduled, clearTimeout: () => {}, paintPreview: () => {},
@@ -252,6 +254,97 @@ for (const invalidate of [null, "navigation", "main"]) {
   for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
   assert.equal(scheduled, 1);
   assert.equal(ctx.sourceGeneration, 10);
+}
+
+// Typst's PDF compiler is still scheduled at a bounded cadence: continuous
+// typing must not keep moving the timer's deadline forever.
+{
+  let scheduled = 0;
+  const ctx = context({
+    sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
+    previewTimer: null, diagnosticPainter: { typed: () => {} },
+    setTimeout: () => ++scheduled, clearTimeout: () => {}, paintPreview: () => {}, dropHeldRendering: () => {},
+  });
+  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
+  for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
+  assert.equal(scheduled, 1, "Typst preview timer remains bounded during typing");
+}
+
+// Typst follows the PDF lifecycle too: one compile in flight, latest request
+// queued, and an older PDF cannot replace the newer source snapshot.
+{
+  const first = deferred();
+  const second = deferred();
+  const calls = [];
+  const delivered = [];
+  const held = [];
+  const diagnostics = [];
+  let text = "first";
+  const ctx = context({
+    displayedFormat: "typst", pdfOutput: true, compilesHere: true, paintsTheFrame: true,
+    issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
+    sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
+    previewTimer: null, everPainted: false, latestPreview: null,
+    paintRendering: async () => {},
+    treeNow: () => ({ main: "main.typ", texts: { "main.typ": text }, digests: {} }),
+    headingOf: async () => "Title", snapshotDigest: async () => "digest-typst",
+    figures: { gather: async () => ({ assets: {}, urls: {} }) },
+    renderers: {
+      formatOf: () => "typst",
+      producesPdf: () => true,
+      render: (tree) => {
+        calls.push(tree);
+        return calls.length === 1 ? first.promise : second.promise;
+      },
+    },
+    deliverPreview: (payload) => delivered.push(payload.bytes[0]),
+    holdRendering: (...args) => held.push(args),
+    diagnosticPainter: { rendered: (value) => diagnostics.push(value) },
+    tell: () => {}, say: (message) => assert.fail(message),
+  });
+  vm.runInContext(paintPreview, ctx);
+  const pending = vm.runInContext("paintPreview()", ctx);
+  await new Promise(setImmediate);
+  text = "latest";
+  ctx.sourceGeneration++;
+  await vm.runInContext("paintPreview()", ctx);
+  assert.equal(calls.length, 1, "Typst keeps one PDF compile active");
+  first.resolve({ pdf: Uint8Array.of(1), diagnostics: [] });
+  await pending;
+  await new Promise(setImmediate);
+  assert.equal(calls.length, 2, "Typst queues the latest source snapshot");
+  second.resolve({ pdf: Uint8Array.of(2), diagnostics: [] });
+  await new Promise(setImmediate);
+  assert.deepEqual(delivered, [1, 2], "Typst may show an intermediate PDF, then the latest one");
+  assert.equal(held.length, 1, "only the current Typst snapshot is eligible for storage");
+  assert.equal(diagnostics.length, 1, "an intermediate Typst PDF cannot clear newer diagnostics");
+}
+
+// A first Typst compile that returns structured diagnostics must leave the
+// reader in its explicit PDF failure state instead of a blank frame.
+{
+  const ctx = context({
+    displayedFormat: "typst", pdfOutput: true, compilesHere: true, paintsTheFrame: true,
+    issued: 0, painted: 0, viewing: null, navigationGeneration: 0, sourceGeneration: 0,
+    previewPaintBusy: false, previewPaintQueued: false, previewTimer: null,
+    everPainted: false, everPaintedShown: false, latestPreview: null, pdfFailure: false,
+    sourceFormat: "typst", treeNow: () => ({ main: "main.typ", texts: { "main.typ": "bad" }, digests: {} }),
+    headingOf: async () => "Title", snapshotDigest: async () => "digest-typst",
+    paintRendering: async () => {},
+    figures: { gather: async () => ({ assets: {}, urls: {} }) },
+    renderers: {
+      formatOf: () => "typst", producesPdf: () => true,
+      render: async () => ({ pdf: null, diagnostics: [{ severity: "error", message: "broken" }] }),
+      failurePage: async () => null,
+    },
+    deliverPreview: () => assert.fail("a failed first Typst compile must not deliver a PDF"),
+    holdRendering: () => assert.fail("a failed first Typst compile must not store a PDF"),
+    diagnosticPainter: { rendered: () => {} }, tell: () => {}, say: (message) => assert.fail(message),
+  });
+  vm.runInContext(paintPreview, ctx);
+  await vm.runInContext("paintPreview()", ctx);
+  assert.equal(ctx.pdfFailure, true, "structured Typst diagnostics set the PDF failure state");
+  assert.equal(ctx.latestPreview, null, "a failed first Typst compile leaves no blank success preview");
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 

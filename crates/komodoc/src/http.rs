@@ -186,6 +186,53 @@ pub async fn get_json(target: &str, timeout: Duration) -> Result<(u16, Value), S
     Ok((status, decode(&raw)))
 }
 
+/// Uploads an already-rendered binary artifact. Renderings are deliberately
+/// kept out of the JSON publishing request: PDF bytes are binary, and the
+/// server applies the same digest, permission, quota, and retention rules to
+/// this request as it does to a browser rendering upload.
+/// Uploads a rendering while asking the server to accept it only when the
+/// named tree is still current and its canonical source-input digest matches
+/// `expected_inputs`.
+pub async fn put_current_bytes(
+    target: &str,
+    body: Vec<u8>,
+    token: &str,
+    content_type: &str,
+    expected_inputs: &str,
+    timeout: Duration,
+) -> Result<(u16, Value), String> {
+    put_bytes_with_headers(
+        target,
+        body,
+        token,
+        content_type,
+        &[
+            ("x-komodoc-current", "1"),
+            ("x-komodoc-inputs", expected_inputs),
+        ],
+        timeout,
+    )
+    .await
+}
+
+async fn put_bytes_with_headers(
+    target: &str,
+    body: Vec<u8>,
+    token: &str,
+    content_type: &str,
+    extra: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<(u16, Value), String> {
+    let bearer = format!("Bearer {token}");
+    let mut headers = vec![("content-type", content_type), ("x-komodoc-client", "cli")];
+    headers.extend_from_slice(extra);
+    if !token.is_empty() {
+        headers.push(("authorization", bearer.as_str()));
+    }
+    let (status, raw) = send(reqwest::Method::PUT, target, &headers, Some(body), timeout).await?;
+    Ok((status, decode(&raw)))
+}
+
 fn decode(raw: &[u8]) -> Value {
     serde_json::from_slice(raw).unwrap_or_else(
         |_| serde_json::json!({"error": truncate(&String::from_utf8_lossy(raw), 300)}),

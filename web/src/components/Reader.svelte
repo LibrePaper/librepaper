@@ -283,6 +283,30 @@
         pending = { exact: "", prefix: "", suffix: "", position: null, region: message.region, source: null };
         placeBar(message.rect);
         break;
+      case "regions-unplaceable": {
+        const ids = new Set((message.ids || []).map(String));
+        if (!ids.size) break;
+        for (const comment of comments) {
+          if (comment.region && ids.has(String(comment.id))) {
+            comment.regionUnplaceable = true;
+            comment.regionUnplaceableReason = String(message.reason || "figure-unavailable");
+          }
+        }
+        comments = comments;
+        break;
+      }
+      case "regions-placeable": {
+        const ids = new Set((message.ids || []).map(String));
+        if (!ids.size) break;
+        for (const comment of comments) {
+          if (comment.region && ids.has(String(comment.id))) {
+            delete comment.regionUnplaceable;
+            delete comment.regionUnplaceableReason;
+          }
+        }
+        comments = comments;
+        break;
+      }
       case "caret":
         followDocumentClick(Number(message.offset) || 0);
         break;
@@ -355,7 +379,7 @@
   let commenting = $state(false);
   let identifying = $state(false);
   let deleting = $state(false);
-  let draft = $state({ body: "", tags: "" });
+  let draft = $state({ body: "" });
   let pendingDelete = null;
 
   function barClicked() {
@@ -363,7 +387,7 @@
     bar = { ...bar, shown: false };
     if (tool === "highlighting") {
       // No dialog: the passage is the whole annotation.
-      submitAnnotation({ motivation: "highlighting", body: "", tags: [] });
+      submitAnnotation({ motivation: "highlighting", body: "" });
       return;
     }
     if (!identity && me.providers?.length) {
@@ -373,7 +397,7 @@
     commenting = true;
   }
 
-  function submitAnnotation({ motivation, body, tags }) {
+  function submitAnnotation({ motivation, body }) {
     if (!pending) return;
     // The name shown here is only a guess until the broadcast comes back: the
     // server decides the real creator (the account name, or the per-document
@@ -387,7 +411,6 @@
       ...pending,
       motivation,
       body,
-      tags,
       creator,
       created: new Date().toISOString(),
       resolved: false,
@@ -399,7 +422,7 @@
     anchorComments([optimistic]);
     comments = [...comments, optimistic];
     applyHighlights();
-    sendAnnotation({ type: "comment", ...pending, motivation, body, tags, temp_id });
+    sendAnnotation({ type: "comment", ...pending, motivation, body, temp_id });
     pending = null;
   }
 
@@ -408,11 +431,8 @@
     submitAnnotation({
       motivation: tool === "region" ? "commenting" : tool,
       body: draft.body,
-      // "methods, typo" becomes ["methods", "typo"]. The server normalises
-      // again, so this only has to be reasonable.
-      tags: draft.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
     });
-    draft = { ...draft, body: "", tags: "" };
+    draft = { ...draft, body: "" };
     commenting = false;
   }
 
@@ -922,19 +942,25 @@
 
   /* -------------------------------------------------------------- LaTeX */
 
-  // A LaTeX document has no HTML to paint, so its frame is the PDF viewer on
-  // the documents origin rather than the empty shell. Everything else about
-  // the frame is the same: same origin, same CSP, same agent, same channel.
-  const framePath = $derived(displayedFormat === "latex" ? "pdf" : "raw");
+  // Paged source formats have no HTML to paint, so their frame is the PDF
+  // viewer on the documents origin rather than the empty shell. Everything
+  // else about the frame is the same: same origin, same CSP, same channel.
+  const pdfOutput = $derived(renderers.producesPdf(displayedFormat));
+  const framePath = $derived(renderers.outputKind(displayedFormat) === "pdf" ? "pdf" : "raw");
 
   // Whether a compiler has been chosen in this browser. Not a promise and not
   // a fetch: the card is drawn from this before anything is downloaded.
   let latexReady = $state(false);
-  // How long the last compile took, and whether one is running now. Both only
-  // exist for LaTeX, where a compile takes seconds and silence would read as
-  // a preview that had stopped working.
+  // How long the last compile took, and whether one is running now. Paged
+  // formats expose the same short-lived loading state; the elapsed time is
+  // especially useful for LaTeX, whose compiler can take seconds.
   let compiling = $state(false);
   let lastCompile = $state(0);
+  let pdfFailure = $state(false);
+  // Why, when the Diagnostics list has nothing to say: the compiler's own
+  // words when it threw, or the tail of its log when it produced neither a
+  // PDF nor an error the parser could name. Empty when the list says it.
+  let pdfFailureReason = $state("");
 
   // The card is offered to somebody who can act on it and to nobody else. A
   // reader is never asked to download a compiler to read a paper: what they
@@ -950,15 +976,20 @@
       renderers.available("latex") &&
       (!latexReady || cardOpen),
   );
-  const unrendered = $derived(sourceFormat === "latex" && !mayEdit && !everPaintedShown);
 
   // Whether this browser is the one producing the pages. An editor with a
   // distribution loaded compiles here and stores the result on the server;
   // everybody else -- a reader, an editor who has not loaded one, anyone on a
   // deployment with no mirror -- is shown what the server kept.
   const compilesHere = $derived(
-    sourceFormat === "latex" && editing && mayEdit && latexReady && renderers.available("latex"),
+    editing && mayEdit && (
+      sourceFormat === "typst"
+        ? renderers.compilerAvailable("typst")
+      : sourceFormat === "latex" && latexReady && renderers.compilerAvailable("latex")
+    ),
   );
+  const unrendered = $derived(pdfOutput && !compilesHere && !everPaintedShown);
+  const failedBeforeRender = $derived(pdfOutput && compilesHere && pdfFailure && !everPaintedShown);
 
   // A distribution is loaded: the card goes, and the document is compiled at
   // once rather than on the next keystroke. This is the only place a compile
@@ -969,7 +1000,7 @@
     paintPreview();
   }
 
-  // A LaTeX compile that is running says so, and says how long the last one
+  // A paged compile that is running says so, and says how long the last one
   // took once there has been one. Before the first, there is no honest number
   // to give.
   const compileBadge = $derived(
@@ -1086,7 +1117,7 @@
     navigateFrame(true);
   }
 
-  // What a LaTeX document's frame is showing: the checkpoint the stored
+  // What a paged document's frame is showing: the checkpoint the stored
   // rendering was compiled from, when that checkpoint was taken, and whether
   // it is the text as it stands. Null until the server has been asked.
   let rendering = $state(null);
@@ -1101,7 +1132,7 @@
   // is the text as it stands, it is older than the text and here is when, or
   // nobody has rendered this yet.
   const renderedNote = $derived(
-    displayedFormat !== "latex" || (compilesHere && !viewing)
+    !pdfOutput || (compilesHere && !viewing)
       ? ""
       : !rendering
         ? "not yet rendered"
@@ -1247,12 +1278,26 @@
   async function paintPreview() {
     clearTimeout(previewTimer);
     previewTimer = null;
-    // A LaTeX document is compiled in an editor's browser and nowhere else,
+    // A paged document is compiled in an editor's browser and nowhere else,
     // so everybody else is shown the PDF the server kept from the last one
     // who did. See `docs/specs/latex.md`.
-    if (displayedFormat === "latex" && (Boolean(viewing) || !compilesHere)) {
+    const outputIsPdf = pdfOutput;
+    if (outputIsPdf && (Boolean(viewing) || !compilesHere)) {
       await paintRendering();
       return;
+    }
+    // An editor's first look at a document somebody has already rendered is
+    // that rendering, painted before the compile that will replace it: a
+    // compile takes seconds and its first attempt can fail, and a pane that
+    // says nothing until then is worse than the pages that already exist.
+    // Only while nothing has been painted; after that the last page that
+    // compiled stays up, as the spec says. The poll paintRendering leaves
+    // behind is for a browser that waits on somebody else's compile, and
+    // this one compiles for itself.
+    if (outputIsPdf && !everPainted && !viewing) {
+      await paintRendering();
+      clearTimeout(previewTimer);
+      previewTimer = null;
     }
     if (!paintsTheFrame) {
       refreshFramedPage();
@@ -1263,7 +1308,9 @@
     const snapshotViewing = viewing;
     const snapshotNavigation = navigationGeneration;
     const snapshotSource = sourceGeneration;
-    const slow = renderers.formatOf(tree.main) === "latex";
+    const format = renderers.formatOf(tree.main);
+    const paged = renderers.producesPdf(format);
+    const slow = format === "latex";
     if (previewPaintBusy) {
       previewPaintQueued = true;
       return;
@@ -1283,7 +1330,7 @@
           (slow && snapshotSource !== sourceGeneration) ||
           tree.main !== treeNow().main
         ) return;
-        if (slow) {
+        if (paged) {
           const missing = Object.keys(tree.digests).filter(
             (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
           );
@@ -1298,7 +1345,10 @@
       // says one is running. The last page that compiled stays up under it:
       // an author who is typing has something to look at, which is the whole
       // difference between this and a pane that blanks for four seconds.
-      if (slow) compiling = true;
+      if (paged) {
+        compiling = true;
+        if (!everPainted) pdfFailure = false;
+      }
       // What a rendering compiled now will be stored as. Asked before the
       // compile rather than after, because a compile takes seconds and the
       // text may move meanwhile: what comes out is of the text as it was, and
@@ -1306,7 +1356,7 @@
       // Checkpoint SHAs are already canonical server tree digests. For live
       // text, hash this exact immutable tree, after asset bytes have arrived
       // so asset sizes agree with the server's TreeEntry values.
-      const renderingName = slow
+      const renderingName = paged
         ? snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}))
         : null;
       let rendered;
@@ -1315,12 +1365,13 @@
       } finally {
         // Only the newest compile owns the badge. An older one finishing
         // afterwards must not turn the spinner off under a newer one.
-        if (slow && mine > painted) compiling = false;
+        if (paged && mine > painted) compiling = false;
       }
-      const { html, pdf, synctex, diagnostics: said, seconds } = rendered;
-      // An in-flight HTML preview may finish after another keystroke: show
-      // that progress while the queued render catches up. Navigation and
-      // main-file changes still invalidate it; LaTeX keeps its digest guard.
+      const { html, pdf, synctex, diagnostics: said, seconds, log } = rendered;
+      // An in-flight preview may finish after another keystroke: HTML and
+      // Typst may show that intermediate progress while the queued render
+      // catches up. Navigation and main-file changes still invalidate it;
+      // LaTeX keeps its strict source guard.
       if (
         mine <= painted ||
         snapshotNavigation !== navigationGeneration ||
@@ -1328,27 +1379,29 @@
         tree.main !== treeNow().main
       ) return;
       painted = mine;
-      if (slow && seconds) lastCompile = seconds;
+      if (paged && seconds) lastCompile = seconds;
       // A render carries `html` or `pdf`, and the reader posts whichever it
       // has. The bytes are transferred rather than copied: a PDF is megabytes
       // and this page has no further use for it once the frame has it.
       if (pdf) {
+        pdfFailure = false;
+        pdfFailureReason = "";
         const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
         latestPreview = { kind: "pdf", sha: renderingName, bytes: new Uint8Array(buffer.slice(0)) };
         // Held for the readers, from a copy: the hand-over to the frame below
         // empties this page's own.
-        if (renderingName) {
+        if (renderingName && snapshotSource === sourceGeneration) {
           holdRendering(
             renderingName,
             buffer.slice(0),
             synctex,
-            !snapshotViewing &&
-              snapshotNavigation === navigationGeneration &&
-              snapshotSource === sourceGeneration,
+            !snapshotViewing && snapshotNavigation === navigationGeneration,
           );
         }
         deliverPreview(latestPreview);
-        diagnosticPainter.rendered({ page: "", diagnostics: said || [] });
+        if (snapshotSource === sourceGeneration) {
+          diagnosticPainter.rendered({ page: "", diagnostics: said || [] });
+        }
         return;
       }
       if (typeof html === "string") {
@@ -1368,6 +1421,17 @@
       // it does not compile now, and where -- once the typing has stopped.
       if (snapshotSource !== sourceGeneration) return;
       diagnosticPainter.rendered({ page: null, diagnostics: said || [] });
+      if (paged) {
+        pdfFailure = true;
+        // A log the parser found nothing in is still the only account there
+        // is of what happened, and its last lines are where an engine says
+        // why it stopped.
+        pdfFailureReason = said?.length
+          ? ""
+          : (log || "").trim().split("\n").slice(-12).join("\n") ||
+            "the compiler produced no PDF and no log";
+        if (pdfFailureReason) console.error("latex: could not render:", pdfFailureReason);
+      }
       // Unless nothing was ever painted, which is what someone who opens the
       // editor on a document that does not compile sees. Then the frame shows
       // the engine's page saying so, with the list on it, styled like a
@@ -1381,7 +1445,16 @@
     } catch (error) {
       // Not a document that did not compile: a renderer that could not be
       // fetched, which is this page's problem rather than the author's.
-      if (mine > painted) say(error.message || "could not render", true);
+      const currentSnapshot = snapshotNavigation === navigationGeneration &&
+        (!paged || snapshotSource === sourceGeneration);
+      if (mine > painted && currentSnapshot) {
+        if (paged) {
+          pdfFailure = true;
+          pdfFailureReason = error.message || "could not render";
+          console.error("latex: could not render:", error);
+        }
+        say(error.message || "could not render", true);
+      }
     } finally {
       previewPaintBusy = false;
       if (previewPaintQueued) {
@@ -1405,11 +1478,15 @@
 
   function sourceChanged() {
     sourceGeneration += 1;
+    const outputIsPdf = pdfOutput;
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
+    // Typst has a bounded 300 ms preview cadence like the other fast source
+    // formats. Only LaTeX owns its longer compiler debounce; postponing this
+    // timer for every Typst keystroke would starve the PDF indefinitely.
     if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
     clearTimeout(previewTimer);
-    if (sourceFormat === "latex" && !compilesHere) {
+    if (outputIsPdf && !compilesHere) {
       // The text has moved, so what is in the frame is a rendering of an
       // earlier version. That is known here rather than asked: the rendering
       // is named by the digest of the source it was compiled from.
@@ -1419,7 +1496,7 @@
     }
     // A rendering waiting for the text to stay quiet is of a text that did
     // not.
-    if (sourceFormat === "latex") dropHeldRendering();
+    if (outputIsPdf) dropHeldRendering();
     // A LaTeX compile takes seconds, so it waits for the source to be quiet
     // for longer -- `latex.DEBOUNCE`, which is that module's number and not
     // one written twice. A reader watching somebody else type waits longer
@@ -1715,6 +1792,7 @@
   // the arriving text triggers, as it always was.
   function refreshFiles() {
     if (!session) return;
+    const previousFormat = sourceFormat;
     const previousFigure = shownFigure;
     const previousFiles = files;
     files = session.list();
@@ -1746,7 +1824,27 @@
     const format = renderers.formatOf(session.mainPath());
     if (format && format !== sourceFormat) {
       sourceFormat = format;
-      renderers.warm(format);
+      if (mayEdit) renderers.warm(format);
+      // A main-file rename can keep the same output kind (Typst -> LaTeX is
+      // still PDF), so framePath alone is not enough to invalidate the old
+      // page. Drop all replayable state before the new format gets a chance to
+      // render, and reload the viewer even when both formats use pdf.js.
+      if (previousFormat && previousFormat !== format) {
+        navigationGeneration += 1;
+        renderingRequest += 1;
+        issued += 1;
+        dropHeldRendering();
+        rendering = null;
+        renderingChecked = false;
+        latestPreview = null;
+        renderedSha = null;
+        frameShowsCheckpoint = false;
+        everPainted = false;
+        everPaintedShown = false;
+        pdfFailure = false;
+        pdfFailureReason = "";
+        if (docsOrigin) navigateFrame(true);
+      }
     }
   }
 
@@ -1967,20 +2065,14 @@
     // page itself, through the identity renderer.
     const format = document_.source_format || "html";
     sourceFormat = format;
-    // A document is shown here only if this deployment can render what it was
-    // written in. Markdown and HTML always; typst when its renderer was built.
-    //
-    // LaTeX is the exception, and the only one. Its compiler is a property of
-    // the deployment rather than of the build -- behind `--latex`, not in the
-    // binary -- and it runs in an editor's browser, whose result the server
-    // keeps. So a reader is shown a stored PDF whether or not this deployment
-    // has a mirror, and the only thing the deployment has to be able to do
-    // for LaTeX is store that PDF, which it always can. Whether it has a
-    // mirror decides only whether an editor is offered a compiler.
+    // A document is shown by output kind. Paged documents use stored PDFs when
+    // this deployment has no browser compiler, so opening a Typst paper never
+    // depends on downloading Typst WASM. Compiler availability only controls
+    // whether an authorized editor compiles locally.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
     renderers.offerLatex(list.includes("latex"));
     latexReady = false;
-    if (format !== "latex" && (!list.includes(format) || !renderers.available(format))) {
+    if (!renderers.outputKind(format)) {
       say(`${format} documents are read where their renderer is built`, true);
       settled = true;
       return;
@@ -1991,7 +2083,9 @@
     // browser's, and an editor coming back to their own document keeps it.
     if (panel && !tabs.some((tab) => tab.id === panel)) showPanel(home, false);
     settled = true;
-    renderers.warm(format);
+    // Typst is loaded automatically for editors. Readers use the stored PDF
+    // and must remain usable on a deployment with no Typst module at all.
+    if (mayEdit) renderers.warm(format);
     // localStorage remembers a preference, not a running worker. Restore the
     // worker before claiming that LaTeX is ready; if the distribution was
     // removed from this mirror, the card remains available for a new choice.
@@ -2151,7 +2245,54 @@
 
 <svelte:window bind:innerWidth={width} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
 
-<Nav {me}>
+{#snippet layoutControl()}
+  <!-- Right-click, or hold, for which side the source is on: an order set once
+       does not belong in a control flipped hourly. -->
+  <Menu onSelect={(chosen) => chose(chosen.value)}>
+    <Menu.ContextTrigger>
+      {#snippet element(attributes)}
+        <span {...attributes} class="contents">
+          <IconButton
+            icon={ARRANGEMENTS[layout].icon}
+            label="Layout: {ARRANGEMENTS[layout].says}. Click for {ARRANGEMENTS[
+              ARRANGEMENTS[layout].next
+            ].says}."
+            pressed={layout !== "split"}
+            onclick={cycleLayout}
+          />
+        </span>
+      {/snippet}
+    </Menu.ContextTrigger>
+    <Menu.Positioner class="z-50">
+      <Menu.Content class="card bg-surface-50-950 w-52 p-1 shadow-xl">
+        {#each [["left", "Source on left"], ["right", "Source on right"]] as [side, says]}
+          <Menu.Item value="side-{side}" class="menuitem">
+            <span class="w-4">{sourceSide === side ? "✓" : ""}</span>
+            {says}
+          </Menu.Item>
+        {/each}
+        <hr class="hr my-1" />
+        <!-- The same ratios a drag sticks to, for anyone who never finds that
+             it does. -->
+        {#each RATIOS as ratio}
+          <Menu.Item value="ratio-{ratio.share}" class="menuitem">
+            <span class="w-4">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>
+            {ratio.says}
+          </Menu.Item>
+        {/each}
+        <hr class="hr my-1" />
+        <!-- A preference rather than a mode: set once, and only about this
+             arrangement. It is also available from Settings. -->
+        <Menu.Item value="linked" class="menuitem">
+          <span class="w-4">{linked ? "✓" : ""}</span>
+          Keep in step
+        </Menu.Item>
+      </Menu.Content>
+    </Menu.Positioner>
+  </Menu>
+{/snippet}
+
+<Nav {me} documentation={false}>
   {#snippet children()}
     <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
       {toolbarPath ? basename(toolbarPath) : doc.title || "Komodoc"}
@@ -2170,58 +2311,14 @@
   {/snippet}
   {#snippet tools()}
     <Row gap={2}>
-      <ControlGroup label="Layout">
-        {#snippet children()}
-          {#if editing}
-            <!-- Right-click, or hold, for which side the source is on: an
-                 order set once does not belong in a control flipped hourly. -->
-            <Menu onSelect={(chosen) => chose(chosen.value)}>
-              <Menu.ContextTrigger>
-                {#snippet element(attributes)}
-                  <span {...attributes} class="contents">
-                    <IconButton
-                      icon={ARRANGEMENTS[layout].icon}
-                      label="Layout: {ARRANGEMENTS[layout].says}. Click for {ARRANGEMENTS[
-                        ARRANGEMENTS[layout].next
-                      ].says}."
-                      pressed={layout !== "split"}
-                      onclick={cycleLayout}
-                    />
-                  </span>
-                {/snippet}
-              </Menu.ContextTrigger>
-              <Menu.Positioner class="z-50">
-                <Menu.Content class="card bg-surface-50-950 w-52 p-1 shadow-xl">
-                  {#each [["left", "Source on left"], ["right", "Source on right"]] as [side, says]}
-                    <Menu.Item value="side-{side}" class="menuitem">
-                      <span class="w-4">{sourceSide === side ? "✓" : ""}</span>
-                      {says}
-                    </Menu.Item>
-                  {/each}
-                  <hr class="hr my-1" />
-                  <!-- The same ratios a drag sticks to, for anyone who never
-                       finds that it does. -->
-                  {#each RATIOS as ratio}
-                    <Menu.Item value="ratio-{ratio.share}" class="menuitem">
-                      <span class="w-4">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>
-                      {ratio.says}
-                    </Menu.Item>
-                  {/each}
-                  <hr class="hr my-1" />
-                  <!-- A preference rather than a mode: set once, and only about
-                       this arrangement. It does not earn a place in the bar,
-                       and it is here as a shortcut to the same switch the
-                       Settings panel holds. -->
-                  <Menu.Item value="linked" class="menuitem">
-                    <span class="w-4">{linked ? "✓" : ""}</span>
-                    Keep in step
-                  </Menu.Item>
-                </Menu.Content>
-              </Menu.Positioner>
-            </Menu>
-          {/if}
-        {/snippet}
-      </ControlGroup>
+      <div class="mobile-workspace-tools">
+        {#if editing}
+          <ControlGroup label="Layout">
+            {#snippet children()}{@render layoutControl()}{/snippet}
+          </ControlGroup>
+        {/if}
+        <IconButton icon="help" label="Documentation" href="/documentation" />
+      </div>
       {#if viewing}
         <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={backToNow}>Back to now</button>
         <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
@@ -2248,31 +2345,37 @@
        the activity bar. A file dropped anywhere on it joins the project. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
     <aside class="sidebar" class:collapsed={!shown.comments} ondragover={(event) => event.preventDefault()} ondrop={dropped}>
-      <div class="sidebar-activity" role="group" aria-label="Sidebar sections">
-        {#each tabs as tab (tab.id)}
-          {#if tab.id === "diagnostics"}
-            <!-- The counts sit under the icon, in the colour of what they
-                 count, so the bar says at a glance whether the document
-                 compiles; the words go to the tooltip and the screen reader. -->
-            <div class="activity-diagnostics">
-              <IconButton icon="triangle-alert"
-                label={diagnosticBadge ? `${tab.says}: ${diagnosticBadge}` : tab.says}
-                pressed={panel === tab.id}
+      <div class="sidebar-activity">
+        <div class="activity-sections" role="group" aria-label="Sidebar sections">
+          {#each tabs as tab (tab.id)}
+            {#if tab.id === "diagnostics"}
+              <!-- The counts sit under the icon, in the colour of what they
+                   count, so the bar says at a glance whether the document
+                   compiles; the words go to the tooltip and the screen reader. -->
+              <div class="activity-diagnostics">
+                <IconButton icon="triangle-alert"
+                  label={diagnosticBadge ? `${tab.says}: ${diagnosticBadge}` : tab.says}
+                  pressed={panel === tab.id}
+                  onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
+                {#if diagnostics.length}
+                  <span class="activity-counts" aria-hidden="true">
+                    {#if errorCount}<span class="activity-count errors">{errorCount}</span>{/if}
+                    {#if warningCount}<span class="activity-count warnings">{warningCount}</span>{/if}
+                  </span>
+                {/if}
+              </div>
+            {:else}
+              <IconButton
+                icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
+                label={tab.says} pressed={panel === tab.id}
                 onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
-              {#if diagnostics.length}
-                <span class="activity-counts" aria-hidden="true">
-                  {#if errorCount}<span class="activity-count errors">{errorCount}</span>{/if}
-                  {#if warningCount}<span class="activity-count warnings">{warningCount}</span>{/if}
-                </span>
-              {/if}
-            </div>
-          {:else}
-            <IconButton
-              icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
-              label={tab.says} pressed={panel === tab.id}
-              onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
-          {/if}
-        {/each}
+            {/if}
+          {/each}
+        </div>
+        <div class="activity-utilities" role="group" aria-label="Workspace controls">
+          {#if editing}{@render layoutControl()}{/if}
+          <IconButton icon="help" label="Documentation" href="/documentation" />
+        </div>
       </div>
       {#if shown.comments && settled}
       <div class="sidebar-content">
@@ -2372,23 +2475,37 @@
   {/if}
 
   <!-- What stands where the document would be, before there is one to show.
-       Two states and two audiences: an editor who has not chosen a compiler
-       gets the card, and a reader gets told plainly that nobody has compiled
-       this yet. A reader is never shown the card -- nobody is asked to
-       download a TeX distribution in order to read a paper. -->
+       LaTeX has its compiler card; every paged format gets an explicit
+       not-yet-rendered state until a stored PDF arrives. Readers never load a
+       compiler merely to read an existing artifact. -->
   {#if shown.document && showsCard}
     <section class="latexpane">
       {#await import("./LatexCard.svelte") then { default: LatexCard }}
         <LatexCard onchosen={latexChosen} onerror={(why) => say(why, true)} />
       {/await}
     </section>
+  {:else if shown.document && failedBeforeRender}
+    <section class="latexpane">
+      <div class="notyet">
+        <h2 class="h4">Could not render</h2>
+        {#if pdfFailureReason}
+          <p class="text-surface-700-300 text-sm">
+            The compiler produced no PDF, and Diagnostics has nothing to show for it. What it said:
+          </p>
+          <pre class="text-surface-700-300 text-xs">{pdfFailureReason}</pre>
+        {:else}
+          <p class="text-surface-700-300 text-sm">
+            Fix the errors in Diagnostics to produce a PDF preview.
+          </p>
+        {/if}
+      </div>
+    </section>
   {:else if shown.document && unrendered}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">Not yet rendered</h2>
         <p class="text-surface-700-300 text-sm">
-          This is a LaTeX document, and no editor has compiled it in a browser
-          yet. When one does, its pages appear here.
+          This {sourceFormat === "typst" ? "Typst" : "paged"} document has no stored PDF yet. When an editor compiles it, its pages appear here.
         </p>
       </div>
     </section>
@@ -2397,7 +2514,7 @@
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
-           away={!shown.document || showsCard || unrendered} />
+           away={!shown.document || showsCard || unrendered || failedBeforeRender} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
@@ -2444,10 +2561,6 @@
         <!-- svelte-ignore a11y_autofocus -->
         <textarea class="textarea" rows="5" maxlength="5000" required autofocus bind:value={draft.body}
         ></textarea>
-      </label>
-      <label class="label">
-        <span class="label-text">Tags <small class="text-surface-500">optional, comma separated</small></span>
-        <input class="input" placeholder="methods, typo, citation" bind:value={draft.tags} />
       </label>
     </form>
   {/snippet}
@@ -2524,6 +2637,18 @@
     width: var(--komodoc-activity);
     padding-block: calc(var(--spacing) * 3);
   }
+  .activity-sections, .activity-utilities {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing);
+  }
+  .activity-utilities {
+    margin-top: auto;
+    padding-top: calc(var(--spacing) * 2);
+    border-top: 1px solid var(--color-surface-200-800);
+  }
+  .mobile-workspace-tools { display: none; align-items: center; gap: var(--spacing); }
   .activity-diagnostics {
     display: flex;
     flex-direction: column;
@@ -2551,6 +2676,9 @@
   @media (max-width: 760px) {
     .sidebar, .sidebar.collapsed { flex: none; flex-direction: column; }
     .sidebar-activity { flex-direction: row; width: auto; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); }
+    .activity-sections { flex-direction: row; }
+    .activity-utilities { display: none; }
+    .mobile-workspace-tools { display: flex; }
     .sidebar-content { overflow: visible; }
   }
 </style>

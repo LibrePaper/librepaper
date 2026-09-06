@@ -113,12 +113,41 @@ impl Diagnostic {
     }
 }
 
-/// What a compile produced: the page, when there is one, and everything the
-/// compiler had to say. The page is present exactly when no diagnostic is an
-/// error.
+/// The format of a successful rendering.
+///
+/// Keeping the format in the type is important at the WebAssembly boundary:
+/// PDF bytes must never be passed through a UTF-8 decoder, and callers should
+/// not have to guess whether a byte buffer is HTML or PDF.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RenderedDocument {
+    /// A document whose output can be inserted into an HTML page.
+    Html(String),
+    /// A complete PDF file, including its binary header and cross-reference.
+    Pdf(Vec<u8>),
+}
+
+impl RenderedDocument {
+    pub fn html(&self) -> Option<&str> {
+        match self {
+            Self::Html(html) => Some(html),
+            Self::Pdf(_) => None,
+        }
+    }
+
+    pub fn pdf(&self) -> Option<&[u8]> {
+        match self {
+            Self::Pdf(pdf) => Some(pdf),
+            Self::Html(_) => None,
+        }
+    }
+}
+
+/// What a compile produced and everything the compiler had to say. A result
+/// has no document exactly when at least one diagnostic is an error.
 #[derive(Clone, Debug, Default)]
 pub struct Compiled {
-    pub page: Option<String>,
+    /// The successfully rendered document, if compilation succeeded.
+    pub output: Option<RenderedDocument>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -127,7 +156,15 @@ impl Compiled {
     /// and HTML always return.
     pub fn page(page: String) -> Compiled {
         Compiled {
-            page: Some(page),
+            output: Some(RenderedDocument::Html(page)),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// A successful PDF rendering.
+    pub fn pdf(pdf: Vec<u8>) -> Compiled {
+        Compiled {
+            output: Some(RenderedDocument::Pdf(pdf)),
             diagnostics: Vec::new(),
         }
     }
@@ -135,7 +172,7 @@ impl Compiled {
     /// A compile that failed for a reason with no place in the source.
     pub fn failed(message: impl Into<String>) -> Compiled {
         Compiled {
-            page: None,
+            output: None,
             diagnostics: vec![Diagnostic::spanless(Severity::Error, message)],
         }
     }
@@ -143,10 +180,19 @@ impl Compiled {
     /// Replaces the page, keeping what the compiler said about it: what
     /// wrapping the output in the shared page template amounts to.
     pub fn map_page(self, wrap: impl FnOnce(String) -> String) -> Compiled {
+        let output = self.output.map(|page| match page {
+            RenderedDocument::Html(html) => RenderedDocument::Html(wrap(html)),
+            RenderedDocument::Pdf(pdf) => RenderedDocument::Pdf(pdf),
+        });
         Compiled {
-            page: self.page.map(wrap),
+            output,
             diagnostics: self.diagnostics,
         }
+    }
+
+    /// Maps an HTML rendering while leaving a PDF rendering untouched.
+    pub fn map_html(self, map: impl FnOnce(String) -> String) -> Compiled {
+        self.map_page(map)
     }
 
     pub fn errors(&self) -> impl Iterator<Item = &Diagnostic> {
@@ -168,9 +214,22 @@ impl Compiled {
     /// The page, or the first error's message, for the callers that were
     /// written against `Result<String, String>` and want nothing more.
     pub fn into_result(self) -> Result<String, String> {
-        match self.page {
-            Some(page) => Ok(page),
-            None => Err(self.message()),
+        let message = self.message();
+        match self.output {
+            Some(RenderedDocument::Html(page)) => Ok(page),
+            Some(RenderedDocument::Pdf(_)) => Err("this compile produced a PDF".to_string()),
+            None => Err(message),
+        }
+    }
+
+    /// Returns a PDF result, retaining the compiler's first error when it did
+    /// not produce one.
+    pub fn into_pdf_result(self) -> Result<Vec<u8>, String> {
+        let message = self.message();
+        match self.output {
+            Some(RenderedDocument::Pdf(pdf)) => Ok(pdf),
+            Some(RenderedDocument::Html(_)) => Err("this compile produced HTML".to_string()),
+            None => Err(message),
         }
     }
 
@@ -272,7 +331,7 @@ mod tests {
     #[test]
     fn the_list_is_json_a_browser_can_read() {
         let compiled = Compiled {
-            page: None,
+            output: None,
             diagnostics: vec![Diagnostic {
                 message: "say \"what\"\n".into(),
                 line: 3,
@@ -285,6 +344,10 @@ mod tests {
         assert!(json.contains("\\\"what\\\"\\n"), "{json}");
         assert!(json.contains("\"line\":3"), "{json}");
         assert_eq!(Compiled::page("<p>x</p>".into()).diagnostics_json(), "[]");
+        assert_eq!(
+            Compiled::pdf(b"%PDF".to_vec()).output.unwrap().pdf(),
+            Some(b"%PDF".as_slice())
+        );
     }
 
     #[test]

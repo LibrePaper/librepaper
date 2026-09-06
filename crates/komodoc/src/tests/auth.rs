@@ -775,28 +775,6 @@ async fn annotation_kinds() {
 }
 
 #[tokio::test]
-async fn tags_are_normalised() {
-    let server = new_test_server().await;
-    let slug = text(&publish_test_document(&server.url).await, "slug");
-    let path = format!("/api/documents/{slug}/comments");
-    let (status, payload) = post(
-        &server.url,
-        &path,
-        json!({"type": "comment", "exact": "hello", "body": "x",
-            // Mixed case, padding, a duplicate, and more than the cap allows.
-            "tags": ["Methods", " methods ", "TYPO", "a", "b", "c", "d", "e", "f"]}),
-    )
-    .await;
-    assert_eq!(status, 200, "tagged comment got {status} {payload}");
-    let tags = payload["comment"]["tags"].as_array().unwrap();
-    assert_eq!(tags.len(), Configuration::default().max_tags, "{tags:?}");
-    assert!(
-        tags[0] == "methods" && tags[1] == "typo",
-        "tags were not normalised or deduplicated: {tags:?}"
-    );
-}
-
-#[tokio::test]
 async fn region_annotations() {
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");

@@ -29,7 +29,7 @@ import * as figures from "./figures.js";
 import * as history from "./history.js";
 import * as renderers from "./renderers.js";
 
-// One rendering per checkpoint per page, whatever asks for it. A document
+// One rendering per document/checkpoint, whatever asks for it. A document
 // under review has a handful of comments on one or two moments, so this is
 // nearly always one entry deep.
 const rendered = new Map();
@@ -41,37 +41,54 @@ const rendered = new Map();
 /// DOM -- so the two can differ at a whitespace boundary. That is what
 /// `anchorOne`'s flattened second pass is for, and it is why this is used to
 /// answer "is the passage here" rather than to place anything.
-export async function textAt(slug, sha, headers = {}) {
-  if (rendered.has(sha)) return rendered.get(sha);
+export async function textAt(slug, sha, headers = {}, services = {}) {
+  const key = `${slug}\u0000${sha}`;
+  if (rendered.has(key)) return rendered.get(key);
   const pending = (async () => {
-    const point = await history.checkpoint(slug, sha, headers);
+    const historyApi = services.history || history;
+    const rendererApi = services.renderers || renderers;
+    const figureApi = services.figures || figures;
+    const fetcher = services.fetch || fetch;
+    const point = await historyApi.checkpoint(slug, sha, headers);
     const tree = { main: point.main, texts: point.texts || {}, digests: {} };
     for (const [path, file] of Object.entries(point.files || {})) {
       if (file.kind !== "text") tree.digests[path] = file.sha;
     }
 
-    // Readers must never compile historical LaTeX: the PDF is already the
-    // rendering of that exact checkpoint, and asking for a browser compiler
-    // would make passage lookup depend on a local distribution choice.
-    if (renderers.formatOf(tree.main) === "latex") {
-      const response = await fetch(`/api/documents/${slug}/renderings/${sha}`, { headers });
+    // Readers must never compile a historical paged document: its PDF is
+    // already the rendering of that exact checkpoint, and asking for a
+    // browser compiler would make passage lookup depend on local capability.
+    if (rendererApi.producesPdf(rendererApi.formatOf(tree.main))) {
+      const response = await fetcher(`/api/documents/${slug}/renderings/${sha}`, { headers });
       if (!response.ok) return null; // unavailable is unknown, not empty text
-      const { text } = await import("./pdf/render.js");
-      return text(await response.arrayBuffer());
+      const pdfText = services.pdfText || (await import("./pdf/render.js")).text;
+      return pdfText(await response.arrayBuffer());
     }
 
     // A checkpoint is a whole directory. Rehydrate every referenced figure
     // before rendering so an image-dependent Typst source is evaluated in the
     // same tree that was stored, rather than silently compiling with holes.
-    const gathered = await figures.gather(slug, tree.digests, headers);
+    const gathered = await figureApi.gather(slug, tree.digests, headers);
     if (Object.keys(gathered.assets).length !== Object.keys(tree.digests).length) return null;
-    const { html } = await renderers.render(
+    const { html } = await rendererApi.render(
       { ...tree, assets: gathered.assets, urls: gathered.urls },
       point.label || "Document",
     );
     return typeof html === "string" ? visibleText(html) : null;
   })();
-  rendered.set(sha, pending);
+  rendered.set(key, pending);
+  // A rendering may be uploaded after the first lookup (for example while a
+  // reader opens history during an editor's compile). Do not remember a
+  // missing artifact or a transient fetch failure forever. The identity check
+  // keeps a late result from evicting a newer retry.
+  pending.then(
+    (value) => {
+      if (value === null && rendered.get(key) === pending) rendered.delete(key);
+    },
+    () => {
+      if (rendered.get(key) === pending) rendered.delete(key);
+    },
+  );
   return pending;
 }
 
