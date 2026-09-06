@@ -48,6 +48,15 @@ percent-encoding = "2"
 html-escape = "0.2"
 yrs = "0.27"
 unicode-normalization = "0.1.25"
+# `sync` is a WebSocket client, and axum's socket type is the server half of
+# the same library. This is the tungstenite axum already builds, over the
+# rustls reqwest already builds, so what it adds to the binary is the client
+# handshake and nothing else.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# Watching for a save. The one thing `sync` cannot do by polling without
+# either missing a save or spinning: inotify, FSEvents and
+# ReadDirectoryChangesW behind one interface.
+notify = "8"
 
 [dev-dependencies]
 tempfile = "3"

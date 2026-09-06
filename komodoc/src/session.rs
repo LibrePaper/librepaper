@@ -583,6 +583,36 @@ fn edit_text(txn: &mut TransactionMut, text: &TextRef, wanted: &str) {
     }
 }
 
+/// Applies word-level edits to the main file, in one transaction.
+///
+/// `replace_text` above states a change as one contiguous replacement, which
+/// is right for a publish -- the whole text is being set -- and wrong for a
+/// merge: a file whose author edited two distant paragraphs would have
+/// everything between them deleted and reinserted, taking the concurrent
+/// insertions in the middle with it. `komodoc-text` says exactly which spans
+/// moved, so those are the spans that move here.
+///
+/// Back to front, so that an edit's offsets are still the ones `diff`
+/// measured when it is applied. Offsets are UTF-16 code units on both sides.
+pub fn apply_edits(doc: &Doc, edits: &[komodoc_text::Edit]) {
+    let (files, _, _, meta) = maps(doc);
+    let mut txn = doc.transact_mut();
+    let Some(id) = string_at(&meta, &txn, MAIN) else {
+        return;
+    };
+    let Some(text) = text_at(&files, &txn, &id) else {
+        return;
+    };
+    for edit in edits.iter().rev() {
+        if edit.delete > 0 {
+            text.remove_range(&mut txn, edit.at as u32, edit.delete as u32);
+        }
+        if !edit.insert.is_empty() {
+            text.insert(&mut txn, edit.at as u32, &edit.insert);
+        }
+    }
+}
+
 /// Puts a text at a path, making the file if there is none there. Returns its
 /// id. What a publish of a directory and a restore both build the document
 /// with.

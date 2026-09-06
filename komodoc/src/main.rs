@@ -24,6 +24,7 @@ mod server;
 mod session;
 mod storage;
 mod store;
+mod sync;
 mod util;
 
 #[cfg(test)]
@@ -204,6 +205,18 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
+    /// Keep a local file and a document in step, both ways, until interrupted
+    Sync {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// The file to keep in step with the document's main file
+        file: String,
+        /// How long either side stays quiet before it is acted on (default 250ms)
+        #[arg(long, value_name = "DURATION")]
+        interval: Option<String>,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
     /// Show or change who a document is shared with
     Share {
         /// A full slug, or one of the short handles `list` prints
@@ -328,6 +341,20 @@ async fn main() {
             cli::comment_document(&id, server.unwrap_or_default()).await
         }
         Command::Edit { id, server } => cli::edit_document(&id, server.unwrap_or_default()).await,
+        Command::Sync {
+            id,
+            file,
+            interval,
+            server,
+        } => {
+            sync::sync_document(
+                &id,
+                &file,
+                server.unwrap_or_default(),
+                interval.unwrap_or_default(),
+            )
+            .await
+        }
         Command::Share {
             id,
             editor,

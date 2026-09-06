@@ -1,11 +1,12 @@
 # SPEC: `komodoc sync`, the file on disk as a peer in the session
 
-Status: proposed. Nothing here is built. Revised for `01-SPEC-history.md`, which
-makes the session the document and the server the peer that holds it; the
-publishing this spec once did is gone with the separate publication copy.
-Planned for the existing Rust command line with Tokio. Yrs references below
-are conditional on the CRDT interoperability decision in `01-SPEC-history.md`;
-they do not mark that library choice as accepted or this command as built.
+Status: built, in `komodoc/src/sync.rs`, with `komodoc/src/tests/sync.rs` and
+the merge's own tests in `text/src/tests.rs`. Yrs is the library on both
+sides of the Rust half and Yjs on the browser's, and the test suite joins a
+Yrs client to the real room over a real socket rather than assuming the shared
+encoding. Two things this spec describes are not in it and are noted where
+they come up: the automation client under "Follow-up", and the awareness entry
+that would put a name on this peer in the browser.
 
 ## The problem
 
@@ -141,10 +142,12 @@ not anyone is editing it.
 On `y-snapshot`, encode the full Yrs state as a v1 update with `replace: true`,
 which is what the browser does for an older server. On `y-awareness`, apply
 it and print who
-joined or left. The client's own awareness entry is
+joined or left. The client's own awareness entry would be
 `{user: {name: "<login> (sync)", color}}`, so a caret label in the browser
-says where the other edits are coming from, even though the client has no
-caret to show.
+said where the other edits were coming from. Not built: awareness is who is
+here now, this client has no caret to show, and the entry would mean encoding
+Y.Awareness in Rust for one label. It is worth doing and it is not the
+command.
 
 If the socket drops, reconnect with backoff, send `y-open` again, and treat
 what comes back as above. Reconnecting is the ordinary case for a process
@@ -359,10 +362,10 @@ It is not a general file synchroniser. One file, one document, one session.
    lock file, the messages above, `--interval`. A section in the README
    under "CLI", after "Edit", which opens with what it is not.
 
-Steps 1 and 2 are a day each; step 3 is a day or two, most of it tests; 4
-and 5 are a day together. Step 3 is where the risk is, and it is the step
-with no dependency on the network, so it can be built and tested first if
-that is where the doubt is.
+All five are built. One deviation from step 5 is worth knowing: the README
+section sits after "Comment" and "Edit" rather than immediately after "Edit",
+and opens with what the command is for; what it is not is the last paragraph,
+where it reads better than as an apology at the top.
 
 ## Open questions
 
