@@ -277,6 +277,17 @@ pub struct Session {
     pub doc: yrs::Doc,
     /// Whether the document has changed since `sessions/<slug>` was written.
     pub dirty: bool,
+    /// Bumped on every mutation that changes the document or how its files
+    /// are named -- an edit, a main-file change, a restore, an asset naming.
+    /// A checkpoint or a persist records which generation its bytes cover, so
+    /// a later comparison can tell whether an edit landed after the snapshot
+    /// was taken rather than trusting that nothing moved between one await
+    /// and the next.
+    pub generation: u64,
+    /// The generation the newest checkpoint's tree actually covers. Compared
+    /// against `generation` to say whether the document has changed since
+    /// then, so an idle room is not re-hashed every second to answer that.
+    pub checkpoint_generation: u64,
     /// When the last update arrived, and who sent it. Both feed the quiet
     /// checkpoint, whose `by` is the editor whose update last landed.
     pub updated_at: i64,
@@ -470,6 +481,8 @@ impl RoomSet {
                 session: Session {
                     doc: session::new_doc(),
                     dirty: false,
+                    generation: 0,
+                    checkpoint_generation: 0,
                     updated_at: 0,
                     by: String::new(),
                     asked: None,
@@ -618,9 +631,24 @@ impl Room {
     /// anybody opens it. Nothing is rewritten until then, so a deployment that
     /// is rolled back loses nothing.
     async fn load_session(&self) {
-        let (manifest, manifest_at) = history::load_versioned(self.blobs.as_ref(), &self.slug)
-            .await
-            .unwrap_or_default();
+        let (manifest, manifest_at) =
+            match history::load_versioned(self.blobs.as_ref(), &self.slug).await {
+                Ok(pair) => pair,
+                Err(err) => {
+                    // No manifest is an empty one; a manifest that exists and
+                    // cannot be parsed is not the same thing, and defaulting it
+                    // here would let the next checkpoint write a near-empty
+                    // history over a real one this server merely could not read.
+                    // The room opens read-only until somebody looks at the
+                    // object by hand.
+                    eprintln!(
+                    "warning: the history of {} is unreadable ({err}); this room opens read-only",
+                    self.slug
+                );
+                    self.read_only.store(true, Ordering::Relaxed);
+                    (Manifest::default(), BlobVersion::new())
+                }
+            };
         let entry = match self.store.get() {
             Some(store) => store.get(&self.slug).await,
             None => None,
@@ -665,6 +693,10 @@ impl Room {
         state.session.format = format;
         if let Some(point) = state.manifest.latest() {
             state.session.last_checkpoint = point.sha.clone();
+            // A freshly loaded document has taken no edits yet, so generation
+            // 0 covers whatever the newest checkpoint recorded until proven
+            // otherwise.
+            state.session.checkpoint_generation = 0;
         }
         let named = entry
             .as_ref()
@@ -672,12 +704,57 @@ impl Room {
             .unwrap_or_default();
         match stored {
             Some((raw, at)) => {
-                state.session_version = at;
-                if let Err(err) = session::apply_update(&state.session.doc, &raw) {
+                // Decoded onto a fresh document first, and installed only if
+                // it actually applies: a session that half-applies onto the
+                // live document is worse than one left alone, since the live
+                // document is what the next persist would write over the
+                // original object with.
+                let candidate = session::new_doc();
+                if session::apply_update(&candidate, &raw).is_ok() {
+                    state.session.doc = candidate;
+                    state.session_version = at;
+                } else {
                     eprintln!(
-                        "warning: the session for {} is unreadable ({err})",
+                        "warning: the session for {} is unreadable; preserving it and trying to \
+                         recover from its history",
                         self.slug
                     );
+                    // The corrupt object is diagnosable evidence and must
+                    // never be overwritten by whatever recovery does next, so
+                    // it is copied aside before anything else touches it.
+                    let sibling = format!("{}.unreadable-{}", session_key(&self.slug), now_unix());
+                    if let Err(err) = self
+                        .blobs
+                        .put(&sibling, raw.clone(), "application/octet-stream")
+                        .await
+                    {
+                        eprintln!(
+                            "warning: could not preserve the unreadable session for {} ({err})",
+                            self.slug
+                        );
+                    }
+                    match self
+                        .rebuild_from_checkpoint(&state.session.doc, &state.manifest, &named)
+                        .await
+                    {
+                        Ok(()) => {
+                            // Recovered onto the document in memory, from the
+                            // last checkpoint's own tree; storage still has
+                            // the corrupt object, so this is dirty until the
+                            // next persist writes the recovered state over it.
+                            state.session.dirty = true;
+                            state.session.generation += 1;
+                            state.session_version = at;
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "warning: could not recover {} from its history either ({err}); \
+                                 this room opens read-only",
+                                self.slug
+                            );
+                            self.read_only.store(true, Ordering::Relaxed);
+                        }
+                    }
                 }
             }
             None => {
@@ -708,6 +785,7 @@ impl Room {
         let format = state.session.format.clone();
         if session::migrate(&state.session.doc, &main_path_for(&named, &format)) {
             state.session.dirty = true;
+            state.session.generation += 1;
         }
         drop(state);
         self.load_asset_sizes().await;
@@ -1236,16 +1314,33 @@ impl Room {
         // one yet: a document being published for the first time. It follows
         // from what the document is written in, which is the same name the
         // migration gives a document that predates directories.
-        let implied = if format.is_empty() {
-            state.session.format.clone()
-        } else {
+        let implied = if !format.is_empty() {
             format.to_string()
+        } else if !named.is_empty() {
+            // No format was given, but the main file's own name was --
+            // deriving from its extension keeps the two from disagreeing
+            // when a caller names a file without also spelling out its
+            // format (R27).
+            let derived = format_from_path(named);
+            if derived.is_empty() {
+                state.session.format.clone()
+            } else {
+                derived
+            }
+        } else {
+            state.session.format.clone()
         };
         session::replace_text(&state.session.doc, source, &main_path_for(named, &implied));
         if !format.is_empty() {
             state.session.format = format.to_string();
+        } else if !named.is_empty() {
+            let derived = format_from_path(named);
+            if !derived.is_empty() {
+                state.session.format = derived;
+            }
         }
         state.session.dirty = true;
+        state.session.generation += 1;
         state.session.updated_at = now_unix();
         session::encode_diff(&state.session.doc, &before)
             .unwrap_or_else(|_| session::encode_state(&state.session.doc))
@@ -1312,6 +1407,10 @@ impl Room {
             }
             session::Admission::Fits => {}
         }
+        // Read before the update is applied, so a change to the shared
+        // main-file pointer can be told from a document that already opened
+        // with this main file.
+        let main_before = session::main_path(&state.session.doc);
         if session::apply_update(&state.session.doc, update).is_err() {
             return Applied::Ignored;
         }
@@ -1344,7 +1443,20 @@ impl Room {
                 peer.sent = seq;
             }
         }
+        // An editor changing which file is the main one is a CRDT write like
+        // any other; the format that travels with every checkpoint has to
+        // follow it rather than keep whatever the document opened in, or a
+        // checkpoint ends up naming a new main path with a stale format
+        // (R27).
+        let main_after = session::main_path(&state.session.doc);
+        if main_after != main_before {
+            let derived = format_from_path(&main_after);
+            if !derived.is_empty() {
+                state.session.format = derived;
+            }
+        }
         state.session.dirty = true;
+        state.session.generation += 1;
         state.session.updated_at = now;
         state.session.by = by.to_string();
         Applied::Relay
@@ -1389,8 +1501,10 @@ impl Room {
             }
         }
         let history = state.manifest.bytes();
+        let format = state.session.format.clone();
+        let main = session::main_path(&state.session.doc);
         drop(state);
-        self.record_size(size + history, None).await;
+        self.record_size(size + history, None, &format, &main).await;
         Ok(true)
     }
 
@@ -1408,7 +1522,7 @@ impl Room {
     /// names it as `parent` -- `repair` below is that.
     pub async fn checkpoint(&self, why: &str, by: &str) -> Result<Option<String>, String> {
         let now = now_unix();
-        let (tree, bodies, format, last, deferred) = {
+        let (tree, bodies, format, last, deferred, tree_generation) = {
             let mut state = self.state.lock().await;
             // A deliberate write inside the defer window is not refused; it
             // waits, and is taken when the window passes, if the text still
@@ -1425,15 +1539,35 @@ impl Room {
                     String::new(),
                     String::new(),
                     true,
+                    0,
                 )
             } else {
                 let (tree, bodies) = tree_of(&state.session.doc, &state.session.asset_sizes);
+                // The main file can change by paths this room does not itself
+                // mediate through a dedicated setter -- an applied CRDT
+                // update is the ordinary one, but this is the safety net,
+                // checked at the moment of every checkpoint: the tree's own
+                // main path is what is actually about to be recorded, so the
+                // format that travels with it has to agree, rather than
+                // trust that `session.format` was already kept in step
+                // (R27).
+                let derived = format_from_path(&tree.main);
+                let format = if !derived.is_empty() && derived != state.session.format {
+                    state.session.format = derived.clone();
+                    derived
+                } else {
+                    state.session.format.clone()
+                };
                 (
                     tree,
                     bodies,
-                    state.session.format.clone(),
+                    format,
                     state.session.last_checkpoint.clone(),
                     false,
+                    // What this checkpoint's tree covers, so a later tick can
+                    // tell whether the document has moved on without hashing
+                    // the whole tree again (R26).
+                    state.session.generation,
                 )
             }
         };
@@ -1449,8 +1583,27 @@ impl Room {
             let mut state = self.state.lock().await;
             state.session.asked = None;
             if state.manifest.has(&sha) {
+                // Reusing immutable content is not a new checkpoint -- the
+                // manifest's chronology and its bytes are left alone, since
+                // `shed` and pruning key on SHAs and a repeated entry would
+                // only confuse them -- but it does become the current
+                // revision again, so the in-memory pointer and the index
+                // head both have to say so, or a reader asking what the
+                // document says now gets an old answer (R17).
+                // `last_checkpoint_at` is deliberately left untouched:
+                // unchanged content is not a new checkpoint, and refreshing
+                // it would push the next deliberate checkpoint that actually
+                // changes something into the defer window (R26).
+                let moved = state.session.last_checkpoint != sha;
                 state.session.last_checkpoint = sha.clone();
-                state.session.last_checkpoint_at = now;
+                state.session.last_tree = Some(tree.clone());
+                state.session.checkpoint_generation = tree_generation;
+                let format = state.session.format.clone();
+                let main = tree.main.clone();
+                drop(state);
+                if moved {
+                    self.record_size_now(Some(&sha), &format, &main).await;
+                }
                 return Ok(Some(sha));
             }
         }
@@ -1497,10 +1650,17 @@ impl Room {
             .map_err(|err| err.to_string())?;
 
         // 3. the session state, so a restart comes back at or after the
-        //    checkpoint rather than before it.
-        let state_bytes = {
+        //    checkpoint rather than before it. The generation is captured in
+        //    the same breath as the bytes: if a newer edit lands before this
+        //    server gets to clear `dirty` below, the two disagree and `dirty`
+        //    is left set, so that edit is never reported as saved when it is
+        //    not yet on disk (R07).
+        let (state_bytes, encoded_generation) = {
             let state = self.state.lock().await;
-            session::encode_state(&state.session.doc)
+            (
+                session::encode_state(&state.session.doc),
+                state.session.generation,
+            )
         };
         let session_size = state_bytes.len() as i64;
         {
@@ -1512,6 +1672,12 @@ impl Room {
             state.session_version = version;
             written?;
         }
+        {
+            let mut state = self.state.lock().await;
+            if state.session.generation == encoded_generation {
+                state.session.dirty = false;
+            }
+        }
 
         // What the parent recorded, so this entry can say which paths moved.
         // Held in memory from one checkpoint to the next; read back only on
@@ -1519,23 +1685,30 @@ impl Room {
         // this server has not seen the parent itself.
         let parent_tree = self.parent_tree().await;
 
-        // The manifest, in memory: the repair first, then this checkpoint.
-        let (manifest, shed, size) = {
+        // 4. the index entry, then 5. the manifest -- staged from
+        // `state.manifest` and written under one continuously held lock, so a
+        // concurrent `label` can never land between the staging and the write
+        // and be discarded by this checkpoint's now-stale idea of the
+        // manifest (R09), and a failed write never lands in memory, so a
+        // retry recomputes from the real manifest rather than quietly
+        // no-op-ing through the deduplication branch above (R08).
+        let shed;
+        {
             let mut state = self.state.lock().await;
-            state.session.dirty = false;
-            self.repair(&mut state, &last).await;
-            let parent = state
-                .manifest
+            let mut staged = state.manifest.clone();
+            let repair_format = state.session.format.clone();
+            self.repair(&mut staged, &repair_format, &last).await;
+            let parent = staged
                 .latest()
                 .map(|point| point.sha.clone())
                 .unwrap_or_default();
-            state.manifest.checkpoints.push(Checkpoint {
+            staged.checkpoints.push(Checkpoint {
                 sha: sha.clone(),
                 parent,
                 at: timestamp(),
                 by: by.to_string(),
                 why: why.to_string(),
-                source_format: format,
+                source_format: format.clone(),
                 size: tree.size(),
                 label: String::new(),
                 commit: String::new(),
@@ -1543,48 +1716,41 @@ impl Room {
                 tree: true,
                 changed: tree.changed_from(parent_tree.as_ref()),
             });
+
+            // A checkpoint is never refused, because refusing it would lose
+            // work. What gives instead is the oldest history: the ceilings
+            // shed the oldest unlabelled checkpoints, and the oldest
+            // labelled ones after them, until the document fits.
+            let ceiling = self.allowance(session_size).await;
+            let keep_count = self.config.session.history_max;
+            let shed_now = staged.shed(|manifest| {
+                (keep_count == 0 || manifest.checkpoints.len() <= keep_count)
+                    && (ceiling < 0 || manifest.bytes() <= ceiling)
+            });
+
+            // What the document costs: the live session, its history, its
+            // figures and its renderings. The quota counts each object once
+            // -- a text blob and an asset are each charged where they are
+            // stored, and the tree that names them is bookkeeping rather
+            // than a third copy. Read straight off the locked state instead
+            // of through `assets_bytes`/`renderings_bytes`, which lock it
+            // themselves.
+            let assets: i64 = state.session.asset_sizes.values().sum();
+            let renderings: i64 = state.session.rendering_sizes.values().sum();
+            self.record_size(
+                session_size + staged.bytes() + assets + renderings,
+                Some(&sha),
+                &format,
+                &tree.main,
+            )
+            .await;
+
+            self.write_manifest(&mut state, staged).await?;
             state.session.last_tree = Some(tree.clone());
             state.session.last_checkpoint = sha.clone();
             state.session.last_checkpoint_at = now;
-            (state.manifest.clone(), Vec::<String>::new(), session_size)
-        };
-        let mut manifest = manifest;
-        let mut shed = shed;
-
-        // A checkpoint is never refused, because refusing it would lose work.
-        // What gives instead is the oldest history: the ceilings shed the
-        // oldest unlabelled checkpoints, and the oldest labelled ones after
-        // them, until the document fits.
-        let ceiling = self.allowance(size).await;
-        let keep_count = self.config.session.history_max;
-        shed.extend(manifest.shed(|manifest| {
-            (keep_count == 0 || manifest.checkpoints.len() <= keep_count)
-                && (ceiling < 0 || manifest.bytes() <= ceiling)
-        }));
-
-        // 4. the index entry, then 5. the manifest.
-        // What the document costs: the live session, its history, its figures
-        // and its renderings. The quota counts each object once -- a text blob and an
-        // asset are each charged where they are stored, and the tree that
-        // names them is bookkeeping rather than a third copy.
-        let assets = self.assets_bytes().await;
-        let renderings = self.renderings_bytes().await;
-        self.record_size(size + manifest.bytes() + assets + renderings, Some(&sha))
-            .await;
-        {
-            let mut state = self.state.lock().await;
-            let body = serde_json::to_vec(&manifest).map_err(|err| err.to_string())?;
-            let mut version = std::mem::take(&mut state.manifest_version);
-            let written = self
-                .write_owned(
-                    &crate::blob::history_index_key(&self.slug),
-                    body,
-                    &mut version,
-                )
-                .await;
-            state.manifest_version = version;
-            written?;
-            state.manifest = manifest;
+            state.session.checkpoint_generation = tree_generation;
+            shed = shed_now;
         }
         if !shed.is_empty() {
             let keys: Vec<String> = shed
@@ -1612,56 +1778,65 @@ impl Room {
         Ok(Some(sha))
     }
 
-    /// Puts back a checkpoint the manifest lost. The index names the newest
-    /// checkpoint, so an index entry naming a SHA the manifest does not have,
-    /// whose object is still there, is a write that got as far as step 3 and
-    /// no further. It is added as the newest entry rather than guessed at.
-    async fn repair(&self, state: &mut RoomState, last: &str) {
-        if last.is_empty() || state.manifest.has(last) {
-            return;
+    /// Puts back a checkpoint the manifest lost, into a staged manifest the
+    /// caller has not committed yet. The index names the newest checkpoint,
+    /// so an index entry naming a SHA the manifest does not have, whose
+    /// object is still there, is a write that got as far as recording the
+    /// index but no further. `last` is this server's own idea of the newest
+    /// checkpoint, carried in memory since the checkpoint before; the store's
+    /// own head is consulted too, because a crash between recording the index
+    /// and writing the manifest leaves exactly that head standing with
+    /// nothing in the manifest naming it, and `load_session` seeds `last`
+    /// from the manifest, not the index, so a restart does not otherwise
+    /// supply it. Either candidate is added as the newest entry rather than
+    /// guessed at.
+    async fn repair(&self, manifest: &mut Manifest, format: &str, last: &str) {
+        let mut candidates = vec![last.to_string()];
+        if let Some(store) = self.store.get() {
+            if let Some(entry) = store.get(&self.slug).await {
+                candidates.push(entry.sha);
+            }
         }
-        if self
-            .blobs
-            .get(&checkpoint_key(&self.slug, last))
-            .await
-            .is_err()
-        {
-            return;
+        for candidate in candidates {
+            if candidate.is_empty() || manifest.has(&candidate) {
+                continue;
+            }
+            let Ok(raw) = self
+                .blobs
+                .get(&checkpoint_key(&self.slug, &candidate))
+                .await
+            else {
+                continue;
+            };
+            // Whether what was recovered is a tree is answered by the object
+            // itself, since a checkpoint written by this code and one written
+            // before there were directories sit under the same key. Reading
+            // it as a tree is the test: a source that happens to parse as
+            // this exact JSON shape is not a source anybody wrote.
+            let recovered: Option<crate::history::Tree> = serde_json::from_slice(&raw).ok();
+            let size = match &recovered {
+                Some(tree) => tree.size(),
+                None => raw.len() as i64,
+            };
+            let parent = manifest
+                .latest()
+                .map(|point| point.sha.clone())
+                .unwrap_or_default();
+            manifest.checkpoints.push(Checkpoint {
+                sha: candidate,
+                parent,
+                at: timestamp(),
+                by: String::new(),
+                why: "recovered".to_string(),
+                source_format: format.to_string(),
+                size,
+                label: String::new(),
+                commit: String::new(),
+                dirty: false,
+                tree: recovered.is_some(),
+                changed: Vec::new(),
+            });
         }
-        let raw = self
-            .blobs
-            .get(&checkpoint_key(&self.slug, last))
-            .await
-            .unwrap_or_default();
-        // Whether what was recovered is a tree is answered by the object
-        // itself, since a checkpoint written by this code and one written
-        // before there were directories sit under the same key. Reading it as
-        // a tree is the test: a source that happens to parse as this exact
-        // JSON shape is not a source anybody wrote.
-        let recovered: Option<crate::history::Tree> = serde_json::from_slice(&raw).ok();
-        let size = match &recovered {
-            Some(tree) => tree.size(),
-            None => raw.len() as i64,
-        };
-        let parent = state
-            .manifest
-            .latest()
-            .map(|point| point.sha.clone())
-            .unwrap_or_default();
-        state.manifest.checkpoints.push(Checkpoint {
-            sha: last.to_string(),
-            parent,
-            at: timestamp(),
-            by: String::new(),
-            why: "recovered".to_string(),
-            source_format: state.session.format.clone(),
-            size,
-            label: String::new(),
-            commit: String::new(),
-            dirty: false,
-            tree: recovered.is_some(),
-            changed: Vec::new(),
-        });
     }
 
     /// The tree the newest checkpoint recorded, for the sake of the `changed`
@@ -1726,12 +1901,56 @@ impl Room {
         Ok((tree, bodies))
     }
 
+    /// Rebuilds a document, in place, from its newest checkpoint's own tree --
+    /// the same texts a `restore` would put back. Used when the saved session
+    /// itself cannot be trusted, so it takes the document to work on directly
+    /// rather than locking the room, and touches nothing but storage reads.
+    async fn rebuild_from_checkpoint(
+        &self,
+        doc: &yrs::Doc,
+        manifest: &Manifest,
+        named: &str,
+    ) -> Result<(), String> {
+        let point = manifest
+            .latest()
+            .cloned()
+            .ok_or_else(|| "no checkpoint to recover from".to_string())?;
+        // The document has nothing in it yet at this point, so the path/id a
+        // one-file checkpoint would fall back to come from the index entry
+        // rather than the (empty) document.
+        let tree =
+            crate::history::load_tree(self.blobs.as_ref(), &self.slug, &point, named, "").await?;
+        let mut bodies = HashMap::new();
+        for entry in tree.files.values() {
+            if entry.kind != "text" || bodies.contains_key(&entry.sha) {
+                continue;
+            }
+            let raw = if point.tree {
+                self.blobs
+                    .get(&crate::blob::blob_key(&self.slug, &entry.sha))
+                    .await
+            } else {
+                self.blobs
+                    .get(&checkpoint_key(&self.slug, point.sha.as_str()))
+                    .await
+            }
+            .map_err(|err| err.to_string())?;
+            bodies.insert(entry.sha.clone(), String::from_utf8_lossy(&raw).to_string());
+        }
+        session::restore(doc, &tree, &bodies);
+        Ok(())
+    }
+
     /// Names a checkpoint, or takes its name away when `label` is empty.
     ///
     /// This is the one write that changes a manifest entry after it is made,
     /// and it changes exactly one field. Nothing else about a checkpoint is
     /// ever rewritten: what it recorded is what it recorded, and a label is
     /// somebody's remark about it rather than a claim about the text.
+    ///
+    /// Goes through `write_manifest`, the same as `checkpoint`, so the two can
+    /// never race each other into overwriting one's success with the other's
+    /// stale snapshot.
     ///
     /// `Ok(false)` means the manifest has no such checkpoint, which is a
     /// 404 for the caller rather than a failure here.
@@ -1745,17 +1964,30 @@ impl Room {
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
-        let manifest = {
-            let mut state = self.state.lock().await;
-            for point in state.manifest.checkpoints.iter_mut() {
-                if point.sha == sha {
-                    point.label = label.to_string();
-                }
-            }
-            state.manifest.clone()
-        };
-        let body = serde_json::to_vec(&manifest).map_err(|err| err.to_string())?;
         let mut state = self.state.lock().await;
+        let mut staged = state.manifest.clone();
+        for point in staged.checkpoints.iter_mut() {
+            if point.sha == sha {
+                point.label = label.to_string();
+            }
+        }
+        self.write_manifest(&mut state, staged).await?;
+        Ok(true)
+    }
+
+    /// Writes a manifest that was staged from `state.manifest` as it stood
+    /// under this same lock, and keeps it only once storage agrees. This is
+    /// the one path through which a manifest may change -- `checkpoint` and
+    /// `label` both go through it -- and the caller holds `state` locked from
+    /// before it stages its change until after this returns, so no other
+    /// manifest mutation can land in between and be overwritten by this one's
+    /// now-stale idea of what the manifest said (R09). A failed write leaves
+    /// `state.manifest` exactly as it was, so a retry recomputes from the
+    /// real, unmutated manifest rather than quietly no-op-ing through the
+    /// deduplication branch above believing this checkpoint already landed
+    /// (R08).
+    async fn write_manifest(&self, state: &mut RoomState, staged: Manifest) -> Result<(), String> {
+        let body = serde_json::to_vec(&staged).map_err(|err| err.to_string())?;
         let mut version = std::mem::take(&mut state.manifest_version);
         let written = self
             .write_owned(
@@ -1766,7 +1998,8 @@ impl Room {
             .await;
         state.manifest_version = version;
         written?;
-        Ok(true)
+        state.manifest = staged;
+        Ok(())
     }
 
     /// Puts the document back to what a checkpoint recorded: every text and
@@ -1778,7 +2011,16 @@ impl Room {
         let mut state = self.state.lock().await;
         let before = session::encode_vector(&state.session.doc);
         session::restore(&state.session.doc, &tree, &bodies);
+        // The tree just restored names the main file as it was at that
+        // moment; the format that travels with every checkpoint has to
+        // follow it rather than keep whatever the document happened to open
+        // in.
+        let derived = format_from_path(&tree.main);
+        if !derived.is_empty() {
+            state.session.format = derived;
+        }
         state.session.dirty = true;
+        state.session.generation += 1;
         state.session.updated_at = now_unix();
         Ok(session::encode_diff(&state.session.doc, &before)
             .unwrap_or_else(|_| session::encode_state(&state.session.doc)))
@@ -1802,19 +2044,16 @@ impl Room {
     /// names. A failure here is a failure of the checkpoint's bookkeeping, not
     /// of the checkpoint: the object and the state are already written, and
     /// the next checkpoint repairs the entry.
-    async fn record_size(&self, size: i64, sha: Option<&str>) {
+    ///
+    /// Takes `format` and `main` rather than reading them off `self.state`
+    /// itself, so a caller that already holds the room's lock can call this
+    /// without deadlocking on it.
+    async fn record_size(&self, size: i64, sha: Option<&str>, format: &str, main: &str) {
         let Some(store) = self.store.get() else {
             return;
         };
-        let (format, main) = {
-            let state = self.state.lock().await;
-            (
-                state.session.format.clone(),
-                session::main_path(&state.session.doc),
-            )
-        };
         if let Err(err) = store
-            .record_history(&self.slug, sha, size, &format, &main)
+            .record_history(&self.slug, sha, size, format, main)
             .await
         {
             eprintln!(
@@ -1839,6 +2078,7 @@ impl Room {
         let mut state = self.state.lock().await;
         session::put_text(&state.session.doc, path, body);
         state.session.dirty = true;
+        state.session.generation += 1;
         state.session.updated_at = now_unix();
     }
 
@@ -1848,6 +2088,7 @@ impl Room {
         let mut state = self.state.lock().await;
         session::put_asset(&state.session.doc, path, sha);
         state.session.dirty = true;
+        state.session.generation += 1;
         state.session.updated_at = now_unix();
     }
 
@@ -1908,17 +2149,21 @@ impl Room {
             )
             .await
             .map_err(|err| err.to_string())?;
-        {
+        let (format, main) = {
             let mut state = self.state.lock().await;
             state.session.asset_sizes.insert(sha.clone(), size);
             state
                 .session
                 .asset_written_at
                 .insert(sha.clone(), now_unix());
-        }
+            (
+                state.session.format.clone(),
+                session::main_path(&state.session.doc),
+            )
+        };
         // What the document costs has changed, and the index is what the
         // quota is decided from.
-        self.record_size_now().await;
+        self.record_size_now(None, &format, &main).await;
         Ok((sha, size))
     }
 
@@ -1998,12 +2243,16 @@ impl Room {
             .put(&key, body, kind)
             .await
             .map_err(|err| err.to_string())?;
-        {
+        let (format, main) = {
             let mut state = self.state.lock().await;
             state.session.rendering_sizes.insert(name.clone(), size);
             state.session.rendering_written_at.insert(name, now_unix());
-        }
-        self.record_size_now().await;
+            (
+                state.session.format.clone(),
+                session::main_path(&state.session.doc),
+            )
+        };
+        self.record_size_now(None, &format, &main).await;
         Ok(size)
     }
 
@@ -2124,16 +2373,28 @@ impl Room {
     /// says about it, because uploading a figure and naming it are two
     /// requests and pruning between them would delete what somebody had just
     /// uploaded.
+    ///
+    /// A retained tree this pass cannot read is not proof its assets are
+    /// unreferenced -- only that this attempt could not tell -- so nothing at
+    /// all is deleted on a pass where that happens: the sweep aborts and
+    /// tries again next time, rather than risk a figure a restore still
+    /// needs (R15).
     async fn prune_assets(&self) {
         let now = now_unix();
         let grace = self.config.asset_grace;
-        let (live, trees, written_at) = {
+        let (live, trees, written_at, path, id) = {
             let state = self.state.lock().await;
             let live: std::collections::HashSet<String> = session::assets_of(&state.session.doc)
                 .into_values()
                 .collect();
             let trees: Vec<Checkpoint> = state.manifest.checkpoints.clone();
-            (live, trees, state.session.asset_written_at.clone())
+            (
+                live,
+                trees,
+                state.session.asset_written_at.clone(),
+                session::main_path(&state.session.doc),
+                session::main_id(&state.session.doc),
+            )
         };
         // Every digest any surviving checkpoint names. A restore has to find
         // its figures where the tree says they are.
@@ -2142,20 +2403,23 @@ impl Room {
             if !point.tree {
                 continue; // a checkpoint from before directories names none
             }
-            let (path, id) = {
-                let state = self.state.lock().await;
-                (
-                    session::main_path(&state.session.doc),
-                    session::main_id(&state.session.doc),
-                )
-            };
-            if let Ok(tree) =
-                crate::history::load_tree(self.blobs.as_ref(), &self.slug, point, &path, &id).await
+            match crate::history::load_tree(self.blobs.as_ref(), &self.slug, point, &path, &id)
+                .await
             {
-                for entry in tree.files.values() {
-                    if entry.kind == "asset" {
-                        kept.insert(entry.sha.clone());
+                Ok(tree) => {
+                    for entry in tree.files.values() {
+                        if entry.kind == "asset" {
+                            kept.insert(entry.sha.clone());
+                        }
                     }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "warning: could not read checkpoint {} of {} while pruning assets \
+                         ({err}); skipping this pass rather than risk a figure it still names",
+                        point.sha, self.slug
+                    );
+                    return;
                 }
             }
         }
@@ -2193,8 +2457,10 @@ impl Room {
     }
 
     /// Records what this document costs as it stands, without a checkpoint:
-    /// what an asset upload changes.
-    async fn record_size_now(&self) {
+    /// what an asset upload changes, and -- with `sha` set -- what reusing an
+    /// old tree's content moves the index head to (R17), without pretending a
+    /// new checkpoint was taken.
+    async fn record_size_now(&self, sha: Option<&str>, format: &str, main: &str) {
         let (session_size, history) = {
             let state = self.state.lock().await;
             (
@@ -2204,8 +2470,13 @@ impl Room {
         };
         let assets = self.assets_bytes().await;
         let renderings = self.renderings_bytes().await;
-        self.record_size(session_size + history + assets + renderings, None)
-            .await;
+        self.record_size(
+            session_size + history + assets + renderings,
+            sha,
+            format,
+            main,
+        )
+        .await;
     }
 
     /// The manifest, for the timeline and for the tests.
@@ -2222,16 +2493,21 @@ impl Room {
     pub async fn tick(&self) -> bool {
         let limits = self.config.session;
         let now = now_unix();
-        let (dirty, quiet_for, asked, sockets, since_checkpoint, differs) = {
+        // Whether the document has moved on since its last checkpoint is a
+        // generation comparison rather than a digest of the whole tree: the
+        // tree's identity used to be a text digest, and comparing today's
+        // tree digest against that meant hashing the whole document every
+        // second even for a room nobody has touched (R26).
+        let (dirty, quiet_for, asked, sockets, since_checkpoint, differs, by) = {
             let state = self.state.lock().await;
-            let text = session::text_of(&state.session.doc);
             (
                 state.session.dirty,
                 now - state.session.updated_at,
                 state.session.asked.clone(),
                 state.sockets.len(),
                 now - state.session.last_checkpoint_at,
-                crate::store::digest_of(&text) != state.session.last_checkpoint,
+                state.session.generation != state.session.checkpoint_generation,
+                state.session.by.clone(),
             )
         };
         if dirty && quiet_for >= limits.write_after_seconds {
@@ -2251,7 +2527,6 @@ impl Room {
             }
         }
         if differs && quiet_for >= limits.checkpoint_seconds {
-            let by = self.state.lock().await.session.by.clone();
             let _ = self.checkpoint("quiet", &by).await;
             return false;
         }
@@ -2327,9 +2602,34 @@ pub fn main_path_for(named: &str, format: &str) -> String {
         "typst" => "main.typ",
         "markdown" => "main.md",
         "html" => "main.html",
+        // A single-file LaTeX source is still LaTeX; calling it `main.txt`
+        // is what made a document open advertising a format its own main
+        // file's extension already contradicted (R27).
+        "latex" => "main.tex",
         _ => "main.txt",
     }
     .to_string()
+}
+
+/// The format a main file's own extension implies, the inverse of
+/// `main_path_for`. The main file is shared CRDT metadata that an editor or a
+/// restore can change directly; `session.format` has to follow it rather than
+/// keep whatever the document happened to open in, or a checkpoint ends up
+/// combining a new main path with a stale format (R27). Empty for an
+/// extension none of the four formats claim, which the caller reads as "keep
+/// what was there".
+pub fn format_from_path(path: &str) -> String {
+    if crate::render::is_markdown(path) {
+        "markdown".to_string()
+    } else if crate::render::is_typst(path) {
+        "typst".to_string()
+    } else if crate::render::is_latex(path) {
+        "latex".to_string()
+    } else if crate::render::is_html(path) {
+        "html".to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// What a rendering is called under `renderings/<slug>/`: the checkpoint's SHA

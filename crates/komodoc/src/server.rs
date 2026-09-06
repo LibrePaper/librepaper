@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::extract::connect_info::ConnectInfo;
+use axum::extract::multipart::MultipartError;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{FromRequest, FromRequestParts, Multipart};
+use axum::extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Multipart};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::Router;
@@ -207,7 +208,15 @@ impl Server {
     }
 
     pub fn router(self: Arc<Server>) -> Router {
-        Router::new().fallback(handle).with_state(self)
+        // `read_upload` bounds the multipart body itself, against a ceiling
+        // that accounts for the document, the figure budget and the
+        // multipart overhead together -- so Axum's own default (2 MiB, meant
+        // for a deployment that never overrides it) must not additionally cut
+        // a legitimate upload off before that ceiling is even consulted.
+        Router::new()
+            .fallback(handle)
+            .layer(DefaultBodyLimit::disable())
+            .with_state(self)
     }
 
     /// Which formats this deployment can render again in a reader, and so
@@ -1346,6 +1355,25 @@ impl Server {
             );
         }
 
+        // What a directory publish named, or -- for one file, which is a
+        // directory of one file -- the name its format implies, which is
+        // what the migration gives a document published before there were
+        // directories.
+        let main = if parsed.main.is_empty() {
+            crate::room::main_path_for("", &parsed.source_format)
+        } else {
+            parsed.main.clone()
+        };
+        // Every file is checked against the size and encoding rules before
+        // anything is written: a document is a directory, and it is either
+        // published whole or refused whole, never left half-written because
+        // the eleventh file was the one that broke a rule the first ten
+        // happened to keep.
+        if let Err(response) =
+            self.preflight_directory(&parsed, &main, &crate::history::Tree::default())
+        {
+            return response;
+        }
         let entry = match self
             .store
             .put(Publication {
@@ -1353,15 +1381,7 @@ impl Server {
                 title: parsed.title.clone(),
                 source: parsed.source.clone(),
                 source_format: parsed.source_format.clone(),
-                // What a directory publish named, or -- for one file, which is
-                // a directory of one file -- the name its format implies,
-                // which is what the migration gives a document published
-                // before there were directories.
-                main: if parsed.main.is_empty() {
-                    crate::room::main_path_for("", &parsed.source_format)
-                } else {
-                    parsed.main.clone()
-                },
+                main: main.clone(),
                 owner: who.key,
                 owner_id: who.id,
                 owner_name: who.name,
@@ -1384,23 +1404,38 @@ impl Server {
             .await;
         // The rest of the directory, if a whole one was published. The texts
         // go into the shared document beside the main file; the figures go to
-        // the store under their digests and are named in it.
+        // the store under their digests and are named in it. The preflight
+        // above already ruled out every refusal this can still hit, so a
+        // failure here is a storage fault, not a bad upload -- and a creation
+        // whose source only ever made it into RAM is not a creation that
+        // happened, so it is undone the way the delete route removes a
+        // document rather than answered with 201.
         if !parsed.files.is_empty() {
             if let Err(why) = self.fill_directory(&room, &parsed).await {
                 eprintln!("warning: could not store every file of {key}: {why}");
+                if let Err(err) = self.delete_document(&key).await {
+                    eprintln!("warning: could not undo the creation of {key}: {err}");
+                }
+                return write_json(500, &json!({"error": "could not store the document"}));
             }
         }
         // The checkpoint names itself, and what it is named is the digest of
         // the tree rather than of the source: a document is a directory, so
-        // what the index points at is the directory this document was at. The
-        // entry `put` returned was written before the tree existed, which is
-        // why the answer takes the checkpoint's own name over it.
+        // what the index points at is the directory this document was at. A
+        // creation is successful only once this has landed durably -- until
+        // then the only copy of the source is in RAM, and a response saying
+        // otherwise would describe a document a crash could still make
+        // disappear. So a failure here undoes the creation instead of
+        // answering with the SHA `put` wrote before the tree existed.
         let sha = match room.checkpoint("cli", &entry.publisher).await {
             Ok(Some(sha)) => sha,
             Ok(None) => entry.sha.clone(),
             Err(err) => {
                 eprintln!("warning: could not checkpoint {key}: {err}");
-                entry.sha.clone()
+                if let Err(err) = self.delete_document(&key).await {
+                    eprintln!("warning: could not undo the creation of {key}: {err}");
+                }
+                return write_json(500, &json!({"error": "could not store the document"}));
             }
         };
         write_json(
@@ -1414,9 +1449,20 @@ impl Server {
     }
 
     #[allow(clippy::result_large_err)] // as read_upload: the error is a response
-    /// A publish onto a document that already exists: the source goes into the
-    /// live session as a difference, everyone with the document open sees it
-    /// arrive, and a checkpoint marks the moment.
+    /// A publish onto a document that already exists: the whole upload is
+    /// reconciled into the live session as one operation, everyone with the
+    /// document open sees it arrive, and a checkpoint marks the moment.
+    ///
+    /// An upload is the whole directory, not just its main file: a chapter it
+    /// changes is diffed in by path, a file it adds appears, a file it does
+    /// not mention any more is gone, and the main path follows what the
+    /// upload named -- the same reconciliation `Room::restore` does when a
+    /// checkpoint is brought back, because a republish and a restore are the
+    /// same operation with a different source for the tree. A file both this
+    /// upload and a concurrent editor leave untouched is carried over
+    /// unchanged; one this upload changes is diffed by prefix and suffix
+    /// exactly as a single-file publish always has been, so a concurrent
+    /// editor of it keeps their words and sees the rest change under them.
     async fn edit_into_session(
         &self,
         room: &Room,
@@ -1424,12 +1470,151 @@ impl Server {
         who: &Caller,
         existing: &IndexEntry,
     ) -> Result<IndexEntry, Reply> {
-        if parsed.source.len() > self.config.max_document {
-            return Err(write_json(
-                413,
-                &json!({"error": "that document is too large"}),
-            ));
+        let current = {
+            let state = room.state.lock().await;
+            crate::room::tree_of(&state.session.doc, &state.session.asset_sizes).0
+        };
+        let main_path = if parsed.main.is_empty() {
+            current.main.clone()
+        } else {
+            parsed.main.clone()
+        };
+        // Validated whole, against what the document already holds, before
+        // any of it touches storage or the session: a bad file in a republish
+        // must leave the live document exactly as it was, not half-applied.
+        self.preflight_directory(parsed, &main_path, &current)?;
+
+        let mut wanted: std::collections::HashSet<String> =
+            parsed.files.iter().map(|(path, _)| path.clone()).collect();
+        wanted.insert(main_path.clone());
+
+        // Every new asset is stored under its digest before it is named in
+        // the tree, outside any lock this call holds: a failure here is a
+        // storage fault the preflight above could not have caught, and it
+        // leaves an unreferenced blob rather than a half-written document,
+        // because nothing has named it yet.
+        let mut new_assets: HashMap<String, crate::history::TreeEntry> = HashMap::new();
+        for (path, raw) in &parsed.files {
+            if let Ok(crate::paths::Kind::Asset) = crate::paths::check(&self.config.paths(), path) {
+                let (sha, size) = match room
+                    .put_asset(raw.clone(), (self.config.max_asset, self.config.max_assets))
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(why) => {
+                        eprintln!(
+                            "warning: could not store {path} of {}: {why}",
+                            existing.slug
+                        );
+                        return Err(write_json(
+                            500,
+                            &json!({"error": "could not store the document"}),
+                        ));
+                    }
+                };
+                new_assets.insert(
+                    path.clone(),
+                    crate::history::TreeEntry {
+                        kind: "asset".to_string(),
+                        id: String::new(),
+                        sha,
+                        size,
+                    },
+                );
+            }
         }
+
+        // Applied as one operation under one lock: the tree and its bodies
+        // are read fresh here, right before `restore` is given them, rather
+        // than from the snapshot above -- so a concurrent edit to a file this
+        // upload does not touch, landed in the time it took to validate and
+        // store the assets above, is carried forward as it now stands rather
+        // than overwritten with a stale copy of it.
+        let update = {
+            let mut state = room.state.lock().await;
+            let (mut tree, mut bodies) =
+                crate::room::tree_of(&state.session.doc, &state.session.asset_sizes);
+            let main_id = tree
+                .files
+                .get(&main_path)
+                .map(|entry| entry.id.clone())
+                .unwrap_or_default();
+            let main_sha = crate::store::digest_of(&parsed.source);
+            tree.files.insert(
+                main_path.clone(),
+                crate::history::TreeEntry {
+                    kind: "text".to_string(),
+                    id: main_id,
+                    sha: main_sha.clone(),
+                    size: parsed.source.len() as i64,
+                },
+            );
+            bodies.insert(main_sha, parsed.source.clone());
+            for (path, raw) in &parsed.files {
+                match crate::paths::check(&self.config.paths(), path) {
+                    Ok(crate::paths::Kind::Text) => {
+                        // `preflight_directory` already required this to decode.
+                        let Ok(body) = std::str::from_utf8(raw) else {
+                            return Err(write_json(
+                                400,
+                                &json!({"error": format!("{path} is not valid UTF-8")}),
+                            ));
+                        };
+                        let sha = crate::store::digest_of(body);
+                        let id = tree
+                            .files
+                            .get(path)
+                            .map(|entry| entry.id.clone())
+                            .unwrap_or_default();
+                        tree.files.insert(
+                            path.clone(),
+                            crate::history::TreeEntry {
+                                kind: "text".to_string(),
+                                id,
+                                sha: sha.clone(),
+                                size: body.len() as i64,
+                            },
+                        );
+                        bodies.insert(sha, body.to_string());
+                    }
+                    Ok(crate::paths::Kind::Asset) => {
+                        if let Some(entry) = new_assets.get(path) {
+                            tree.files.insert(path.clone(), entry.clone());
+                        }
+                    }
+                    Err(why) => return Err(write_json(400, &json!({"error": why}))),
+                }
+            }
+            // Anything this upload does not name and the document did not
+            // already have under one of these paths is gone: an upload is
+            // the whole directory, so a chapter left out of it is a chapter
+            // removed.
+            // ...but only when a directory was uploaded. A one-file publish
+            // -- the JSON body `komodoc publish paper.md` sends, which names
+            // no main -- is a new version of the main file, not a claim that
+            // the document has no other files, and it has never emptied a
+            // directory it was published over.
+            if !parsed.main.is_empty() {
+                tree.files.retain(|path, _| wanted.contains(path));
+            }
+            tree.main = main_path.clone();
+
+            let before = crate::session::encode_vector(&state.session.doc);
+            crate::session::restore(&state.session.doc, &tree, &bodies);
+            if !parsed.source_format.is_empty() {
+                state.session.format = parsed.source_format.clone();
+            }
+            state.session.dirty = true;
+            // Every mutation of the document moves its generation; that is
+            // what lets a checkpoint tell an edit that landed after its
+            // snapshot from one it covered.
+            state.session.generation += 1;
+            state.session.updated_at = now_unix();
+            crate::session::encode_diff(&state.session.doc, &before)
+                .unwrap_or_else(|_| crate::session::encode_state(&state.session.doc))
+        };
+        room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
+            .await;
         // A title given on the command line renames the document; an empty one
         // leaves it as it is.
         let title = if parsed.title.is_empty() {
@@ -1437,9 +1622,6 @@ impl Server {
         } else {
             parsed.title.clone()
         };
-        let update = room.set_source(&parsed.source, &parsed.source_format).await;
-        room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
-            .await;
         let sha = match room.checkpoint("cli", &who.key).await {
             Ok(Some(sha)) => sha,
             // Deferred: the text is in the session and durable at the next
@@ -1488,11 +1670,11 @@ impl Server {
         if content_type.contains("multipart/form-data") {
             // The whole request is bounded, not just the document: without
             // this an oversized body would be read in full before the HTML
-            // limit below is even consulted. The slack covers the part headers
-            // and the other fields.
-            let ceiling = max_document + MULTIPART_SLACK;
-            let declared = header_of(request.headers(), "content-length")
-                .and_then(|v| v.parse::<usize>().ok());
+            // limit below is even consulted. The slack covers the part
+            // headers and the other fields; the document and the figure
+            // budget are counted separately because a directory is allowed
+            // both at once, not one shared between them.
+            let ceiling = max_document + self.config.max_assets.max(0) as usize + MULTIPART_SLACK;
             let (parts, body) = request.into_parts();
             let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
             let mut multipart = match Multipart::from_request(limited, &()).await {
@@ -1504,15 +1686,7 @@ impl Server {
                 let field = match multipart.next_field().await {
                     Ok(Some(field)) => field,
                     Ok(None) => break,
-                    Err(_) => {
-                        if declared.is_some_and(|n| n > ceiling) {
-                            return Err(write_json(
-                                413,
-                                &json!({"error": "that upload is too large"}),
-                            ));
-                        }
-                        return Err(write_json(400, &json!({"error": "bad upload"})));
-                    }
+                    Err(err) => return Err(upload_limit_exceeded(&err, ceiling)),
                 };
                 let name = field.name().unwrap_or_default().to_string();
                 match name.as_str() {
@@ -1528,15 +1702,7 @@ impl Server {
                         let at = field.file_name().unwrap_or_default().to_string();
                         let bytes = match field.bytes().await {
                             Ok(bytes) => bytes,
-                            Err(_) => {
-                                if declared.is_some_and(|n| n > ceiling) {
-                                    return Err(write_json(
-                                        413,
-                                        &json!({"error": "that upload is too large"}),
-                                    ));
-                                }
-                                return Err(write_json(400, &json!({"error": "bad upload"})));
-                            }
+                            Err(err) => return Err(upload_limit_exceeded(&err, ceiling)),
                         };
                         sent.push((at, bytes.to_vec()));
                     }
@@ -1750,24 +1916,107 @@ impl Server {
         })
     }
 
+    /// Checks a whole directory upload against the size and encoding rules
+    /// before any of it touches storage or the session. A document is a
+    /// directory, so it is admitted whole or refused whole, naming the file
+    /// and the rule it broke -- never accepted with the eleventh file silently
+    /// missing because it was the one that turned out to be too large.
+    ///
+    /// `main_path` is where the upload's main file will live and `current` is
+    /// the directory as it stands before this upload lands, which is empty
+    /// for a creation and the live tree for a republish: a file this upload
+    /// does not mention is judged by whether the document already keeps it,
+    /// not refused twice or forgotten from the aggregate ceilings.
+    #[allow(clippy::result_large_err)] // as read_upload: the error is a response
+    fn preflight_directory(
+        &self,
+        parsed: &Upload,
+        main_path: &str,
+        current: &crate::history::Tree,
+    ) -> Result<(), Reply> {
+        for (path, bytes) in &parsed.files {
+            match crate::paths::check(&self.config.paths(), path) {
+                Ok(crate::paths::Kind::Text) => {
+                    if std::str::from_utf8(bytes).is_err() {
+                        return Err(write_json(
+                            400,
+                            &json!({"error": format!("{path} is not valid UTF-8")}),
+                        ));
+                    }
+                }
+                Ok(crate::paths::Kind::Asset) => {
+                    if bytes.len() as i64 > self.config.max_asset {
+                        return Err(write_json(
+                            413,
+                            &json!({"error": format!(
+                                "{path} is larger than the {} MB one file may be",
+                                self.config.max_asset >> 20
+                            )}),
+                        ));
+                    }
+                }
+                Err(why) => return Err(write_json(400, &json!({"error": why}))),
+            }
+        }
+        // What survives this upload: the main file and every path it names.
+        // A file the document already has under one of these paths is being
+        // replaced, so its old bytes do not count against the ceilings below.
+        let mut wanted: std::collections::HashSet<&str> =
+            parsed.files.iter().map(|(path, _)| path.as_str()).collect();
+        wanted.insert(main_path);
+        let mut by_sha: HashMap<String, i64> = HashMap::new();
+        for (path, entry) in &current.files {
+            if entry.kind == "asset" && !wanted.contains(path.as_str()) {
+                by_sha.entry(entry.sha.clone()).or_insert(entry.size);
+            }
+        }
+        for (path, bytes) in &parsed.files {
+            if let Ok(crate::paths::Kind::Asset) = crate::paths::check(&self.config.paths(), path) {
+                by_sha.insert(crate::store::digest_of_bytes(bytes), bytes.len() as i64);
+            }
+        }
+        let assets_total: i64 = by_sha.values().sum();
+        if assets_total > self.config.max_assets {
+            return Err(write_json(
+                413,
+                &json!({"error": format!(
+                    "this document has reached the {} MB it may keep in figures",
+                    self.config.max_assets >> 20
+                )}),
+            ));
+        }
+        let mut text_total = parsed.source.len();
+        for (path, entry) in &current.files {
+            if entry.kind == "text" && !wanted.contains(path.as_str()) {
+                text_total += entry.size as usize;
+            }
+        }
+        for (path, bytes) in &parsed.files {
+            if let Ok(crate::paths::Kind::Text) = crate::paths::check(&self.config.paths(), path) {
+                text_total += bytes.len();
+            }
+        }
+        if text_total > self.config.max_document {
+            return Err(write_json(413, &json!({"error": "document too large"})));
+        }
+        Ok(())
+    }
+
     /// Puts the rest of a published directory where it belongs: every text
     /// into the shared document, every figure into the store with its name
     /// written beside its digest.
     ///
     /// The main file is already in the session -- `set_source` put it there --
-    /// so this adds the others and names none of them the document. A failure
-    /// is reported rather than fatal: the document exists and is readable, and
-    /// a chapter that did not make it is one somebody can add.
+    /// so this adds the others and names none of them the document.
+    /// `preflight_directory` has already ruled out every refusal this can
+    /// still hit, so a failure here is a storage fault: the caller decides
+    /// whether that leaves an inconsistent document worth undoing.
     async fn fill_directory(&self, room: &Room, parsed: &Upload) -> Result<(), String> {
         for (path, bytes) in &parsed.files {
             match crate::paths::check(&self.config.paths(), path) {
                 Ok(crate::paths::Kind::Text) => {
-                    let Ok(body) = std::str::from_utf8(bytes) else {
-                        // A text that is not UTF-8 is not a text. It is left
-                        // out rather than stored as something it is not.
-                        eprintln!("warning: {path} is not valid UTF-8 and was not stored");
-                        continue;
-                    };
+                    let body = std::str::from_utf8(bytes)
+                        .map_err(|_| format!("{path} is not valid UTF-8"))?;
                     room.add_text(path, body).await;
                 }
                 Ok(crate::paths::Kind::Asset) => {
@@ -3708,6 +3957,25 @@ pub fn write_json(status: u16, payload: &Value) -> Reply {
         "application/json; charset=utf-8",
     );
     response
+}
+
+/// What a multipart field failure over `read_upload`'s ceiling is answered
+/// with. Axum's own `MultipartError` already tells the two failures apart --
+/// the `Limited` reader's length limit, from a stream that is simply
+/// malformed -- so an upload that ran into the ceiling is named as too large
+/// even when the request never sent a Content-Length to compare against.
+fn upload_limit_exceeded(err: &MultipartError, ceiling: usize) -> Reply {
+    if err.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        write_json(
+            413,
+            &json!({"error": format!(
+                "that upload is too large; it may be at most {} MB",
+                ceiling >> 20
+            )}),
+        )
+    } else {
+        write_json(400, &json!({"error": "bad upload"}))
+    }
 }
 
 fn plain(status: u16, text: &str) -> Reply {
