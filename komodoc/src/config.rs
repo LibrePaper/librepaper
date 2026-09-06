@@ -10,9 +10,8 @@ pub struct Configuration {
     /// The sum of every text in a document and of every key naming one. A
     /// paper split into thirty files is allowed exactly what a paper in one
     /// file is allowed, which is why this bounds the sum rather than each
-    /// text. It was `max_html` when a document was one text, and the shell
-    /// still reads it under that name.
-    #[serde(rename = "max_html")]
+    /// text. It bounds a rendering too, now that a document may store one, so
+    /// it is named for the document rather than for the HTML it once was.
     pub max_document: usize,
     /// How many files one document may hold, across its texts and its assets.
     /// A paper has a dozen; a directory of two hundred is somebody using a
@@ -285,7 +284,7 @@ impl Configuration {
 
     /// Overrides the document size ceiling, in megabytes. Zero leaves the
     /// default alone.
-    pub fn set_max_html(&mut self, megabytes: usize) -> Result<(), String> {
+    pub fn set_max_document(&mut self, megabytes: usize) -> Result<(), String> {
         if megabytes == 0 {
             return Ok(());
         }

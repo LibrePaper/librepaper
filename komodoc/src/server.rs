@@ -548,6 +548,18 @@ fn is_sha(value: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
+/// The last segment of a rendering's URL, split into the checkpoint it belongs
+/// to and whether it is the SyncTeX file rather than the PDF. `None` for
+/// anything else, because this becomes a storage key and a key is never built
+/// from something a caller can shape.
+fn split_rendering_name(name: &str) -> Option<(String, bool)> {
+    let (sha, synctex) = match name.strip_suffix(".synctex") {
+        Some(sha) => (sha, true),
+        None => (name, false),
+    };
+    is_sha(sha).then(|| (sha.to_string(), synctex))
+}
+
 async fn handle(
     axum::extract::State(server): axum::extract::State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -763,6 +775,36 @@ async fn handle(
         if method == Method::GET {
             return server
                 .handle_asset_read(request.headers(), &arrival, slug, sha)
+                .await;
+        }
+    }
+
+    // The renderings: the PDF an editor's browser compiled, stored beside the
+    // checkpoint it was compiled from. Putting one takes an editor, because
+    // only somebody who may change the document may say what it looks like;
+    // reading one takes whatever reading the document takes, because a
+    // rendering is the document. See `05-SPEC-latex.md`, "Renderings, stored".
+    //
+    // `latest` is not a SHA and never can be -- a SHA is sixty-four hex
+    // characters -- so it sits in the same shape without ambiguity: it answers
+    // with which rendering a reader should ask for, and whether it is the text
+    // as it stands.
+    if let ["api", "documents", slug, "renderings", "latest"] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_rendering_latest(request.headers(), &arrival, slug)
+                .await;
+        }
+    }
+    if let ["api", "documents", slug, "renderings", name] = parts[..] {
+        if method == Method::PUT || method == Method::POST {
+            return server
+                .handle_rendering_upload(request, &arrival, slug, name)
+                .await;
+        }
+        if method == Method::GET {
+            return server
+                .handle_rendering_read(request.headers(), &arrival, slug, name)
                 .await;
         }
     }
@@ -1867,6 +1909,206 @@ impl Server {
             .header("x-content-type-options", "nosniff")
             .body(Body::from(bytes))
             .unwrap()
+    }
+
+    /* ---------------------------------------------------------- renderings */
+
+    /// Stores the PDF an editor's browser compiled, under the SHA of the
+    /// checkpoint it was compiled from.
+    ///
+    /// This is the one exception to `01-SPEC-history.md`'s rule that nothing
+    /// derived is stored, and the acceptance rules are what bound it. The
+    /// caller must be an editor. The name must be a checkpoint's SHA, or the
+    /// SHA the live text would take -- in which case a checkpoint is taken
+    /// first, the way a comment takes one, so that what is stored is a
+    /// rendering of a moment the timeline has. Anything else is refused: a
+    /// rendering whose source is not in the history is a page nobody could
+    /// check against a text.
+    ///
+    /// The bytes are bounded by `max_document`, which bounds a PDF as readily
+    /// as it bounds the texts, and charged to the owner's quota.
+    async fn handle_rendering_upload(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+        name: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        let Some((sha, synctex)) = split_rendering_name(name) else {
+            return plain(404, "not found");
+        };
+        if cross_site_refused(request.headers(), arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, request.headers(), arrival, None).await;
+        // As for a figure: a document somebody may not change is not a
+        // document they need to learn the shape of.
+        if !who.at_least(Role::Editor) {
+            return plain(404, "not found");
+        }
+        // Counted before the bytes are read, so a refusal costs the body
+        // rather than the storage, and counted in the same budget a figure
+        // spends: what this bounds is what one publisher may put on the disk
+        // in an hour, whatever they are calling it.
+        {
+            let hour = crate::clock::now_unix() / 3600;
+            let mut counts = self.asset_uploads.lock().await;
+            let seen = counts.entry(who.key.clone()).or_insert((hour, 0));
+            if seen.0 != hour {
+                *seen = (hour, 0);
+            }
+            if seen.1 >= self.config.storage.uploads_per_hour {
+                return write_json(
+                    429,
+                    &json!({"error": "too many uploads this hour; try later"}),
+                );
+            }
+            seen.1 += 1;
+        }
+        let room = self.rooms.get(slug).await;
+        // Which moment this is a rendering of. A SHA the manifest already has
+        // is that moment; the SHA the live text would take becomes one here,
+        // because a rendering of a moment nothing recorded is a rendering of
+        // nothing.
+        if !room.manifest().await.has(&sha) {
+            if room.tree().await.digest() != sha {
+                return write_json(
+                    409,
+                    &json!({"error": "that is not a checkpoint of this document, or the text has moved on"}),
+                );
+            }
+            match room.checkpoint("render", &who.key).await {
+                Ok(Some(taken)) if taken == sha => {}
+                Ok(_) => {
+                    // The text moved between the digest above and the
+                    // checkpoint below, or the checkpoint was deferred. Either
+                    // way this PDF is of something else now, and the browser
+                    // will compile the new text in a moment anyway.
+                    return write_json(
+                        409,
+                        &json!({"error": "the text moved while that was being stored"}),
+                    );
+                }
+                Err(err) => return write_json(500, &json!({"error": err})),
+            }
+        }
+        let ceiling = self.config.max_document.saturating_add(1);
+        let Ok(body) = to_bytes(request.into_body(), ceiling).await else {
+            return write_json(413, &json!({"error": "that rendering is too large"}));
+        };
+        let size = body.len() as i64;
+        // The owner's quota, which a rendering counts against exactly as a
+        // figure does. Nothing is charged twice: bytes this document already
+        // holds under this name are the same bytes, and `put_rendering`
+        // answers with what is held rather than writing again.
+        if !room.has_rendering(&sha, synctex).await {
+            if let Some(room_for) = self.store.room_for(slug).await {
+                if entry.size + size > room_for {
+                    return write_json(
+                        507,
+                        &json!({"error": "your storage quota is used up; delete a document first"}),
+                    );
+                }
+            }
+        }
+        match room.put_rendering(&sha, synctex, body.to_vec()).await {
+            Ok(size) => write_json(200, &json!({"sha": sha, "size": size})),
+            Err(why) => write_json(413, &json!({"error": why})),
+        }
+    }
+
+    /// A rendering's bytes, for whoever may read the document.
+    ///
+    /// Named by the SHA of the source it was compiled from, so it is immutable
+    /// and cached for a year: a rendering of another text is at another URL.
+    /// A private document's renderings are refused exactly as its text is.
+    async fn handle_rendering_read(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        name: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        let Some((sha, synctex)) = split_rendering_name(name) else {
+            return plain(404, "not found");
+        };
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, headers, arrival, None).await;
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let room = self.rooms.get(slug).await;
+        let Some(bytes) = room.read_rendering(&sha, synctex).await else {
+            return plain(404, "not found");
+        };
+        Response::builder()
+            .status(200)
+            .header(
+                "content-type",
+                if synctex {
+                    "application/gzip"
+                } else {
+                    "application/pdf"
+                },
+            )
+            .header("cache-control", "private, max-age=31536000, immutable")
+            .header("x-content-type-options", "nosniff")
+            .body(Body::from(bytes))
+            .unwrap()
+    }
+
+    /// Which rendering a reader should ask for, and what to say about it.
+    ///
+    /// `sha` names the newest checkpoint that has one; `current` says whether
+    /// that checkpoint is the text as it stands. A reader shown a rendering
+    /// whose `current` is false is told, in one line, that it was rendered
+    /// from an earlier version and when -- which is what makes storing a
+    /// derived thing honest: a rendering keyed by the digest of its source
+    /// cannot disagree with that source silently.
+    ///
+    /// A document with no rendering at all answers 200 with `sha` absent,
+    /// because "nothing has rendered this yet" is an answer rather than a
+    /// missing page.
+    async fn handle_rendering_latest(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, headers, arrival, None).await;
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let room = self.rooms.get(slug).await;
+        match room.newest_rendering().await {
+            Some((sha, at, current)) => {
+                write_json(200, &json!({"sha": sha, "at": at, "current": current}))
+            }
+            None => write_json(200, &json!({})),
+        }
     }
 
     /// The document's whole Yjs state, as bytes. Reached only from a

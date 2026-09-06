@@ -90,6 +90,13 @@
   let preview = $state(null);
   const tell = (message) => preview?.tell(message);
 
+  // Which page goes in the frame. Every format but LaTeX is painted as HTML
+  // into an empty shell; a LaTeX document is a PDF, so its frame is the pdf.js
+  // page the server keeps beside that shell. Both are the same origin, the
+  // same CSP and the same agent, and differ only in what may be sent to them.
+  const framePage = (format) =>
+    `${docsOrigin}/${format === "latex" ? "pdf" : "raw"}/${SLUG}/`;
+
   // The agent repaints the whole document on every "regions" or "highlight"
   // message, so a call that changes nothing is not free even though it looks
   // idempotent. Each is sent only when its payload actually differs from the
@@ -604,7 +611,62 @@
     frameSrc = `${docsOrigin}/raw/${SLUG}/?v=${++framedGeneration}`;
   }
 
+  // What a LaTeX document's frame is showing: the checkpoint the stored
+  // rendering was compiled from, when that checkpoint was taken, and whether
+  // it is the text as it stands. Null until the server has been asked.
+  let rendering = $state(null);
+  // The SHA whose bytes are in the frame, so a poll that finds the same
+  // rendering costs one small request rather than a PDF.
+  let renderedSha = null;
+
+  // The line under the badge for a LaTeX document, and the whole of what makes
+  // storing a derived thing honest. A rendering is named by the digest of the
+  // source it was compiled from, so there are exactly three things to say: it
+  // is the text as it stands, it is older than the text and here is when, or
+  // nobody has rendered this yet.
+  const renderedNote = $derived(
+    sourceFormat !== "latex"
+      ? ""
+      : !rendering
+        ? "not yet rendered"
+        : rendering.current
+          ? ""
+          : `rendered from an earlier version, ${(rendering.at || "").slice(0, 10)}`,
+  );
+
+  // The PDF an editor's browser compiled, drawn for everybody else.
+  //
+  // A reader is never asked to fetch a TeX distribution to read a paper, so
+  // what they are shown is what the server kept: the newest checkpoint that
+  // has a rendering. `latest` says which one that is in a few bytes; the
+  // rendering itself is named by a digest and cached for a year, so it is
+  // fetched once however often this is called.
+  async function paintRendering() {
+    const headers = { ...SHELL_HEADERS, ...keyHeaders(KEY) };
+    const found = await fetch(`/api/documents/${SLUG}/renderings/latest`, { headers })
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null);
+    if (!found) return;
+    rendering = found.sha ? found : null;
+    if (!rendering || rendering.sha === renderedSha) return;
+    const bytes = await fetch(`/api/documents/${SLUG}/renderings/${rendering.sha}`, { headers })
+      .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .catch(() => null);
+    // A rendering the manifest names and the store has lost is nothing to
+    // paint over what is already on the screen with.
+    if (!bytes) return;
+    renderedSha = rendering.sha;
+    tell({ type: "preview", pdf: bytes });
+    everPainted = true;
+  }
+
   async function paintPreview() {
+    // A LaTeX document is not rendered here and never was: what goes in the
+    // frame is a PDF somebody's browser compiled. See `05-SPEC-latex.md`.
+    if (sourceFormat === "latex") {
+      await paintRendering();
+      return;
+    }
     if (!paintsTheFrame) {
       refreshFramedPage();
       return;
@@ -664,10 +726,25 @@
   // else type and should never be shown a word half written.
   const READER_DEBOUNCE = 1000;
 
+  // How long a LaTeX document waits before asking the server whether a newer
+  // rendering has turned up. Long, because nothing this browser does produces
+  // one: the text moving means the rendering on the screen is now of an
+  // earlier version, which is answered here without a request, and a newer
+  // rendering can only come from somebody else's compile.
+  const RENDERING_POLL = 30_000;
+
   function sourceChanged() {
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
     clearTimeout(previewTimer);
+    if (sourceFormat === "latex") {
+      // The text has moved, so what is in the frame is a rendering of an
+      // earlier version. That is known here rather than asked: the rendering
+      // is named by the digest of the source it was compiled from.
+      if (rendering?.current) rendering = { ...rendering, current: false };
+      previewTimer = setTimeout(paintPreview, RENDERING_POLL);
+      return;
+    }
     previewTimer = setTimeout(paintPreview, editing ? 60 : READER_DEBOUNCE);
   }
 
@@ -1046,13 +1123,19 @@
     sourceFormat = format;
     // A document is shown here only if this deployment can render what it was
     // written in. Markdown and HTML always; typst when its renderer was built.
+    //
+    // LaTeX is the exception, and the only one: there is no renderer for it on
+    // this side and there never will be, because the compiler is in the
+    // browser and the reader is shown a PDF an editor's browser already
+    // compiled. What this deployment has to be able to do for LaTeX is store
+    // that PDF, which it always can.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
-    if (!list.includes(format) || !renderers.available(format)) {
+    if (format !== "latex" && (!list.includes(format) || !renderers.available(format))) {
       say(`${format} documents are read where their renderer is built`, true);
       return;
     }
     mayEdit = Boolean(allowed);
-    renderers.warm(format);
+    if (format !== "latex") renderers.warm(format);
     joinSession(document_);
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
@@ -1091,8 +1174,10 @@
         document.title = `${found.title} · Komodoc`;
         docsOrigin = found.docs_origin || location.origin;
         // The frame is an empty page with the agent in it, on the documents
-        // origin. What goes into it is what this browser renders.
-        frameSrc = `${docsOrigin}/raw/${SLUG}/`;
+        // origin. What goes into it is what this browser renders -- or, for a
+        // LaTeX document, the PDF an editor's browser compiled, which needs a
+        // frame that can draw one.
+        frameSrc = framePage(found.source_format || "html");
         prepare(found);
       })
       // A private document answers a stranger exactly as a missing one does,
@@ -1229,6 +1314,15 @@
           />
         {/snippet}
       </ControlGroup>
+      <!-- What the frame is showing, for a LaTeX document, when it is not
+           simply the text as it stands. Said to readers as well as to editors,
+           because a reader is the person who most needs to know that the pages
+           in front of them are of an earlier version -- and because "not yet
+           rendered" is the honest answer for a document no browser has
+           compiled. Empty, and so absent, when the rendering is current. -->
+      {#if renderedNote}
+        <small class="badge preset-tonal-surface whitespace-nowrap">{renderedNote}</small>
+      {/if}
       {#if editing}
         <!-- There is no save. What the toolbar says instead is whether this
              browser's work has reached the server, which is a different
@@ -1280,7 +1374,7 @@
     // Making a document private changes where its bytes come from, so the
     // frame is reloaded rather than left showing what it was served before.
     visibility = chosen;
-    if (docsOrigin) frameSrc = `${docsOrigin}/raw/${SLUG}/?v=${++framedGeneration}`;
+    if (docsOrigin) frameSrc = `${framePage(sourceFormat)}?v=${++framedGeneration}`;
   }}
 />
 

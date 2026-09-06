@@ -15,7 +15,7 @@
   import { FAVORITES, VIEWED, read, write } from "../lib/storage.js";
 
   let me = $state({});
-  let config = $state({ max_html: 4 * 1024 * 1024, extensions: [".html", ".htm", ".md", ".markdown"] });
+  let config = $state({ max_document: 4 * 1024 * 1024, extensions: [".html", ".htm", ".md", ".markdown"] });
   let documents = $state([]);
   let counts = $state(new Map());
   let favorites = $state(new Set(read(FAVORITES, [])));
@@ -38,7 +38,7 @@
   let fileInput = $state(null);
   let titleInput = $state(null);
 
-  const maxLabel = $derived(Math.round(config.max_html / (1024 * 1024)) + " MB");
+  const maxLabel = $derived(Math.round(config.max_document / (1024 * 1024)) + " MB");
 
   /* ------------------------------------------------------------- the listing */
 
@@ -177,7 +177,7 @@
     if (!config.extensions.includes(extension)) {
       return refuse(`${file.name} is not a document Komodoc can serve. Only ${config.extensions.join(", ")} work.`);
     }
-    if (file.size > config.max_html) {
+    if (file.size > config.max_document) {
       return refuse(`${file.name} is ${(file.size / (1024 * 1024)).toFixed(1)} MB; the limit is ${maxLabel}.`);
     }
     return true;

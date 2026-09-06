@@ -356,6 +356,24 @@ pub fn history_prefix(slug: &str) -> String {
     format!("history/{slug}/")
 }
 
+/// The PDF an editor's browser compiled from a checkpoint, named by that
+/// checkpoint's SHA. The one derived thing komodoc stores, and what makes it
+/// storable at all: a rendering keyed by the digest of its source cannot
+/// disagree with that source silently -- either the live text has that SHA, or
+/// the reader is told it does not.
+pub fn rendering_key(slug: &str, sha: &str) -> String {
+    format!("renderings/{slug}/{sha}")
+}
+/// The SyncTeX file that rode along with it, gzipped as the compiler wrote it.
+/// Beside the PDF rather than inside it, so a reader who wants only the pages
+/// fetches only the pages.
+pub fn rendering_synctex_key(slug: &str, sha: &str) -> String {
+    format!("renderings/{slug}/{sha}.synctex")
+}
+pub fn rendering_prefix(slug: &str) -> String {
+    format!("renderings/{slug}/")
+}
+
 /// Removes everything komodoc wrote and nothing else. Seeding starts from
 /// nothing, and on a bucket somebody else supplied, "nothing" means our keys
 /// -- never the container, and never what else is in it.
@@ -367,6 +385,8 @@ pub async fn clear_storage(blobs: &dyn BlobStore) {
         "examples/",
         "sessions/",
         "history/",
+        "assets/",
+        "renderings/",
     ] {
         let Ok(found) = blobs.list(prefix).await else {
             continue;

@@ -515,7 +515,7 @@ Six flags bound what a deployment will store:
 
 | Flag | Caps | Default |
 | --- | --- | --- |
-| `--max-size` | the texts of one document | 4 MB |
+| `--max-size` | the texts of one document, and any one rendering of it | 4 MB |
 | `--max-assets` | the figures of one document | 32 MB |
 | `--quota` | everything one publisher holds | 100 MB |
 | `--storage` | the whole deployment | 5120 MB |
@@ -528,7 +528,11 @@ komodoc serve --max-size 8 --max-assets 16 --quota 500 --storage 10240
 
 A document is a directory, so `--max-size` bounds the sum of its texts and
 `--max-assets` bounds its figures. Both count against `--quota`; a figure is
-an upload and counts against `--uploads-per-hour` like any other. On a
+an upload and counts against `--uploads-per-hour` like any other. A LaTeX
+document also keeps the PDF an editor's browser compiled, so that a reader
+never has to compile one: `--max-size` bounds that PDF too, it counts against
+the quota and the hourly uploads like a figure, and only the newest one plus
+the named checkpoints' are kept. On a
 deployment anybody may publish to, `--max-assets` is the one worth lowering:
 figures are where a paper's bytes actually are, and it is what stops a single
 document spending a publisher's whole allowance on images.

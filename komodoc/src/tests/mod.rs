@@ -18,6 +18,7 @@ mod history;
 mod latex;
 mod ownership;
 mod quota;
+mod renderings;
 mod retention;
 mod s3;
 mod seed;

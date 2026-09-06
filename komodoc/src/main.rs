@@ -125,7 +125,7 @@ impl ServiceFlags {
         if let Err(err) = config.set_max_assets(self.max_assets) {
             die(err);
         }
-        if let Err(err) = config.set_max_html(self.max_size) {
+        if let Err(err) = config.set_max_document(self.max_size) {
             die(err);
         }
         if let Err(err) = config.set_storage(self.quota, self.storage) {
