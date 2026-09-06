@@ -76,7 +76,7 @@
 
   const createLink = (role) => change({ link: { role, until: until[role] } }, "Access link created.");
   const resetLink = (role) => change({ link: { role, until: until[role] } }, "Access link reset. The old link no longer works.");
-  const revokeLink = (role) => change({ revoke: role }, "Access link turned off.");
+  const revokeLink = (role) => change({ revoke: role }, "");
   const revokePerson = (person) => change({ revoke: person.login }, `Access removed for ${person.login}.`);
 
   async function copy(value, label = "Link copied.") {
@@ -97,23 +97,11 @@
     {#if loading}
       <p class="panel-muted" role="status">Loading sharing settings…</p>
     {:else if sharing}
-      <!-- The owner's own way in: the document URL, which works by sign-in
-           and by nothing else. There is nothing to create, revoke or expire
-           about it, so it is one line and a copy button. -->
-      <section class="share-section space-y-2" aria-labelledby="own-heading">
-        <h3 id="own-heading" class="panel-section-title">Your link</h3>
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <p class="panel-muted min-w-0">Opens for you when signed in. Nobody else can use it.</p>
-          <button type="button" class="btn btn-sm text-primary-500 shrink-0" disabled={busy} aria-label="Copy your link"
-                  onclick={() => copy(fullUrl(sharing.url), "Your link copied.")}>{copied === fullUrl(sharing.url) ? "Copied" : "Copy link"}</button>
-        </div>
-      </section>
-
       <div class="share-links space-y-6" aria-labelledby="links-heading">
         <h3 id="links-heading" class="panel-section-title">Share links</h3>
         {#each ROLES as role (role.id)}
           {@const link = sharing.links?.[role.id] || null}
-          {@const description = role.id === "reader" ? "Anyone with this link can read the document. Without one, only you can open it." : role.id === "commenter" ? "Anyone with this link can read and comment." : "Anyone with this link can read, comment and edit."}
+          {@const description = role.id === "reader" ? "Anyone with this link can read the document." : role.id === "commenter" ? "Anyone with this link can read and comment." : "Anyone with this link can read, comment and edit."}
           <section class="share-section space-y-2" aria-labelledby="share-{role.id}-heading">
             <h4 id="share-{role.id}-heading" class="panel-section-title">{role.label}</h4>
             <p class="panel-muted">{description}</p>
@@ -191,6 +179,5 @@
 <style>
   .share-sidebar :global(select) { max-width: 100%; }
   .share-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); }
-  .share-links { border-top: 1px solid var(--color-divider); padding-top: calc(var(--spacing) * 6); }
   .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-surface-400-600); font-size: var(--panel-meta-size); }
 </style>

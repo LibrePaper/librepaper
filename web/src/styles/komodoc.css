@@ -322,15 +322,45 @@ main.reader.source-right .editorpane {
    the iframe reflow that comes with it -- is applied once, on release. */
 .grip {
   position: relative;
+  /* The width the layout counts (`GRIP` in panes.js); the hand gets more
+     than the eye does, below. Stacked above its neighbours so that the extra
+     reach lands on the grip and not on the frame or the editor beside it. */
   flex: 0 0 6px;
+  z-index: 5;
   cursor: col-resize;
   background: transparent;
+  transition: background 0.15s;
+}
+/* Sixteen pixels to take hold of, centred on the six that are drawn: a
+   separator that has to be hit exactly is one that gets missed. */
+.grip::before {
+  content: "";
+  position: absolute;
+  inset: 0 -5px;
+}
+/* A short bar in the middle says there is something here to drag before the
+   pointer has found it. It gives way to the full-height highlight on hover. */
+.grip::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 40px;
+  translate: -50% -50%;
+  border-radius: 1px;
+  background: var(--color-surface-400-600);
+  pointer-events: none;
   transition: background 0.15s;
 }
 .grip:hover,
 .grip:focus-visible {
   background: var(--color-primary-500);
   outline: none;
+}
+.grip:hover::after,
+.grip:focus-visible::after {
+  background: transparent;
 }
 .grip-guide {
   position: fixed;

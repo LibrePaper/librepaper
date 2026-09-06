@@ -185,11 +185,10 @@ window.sharingSetup = async () => {
 };
 window.sharingCheck = async () => {
   // The links are the whole of the sharing: there is no access setting beside
-  // them, and the owner's own way in is the bare URL, offered but not minted.
+  // them, and the owner has no link of their own here; they open the document
+  // from the main page.
+  check(!button('Copy your link'), 'the owner is not offered a link of their own');
   check(!document.querySelector('[aria-label="General access"]'), 'no general access setting');
-  check(button('Copy your link'), 'the owner is offered their own link');
-  button('Copy your link').click(); await flush();
-  check(window.copiedLink.endsWith('/docs/paper'), 'the owner link is the bare document URL');
   check(!button('Copy Read link'), 'a read link has to be created before it can be copied');
   check(!document.querySelector('input[readonly]'), 'raw URLs are hidden');
   button('Create Read link').click(); await flush();
