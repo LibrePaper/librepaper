@@ -139,6 +139,62 @@ function search(text, { exact, prefix = "", suffix = "", position = null }) {
 }
 
 /**
+ * Locate a comment's source selector in a tree of source files. The path it
+ * was cut from is tried first, since that is where it almost always still
+ * is; a file that has since been renamed has no text at that path any more,
+ * so every other file in the tree is tried instead, and the selector is
+ * accepted only when exactly one of them finds it -- the same rule
+ * `sourcePlaceInTree` applies to a caret, for the same reason: a source
+ * quote landing in the wrong file is worse than one that lands nowhere.
+ * Returns {path, start, end}, or null.
+ */
+export function anchorSource(tree, source) {
+  if (!source?.exact) return null;
+  const texts = tree?.texts || {};
+  const own = texts[source.path];
+  if (own !== undefined) {
+    const found = anchorOne(own, source, flatten(own));
+    return found ? { path: source.path, start: found.start, end: found.end } : null;
+  }
+
+  let hit = null;
+  for (const [path, text] of Object.entries(texts)) {
+    const found = anchorOne(text, source, flatten(text));
+    if (!found) continue;
+    if (hit) return null; // found in more than one file: which one it meant is a guess
+    hit = { path, start: found.start, end: found.end };
+  }
+  return hit;
+}
+
+/**
+ * Re-anchor every comment's source selector against a tree, in one pass.
+ * Mutates each comment that has a `source` with `sourceStart`, `sourceEnd`
+ * and `sourcePath` -- null when the passage cannot be placed -- and counts
+ * only over those comments, mirroring `anchorAll`.
+ */
+export function anchorAllSources(tree, comments) {
+  let anchored = 0;
+  let orphaned = 0;
+  for (const comment of comments) {
+    if (!comment.source) continue;
+    const found = anchorSource(tree, comment.source);
+    if (found) {
+      comment.sourcePath = found.path;
+      comment.sourceStart = found.start;
+      comment.sourceEnd = found.end;
+      anchored++;
+    } else {
+      comment.sourcePath = null;
+      comment.sourceStart = null;
+      comment.sourceEnd = null;
+      orphaned++;
+    }
+  }
+  return { anchored, orphaned };
+}
+
+/**
  * Re-anchor every comment against one document, in a single pass over the
  * already-extracted text. Mutates each comment with `start`, `end` and
  * `orphaned` -- all derived values that are never sent to the server.

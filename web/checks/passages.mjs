@@ -54,6 +54,61 @@ const comment = (revision) => ({
   revision,
 });
 
+/// The same history, but read as source files rather than renderings -- the
+/// texts at each checkpoint stand in for what `sourceTextAt` would return for
+/// one path, and `at` is left to blow up if `wentAt` ever calls it, since a
+/// comment with a source anchor has no business asking for a render.
+function sourceHistory(n, until) {
+  const { checkpoints, texts, looked } = (() => {
+    const checkpoints = Array.from({ length: n }, (_, at) => ({
+      sha: String(at).padStart(64, "0"),
+      at: `2026-09-05T09:${String(at).padStart(2, "0")}:00Z`,
+      by: "vincent",
+      why: "quiet",
+      label: "",
+    }));
+    const looked = new Set();
+    const texts = new Map(
+      checkpoints.map((point, at) => [
+        point.sha,
+        at <= until ? "before the passage of interest after" : "before after",
+      ]),
+    );
+    return { checkpoints, texts, looked };
+  })();
+  return {
+    checkpoints,
+    looked,
+    at: async () => {
+      throw new Error("wentAt must not render for a comment with a source anchor");
+    },
+    atSource: async (_slug, sha, path) => {
+      looked.add(sha);
+      return path === "chapter.typ" ? texts.get(sha) : null;
+    },
+  };
+}
+
+const sourceComment = (revision) => ({
+  revision,
+  source: {
+    path: "chapter.typ",
+    exact: "the passage of interest",
+    prefix: "before ",
+    suffix: " after",
+    position: null,
+  },
+});
+
+/* ---------------------------------------------------------- source anchors */
+
+{
+  const { checkpoints, at, atSource, looked } = sourceHistory(32, 20);
+  const found = await wentAt("slug", sourceComment(checkpoints[0].sha), checkpoints, {}, at, atSource);
+  check("a source anchor finds the first moment the source no longer holds it", found?.sha === checkpoints[21].sha);
+  check(`a bisection over the source, not a walk (looked at ${looked.size} of 32)`, looked.size <= 8);
+}
+
 /* ------------------------------------------------------------ the answer */
 
 {

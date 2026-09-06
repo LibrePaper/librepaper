@@ -35,6 +35,7 @@ mod seed;
 mod serve;
 mod share_cli;
 mod sharing;
+mod source_anchor;
 mod sync;
 mod timeline;
 mod visitor;

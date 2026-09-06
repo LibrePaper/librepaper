@@ -288,8 +288,10 @@ until another file is made the main file.
 The editor is offered to whoever may replace the document, and the document
 opens ready to work on. There is nothing to save: what is typed is the
 document, readers see it a moment later, and the comments survive it â as you
-type, they re-anchor against the edited text, and one whose passage is gone is
-marked as needing re-anchoring rather than quietly dropped.
+type, they re-anchor against the edited text. A comment records its passage in
+the source file as well as on the page, so it can be found in any version and
+in the editor, and one whose passage is gone from both is marked as such
+rather than quietly dropped.
 
 Several people can edit at once. The source is a CRDT (Yjs), so two people
 typing in the same sentence converge without either waiting for the other, and

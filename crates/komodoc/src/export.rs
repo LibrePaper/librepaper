@@ -1,7 +1,9 @@
 //! Export in the W3C Web Annotation Data Model. The stored fields already
 //! carry the spec's names, so this is a reshaping rather than a translation:
 //! each comment becomes an Annotation whose target is a TextQuoteSelector, and
-//! each reply an Annotation motivated by replying.
+//! each reply an Annotation motivated by replying; a comment with a source
+//! anchor targets two selectors, the rendered quote and the one into the file
+//! it actually came from.
 
 use std::time::Duration;
 
@@ -74,7 +76,26 @@ fn selector_for(item: &Comment) -> Value {
     if !item.suffix.is_empty() {
         selector.insert("suffix".into(), json!(item.suffix));
     }
-    Value::Object(selector)
+    // The rendered quote is what a reader saw; the source anchor beside it is
+    // what survives a re-render, so a comment with one targets both -- the
+    // page it was written against, and the file that page came from.
+    let Some(source) = &item.source else {
+        return Value::Object(selector);
+    };
+    let mut from_source = Map::new();
+    from_source.insert("type".into(), json!("TextQuoteSelector"));
+    from_source.insert("exact".into(), json!(source.exact));
+    if !source.prefix.is_empty() {
+        from_source.insert("prefix".into(), json!(source.prefix));
+    }
+    if !source.suffix.is_empty() {
+        from_source.insert("suffix".into(), json!(source.suffix));
+    }
+    from_source.insert("komodoc:path".into(), json!(source.path));
+    if let Some(position) = source.position {
+        from_source.insert("komodoc:position".into(), json!(position));
+    }
+    Value::Array(vec![Value::Object(selector), Value::Object(from_source)])
 }
 
 /// A number the way %g prints it: no trailing zeros, no decimal point on a

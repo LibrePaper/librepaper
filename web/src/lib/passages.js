@@ -19,6 +19,10 @@
 // step 8 of `docs/specs/history.md` and needs the diff crate in the browser;
 // what is here needs nothing that is not already built, and it is the half of
 // the question a reviewer actually asks.
+//
+// A comment with a source anchor is searched for in the source file itself,
+// which is why it is preferred over the rendered quote whenever there is one:
+// it needs no render and, for a LaTeX document, no PDF either.
 
 import { anchorOne, flatten } from "./anchor.js";
 import * as figures from "./figures.js";
@@ -71,6 +75,27 @@ export async function textAt(slug, sha, headers = {}) {
   return pending;
 }
 
+// One checkpoint fetch per sha, whatever asks for it -- the same sharing
+// `textAt` gives the rendering, kept separately because a comment can have
+// both a source anchor and, on an older version, a rendered one, and the two
+// must not evict each other.
+const points = new Map();
+
+/// The text of one file of a checkpoint, as it was written. Unlike `textAt`
+/// this asks for nothing but the tree the server already has on hand: no
+/// render, no figures gathered, no PDF fetched. A path the checkpoint does
+/// not have -- the file did not exist yet, or has since been renamed away --
+/// answers null, which `holds` already reads as "not here" rather than as
+/// "unknown", the same as an empty page would.
+export async function sourceTextAt(slug, sha, path, headers = {}) {
+  if (!points.has(sha)) {
+    points.set(sha, history.checkpoint(slug, sha, headers));
+  }
+  const point = await points.get(sha);
+  const texts = point.texts || {};
+  return Object.prototype.hasOwnProperty.call(texts, path) ? texts[path] : null;
+}
+
 /// The words of a page, with the markup and the things that are not words
 /// taken out.
 export function visibleText(html) {
@@ -93,7 +118,7 @@ export function holds(text, comment) {
 /// caller has already established that the passage is gone. Returns the
 /// manifest entry, or null when there is nothing to say: no history to look
 /// in, or a passage that turns out still to be there.
-export async function wentAt(slug, comment, checkpoints, headers = {}, at = textAt) {
+export async function wentAt(slug, comment, checkpoints, headers = {}, at = textAt, atSource = sourceTextAt) {
   if (!checkpoints?.length) return null;
   // A comment from before checkpoints were recorded on one, or one whose
   // checkpoint has since been shed, is read as made on the oldest moment the
@@ -103,22 +128,32 @@ export async function wentAt(slug, comment, checkpoints, headers = {}, at = text
   let high = checkpoints.length - 1;
   if (low >= high) return null;
 
+  // A source anchor is searched for in the source file it names, at every
+  // checkpoint, and a comment without one falls back to the rendered
+  // quotation exactly as before -- the two are just different ways of
+  // reading a checkpoint into a string to run `holds` against.
+  const source = comment.source;
+  const selector = source || comment;
+  const read = source
+    ? (sha) => atSource(slug, sha, source.path, headers)
+    : (sha) => at(slug, sha, headers);
+
   // The passage has to have been there to have gone. A comment whose own
   // checkpoint does not hold it is one whose quotation this cannot reason
   // about -- a figure annotation, or a passage the renderer no longer emits --
   // and saying nothing is better than naming a moment at random.
-  const ownText = await at(slug, checkpoints[low].sha, headers);
-  if (typeof ownText !== "string" || !holds(ownText, comment)) return null;
-  const newestText = await at(slug, checkpoints[high].sha, headers);
-  if (typeof newestText !== "string" || holds(newestText, comment)) return null;
+  const ownText = await read(checkpoints[low].sha);
+  if (typeof ownText !== "string" || !holds(ownText, selector)) return null;
+  const newestText = await read(checkpoints[high].sha);
+  if (typeof newestText !== "string" || holds(newestText, selector)) return null;
 
   // Invariant: it is in `low` and not in `high`. Each step halves the gap, so
   // the answer costs about five renders on a history of thirty.
   while (high - low > 1) {
     const middle = (low + high) >> 1;
-    const middleText = await at(slug, checkpoints[middle].sha, headers);
+    const middleText = await read(checkpoints[middle].sha);
     if (typeof middleText !== "string") return null;
-    if (holds(middleText, comment)) low = middle;
+    if (holds(middleText, selector)) low = middle;
     else high = middle;
   }
   return checkpoints[high];

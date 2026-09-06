@@ -83,6 +83,29 @@ pub struct Region {
     pub height: f64,
 }
 
+/// Where a passage sits in the file it actually came from, as opposed to the
+/// rendered page a reader was looking at when they wrote the comment. The
+/// source is what is versioned -- checkpoints and the CRDT both hold it, not
+/// the HTML a browser produced from it -- so this is the anchor that survives
+/// a re-render and that can be looked up in any checkpoint without rendering
+/// it first. It becomes the anchor of record; the rendered TextQuoteSelector
+/// stays only for display. Not every comment has one: a remark on generated
+/// text (a bibliography entry, a numbered caption) may match nothing in the
+/// source, and a region comment on a figure never has one.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SourceAnchor {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub exact: String,
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default)]
+    pub suffix: String,
+    #[serde(default)]
+    pub position: Option<i64>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
@@ -104,6 +127,12 @@ pub struct Comment {
     /// figure rather than on a run of words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<Region>,
+    /// The anchor of record, into the source rather than the rendered page.
+    /// Absent on a region comment, on a comment made before this existed, and
+    /// on one whose passage could not be found in the source it was written
+    /// against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceAnchor>,
     #[serde(default)]
     pub body: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -228,6 +257,10 @@ pub struct Message {
     pub position: Option<i64>,
     #[serde(default)]
     pub region: Option<Region>,
+    /// The source anchor a `comment` arrives with, or that an `anchor`
+    /// message backfills onto one that has none yet.
+    #[serde(default)]
+    pub source: Option<SourceAnchor>,
     #[serde(default)]
     pub comment_id: String,
     #[serde(default)]
@@ -1326,6 +1359,46 @@ impl Room {
             );
         }
 
+        // A backfill on an existing comment, for a passage anchored after the
+        // fact -- a comment made before source anchors existed, or one made
+        // on generated text that a later edit brought back into the source.
+        // Guarded the same way a delete is: the author of the comment, or an
+        // editor, and only once -- a comment that already has an anchor of
+        // record is not overwritten by a second try.
+        if incoming.kind == "anchor" {
+            let Some(index) = state
+                .comments
+                .iter()
+                .position(|item| item.id == incoming.comment_id)
+            else {
+                return fail("unknown comment");
+            };
+            if !deletable(&state.comments[index], author, is_owner) {
+                return fail("you may only anchor your own comments");
+            }
+            if state.comments[index].source.is_some() {
+                return fail("this comment already has a source anchor");
+            }
+            if state.comments[index].region.is_some() {
+                return fail("a figure comment cannot take a source anchor");
+            }
+            let Some(anchor) = valid_source(&config, incoming.source.as_ref()) else {
+                return fail("that source anchor is not valid");
+            };
+            state.comments[index].source = Some(anchor.clone());
+            if self.save(&mut state).await.is_err() {
+                state.comments[index].source = None;
+                return fail(UNSAVED);
+            }
+            return (
+                json!({
+                    "type": "anchor", "comment_id": state.comments[index].id,
+                    "source": anchor,
+                }),
+                true,
+            );
+        }
+
         let body = clean(&incoming.body, config.caps.body).trim().to_string();
         let motivation = config.allowed_motivation(&incoming.motivation);
         // A highlight is the passage itself: marking something as worth
@@ -1396,6 +1469,12 @@ impl Room {
                     prefix: clean(&incoming.prefix, config.caps.context),
                     suffix: clean(&incoming.suffix, config.caps.context),
                     position: incoming.position.filter(|p| *p >= 0),
+                    // A region comment is anchored to the figure; the source
+                    // it might otherwise have carried is not kept.
+                    source: spot
+                        .is_none()
+                        .then(|| valid_source(&config, incoming.source.as_ref()))
+                        .flatten(),
                     region: spot,
                     body,
                     tags: clean_tags(&incoming.tags, &config),
@@ -3103,5 +3182,36 @@ pub fn valid_region(spot: Option<&Region>) -> Option<Region> {
         y: spot.y,
         width: spot.width,
         height: spot.height,
+    })
+}
+
+/// Keeps a source anchor only if it names a real place: a passage worth
+/// keeping, and a path that stays inside the document rather than reading
+/// somewhere else on the machine that renders it. Anything wrong with either
+/// drops the whole anchor rather than keeping half of it, because half an
+/// anchor -- a path with no passage, or a passage nobody can find the file
+/// for -- is not one a client could ever act on.
+fn valid_source(config: &Configuration, anchor: Option<&SourceAnchor>) -> Option<SourceAnchor> {
+    let anchor = anchor?;
+    let exact = clean(&anchor.exact, config.caps.exact).trim().to_string();
+    if exact.is_empty() {
+        return None;
+    }
+    let path = anchor.path.trim();
+    if path.is_empty()
+        || path.len() > 512
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.split('/').any(|part| part == "..")
+        || path.chars().any(|c| c.is_control())
+    {
+        return None;
+    }
+    Some(SourceAnchor {
+        path: path.to_string(),
+        exact,
+        prefix: clean(&anchor.prefix, config.caps.context),
+        suffix: clean(&anchor.suffix, config.caps.context),
+        position: anchor.position.filter(|p| *p >= 0),
     })
 }

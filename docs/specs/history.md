@@ -74,6 +74,32 @@ the card's "then and now" line and the response export run on, and it
 answers whether a passage is still there and when it went. It does not say
 what replaced it: that is the word-level diff, and it is step 8.
 
+### Anchors
+
+A comment is about a passage, and it records that passage twice. The
+quotation from the page -- `exact`, `prefix`, `suffix` and the `position`
+hint, a W3C TextQuoteSelector cut from the text the frame published -- is
+what the reader highlights and what the card shows. The anchor of record is
+`source`: the same selector cut from the source file, with the `path` of
+that file, taken in the commenter's browser at the moment of selection by
+finding the selected words in the source (`sourceSelectorFor` in
+`web/src/lib/sync.js`). The source is the text this spec versions, so a
+source anchor can be looked up in any checkpoint by reading it, with no
+render, no compiler and no PDF in the loop, and it has the same shape for
+markdown, typst and LaTeX.
+
+A comment is orphaned only when neither anchor is found. The page may have
+lost the words while the source still has them, in which case the card says
+so and, for an editor, revealing the comment goes to the source. Where a
+passage went (`wentAt` in `passages.js`) is answered from the source when
+there is a source anchor, and from rendered checkpoints only for a comment
+that has none. A comment has no source anchor when its words exist only in
+the rendering -- a bibliography entry, a numbered caption, generated text --
+or when it was made before the anchor existed; an editor's browser backfills
+the second kind once, over the socket as `anchor`, which the server accepts
+on a comment that has no source yet, from the comment's author or an editor.
+A region annotation has no source anchor and never will.
+
 ## What is built on it
 
 ### What changed since

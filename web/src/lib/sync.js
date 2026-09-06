@@ -272,3 +272,141 @@ export function sourcePlaceInTree(rendered, at, tree, { open = "", formatOf } = 
   }
   return null;
 }
+
+// A place worth remembering as a comment's anchor of record is not "eleven
+// words at offset 480 of the rendered page" but a place in the file someone
+// actually wrote, because that is the text that is versioned and eventually
+// edited again. This is the sibling of sourcePlaceFor for that anchor: given
+// a selection made in the rendered document, it returns a whole quote
+// selector -- {path, exact, prefix, suffix, position} -- cut from the
+// source, in the same shape anchor.js already stores for a selection taken
+// straight off a click.
+//
+// The needle is the rendered selection, flattened the same way the rendered
+// text always is; the haystack is each candidate file, flattened by its own
+// format. A phrase that is not ambiguous anywhere is taken outright. A
+// phrase that repeats -- within one file or across several -- is resolved
+// the way a caret is: by asking sourcePlaceInTree where the rendered
+// position lands, and taking whichever occurrence sits nearest to that hint,
+// in the same file the hint named. Without a hint an ambiguous phrase names
+// no place, for the same reason findOnce refuses one: a wrong anchor is
+// worse than none.
+//
+// A selection can be interrupted by markup that produced nothing of its own
+// -- a citation, an inline formula -- and then the whole phrase is nowhere
+// to be found. What is tried instead is less of it, one word shorter each
+// time from the right, exactly as findOnce does. The anchor that comes back
+// then covers only the words that were actually found, which is honest about
+// what is known -- the rest of the selection is not claimed to be anywhere.
+// A selection that started short -- two or three words -- is not shortened
+// any further, but it is held to a stricter standard: it is only taken when
+// it is unique across every file, because a hint is a fair tie-break for a
+// phrase long enough to mean something and a bad one for a phrase too short
+// to mean much at all.
+const SOURCE_FORMATS = new Set(["markdown", "typst", "html", "latex"]);
+
+function sourcePaths(tree, open, formatOf) {
+  const all = Object.keys(tree.texts || {});
+  const usable = all.filter((path) => !formatOf || SOURCE_FORMATS.has(formatOf(path)));
+  return [
+    ...(open && usable.includes(open) ? [open] : []),
+    ...(tree.main && tree.main !== open && usable.includes(tree.main) ? [tree.main] : []),
+    ...usable.filter((path) => path !== open && path !== tree.main).sort(),
+  ];
+}
+
+export function sourceSelectorFor(rendered, selector, tree, { open = "", formatOf } = {}) {
+  const fullNeedle = flattenWith(selector?.exact || "", "").text.trim();
+  if (!fullNeedle) return null;
+  const paths = sourcePaths(tree, open, formatOf);
+  if (!paths.length) return null;
+
+  // Every candidate file, flattened once and reused for whatever length of
+  // needle gets tried against it.
+  const haystacks = paths.map((path) => {
+    const format = formatOf ? formatOf(path) : "";
+    return { path, format, source: tree.texts[path], ...flattened(tree.texts[path], format) };
+  });
+
+  const words = fullNeedle.split(" ");
+  for (let n = words.length; n >= 1; n--) {
+    const needle = words.slice(0, n).join(" ");
+    const short = needle.length < ENOUGH;
+
+    const occurrences = [];
+    for (const { path, format, text, from, source } of haystacks) {
+      for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) {
+        occurrences.push({ path, format, at, from, source });
+      }
+    }
+
+    let hit = null;
+    if (occurrences.length === 1) {
+      hit = occurrences[0];
+    } else if (occurrences.length > 1 && !short) {
+      const hint = selector?.position == null
+        ? null
+        : sourcePlaceInTree(rendered, selector.position, tree, { open, formatOf });
+      const inHintFile = hint ? occurrences.filter((candidate) => candidate.path === hint.path) : [];
+      if (inHintFile.length) {
+        hit = inHintFile.reduce((a, b) =>
+          Math.abs(b.at - hint.at) < Math.abs(a.at - hint.at) ? b : a
+        );
+      }
+    }
+    // occurrences.length > 1 && short falls through with hit still null: a
+    // short phrase is only ever taken when it is unmistakable on its own,
+    // never on a hint's say-so.
+
+    if (hit) {
+      const { path, format, source, from: map, at } = hit;
+      let start = map[at];
+      let end = map[at + needle.length];
+
+      // A word wrapped in markup with nothing separating them -- "**bold**"
+      // -- flattens to the same token as a bare word, so the map alone puts
+      // the boundary on the letter, not the marker. What is wanted is the
+      // markdown or typst actually wrote, so each edge is walked back over
+      // the source run that collapsed to get here, past any of it that is
+      // not real whitespace, and stopped at the last real whitespace found --
+      // or at the run's own start, when the run is markup all the way
+      // through, as it is at the very beginning of a file. HTML has no such
+      // single-character markers to reclaim -- what sits between two of its
+      // words is a tag, whose own text is not whitespace either -- so this
+      // is skipped there and the boundary stays exactly where the words are.
+      if (format !== "html" && at > 0) {
+        const before = source.slice(map[at - 1], start);
+        let cut = before.length;
+        while (cut > 0 && !/\s/.test(before[cut - 1])) cut--;
+        start = map[at - 1] + cut;
+      }
+      const afterAt = at + needle.length;
+      if (format !== "html" && afterAt < map.length - 1) {
+        const after = source.slice(end, map[afterAt + 1]);
+        let cut = 0;
+        while (cut < after.length && !/\s/.test(after[cut])) cut++;
+        end += cut;
+      }
+
+      // What is left is trimmed inward rather than dropped, so real
+      // whitespace that made it this far -- a run with more than one space
+      // in it -- never ends up inside the quote.
+      while (start < end && /\s/.test(source[start])) start++;
+      while (end > start && /\s/.test(source[end - 1])) end--;
+      return {
+        path,
+        exact: source.slice(start, end),
+        prefix: source.slice(Math.max(0, start - 64), start),
+        suffix: source.slice(end, end + 64),
+        position: start,
+      };
+    }
+
+    // Nothing at this length, in one file or ambiguously in several: shorten
+    // and try again, unless this candidate was already too short to shorten
+    // further -- a partial match is only ever this one attempt, not a slide
+    // all the way down to a single word.
+    if (short) break;
+  }
+  return null;
+}

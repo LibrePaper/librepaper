@@ -22,7 +22,7 @@ use crate::http::{detail_of, get_json, post_json, text};
 use crate::render::{
     is_latex, is_markdown, is_typst, render_markdown_document, render_typst_document,
 };
-use crate::room::{Comment, Message, Region, Reply, Room, RoomSet};
+use crate::room::{main_path_for, Comment, Message, Region, Reply, Room, RoomSet, SourceAnchor};
 use crate::storage::{open_storage, StorageOptions};
 use crate::store::{example_suffix, slugify, Publication, Store};
 use crate::util::{die, new_id};
@@ -150,7 +150,9 @@ pub async fn seed_into(
         room.checkpoint("cli", "")
             .await
             .unwrap_or_else(|err| die(format!("could not store {}: {err}", document.file)));
-        let (placed, missed) = seed_annotations(&room, &document.annotations, &text).await;
+        let main_path = main_path_for("", &format);
+        let (placed, missed) =
+            seed_annotations(&room, &document.annotations, &text, &source, &main_path).await;
         seeded.push(slug.clone());
 
         println!("  {:<28} {}", entry.slug, document.title);
@@ -258,12 +260,15 @@ pub async fn seed_remote(server_flag: String, documents: &[SeedDocument]) {
                 .count();
             (document.annotations.len() - missed, missed)
         } else {
+            let main_path = main_path_for("", &format);
             seed_remote_annotations(
                 &server,
                 &token,
                 &slug,
                 &document.annotations,
                 &visible_text(&raw),
+                &source,
+                &main_path,
             )
             .await
         };
@@ -282,6 +287,8 @@ async fn seed_remote_annotations(
     slug: &str,
     annotations: &[SeedAnnotation],
     visible: &str,
+    source: &str,
+    main_path: &str,
 ) -> (usize, usize) {
     let url = format!("{server}/api/documents/{slug}/comments");
     let (mut placed, mut missed) = (0, 0);
@@ -300,6 +307,7 @@ async fn seed_remote_annotations(
             prefix: spot.prefix,
             suffix: spot.suffix,
             position: spot.position,
+            source: source_anchor(item, source, main_path),
             region: item.region.clone(),
             ..Message::default()
         };
@@ -380,12 +388,35 @@ pub fn anchor(item: &SeedAnnotation, text: &str) -> Option<SeedAnchor> {
     })
 }
 
+/// Where a seeded annotation's passage sits in the source it was published
+/// from, as opposed to the rendered page `anchor` above locates it in. Kept
+/// only when the passage names one spot unambiguously: several matches would
+/// leave no way to say which one the comment is about, and that is the same
+/// rule the reader itself follows when a comment arrives with no position of
+/// its own. A region annotation has no passage to look for.
+pub fn source_anchor(item: &SeedAnnotation, source: &str, path: &str) -> Option<SourceAnchor> {
+    if item.region.is_some() || source.matches(item.exact).count() != 1 {
+        return None;
+    }
+    let at = source.find(item.exact)?;
+    let context = Configuration::default().caps.context;
+    Some(SourceAnchor {
+        path: path.to_string(),
+        exact: item.exact.to_string(),
+        prefix: tail(&source[..at], context),
+        suffix: head(&source[at + item.exact.len()..], context),
+        position: Some(at as i64),
+    })
+}
+
 /// Writes one document's annotations, anchoring each to where its passage
 /// actually appears.
 pub async fn seed_annotations(
     room: &Room,
     annotations: &[SeedAnnotation],
     text: &str,
+    source: &str,
+    main_path: &str,
 ) -> (usize, usize) {
     let (mut placed, mut missed) = (0, 0);
     for item in annotations {
@@ -400,6 +431,7 @@ pub async fn seed_annotations(
             prefix: spot.prefix,
             suffix: spot.suffix,
             position: spot.position,
+            source: source_anchor(item, source, main_path),
             region: item.region.clone(),
             body: item.body.into(),
             tags: item.tags.iter().map(|t| t.to_string()).collect(),
