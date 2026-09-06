@@ -180,6 +180,52 @@ main.reader.no-preview:not(.editing) .sidebar {
   display: none;
 }
 
+/* What stands where the document would be, before there is one to show. The
+   card, for an editor who has not chosen a compiler; "not yet rendered", for
+   a reader who is never asked to fetch one. It takes the room the frame would
+   have had and sits on the same ground, so the pane does not change shape
+   when the first page arrives. */
+.latexpane {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  background: var(--color-shell);
+}
+.latexpane .notyet {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: --spacing(3);
+  padding: --spacing(8);
+  max-width: 40rem;
+}
+main.reader.source-right .latexpane {
+  order: 1;
+}
+
+/* A compile is the one thing in this application that takes seconds, so it is
+   the one thing with a spinner. */
+.spinner {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-right: 0.4em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: komodoc-spin 700ms linear infinite;
+}
+@keyframes komodoc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
 /* Which side the source is on is an order, not a different tree: moving the
    frame between parents would reload the document and lose the reader's place
    in it. The comments stay last whichever way round the other two are. */

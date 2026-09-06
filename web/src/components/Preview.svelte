@@ -11,9 +11,13 @@
 
   let frame = $state(null);
 
-  export function tell(message) {
+  /// `transfer` is for the one message that carries megabytes: a LaTeX
+  /// document's pages arrive as PDF bytes, and handing the buffer over rather
+  /// than copying it saves the copy on every recompile. Everything else is
+  /// small and is cloned, as it always was.
+  export function tell(message, transfer) {
     if (!docsOrigin || !frame?.contentWindow) return;
-    frame.contentWindow.postMessage({ komodoc: true, ...message }, docsOrigin);
+    frame.contentWindow.postMessage({ komodoc: true, ...message }, docsOrigin, transfer);
   }
 
   function receive(event) {

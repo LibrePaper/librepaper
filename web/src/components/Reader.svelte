@@ -7,6 +7,7 @@
   import * as diagnosticsRule from "../lib/diagnostics.js";
   import * as collab from "../lib/collab.js";
   import * as figures from "../lib/figures.js";
+  import * as latex from "../lib/latex.js";
   import { openRoom } from "../lib/room.js";
   import {
     SHELL_HEADERS,
@@ -88,7 +89,7 @@
   let figureAt = $state([]); // text offset of each figure, by its index
 
   let preview = $state(null);
-  const tell = (message) => preview?.tell(message);
+  const tell = (message, transfer) => preview?.tell(message, transfer);
 
   // The agent repaints the whole document on every "regions" or "highlight"
   // message, so a call that changes nothing is not free even though it looks
@@ -506,7 +507,9 @@
     if (!session) return { main: "", texts: {}, digests: {} };
     const tree = session.tree();
     if (tree.main) return tree;
-    const named = { typst: "main.typ", markdown: "main.md", html: "main.html" }[sourceFormat] || "main.txt";
+    const named =
+      { typst: "main.typ", markdown: "main.md", html: "main.html", latex: "main.tex" }[sourceFormat] ||
+      "main.txt";
     return { main: named, texts: { [named]: session.text.toString() }, digests: {} };
   }
 
@@ -530,6 +533,11 @@
   // Whether the frame has ever shown a page. Until it has, a document that
   // does not compile has nothing to keep on the screen.
   let everPainted = false;
+  // The same fact, in a form the markup may read. `everPainted` is a plain
+  // variable on purpose -- it is written from inside a render and read
+  // nowhere near one -- and a reader's "not yet rendered" is the one place
+  // the question is asked from the template.
+  let everPaintedShown = $state(false);
 
   const errorCount = $derived(diagnostics.filter((d) => d.severity !== "warning").length);
   const warningCount = $derived(diagnostics.length - errorCount);
@@ -581,6 +589,50 @@
   // sets innerHTML. A document that needs them is one to share by link.
   const paintsTheFrame = $derived(editing || sourceFormat !== "html" || visibility === "private");
 
+  /* -------------------------------------------------------------- LaTeX */
+
+  // A LaTeX document has no HTML to paint, so its frame is the PDF viewer on
+  // the documents origin rather than the empty shell. Everything else about
+  // the frame is the same: same origin, same CSP, same agent, same channel.
+  const framePath = $derived(sourceFormat === "latex" ? "pdf" : "raw");
+
+  // Whether a compiler has been chosen in this browser. Not a promise and not
+  // a fetch: the card is drawn from this before anything is downloaded.
+  let latexReady = $state(false);
+  // How long the last compile took, and whether one is running now. Both only
+  // exist for LaTeX, where a compile takes seconds and silence would read as
+  // a preview that had stopped working.
+  let compiling = $state(false);
+  let lastCompile = $state(0);
+
+  // The card is offered to somebody who can act on it and to nobody else. A
+  // reader is never asked to download a compiler to read a paper: what they
+  // get is "not yet rendered" and the source, until a stored rendering makes
+  // that unnecessary.
+  // Reopened from the toolbar to switch distribution, which is the only way
+  // back to it once one has been chosen.
+  let cardOpen = $state(false);
+  const showsCard = $derived(
+    sourceFormat === "latex" && editing && mayEdit && (!latexReady || cardOpen),
+  );
+  const unrendered = $derived(sourceFormat === "latex" && !mayEdit && !everPaintedShown);
+
+  // A distribution is loaded: the card goes, and the document is compiled at
+  // once rather than on the next keystroke. This is the only place a compile
+  // is started other than an edit, and it is the person asking for one.
+  function latexChosen() {
+    latexReady = true;
+    cardOpen = false;
+    paintPreview();
+  }
+
+  // A LaTeX compile that is running says so, and says how long the last one
+  // took once there has been one. Before the first, there is no honest number
+  // to give.
+  const compileBadge = $derived(
+    !compiling ? "" : lastCompile ? `compiling… (last took ${lastCompile.toFixed(1)}s)` : "compiling…",
+  );
+
   // What the frame was showing the last time it was loaded, so a reload
   // happens when the document has changed and not merely because somebody's
   // caret moved. Seeded on the first join: the frame was served from the same
@@ -601,7 +653,7 @@
     // and the path is the document's own, so this is the same page from the
     // same origin under the same CSP -- the scripts it carries run exactly as
     // they did on the first load.
-    frameSrc = `${docsOrigin}/raw/${SLUG}/?v=${++framedGeneration}`;
+    frameSrc = `${docsOrigin}/${framePath}/${SLUG}/?v=${++framedGeneration}`;
   }
 
   async function paintPreview() {
@@ -623,10 +675,36 @@
         tree.assets = held.assets;
         tree.urls = held.urls;
       }
-      const { html, diagnostics: said } = await renderers.render(tree, await headingOf(tree));
+      // A LaTeX compile takes seconds rather than milliseconds, so the pane
+      // says one is running. The last page that compiled stays up under it:
+      // an author who is typing has something to look at, which is the whole
+      // difference between this and a pane that blanks for four seconds.
+      const slow = renderers.formatOf(tree.main) === "latex";
+      if (slow) compiling = true;
+      let rendered;
+      try {
+        rendered = await renderers.render(tree, await headingOf(tree));
+      } finally {
+        // Only the newest compile owns the badge. An older one finishing
+        // afterwards must not turn the spinner off under a newer one.
+        if (slow && mine > painted) compiling = false;
+      }
+      const { html, pdf, diagnostics: said, seconds } = rendered;
       // A slower render that resolves late must not paint over a newer one.
       if (mine <= painted) return;
       painted = mine;
+      if (slow && seconds) lastCompile = seconds;
+      // A render carries `html` or `pdf`, and the reader posts whichever it
+      // has. The bytes are transferred rather than copied: a PDF is megabytes
+      // and this page has no further use for it once the frame has it.
+      if (pdf) {
+        const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
+        tell({ type: "preview", pdf: buffer }, [buffer]);
+        everPainted = true;
+        everPaintedShown = true;
+        diagnosticPainter.rendered({ page: "", diagnostics: said || [] });
+        return;
+      }
       if (html !== null) {
         // The page is what the document says now, so every error said about an
         // earlier state of it is cleared at once. The warnings that came with
@@ -635,6 +713,7 @@
         // keystroke.
         tell({ type: "preview", html });
         everPainted = true;
+        everPaintedShown = true;
         diagnosticPainter.rendered({ page: html, diagnostics: said || [] });
         return;
       }
@@ -668,7 +747,17 @@
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
     clearTimeout(previewTimer);
-    previewTimer = setTimeout(paintPreview, editing ? 60 : READER_DEBOUNCE);
+    // A LaTeX compile takes seconds, so it waits for the source to be quiet
+    // for longer -- `latex.DEBOUNCE`, which is that module's number and not
+    // one written twice. A reader watching somebody else type waits longer
+    // still, and the longer of the two wins.
+    const wait =
+      sourceFormat === "latex"
+        ? Math.max(latex.DEBOUNCE, editing ? 0 : READER_DEBOUNCE)
+        : editing
+          ? 60
+          : READER_DEBOUNCE;
+    previewTimer = setTimeout(paintPreview, wait);
   }
 
   /* ------------------------------------------------------- keeping in step */
@@ -1047,6 +1136,12 @@
     // A document is shown here only if this deployment can render what it was
     // written in. Markdown and HTML always; typst when its renderer was built.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
+    // LaTeX is the one renderer that is a property of the deployment rather
+    // than of the build: the compiler is behind `--latex`, not in the binary,
+    // and a deployment with no mirror has nowhere to send this browser for
+    // one. Told before the question below is asked.
+    renderers.offerLatex(list.includes("latex"));
+    latexReady = format === "latex" && Boolean(latex.chosen());
     if (!list.includes(format) || !renderers.available(format)) {
       say(`${format} documents are read where their renderer is built`, true);
       return;
@@ -1092,8 +1187,11 @@
         docsOrigin = found.docs_origin || location.origin;
         // The frame is an empty page with the agent in it, on the documents
         // origin. What goes into it is what this browser renders.
-        frameSrc = `${docsOrigin}/raw/${SLUG}/`;
+        // Set after `prepare`, which is what settles the format and so which
+        // frame this document wants: a LaTeX document is a PDF and gets the
+        // viewer, everything else gets the empty shell.
         prepare(found);
+        frameSrc = `${docsOrigin}/${framePath}/${SLUG}/`;
       })
       // A private document answers a stranger exactly as a missing one does,
       // which tells a stranger nothing -- and tells a named reader who has not
@@ -1243,6 +1341,24 @@
         {/if}
         <!-- What the compiler said, counted. Clicking it goes to the first
              thing it complained about, and again to the next. -->
+        <!-- A compile takes seconds, so the pane says one is running, and
+             after the first says how long the last one took. Nothing is said
+             between compiles: the page on screen is the answer. -->
+        {#if compileBadge}
+          <small class="badge preset-tonal-surface whitespace-nowrap">
+            <span class="spinner" aria-hidden="true"></span>
+            {compileBadge}
+          </small>
+        {/if}
+        {#if sourceFormat === "latex" && latexReady}
+          <IconButton
+            icon="book"
+            label="Choose a different TeX distribution"
+            title="TeX distribution"
+            pressed={cardOpen}
+            onclick={() => (cardOpen = !cardOpen)}
+          />
+        {/if}
         {#if diagnosticBadge}
           <button type="button" onclick={goToDiagnostic}
                   title="Go to the next problem"
@@ -1280,7 +1396,7 @@
     // Making a document private changes where its bytes come from, so the
     // frame is reloaded rather than left showing what it was served before.
     visibility = chosen;
-    if (docsOrigin) frameSrc = `${docsOrigin}/raw/${SLUG}/?v=${++framedGeneration}`;
+    if (docsOrigin) frameSrc = `${docsOrigin}/${framePath}/${SLUG}/?v=${++framedGeneration}`;
   }}
 />
 
@@ -1336,10 +1452,36 @@
     </Grip>
   {/if}
 
+  <!-- What stands where the document would be, before there is one to show.
+       Two states and two audiences: an editor who has not chosen a compiler
+       gets the card, and a reader gets told plainly that nobody has compiled
+       this yet. A reader is never shown the card -- nobody is asked to
+       download a TeX distribution in order to read a paper. -->
+  {#if shown.document && showsCard}
+    <section class="latexpane">
+      {#await import("./LatexCard.svelte") then { default: LatexCard }}
+        <LatexCard onchosen={latexChosen} onerror={(why) => say(why, true)} />
+      {/await}
+    </section>
+  {:else if shown.document && unrendered}
+    <section class="latexpane">
+      <div class="notyet">
+        <h2 class="h4">Not yet rendered</h2>
+        <p class="text-surface-700-300 text-sm">
+          This is a LaTeX document, and no editor has compiled it in a browser
+          yet. When one does, its pages appear here.
+        </p>
+        <button type="button" class="btn preset-tonal-surface" onclick={downloadTree}>
+          Download the source
+        </button>
+      </div>
+    </section>
+  {/if}
+
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
-           away={!shown.document} />
+           away={!shown.document || showsCard || unrendered} />
 
   {#if shown.comments}
     <Grip pane={PANES.sidebar} label="Resize the comment pane" panes={panes}
