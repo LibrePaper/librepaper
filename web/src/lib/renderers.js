@@ -183,8 +183,8 @@ export async function render(tree, title) {
   // assets/<sha>` out of anything rendered: on a private document that route
   // needs a credential, and a credential does not belong in a page.
   if (format === "latex") {
-    const { pdf, diagnostics, seconds } = await latex.compile(tree);
-    return { pdf, diagnostics: diagnostics || [], seconds };
+    const { pdf, synctex, diagnostics, seconds } = await latex.compile(tree);
+    return { pdf, synctex: synctex || null, diagnostics: diagnostics || [], seconds };
   }
   const wasm = await load(format);
   handOver(wasm, tree);

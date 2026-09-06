@@ -311,6 +311,16 @@ pub struct Session {
     /// the gap it covers is seconds, and a server that restarted in the middle
     /// of it has lost the upload anyway.
     pub asset_written_at: HashMap<String, i64>,
+    /// Every rendering this document holds and what it costs, by the object's
+    /// name under `renderings/<slug>/` -- a checkpoint SHA for a PDF, the same
+    /// with `.synctex` after it for the SyncTeX file. Kept the way the asset
+    /// sizes are, and for the same reason: the quota is charged for what is
+    /// stored, and nothing else knows what these weigh.
+    pub rendering_sizes: HashMap<String, i64>,
+    /// When each rendering was written here, for the grace period. A rendering
+    /// is stored before the checkpoint that will keep it is the newest one,
+    /// and pruning in that gap would delete what a browser had just uploaded.
+    pub rendering_written_at: HashMap<String, i64>,
 }
 
 pub struct RoomState {
@@ -470,6 +480,8 @@ impl RoomSet {
                     blobs_written: std::collections::HashSet::new(),
                     asset_sizes: HashMap::new(),
                     asset_written_at: HashMap::new(),
+                    rendering_sizes: HashMap::new(),
+                    rendering_written_at: HashMap::new(),
                 },
                 manifest: Manifest::default(),
                 touched: now_unix(),
@@ -501,11 +513,12 @@ impl RoomSet {
             .await;
         // The history goes with the document, which is what destroy has
         // promised in the README since before there was a history to delete.
-        // So do its figures: they are the document's, stored under its slug
-        // and referred to by nothing else.
+        // So do its figures and its renderings: they are the document's, stored
+        // under its slug and referred to by nothing else.
         for prefix in [
             crate::blob::history_prefix(slug),
             crate::blob::asset_prefix(slug),
+            crate::blob::rendering_prefix(slug),
         ] {
             if let Ok(found) = self.blobs.list(&prefix).await {
                 let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
@@ -698,6 +711,30 @@ impl Room {
         }
         drop(state);
         self.load_asset_sizes().await;
+        self.load_rendering_sizes().await;
+    }
+
+    /// What each stored rendering weighs, read once when the room is loaded.
+    /// The same listing the figures get, for the same reason: nothing in the
+    /// shared document names a rendering, so the store is the only place the
+    /// answer is.
+    async fn load_rendering_sizes(&self) {
+        let Ok(found) = self
+            .blobs
+            .list(&crate::blob::rendering_prefix(&self.slug))
+            .await
+        else {
+            return;
+        };
+        let mut state = self.state.lock().await;
+        for object in found {
+            if let Some(name) = object.key.rsplit('/').next() {
+                state
+                    .session
+                    .rendering_sizes
+                    .insert(name.to_string(), object.size);
+            }
+        }
     }
 
     /// What each of this document's figures weighs, read once when the room is
@@ -1232,7 +1269,7 @@ impl Room {
     /// what was applied.
     ///
     /// The size ceiling is decided before the document is touched. An update
-    /// that would carry the source past `max_html` is never applied and never
+    /// that would carry the source past `max_document` is never applied and never
     /// relayed, and the socket that sent it is closed with the reason; the
     /// text every other peer is looking at does not move, not even for the
     /// instant a trim-afterwards would have taken. `session::admit_update`
@@ -1526,12 +1563,13 @@ impl Room {
         }));
 
         // 4. the index entry, then 5. the manifest.
-        // What the document costs: the live session, its history, and its
-        // figures. The quota counts each object once -- a text blob and an
+        // What the document costs: the live session, its history, its figures
+        // and its renderings. The quota counts each object once -- a text blob and an
         // asset are each charged where they are stored, and the tree that
         // names them is bookkeeping rather than a third copy.
         let assets = self.assets_bytes().await;
-        self.record_size(size + manifest.bytes() + assets, Some(&sha))
+        let renderings = self.renderings_bytes().await;
+        self.record_size(size + manifest.bytes() + assets + renderings, Some(&sha))
             .await;
         {
             let mut state = self.state.lock().await;
@@ -1560,6 +1598,9 @@ impl Room {
         // what makes a crash leave an unreferenced object rather than a tree
         // pointing at one that is gone.
         self.prune_assets().await;
+        // And the renderings the new manifest no longer keeps, on the same
+        // pass and under the same write-order rule.
+        self.prune_renderings().await;
         // The migration's one and only cleanup. A document stored the old way
         // has a rendered page and a source under the old keys; both are copies
         // of what is now a checkpoint, and this is the first moment at which
@@ -1889,6 +1930,189 @@ impl Room {
             .ok()
     }
 
+    /* --------------------------------------------------------- renderings */
+
+    /// What this document's stored renderings come to, PDFs and SyncTeX files
+    /// alike. Charged to the owner's quota beside the texts and the figures,
+    /// because a rendering is bytes on the same disk.
+    pub async fn renderings_bytes(&self) -> i64 {
+        self.state
+            .lock()
+            .await
+            .session
+            .rendering_sizes
+            .values()
+            .sum()
+    }
+
+    /// Whether this document already holds that object. A rendering is named
+    /// by the checkpoint it was compiled from, so the same name is always the
+    /// same bytes: a second `PUT` of one is a hash and nothing else.
+    pub async fn has_rendering(&self, sha: &str, synctex: bool) -> bool {
+        let name = rendering_name(sha, synctex);
+        self.state
+            .lock()
+            .await
+            .session
+            .rendering_sizes
+            .contains_key(&name)
+    }
+
+    /// Stores a rendering the browser compiled, under the SHA of the
+    /// checkpoint it was compiled from. The caller has already decided that
+    /// SHA names a checkpoint; what is decided here is only that the bytes are
+    /// not already held and that writing them is this server's to do.
+    pub async fn put_rendering(
+        &self,
+        sha: &str,
+        synctex: bool,
+        body: Vec<u8>,
+    ) -> Result<i64, String> {
+        let size = body.len() as i64;
+        if size == 0 {
+            return Err("that rendering is empty".into());
+        }
+        let name = rendering_name(sha, synctex);
+        {
+            let state = self.state.lock().await;
+            if let Some(known) = state.session.rendering_sizes.get(&name) {
+                // Already here. Nothing is written and nothing is charged.
+                return Ok(*known);
+            }
+        }
+        if !self.hold().await {
+            return Err("this room is held by another server".into());
+        }
+        let (key, kind) = if synctex {
+            (
+                crate::blob::rendering_synctex_key(&self.slug, sha),
+                "application/gzip",
+            )
+        } else {
+            (
+                crate::blob::rendering_key(&self.slug, sha),
+                "application/pdf",
+            )
+        };
+        self.blobs
+            .put(&key, body, kind)
+            .await
+            .map_err(|err| err.to_string())?;
+        {
+            let mut state = self.state.lock().await;
+            state.session.rendering_sizes.insert(name.clone(), size);
+            state.session.rendering_written_at.insert(name, now_unix());
+        }
+        self.record_size_now().await;
+        Ok(size)
+    }
+
+    /// A rendering's bytes, for whoever may read the document.
+    pub async fn read_rendering(&self, sha: &str, synctex: bool) -> Option<Vec<u8>> {
+        let key = if synctex {
+            crate::blob::rendering_synctex_key(&self.slug, sha)
+        } else {
+            crate::blob::rendering_key(&self.slug, sha)
+        };
+        self.blobs.get(&key).await.ok()
+    }
+
+    /// The newest checkpoint that has a rendering, when it was taken, and
+    /// whether it is the text as it stands. This is the whole of what a reader
+    /// needs to decide between showing a PDF and saying "not yet rendered",
+    /// and it is answered here because the manifest and the live tree are both
+    /// held here.
+    pub async fn newest_rendering(&self) -> Option<(String, String, bool)> {
+        let (sha, at) = {
+            let state = self.state.lock().await;
+            let held = &state.session.rendering_sizes;
+            state
+                .manifest
+                .checkpoints
+                .iter()
+                .rev()
+                .find(|point| held.contains_key(&point.sha))
+                .map(|point| (point.sha.clone(), point.at.clone()))?
+        };
+        let current = self.tree().await.digest() == sha;
+        Some((sha, at, current))
+    }
+
+    /// Drops the renderings that are no longer worth their bytes. A rendering
+    /// is derived -- the one derived thing komodoc stores -- so unlike a
+    /// checkpoint it may go, and what is kept is the newest checkpoint that
+    /// has one, because that is what a reader is shown, and every labelled
+    /// checkpoint, because a label is somebody saying this moment matters.
+    ///
+    /// Run after the manifest that names what survives is written, never
+    /// before, for the reason `prune_assets` gives: a crash then leaves an
+    /// object nothing names rather than a name pointing at nothing. And an
+    /// object still inside the grace period is kept whatever the manifest
+    /// says, because a browser uploads a PDF and its SyncTeX file in two
+    /// requests, and a checkpoint can land between them.
+    async fn prune_renderings(&self) {
+        let now = now_unix();
+        let grace = self.config.asset_grace;
+        let (kept, held, written_at) = {
+            let state = self.state.lock().await;
+            let held = state.session.rendering_sizes.clone();
+            let mut kept: std::collections::HashSet<String> = state
+                .manifest
+                .checkpoints
+                .iter()
+                .filter(|point| !point.label.is_empty())
+                .map(|point| point.sha.clone())
+                .collect();
+            if let Some(newest) = state
+                .manifest
+                .checkpoints
+                .iter()
+                .rev()
+                .find(|point| held.contains_key(&point.sha))
+            {
+                kept.insert(newest.sha.clone());
+            }
+            (kept, held, state.session.rendering_written_at.clone())
+        };
+        let mut gone = Vec::new();
+        for name in held.keys() {
+            let sha = name.strip_suffix(".synctex").unwrap_or(name);
+            if kept.contains(sha) {
+                continue;
+            }
+            if written_at.get(name).is_some_and(|at| now - at < grace) {
+                continue;
+            }
+            gone.push(name.clone());
+        }
+        if gone.is_empty() {
+            return;
+        }
+        let keys: Vec<String> = gone
+            .iter()
+            .map(|name| format!("{}{name}", crate::blob::rendering_prefix(&self.slug)))
+            .collect();
+        if self.blobs.delete(&keys).await.is_ok() {
+            let mut state = self.state.lock().await;
+            for name in gone {
+                state.session.rendering_sizes.remove(&name);
+                state.session.rendering_written_at.remove(&name);
+            }
+        }
+    }
+
+    /// Names a checkpoint, for the tests that ask what pruning keeps. The
+    /// route that does this for an author is the timeline's.
+    #[cfg(test)]
+    pub async fn label_checkpoint(&self, sha: &str, label: &str) {
+        let mut state = self.state.lock().await;
+        for point in &mut state.manifest.checkpoints {
+            if point.sha == sha {
+                point.label = label.to_string();
+            }
+        }
+    }
+
     /// Drops the figures nothing refers to any more: neither the live document
     /// nor any checkpoint the manifest still holds.
     ///
@@ -1979,7 +2203,8 @@ impl Room {
             )
         };
         let assets = self.assets_bytes().await;
-        self.record_size(session_size + history + assets, None)
+        let renderings = self.renderings_bytes().await;
+        self.record_size(session_size + history + assets + renderings, None)
             .await;
     }
 
@@ -2105,6 +2330,18 @@ pub fn main_path_for(named: &str, format: &str) -> String {
         _ => "main.txt",
     }
     .to_string()
+}
+
+/// What a rendering is called under `renderings/<slug>/`: the checkpoint's SHA
+/// for the PDF, and the same with `.synctex` after it for the SyncTeX file.
+/// One function, because the name keys what is held in memory as well as what
+/// is built into a storage key, and those two must never drift.
+pub fn rendering_name(sha: &str, synctex: bool) -> String {
+    if synctex {
+        format!("{sha}.synctex")
+    } else {
+        sha.to_string()
+    }
 }
 
 /// Base64, which is how a binary update travels on a JSON socket.

@@ -581,6 +581,9 @@
     // The bar over the document says what it is showing by name, so a rename
     // of the checkpoint on the screen has to reach it too.
     if (viewing?.sha === sha) viewing = { ...viewing, label: given };
+    // Naming a checkpoint is the editor saying "this one", so a rendering
+    // waiting for the text to stay quiet is stored now rather than later.
+    if (given) storeHeldRendering();
   }
 
   // The link to a moment: the document's own link with the checkpoint on it.
@@ -764,9 +767,21 @@
   // back to it once one has been chosen.
   let cardOpen = $state(false);
   const showsCard = $derived(
-    sourceFormat === "latex" && editing && mayEdit && (!latexReady || cardOpen),
+    sourceFormat === "latex" &&
+      editing &&
+      mayEdit &&
+      renderers.available("latex") &&
+      (!latexReady || cardOpen),
   );
   const unrendered = $derived(sourceFormat === "latex" && !mayEdit && !everPaintedShown);
+
+  // Whether this browser is the one producing the pages. An editor with a
+  // distribution loaded compiles here and stores the result on the server;
+  // everybody else -- a reader, an editor who has not loaded one, anyone on a
+  // deployment with no mirror -- is shown what the server kept.
+  const compilesHere = $derived(
+    sourceFormat === "latex" && editing && mayEdit && latexReady && renderers.available("latex"),
+  );
 
   // A distribution is loaded: the card goes, and the document is compiled at
   // once rather than on the next keystroke. This is the only place a compile
@@ -807,7 +822,143 @@
     frameSrc = `${docsOrigin}/${framePath}/${SLUG}/?v=${++framedGeneration}`;
   }
 
+  // What a LaTeX document's frame is showing: the checkpoint the stored
+  // rendering was compiled from, when that checkpoint was taken, and whether
+  // it is the text as it stands. Null until the server has been asked.
+  let rendering = $state(null);
+  // The SHA whose bytes are in the frame, so a poll that finds the same
+  // rendering costs one small request rather than a PDF.
+  let renderedSha = null;
+
+  // The line under the badge for a LaTeX document, and the whole of what makes
+  // storing a derived thing honest. A rendering is named by the digest of the
+  // source it was compiled from, so there are exactly three things to say: it
+  // is the text as it stands, it is older than the text and here is when, or
+  // nobody has rendered this yet.
+  const renderedNote = $derived(
+    sourceFormat !== "latex" || compilesHere
+      ? ""
+      : !rendering
+        ? "not yet rendered"
+        : rendering.missing
+          ? "this version was never rendered"
+          : rendering.current
+            ? ""
+            : `rendered from an earlier version, ${(rendering.at || "").slice(0, 10)}`,
+  );
+
+  // The PDF an editor's browser compiled, drawn for everybody else.
+  //
+  // A reader is never asked to fetch a TeX distribution to read a paper, so
+  // what they are shown is what the server kept: the newest checkpoint that
+  // has a rendering. `latest` says which one that is in a few bytes; the
+  // rendering itself is named by a digest and cached for a year, so it is
+  // fetched once however often this is called.
+  async function paintRendering() {
+    const headers = { ...SHELL_HEADERS, ...keyHeaders(KEY) };
+    let found;
+    if (viewing) {
+      // A checkpoint picked out of the timeline is shown from its own
+      // rendering, if one was stored. The toolbar already says which version
+      // this is, so the rendering is "current" in the only sense the note
+      // cares about.
+      found = { sha: viewing.sha, at: viewing.at, current: true };
+    } else {
+      found = await fetch(`/api/documents/${SLUG}/renderings/latest`, { headers })
+        .then((response) => (response.ok ? response.json() : null))
+        .catch(() => null);
+      if (!found) return;
+    }
+    rendering = found.sha ? found : null;
+    // Nothing this browser does produces a rendering, so the only way a newer
+    // one turns up is that somebody else compiled. Asked again, slowly, until
+    // what is shown is the text as it stands.
+    clearTimeout(previewTimer);
+    if (!viewing && (!rendering || !rendering.current)) {
+      previewTimer = setTimeout(paintPreview, RENDERING_POLL);
+    }
+    if (!rendering || rendering.sha === renderedSha) return;
+    const bytes = await fetch(`/api/documents/${SLUG}/renderings/${rendering.sha}`, { headers })
+      .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .catch(() => null);
+    // A rendering the manifest names and the store has lost is nothing to
+    // paint over what is already on the screen with; a version nobody
+    // rendered is said in the note instead.
+    if (!bytes) {
+      if (viewing) rendering = { ...rendering, missing: true };
+      return;
+    }
+    renderedSha = rendering.sha;
+    tell({ type: "preview", pdf: bytes }, [bytes]);
+    everPainted = true;
+    everPaintedShown = true;
+  }
+
+  // What a rendering compiled now is named. A checkpoint picked out of the
+  // timeline is its own SHA; the live text's is the digest it would take as
+  // one, which the server says beside `latest` so that it is named the same
+  // way on both sides.
+  async function renderingNameNow() {
+    if (viewing) return viewing.sha;
+    const headers = { ...SHELL_HEADERS, ...keyHeaders(KEY) };
+    const found = await fetch(`/api/documents/${SLUG}/renderings/latest`, { headers })
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null);
+    return found?.live || null;
+  }
+
+  // The PDF this browser compiled, kept by the server so that a reader never
+  // has to compile one. Stored under the name of the text it was compiled
+  // from: a name the text has moved past is refused, correctly, and the next
+  // compile stores its own. The SyncTeX file goes beside it when the engine
+  // produced one.
+  // A rendering is not stored after every compile. It is stored when the text
+  // it compiled has stayed quiet for a minute afterwards -- the same idea as
+  // the quiet the server takes a checkpoint after, observed from here -- and
+  // at once when the editor names a checkpoint, which is them saying "this
+  // one". An edit in between drops it: the next compile holds its own.
+  const RENDERING_QUIET = 60_000;
+  let heldRendering = null;
+  let renderingTimer;
+
+  function holdRendering(name, bytes, synctex) {
+    clearTimeout(renderingTimer);
+    heldRendering = { name, bytes, synctex };
+    renderingTimer = setTimeout(storeHeldRendering, RENDERING_QUIET);
+  }
+
+  function dropHeldRendering() {
+    clearTimeout(renderingTimer);
+    heldRendering = null;
+  }
+
+  function storeHeldRendering() {
+    clearTimeout(renderingTimer);
+    const held = heldRendering;
+    heldRendering = null;
+    if (held) storeRendering(held.name, held.bytes, held.synctex);
+  }
+
+  async function storeRendering(name, bytes, synctex) {
+    const headers = { ...SHELL_HEADERS, ...keyHeaders(KEY) };
+    const put = (suffix, body) =>
+      fetch(`/api/documents/${SLUG}/renderings/${name}${suffix}`, { method: "PUT", headers, body })
+        .then((response) => response.ok)
+        .catch(() => false);
+    if (!(await put("", bytes))) return;
+    rendering = { sha: name, at: new Date().toISOString(), current: !viewing };
+    renderedSha = name;
+    if (synctex) await put(".synctex", synctex);
+  }
+
   async function paintPreview() {
+    // A LaTeX document is compiled in an editor's browser and nowhere else,
+    // so everybody else is shown the PDF the server kept from the last one
+    // who did. See `docs/specs/latex.md`.
+    if (sourceFormat === "latex" && !compilesHere) {
+      await paintRendering();
+      return;
+    }
     if (!paintsTheFrame) {
       refreshFramedPage();
       return;
@@ -832,6 +983,11 @@
       // difference between this and a pane that blanks for four seconds.
       const slow = renderers.formatOf(tree.main) === "latex";
       if (slow) compiling = true;
+      // What a rendering compiled now will be stored as. Asked before the
+      // compile rather than after, because a compile takes seconds and the
+      // text may move meanwhile: what comes out is of the text as it was, and
+      // a name the text has moved past is refused by the server.
+      const renderingName = slow ? await renderingNameNow() : null;
       let rendered;
       try {
         rendered = await renderers.render(tree, await headingOf(tree));
@@ -840,7 +996,7 @@
         // afterwards must not turn the spinner off under a newer one.
         if (slow && mine > painted) compiling = false;
       }
-      const { html, pdf, diagnostics: said, seconds } = rendered;
+      const { html, pdf, synctex, diagnostics: said, seconds } = rendered;
       // A slower render that resolves late must not paint over a newer one.
       if (mine <= painted) return;
       painted = mine;
@@ -850,6 +1006,9 @@
       // and this page has no further use for it once the frame has it.
       if (pdf) {
         const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
+        // Held for the readers, from a copy: the hand-over to the frame below
+        // empties this page's own.
+        if (renderingName) holdRendering(renderingName, buffer.slice(0), synctex);
         tell({ type: "preview", pdf: buffer }, [buffer]);
         everPainted = true;
         everPaintedShown = true;
@@ -894,10 +1053,29 @@
   // else type and should never be shown a word half written.
   const READER_DEBOUNCE = 1000;
 
+  // How long a LaTeX document this browser does not compile waits before
+  // asking the server whether a newer rendering has turned up. Long, because
+  // nothing this browser does produces one: the text moving means the
+  // rendering on the screen is now of an earlier version, which is answered
+  // here without a request, and a newer rendering can only come from
+  // somebody else's compile.
+  const RENDERING_POLL = 30_000;
+
   function sourceChanged() {
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
     clearTimeout(previewTimer);
+    if (sourceFormat === "latex" && !compilesHere) {
+      // The text has moved, so what is in the frame is a rendering of an
+      // earlier version. That is known here rather than asked: the rendering
+      // is named by the digest of the source it was compiled from.
+      if (rendering?.current) rendering = { ...rendering, current: false };
+      previewTimer = setTimeout(paintPreview, RENDERING_POLL);
+      return;
+    }
+    // A rendering waiting for the text to stay quiet is of a text that did
+    // not.
+    if (sourceFormat === "latex") dropHeldRendering();
     // A LaTeX compile takes seconds, so it waits for the source to be quiet
     // for longer -- `latex.DEBOUNCE`, which is that module's number and not
     // one written twice. A reader watching somebody else type waits longer
@@ -1299,14 +1477,18 @@
     sourceFormat = format;
     // A document is shown here only if this deployment can render what it was
     // written in. Markdown and HTML always; typst when its renderer was built.
+    //
+    // LaTeX is the exception, and the only one. Its compiler is a property of
+    // the deployment rather than of the build -- behind `--latex`, not in the
+    // binary -- and it runs in an editor's browser, whose result the server
+    // keeps. So a reader is shown a stored PDF whether or not this deployment
+    // has a mirror, and the only thing the deployment has to be able to do
+    // for LaTeX is store that PDF, which it always can. Whether it has a
+    // mirror decides only whether an editor is offered a compiler.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
-    // LaTeX is the one renderer that is a property of the deployment rather
-    // than of the build: the compiler is behind `--latex`, not in the binary,
-    // and a deployment with no mirror has nowhere to send this browser for
-    // one. Told before the question below is asked.
     renderers.offerLatex(list.includes("latex"));
     latexReady = format === "latex" && Boolean(latex.chosen());
-    if (!list.includes(format) || !renderers.available(format)) {
+    if (format !== "latex" && (!list.includes(format) || !renderers.available(format))) {
       say(`${format} documents are read where their renderer is built`, true);
       return;
     }
@@ -1356,10 +1538,10 @@
         document.title = `${found.title} · Komodoc`;
         docsOrigin = found.docs_origin || location.origin;
         // The frame is an empty page with the agent in it, on the documents
-        // origin. What goes into it is what this browser renders.
-        // Set after `prepare`, which is what settles the format and so which
-        // frame this document wants: a LaTeX document is a PDF and gets the
-        // viewer, everything else gets the empty shell.
+        // origin. What goes into it is what this browser renders -- or, for a
+        // LaTeX document, a PDF an editor's browser compiled, which needs a
+        // frame that can draw one. Set after `prepare`, which is what settles
+        // the format and so which frame this document wants.
         prepare(found);
         frameSrc = `${docsOrigin}/${framePath}/${SLUG}/`;
       })
@@ -1519,6 +1701,17 @@
           Back to now
         </button>
         <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
+      {/if}
+      <!-- What the frame is showing, for a LaTeX document this browser does
+           not compile, when it is not simply the text as it stands. Said to
+           readers as well as to editors, because a reader is the person who
+           most needs to know that the pages in front of them are of an
+           earlier version -- and because "not yet rendered" is the honest
+           answer for a document no browser has compiled. Empty, and so
+           absent, when the rendering is current; a browser that compiles has
+           the compile badge instead. -->
+      {#if renderedNote}
+        <small class="badge preset-tonal-surface whitespace-nowrap">{renderedNote}</small>
       {/if}
       {#if editing}
         <!-- There is no save. What the toolbar says instead is whether this

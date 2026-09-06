@@ -1,22 +1,25 @@
 # SPEC: LaTeX, compiled in the browser, from a distribution the reader chooses
 
-Status: the compiler, the mirror and the viewer are built and are no longer
-described here. `latex/` builds and serves the mirror, `web/src/lib/latex.js`
-and `web/src/lib/latex/` drive four distributions from a worker and read
-their logs, `web/src/entries/viewer.js` and `web/src/lib/pdf/` draw a PDF with
-comments anchored into its text layer, and `crates/komodoc/src/latex.rs` is
-`--latex`. What remains is the reader's side of step 3 -- the card and the
-compiling state, which is what puts a compile in front of an author -- then
-renderings, SyncTeX and the optional local command. It is written against the
-editor `docs/specs/history.md` describes, where readers render the text
-themselves, and it makes one exception to that spec's "nothing derived is
-stored", stated and bounded below.
+Status: the compiler, the mirror, the viewer, the card and stored renderings
+are built and are no longer described here. `latex/` builds and serves the
+mirror, `web/src/lib/latex.js` and `web/src/lib/latex/` drive four
+distributions from a worker and read their logs, `web/src/entries/viewer.js`
+and `web/src/lib/pdf/` draw a PDF with comments anchored into its text layer,
+`crates/komodoc/src/latex.rs` is `--latex`, `web/src/components/LatexCard.svelte`
+is the card, and the renderings routes in `crates/komodoc/src/server.rs` with
+their storage and pruning in `crates/komodoc/src/room.rs` are step 5, with
+`crates/komodoc/src/tests/renderings.rs`. The reader stores a rendering after
+the quiet minute or on naming a checkpoint, and shows everyone else the newest
+one there is. What remains is SyncTeX and the optional local command. It is
+written against the editor `docs/specs/history.md` describes, where readers
+render the text themselves, and it makes one exception to that spec's
+"nothing derived is stored", stated and bounded below.
 
 ## What the remaining work builds on
 
 | where | what |
 | --- | --- |
-| `latex/distributions.mjs`, `latex/mirror.mjs`, `latex/serve.mjs` | the four distributions Komodoc drives, as data; the mirror, with digested file names and a `manifest.json` carrying each distribution's engines, licence, measured bytes and `shown` flag |
+| `latex/tools/distributions.mjs`, `latex/tools/mirror.mjs`, `latex/tools/serve.mjs` | the four distributions Komodoc drives, as data; the mirror, with digested file names and a `manifest.json` carrying each distribution's engines, licence, measured bytes and `shown` flag |
 | `komodoc serve --latex <url-or-dir>` | where the mirror is. Defaults to the project's bucket, refuses plain `http:` at startup, and is served to browsers from `/latex/` on the deployment's own origin, so the list of packages a document asks for goes no further than the deployment that has the source. `/api/config` says `latex: true` when a mirror is configured |
 | `web/src/lib/latex.js` | `at(url)`, `available()`, `chosen()`, `choose(name)`, `compile(tree)` returning `{pdf, synctex, log, diagnostics}`. Cache Storage under the mirror's URL, persistence asked for once; at most one compile running and one queued, the queued one always the latest |
 | `web/src/lib/latex/worker.js`, `swiftlatex.js`, `busytex.js`, `texlyre.js`, `log.js` | the worker, the glue, one file per distribution, and the log parser, which emits `crates/engine/src/diagnostic.rs`'s shape and treats a line it does not recognise as nothing |
@@ -220,14 +223,14 @@ the compiler already produces.
 
 ## Steps
 
-3. **The card and the compiling state.** The preview pane's three states in
+3. **The card and the compiling state.** Built. The preview pane's three states in
    the reader, drawn from `available()` and `chosen()`; the debounce, the
    badge, the last-page-stays rule; the `preview` message with the bytes to
    the viewer. The reader opens a `.tex` document in the editor with the
    card in the pane when `/api/config` says `latex: true`, and offers the
    source otherwise. `latex.js`'s `DEFAULT_BASE` of `/latex/` is what a
    deployment serves, so nothing points the module anywhere else.
-5. **Renderings.** The `PUT`, the acceptance rules, the quota, the pruning,
+5. **Renderings.** Built. The `PUT`, the acceptance rules, the quota, the pruning,
    the "rendered from an earlier version" line. A reader who never chose a
    distribution reads a rendering and comments on it.
 6. **SyncTeX.** Both directions, on a distribution that returns one.

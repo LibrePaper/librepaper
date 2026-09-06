@@ -15,10 +15,10 @@ export function defaultRules() {
   return {
     // The sum of every text in a document and of every key naming one. A paper
     // split into thirty files is allowed exactly what a paper in one file is
-    // allowed, which is why this bounds the sum rather than each text. The
-    // name is `max_html` because that is what it was when a document was one
-    // text, and it is what the shell still reads.
-    max_html: 4 * 1024 * 1024,
+    // allowed, which is why this bounds the sum rather than each text. It
+    // bounds a rendering too, now that a document may store one, so it is
+    // named for the document rather than for the HTML it once was.
+    max_document: 4 * 1024 * 1024,
     // How many files one document may hold, across its texts and its assets.
     // A paper has a dozen; a directory of two hundred is somebody using a
     // document as a filesystem.
@@ -126,10 +126,10 @@ export function storableSource(rules, format) {
 
 /// Overrides the document size ceiling, in megabytes. Zero leaves the default
 /// alone. Returns an error message, or "" when it took.
-export function setMaxHtml(rules, megabytes) {
+export function setMaxDocument(rules, megabytes) {
   if (!megabytes) return ''
   if (megabytes < 1 || megabytes > 100) return '--max-size must be between 1 and 100 MB'
-  rules.max_html = megabytes * 1024 * 1024
+  rules.max_document = megabytes * 1024 * 1024
   return ''
 }
 
