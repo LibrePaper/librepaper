@@ -538,12 +538,14 @@ komodoc label c9k 4f2a91c "sent to the journal"
 komodoc label c9k 4f2a91c            # and to take the name off again
 ```
 
-In the reader, the history button opens the same list beside the document, in
-reading and in editing alike. Picking a moment shows the document as it was at
-that moment, with a bar saying which one; "Back to now" leaves, and the copy
-button beside it gives a link that puts somebody else exactly where you are.
-A name can be given to any row from there too. Nothing on that screen changes
-the document: viewing the past is reading.
+In the reader, the history button opens the same list beside the document.
+Picking a moment shows the document as it was at that moment, with a bar
+saying which one; "Back to now" leaves, and the copy button beside it gives a
+link that puts another editor exactly where you are. A name can be given to
+any row from there too. Nothing on that screen changes the document: viewing
+the past is reading. The button is an editor's, like the files and the
+settings beside it: somebody who opened a read or a comment link sees the
+document and its comments, and nothing about the source it was made from.
 
 ### Export
 

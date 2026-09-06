@@ -879,11 +879,6 @@
     editor?.setDiagnostics?.(list);
   }
 
-  // General compiler warnings need no source location to be readable.
-  function goToDiagnostic() {
-    void showPanel("diagnostics");
-  }
-
   function diagnosticFile(item) {
     if (!(item.line > 0)) return null;
     const id = item.file ? session?.idOf(item.file) : session?.mainId();
@@ -1494,19 +1489,38 @@
 
   // The column at the left, and what is in it: the files, the comments or the
   // history, or "" for closed. One value rather than a switch per panel,
-  // because the column shows one thing at a time. A first visit opens on the
-  // files -- the shape of the project is what a project space starts with --
-  // and every visit after that opens where the reader left it.
+  // because the column shows one thing at a time. An editor's first visit
+  // opens on the files -- the shape of the project is what a project space
+  // starts with -- and every visit after that opens where they left it.
+  //
+  // Somebody who came by a read or a comment link is shown the document and
+  // its comments and nothing else: no files, no history, no settings. The
+  // source is the editor's, and so is everything that is about the source
+  // rather than the page. Their column opens on the comments, and closes.
   const TABS = [
-    { id: "files", says: "Files" },
+    { id: "files", says: "Files", editorOnly: true },
     { id: "comments", says: "Comments" },
-    { id: "history", says: "History" },
+    { id: "history", says: "History", editorOnly: true },
     { id: "diagnostics", says: "Diagnostics", editOnly: true },
     { id: "share", says: "Share", sharingOnly: true },
-    { id: "settings", says: "Settings" },
+    { id: "settings", says: "Settings", editorOnly: true },
   ];
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
   let panel = $state(PANELS.includes(read(PANEL, null)) ? read(PANEL, null) : "files");
+  // The tabs this browser is offered. `editorOnly` waits on the role the
+  // document answers with; `editOnly` on the source pane being open.
+  const tabs = $derived(
+    TABS.filter(
+      (tab) =>
+        (!tab.editorOnly || mayEdit) && (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing),
+    ),
+  );
+  // Where the column goes back to when what it showed is taken away: the
+  // files for an editor, the comments for everybody else.
+  const home = $derived(mayEdit ? "files" : "comments");
+  // Whether the document has said who this browser is. Until it has, the
+  // column is drawn empty rather than as one audience's and then the other's.
+  let settled = $state(false);
 
   // Showing a panel; "" closes the column. Leaving the timeline is leaving it:
   // what the document pane shows goes back to the text as it stands, because
@@ -1688,9 +1702,9 @@
     if (openFile && !files.some((file) => file.id === openFile)) openFile = "";
     if (!openFile) openFile = session.mainId();
     // The file the link named, if the project has one by that name. An
-    // editor's source pane opens on it; a reader has no pane to open it in,
-    // and the list simply marks it.
-    if (ARRIVED_FILE && !arrivedFileOpened && files.length) {
+    // editor's source pane opens on it; a reader has no pane to open it in
+    // and no list to mark it in, so for them the link is to the document.
+    if (ARRIVED_FILE && mayEdit && !arrivedFileOpened && files.length) {
       arrivedFileOpened = true;
       const named = files.find((file) => file.path === ARRIVED_FILE);
       if (named) openTheFile(named);
@@ -1937,11 +1951,15 @@
     latexReady = false;
     if (format !== "latex" && (!list.includes(format) || !renderers.available(format))) {
       say(`${format} documents are read where their renderer is built`, true);
+      settled = true;
       return;
     }
     mayEdit = Boolean(allowed);
-    if (!mayEdit && panel === "diagnostics") showPanel("files", false);
-    if (!canSeeSharing && panel === "share") showPanel("files", false);
+    // A panel remembered from an editor's visit is not one a link-holder is
+    // offered. Coerced without being remembered: the preference is this
+    // browser's, and an editor coming back to their own document keeps it.
+    if (panel && !tabs.some((tab) => tab.id === panel)) showPanel(home, false);
+    settled = true;
     renderers.warm(format);
     // localStorage remembers a preference, not a running worker. Restore the
     // worker before claiming that LaTeX is ready; if the distribution was
@@ -1966,8 +1984,9 @@
     if (mayEdit) startEditing();
     // Somebody sent a link to a moment rather than to the document. Opening it
     // opens the panel too, so that what is on the screen is explained by
-    // something the reader can see and leave.
-    if (ARRIVED_AT) {
+    // something the reader can see and leave. The history is an editor's:
+    // anyone else who follows such a link is shown the document as it stands.
+    if (ARRIVED_AT && mayEdit) {
       showPanel("history", false).then(() => {
         // The history request may outlive the panel. Do not enter a
         // checkpoint after the reader has explicitly left history.
@@ -2115,10 +2134,6 @@
       {#if persistenceBadge}<small class="badge preset-tonal-warning" title={persistenceBadge}>{persistenceBadge}</small>{/if}
       {#if peers > 1}<small class="badge preset-tonal-secondary">{peers} editing</small>{/if}
       {#if compileBadge}<small class="badge preset-tonal-surface" title={compileBadge}><span class="spinner" aria-hidden="true"></span>{compileBadge}</small>{/if}
-      {#if diagnosticBadge}
-        <button type="button" onclick={goToDiagnostic} title="Show warnings and errors"
-          class="badge {errorCount ? 'preset-tonal-error' : 'preset-tonal-warning'}">{diagnosticBadge}</button>
-      {/if}
       {#if state}<small class="badge {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}" title={state}>{state}</small>{/if}
     {/if}
   {/snippet}
@@ -2203,16 +2218,34 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
     <aside class="sidebar" class:collapsed={!shown.comments} ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <div class="sidebar-activity" role="group" aria-label="Sidebar sections">
-        {#each TABS.filter((tab) => (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing)) as tab (tab.id)}
-          <IconButton
-            icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : tab.id === "settings" ? "sliders" : "triangle-alert"}
-            label={tab.says} pressed={panel === tab.id}
-            onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
+        {#each tabs as tab (tab.id)}
+          {#if tab.id === "diagnostics"}
+            <!-- The counts sit under the icon, in the colour of what they
+                 count, so the bar says at a glance whether the document
+                 compiles; the words go to the tooltip and the screen reader. -->
+            <div class="activity-diagnostics">
+              <IconButton icon="triangle-alert"
+                label={diagnosticBadge ? `${tab.says}: ${diagnosticBadge}` : tab.says}
+                pressed={panel === tab.id}
+                onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
+              {#if diagnostics.length}
+                <span class="activity-counts" aria-hidden="true">
+                  {#if errorCount}<span class="activity-count errors">{errorCount}</span>{/if}
+                  {#if warningCount}<span class="activity-count warnings">{warningCount}</span>{/if}
+                </span>
+              {/if}
+            </div>
+          {:else}
+            <IconButton
+              icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
+              label={tab.says} pressed={panel === tab.id}
+              onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
+          {/if}
         {/each}
       </div>
-      {#if shown.comments}
+      {#if shown.comments && settled}
       <div class="sidebar-content">
-      {#if panel === "files"}
+      {#if panel === "files" && mayEdit}
         <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
                {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
                onmkdir={(path) => session.addFolder(path, rules)} onrelocate={relocateFiles}
@@ -2221,7 +2254,7 @@
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
       {:else if panel === "share" && canSeeSharing}
         <Share open inline slug={SLUG} onclose={() => showPanel("")} />
-      {:else if panel === "settings"}
+      {:else if panel === "settings" && mayEdit}
         <Settings {keys} {linked} {sourceSide} ratio={sizes[PANES.editor.key]}
                   {sourceFormat} canChooseTex={editing && mayEdit && renderers.available("latex")}
                   onkeys={setKeys} onlinked={setLinked} onside={putSourceOn}
@@ -2230,7 +2263,7 @@
       {:else if panel === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic} />
-      {:else if panel === "history"}
+      {:else if panel === "history" && mayEdit}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
                  problem={historyProblem}
                  onshow={showCheckpoint} onback={backToNow} onname={nameCheckpoint} />
@@ -2326,9 +2359,6 @@
           This is a LaTeX document, and no editor has compiled it in a browser
           yet. When one does, its pages appear here.
         </p>
-        <button type="button" class="btn preset-tonal-surface" onclick={downloadTree}>
-          Download the source
-        </button>
       </div>
     </section>
   {/if}
@@ -2463,6 +2493,22 @@
     width: var(--komodoc-activity);
     padding-block: calc(var(--spacing) * 3);
   }
+  .activity-diagnostics {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .activity-counts {
+    display: flex;
+    gap: 4px;
+    font-size: 0.625rem;
+    line-height: 1;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .activity-count.errors { color: var(--color-error-500); }
+  .activity-count.warnings { color: var(--color-warning-500); }
   .sidebar-content {
     display: flex;
     flex-direction: column;

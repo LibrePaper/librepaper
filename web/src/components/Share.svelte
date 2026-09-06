@@ -97,8 +97,7 @@
     {#if loading}
       <p class="panel-muted" role="status">Loading sharing settings…</p>
     {:else if sharing}
-      <div class="share-links space-y-6" aria-labelledby="links-heading">
-        <h3 id="links-heading" class="panel-section-title">Share links</h3>
+      <div class="share-links space-y-6" aria-label="Share links">
         {#each ROLES as role (role.id)}
           {@const link = sharing.links?.[role.id] || null}
           {@const description = role.id === "reader" ? "Anyone with this link can read the document." : role.id === "commenter" ? "Anyone with this link can read and comment." : "Anyone with this link can read, comment and edit."}
