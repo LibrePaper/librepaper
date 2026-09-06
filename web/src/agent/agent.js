@@ -321,16 +321,44 @@
 
   const images = () => [...document.images].filter((img) => img.width > 40 && img.height > 40);
 
-  async function digestOf(image) {
-    if (digests.has(image)) return digests.get(image);
+  // Markdown figures use a blob URL, which is intentionally recreated on each
+  // page session. The renderer can carry the immutable store digest either as
+  // metadata or in the blob URL fragment; prefer that stable identity and only
+  // hash the URL for documents that provide no asset identity.
+  function stableImageDigest(image) {
+    const metadata =
+      image.dataset.komodocImageDigest ||
+      image.dataset.komodocDigest ||
+      image.getAttribute("data-komodoc-image-digest") ||
+      image.getAttribute("data-komodoc-digest");
+    if (metadata) return metadata.slice(0, 16);
     const source = image.currentSrc || image.src || "";
+    try {
+      const marker = new URL(source, document.baseURI).hash.match(/(?:^#|[?&])komodoc-asset=([^&#]+)/);
+      if (marker) return decodeURIComponent(marker[1]).slice(0, 16);
+    } catch {
+      /* an invalid source is handled by the URL hash fallback below */
+    }
+    return null;
+  }
+
+  async function digestOf(image) {
+    const source = image.currentSrc || image.src || "";
+    const stable = stableImageDigest(image);
+    const identity = stable || source;
+    const cached = digests.get(image);
+    if (cached?.identity === identity) return cached.digest;
+    if (stable) {
+      digests.set(image, { identity, digest: stable });
+      return stable;
+    }
     const bytes = new TextEncoder().encode(source);
     const hash = await crypto.subtle.digest("SHA-256", bytes);
     const hex = [...new Uint8Array(hash)]
       .slice(0, 8)
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
-    digests.set(image, hex);
+    digests.set(image, { identity, digest: hex });
     return hex;
   }
 
@@ -368,7 +396,10 @@
 
     quietly(() => {
       for (const item of regions) {
-        const image = byDigest.get(item.digest) || found[item.index];
+        // A known identity that no longer exists must not silently fall back to
+        // a new image at the old position. Positional matching is reserved for
+        // legacy annotations that never had an identity in the first place.
+        const image = item.digest ? byDigest.get(item.digest) : found[item.index];
         if (!image) continue;
         const box = document.createElement("span");
         box.dataset.komodoc = item.id;
@@ -532,7 +563,7 @@
       if (lastRanges.length) highlight(shiftRanges(lastRanges));
       // Directly, not through the observer: the observer waits a quarter of a
       // second before republishing, and a preview should keep up with typing.
-      publish();
+      publish(true);
     }
 
     // Show the reader where a place in the text is. The offset is into the
@@ -602,10 +633,10 @@
   // it happen.
   let published = null;
 
-  function publish() {
+  function publish(force = false) {
     scan();
     const current = text();
-    if (current === published) return;
+    if (!force && current === published) return;
     published = current;
     // Where each figure sits in the text, so the sidebar can order a note on a
     // figure against the notes on passages instead of guessing. Computed by
@@ -616,7 +647,10 @@
   let pending = null;
   const republish = () => {
     clearTimeout(pending);
-    pending = setTimeout(publish, 250);
+    // A style, image source, or other DOM change can leave visible text equal
+    // while still destroying region overlays. The shell needs a fresh ready
+    // signal so it can repaint remembered annotations and figure positions.
+    pending = setTimeout(() => publish(true), 250);
   };
 
   function watch() {

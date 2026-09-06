@@ -86,7 +86,7 @@ export function zip(files) {
     offsets.push(out.at);
     out.u32(0x04034b50); // local file header
     out.u16(20); // the version that can read it: 2.0, which is stored entries
-    out.u16(0);
+    out.u16(1 << 11); // filenames are UTF-8
     out.u16(0); // stored, not deflated
     out.u16(time);
     out.u16(date);
@@ -104,7 +104,7 @@ export function zip(files) {
     out.u32(0x02014b50); // central directory record
     out.u16(20); // made by
     out.u16(20); // needed to extract
-    out.u16(0);
+    out.u16(1 << 11); // filenames are UTF-8
     out.u16(0);
     out.u16(time);
     out.u16(date);

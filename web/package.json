@@ -5,7 +5,8 @@
   "scripts": {
     "build": "node checks/vocabulary.js && vite build && vite build --config vite.agent.config.js",
     "dev": "vite build --watch",
-    "check": "node checks/vocabulary.js && node checks/diagnostics.mjs && node checks/sync.js && node checks/timeline.mjs && node checks/passages.mjs && node checks/latex-log.mjs && node checks/latex.mjs && node checks/viewer.mjs"
+    "check": "node checks/vocabulary.js && node checks/diagnostics.mjs && node checks/sync.js && node checks/timeline.mjs && node checks/passages.mjs && node checks/latex-log.mjs && node checks/latex.mjs && node checks/viewer.mjs && node checks/review-fixes.mjs && node checks/submissions.mjs && node checks/latex-worker.mjs && node checks/tree-digest.mjs && node checks/reader-races.mjs",
+    "check:browser": "node checks/editor-browser.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

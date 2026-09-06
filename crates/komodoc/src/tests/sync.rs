@@ -79,6 +79,10 @@ async fn a_yrs_peer_writes_the_document_the_server_holds() {
     socket.write(json!({"type": "y-open", "vector": ""})).await;
     let state = socket.read().await;
     assert_eq!(state["type"], "y-state");
+    assert!(
+        !text(&state, "vector").is_empty(),
+        "the server supplies its upload state vector"
+    );
 
     // Applied into a Yrs document of this client's own -- nothing here is a
     // browser, which is the point: the encoding the two sides share is
@@ -514,4 +518,55 @@ async fn a_checkpoint_from_the_room_is_reported() {
         None,
         "a checkpoint ended the session"
     );
+}
+
+#[tokio::test]
+async fn browser_multipart_update_exceeding_one_megabyte_reaches_the_room() {
+    let server = new_test_server().await;
+    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let room = server.instance.rooms.get(&slug).await;
+    let mut socket = dial_websocket_with(
+        &server.url,
+        &slug,
+        &format!("Cookie: {}\r\n", session_as(TEST_PUBLISHER)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(socket.read().await["type"], "hello");
+    let (state, _) = room.open_state(None).await;
+    let mine = crate::session::new_doc();
+    crate::session::apply_update(&mine, &state).unwrap();
+    let source = "x".repeat(800_000);
+    crate::session::apply_edits(
+        &mine,
+        &komodoc_text::diff(&crate::session::text_of(&mine), &source),
+    );
+    let update = crate::session::encode_state(&mine);
+    assert!(crate::room::encode_update(&update).len() > 1 << 20);
+    let chunks: Vec<_> = update.chunks(256 * 1024).collect();
+    socket
+        .write(
+            json!({"type":"y-update-start", "seq":1, "size":update.len(), "chunks":chunks.len()}),
+        )
+        .await;
+    for (index, chunk) in chunks.iter().enumerate() {
+        socket.write(json!({"type":"y-update-chunk", "seq":1, "index":index, "update":crate::room::encode_update(chunk)})).await;
+    }
+    assert_ne!(
+        room.source().await,
+        source,
+        "partial updates must never apply"
+    );
+    socket.write(json!({"type":"y-update-end", "seq":1})).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while room.source().await != source {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("large browser state reaches the room");
+    room.persist().await.expect("large update is persisted");
+    let acknowledged = socket.read().await;
+    assert_eq!(acknowledged["type"], "y-ack");
+    assert_eq!(acknowledged["seq"], 1);
 }

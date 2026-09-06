@@ -115,7 +115,10 @@
       refusal = said;
       return;
     }
-    if (renaming) onrename?.(renaming, path);
+    if (renaming) {
+      const original = files.find((file) => file.id === renaming);
+      onrename?.(renaming, path, original?.kind);
+    }
     else onadd?.(path);
     cancel();
   }

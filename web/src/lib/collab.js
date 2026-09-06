@@ -30,6 +30,13 @@ import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate } from "y-protoc
 import { SHELL_HEADERS, keyHeaders } from "./api.js";
 import { keyFor } from "./storage.js";
 
+// Keep each JSON WebSocket frame comfortably below the server's one-megabyte
+// receive limit. Base64 expands the binary update by a third, and the JSON
+// envelope adds a little more, so the chunk is deliberately smaller than the
+// apparent limit. The server reassembles these chunks before applying them as
+// one Yjs update.
+const UPDATE_CHUNK_BYTES = 600_000;
+
 // Updates are binary and the room's socket carries JSON, so they travel
 // base64-encoded. A keystroke is a few dozen bytes either way.
 const encode = (bytes) => {
@@ -59,7 +66,7 @@ function mintId() {
 ///
 /// `mayEdit` is false for a reader, who joins to receive the text and never to
 /// change it.
-export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
+export function join({ send, onPeers, onState, name, slug, key = "", mayEdit = true }) {
   const doc = new Y.Doc();
   // A document is a directory: `files` holds one Y.Text per file under an id
   // of its own, `paths` says what each of them is called, and `meta.main`
@@ -155,12 +162,31 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
   // it being sent straight back out. An update out of indexeddb is this
   // browser's own past work, and is sent on for the same reason a keystroke
   // is: the server may never have seen it.
+  function sendUpdate(update, mine) {
+    if (update.byteLength <= UPDATE_CHUNK_BYTES) {
+      send({ type: "y-update", update: encode(update), seq: mine });
+      return;
+    }
+    const chunks = Math.ceil(update.byteLength / UPDATE_CHUNK_BYTES);
+    send({ type: "y-update-start", seq: mine, size: update.byteLength, chunks });
+    for (let index = 0; index < chunks; index++) {
+      const from = index * UPDATE_CHUNK_BYTES;
+      send({
+        type: "y-update-chunk",
+        seq: mine,
+        index,
+        update: encode(update.subarray(from, Math.min(update.byteLength, from + UPDATE_CHUNK_BYTES))),
+      });
+    }
+    send({ type: "y-update-end", seq: mine });
+  }
+
   doc.on("update", (update, origin) => {
     if (origin === "remote" || !mayEdit) return;
     const mine = ++seq;
     unacknowledged.set(mine, update);
     report();
-    send({ type: "y-update", update: encode(update), seq: mine });
+    sendUpdate(update, mine);
   });
 
   awareness.on("update", ({ added, updated, removed }) => {
@@ -173,15 +199,18 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
   /// Everything this browser has, as one update. Sending it after a join is
   /// how the changes made while the socket was down reach the server: applying
   /// it is idempotent, so it costs nothing when there were none.
-  function catchUp() {
-    const whole = Y.encodeStateAsUpdate(doc);
+  function catchUp(vector) {
+    // A server can include the state vector used for its y-state response. In
+    // that case only this browser's missing structs are sent back; older
+    // servers omit it, so the bounded full-state path remains compatible.
+    const whole = vector ? Y.encodeStateAsUpdate(doc, decode(vector)) : Y.encodeStateAsUpdate(doc);
     const mine = ++seq;
     // One entry stands for every update it contains: the acknowledgment of
     // this send is the acknowledgment of all of them.
     unacknowledged.clear();
     unacknowledged.set(mine, whole);
     report();
-    send({ type: "y-update", update: encode(whole), seq: mine });
+    sendUpdate(whole, mine);
   }
 
   return {
@@ -249,14 +278,21 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
     /// only: their bytes are not in the shared document, and whoever renders
     /// fetches them.
     tree() {
-      const texts = {};
+      const texts = Object.create(null);
+      const entries = Object.create(null);
       for (const [file, text] of files.entries()) {
         const path = paths.get(file);
-        if (path && text instanceof Y.Text) texts[path] = text.toString();
+        if (path && text instanceof Y.Text) {
+          texts[path] = text.toString();
+          entries[path] = { kind: "text", id: file };
+        }
       }
-      const digests = {};
-      for (const [path, sha] of assets.entries()) digests[path] = sha;
-      return { main: this.mainPath(), texts, digests };
+      const digests = Object.create(null);
+      for (const [path, sha] of assets.entries()) {
+        digests[path] = sha;
+        entries[path] = { kind: "asset", sha };
+      }
+      return { main: this.mainPath(), texts, digests, files: entries };
     },
 
     /// The text at a path, for the caller that has a path and not an id --
@@ -285,8 +321,17 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
     /// Renames a file, which moves a string and leaves the words where they
     /// are. This is why the texts are keyed by an id: somebody typing into
     /// this file at this moment keeps what they typed.
-    renameFile(id, path) {
-      paths.set(id, path);
+    renameFile(id, path, kind) {
+      if (kind === "asset" || (kind === undefined && assets.has(id))) {
+        if (!assets.has(id)) return;
+        const sha = assets.get(id);
+        doc.transact(() => {
+          assets.delete(id);
+          assets.set(path, sha);
+        });
+        return;
+      }
+      if (kind === "text" || (kind === undefined && paths.has(id))) paths.set(id, path);
     },
 
     /// Removes a file, its name with it. The main file is never removed here;
@@ -315,7 +360,10 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
     /// Called whenever the directory changes -- a file added, renamed,
     /// removed, or made the main one -- so the list can be redrawn.
     onFiles(watcher) {
-      files.observe(watcher);
+      // A Y.Text is nested below the files map. A shallow observer sees a new
+      // file but not edits to an existing one, leaving readers of another file
+      // with a stale preview. Deep observation covers both cases.
+      files.observeDeep(watcher);
       paths.observe(watcher);
       assets.observe(watcher);
       meta.observe(watcher);
@@ -374,7 +422,7 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
         // refused, which is what the notebook examples were doing.
         const response = await fetch(state.ref, {
           credentials: "same-origin",
-          headers: { ...SHELL_HEADERS, ...keyHeaders(keyFor(slug)) },
+          headers: { ...SHELL_HEADERS, ...keyHeaders(key || keyFor(slug)) },
         });
         if (!response.ok) throw new Error("could not fetch the document");
         Y.applyUpdate(doc, new Uint8Array(await response.arrayBuffer()), "remote");
@@ -385,7 +433,7 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
       // Whatever this browser has that the server may not: its own unsent
       // work, and -- after a reference fetch -- anything that landed while it
       // was in flight.
-      if (mayEdit) catchUp();
+      if (mayEdit) catchUp(state.vector);
       else report();
     },
 

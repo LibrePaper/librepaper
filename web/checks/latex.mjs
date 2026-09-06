@@ -119,11 +119,25 @@ const BASE = `http://localhost:${PORT}`;
 // TeX Live on this machine, and written in. It is never on in a check; a test
 // that reaches the network is a test that fails on a train.
 const RECORD = argv.includes("--record") ? ["--record"] : [];
-const server = spawn("node", [join(REPO, "latex", "serve.mjs"), "--port", String(PORT), ...RECORD], {
+const server = spawn("node", [join(REPO, "latex", "tools", "serve.mjs"), "--port", String(PORT), ...RECORD], {
   stdio: ["ignore", "pipe", "pipe"],
 });
 const serverLog = [];
-server.stdout.on("data", (chunk) => serverLog.push(String(chunk)));
+let serverStarted = false;
+const serverReady = new Promise((resolve, reject) => {
+  server.once("error", reject);
+  server.once("exit", (code, signal) => {
+    if (!serverStarted) reject(new Error(`LaTeX test server exited before readiness (${code ?? signal})`));
+  });
+  server.stdout.on("data", (chunk) => {
+    const text = String(chunk);
+    serverLog.push(text);
+    if (!serverStarted && /latex: mirror on /.test(text)) {
+      serverStarted = true;
+      resolve();
+    }
+  });
+});
 server.stderr.on("data", (chunk) => serverLog.push(String(chunk)));
 
 /* ------------------------------------------------------------- the browser */
@@ -194,6 +208,9 @@ const reset = () => fetch(`${BASE}/__reset`);
 /* ------------------------------------------------------------------ the run */
 
 async function run() {
+  // Fail at the actual child startup problem instead of waiting for a browser
+  // request to time out when the fixture server script or its imports are bad.
+  await serverReady;
   for (const candidate of CHROME) {
     try {
       chrome = spawn(

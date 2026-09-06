@@ -28,6 +28,22 @@ use crate::history::{self, Checkpoint, Manifest};
 use crate::session;
 use crate::util::{clean, new_id};
 
+// Browser submissions carry a random UUID that remains stable across retries.
+// Keeping it as the record ID also lets a reconnect snapshot acknowledge a
+// write whose direct response was lost. Older clients may use arbitrary
+// temporary labels; those retain server-generated IDs.
+fn submission_id(value: &str) -> Option<&str> {
+    (value.len() == 36
+        && value.bytes().enumerate().all(|(at, byte)| {
+            if [8, 13, 18, 23].contains(&at) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        }))
+    .then_some(value)
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Reply {
     pub id: String,
@@ -231,6 +247,13 @@ pub struct Message {
     /// reconnect.
     #[serde(default)]
     pub seq: i64,
+    /// Framing for a bounded multipart browser update.
+    #[serde(default)]
+    pub size: usize,
+    #[serde(default)]
+    pub chunks: usize,
+    #[serde(default)]
+    pub index: usize,
     /// Why a checkpoint was asked for: `cli`, `sync`, `restore`, `label`. Only
     /// these four arrive from outside; the rest the server decides for itself.
     #[serde(default)]
@@ -1025,6 +1048,40 @@ impl Room {
         };
         const UNSAVED: &str = "could not save that comment; try again";
 
+        // Retry before counting or writing again. Identity comes from the
+        // server, so choosing another person's record ID cannot take it over.
+        let requested_id = submission_id(&incoming.temp_id);
+        if let Some(id) = requested_id {
+            if incoming.kind == "comment" || incoming.kind == "reply" {
+                for item in &state.comments {
+                    if item.id == id {
+                        if incoming.kind == "comment" && !author.is_empty() && item.author == author
+                        {
+                            return (
+                                json!({"type": "comment", "comment": item, "temp_id": id}),
+                                true,
+                            );
+                        }
+                        return fail("that submission ID is already in use");
+                    }
+                    if let Some(reply) = item.replies.iter().find(|reply| reply.id == id) {
+                        if incoming.kind == "reply"
+                            && item.id == incoming.comment_id
+                            && !author.is_empty()
+                            && reply.author == author
+                        {
+                            return (
+                                json!({"type": "reply", "comment_id": item.id,
+                                "reply": reply, "temp_id": id}),
+                                true,
+                            );
+                        }
+                        return fail("that submission ID is already in use");
+                    }
+                }
+            }
+        }
+
         // What the document says at this moment, by name. The socket takes a
         // checkpoint before a comment reaches here, so for a comment this is
         // the text the reviewer was looking at; for a resolve it is the text
@@ -1132,7 +1189,7 @@ impl Room {
                     return fail("this comment has reached its reply limit");
                 }
                 let added = Reply {
-                    id: new_id(),
+                    id: requested_id.map(str::to_owned).unwrap_or_else(new_id),
                     body,
                     creator,
                     created: timestamp(),
@@ -1167,7 +1224,7 @@ impl Room {
                 // the reader against whatever version of the document is on
                 // screen, so replacing a document needs no migration pass here.
                 let added = Comment {
-                    id: new_id(),
+                    id: requested_id.map(str::to_owned).unwrap_or_else(new_id),
                     seq: state.seq,
                     motivation,
                     exact,
@@ -1255,13 +1312,24 @@ impl Room {
     /// holds, or -- when the socket says what it already has -- only the rest.
     /// The second result is how many people are here.
     pub async fn open_state(&self, vector: Option<&[u8]>) -> (Vec<u8>, usize) {
+        let (update, count, _) = self.open_state_with_vector(vector).await;
+        (update, count)
+    }
+
+    /// The response and server vector describe the same locked snapshot.
+    /// Browsers use this vector to upload only state the server is missing.
+    pub async fn open_state_with_vector(&self, vector: Option<&[u8]>) -> (Vec<u8>, usize, Vec<u8>) {
         let state = self.state.lock().await;
         let update = match vector {
             Some(raw) => session::encode_diff(&state.session.doc, raw)
                 .unwrap_or_else(|_| session::encode_state(&state.session.doc)),
             None => session::encode_state(&state.session.doc),
         };
-        (update, state.sockets.len())
+        (
+            update,
+            state.sockets.len(),
+            session::encode_vector(&state.session.doc),
+        )
     }
 
     /// Applies one update from an editor. The document is the server's, so an

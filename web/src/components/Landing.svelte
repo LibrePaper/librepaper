@@ -251,21 +251,26 @@
       return;
     }
     busy = true;
-    const form = new FormData();
-    form.append("file", chosen, chosen.name);
-    form.append("title", title);
-    const response = await upload(form);
-    busy = false;
-    if (!response.ok) {
-      problem((await response.json().catch(() => ({}))).error || "upload failed");
-      return;
+    try {
+      const form = new FormData();
+      form.append("file", chosen, chosen.name);
+      form.append("title", title);
+      const response = await upload(form);
+      if (!response.ok) {
+        problem((await response.json().catch(() => ({}))).error || "upload failed");
+        return;
+      }
+      const doc = await response.json();
+      chosen = null;
+      title = "";
+      await showList();
+      shared = new URL(doc.url, location.origin).href;
+      sharing = true;
+    } catch (error) {
+      problem(error?.message || "upload failed");
+    } finally {
+      busy = false;
     }
-    const doc = await response.json();
-    chosen = null;
-    title = "";
-    await showList();
-    shared = new URL(doc.url, location.origin).href;
-    sharing = true;
   }
 
   $effect(() => {
