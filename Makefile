@@ -115,10 +115,16 @@ PORT       ?= 8081
 DATA       ?= komodoc-data
 PUBLISHERS ?= any
 COMMENTERS ?= anyone
+# Where LaTeX distributions come from: a mirror directory or an https bucket.
+# Empty means no `--latex`, so `.tex` documents are stored and shown but not
+# compiled. `deploy` below passes the bare flag, which is the project's own
+# mirror; `LATEX=` names another for either target.
+LATEX      ?=
+LATEX_FLAG ?= $(if $(LATEX),--latex $(LATEX))
 
-serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, PUBLISHERS=, COMMENTERS=)
+serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, PUBLISHERS=, COMMENTERS=, LATEX=)
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@$(BIN) serve --port $(PORT) --data $(DATA) --publishers $(PUBLISHERS) --commenters $(COMMENTERS)
+	@$(BIN) serve --port $(PORT) --data $(DATA) --publishers $(PUBLISHERS) --commenters $(COMMENTERS) $(LATEX_FLAG)
 
 # One example per source format Komodoc accepts. Only the HTML one is built:
 # Quarto renders it from the .qmd beside it. The .md and the .typ are rendered
@@ -147,9 +153,10 @@ kill:  ## Stop a server started with make serve
 .PHONY: deploy
 
 # No sign-in at all: publishing and commenting are both open, so this needs
-# no GitHub OAuth app and no `komodoc login`.
-deploy: seed  ## Seed the examples and serve them on this machine, no sign-in
-	@$(MAKE) serve PUBLISHERS=anyone COMMENTERS=anyone
+# no GitHub OAuth app and no `komodoc login`. LaTeX is on, from the project's
+# mirror unless LATEX= names another, so the seeded .tex example compiles.
+deploy: seed  ## Seed the examples and serve them on this machine, no sign-in, LaTeX on (LATEX=)
+	@$(MAKE) serve PUBLISHERS=anyone COMMENTERS=anyone LATEX_FLAG="--latex $(LATEX)"
 
 # --- the web app -----------------------------------------------------------
 #
