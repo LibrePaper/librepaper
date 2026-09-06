@@ -100,6 +100,17 @@ pub struct Comment {
     pub resolved: bool,
     #[serde(default)]
     pub resolved_at: Option<String>,
+    /// The checkpoint this comment was made on: what the reviewer was actually
+    /// looking at. Set by the server, never by the client, from the checkpoint
+    /// taken the moment the comment arrived -- so a passage can be looked up
+    /// in the text as it was rather than reconstructed from one that has moved
+    /// on. Empty on a comment from before the field existed, which is read as
+    /// the oldest checkpoint the manifest still has.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub revision: String,
+    /// The checkpoint current when it was resolved, beside `resolved_at`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resolved_in: String,
     #[serde(default)]
     pub replies: Vec<Reply>,
     /// Who actually posted this comment: "github:<login>" for a signed-in
@@ -977,6 +988,17 @@ impl Room {
         };
         const UNSAVED: &str = "could not save that comment; try again";
 
+        // What the document says at this moment, by name. The socket takes a
+        // checkpoint before a comment reaches here, so for a comment this is
+        // the text the reviewer was looking at; for a resolve it is the text
+        // the author was looking at when they called it done. Either way it is
+        // the server's to record and never the client's to send.
+        let current = state
+            .manifest
+            .latest()
+            .map(|point| point.sha.clone())
+            .unwrap_or_default();
+
         // Resolving and deleting cost a slot too, the same as posting: a
         // caller who could resolve or delete without limit could still make a
         // thread unusable, just by different means than flooding it with text.
@@ -992,15 +1014,24 @@ impl Room {
             else {
                 return fail("unknown comment");
             };
-            let (was_resolved, was_resolved_at) = (
+            let (was_resolved, was_resolved_at, was_resolved_in) = (
                 state.comments[index].resolved,
                 state.comments[index].resolved_at.clone(),
+                state.comments[index].resolved_in.clone(),
             );
             state.comments[index].resolved = incoming.resolved;
             state.comments[index].resolved_at = incoming.resolved.then(timestamp);
+            // Which text it was resolved against. Cleared when a comment is
+            // reopened, because it is no longer resolved in anything.
+            state.comments[index].resolved_in = if incoming.resolved {
+                current.clone()
+            } else {
+                String::new()
+            };
             if self.save(&mut state).await.is_err() {
                 state.comments[index].resolved = was_resolved;
                 state.comments[index].resolved_at = was_resolved_at;
+                state.comments[index].resolved_in = was_resolved_in;
                 return fail(UNSAVED);
             }
             let target = &state.comments[index];
@@ -1008,6 +1039,7 @@ impl Room {
                 json!({
                     "type": "resolve", "comment_id": target.id,
                     "resolved": target.resolved, "resolved_at": target.resolved_at,
+                    "resolved_in": target.resolved_in,
                 }),
                 true,
             );
@@ -1112,6 +1144,8 @@ impl Room {
                     created: timestamp(),
                     resolved: false,
                     resolved_at: None,
+                    revision: current,
+                    resolved_in: String::new(),
                     replies: Vec::new(),
                     author: author.to_string(),
                     via: via.to_string(),

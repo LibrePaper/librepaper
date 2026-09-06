@@ -8,6 +8,7 @@
   import * as collab from "../lib/collab.js";
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
+  import * as passages from "../lib/passages.js";
   import { openRoom } from "../lib/room.js";
   import {
     SHELL_HEADERS,
@@ -146,6 +147,7 @@
     anchorAll(docText, comments.filter((comment) => !comment.region), docView);
     comments = comments;
     applyHighlights();
+    tracePassages();
   }
 
   function fromFrame(message) {
@@ -581,6 +583,41 @@
     const link = new URL(linkFor(SLUG));
     link.searchParams.set("at", sha);
     return link.href;
+  }
+
+  /* -------------------------------------------- the passage, then and now */
+
+  // Where each orphaned comment's passage went, by comment id: the manifest
+  // entry at which it stopped being found. This is what replaces "Needs
+  // re-anchoring" on the card, which told the person who wrote the comment
+  // nothing they did not already know.
+  let went = $state({});
+  // The comments already looked into, so a repaint does not search again for
+  // an answer that has not changed.
+  const traced = new Set();
+
+  // A document with nothing orphaned costs nothing at all: no manifest, no
+  // renders. The first passage that has gone is what buys the manifest, and
+  // every comment after it is answered from the same list.
+  async function tracePassages() {
+    const lost = comments.filter(
+      (comment) => comment.orphaned && !comment.region && !traced.has(comment.id),
+    );
+    if (!lost.length || viewing) return;
+    for (const comment of lost) traced.add(comment.id);
+    if (!checkpoints.length) await loadHistory();
+    const list = checkpoints;
+    if (!list.length) return;
+    for (const comment of lost) {
+      try {
+        const point = await passages.wentAt(SLUG, comment, list, keyHeaders(KEY));
+        if (point) went = { ...went, [comment.id]: point };
+      } catch {
+        // A checkpoint that cannot be read or rendered is one this cannot say
+        // anything about, and the card falls back to saying the passage is
+        // not in the document -- which is still true and still useful.
+      }
+    }
   }
 
   // What the bar over the document calls what it is showing: the name somebody
@@ -1501,7 +1538,7 @@
                problem={historyProblem}
                onshow={showCheckpoint} onback={backToNow} onname={nameCheckpoint} />
     {:else}
-      <Sidebar {comments} {figureAt} {identity} {canModerate} {tool}
+      <Sidebar {comments} {figureAt} {identity} {canModerate} {tool} {went}
                hasFigures={figureAt.length > 0}
                ontool={chooseTool}
                onreveal={(comment) => tell({ type: "reveal", id: comment.id })}

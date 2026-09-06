@@ -7,6 +7,10 @@
     comment,
     identity = "",
     canModerate = false,
+    // The manifest entry at which this comment's passage stopped being found,
+    // when it has been looked up and there was an answer. Null otherwise, and
+    // null for every comment whose passage is still in the document.
+    went = null,
     ontoggleTag,
     onreveal,
     onresolve,
@@ -91,7 +95,12 @@
     <div class="flex flex-col gap-2">
       <Row gap={1} wrap>
         {#if comment.orphaned}
-          <span class="badge preset-tonal-warning">Needs re-anchoring</span>
+          <!-- "Needs re-anchoring" said what the machine could not do. This
+               says what happened to the words, which is what the person who
+               wrote the comment came back to find out. -->
+          <span class="badge preset-tonal-warning">
+            {went ? "Passage removed" : "Passage not in the document"}
+          </span>
         {/if}
         <!-- The motivation is the W3C annotation type. Commenting is the
              default, so only the others are worth showing. -->
@@ -124,6 +133,16 @@
         <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3 text-sm">
           “{comment.exact}”
         </blockquote>
+      {/if}
+
+      <!-- The quotation above is what the passage said when the comment was
+           made. This is what became of it: the moment it stopped being in the
+           document, by the name somebody gave that moment or by its digest.
+           What replaced it is the word-level diff, and is not built. -->
+      {#if went}
+        <p class="text-surface-600-400 text-sm">
+          Removed in {went.label || went.sha.slice(0, 7)}, {new Date(went.at).toLocaleDateString()}.
+        </p>
       {/if}
 
       {#if comment.body}<p class="text-sm">{comment.body}</p>{/if}

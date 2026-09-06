@@ -265,3 +265,166 @@ async fn naming_a_checkpoint_that_is_not_there_is_a_404() {
     .await;
     assert_eq!(status, 404);
 }
+
+/* ------------------------------------------- a comment knows its checkpoint */
+
+/// Every comment records the checkpoint it was made on, because the socket
+/// takes one before the comment reaches the room. What the reviewer was
+/// looking at is on record the moment they say something about it, rather than
+/// being reconstructed later from a document that has moved on.
+#[tokio::test]
+async fn a_comment_records_the_checkpoint_it_was_made_on() {
+    let server = new_test_server().await;
+    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let room = server.instance.rooms.get(&slug).await;
+    room.set_source("# My Paper\n\nA sentence worth remarking on.\n", "markdown")
+        .await;
+
+    let (status, answer) = post(
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+        json!({
+            "type": "comment", "exact": "worth remarking on",
+            "body": "Is it?", "creator": "Anne",
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{answer}");
+
+    let comments = room.snapshot().await;
+    assert_eq!(comments.len(), 1);
+    let revision = comments[0].revision.clone();
+    assert!(!revision.is_empty(), "the comment recorded no checkpoint");
+    // And it is a checkpoint of this document, which is the whole of what the
+    // field is worth: a digest nothing can be looked up in says nothing.
+    let known: Vec<String> = history_of("", &server.url, &slug)
+        .await
+        .iter()
+        .map(|point| text(point, "sha"))
+        .collect();
+    assert!(known.contains(&revision), "{revision} is not in {known:?}");
+    // The text at that checkpoint is the text the comment quotes.
+    let (_, at) = get_checkpoint("", &server.url, &slug, &revision).await;
+    let main = text(&at, "main");
+    assert!(
+        at["texts"][&main]
+            .as_str()
+            .unwrap_or_default()
+            .contains("worth remarking on"),
+        "the recorded checkpoint is not the one the passage was in"
+    );
+}
+
+/// Resolving records the checkpoint it was resolved against, and reopening
+/// takes it away: a comment that is not resolved is not resolved in anything.
+#[tokio::test]
+async fn resolving_records_the_checkpoint_it_was_settled_against() {
+    let server = new_test_server().await;
+    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let room = server.instance.rooms.get(&slug).await;
+    let cookie = session_as(TEST_PUBLISHER);
+
+    let (status, answer) = post(
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+        json!({"type": "comment", "exact": "My Paper", "body": "A note.", "creator": "Anne"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{answer}");
+    let id = room.snapshot().await[0].id.clone();
+
+    // The document moves on and is checkpointed, so what it is resolved
+    // against is demonstrably a later moment than what it was made on.
+    room.set_source("# My Paper\n\nRewritten since.\n", "markdown")
+        .await;
+    let later = room
+        .checkpoint("quiet", TEST_PUBLISHER)
+        .await
+        .expect("a checkpoint")
+        .expect("a sha");
+
+    let (status, answer) = post_as(
+        &cookie,
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+        json!({"type": "resolve", "comment_id": id, "resolved": true}),
+    )
+    .await;
+    assert_eq!(status, 200, "{answer}");
+    let settled = room.snapshot().await[0].clone();
+    assert_eq!(settled.resolved_in, later);
+    assert_ne!(settled.revision, settled.resolved_in, "nothing moved");
+
+    let (status, _) = post_as(
+        &cookie,
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+        json!({"type": "resolve", "comment_id": id, "resolved": false}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        room.snapshot().await[0].resolved_in,
+        "",
+        "a reopened comment is still resolved in something"
+    );
+}
+
+/// Both fields travel in the JSON-LD export, as extra properties -- which the
+/// Web Annotation model permits and which the export already relies on for
+/// `resolved`. An exported quotation with no version behind it is a quotation
+/// of nothing in particular.
+#[tokio::test]
+async fn the_export_carries_the_checkpoint_a_comment_was_made_on() {
+    let server = new_test_server().await;
+    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let room = server.instance.rooms.get(&slug).await;
+    let cookie = session_as(TEST_PUBLISHER);
+
+    post(
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+        json!({"type": "comment", "exact": "My Paper", "body": "A note.", "creator": "Anne"}),
+    )
+    .await;
+    let id = room.snapshot().await[0].id.clone();
+    post_as(
+        &cookie,
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+        json!({"type": "resolve", "comment_id": id, "resolved": true}),
+    )
+    .await;
+
+    let held = room.snapshot().await;
+    let exported = crate::export::render_jsonld(
+        "My Paper",
+        &held,
+        "urn:komodoc:test",
+        &crate::config::Configuration::default(),
+    );
+    let page: Value = serde_json::from_str(&exported).expect("the export is JSON");
+    let first = &page["items"][0];
+    assert_eq!(text(first, "komodoc:revision"), held[0].revision);
+    assert_eq!(text(first, "komodoc:resolved_in"), held[0].resolved_in);
+
+    // A comment from before the fields existed carries neither, rather than
+    // carrying an empty one that reads as an answer.
+    let older = vec![crate::room::Comment {
+        id: "old".into(),
+        exact: "My Paper".into(),
+        body: "From before.".into(),
+        ..Default::default()
+    }];
+    let exported = crate::export::render_jsonld(
+        "My Paper",
+        &older,
+        "urn:komodoc:test",
+        &crate::config::Configuration::default(),
+    );
+    let page: Value = serde_json::from_str(&exported).expect("the export is JSON");
+    assert!(
+        page["items"][0].get("komodoc:revision").is_none(),
+        "an empty revision was exported as an answer"
+    );
+}

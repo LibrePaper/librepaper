@@ -181,6 +181,17 @@ pub fn render_jsonld(
         if let Some(at) = &item.resolved_at {
             annotation.insert("komodoc:resolved_at".into(), json!(at));
         }
+        // Which text this was said about, and which text it was settled
+        // against. The same kind of extra property, and the two that make an
+        // exported annotation checkable against a document that has moved on:
+        // a quotation with no version behind it is a quotation of nothing in
+        // particular. Absent on a comment made before they were recorded.
+        if !item.revision.is_empty() {
+            annotation.insert("komodoc:revision".into(), json!(item.revision));
+        }
+        if !item.resolved_in.is_empty() {
+            annotation.insert("komodoc:resolved_in".into(), json!(item.resolved_in));
+        }
         items.push(Value::Object(annotation));
         // A reply is an annotation whose target is the annotation it answers.
         for answer in &item.replies {

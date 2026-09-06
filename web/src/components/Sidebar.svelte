@@ -15,6 +15,10 @@
     canModerate = false,
     tool = "commenting",
     hasFigures = false,
+    // Where each orphaned passage went, by comment id. Passed through rather
+    // than looked up here: the card is what says it, and the page is what
+    // knows it.
+    went = {},
     ontool,
     onreveal,
     onresolve,
@@ -120,6 +124,7 @@
         {comment}
         {identity}
         {canModerate}
+        went={went[comment.id] || null}
         ontoggleTag={toggleTag}
         {onreveal}
         {onresolve}
