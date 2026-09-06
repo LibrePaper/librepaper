@@ -3,7 +3,6 @@
   // project is a document and the directory around it -- its chapters and its
   // figures -- and it is found here by any of them.
   import Nav from "./Nav.svelte";
-  import CopyLink from "./CopyLink.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import Modal from "./Modal.svelte";
@@ -494,11 +493,6 @@
                           listed
                         </span>
                       {/if}
-                      <CopyLink
-                        href={new URL(`/docs/${doc.slug}`, location.origin).href}
-                        label="Copy the link to {doc.title}"
-                        tone="plain"
-                      />
                     </Row>
                   </td>
                   <td>{paths.has(doc.slug) ? paths.get(doc.slug).length : "—"}</td>

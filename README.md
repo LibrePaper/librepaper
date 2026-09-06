@@ -274,8 +274,8 @@ komodoc edit c9k
 
 The **Files** sidebar is a folder tree. Its toolbar creates files and folders
 inside the selection, or uploads files from your computer. Drag files or
-folders onto another folder to move them; drop onto **Project root** to move
-them out. Dropping files or directories from your computer uploads them with
+folders onto another folder to move them; drop onto empty space in the sidebar
+to move them to the top level. Dropping files or directories from your computer uploads them with
 their folder structure. Upload name collisions offer **Keep both** or **Skip**.
 
 Right-click an item or use its **⋯** menu to rename, move, download, or delete

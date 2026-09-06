@@ -1904,28 +1904,27 @@
 
 <Nav {me}>
   {#snippet children()}
-    <!-- The column's switch sits over the column: at the left, before the
-         title. Which panel it opens on is the tabs' business, in the column. -->
-    <IconButton
-      icon="panel-left-open"
-      label="Show or hide the files, comments and history"
-      title="Files, comments and history"
-      pressed={Boolean(panel)}
-      onclick={toggleColumn}
-    />
+    <IconButton icon="panel-left-open" label="Show or hide the files, comments and history"
+      title="Files, comments and history" pressed={Boolean(panel)} onclick={toggleColumn} />
     <span id="docTitle" class="text-surface-600-400 truncate text-sm">{doc.title ?? ""}</span>
-    <!-- Silent while the socket is up: it only has something to say when the
-         live updates have stopped. -->
-    {#if !connected}
-      <small class="badge preset-tonal-warning whitespace-nowrap">reconnecting…</small>
+  {/snippet}
+  {#snippet status()}
+    {#if !connected}<small class="badge preset-tonal-warning" title="Reconnecting">reconnecting…</small>{/if}
+    {#if viewing}<small class="badge preset-tonal-warning" title={new Date(viewing.at).toLocaleString()}>Showing {viewingName}</small>{/if}
+    {#if renderedNote}<small class="badge preset-tonal-surface" title={renderedNote}>{renderedNote}</small>{/if}
+    {#if editing}
+      {#if persistenceBadge}<small class="badge preset-tonal-warning" title={persistenceBadge}>{persistenceBadge}</small>{/if}
+      {#if peers > 1}<small class="badge preset-tonal-secondary">{peers} editing</small>{/if}
+      {#if compileBadge}<small class="badge preset-tonal-surface" title={compileBadge}><span class="spinner" aria-hidden="true"></span>{compileBadge}</small>{/if}
+      {#if diagnosticBadge}
+        <button type="button" onclick={goToDiagnostic} title="Go to the next problem"
+          class="badge {errorCount ? 'preset-tonal-error' : 'preset-tonal-warning'}">{diagnosticBadge}</button>
+      {/if}
+      {#if state}<small class="badge {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}" title={state}>{state}</small>{/if}
     {/if}
   {/snippet}
-
   {#snippet tools()}
     <Row gap={3}>
-      <!-- How the source and the document are arranged, which only means
-           anything while editing. The column is switched from the other end
-           of the bar, above where it opens. -->
       <ControlGroup label="Layout">
         {#snippet children()}
           {#if editing}
@@ -1976,88 +1975,16 @@
           {/if}
         {/snippet}
       </ControlGroup>
-      <!-- The bar over an old version. It says which one is showing, because a
-           document that is not the current one and does not say so is a way to
-           quote something that was withdrawn a month ago; and it offers the
-           way out, and the link that puts somebody else where the reader is.
-           Naming lives on every row of the panel rather than only on this one,
-           which is the same offer in a better place. -->
       {#if viewing}
-        <small class="badge preset-tonal-warning whitespace-nowrap">
-          Showing {viewingName} · {new Date(viewing.at).toLocaleString()}
-        </small>
-        <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
-                onclick={backToNow}>
-          Back to now
-        </button>
+        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={backToNow}>Back to now</button>
         <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
       {/if}
-      <!-- What the frame is showing, for a LaTeX document this browser does
-           not compile, when it is not simply the text as it stands. Said to
-           readers as well as to editors, because a reader is the person who
-           most needs to know that the pages in front of them are of an
-           earlier version -- and because "not yet rendered" is the honest
-           answer for a document no browser has compiled. Empty, and so
-           absent, when the rendering is current; a browser that compiles has
-           the compile badge instead. -->
-      {#if renderedNote}
-        <small class="badge preset-tonal-surface whitespace-nowrap">{renderedNote}</small>
+      {#if editing && sourceFormat === "latex" && latexReady}
+        <IconButton icon="book" label="Choose a different TeX distribution" title="TeX distribution"
+          pressed={cardOpen} onclick={() => (cardOpen = !cardOpen)} />
       {/if}
-      {#if editing}
-        <!-- There is no save. What the toolbar says instead is whether this
-             browser's work has reached the server, which is a different
-             question from whether the socket is open and the only one worth
-             answering. It is empty when there is nothing to say. -->
-        {#if persistenceBadge}
-          <small class="badge preset-tonal-warning whitespace-nowrap">{persistenceBadge}</small>
-        {/if}
-        <!-- Said only when there is more than one person editing. -->
-        {#if peers > 1}
-          <small class="badge preset-tonal-secondary whitespace-nowrap">{peers} editing</small>
-        {/if}
-        <!-- What the compiler said, counted. Clicking it goes to the first
-             thing it complained about, and again to the next. -->
-        <!-- A compile takes seconds, so the pane says one is running, and
-             after the first says how long the last one took. Nothing is said
-             between compiles: the page on screen is the answer. -->
-        {#if compileBadge}
-          <small class="badge preset-tonal-surface whitespace-nowrap">
-            <span class="spinner" aria-hidden="true"></span>
-            {compileBadge}
-          </small>
-        {/if}
-        {#if sourceFormat === "latex" && latexReady}
-          <IconButton
-            icon="book"
-            label="Choose a different TeX distribution"
-            title="TeX distribution"
-            pressed={cardOpen}
-            onclick={() => (cardOpen = !cardOpen)}
-          />
-        {/if}
-        {#if diagnosticBadge}
-          <button type="button" onclick={goToDiagnostic}
-                  title="Go to the next problem"
-                  class="badge whitespace-nowrap {errorCount ? 'preset-tonal-error' : 'preset-tonal-warning'}">
-            {diagnosticBadge}
-          </button>
-        {/if}
-        {#if state}
-          <small class="badge whitespace-nowrap {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}">
-            {state}
-          </small>
-        {/if}
-      {/if}
-      <!-- Sharing is the copy-link button grown up: copying the link is still
-           the first thing inside it. Somebody with no place on the document
-           gets the plain copy button, which is all it ever was for them. -->
       {#if canSeeSharing}
-        <IconButton
-          icon="users"
-          label="Share this document"
-          title="Share"
-          onclick={() => (sharingOpen = true)}
-        />
+        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (sharingOpen = true)}>Share</button>
       {:else}
         <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
       {/if}

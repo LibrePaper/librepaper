@@ -85,7 +85,13 @@ main.reader {
 }
 
 /* Skeleton owns tree semantics; these rules give it the project's compact rows. */
-.explorer-row, .explorer-root {
+.explorer, .explorer-menu {
+  font-family: var(--typo-base--font-family);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.explorer-title { font: inherit; font-weight: 600; }
+.explorer-row {
   display: flex;
   align-items: center;
   gap: --spacing(2);
@@ -97,9 +103,8 @@ main.reader {
   text-align: left;
   cursor: pointer;
 }
-.explorer-row { padding-left: calc(var(--depth, 1) * --spacing(3)); }
-.explorer-root { color: var(--color-surface-600-400); font-size: var(--text-sm); }
-.explorer-row:hover, .explorer-root:hover, .explorer-open { background: var(--color-surface-100-900); }
+.explorer-row { padding-left: calc((var(--depth, 1) - 1) * --spacing(4)); }
+.explorer-row:hover, .explorer-open { background: var(--color-surface-100-900); }
 .explorer-row[data-selected] { background: var(--color-primary-100-900); }
 .explorer [data-part="branch"][data-selected] > [data-part="context-trigger"] .explorer-row { background: var(--color-primary-100-900); }
 .explorer-row:focus-visible, .explorer [data-part="branch"]:focus-visible > [data-part="context-trigger"] .explorer-row {
@@ -107,9 +112,13 @@ main.reader {
   outline-offset: -2px;
 }
 .explorer .drop-target { background: var(--color-primary-100-900); outline: 2px dashed var(--color-primary-500); outline-offset: -2px; }
+.explorer-drop { box-shadow: inset 0 0 0 2px var(--color-primary-500); }
 .explorer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.explorer-row svg, .explorer-root svg { width: --spacing(4); height: --spacing(4); flex-shrink: 0; }
-.explorer-chevron { width: --spacing(2); flex-shrink: 0; }
+.explorer-row svg { width: --spacing(4); height: --spacing(4); flex-shrink: 0; }
+.explorer-chevron { width: --spacing(3); flex-shrink: 0; color: var(--color-surface-600-400); }
+.explorer-chevron svg { width: --spacing(3); height: --spacing(3); }
+.explorer-menu-button { width: --spacing(7); height: --spacing(7); border-radius: var(--radius-base); }
+.explorer-menu-button:hover, .explorer-more:hover { background: var(--color-surface-100-900); }
 .explorer-more { margin-left: auto; padding-inline: --spacing(2); border-radius: var(--radius-base); opacity: 0; }
 .explorer-row:hover .explorer-more, .explorer-row:focus-within .explorer-more, .explorer-more[data-state="open"] { opacity: 1; }
 @media (hover: none) { .explorer-more { opacity: 1; } }

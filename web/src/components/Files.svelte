@@ -1,9 +1,10 @@
 <script>
   import { tick, onDestroy } from "svelte";
-  import { TreeView, createTreeViewCollection, Menu, Portal } from "@skeletonlabs/skeleton-svelte";
+  import { TreeView, createTreeViewCollection, Menu } from "@skeletonlabs/skeleton-svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import Modal from "./Modal.svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
   import { checkPath, collisionKey } from "../lib/paths.js";
   import { basename, parentPath, inside, nodeKey, fileTree, folderPaths, topEntries, checkPlacement, copyPath, droppedFiles } from "../lib/file-manager.js";
 
@@ -115,6 +116,7 @@
   }
   function keyed(event) {
     if (!mayEdit || event.target.closest("input, button, [role=menu]")) return;
+    if (event.key === "Escape") { selected = []; return; }
     const targets = chosen.length ? chosen : entries.filter((entry) => nodeKey(entry) === focused);
     if (event.key === "F2" && targets.length === 1) { event.preventDefault(); start("rename", targets[0], parentPath(targets[0].path)); }
     if (event.key === "Delete" && targets.length) { event.preventDefault(); ask("delete", targets); }
@@ -190,24 +192,23 @@
   }
 </script>
 
-<div class="panel filelist explorer" role="region" aria-label="File manager" ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
+<div class="panel filelist explorer" class:explorer-drop={hover === ""} role="region" aria-label="File manager"
+  onpointerdown={(event) => { if (!event.target.closest('[role="treeitem"], button, input, select, header')) selected = []; }}
+  ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")} ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
   <header class="space-y-2 py-3">
-    <div class="flex items-center justify-between gap-2">
-      <h3 class="h5">Files</h3>
-      <small class="text-surface-600-400">{files.length} {files.length === 1 ? "file" : "files"}</small>
-    </div>
     <div class="flex items-center gap-1">
+      <h3 class="explorer-title mr-auto">Files</h3>
       {#if mayEdit}
-        <IconButton icon="file-plus" label="New file" onclick={() => start("file")} />
-        <IconButton icon="folder-plus" label="New folder" onclick={() => start("folder")} />
-        <IconButton icon="upload" label="Upload files" disabled={busy} onclick={() => choose()} />
+        <IconButton icon="file-plus" label="New file" tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
+        <IconButton icon="folder-plus" label="New folder" tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
+        <IconButton icon="upload" label="Upload files" tone="plain" size="btn-icon-sm" disabled={busy} onclick={() => choose()} />
       {/if}
       <Menu onSelect={({ value }) => { if (value === "download") ondownload?.(); else expanded = []; }}>
-        <Menu.Trigger class="btn btn-sm preset-outlined-surface-300-700" aria-label="Project actions">⋯</Menu.Trigger>
-        <Portal><Menu.Positioner class="z-50"><Menu.Content class="card bg-surface-50-950 w-52 p-1 shadow-xl">
+        <Menu.Trigger class="explorer-menu-button" aria-label="Project actions">⋯</Menu.Trigger>
+        <ExplorerMenu>
           <Menu.Item value="collapse" class="menuitem">Collapse all</Menu.Item>
           <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
-        </Menu.Content></Menu.Positioner></Portal>
+        </ExplorerMenu>
       </Menu>
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
         onchange={(event) => { const picked = [...event.target.files]; event.target.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
@@ -232,11 +233,6 @@
     {/if}
   </header>
 
-  <!-- A named root target makes moving files out of folders unambiguous. -->
-  <button class="explorer-root" class:drop-target={hover === ""} onclick={() => { selected = []; }}
-    ondragover={(event) => dragOver(event, "")} ondragleave={dragEnd} ondrop={(event) => drop(event, "")}>
-    <Icon name="folder" /> Project root
-  </button>
   <TreeView {collection} selectionMode="multiple" selectedValue={selected} expandedValue={expanded}
     onExpandedChange={(event) => { expanded = event.expandedValue; }}
     onFocusChange={(event) => { focused = event.focusedValue; }}
@@ -255,7 +251,7 @@
 </div>
 
 {#snippet row(node)}
-  {#if node.kind === "folder"}<span class="explorer-chevron" aria-hidden="true">{expanded.includes(node.id) ? "⌄" : "›"}</span>{/if}
+  <span class="explorer-chevron" aria-hidden="true">{#if node.kind === "folder"}<Icon name={expanded.includes(node.id) ? "chevron-down" : "chevron-right"} />{/if}</span>
   <Icon name={node.kind === "folder" ? "folder" : node.kind === "asset" ? "image" : "file-text"} />
   {#if editing?.type === "rename" && editing.entry.path === node.path}
     <input class="name" aria-label="Rename {node.path}" bind:value={draft} use:focusName onkeydown={namingKey} onclick={(event) => event.stopPropagation()} />
@@ -269,7 +265,7 @@
 {/snippet}
 
 {#snippet nodeMenu(node)}
-  <Portal><Menu.Positioner class="z-50"><Menu.Content class="card bg-surface-50-950 w-52 p-1 shadow-xl">
+  <ExplorerMenu>
     {#if mayEdit}
       {#if node.kind === "folder"}
         <Menu.Item value="file" class="menuitem">New file</Menu.Item>
@@ -283,7 +279,7 @@
     {/if}
     <Menu.Item value="download" class="menuitem">Download</Menu.Item>
     {#if mayEdit}<Menu.Item value="delete" class="menuitem" disabled={node.main}>Delete…</Menu.Item>{/if}
-  </Menu.Content></Menu.Positioner></Portal>
+  </ExplorerMenu>
 {/snippet}
 
 {#snippet branch(node, indexPath)}
@@ -335,7 +331,7 @@
   {:else if dialog}
     <label for="move-destination">Destination folder</label>
     <select id="move-destination" class="select" bind:value={destination}>
-      <option value="">Project root</option>
+      <option value="">Top level</option>
       {#each directories.filter((path) => !dialog.entries.some((entry) => entry.kind === "folder" && (entry.path === path || inside(path, entry.path)))) as path}
         <option value={path}>{path}</option>
       {/each}

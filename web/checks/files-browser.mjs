@@ -51,11 +51,33 @@ const menu = async (path, text) => {
   const item = [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent.trim().startsWith(text) && item.getClientRects().length);
   check(item, 'missing menu item ' + text); item.dispatchEvent(new PointerEvent('pointermove', { pointerType: 'mouse', bubbles: true })); await flush(); item.click(); await flush();
 };
+window.contextCheck = async (lower = false) => {
+  document.body.style.paddingTop = lower ? "190px" : "64px";
+  await flush();
+  const target = row('main.tex');
+  const rect = target.getBoundingClientRect();
+  const x = rect.left + 90, y = rect.top + rect.height / 2;
+  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: x, clientY: y }));
+  await flush();
+  const menu = document.querySelector('[role="menu"][data-state="open"]');
+  check(menu, 'right click opens the file menu');
+  const bounds = menu.getBoundingClientRect();
+  check(bounds.left >= 0 && bounds.top >= 0 && bounds.right <= innerWidth && bounds.bottom <= innerHeight, 'context menu remains inside viewport');
+  check(Math.min(Math.abs(bounds.top - y), Math.abs(bounds.bottom - y)) < 20, 'context menu stays next to right click');
+  check(Math.abs(bounds.left - x) < 20, 'context menu has pointer horizontal position');
+  check(getComputedStyle(menu).fontFamily === getComputedStyle(target).fontFamily, 'consistent menu font');
+  check(getComputedStyle(menu).fontSize === getComputedStyle(target).fontSize, 'consistent menu font size');
+  const item = menu.querySelector('[role="menuitem"]');
+  const itemRect = item.getBoundingClientRect();
+  check(menu.contains(document.elementFromPoint(itemRect.left + 8, itemRect.top + 8)), 'context menu is above page content');
+  return true;
+};
 window.filesCheck = async () => {
   await flush();
   check(document.querySelector('[role="tree"]'), 'Skeleton tree mounted');
+  check(!document.querySelector('.explorer-root'), 'no redundant root row');
   check(row('main.tex').getBoundingClientRect().height <= 40, 'compact file rows');
-  check(document.querySelector('.explorer-root svg').getBoundingClientRect().width <= 24, 'compact icons');
+  check(document.querySelector('.explorer-row svg').getBoundingClientRect().width <= 24, 'compact icons');
   button('New folder').click(); await flush(); await name('New folder name', 'new');
   check(session.folders().includes('new'), 'created empty folder');
   row('new').click(); await flush(); button('New folder').click(); await flush(); await name('New folder name', 'sub');
@@ -69,7 +91,11 @@ window.filesCheck = async () => {
   row('chapters').dispatchEvent(new DragEvent('dragstart', { dataTransfer: transfer, bubbles: true, cancelable: true }));
   row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true }));
   await flush(); check(session.paths.get(child) === 'empty/chapters/two.tex', 'drag moved entire folder');
-  await menu('empty/chapters', 'Move to');
+  const toTop = new DataTransfer();
+  row('empty/chapters').dispatchEvent(new DragEvent('dragstart', { dataTransfer: toTop, bubbles: true, cancelable: true }));
+  document.querySelector('.explorer').dispatchEvent(new DragEvent('drop', { dataTransfer: toTop, bubbles: true, cancelable: true }));
+  await flush(); check(session.paths.get(child) === 'chapters/two.tex', 'drop on sidebar moves to top level');
+  await menu('chapters', 'Move to');
   const confirmMove = [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Move');
   check(confirmMove, 'move dialog opened'); confirmMove.click(); await flush();
   check(session.paths.get(child) === 'chapters/two.tex', 'Move to root');
@@ -195,6 +221,17 @@ try {
     await wait(100);
   }
   assert.equal(ready, true, "Editor did not mount in Chromium");
+  assert.equal(await evaluate("contextCheck()"), true);
+  if (process.env.FILES_MENU_SCREENSHOT) {
+    const menuScreenshot = await send("Page.captureScreenshot", { format: "png" });
+    writeFileSync(process.env.FILES_MENU_SCREENSHOT, Buffer.from(menuScreenshot.result.data, "base64"));
+  }
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+  assert.equal(await evaluate("contextCheck(true)"), true);
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+  await evaluate("document.body.style.paddingTop = '0px'");
   const screenshot = await send("Page.captureScreenshot", { format: "png" });
   if (process.env.FILES_SCREENSHOT) writeFileSync(process.env.FILES_SCREENSHOT, Buffer.from(screenshot.result.data, "base64"));
   const result = await evaluate("filesCheck()");
