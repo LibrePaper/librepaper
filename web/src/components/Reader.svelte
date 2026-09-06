@@ -1,7 +1,7 @@
 <script>
   // One document: the source beside it, the page itself, and everything said
   // about it.
-  import { anchorAll, flatten } from "../lib/anchor.js";
+  import { anchorAll, anchorAllSources, flatten } from "../lib/anchor.js";
   import * as sync from "../lib/sync.js";
   import * as renderers from "../lib/renderers.js";
   import * as diagnosticsRule from "../lib/diagnostics.js";
@@ -9,6 +9,7 @@
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
   import * as passages from "../lib/passages.js";
+  import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
@@ -168,14 +169,83 @@
     }
   }
 
+  // Whether a comment's passage is lost is answered from two anchors, not
+  // one: the rendered quotation, which is what the highlight and the click
+  // target are drawn from, and the source quotation, which is the anchor of
+  // record. A comment is orphaned only when neither finds its passage; when
+  // only the source still has it, the card says so instead and a click on it
+  // goes to the source rather than nowhere. A region has no source anchor and
+  // is never in either state.
+  function applyAnchorFlags(comment) {
+    const { orphaned, inSourceOnly } = orphanState({
+      renderedFound: comment.start != null,
+      sourceFound: comment.sourceStart != null,
+      region: Boolean(comment.region),
+    });
+    comment.orphaned = orphaned;
+    comment.inSourceOnly = inSourceOnly;
+  }
+
+  // The one place both anchors of a comment are computed, so the orphaning
+  // rule above lives in one place too. Used for a whole re-anchoring pass and
+  // for the single comment a submission or a broadcast just added -- the
+  // rendered pass is skipped for a region annotation, which is placed by the
+  // agent rather than by text matching, but the source pass runs over
+  // whatever is given it since only a comment that already has a `source`
+  // does anything there.
+  function anchorComments(list) {
+    anchorAll(docText || "", list.filter((comment) => !comment.region), docText === null ? null : docView);
+    anchorAllSources(treeNow(), list);
+    for (const comment of list) applyAnchorFlags(comment);
+  }
+
+  // A comment made before the source anchor existed, or whose passage this
+  // browser cannot re-derive from the words alone, is missing the anchor of
+  // record. An editor's browser backfills it once per page load, quietly: the
+  // same heuristic a fresh selection uses, run now against the passage the
+  // rendered anchor already found. Tried is remembered so a comment nobody
+  // can place is not retried on every repaint, and nothing here is retried
+  // automatically -- a comment that stays untried just keeps its rendered
+  // anchor as its only one.
+  const triedBackfill = new Set();
+  // A backfill this browser sent and has not heard back about, so its `error`
+  // -- a race with someone else's backfill, or a comment deleted meanwhile --
+  // is known to be that and not a failed submission. Nothing else reads or
+  // writes this set.
+  const pendingBackfill = new Set();
+  function backfillSourceAnchors() {
+    if (!mayEdit || !session || viewing || docText === null) return;
+    const tree = treeNow();
+    const open = session?.paths?.get(openFile) || "";
+    for (const comment of comments) {
+      if (comment.source || comment.region || comment.pending || comment.temp_id) continue;
+      if (comment.start == null || triedBackfill.has(comment.id)) continue;
+      triedBackfill.add(comment.id);
+      const source = sync.sourceSelectorFor(
+        docText,
+        { exact: comment.exact, position: comment.start },
+        tree,
+        { open, formatOf: renderers.formatOf },
+      );
+      if (source) {
+        pendingBackfill.add(comment.id);
+        room?.send({ type: "anchor", comment_id: comment.id, source });
+      }
+    }
+  }
+
   function reanchor() {
     if (!frameReady || !commentsReady || docText === null) return;
-    // A region annotation is placed by the agent, not by text matching, so it
-    // is never orphaned for want of a quotation.
-    anchorAll(docText, comments.filter((comment) => !comment.region), docView);
+    anchorComments(comments);
     comments = comments;
     applyHighlights();
     tracePassages();
+    // The frame's own `ready` is what re-anchors after the source changes --
+    // `session.watchSource` schedules a repaint, and every repaint ends here
+    // -- so a comment newly findable in the source is caught by the same
+    // pass, not by a second path. Batched a tick out so the paint above is
+    // never delayed by a socket round trip.
+    setTimeout(backfillSourceAnchors, 0);
   }
 
   function fromFrame(message) {
@@ -208,8 +278,10 @@
         showSelection(message.selector, message.rect);
         break;
       case "region":
-        // A rectangle drawn on a figure anchors the same way a quotation does.
-        pending = { exact: "", prefix: "", suffix: "", position: null, region: message.region };
+        // A rectangle drawn on a figure anchors the same way a quotation
+        // does, but it has no words to look up in the source: a region has
+        // no source anchor and never will.
+        pending = { exact: "", prefix: "", suffix: "", position: null, region: message.region, source: null };
         placeBar(message.rect);
         break;
       case "caret":
@@ -241,6 +313,23 @@
       // to choose between passages the context cannot separate.
       position: Number.isInteger(selector.position) && selector.position >= 0 ? selector.position : null,
     };
+    // The anchor of record, cut from the source at the same moment: a best
+    // effort taken here, in the commenter's browser, while the words just
+    // selected are still fresh. A page with no text yet, or a phrase the
+    // source-matching heuristic cannot place, leaves this null -- which the
+    // server reads as "no source anchor yet" rather than as a failure.
+    let source = null;
+    try {
+      if (docText !== null) {
+        source = sync.sourceSelectorFor(docText, pending, treeNow(), {
+          open: session?.paths?.get(openFile) || "",
+          formatOf: renderers.formatOf,
+        }) || null;
+      }
+    } catch {
+      source = null;
+    }
+    pending.source = source;
     placeBar(rect);
   }
 
@@ -308,7 +397,7 @@
       pending: true,
     };
     // Drawn before the round trip; the broadcast reconciles it by temp_id.
-    anchorAll(docText || "", [optimistic], docText === null ? null : docView);
+    anchorComments([optimistic]);
     comments = [...comments, optimistic];
     applyHighlights();
     sendAnnotation({ type: "comment", ...pending, motivation, body, tags, temp_id });
@@ -382,6 +471,11 @@
       return;
     }
     if (event.type === "error") {
+      // A backfill this browser sent is not a submission and never touched
+      // the screen while it waited, so its failure -- somebody else's
+      // backfill won the race, or the comment is gone -- is dropped quietly
+      // rather than rolled back or reported.
+      if (event.comment_id && pendingBackfill.delete(event.comment_id)) return;
       outbox.failed(event.temp_id, event.message);
       // Roll the optimistic row back.
       if (event.temp_id) {
@@ -461,9 +555,24 @@
       // this browser regardless of what the server sent back.
       if (local) Object.assign(local, event.comment, { temp_id: undefined, pending: false, deletable: true });
       else if (!comments.some((comment) => comment.id === event.comment.id)) {
-        anchorAll(docText || "", [event.comment], docText === null ? null : docView);
+        anchorComments([event.comment]);
         comments = [...comments, event.comment];
       }
+      comments = comments;
+      applyHighlights();
+      return;
+    }
+    if (event.type === "anchor") {
+      // The server's answer to this browser's own backfill, or somebody
+      // else's: either way, a comment that had no anchor of record now does.
+      // A comment_id nobody has -- deleted meanwhile -- is answered with
+      // nothing to do.
+      pendingBackfill.delete(event.comment_id);
+      const comment = comments.find((item) => item.id === event.comment_id);
+      if (!comment) return;
+      comment.source = event.source;
+      anchorAllSources(treeNow(), [comment]);
+      applyAnchorFlags(comment);
       comments = comments;
       applyHighlights();
       return;
@@ -2116,7 +2225,23 @@
         <Comments {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went}
                   hasFigures={figureAt.length > 0}
                   ontool={chooseTool}
-                  onreveal={(comment) => tell({ type: "reveal", id: comment.id })}
+                  onreveal={(comment) => {
+                    // The rendered anchor, when there is one, reveals on the
+                    // page as it always did. A comment found only in the
+                    // source has nothing there to reveal, and goes to the
+                    // source instead -- the same jump a click in the document
+                    // makes in `followDocumentClick`.
+                    if (comment.start != null) tell({ type: "reveal", id: comment.id });
+                    if (comment.sourceStart != null && editing && editor) {
+                      const id = session.idOf(comment.sourcePath);
+                      if (id) {
+                        openFile = id;
+                        editor.goToIn(id, comment.sourceStart);
+                      } else {
+                        editor.goTo(comment.sourceStart);
+                      }
+                    }
+                  }}
                   onresolve={resolve} ondelete={askDelete} onreply={reply} />
       {/if}
     </aside>

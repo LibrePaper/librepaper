@@ -107,6 +107,12 @@
             {went ? "Passage removed" : "Passage not in the document"}
           </span>
         {/if}
+        {#if comment.inSourceOnly}
+          <!-- The rendering lost the words, but the source -- the text that
+               is actually versioned -- still has them, so this is not lost,
+               only unreachable from the page. -->
+          <span class="badge preset-tonal-secondary">In the source, not on the page</span>
+        {/if}
         <!-- The motivation is the W3C annotation type. Commenting is the
              default, so only the others are worth showing. -->
         {#if comment.motivation && comment.motivation !== "commenting"}
@@ -138,6 +144,12 @@
         <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3 text-sm">
           “{comment.exact}”
         </blockquote>
+      {/if}
+
+      {#if comment.source}
+        <!-- The anchor of record, quietly: which file the quotation above
+             was actually cut from. -->
+        <div class="text-surface-500 text-xs">{comment.source.path}</div>
       {/if}
 
       <!-- The quotation above is what the passage said when the comment was
