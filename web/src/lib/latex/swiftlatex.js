@@ -33,7 +33,7 @@
 // not a per-compile one.
 //
 // And it has no SyncTeX. There is no synctex symbol in the module, so
-// `synctex` is always null here and `05-SPEC-latex.md`'s last step cannot be
+// `synctex` is always null here and `docs/specs/latex.md`'s last step cannot be
 // built on this distribution.
 
 const READY = "ok";

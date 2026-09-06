@@ -34,7 +34,7 @@
     observer.observe(document.body, { childList: true, characterData: true, subtree: true });
   }
 
-  // The styles of the page being shown. Under `01-SPEC-history.md` the frame
+  // The styles of the page being shown. Under `docs/specs/history.md` the frame
   // is an empty shell and the whole document -- head and body -- arrives over
   // the channel, so the head has to be installed here or every document would
   // render as unstyled HTML. Only `<style>` and `<link rel=stylesheet>` are
@@ -500,7 +500,7 @@
     // innerHTML does not run scripts, so a preview never executes anything.
     if (message.type === "preview") {
       // A LaTeX document arrives as PDF bytes rather than as HTML, and the
-      // page it arrives on -- the viewer of `05-SPEC-latex.md` step 4 -- draws
+      // page it arrives on -- the viewer of `docs/specs/latex.md` step 4 -- draws
       // it itself into a text layer of ordinary spans. Nothing below applies
       // to that: there is no markup to parse and no body to replace, and
       // doing either would wipe the pages out from under the viewer. That is

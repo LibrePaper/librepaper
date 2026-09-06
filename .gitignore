@@ -10,9 +10,9 @@ examples/.calepin/
 .env
 
 # The reader shell is built from web/ by bun and vite, and the README is
-# copied in beside it: everything under src/shell is a build output that the
+# copied in beside it: everything under web/dist is a build output that the
 # binary embeds.
-src/shell/
+web/dist/
 examples/.venv/
 examples/__marimo__/
 .claude
@@ -27,18 +27,18 @@ target/
 # build input, the tree it installs is not.
 web/node_modules/
 
-# The LaTeX distributions, mirrored locally by latex/mirror.mjs. Hundreds of
+# The LaTeX distributions, mirrored locally by latex/tools/mirror.mjs. Hundreds of
 # megabytes of somebody else's release; a manifest and a script rebuild it.
 latex/mirror/
 
-# What a TeX run leaves beside a document in examples/latex. The corpus keeps
+# What a TeX run leaves beside a document in latex/corpus. The corpus keeps
 # its sources and the logs the engines produced; everything else is remade by
-# `node latex/texlive.mjs`.
-examples/latex/*/main.aux
-examples/latex/*/main.bbl
-examples/latex/*/main.blg
-examples/latex/*/main.log
-examples/latex/*/main.pdf
-examples/latex/*/main.synctex.gz
-examples/latex/*/chapters/*.aux
-examples/latex/article/article.bib
+# `node latex/tools/texlive.mjs`.
+latex/corpus/*/main.aux
+latex/corpus/*/main.bbl
+latex/corpus/*/main.blg
+latex/corpus/*/main.log
+latex/corpus/*/main.pdf
+latex/corpus/*/main.synctex.gz
+latex/corpus/*/chapters/*.aux
+latex/corpus/article/article.bib

@@ -3,7 +3,7 @@
 # the engine need; `komodoc` is the binary -- the command line and the server.
 [workspace]
 resolver = "2"
-members = ["engine", "text", "komodoc"]
+members = ["crates/engine", "crates/text", "crates/komodoc"]
 
 [profile.release]
 opt-level = 3

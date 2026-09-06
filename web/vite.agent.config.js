@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 
 export default defineConfig({
   build: {
-    outDir: resolve(import.meta.dirname, "../src/shell"),
+    outDir: resolve(import.meta.dirname, "dist"),
     emptyOutDir: false,
     lib: {
       entry: resolve(import.meta.dirname, "src/agent/agent.js"),

@@ -1,9 +1,16 @@
+# The README links its screenshots, so they are copied in beside it and served
+# at the same relative path the page on GitHub uses.
+IMAGES := $(patsubst docs/images/%,web/dist/docs/images/%,$(wildcard docs/images/*.png))
+$(BIN) test: $(IMAGES)
+web/dist/docs/images/%.png: docs/images/%.png
+	@mkdir -p $(dir $@)
+	@cp $< $@
 # Komodoc. `make` builds the single static binary into dist/.
 #
-# Three builds, one binary. The engine crate renders markdown and typst,
-# natively for the command line and as WebAssembly for the editor; the web app
-# in web/ is Svelte, bundled by vite and installed by bun; komodoc embeds both
-# and serves them.
+# Three crates under crates/: engine (markdown and typst rendering, CLI and WASM),
+# komodoc (server and CLI), text (utilities). The web app in web/ is Svelte,
+# bundled by vite and installed by bun. The binary embeds the web build (from
+# web/dist) and the WASM renderers, and serves them.
 
 # Local settings, kept out of the repository: the GitHub OAuth app and who may
 # publish. Copy .env.example to .env and fill it in. Values are read as Make
@@ -14,16 +21,16 @@ export
 BIN     := dist/komodoc
 # The markdown renderer, built for the browser: the editor previews with it,
 # and it is embedded in the binary like every other shell file.
-WASM    := src/shell/wasm/markdown.wasm
+WASM    := web/dist/wasm/markdown.wasm
 # Optional, and built separately by `make typst`: see the bottom of this file.
-TYPST   := src/shell/wasm/typst.wasm
+TYPST   := web/dist/wasm/typst.wasm
 MODULE  := target/wasm32-unknown-unknown/wasm/komodoc_engine.wasm
-# The pages. src/shell is entirely a build output, so it is an input to
-# nothing: what the pages are built from lives in web/.
-SHELL_OUT := src/shell/index.html
-WEB     := $(shell find web/src web/public -type f) $(wildcard web/*.html web/package.json web/vite.config.js)
+# The pages. web/dist is entirely a build output, so it is an input to
+# nothing: what the pages are built from lives in web/src and web/public.
+SHELL_OUT := web/dist/index.html
+WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
-SOURCES := $(shell find engine komodoc -type f -not -path '*/target/*') Cargo.toml README.md
+SOURCES := $(shell find crates -type f -not -path '*/target/*') Cargo.toml README.md
 
 .DEFAULT_GOAL := help
 .PHONY: help build test smoke serve seed examples kill clean snapshot wasm typst fmt web
@@ -43,8 +50,17 @@ $(BIN): $(SOURCES) $(WASM) $(SHELL_OUT)
 
 # The documentation page is the README, so it is copied in to be embedded. The
 # tests read it too, so both depend on it rather than on the build.
-$(BIN) test: src/shell/README.md
-src/shell/README.md: README.md
+$(BIN) test: web/dist/README.md
+
+# The README links its screenshots, so they are copied in beside it and served
+# at the relative path the page on GitHub uses.
+IMAGES := $(patsubst docs/images/%,web/dist/docs/images/%,$(wildcard docs/images/*.png))
+$(BIN) test: $(IMAGES)
+web/dist/docs/images/%.png: docs/images/%.png
+	@mkdir -p $(dir $@)
+	@cp $< $@
+web/dist/README.md: README.md
+	@mkdir -p $(dir $@)
 	@cp $< $@
 
 # The suite reads the built shell -- a test that asserts a page names its own
@@ -61,7 +77,7 @@ test: $(WASM) $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 smoke: $(BIN)  ## Drive the reader in headless chromium (needs chromium)
 	@command -v chromium >/dev/null || command -v google-chrome >/dev/null || \
 		{ echo "no chromium to drive; skipping the browser smoke test"; exit 0; }
-	@bun web/scripts/browser-smoke.mjs $(BIN)
+	@bun web/tools/browser-smoke.mjs $(BIN)
 
 fmt:  ## Format every crate
 	@cargo fmt
@@ -73,7 +89,7 @@ snapshot: $(WASM) $(TYPST) $(SHELL_OUT)  ## Build the release binary locally, wi
 	@echo "target/release/komodoc"
 
 clean:  ## Remove build output
-	@rm -rf dist target/release/komodoc src/shell web/node_modules
+	@rm -rf dist target/release/komodoc web/dist web/node_modules
 
 # The port is fixed because the GitHub OAuth app's callback URL names it.
 PORT       ?= 8081
@@ -143,13 +159,13 @@ deploy: seed  ## Seed the examples and serve them on this machine, no sign-in
 # --- the web app -----------------------------------------------------------
 #
 # Svelte, Skeleton, CodeMirror and Yjs, bundled into the pages the binary
-# embeds. The output goes to src/shell, so nothing under that directory is
+# embeds. The output goes to web/dist, so nothing under that directory is
 # edited by hand. The build refuses to run if a page has drifted from the
-# design system -- see web/scripts/check-vocabulary.js.
+# design system -- see web/checks/vocabulary.js.
 
 web: $(SHELL_OUT)  ## Build the pages from web/
 
-$(SHELL_OUT): $(WEB) src/shell/README.md
+$(SHELL_OUT): $(WEB) web/dist/README.md
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
 	@cd web && bun install --silent && bun run build
 
@@ -162,7 +178,7 @@ $(SHELL_OUT): $(WEB) src/shell/README.md
 
 wasm: $(WASM)  ## Build the markdown renderer for the browser
 
-$(WASM): $(shell find engine/src -type f) engine/Cargo.toml engine/document.css
+$(WASM): $(shell find crates/engine/src -type f) crates/engine/Cargo.toml crates/engine/document.css
 	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
 		--no-default-features --features markdown
 	@mkdir -p $(dir $@)
@@ -171,7 +187,7 @@ $(WASM): $(shell find engine/src -type f) engine/Cargo.toml engine/document.css
 
 typst: $(TYPST)  ## Build the typst renderer for the browser (slow: ~30 MB)
 
-$(TYPST): $(shell find engine/src -type f) engine/Cargo.toml engine/document.css
+$(TYPST): $(shell find crates/engine/src -type f) crates/engine/Cargo.toml crates/engine/document.css
 	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
 		--no-default-features --features typst
 	@mkdir -p $(dir $@)

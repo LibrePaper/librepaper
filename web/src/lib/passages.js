@@ -16,7 +16,7 @@
 // asks about the same moment.
 //
 // This is deliberately not the word-level diff. What replaced the passage is
-// step 8 of `01-SPEC-history.md` and needs the diff crate in the browser;
+// step 8 of `docs/specs/history.md` and needs the diff crate in the browser;
 // what is here needs nothing that is not already built, and it is the half of
 // the question a reviewer actually asks.
 

@@ -1,0 +1,54 @@
+# Komodoc: the command line and the server, one binary.
+[package]
+name = "komodoc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "komodoc"
+path = "src/main.rs"
+
+[dependencies]
+komodoc-engine = { path = "../engine" }
+komodoc-text = { path = "../text" }
+
+# The server. WebSockets come with axum, so nothing here frames them by hand.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal"] }
+axum = { version = "0.8", features = ["ws", "multipart", "http1"] }
+http-body-util = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# Every JSON body, in and out.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# GitHub, S3, and the deployment the command line talks to. rustls rather than
+# OpenSSL, so every target cross-compiles from one machine.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2", "multipart"] }
+# Digests, SigV4, and the signature on every cookie.
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.9"
+# The slug pattern, which the shell shares as a string, and the handful of
+# patterns that read documents for seeding.
+regex = "1"
+# Timestamps in the index and the room, RFC 3339 like the Worker wrote them.
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+# The shell, compiled in: real .html, .css and .js files under web/dist.
+include_dir = "0.7"
+# The command line.
+clap = { version = "4", features = ["derive"] }
+# The blob store is a trait with async methods behind a pointer.
+async-trait = "0.1"
+url = "2"
+percent-encoding = "2"
+# What a browser shows of a document, for anchoring seeded annotations.
+html-escape = "0.2"
+yrs = "0.27"
+unicode-normalization = "0.1.25"
+
+[dev-dependencies]
+tempfile = "3"
+sha1 = "0.10"

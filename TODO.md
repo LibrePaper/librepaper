@@ -110,7 +110,7 @@ be read by hand; the checkpoints are.
 # HTML as a source, left open
 
 HTML is a source format like markdown and typst: the identity renderer in
-`engine/src/html.rs`, its own row in the formats table, the caret lock's
+`crates/engine/src/html.rs`, its own row in the formats table, the caret lock's
 flattening in `sync.js`. Two questions from that work were left unanswered:
 
 - A megabyte-long `data:` URI in an HTML source is a megabyte-long line in
@@ -146,5 +146,5 @@ deliberately not done:
   One caller can fill it and keep every new `komodoc login` waiting for ten
   minutes; nothing else. A per-address cap would be the better bound.
 - `Grant.login` holds a handle, not a login, since providers arrived; see
-  `03-SPEC-sharing.md` for the rename that goes with resolving a grant to a
+  `docs/specs/sharing.md` for the rename that goes with resolving a grant to a
   handle nobody has signed in with.

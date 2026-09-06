@@ -13,11 +13,11 @@ comments and highlights in real time.
 
 <div class="screenshot-pair">
 <figure>
-<img src="docs/sandbox.png" alt="Komodoc sandbox landing page with the upload area and document list">
+<img src="docs/images/sandbox.png" alt="Komodoc sandbox landing page with the upload area and document list">
 <figcaption>The free sandbox landing page.</figcaption>
 </figure>
 <figure>
-<img src="docs/commenting.png" alt="A document open in Komodoc with highlighted passages and the comments sidebar">
+<img src="docs/images/commenting.png" alt="A document open in Komodoc with highlighted passages and the comments sidebar">
 <figcaption>The annotation window, with highlights and threaded comments.</figcaption>
 </figure>
 </div>
@@ -25,7 +25,7 @@ comments and highlights in real time.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/komodoc/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/komodoc/main/deploy/install.sh | sh
 ```
 
 The installer supports Linux and macOS. Windows binaries are available on the
@@ -718,13 +718,13 @@ Three builds go into one binary.
 
 | | What it is | Built by |
 | --- | --- | --- |
-| `engine/` | markdown and typst, rendered | cargo, natively and to WebAssembly |
+| `crates/engine/` | markdown and typst, rendered | cargo, natively and to WebAssembly |
 | `web/` | the pages: Svelte, Skeleton, CodeMirror 6, Yjs | bun and vite |
-| `komodoc/` | the server and the command line | cargo |
+| `crates/komodoc/` | the server and the command line | cargo |
 
 The engine is built twice â natively into the binary, and to WebAssembly for
 the browser â so the editor's preview and the command line's output come from
-the same code. The web build writes into `src/shell`, which the binary embeds;
+the same code. The web build writes into `web/dist`, which the binary embeds;
 nothing under that directory is edited by hand.
 
 ```sh

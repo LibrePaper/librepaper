@@ -1,4 +1,4 @@
-// The reader shell, built into src/shell, which the binary embeds.
+// The reader shell, built into dist/, which the binary embeds.
 //
 // Two pages rather than one application with a router: the server already
 // routes -- "/" is the landing page and "/docs/<slug>" is the reader -- and a
@@ -19,18 +19,20 @@ import { rmSync } from "node:fs";
 const clearOwnOutput = {
   name: "komodoc-clear-own-output",
   buildStart() {
-    const out = resolve(import.meta.dirname, "../src/shell");
+    const out = resolve(import.meta.dirname, "dist");
     rmSync(resolve(out, "assets"), { recursive: true, force: true });
   },
 };
 
 export default defineConfig({
+  root: resolve(import.meta.dirname, "pages"),
+  publicDir: resolve(import.meta.dirname, "public"),
   plugins: [clearOwnOutput, tailwindcss(), svelte()],
   // The pages are served from the site root by the Go-free Rust server, which
   // knows nothing about this build beyond where the files are.
   base: "/",
   build: {
-    outDir: resolve(import.meta.dirname, "../src/shell"),
+    outDir: resolve(import.meta.dirname, "dist"),
     emptyOutDir: false, // the wasm modules and the README live there too
     // A stale bundle behind a fresh page is the failure this avoids: every
     // asset is named for a digest of its own bytes, so a browser holding the
@@ -39,17 +41,17 @@ export default defineConfig({
     assetsDir: "assets",
     rollupOptions: {
       input: {
-        index: resolve(import.meta.dirname, "index.html"),
-        reader: resolve(import.meta.dirname, "reader.html"),
-        documentation: resolve(import.meta.dirname, "documentation.html"),
-        notfound: resolve(import.meta.dirname, "404.html"),
-        signin: resolve(import.meta.dirname, "signin.html"),
-        device: resolve(import.meta.dirname, "device.html"),
+        index: resolve(import.meta.dirname, "pages/index.html"),
+        reader: resolve(import.meta.dirname, "pages/reader.html"),
+        documentation: resolve(import.meta.dirname, "pages/documentation.html"),
+        notfound: resolve(import.meta.dirname, "pages/404.html"),
+        signin: resolve(import.meta.dirname, "pages/signin.html"),
+        device: resolve(import.meta.dirname, "pages/device.html"),
         // The PDF frame, served on the documents origin. It is a page of its
         // own rather than a mode of the reader because it is not the reader:
         // it lives with the document, behind the document's CSP, and the
         // pdf.js it pulls in must never end up in the shell's bundle.
-        viewer: resolve(import.meta.dirname, "viewer.html"),
+        viewer: resolve(import.meta.dirname, "pages/viewer.html"),
       },
     },
     // The typst module is thirty megabytes; nothing here comes close, and a
