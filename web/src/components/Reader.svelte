@@ -1408,7 +1408,7 @@
     comments: Boolean(panel),
     editing,
     sourceSide,
-    sizes: panel === "share" ? { ...sizes, [PANES.sidebar.key]: 432 } : sizes,
+    sizes,
     width,
   });
   const shown = $derived(showing(panes));
@@ -2106,14 +2106,10 @@
       {/if}
     </aside>
   {#if shown.comments}
-    {#if panel === "share"}
-      <div class="grip share-divider" aria-hidden="true"></div>
-    {:else}
     <Grip pane={PANES.sidebar} label="Resize the left-hand column" panes={panes}
           onsize={(size) => setSize(PANES.sidebar, size)}
           onguide={(where) => (guide = where)}
           ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }} />
-    {/if}
   {/if}
 
   {#if shown.source}
@@ -2301,7 +2297,6 @@
     color: var(--color-surface-700-300);
     font-size: var(--text-sm);
   }
-  .share-divider { pointer-events: none; }
   .sidebar { flex-direction: row; }
   .sidebar.collapsed { flex: 0 0 var(--komodoc-activity); }
   .sidebar-activity {
