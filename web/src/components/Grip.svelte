@@ -44,6 +44,11 @@
   }
 </script>
 
+<!-- A focusable separator is a window splitter, which ARIA makes a widget:
+     it takes the focus, it has a value, and the arrow keys move it. Svelte's
+     rules read `separator` as non-interactive whatever it carries, so the two
+     they raise here are the two that describe a splitter working correctly. -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div
   bind:this={element}
   class="grip grip-{pane.name}"
@@ -51,6 +56,8 @@
   aria-orientation="vertical"
   aria-label={label}
   aria-valuenow={Math.round(clamp(pane, panes) * (pane.fraction ? 100 : 1))}
+  aria-valuemin="0"
+  aria-valuemax={pane.fraction ? 100 : Math.round(panes.width)}
   tabindex="0"
   onpointerdown={down}
   onpointermove={move}

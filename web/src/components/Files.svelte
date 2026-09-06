@@ -125,6 +125,10 @@
     {#each files as file (file.id)}
       <li class:open={file.id === open} class:mainfile={file.main}>
         {#if renaming === file.id}
+          <!-- The field exists because somebody just asked to rename this file,
+               so the caret belongs in it. The rule is about a page that takes
+               the focus on load, which this is not. -->
+          <!-- svelte-ignore a11y_autofocus -->
           <input
             class="name"
             bind:value={draft}
@@ -166,6 +170,8 @@
     {/each}
     {#if adding}
       <li class="adding">
+        <!-- As above: this row exists because somebody just asked to add a file. -->
+        <!-- svelte-ignore a11y_autofocus -->
         <input
           class="name"
           bind:value={draft}

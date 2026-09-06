@@ -25,7 +25,12 @@
   let quoteOpen = $state(false);
   let replying = $state(false);
   let replyBody = $state("");
-  let replyName = $state(identity || read(AUTHOR, "Anonymous"));
+  // What an anonymous reader is called, which is theirs to type. Held apart
+  // from `identity` rather than seeded from it: the account arrives a moment
+  // after this card is built, and a name captured before it landed would leave
+  // a signed-in reader replying as "Anonymous" for the rest of the session.
+  let typed = $state(read(AUTHOR, "Anonymous"));
+  const replyName = $derived(identity || typed);
 
   const collapsed = $derived(Boolean(comment.resolved) && !expanded);
   $effect(() => {
@@ -70,13 +75,17 @@
   function submitReply(event) {
     event.preventDefault();
     if (!replyBody.trim()) return;
-    if (!identity) write(AUTHOR, replyName);
+    if (!identity) write(AUTHOR, typed);
     onreply?.(comment, replyBody, replyName);
     replyBody = "";
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+<!-- The whole card is the click target for opening a resolved note, which is
+     what `summary` says it is. It is not a button: it holds buttons, and a
+     button inside a button is a worse thing than a click handler on an
+     article. The keyboard reaches everything in it through those. -->
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
 <article
   id="comment-{comment.id}"
   class="card cursor-pointer p-3 {comment.resolved || comment.pending
@@ -199,8 +208,11 @@
   {#if replying}
     <form class="mt-3 flex flex-col gap-2" onsubmit={submitReply}>
       {#if !identity}
-        <input class="input" placeholder="Name" maxlength="80" bind:value={replyName} />
+        <input class="input" placeholder="Name" maxlength="80" bind:value={typed} />
       {/if}
+      <!-- The box exists because somebody just clicked Reply, so the caret
+           belongs in it. The rule is about a page that takes the focus on
+           load, which this is not. -->
       <!-- svelte-ignore a11y_autofocus -->
       <textarea
         class="textarea"
