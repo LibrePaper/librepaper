@@ -22,7 +22,10 @@
 //! `latex/tools/mirror.mjs` -- so it is immutable for a year and a new release is a
 //! new path rather than a cache to invalidate.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// Where the project keeps the mirror it builds: a Cloudflare worker of static
 /// files that `make latex-push` deploys from deploy/latex/wrangler.toml. A
@@ -146,10 +149,111 @@ impl Mirror {
     }
 
     /// Serves one path under the mirror, or says it is not there.
+    ///
+    /// Two kinds of path arrive. The loader, the module and the manifest are
+    /// asked for by the digested URLs the manifest hands out. A TeX Live file
+    /// is not: the engine asks for it by name, as
+    /// `packages/<engine>/<format code>/<name>`, built in C from the base
+    /// URL it was given, and only the manifest knows which digested file that
+    /// name is. So a name is looked up first and served as the file it names,
+    /// and a name the manifest does not have is a 301, not a 404 -- the engine
+    /// reads a 301 as "this file does not exist" and moves on, and a 404 as a
+    /// network failure to retry, which is a compile that never ends.
     pub async fn get(&self, path: &str) -> Served {
         let Some(path) = safe_path(path) else {
             return missing();
         };
+        if let Some(key) = package_key(&path) {
+            return match self.resolve(&key).await {
+                Resolved::File(url) => match safe_path(&url) {
+                    Some(url) if package_key(&url).is_none() => self.fetch(&url).await,
+                    _ => absent(),
+                },
+                Resolved::NotThere => absent(),
+                Resolved::Unreachable => unreachable(),
+            };
+        }
+        self.fetch(&path).await
+    }
+
+    /// Which digested file a name is, from the manifest's package index. The
+    /// index is read once and kept; a name it does not have is looked up again
+    /// only if the copy is older than `INDEX_REFRESH`, so a mirror updated in
+    /// place is noticed within that, and a document asking for a file that
+    /// does not exist costs one manifest read per refresh rather than one per
+    /// request. A name the manifest itself records as absent is answered
+    /// without a second look.
+    async fn resolve(&self, key: &str) -> Resolved {
+        let name = self.describe();
+        let cached = indexes()
+            .lock()
+            .expect("the index lock")
+            .get(&name)
+            .cloned();
+        if let Some(index) = &cached {
+            if let Some(url) = index.packages.get(key) {
+                return Resolved::File(url.clone());
+            }
+            if index.absent.contains(key) || index.loaded.elapsed() < INDEX_REFRESH {
+                return Resolved::NotThere;
+            }
+        }
+        match self.load_index().await {
+            Some(index) => {
+                let index = Arc::new(index);
+                indexes()
+                    .lock()
+                    .expect("the index lock")
+                    .insert(name, index.clone());
+                match index.packages.get(key) {
+                    Some(url) => Resolved::File(url.clone()),
+                    None => Resolved::NotThere,
+                }
+            }
+            // The manifest could not be read now. What was known before still
+            // stands, and a name it did not have is still not there; with
+            // nothing known at all, the mirror is what is unreachable.
+            None if cached.is_some() => Resolved::NotThere,
+            None => Resolved::Unreachable,
+        }
+    }
+
+    /// The manifest's `packages` and `absent` maps, read through the same
+    /// path a browser reads the manifest by.
+    async fn load_index(&self) -> Option<Index> {
+        let served = self.fetch(MANIFEST).await;
+        if served.status != 200 {
+            return None;
+        }
+        let manifest: serde_json::Value = serde_json::from_slice(&served.bytes).ok()?;
+        let packages = manifest
+            .get("packages")
+            .and_then(|value| value.as_object())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|(key, entry)| {
+                        let url = entry.get("url")?.as_str()?;
+                        Some((key.clone(), url.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let absent = manifest
+            .get("absent")
+            .and_then(|value| value.as_object())
+            .map(|entries| entries.keys().cloned().collect())
+            .unwrap_or_default();
+        Some(Index {
+            packages,
+            absent,
+            loaded: Instant::now(),
+        })
+    }
+
+    /// One file, by the path the mirror keeps it under.
+    async fn fetch(&self, path: &str) -> Served {
+        let path = path.to_string();
         if let Mirror::Upstream { base, .. } = self {
             if !request_stays_under_base(base, &path) {
                 return missing();
@@ -215,6 +319,83 @@ fn missing() -> Served {
         content_type: "text/plain; charset=utf-8",
         cache_control: "no-store",
     }
+}
+
+/// A TeX Live file the mirror does not have, in the one status the engine
+/// reads as "does not exist" rather than "try again". Not cached by the
+/// browser, since a mirror can gain the file later.
+fn absent() -> Served {
+    Served {
+        status: 301,
+        bytes: b"no such file".to_vec(),
+        content_type: "text/plain; charset=utf-8",
+        cache_control: "no-store",
+    }
+}
+
+fn unreachable() -> Served {
+    Served {
+        status: 502,
+        bytes: b"the LaTeX mirror is unreachable".to_vec(),
+        content_type: "text/plain; charset=utf-8",
+        cache_control: "no-store",
+    }
+}
+
+/// The manifest's package index: the engine's name for a file, as
+/// `<engine>/<format code>/<name>`, to the digested path that holds it, plus
+/// the names the mirror recorded as having nowhere to fetch from.
+#[derive(Debug)]
+struct Index {
+    packages: HashMap<String, String>,
+    absent: HashSet<String>,
+    loaded: Instant,
+}
+
+enum Resolved {
+    File(String),
+    NotThere,
+    Unreachable,
+}
+
+/// How long a name that is not in the index is trusted to be absent before
+/// the manifest is read again. Long enough that a document asking for a
+/// package nobody has does not read the manifest on every compile; short
+/// enough that a mirror updated in place is noticed without a restart.
+const INDEX_REFRESH: Duration = Duration::from_secs(30);
+
+/// One index per mirror, by the name `describe` gives it. A process has one
+/// mirror, or a test has a few, and none of them is a reason for the mirror
+/// to be anything other than the enum the flag parses into.
+fn indexes() -> &'static Mutex<HashMap<String, Arc<Index>>> {
+    static INDEXES: OnceLock<Mutex<HashMap<String, Arc<Index>>>> = OnceLock::new();
+    INDEXES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The engine's name for a file, if this is a request for one: four
+/// components, `packages`, an engine, a numeric format code and a name that is
+/// not already a digested file name. A digested name starts with sixteen hex
+/// digits and a dash, which no TeX Live file does.
+fn package_key(path: &str) -> Option<String> {
+    let parts: Vec<&str> = path.split('/').collect();
+    let [prefix, engine, format, name] = parts[..] else {
+        return None;
+    };
+    if prefix != "packages"
+        || engine.is_empty()
+        || format.is_empty()
+        || !format.bytes().all(|byte| byte.is_ascii_digit())
+        || name.is_empty()
+    {
+        return None;
+    }
+    let digested = name.len() > 17
+        && name.as_bytes()[16] == b'-'
+        && name.bytes().take(16).all(|byte| byte.is_ascii_hexdigit());
+    if digested {
+        return None;
+    }
+    Some(format!("{engine}/{format}/{name}"))
 }
 
 /// The path a request may have, or nothing. Percent escapes are decoded first,
@@ -303,6 +484,67 @@ fn content_type(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The engine asks for a TeX Live file by name, and the manifest says
+    // which digested file that is. A name the manifest has is that file, with
+    // the cache life a digested file earns; a name it does not have is a 301,
+    // the one status the engine reads as "does not exist"; and a digested path
+    // asked for directly is untouched by any of this.
+    #[tokio::test]
+    async fn a_package_asked_for_by_name_is_the_file_the_manifest_names() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let file = "packages/pdftex/b2/b20a30ef79872ed1-article.cls";
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            format!(
+                r#"{{"version":1,"distributions":{{}},"packages":{{"pdftex/26/article.cls":{{"url":"{file}","size":12}}}},"absent":{{"pdftex/26/nowhere.sty":true}}}}"#
+            ),
+        )
+        .expect("manifest");
+        std::fs::create_dir_all(dir.path().join("packages/pdftex/b2")).expect("directory");
+        std::fs::write(dir.path().join(file), b"\\ProvidesClass").expect("the class");
+        let mirror = Mirror::Directory(dir.path().to_path_buf());
+
+        let served = mirror.get("packages/pdftex/26/article.cls").await;
+        assert_eq!(served.status, 200);
+        assert_eq!(served.bytes, b"\\ProvidesClass");
+        assert_eq!(served.cache_control, "public, max-age=31536000, immutable");
+
+        for name in [
+            "packages/pdftex/26/nothere.sty",
+            "packages/pdftex/26/nowhere.sty",
+        ] {
+            let served = mirror.get(name).await;
+            assert_eq!(served.status, 301, "{name}");
+            assert_eq!(served.cache_control, "no-store");
+        }
+
+        let served = mirror.get(file).await;
+        assert_eq!(served.status, 200);
+        assert_eq!(served.bytes, b"\\ProvidesClass");
+    }
+
+    #[test]
+    fn a_package_key_is_a_name_and_never_a_digested_file() {
+        assert_eq!(
+            package_key("packages/pdftex/26/amsmath.sty").as_deref(),
+            Some("pdftex/26/amsmath.sty")
+        );
+        assert_eq!(
+            package_key("packages/xetex/3/cmr10").as_deref(),
+            Some("xetex/3/cmr10")
+        );
+        assert_eq!(
+            package_key("packages/pdftex/84/843c4a4ee0404b93-amsmath.sty"),
+            None
+        );
+        assert_eq!(package_key("packages/pdftex/b2/article.cls"), None);
+        assert_eq!(
+            package_key("swiftlatex-pdftex/2dfb2fc534b459b5/engine.js"),
+            None
+        );
+        assert_eq!(package_key("manifest.json"), None);
+    }
 
     // Every way out of the mirror that has ever been tried on a static route,
     // in the two forms a browser can send them.
