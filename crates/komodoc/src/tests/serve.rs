@@ -75,7 +75,10 @@ async fn publish_then_serve_document() {
     // This document's format is `html`, so it is served as the page it is --
     // that is the one format whose renderer is the identity, and a page with
     // scripts of its own has to be a page rather than an innerHTML of one.
-    let response = on_docs_host(&server.url, &shell_path).await;
+    // It is served only to a frame URL carrying the token the reader fetched
+    // on the origin that knows who is asking, which here is the owner.
+    let query = frame_query(&session_as(TEST_PUBLISHER), "", &server.url, &slug).await;
+    let response = on_docs_host(&server.url, &format!("{shell_path}?{query}")).await;
     let csp = response
         .headers()
         .get("content-security-policy")
@@ -136,8 +139,9 @@ async fn republish_keeps_slug_and_comments() {
     let server = new_test_server().await;
     let first = publish_test_document(&server.url).await;
     let slug = text(&first, "slug");
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
 
-    let mut socket = dial_websocket(&server.url, &slug).await;
+    let mut socket = dial_websocket_keyed(&server.url, &slug, &key).await;
     socket.read().await; // hello
     socket
         .write(json!({"type": "comment", "exact": "hello", "body": "a note", "creator": "Reader"}))
@@ -166,7 +170,8 @@ async fn republish_keeps_slug_and_comments() {
         "republish should keep the creation time"
     );
 
-    let (_, document) = get_json(&server.url, &format!("/api/documents/{slug}")).await;
+    let (_, document) =
+        get_json_keyed("", &key, &server.url, &format!("/api/documents/{slug}")).await;
     assert_eq!(
         document["comment_count"],
         json!(1),
@@ -185,9 +190,13 @@ async fn republish_keeps_slug_and_comments() {
 async fn comments_broadcast_to_every_reader() {
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
+    // The author holds a commenter link; the watcher only needs to read, so
+    // the same link -- which carries at least a reader's rung -- does for
+    // both.
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
 
-    let mut author = dial_websocket(&server.url, &slug).await;
-    let mut watcher = dial_websocket(&server.url, &slug).await;
+    let mut author = dial_websocket_keyed(&server.url, &slug, &key).await;
+    let mut watcher = dial_websocket_keyed(&server.url, &slug, &key).await;
     for socket in [&mut author, &mut watcher] {
         let hello = socket.read().await;
         assert_eq!(hello["type"], "hello");
@@ -214,7 +223,13 @@ async fn comments_broadcast_to_every_reader() {
     }
 
     // Replies and resolves reach everyone the same way.
-    let (_, listing) = get_json(&server.url, &format!("/api/documents/{slug}/comments")).await;
+    let (_, listing) = get_json_keyed(
+        "",
+        &key,
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+    )
+    .await;
     let comments = listing["comments"].as_array().unwrap();
     assert_eq!(comments.len(), 1);
     let identifier = text(&comments[0], "id");
@@ -235,7 +250,10 @@ async fn comments_broadcast_to_every_reader() {
 async fn comment_validation() {
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
-    let mut socket = dial_websocket(&server.url, &slug).await;
+    // A commenter link: the caller has to hold enough to comment at all
+    // before what it typed can be checked for validity.
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let mut socket = dial_websocket_keyed(&server.url, &slug, &key).await;
     socket.read().await;
 
     let cases = [
@@ -386,7 +404,12 @@ async fn document_origin_is_isolated() {
     let slug = text(&publish_test_document(&server.url).await, "slug");
 
     // The reader is told where to frame documents from, and it is not itself.
-    let (_, payload) = get_json(&server.url, &format!("/api/documents/{slug}")).await;
+    let (_, payload) = get_json_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
     let origin = text(&payload, "docs_origin");
     assert!(
         origin.starts_with("http://docs."),
@@ -435,7 +458,12 @@ async fn markdown_upload_is_stored_as_markdown() {
     // the browser showing it renders it, with the same module the editor
     // previews with.
     let slug = text(&document, "slug");
-    let (status, payload) = get_json(&server.url, &format!("/api/documents/{slug}/source")).await;
+    let (status, payload) = get_json_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}/source"),
+    )
+    .await;
     assert_eq!(status, 200, "{payload}");
     assert_eq!(text(&payload, "format"), "markdown");
     assert!(

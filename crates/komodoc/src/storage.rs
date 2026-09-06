@@ -32,12 +32,6 @@ pub struct StorageOptions {
     /// work. It is never inferred: a silently degraded index is a lost
     /// document, so it has to be asked for.
     pub single_writer: bool,
-
-    /// Sends the reader's browser to the bucket for a document's bytes rather
-    /// than passing them through this process. It needs a CORS rule on the
-    /// bucket, which is why it is a choice rather than the default, and the
-    /// probe prints the policy to paste.
-    pub direct_reads: bool,
 }
 
 impl StorageOptions {
@@ -101,13 +95,6 @@ pub async fn open_storage(mut options: StorageOptions) -> Result<Arc<dyn BlobSto
     let store = S3Store::new(&options);
     let report = store.probe().await;
     print!("{}", report.describe(&options));
-    // Reading straight from the bucket needs a CORS rule on it, and a scoped
-    // credential is worth having either way. Both are the kind of thing that
-    // is obvious once you have the JSON and tedious to derive from prose, so
-    // the JSON is what is printed.
-    if options.direct_reads {
-        print!("{}", store.advice(&format!("https://{}", options.bucket)));
-    }
     if !report.conditional_writes && !options.single_writer {
         return Err(format!(
             "{} does not support conditional writes, which is what keeps the\n  \
@@ -151,9 +138,6 @@ pub struct StorageFlags {
     /// Assert that only this process writes the bucket, when it has no conditional writes
     #[arg(long)]
     pub single_writer: bool,
-    /// Fetch documents in the reader's browser straight from the bucket; needs a CORS rule
-    #[arg(long)]
-    pub s3_direct_reads: bool,
 }
 
 impl StorageFlags {
@@ -180,7 +164,6 @@ impl StorageFlags {
             access_key: value(&self.s3_access_key),
             secret_key: value(&self.s3_secret_key),
             single_writer: self.single_writer,
-            direct_reads: self.s3_direct_reads,
         }
     }
 }

@@ -152,7 +152,7 @@ window.sharingSetup = async () => {
   window.shareRequests = [];
   window.copiedLink = '';
   let linkNumber = 0;
-  let snapshot = { slug: 'paper', can_share: true, visibility: 'private', listing: true,
+  let snapshot = { slug: 'paper', can_share: true, url: '/docs/paper',
     owner: { name: 'Alice', provider: 'github' },
     links: { reader: null, commenter: null, editor: null },
     edit_needs_signin: false, comment_needs_signin: false };
@@ -161,8 +161,6 @@ window.sharingSetup = async () => {
     if (options.method !== 'POST') return new Response(JSON.stringify(snapshot));
     const body = JSON.parse(options.body);
     window.shareRequests.push(body);
-    if (body.visibility === 'listed') return new Response(JSON.stringify({ error: 'Listing disabled' }), { status: 403 });
-    if (body.visibility) snapshot.visibility = body.visibility;
     if (body.link) {
       const token = body.link.role + "-token-" + (++linkNumber);
       snapshot.links = { ...snapshot.links, [body.link.role]: {
@@ -186,13 +184,17 @@ window.sharingSetup = async () => {
   await flush();
 };
 window.sharingCheck = async () => {
-  const access = document.querySelector('[aria-label="General access"]');
-  check(access.value === 'private', 'restricted access shown');
-  check(!button('Copy Read link'), 'private document needs a read link before copying');
+  // The links are the whole of the sharing: there is no access setting beside
+  // them, and the owner's own way in is the bare URL, offered but not minted.
+  check(!document.querySelector('[aria-label="General access"]'), 'no general access setting');
+  check(button('Copy your link'), 'the owner is offered their own link');
+  button('Copy your link').click(); await flush();
+  check(window.copiedLink.endsWith('/docs/paper'), 'the owner link is the bare document URL');
+  check(!button('Copy Read link'), 'a read link has to be created before it can be copied');
   check(!document.querySelector('input[readonly]'), 'raw URLs are hidden');
   button('Create Read link').click(); await flush();
   button('Copy Read link').click(); await flush();
-  check(window.copiedLink.includes('#k='), 'private read link grants access');
+  check(window.copiedLink.includes('#k=reader-token-'), 'a read link carries its key');
   button('Create Edit link').click(); await flush();
   check(button('Copy Edit link'), 'new edit link can be copied');
   button('Copy Edit link').click(); await flush();
@@ -205,20 +207,15 @@ window.sharingCheck = async () => {
   check(button('Copy Edit link'), 'replacement link can be copied');
   button('Revoke Edit link').click(); await flush();
   check(!button('Copy Edit link') && button('Create Edit link'), 'revoking restores link creation');
-  const currentAccess = document.querySelector('[aria-label="General access"]');
-  currentAccess.value = 'link'; currentAccess.dispatchEvent(new Event('change', { bubbles: true })); await flush();
   button('Copy Read link').click(); await flush();
-  check(window.copiedLink.includes('#k=reader-token-'), 'public documents still use revocable read links');
   const previousReadLink = window.copiedLink;
   button('Revoke Read link').click(); await flush();
   check(!button('Copy Read link') && button('Create Read link'), 'read revocation restores creation');
   check(window.shareRequests.at(-1).revoke === 'reader', 'read revocation uses the reader role');
-  check(currentAccess.value === 'link', 'revoking a read link does not silently change general access');
   button('Create Read link').click(); await flush();
   button('Copy Read link').click(); await flush();
   check(window.copiedLink !== previousReadLink, 'recreating issues a new read link');
-  currentAccess.value = 'listed'; currentAccess.dispatchEvent(new Event('change', { bubbles: true })); await flush();
-  check(currentAccess.value === 'link', 'refused access change restores displayed setting');
+  check(window.shareRequests.every((body) => !('visibility' in body)), 'the pane never sends a visibility');
   window.testShare.$set({ open: false }); await flush();
   const status = document.querySelector('.nav-status').getBoundingClientRect();
   const actions = document.querySelector('.nav-actions').getBoundingClientRect();

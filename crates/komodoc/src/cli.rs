@@ -7,7 +7,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::config::Configuration;
-use crate::http::{detail_of, get_json, get_with_token, post_directory, post_json, text};
+use crate::http::{
+    detail_of, get_as, get_json, get_with_token, post_directory, post_json, text, Credentials,
+};
 use crate::render::{
     counted, is_html, is_markdown, is_typst, read_and_note, render_typst_document, report,
     title_from_html, title_from_markdown, title_from_typst,
@@ -718,16 +720,38 @@ async fn publish_directory(
             detail_of(&document)
         ));
     }
-    let link = format!("{server}{}", text(&document, "url"));
-    println!("{link}");
-    if is_terminal_stdout() {
+    report_published(&server, &document, &format!("{}", root.display()));
+}
+
+/// What `publish` prints: the read link when the document has one, since
+/// that is the thing to send, and the bare URL otherwise -- which opens for
+/// the owner alone, and the note says so. The note goes to stderr so the
+/// link stays alone on stdout for a pipe.
+fn report_published(server: &str, document: &Value, path: &str) {
+    let share = text(document, "share_url");
+    let slug = text(document, "slug");
+    if share.is_empty() {
+        println!("{server}{}", text(document, "url"));
+    } else {
+        println!("{server}{share}");
+    }
+    if !is_terminal_stdout() {
+        return;
+    }
+    if share.is_empty() {
         eprintln!(
-            "\nShare this link; anyone with it can comment, no account needed.\n\
-             To publish a revision to the same link:\n  komodoc publish {} --slug {}",
-            root.display(),
-            text(&document, "slug")
+            "\nThis link opens for you alone; the document has no read link.\n\
+             To mint one:\n  komodoc share {slug} --link read"
+        );
+    } else {
+        eprintln!(
+            "\nShare this link; anyone with it can read, no account needed.\n\
+             For a link that also lets them comment:\n  komodoc share {slug} --link comment"
         );
     }
+    eprintln!(
+        "To publish a revision to the same document:\n  komodoc publish {path} --slug {slug}"
+    );
 }
 
 async fn publish_file(file: &str, mut title: String, slug: String, server_flag: String) {
@@ -889,15 +913,7 @@ async fn publish_file(file: &str, mut title: String, slug: String, server_flag: 
         ));
     }
 
-    let link = format!("{server}{}", text(&document, "url"));
-    println!("{link}");
-    if is_terminal_stdout() {
-        eprintln!(
-            "\nShare this link; anyone with it can comment, no account needed.\n\
-             To publish a revision to the same link:\n  komodoc publish {file} --slug {}",
-            text(&document, "slug")
-        );
-    }
+    report_published(&server, &document, file);
 }
 
 /// Falls back to the filename, the way an untitled document is named.
@@ -1028,11 +1044,13 @@ pub fn short_ids(
 
 /// Turns what the user typed -- a full slug, or one of the short handles
 /// `list` prints -- into the slug the API knows.
-pub async fn resolve_identifier(identifier: &str, server: &str) -> String {
-    // A full slug needs no listing, and so no token: this is the path an
-    // export from a link someone sent takes.
-    if let Ok((200, _)) = get_json(
+pub async fn resolve_identifier(identifier: &str, server: &str, key: &str) -> String {
+    // A full slug needs no listing: this is the path a command run from a
+    // link someone sent takes, with the link's key as its credential, and
+    // the path an owner's own slug takes with their sign-in.
+    if let Ok((200, _)) = get_as(
         &format!("{server}/api/documents/{identifier}"),
+        &Credentials::new(&stored_token_for(server), key),
         Duration::from_secs(30),
     )
     .await
@@ -1075,17 +1093,49 @@ pub async fn resolve_identifier(identifier: &str, server: &str) -> String {
     found
 }
 
-pub async fn comment_document(identifier: &str, server_flag: String) {
+pub async fn comment_document(identifier: &str, server_flag: String, key: String) {
     let server = server_from(&server_flag);
-    let slug = resolve_identifier(identifier, &server).await;
-    open_url(&format!("{server}/docs/{slug}"));
+    let key = link_key(&key);
+    let slug = resolve_identifier(identifier, &server, &key).await;
+    // The key goes back where a browser expects it, in the fragment, so the
+    // page opened is the link exactly as it was shared.
+    if key.is_empty() {
+        open_url(&format!("{server}/docs/{slug}"));
+    } else {
+        open_url(&format!("{server}/docs/{slug}#k={key}"));
+    }
+}
+
+/// What `--key` takes: the key itself, or the whole link it came in, since a
+/// link is what a person actually has in their clipboard. A URL with no key
+/// in its fragment is an empty key, which is what a plain document URL
+/// carries.
+pub fn link_key(flag: &str) -> String {
+    let flag = flag.trim();
+    let Some((_, fragment)) = flag.split_once('#') else {
+        return if flag.contains("://") {
+            String::new()
+        } else {
+            flag.to_string()
+        };
+    };
+    fragment
+        .split('&')
+        .find_map(|part| part.strip_prefix("k="))
+        .map(|key| {
+            url::form_urlencoded::parse(format!("k={key}").as_bytes())
+                .next()
+                .map(|(_, value)| value.to_string())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
 }
 
 /// `komodoc edit` opens a document in the reader, with its source beside it.
 /// The editor is part of the reader rather than a program of its own, so this
 /// is what it should be: a way to get to the right page from a short id.
-pub async fn edit_document(identifier: &str, server_flag: String) {
-    comment_document(identifier, server_flag).await;
+pub async fn edit_document(identifier: &str, server_flag: String, key: String) {
+    comment_document(identifier, server_flag, key).await;
 }
 
 pub fn open_url(target: &str) {
@@ -1131,11 +1181,10 @@ pub async fn share_document(
     server_flag: String,
     link: String,
     until: String,
-    visibility: String,
     revoke: String,
 ) {
     let server = server_from(&server_flag);
-    let slug = resolve_identifier(identifier, &server).await;
+    let slug = resolve_identifier(identifier, &server, "").await;
     let target = format!("{server}/api/documents/{slug}/share");
 
     let mut change = json!({});
@@ -1146,9 +1195,6 @@ pub async fn share_document(
         change["link"] = json!({"role": role, "until": until});
     } else if !until.is_empty() {
         die("--until describes a link; pass --link read, --link comment, or --link edit");
-    }
-    if !visibility.is_empty() {
-        change["visibility"] = json!(visibility);
     }
     if !revoke.is_empty() {
         change["revoke"] = json!(revoke);
@@ -1225,13 +1271,18 @@ pub(crate) fn format_role_row(role: &str, link: &Value, server: &str) -> String 
 }
 
 /// The full listing `komodoc share` with no flags prints, one line per entry:
-/// the visibility, then one row per role in the fixed order a reader, a
-/// commenter, and an editor matter to somebody deciding what to change, then
-/// whatever legacy people are still named on the document. Built as a plain
+/// the slug, the owner's own link, then one row per role in the fixed order a
+/// reader, a commenter, and an editor matter to somebody deciding what to
+/// change, then whatever legacy people are still named on the document. Built as a plain
 /// `Vec<String>` rather than printed straight away, so the order and the
 /// content of the report can be checked without capturing stdout.
 pub(crate) fn sharing_report_lines(payload: &Value, server: &str, slug: &str) -> Vec<String> {
-    let mut lines = vec![format!("{slug}  {}", text(payload, "visibility"))];
+    let mut lines = vec![
+        slug.to_string(),
+        // The owner's way in is their sign-in, and the row says so where the
+        // others say when they expire: there is nothing to mint or revoke.
+        format!("  {:<8} {server}/docs/{slug}   yours, signed in", "owner"),
+    ];
     let links = payload.get("links").cloned().unwrap_or(Value::Null);
     let empty = Value::Null;
     for role in ["reader", "commenter", "editor"] {
@@ -1267,7 +1318,7 @@ fn print_sharing(payload: &Value, server: &str, slug: &str) {
 /// that leaves the caller with nothing.
 pub async fn transfer_document(identifier: &str, to: &str, server_flag: String, yes: bool) {
     let server = server_from(&server_flag);
-    let slug = resolve_identifier(identifier, &server).await;
+    let slug = resolve_identifier(identifier, &server, "").await;
     println!("About to transfer on {server}:");
     println!("  {slug}");
     println!("  to @{to}, with its history, its comments and its storage quota");
@@ -1306,7 +1357,7 @@ pub async fn destroy_document(identifier: &str, server_flag: String, yes: bool) 
     // The same identifier `comment` and `export` take. The confirmation
     // below still asks for the whole slug: this is the one irreversible
     // command, and a three-character answer is too easy to give.
-    let slug = resolve_identifier(identifier, &server).await;
+    let slug = resolve_identifier(identifier, &server, "").await;
     // Authenticated, not `get_json`: an owner's own document can be private,
     // and an unauthenticated read of it gets the same 404 a stranger would --
     // which used to stop `destroy` here before it ever reached the delete
@@ -1365,12 +1416,13 @@ pub async fn destroy_document(identifier: &str, server_flag: String, yes: bool) 
 /// in and the order a history reads in. The newest is marked, because "where
 /// am I" is the first question anybody asks of a list like this, and a label
 /// is printed as it was given: it is somebody's own words about a moment.
-pub async fn history_document(identifier: &str, server_flag: String) {
+pub async fn history_document(identifier: &str, server_flag: String, key: String) {
     let server = server_from(&server_flag);
-    let slug = resolve_identifier(identifier, &server).await;
-    let (status, payload) = get_with_token(
+    let key = link_key(&key);
+    let slug = resolve_identifier(identifier, &server, &key).await;
+    let (status, payload) = get_as(
         &format!("{server}/api/documents/{slug}/history"),
-        &stored_token_for(&server),
+        &Credentials::new(&stored_token_for(&server), &key),
         Duration::from_secs(60),
     )
     .await
@@ -1427,7 +1479,7 @@ pub async fn history_document(identifier: &str, server_flag: String) {
 /// be a thing for a person to disambiguate rather than for a route to guess.
 pub async fn label_checkpoint(identifier: &str, sha: &str, label: String, server_flag: String) {
     let server = server_from(&server_flag);
-    let slug = resolve_identifier(identifier, &server).await;
+    let slug = resolve_identifier(identifier, &server, "").await;
     let token = require_token_for(&server);
     let (status, payload) = get_with_token(
         &format!("{server}/api/documents/{slug}/history"),

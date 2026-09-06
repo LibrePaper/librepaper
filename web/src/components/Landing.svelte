@@ -484,15 +484,6 @@
                           {doc.role}
                         </span>
                       {/if}
-                      {#if doc.visibility === "private"}
-                        <span class="badge preset-tonal-surface text-xs" title="Only people named on it may read this">
-                          private
-                        </span>
-                      {:else if doc.visibility === "listed"}
-                        <span class="badge preset-tonal-surface text-xs" title="On the front page for everyone">
-                          listed
-                        </span>
-                      {/if}
                     </Row>
                   </td>
                   <td>{paths.has(doc.slug) ? paths.get(doc.slug).length : "—"}</td>

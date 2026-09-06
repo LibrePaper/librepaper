@@ -180,7 +180,7 @@ out.
 - **The source is public to readers**, which is the honest price of storing
   nothing rendered. Who a reader is is a question `docs/specs/sharing.md`
   answers: "anyone who may read the document" in the storage table means the
-  reader role there, and a `private` document has named readers only.
+  reader role there: the owner, and whoever holds a live link.
 - **Rendering on the server.** Excluded from this plan. Having the native
   engine in the executable does not put compilation in the request path.
   Rendering and visual diffs run on clients; the server handles permission

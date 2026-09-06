@@ -81,7 +81,7 @@ struct ServiceFlags {
     /// Who may comment: 'anyone' (default), 'any' GitHub account, or a list of logins
     #[arg(long, value_name = "WHO")]
     commenters: Option<String>,
-    /// Never list documents on the front page, whatever a document asks for
+    /// No public front page: the examples are listed only to their owner
     #[arg(long)]
     no_listing: bool,
     /// Largest document accepted, in megabytes (default 4)
@@ -201,6 +201,10 @@ enum Command {
     Comment {
         /// A full slug, or one of the short handles `list` prints
         id: String,
+        /// A share link, or the key from one: act as its holder rather than
+        /// as your sign-in
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
@@ -208,6 +212,10 @@ enum Command {
     Edit {
         /// A full slug, or one of the short handles `list` prints
         id: String,
+        /// A share link, or the key from one: act as its holder rather than
+        /// as your sign-in
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
@@ -220,6 +228,10 @@ enum Command {
         /// How long either side stays quiet before it is acted on (default 250ms)
         #[arg(long, value_name = "DURATION")]
         interval: Option<String>,
+        /// An edit link, or the key from one: join as its holder, with no
+        /// sign-in needed where the deployment asks for none
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
@@ -237,9 +249,6 @@ enum Command {
         /// expiry
         #[arg(long, value_name = "DURATION")]
         until: Option<String>,
-        /// Who may read: 'link' (default), 'private', or 'listed'
-        #[arg(long, value_name = "WHO")]
-        visibility: Option<String>,
         /// Turn off a role's link ('read', 'comment', or 'edit'), or take
         /// away a legacy login
         #[arg(long, value_name = "ROLE")]
@@ -263,6 +272,10 @@ enum Command {
     History {
         /// A full slug, or one of the short handles `list` prints
         id: String,
+        /// A share link, or the key from one: read as its holder rather than
+        /// as your sign-in
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
@@ -290,6 +303,10 @@ enum Command {
         /// File to write; defaults to standard output
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
+        /// A share link, or the key from one: read as its holder rather than
+        /// as your sign-in
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
@@ -358,14 +375,17 @@ pub async fn main() {
             .await
         }
         Command::List { server } => cli::list_documents(server.unwrap_or_default()).await,
-        Command::Comment { id, server } => {
-            cli::comment_document(&id, server.unwrap_or_default()).await
+        Command::Comment { id, key, server } => {
+            cli::comment_document(&id, server.unwrap_or_default(), key.unwrap_or_default()).await
         }
-        Command::Edit { id, server } => cli::edit_document(&id, server.unwrap_or_default()).await,
+        Command::Edit { id, key, server } => {
+            cli::edit_document(&id, server.unwrap_or_default(), key.unwrap_or_default()).await
+        }
         Command::Sync {
             id,
             file,
             interval,
+            key,
             server,
         } => {
             sync::sync_document(
@@ -373,6 +393,7 @@ pub async fn main() {
                 &file,
                 server.unwrap_or_default(),
                 interval.unwrap_or_default(),
+                key.unwrap_or_default(),
             )
             .await
         }
@@ -380,7 +401,6 @@ pub async fn main() {
             id,
             link,
             until,
-            visibility,
             revoke,
             server,
         } => {
@@ -389,7 +409,6 @@ pub async fn main() {
                 server.unwrap_or_default(),
                 link.unwrap_or_default(),
                 until.unwrap_or_default(),
-                visibility.unwrap_or_default(),
                 revoke.unwrap_or_default(),
             )
             .await
@@ -400,8 +419,8 @@ pub async fn main() {
             server,
             yes,
         } => cli::transfer_document(&id, &to, server.unwrap_or_default(), yes).await,
-        Command::History { id, server } => {
-            cli::history_document(&id, server.unwrap_or_default()).await
+        Command::History { id, key, server } => {
+            cli::history_document(&id, server.unwrap_or_default(), key.unwrap_or_default()).await
         }
         Command::Label {
             id,
@@ -422,6 +441,7 @@ pub async fn main() {
             format,
             since,
             out,
+            key,
             server,
         } => {
             export::export_document(
@@ -430,6 +450,7 @@ pub async fn main() {
                 &format,
                 out.unwrap_or_default(),
                 since.unwrap_or_default(),
+                key.unwrap_or_default(),
             )
             .await
         }

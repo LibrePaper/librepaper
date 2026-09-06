@@ -361,15 +361,17 @@ async function run() {
   /* --- 2. read-only live updates ------------------------------------------ */
 
   // A document owned by somebody, so a second browser is a reader rather than
-  // an editor.
+  // an editor. Reading takes a link, and publishing mints the read one, which
+  // is what a reader is handed.
   const owned = await publish(
     { title: "Owned", source: "# Owned\n\nOriginal wording.\n", source_format: "markdown" },
     sessionCookie("owner"),
   );
+  check("publishing hands back a read link", /#k=/.test(owned.share_url || ""), JSON.stringify(owned).slice(0, 120));
   const ownerTab = await openTab(`${BASE}/docs/${owned.slug}`, [
     { name: "komodoc_session", value: sessionCookie("owner"), domain: "localhost", path: "/" },
   ]);
-  const readerTab = await openTab(`${BASE}/docs/${owned.slug}`, [], { ownProfile: true });
+  const readerTab = await openTab(`${BASE}${owned.share_url}`, [], { ownProfile: true });
   const readerSees = await until("the reader renders", async () =>
     (await readerTab.evalInFrame("return document.body.innerText", owned.slug))?.includes("Original wording."),
   );
@@ -586,29 +588,25 @@ async function run() {
   `);
   check("the copied link carries the key back", copied.endsWith(`#k=${mintedKey}`));
 
-  /* --- 7. a private HTML document is painted rather than served ------------ */
+  /* --- 7. an HTML document is served to its reader's frame, and to no one else */
 
-  // The documents origin holds no sign-in, so it never serves a private
-  // document's bytes. The reader paints them in over the socket instead, which
-  // is the one path that carries an identity -- at the cost of the document's
-  // own scripts, which is what the second check below pins.
+  // Reading takes a credential now, and the documents origin holds none: no
+  // sign-in, no link key. It serves a document's bytes only to a frame whose
+  // URL carries the short-lived token the reader fetched over the channel
+  // that does carry an identity. So a bare fetch gets the empty shell, and
+  // the owner's frame gets the page as itself, scripts and all -- which is
+  // what the title check below pins.
   const secretPage =
     '<!doctype html><html><head><title>Private Draft</title></head><body>' +
     '<h1>Private Draft</h1><p id="p">the private text</p>' +
-    '<script>document.title = "a script ran"</script></body></html>';
+    // A mark on the body rather than the title: the agent sets the frame's
+    // title from the page's own, so a title the script changed would be
+    // put back before anything here could read it.
+    '<script>document.body.dataset.ran = "yes"<\/script></body></html>';
   const secret = await publish(
     { title: "Private Draft", source: secretPage, source_format: "html" },
     alice,
   );
-  await fetch(`${BASE}/api/documents/${secret.slug}/share`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-komodoc-client": "1",
-      cookie: `komodoc_session=${alice}`,
-    },
-    body: JSON.stringify({ visibility: "private" }),
-  });
 
   const bare = await fetch(`${BASE}/raw/${secret.slug}/`, {
     headers: { host: `docs.localhost:${PORT}` },
@@ -617,24 +615,27 @@ async function run() {
     .then((r) => r.text())
     .catch(() => "");
   check(
-    "the documents origin serves no private document's text",
+    "the documents origin serves no document's text to a frame with no token",
     !bare.includes("the private text"),
     bare.slice(0, 80),
   );
+  check("the empty shell still carries the agent", bare.includes("agent.js"), bare.slice(0, 80));
 
   const ownerOfSecret = await openTab(`${BASE}/docs/${secret.slug}`, [
     { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
   ]);
-  const shown = await until("the private document is painted", async () =>
+  const shown = await until("the document is served into the owner's frame", async () =>
     (await ownerOfSecret.evalInFrame("return document.body.innerText", secret.slug))?.includes(
       "the private text",
     ),
   );
   check(
-    "a private document is painted into the frame by the reader",
+    "a document is served into its reader's frame with a token",
     shown,
     shown ? "" : `console: ${ownerOfSecret.console.slice(-3).join(" | ")}`,
   );
+  const scripted = await ownerOfSecret.evalInFrame("return document.body.dataset.ran", secret.slug);
+  check("the served document's own scripts run", scripted === "yes", scripted || "");
 
   // A stranger gets what a deleted document gets, and is told the one useful
   // thing: that signing in might help.
@@ -643,7 +644,7 @@ async function run() {
     const text = await stranger.eval(`return document.body.innerText`);
     return text.includes("not found") ? text : null;
   });
-  check("a private document tells a stranger nothing", Boolean(refused), (refused || "").slice(0, 90));
+  check("a document with no link tells a stranger nothing", Boolean(refused), (refused || "").slice(0, 90));
 
   /* ------------------------------------------------------- the directory */
 

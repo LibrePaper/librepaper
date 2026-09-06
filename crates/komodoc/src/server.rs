@@ -30,7 +30,6 @@ use crate::auth::{
     DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE,
     SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
-use crate::blob::document_key;
 use crate::config::Configuration;
 use crate::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
@@ -41,8 +40,8 @@ use crate::room::{
     decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet, Sender,
 };
 use crate::store::{
-    is_visibility, random_suffix, slugify, Ceiling, Grant, Guest, IndexEntry, LinkGrant,
-    ModifyError, Publication, PutError, Role, Store, VISIBILITY_LISTED, VISIBILITY_PRIVATE,
+    random_suffix, slugify, Ceiling, Grant, Guest, IndexEntry, LinkGrant, ModifyError, Publication,
+    PutError, Role, Store,
 };
 use crate::util::clean;
 
@@ -114,10 +113,6 @@ impl UpdateAssembly {
 pub struct Server {
     pub store: Arc<Store>,
     pub rooms: RoomSet,
-    /// Whether a document's bytes are fetched by the reader's browser straight
-    /// from the bucket. Only possible when the bucket can presign, and only
-    /// useful when it allows this origin to read it.
-    pub direct_reads: bool,
     pub shell: HashMap<String, ShellFile>,
     pub app: GithubApp,
     /// The other way in. Configured from the environment alone, and set after
@@ -132,9 +127,10 @@ pub struct Server {
     /// Who a GitHub login is, for a grant by name. GitHub in a running
     /// deployment; a stand-in in the tests, which have no network.
     pub accounts: Arc<dyn Accounts>,
-    /// Whether the landing page lists anything at all. `--no-listing` is the
-    /// operator saying this deployment has no public front page, and a
-    /// document marked `listed` behaves as `link` under it.
+    /// Whether the landing page lists anything to somebody who is on none of
+    /// it. `--no-listing` is the operator saying this deployment has no
+    /// public front page, and the reserved examples -- the only documents
+    /// that would be on one -- are then listed to nobody but their owner.
     pub listing: bool,
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.
@@ -184,6 +180,15 @@ struct Connection {
 /// key itself never reaches a log: what is recorded anywhere is its hash.
 pub const LINK_HEADER: &str = "x-komodoc-key";
 pub const LINK_PARAM: &str = "k";
+
+/// How long a frame token stands. One navigation's worth: the reader asks
+/// for one right before it sets the frame's URL, and asks again next time.
+const FRAME_TOKEN_SECONDS: i64 = 120;
+
+/// What a frame token signs: the slug and the second it stops being good.
+fn frame_claim(slug: &str, until: i64) -> String {
+    format!("frame:{slug}:{until}")
+}
 
 /// How long a new link lasts unless something shorter is asked for. A round of
 /// review has an end, and a link that lives for ever is a leak waiting for a
@@ -268,7 +273,6 @@ impl Server {
         Server {
             store,
             rooms,
-            direct_reads: false,
             shell,
             app,
             google: GoogleApp::default(),
@@ -480,9 +484,9 @@ impl Server {
         }
     }
 
-    /// Whether a caller may read this document at all. A `private` one is read
-    /// by the people named on it and by nobody else; every other document is
-    /// read by whoever has its link, which is how it has always been.
+    /// Whether a caller may read this document at all: its owner, whoever
+    /// holds a live link, and anybody at all for an example. The bare URL
+    /// opens nothing for anyone else.
     pub fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
         entry.readable_by(&who.key, &who.id.id, &who.link, crate::clock::now_unix())
     }
@@ -513,26 +517,24 @@ impl Server {
         ))
     }
 
-    /// Narrows a listing to what one caller should see: the reserved examples,
-    /// the documents that predate ownership, their own uploads, everything
-    /// shared with them by name, everything they are a recorded guest of, and
-    /// everything `listed`.
+    /// Narrows a listing to what one caller should see: the reserved examples
+    /// unless the front page is off, the documents that predate ownership,
+    /// their own uploads, everything shared with them by name, and everything
+    /// they are a recorded guest of.
     ///
     /// A document shared by a link nobody has opened yet is not here, and
     /// cannot be: the link lives in one browser rather than on an account, so
     /// that browser's own list is where it belongs until somebody signed in
     /// actually uses it, at which point they are a guest and this is exactly
-    /// where it belongs. Under `--no-listing` there is no public front page,
-    /// so `listed` behaves as `link` and adds nothing.
+    /// where it belongs.
     pub fn visible(&self, entries: Vec<IndexEntry>, who: &Caller) -> Vec<IndexEntry> {
         entries
             .into_iter()
             .filter(|entry| {
-                entry.example
+                (entry.example && self.listing)
                     || entry.owned_by(&who.key, &who.id)
                     || entry.named_role(&who.id).is_some()
                     || entry.guests.iter().any(|guest| guest.id == who.id)
-                    || (self.listing && entry.visibility() == VISIBILITY_LISTED)
             })
             .collect()
     }
@@ -577,7 +579,6 @@ impl Server {
             "size": entry.size,
             "source_format": entry.source_format,
             "main": entry.main,
-            "visibility": entry.visibility(),
             "role": role.as_str(),
         })
     }
@@ -696,15 +697,9 @@ async fn handle(
         // module the editor previews with, and sends the page in. Nothing
         // rendered is stored, so there is nothing here to serve.
         if let ["raw", slug] | ["raw", slug, ""] = parts[..] {
-            return server.serve_shell(&arrival, slug).await;
-        }
-        // The old content-addressed page, for as long as a deployment still
-        // has one: a link written down before this change still resolves.
-        // Nothing writes these any more.
-        if let ["raw", slug, file] = parts[..] {
-            if let Some(digest) = file.strip_suffix(".html") {
-                return server.serve_document(&arrival, slug, digest).await;
-            }
+            return server
+                .serve_shell(&arrival, slug, request.uri().query())
+                .await;
         }
         // The PDF frame, for a document whose format is `latex`. It is the
         // same shell as above in every way that confines a document -- same
@@ -738,14 +733,6 @@ async fn handle(
             }
         }
         return plain(404, "not found");
-    }
-
-    // A document asked for on the reader's own host is sent to the other one,
-    // so it is never served somewhere it could reach the session.
-    if let ["raw", _slug, file] = parts[..] {
-        if file.strip_suffix(".html").is_some_and(is_sha) {
-            return redirect(&format!("{}{}", arrival.docs_origin(), path));
-        }
     }
 
     // --- signing in ------------------------------------------------------
@@ -863,6 +850,18 @@ async fn handle(
         if method == Method::GET {
             return server
                 .handle_state(request.headers(), &arrival, slug, request.uri().query())
+                .await;
+        }
+    }
+
+    // What lets the documents origin serve this document's page into the
+    // frame. That origin holds no identity, so the identity is checked here,
+    // where it is, and turned into a signed, short-lived token the reader
+    // puts on the frame's URL.
+    if let ["api", "documents", slug, "frame"] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_frame(request.headers(), &arrival, slug, request.uri().query())
                 .await;
         }
     }
@@ -1067,11 +1066,6 @@ async fn handle(
                     // the name shown while typing is the name the comment
                     // actually lands under.
                     "commenting_as": commenting_as,
-                    // Who may read this document, which is a property of the
-                    // document rather than a role anyone holds. The reader
-                    // needs it because a private document is painted into the
-                    // frame rather than served into it -- see `serve_shell`.
-                    "visibility": entry.visibility(),
                     // Whether the Share dialog is offered, and whether it is
                     // the owner's to change. Somebody named on the document
                     // sees who else is in the room; a reader who arrived by
@@ -1501,11 +1495,11 @@ impl Server {
     /// Reruns every live socket on `slug`'s authorization against the current
     /// index entry, and closes whichever one may no longer read the document
     /// or whose editor rung no longer matches what it was handed at the
-    /// handshake. This is what makes revoking a grant, making a document
-    /// private, or transferring it away actually take effect on a connection
+    /// handshake. This is what makes revoking or rotating a link, or
+    /// transferring the document away, actually take effect on a connection
     /// that is already open: without it, `who`/`author`/`is_owner` are
-    /// resolved once and never again, so the room keeps relaying private
-    /// state and accepting writes from someone the index no longer names.
+    /// resolved once and never again, so the room keeps relaying the text
+    /// and accepting writes from someone the index no longer names.
     ///
     /// A socket that is still allowed but whose rung changed is closed rather
     /// than adjusted in place -- a downgraded editor simply reconnects and
@@ -1686,12 +1680,17 @@ impl Server {
                 Ok(entry) => entry,
                 Err(response) => return response,
             };
+            // A revision changes the text and not the sharing: the read link
+            // it hands back is the one the document already has, or none if
+            // the owner took it away, which is theirs to have done.
+            let share_url = Self::read_link_of(&entry);
             return write_json(
                 201,
                 &json!({
                     "slug": entry.slug, "title": entry.title, "sha": entry.sha,
                     "created_at": entry.created_at, "updated_at": entry.updated_at,
                     "url": format!("/docs/{}", entry.slug),
+                    "share_url": share_url,
                 }),
             );
         }
@@ -1779,14 +1778,64 @@ impl Server {
                 return write_json(500, &json!({"error": "could not store the document"}));
             }
         };
+        // A document only its owner can open is not published in any useful
+        // sense, so the upload mints the read link and hands it back beside
+        // the bare URL: what `komodoc publish` prints is the thing to send.
+        // It has no expiry, because it stands where the URL itself used to
+        // stand, and that never expired; the owner shortens, rotates or
+        // revokes it from the share dialog like any other link. A failure
+        // to record it is not a failure to publish -- the document is there
+        // and the dialog can mint one -- so it is reported and not fatal.
+        let share_url = match self.mint_read_link(&key).await {
+            Ok(url) => Value::String(url),
+            Err(err) => {
+                eprintln!("warning: could not mint the read link of {key}: {err:?}");
+                Value::Null
+            }
+        };
         write_json(
             201,
             &json!({
                 "slug": entry.slug, "title": entry.title, "sha": sha,
                 "created_at": entry.created_at, "updated_at": entry.updated_at,
                 "url": format!("/docs/{}", entry.slug),
+                "share_url": share_url,
             }),
         )
+    }
+
+    /// Mints this document's read link, replacing any it had, and returns the
+    /// path to hand out. The key is generated before the write, as the share
+    /// route does, since the write is what commits it.
+    async fn mint_read_link(&self, slug: &str) -> Result<String, ModifyError> {
+        let key = mint_link_key();
+        let link = LinkGrant {
+            hash: hash_link_key(&key),
+            role: Role::Reader.as_str().to_string(),
+            key: key.clone(),
+            since: crate::clock::timestamp(),
+            ..Default::default()
+        };
+        self.store
+            .modify(slug, |entry| {
+                entry.set_link(link.clone());
+                Ok(())
+            })
+            .await?;
+        Ok(format!("/docs/{slug}#k={key}"))
+    }
+
+    /// The read link a document already has, as a path, when it is live and
+    /// its key was kept; what a revision hands back so the command line can
+    /// print something worth sending without minting anything.
+    fn read_link_of(entry: &IndexEntry) -> Value {
+        let now = crate::clock::now_unix();
+        match entry.link_for(Role::Reader) {
+            Some(link) if link.live_at(now) && !link.key.is_empty() => {
+                Value::String(format!("/docs/{}#k={}", entry.slug, link.key))
+            }
+            _ => Value::Null,
+        }
     }
 
     #[allow(clippy::result_large_err)] // as read_upload: the error is a response
@@ -2869,6 +2918,58 @@ impl Server {
     /// but the signature is not the authorization. Anyone who may read the
     /// document may read this, and nobody else, which is the same rule the
     /// socket answers `y-open` under.
+    /// A token the documents origin will serve this document's page for. The
+    /// caller's right to read is decided here, by `may_read`, exactly as it
+    /// is for the socket and the source; what crosses to the other origin is
+    /// only the fact that it was, signed for this slug and good for two
+    /// minutes -- long enough to navigate a frame, too short to keep. The
+    /// reader asks for a fresh one each time it navigates.
+    async fn handle_frame(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return write_json(404, &json!({"error": "not found"}));
+        };
+        let who = self.viewer(&entry, headers, arrival, query).await;
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let until = crate::clock::now_unix() + FRAME_TOKEN_SECONDS;
+        let token = crate::auth::sign(&self.key, &frame_claim(slug, until));
+        write_json(200, &json!({"until": until, "token": token}))
+    }
+
+    /// Whether a frame URL's query carries a token `handle_frame` minted for
+    /// this slug and has not outlived it. An absent or malformed pair is the
+    /// same as an expired one: the empty shell.
+    fn frame_token_verifies(&self, slug: &str, query: Option<&str>) -> bool {
+        let fields: HashMap<String, String> = query
+            .map(|q| {
+                url::form_urlencoded::parse(q.as_bytes())
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(until) = fields.get("until").and_then(|v| v.parse::<i64>().ok()) else {
+            return false;
+        };
+        let Some(token) = fields.get("token") else {
+            return false;
+        };
+        until >= crate::clock::now_unix()
+            && crate::auth::verifies(&self.key, &frame_claim(slug, until), token)
+    }
+
     async fn handle_state(
         &self,
         headers: &HeaderMap,
@@ -3047,29 +3148,11 @@ impl Server {
             ));
         }
 
-        if let Some(visibility) = &asked.visibility {
-            if !is_visibility(visibility) {
-                return write_json(
-                    400,
-                    &json!({"error": "visibility is 'link', 'private' or 'listed'"}),
-                );
-            }
-            if visibility == VISIBILITY_LISTED && !self.listing {
-                return write_json(
-                    403,
-                    &json!({"error": "this deployment has no public listing"}),
-                );
-            }
-        }
-
         let revoke = asked.revoke.clone().unwrap_or_default();
         let now = crate::clock::now_unix();
         let updated = self
             .store
             .modify(slug, |entry| {
-                if let Some(visibility) = &asked.visibility {
-                    entry.visibility = visibility.clone();
-                }
                 let asked_revoke = revoke.trim();
                 if !asked_revoke.is_empty() {
                     // A role word revokes that role's link; anything else is a
@@ -3105,9 +3188,9 @@ impl Server {
                 return write_json(500, &json!({"error": "could not record the change"}));
             }
         };
-        // Rotations, revocations, and visibility all land here: whatever just
-        // changed, any socket already open on this document may no longer be
-        // entitled to what it is holding.
+        // Rotations and revocations both land here: whatever just changed,
+        // any socket already open on this document may no longer be entitled
+        // to what it is holding.
         self.reauthorize(slug).await;
         let mut answer = self.sharing_json(&entry);
         if let Some((key, _)) = minted {
@@ -3120,8 +3203,8 @@ impl Server {
         write_json(200, &answer)
     }
 
-    /// Everything the share dialog draws: the document's visibility, its
-    /// three role links, the legacy people still named on it, and what this
+    /// Everything the share dialog draws: the owner's own link, the three
+    /// role links, the legacy people still named on it, and what this
     /// deployment's switches will let the owner offer. Only the owner ever
     /// asks for this now, so nothing here is held back from the caller.
     fn sharing_json(&self, entry: &IndexEntry) -> Value {
@@ -3163,7 +3246,11 @@ impl Server {
         };
         let mut answer = json!({
             "slug": entry.slug,
-            "visibility": entry.visibility(),
+            // The owner's own way in: the bare URL, which opens for the owner
+            // by their sign-in and for nobody else. It is a link in the
+            // dialog's sense only so far as it can be copied; there is
+            // nothing to mint, rotate or expire about it.
+            "url": format!("/docs/{}", entry.slug),
             // A visitor's key names a browser rather than a person, and is the
             // same value that owns their other uploads, so it is not a thing
             // to print: the dialog says "this browser" instead.
@@ -3192,7 +3279,6 @@ impl Server {
             // the choices that would actually be accepted.
             "publishers": self.publishers.describe(),
             "commenters_policy": self.commenters.describe(),
-            "listing": self.listing,
             // Whether editing, and commenting, ask for a sign-in at all: a
             // link cannot carry a role the deployment itself would refuse an
             // anonymous caller.
@@ -3337,13 +3423,13 @@ impl Server {
     /// document that turns out to be hostile, and the agent is still the only
     /// thing on either side that touches the DOM. What changed is where the
     /// HTML comes from.
-    async fn serve_shell(&self, arrival: &Arrival, slug: &str) -> Reply {
+    async fn serve_shell(&self, arrival: &Arrival, slug: &str, query: Option<&str>) -> Reply {
         if !self.valid_slug(slug) {
             return plain(404, "not found");
         }
-        let Some(entry) = self.store.get(slug).await else {
+        if self.store.get(slug).await.is_none() {
             return plain(404, "not found");
-        };
+        }
         let reader = arrival.reader_origin();
         // A document whose format is `html` is sent as it is. It has to be:
         // its renderer is the identity, and a notebook or a Quarto page
@@ -3354,19 +3440,18 @@ impl Server {
         // typed. Every other format is rendered by the browser into the empty
         // shell below.
         //
-        // A private document is the exception, and has to be. This origin
-        // shares no cookie with the reader's -- that is the whole point of the
-        // split -- so there is no identity here to check `private` against,
-        // and bytes served from here are served to whoever asks. So a private
-        // document is never sent from here whatever its format: it gets the
-        // empty shell, and the reader paints it in over the channel that does
-        // carry an identity. The cost is that a private HTML document's own
-        // scripts do not run, because painting sets innerHTML; a document that
-        // needs them is one to publish with the link rather than privately.
+        // This origin shares no cookie with the reader's -- that is the whole
+        // point of the split -- so it has no identity of its own to ask
+        // `may_read` with, and bytes served from here are served to whoever
+        // asks. What stands in for the identity is a token the reader fetched
+        // from `handle_frame` on the origin that does carry one: signed for
+        // this slug, good for two minutes, and presented on the frame's own
+        // URL. Without one the empty shell is what arrives, whatever the
+        // format, and nothing of the document goes with it.
         let room = self.rooms.get(slug).await;
         let format = room.format().await;
-        let private = entry.visibility() == VISIBILITY_PRIVATE;
-        let page = if !private && (format.is_empty() || format == "html") {
+        let admitted = self.frame_token_verifies(slug, query);
+        let page = if admitted && (format.is_empty() || format == "html") {
             room.source().await.into_bytes()
         } else {
             b"<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
@@ -3403,9 +3488,9 @@ impl Server {
     /// same CSP, same `frame-ancestors`, same privacy headers, same agent,
     /// same `no-store`.
     ///
-    /// It serves no document bytes, so unlike `serve_document` it has nothing
-    /// to withhold from a private document: the pages come from the reader,
-    /// over the channel that does carry an identity.
+    /// It serves no document bytes, so it has nothing to withhold and asks
+    /// for no token: the pages come from the reader, over the channel that
+    /// does carry an identity.
     async fn serve_viewer(&self, arrival: &Arrival, slug: &str) -> Reply {
         if !self.valid_slug(slug) {
             return plain(404, "not found");
@@ -3435,73 +3520,6 @@ impl Server {
         // under the document's own path, and a stale copy would outlive a
         // change to the agent or to the viewer.
         set(&mut response, "cache-control", "no-store");
-        response
-    }
-
-    async fn serve_document(&self, arrival: &Arrival, slug: &str, digest: &str) -> Reply {
-        if !self.valid_slug(slug) || !is_sha(digest) {
-            return plain(404, "not found");
-        }
-        // As in `serve_shell`: this origin has no identity to check `private`
-        // against, so a private document is not served from it at all.
-        if self
-            .store
-            .get(slug)
-            .await
-            .is_some_and(|entry| entry.visibility() == VISIBILITY_PRIVATE)
-        {
-            return plain(404, "not found");
-        }
-        // Where the bytes come from is a separate question from what this
-        // response says about them. If they live in a bucket the reader's
-        // browser can reach, they go straight there and never pass through
-        // this process. A bare redirect will not do, though: the headers below
-        // are what confine a document, and the agent injected into it is what
-        // makes it annotable. So this response is still made, and it fetches
-        // the document itself.
-        let direct = if self.direct_reads {
-            self.store
-                .blobs
-                .presigned_get(&document_key(slug, digest), 120)
-        } else {
-            None
-        };
-        let raw = match &direct {
-            Some(_) => Vec::new(),
-            None => match self.store.read(slug, digest).await {
-                Ok(raw) => raw,
-                Err(_) => return plain(404, "not found"),
-            },
-        };
-        let reader = arrival.reader_origin();
-        // The document runs on its own origin, with nothing of the reader's to
-        // reach for, so it may run its own scripts: charts, maps, whatever it
-        // shipped with. What it may not do is escape the frame or be framed by
-        // anyone but the reader.
-        let body = match direct {
-            Some(url) => direct_document(&url, &reader),
-            None => with_agent(&raw, &reader),
-        };
-        let mut response = Response::new(Body::from(body));
-        set(&mut response, "content-type", "text/html; charset=utf-8");
-        set(
-            &mut response,
-            "content-security-policy",
-            &format!(
-                "default-src 'self' data: blob: https:; \
-                 script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; \
-                 style-src 'self' 'unsafe-inline' data: https:; \
-                 frame-ancestors {reader}; form-action 'none'; base-uri 'none'"
-            ),
-        );
-        set(&mut response, "x-content-type-options", "nosniff");
-        privacy_headers(&mut response);
-        // Content-addressed path, so the bytes behind a URL never change.
-        set(
-            &mut response,
-            "cache-control",
-            "public, max-age=31536000, immutable",
-        );
         response
     }
 
@@ -3990,12 +4008,10 @@ struct Upload {
 }
 
 /// What one call to the share route asks for. Every field is optional, and
-/// several may arrive together: the dialog changes visibility and mints a
-/// link in one round trip when somebody does both.
+/// several may arrive together: a revoke and a mint in one round trip is a
+/// rotation asked for the long way.
 #[derive(Deserialize, Default)]
 struct ShareRequest {
-    #[serde(default)]
-    visibility: Option<String>,
     /// A role word (`read`/`reader`, `comment`/`commenter`, `edit`/`editor`),
     /// or, for a legacy row, a login or the first characters of a link's id.
     #[serde(default)]
@@ -4120,29 +4136,6 @@ pub fn mint_link_key() -> String {
 
 pub fn slug_pattern(config: &Configuration) -> regex::Regex {
     regex::Regex::new(&config.slug_pattern).expect("the slug pattern is a valid expression")
-}
-
-/// The page that fetches a document from the bucket and becomes it.
-/// document.write rather than innerHTML, because a document may carry scripts
-/// of its own -- a chart, a map -- and innerHTML would leave them inert. The
-/// agent is added afterwards, so it is there whichever way the bytes arrived.
-fn direct_document(url: &str, reader: &str) -> Vec<u8> {
-    let quoted_url = serde_json::to_string(url).unwrap_or_default();
-    let quoted_agent = serde_json::to_string(&docs_origin_agent(reader)).unwrap_or_default();
-    format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>\n<script>\n(async () => {{\n  \
-         const response = await fetch({quoted_url}, {{ mode: \"cors\" }});\n  if (!response.ok) {{\n    \
-         document.body.textContent = \"This document could not be fetched from its bucket.\";\n    return;\n  }}\n  \
-         const html = await response.text();\n  document.open();\n  document.write(html);\n  \
-         const agent = document.createElement(\"script\");\n  agent.src = {quoted_agent};\n  \
-         document.body.appendChild(agent);\n  document.close();\n}})();\n</script>\n</body></html>"
-    )
-    .into_bytes()
-}
-
-/// The agent's own URL, carrying the origin it may talk to.
-fn docs_origin_agent(reader: &str) -> String {
-    format!("/agent.js?reader={}", url_escape(reader))
 }
 
 /// Appends the in-frame half of the reader to a document. The stored bytes are

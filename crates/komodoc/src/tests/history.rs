@@ -116,9 +116,26 @@ fn unb64(text: &str) -> Vec<u8> {
 }
 
 impl Editing {
-    /// Dials, joins, and takes the document the server hands back.
+    /// Dials, joins, and takes the document the server hands back, as the
+    /// owner or a signed-in caller (no link key needed).
     async fn join(base: &str, slug: &str, cookie: &str, id: &'static str) -> Editing {
-        let mut socket = dial_websocket_with(base, slug, &format!("Cookie: {cookie}\r\n"))
+        Editing::join_keyed(base, slug, cookie, "", id).await
+    }
+
+    /// The same, carrying a link key too -- what a reader who was sent the
+    /// link `publish` printed holds.
+    async fn join_keyed(
+        base: &str,
+        slug: &str,
+        cookie: &str,
+        key: &str,
+        id: &'static str,
+    ) -> Editing {
+        let extra = format!(
+            "Cookie: {cookie}\r\n{}: {key}\r\n",
+            crate::server::LINK_HEADER
+        );
+        let mut socket = dial_websocket_with(base, slug, &extra)
             .await
             .expect("the socket opens");
         assert_eq!(socket.read().await["type"], "hello");
@@ -209,7 +226,9 @@ macro_rules! needs_browser {
 async fn an_acknowledged_edit_survives_a_restart() {
     needs_browser!();
     let server = new_test_server().await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let mut editor = Editing::join(&server.url, &slug, &session_as(TEST_PUBLISHER), "author").await;
     assert_eq!(
         editor.text(),
@@ -233,9 +252,16 @@ async fn an_acknowledged_edit_survives_a_restart() {
     let ack = editor.expect("y-ack").await;
     assert!(ack["seq"].as_i64().unwrap_or(0) >= 1, "got {ack}");
 
-    // A different process over the same storage.
+    // A different process over the same storage. This reader holds the link
+    // `publish` printed, not merely the slug.
     let (restarted, _instance) = server_over(server.dir.path(), Configuration::default()).await;
-    let (status, payload) = get_json(&restarted, &format!("/api/documents/{slug}/source")).await;
+    let (status, payload) = get_json_keyed(
+        "",
+        &key,
+        &restarted,
+        &format!("/api/documents/{slug}/source"),
+    )
+    .await;
     assert_eq!(status, 200, "{payload}");
     assert!(
         text(&payload, "source").starts_with("typed on the server's document."),
@@ -299,9 +325,12 @@ async fn an_unacknowledged_edit_synchronises_after_a_reconnect() {
 async fn a_reader_receives_the_document_and_cannot_change_it() {
     needs_browser!();
     let server = new_test_server().await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
-    // No cookie: not the publisher, so not an editor.
-    let mut reader = Editing::join(&server.url, &slug, "", "reader").await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    // No cookie, and no account: a reader who holds the link `publish`
+    // printed, not the publisher, so not an editor.
+    let mut reader = Editing::join_keyed(&server.url, &slug, "", &key, "reader").await;
     assert_eq!(reader.text(), TEST_MARKDOWN, "a reader is given the text");
 
     reader.type_at(0, "a reader typing. ").await;
@@ -661,9 +690,12 @@ async fn a_peer_that_cannot_keep_up_is_disconnected() {
         true,
     )
     .await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
-    // One socket that never reads a frame.
-    let _silent = dial_websocket(&server.url, &slug).await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    // One socket that never reads a frame, held by a reader on the link
+    // `publish` printed.
+    let _silent = dial_websocket_keyed(&server.url, &slug, &key).await;
     let room = server.instance.rooms.get(&slug).await;
     assert_eq!(room.editors().await, 1);
 
@@ -696,8 +728,10 @@ async fn a_large_document_is_fetched_rather_than_framed() {
         true,
     )
     .await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
-    let mut socket = dial_websocket(&server.url, &slug).await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    let mut socket = dial_websocket_keyed(&server.url, &slug, &key).await;
     socket.read().await; // hello
     socket.write(json!({"type": "y-open"})).await;
     let state = socket.read().await;
@@ -711,6 +745,7 @@ async fn a_large_document_is_fetched_rather_than_framed() {
     let response = client()
         .get(format!("{}{reference}", server.url))
         .header("x-komodoc-client", "1")
+        .header(crate::server::LINK_HEADER, &key)
         .send()
         .await
         .unwrap();
@@ -724,6 +759,7 @@ async fn a_large_document_is_fetched_rather_than_framed() {
     let refused = client()
         .get(format!("{}{forged}", server.url))
         .header("x-komodoc-client", "1")
+        .header(crate::server::LINK_HEADER, &key)
         .send()
         .await
         .unwrap();
@@ -808,15 +844,19 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
     write_the_old_layout(dir.path(), slug).await;
 
     let (base, instance) = server_over(dir.path(), Configuration::default()).await;
+    // This entry names a publisher on record, so the bare URL opens it only
+    // for them -- exactly the account the old layout recorded here.
+    let owner = session_as(TEST_PUBLISHER);
 
     // The document opens, from the source the old layout kept.
-    let (status, payload) = get_json(&base, &format!("/api/documents/{slug}/source")).await;
+    let (status, payload) =
+        get_json_as(&owner, &base, &format!("/api/documents/{slug}/source")).await;
     assert_eq!(status, 200, "{payload}");
     assert_eq!(text(&payload, "source"), TEST_MARKDOWN);
     assert_eq!(text(&payload, "format"), "markdown");
 
     // Its comments are still on it.
-    let (_, listing) = get_json(&base, &format!("/api/documents/{slug}/comments")).await;
+    let (_, listing) = get_json_as(&owner, &base, &format!("/api/documents/{slug}/comments")).await;
     let comments = listing["comments"].as_array().unwrap();
     assert_eq!(comments.len(), 1, "the comments did not survive: {listing}");
     assert_eq!(comments[0]["body"], "a note from before");
@@ -974,7 +1014,13 @@ async fn an_old_html_document_is_seeded_from_its_page() {
         .unwrap();
 
     let (base, _instance) = server_over(dir.path(), Configuration::default()).await;
-    let (status, payload) = get_json(&base, &format!("/api/documents/{slug}/source")).await;
+    // This entry names a publisher on record, so it opens only for them.
+    let (status, payload) = get_json_as(
+        &session_as(TEST_PUBLISHER),
+        &base,
+        &format!("/api/documents/{slug}/source"),
+    )
+    .await;
     assert_eq!(status, 200, "{payload}");
     assert_eq!(text(&payload, "source"), page);
     assert_eq!(text(&payload, "format"), "html");
@@ -1160,7 +1206,10 @@ async fn the_browser_module_and_the_server_agree() {
 async fn the_frame_is_a_shell_for_what_the_browser_renders() {
     let server = new_test_server().await;
     let slug = text(&publish_with_source(&server.url).await, "slug");
-    let response = on_docs_host(&server.url, &format!("/raw/{slug}/")).await;
+    // With a frame token, so that what is being checked is the format rule
+    // and not the token rule.
+    let query = frame_query(&session_as(TEST_PUBLISHER), "", &server.url, &slug).await;
+    let response = on_docs_host(&server.url, &format!("/raw/{slug}/?{query}")).await;
     assert_eq!(response.status().as_u16(), 200);
     let body = response.text().await.unwrap();
     assert!(

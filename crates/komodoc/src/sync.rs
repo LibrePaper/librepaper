@@ -31,8 +31,8 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::cli::{require_token_for, resolve_identifier, server_from};
-use crate::http::{detail_of, get_with_token, text};
+use crate::cli::{link_key, require_token_for, resolve_identifier, server_from, stored_token_for};
+use crate::http::{detail_of, get_as, text, Credentials, KEY_HEADER};
 use crate::room::{decode_update, encode_update};
 use crate::session;
 use crate::util::die;
@@ -49,19 +49,33 @@ const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
 const RECONNECT_FIRST: Duration = Duration::from_millis(500);
 const RECONNECT_MOST: Duration = Duration::from_secs(30);
 
-pub async fn sync_document(identifier: &str, file: &str, server_flag: String, interval: String) {
+pub async fn sync_document(
+    identifier: &str,
+    file: &str,
+    server_flag: String,
+    interval: String,
+    key: String,
+) {
     let server = server_from(&server_flag);
     let every = parse_interval(&interval).unwrap_or_else(|err| die(err));
-    let token = require_token_for(&server);
-    let slug = resolve_identifier(identifier, &server).await;
+    // A link is a credential in its own right: with one, a sign-in is sent
+    // if there is one and not insisted on, since the link authorizes and the
+    // account only attributes. Without one, the sign-in is the whole story.
+    let key = link_key(&key);
+    let token = if key.is_empty() {
+        require_token_for(&server)
+    } else {
+        stored_token_for(&server)
+    };
+    let slug = resolve_identifier(identifier, &server, &key).await;
 
     // Only an editor may change a document's source, in the browser and here.
     // Asked before anything is opened, because the server drops anyone else's
     // `y-*` messages silently and a client that ran anyway would sit there
     // doing nothing.
-    let (status, document) = get_with_token(
+    let (status, document) = get_as(
         &format!("{server}/api/documents/{slug}"),
-        &token,
+        &Credentials::new(&token, &key),
         Duration::from_secs(30),
     )
     .await
@@ -92,7 +106,8 @@ pub async fn sync_document(identifier: &str, file: &str, server_flag: String, in
     let _watcher = watch(&target, events).unwrap_or_else(|err| die(err));
 
     let mut wait = RECONNECT_FIRST;
-    let mut client = Client::new(target.clone(), every, server.clone(), token.clone());
+    let mut client =
+        Client::new(target.clone(), every, server.clone(), token.clone()).with_key(&key);
     loop {
         match client.run(&slug, &mut watched).await {
             // The room closed the socket and said why -- the document was
@@ -154,6 +169,9 @@ pub struct Client {
     /// to fetch something over HTTP rather than read it off the socket.
     server: String,
     token: String,
+    /// The share link's key, when the client joined by one; sent beside the
+    /// bearer on the upgrade and on the one fetch, the way a browser sends it.
+    key: String,
     /// What is to be sent, in order. Every method below writes here rather
     /// than to the socket, so the whole of this client -- the merge included
     /// -- can be driven by a test with no socket at all, and so that nothing
@@ -168,6 +186,7 @@ impl Client {
             every,
             server,
             token,
+            key: String::new(),
             outbox: Vec::new(),
             doc: session::new_doc(),
             base: String::new(),
@@ -178,6 +197,12 @@ impl Client {
             wants_checkpoint: false,
             seq: 0,
         }
+    }
+
+    /// The same client, joining by a share link's key.
+    pub fn with_key(mut self, key: &str) -> Client {
+        self.key = key.to_string();
+        self
     }
 
     /// One message to send. The socket is drained from `run`; nothing else
@@ -208,12 +233,22 @@ impl Client {
         let mut request = socket_url(&self.server, slug)
             .into_client_request()
             .map_err(|err| format!("{err}"))?;
-        request.headers_mut().insert(
-            "authorization",
-            format!("Bearer {}", self.token)
-                .parse()
-                .map_err(|_| "the stored token is not a header value".to_string())?,
-        );
+        if !self.token.is_empty() {
+            request.headers_mut().insert(
+                "authorization",
+                format!("Bearer {}", self.token)
+                    .parse()
+                    .map_err(|_| "the stored token is not a header value".to_string())?,
+            );
+        }
+        if !self.key.is_empty() {
+            request.headers_mut().insert(
+                KEY_HEADER,
+                self.key
+                    .parse()
+                    .map_err(|_| "the link key is not a header value".to_string())?,
+            );
+        }
         let (socket, _) = tokio_tungstenite::connect_async(request)
             .await
             .map_err(|err| format!("could not join the session: {err}"))?;
@@ -326,7 +361,9 @@ impl Client {
             // fetch it from, which is the path the browser takes too.
             "y-state" => {
                 let update = match message.get("ref").and_then(Value::as_str) {
-                    Some(reference) => fetch_state(&self.server, reference, &self.token).await?,
+                    Some(reference) => {
+                        fetch_state(&self.server, reference, &self.token, &self.key).await?
+                    }
                     None => decode_update(&text(&message, "update")).unwrap_or_default(),
                 };
                 if !update.is_empty() {
@@ -597,17 +634,23 @@ async fn send(write: &mut Socket, payload: Value) -> Result<(), String> {
 
 /// The document's whole state, when it was too large for a text frame. Same
 /// origin, signed and short-lived, and the signature is not the authorization:
-/// the bearer says who is asking, as it does everywhere else.
-async fn fetch_state(server: &str, reference: &str, token: &str) -> Result<Vec<u8>, String> {
+/// the bearer and the link key say who is asking, as they do everywhere else.
+async fn fetch_state(
+    server: &str,
+    reference: &str,
+    token: &str,
+    key: &str,
+) -> Result<Vec<u8>, String> {
     let target = if reference.starts_with("http") {
         reference.to_string()
     } else {
         format!("{server}{reference}")
     };
-    let response = reqwest::Client::new()
-        .get(&target)
-        .header("x-komodoc-client", "cli")
-        .header("authorization", format!("Bearer {token}"))
+    let mut request = reqwest::Client::new().get(&target);
+    for (name, value) in Credentials::new(token, key).headers() {
+        request = request.header(name, value);
+    }
+    let response = request
         .send()
         .await
         .map_err(|err| format!("could not fetch the document: {err}"))?;

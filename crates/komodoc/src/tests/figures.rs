@@ -40,6 +40,17 @@ async fn put_asset(cookie: &str, base: &str, slug: &str, body: Vec<u8>) -> (u16,
 }
 
 async fn get_asset(cookie: &str, base: &str, slug: &str, sha: &str) -> (u16, Vec<u8>) {
+    get_asset_keyed(cookie, "", base, slug, sha).await
+}
+
+/// The same, carrying a link key too, for a caller who is not the owner.
+async fn get_asset_keyed(
+    cookie: &str,
+    key: &str,
+    base: &str,
+    slug: &str,
+    sha: &str,
+) -> (u16, Vec<u8>) {
     // The header a browser cannot attach across origins without a preflight
     // that is never granted, which is what marks a same-origin request. Every
     // API route refuses without it, and a figure is not an exception.
@@ -48,6 +59,9 @@ async fn get_asset(cookie: &str, base: &str, slug: &str, sha: &str) -> (u16, Vec
         .header("x-komodoc-client", "1");
     if !cookie.is_empty() {
         request = request.header("cookie", cookie);
+    }
+    if !key.is_empty() {
+        request = request.header(crate::server::LINK_HEADER, key);
     }
     let response = request.send().await.expect("a response");
     let status = response.status().as_u16();
@@ -58,11 +72,19 @@ async fn get_asset(cookie: &str, base: &str, slug: &str, sha: &str) -> (u16, Vec
 /// request. Every route below refuses without it, which is rule A and not a
 /// property of figures.
 async fn get_same_origin(cookie: &str, base: &str, path: &str) -> (u16, Value) {
+    get_same_origin_keyed(cookie, "", base, path).await
+}
+
+/// The same, carrying a link key too, for a caller who is not the owner.
+async fn get_same_origin_keyed(cookie: &str, key: &str, base: &str, path: &str) -> (u16, Value) {
     let mut request = client()
         .get(format!("{base}{path}"))
         .header("x-komodoc-client", "1");
     if !cookie.is_empty() {
         request = request.header("cookie", cookie);
+    }
+    if !key.is_empty() {
+        request = request.header(crate::server::LINK_HEADER, key);
     }
     let response = request.send().await.expect("a response");
     let status = response.status().as_u16();
@@ -74,7 +96,9 @@ async fn get_same_origin(cookie: &str, base: &str, path: &str) -> (u16, Value) {
 #[tokio::test]
 async fn a_figure_goes_up_and_comes_back() {
     let server = new_test_server().await;
-    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let bytes = png(1);
 
     let (status, answer) = put_asset(
@@ -93,7 +117,8 @@ async fn a_figure_goes_up_and_comes_back() {
     );
     assert_eq!(answer["size"], bytes.len());
 
-    let (status, back) = get_asset("", &server.url, &slug, &sha).await;
+    // A reader holds the link `publish` printed, not merely the slug.
+    let (status, back) = get_asset_keyed("", &key, &server.url, &slug, &sha).await;
     assert_eq!(status, 200);
     assert_eq!(back, bytes, "what came back is not what went up");
 }
@@ -101,13 +126,16 @@ async fn a_figure_goes_up_and_comes_back() {
 #[tokio::test]
 async fn a_figure_is_cached_for_a_year_because_its_name_is_its_bytes() {
     let server = new_test_server().await;
-    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let (_, answer) = put_asset(&session_as(TEST_PUBLISHER), &server.url, &slug, png(2)).await;
     let sha = text(&answer, "sha");
 
     let response = client()
         .get(format!("{}/api/documents/{slug}/assets/{sha}", server.url))
         .header("x-komodoc-client", "1")
+        .header(crate::server::LINK_HEADER, &key)
         .send()
         .await
         .expect("a response");
@@ -163,31 +191,19 @@ async fn only_an_editor_may_put_a_figure() {
 }
 
 #[tokio::test]
-async fn a_private_documents_figures_are_as_private_as_its_text() {
+async fn a_documents_figures_are_as_closed_as_its_text() {
     let server = new_test_server().await;
     let owner = session_as(TEST_PUBLISHER);
     let slug = text(&publish_test_document(&server.url).await, "slug");
     let (_, answer) = put_asset(&owner, &server.url, &slug, png(5)).await;
     let sha = text(&answer, "sha");
 
-    // While the document is readable by link, so is its figure.
-    assert_eq!(get_asset("", &server.url, &slug, &sha).await.0, 200);
-
-    let (status, said) = post_as(
-        &owner,
-        &server.url,
-        &format!("/api/documents/{slug}/share"),
-        json!({"visibility": "private"}),
-    )
-    .await;
-    assert_eq!(status, 200, "{said}");
-
-    // Now a stranger gets what they get for the document itself: nothing, and
+    // A stranger gets what they get for the document itself: nothing, and
     // no hint that there is anything to get.
     assert_eq!(
         get_asset("", &server.url, &slug, &sha).await.0,
         404,
-        "a private document's figure was served to a stranger"
+        "a document's figure was served to a stranger"
     );
     assert_eq!(
         get_asset(&session_as("stranger"), &server.url, &slug, &sha)
@@ -675,24 +691,34 @@ async fn the_history_says_which_paths_each_checkpoint_moved() {
 async fn a_history_is_as_readable_as_the_document_it_belongs_to() {
     let server = new_test_server().await;
     let owner = session_as(TEST_PUBLISHER);
-    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
     let path = format!("/api/documents/{slug}/history");
+    let key = read_key_of(&document);
 
-    // While the document is readable by link, so is what it used to say.
-    assert_eq!(get_same_origin("", &server.url, &path).await.0, 200);
+    // Whoever holds the read link `publish` printed can read what the
+    // document used to say, exactly as they can read the document.
+    assert_eq!(
+        get_same_origin_keyed("", &key, &server.url, &path).await.0,
+        200,
+        "a link holder was refused the history"
+    );
 
+    // The bare URL never opened the history for a stranger, and revoking the
+    // read link -- the only thing that ever let a stranger in -- leaves them
+    // with nothing, same as it does for the document.
     let (status, said) = post_as(
         &owner,
         &server.url,
         &format!("/api/documents/{slug}/share"),
-        json!({"visibility": "private"}),
+        json!({"revoke": "reader"}),
     )
     .await;
     assert_eq!(status, 200, "{said}");
     assert_eq!(
-        get_same_origin("", &server.url, &path).await.0,
+        get_same_origin_keyed("", &key, &server.url, &path).await.0,
         404,
-        "a private document's history was served to a stranger"
+        "a revoked link still read the history"
     );
     assert_eq!(get_same_origin(&owner, &server.url, &path).await.0, 200);
 }

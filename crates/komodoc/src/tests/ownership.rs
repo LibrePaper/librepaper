@@ -260,26 +260,71 @@ async fn deleting_another_publishers_document_is_a_not_found() {
 }
 
 // Rights are answered by one function and read by the reader from one field:
-// the highest role a caller holds. The owner holds `owner`; anyone else on a
-// deployment that lets anyone comment holds `commenter`; on one that does not,
-// `reader`.
+// the highest role a caller holds. The owner holds `owner` on the bare URL,
+// which opens for nobody else any more; a stranger holding the read link
+// `publish` printed is a `reader`, and one holding a commenter link the owner
+// minted is a `commenter`.
 #[tokio::test]
 async fn the_document_endpoint_answers_a_role() {
     let server = any_publisher_server().await;
-    let slug = publish_as(&server.url, "bob", "Bob Paper", None).await;
-    for (login, wanted) in [("bob", "owner"), ("alice", "commenter")] {
-        let (status, payload) = get_json_as(
-            &session_as(login),
-            &server.url,
-            &format!("/api/documents/{slug}"),
-        )
-        .await;
-        assert_eq!(status, 200, "{payload}");
-        assert_eq!(text(&payload, "role"), wanted, "@{login}: {payload}");
-    }
+    let (status, document) = post_as(
+        &session_as("bob"),
+        &server.url,
+        "/api/documents",
+        json!({"title": "Bob Paper", "html": "<p>Bob Paper</p>"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{document}");
+    let slug = text(&document, "slug");
+    let read_key = read_key_of(&document);
+
+    let (status, payload) = get_json_as(
+        &session_as("bob"),
+        &server.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(text(&payload, "role"), "owner", "@bob: {payload}");
+
+    // Alice with no link at all cannot read this document: the bare URL is
+    // not one, and reaching it only tells the owner apart.
+    let (status, payload) = get_json_as(
+        &session_as("alice"),
+        &server.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
+    assert_eq!(
+        status, 404,
+        "@alice with no link read the document: {payload}"
+    );
+
+    // With the read link, she is a reader.
+    let (status, payload) = get_json_keyed(
+        &session_as("alice"),
+        &read_key,
+        &server.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(text(&payload, "role"), "reader", "@alice: {payload}");
+
+    // With a commenter link the owner minted, she is a commenter.
+    let commenter_key = comment_key(&session_as("bob"), &server.url, &slug).await;
+    let (status, payload) = get_json_keyed(
+        &session_as("alice"),
+        &commenter_key,
+        &server.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(text(&payload, "role"), "commenter", "@alice: {payload}");
 
     // A deployment that names its commenters is a ceiling: a stranger there
-    // may read and nothing else.
+    // may read and nothing else, even holding a commenter link.
     let closed = test_server_with(
         Configuration::default(),
         Policy::parse("any"),
@@ -287,9 +332,19 @@ async fn the_document_endpoint_answers_a_role() {
         true,
     )
     .await;
-    let slug = publish_as(&closed.url, "bob", "Bob Paper", None).await;
-    let (_, payload) = get_json_as(
+    let (status, document) = post_as(
+        &session_as("bob"),
+        &closed.url,
+        "/api/documents",
+        json!({"title": "Bob Paper", "html": "<p>Bob Paper</p>"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{document}");
+    let slug = text(&document, "slug");
+    let commenter_key = comment_key(&session_as("bob"), &closed.url, &slug).await;
+    let (_, payload) = get_json_keyed(
         &session_as("alice"),
+        &commenter_key,
         &closed.url,
         &format!("/api/documents/{slug}"),
     )

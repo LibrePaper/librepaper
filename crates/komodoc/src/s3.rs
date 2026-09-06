@@ -186,57 +186,6 @@ impl S3Store {
         signing_key_for(&self.secret_key, day, &self.region, "s3")
     }
 
-    /// A URL that fetches one object and expires. It is what lets the bytes of
-    /// a document go from the bucket to the reader without passing through
-    /// the server. The URL is a bearer token for its lifetime, which is why
-    /// the lifetime is short.
-    pub fn presign_get(&self, key: &str, lifetime_seconds: u64) -> Option<String> {
-        let (stamp, day) = amz_stamps(now_unix());
-        let scope = format!("{day}/{}/s3/aws4_request", self.region);
-        let mut query = vec![
-            (
-                "X-Amz-Algorithm".to_string(),
-                "AWS4-HMAC-SHA256".to_string(),
-            ),
-            (
-                "X-Amz-Credential".to_string(),
-                format!("{}/{scope}", self.access_key),
-            ),
-            ("X-Amz-Date".to_string(), stamp.clone()),
-            ("X-Amz-Expires".to_string(), lifetime_seconds.to_string()),
-            ("X-Amz-SignedHeaders".to_string(), "host".to_string()),
-        ];
-        let target = url::Url::parse(&self.url(key)).ok()?;
-        let host = match target.port() {
-            Some(port) => format!("{}:{port}", target.host_str()?),
-            None => target.host_str()?.to_string(),
-        };
-        let canonical = [
-            "GET".to_string(),
-            // Same reasoning as in `send`: `target` came from `url()`, so
-            // `target.path()` is already singly encoded and must not be
-            // escaped a second time.
-            canonical_path(&target),
-            canonical_query(&query),
-            format!("host:{host}\n"),
-            "host".to_string(),
-            "UNSIGNED-PAYLOAD".to_string(),
-        ]
-        .join("\n");
-        let to_sign = [
-            "AWS4-HMAC-SHA256",
-            &stamp,
-            &scope,
-            &hex::encode(Sha256::digest(canonical.as_bytes())),
-        ]
-        .join("\n");
-        let signature = hex::encode(hmac_sha256(&self.signing_key(&day), to_sign.as_bytes()));
-        query.push(("X-Amz-Signature".to_string(), signature));
-        let mut base = target.clone();
-        base.set_query(None);
-        Some(format!("{base}?{}", canonical_query(&query)))
-    }
-
     /// What a bucket turned out to support. A deployment must not discover on
     /// its first upload that its index cannot be written safely, so this runs
     /// at startup and is printed.
@@ -312,24 +261,6 @@ impl S3Store {
         let _ = self.delete(&[SCRATCH.to_string()]).await;
         report.conditional_writes = true;
         report
-    }
-
-    /// The two things an operator has to set on their bucket, printed rather
-    /// than described: a CORS rule, if documents are to be fetched by readers
-    /// directly, and a credential scoped to this prefix rather than to the
-    /// whole account.
-    pub fn advice(&self, origin: &str) -> String {
-        format!(
-            "\nTo let readers fetch documents straight from {bucket}, allow this origin:\n\n  \
-             [{{\"AllowedOrigins\": [\"{origin}\"],\n    \"AllowedMethods\": [\"GET\", \"HEAD\"],\n    \
-             \"AllowedHeaders\": [\"*\"],\n    \"ExposeHeaders\": [\"ETag\"],\n    \"MaxAgeSeconds\": 3600}}]\n\n\
-             And a credential that can reach these keys and nothing else:\n\n  \
-             {{\"Version\": \"2012-10-17\",\n   \"Statement\": [{{\"Effect\": \"Allow\",\n     \
-             \"Action\": [\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\", \"s3:ListBucket\"],\n     \
-             \"Resource\": [\"arn:aws:s3:::{bucket}\", \"arn:aws:s3:::{bucket}/{prefix}*\"]}}]}}\n",
-            bucket = self.bucket,
-            prefix = self.prefix,
-        )
     }
 }
 
@@ -487,10 +418,6 @@ impl BlobStore for S3Store {
     fn describe(&self) -> String {
         format!("{}/{}/{}", self.endpoint, self.bucket, self.prefix)
     }
-
-    fn presigned_get(&self, key: &str, lifetime_seconds: u64) -> Option<String> {
-        self.presign_get(key, lifetime_seconds)
-    }
 }
 
 /// ListObjectsV2's answer, in the fields this needs. Read with string
@@ -593,9 +520,8 @@ pub fn escape_path(path: &str) -> String {
 /// encoding, byte for byte, not the raw key. Escaping it again is exactly
 /// the bug this function exists to not repeat: it would turn the `%20` the
 /// request actually carries into `%2520` in the string that gets signed,
-/// so the signature would cover a path nobody sent. Both `send` and
-/// `presign_get` route through this one function so there is a single place
-/// that can make that mistake.
+/// so the signature would cover a path nobody sent. `send` routes through
+/// this one function so there is a single place that can make that mistake.
 pub(crate) fn canonical_path(parsed: &url::Url) -> String {
     parsed.path().to_string()
 }

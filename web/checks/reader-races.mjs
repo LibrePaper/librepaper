@@ -62,7 +62,7 @@ const context = (values) => vm.createContext({
   const ctx = context({
     navigationGeneration: 0, renderingRequest: 0, issued: 0, viewing: null,
     historyProblem: "", frameShowsCheckpoint: false, editing: false,
-    sourceFormat: "html", visibility: "public", framedSource: "live",
+    sourceFormat: "html", framedSource: "live",
     SLUG: "doc", KEY: "key", keyHeaders: () => ({}), dropHeldRendering: () => {},
     paintPreview: () => Promise.resolve(), navigateFrame: () => {},
     history: { checkpoint: () => a.promise },

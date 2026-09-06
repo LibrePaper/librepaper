@@ -9,7 +9,12 @@ pub const TEST_MARKDOWN: &str = "# My Paper\n\nHello *world*.\n";
 
 /// Asks for a document's editable source carrying whatever cookie is given.
 async fn get_source_as(cookie: &str, base: &str, slug: &str) -> (u16, Value) {
-    get_json_as(cookie, base, &format!("/api/documents/{slug}/source")).await
+    get_source_keyed(cookie, "", base, slug).await
+}
+
+/// The same, carrying a link key too, for a caller who is not the owner.
+async fn get_source_keyed(cookie: &str, key: &str, base: &str, slug: &str) -> (u16, Value) {
+    get_json_keyed(cookie, key, base, &format!("/api/documents/{slug}/source")).await
 }
 
 /// Publishes a document the way the CLI publishes markdown: the rendered
@@ -128,9 +133,14 @@ async fn a_document_is_charged_for_its_source_and_its_history() {
 #[tokio::test]
 async fn the_source_is_readable_by_any_reader() {
     let server = new_test_server().await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    // A reader is whoever holds the link `publish` printed, not whoever
+    // merely knows the slug: the bare URL opens nothing for anybody but the
+    // owner now.
+    let key = read_key_of(&document);
     for cookie in ["", &session_as("stranger")] {
-        let (status, payload) = get_source_as(cookie, &server.url, &slug).await;
+        let (status, payload) = get_source_keyed(cookie, &key, &server.url, &slug).await;
         assert_eq!(
             status, 200,
             "source read with cookie {cookie:?} got {status} {payload}"
@@ -160,7 +170,9 @@ async fn an_unknown_source_format_is_refused() {
 #[tokio::test]
 async fn saving_a_revision_keeps_comments() {
     let server = new_test_server().await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let (status, _) = post(
         &server.url,
         &format!("/api/documents/{slug}/comments"),
@@ -179,7 +191,13 @@ async fn saving_a_revision_keeps_comments() {
     .await;
     assert_eq!(status, 201, "saving returned {status}: {document}");
 
-    let (_, listing) = get_json(&server.url, &format!("/api/documents/{slug}/comments")).await;
+    let (_, listing) = get_json_keyed(
+        "",
+        &key,
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+    )
+    .await;
     let comments = listing["comments"].as_array().unwrap();
     assert!(
         comments.len() == 1 && comments[0]["body"] == "still here?",
@@ -353,9 +371,11 @@ async fn a_state_too_large_to_send_inline_is_fetched_with_the_headers_the_shell_
         true,
     )
     .await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
 
-    let mut socket = dial_websocket(&server.url, &slug).await;
+    let mut socket = dial_websocket_keyed(&server.url, &slug, &key).await;
     assert_eq!(socket.read().await["type"], "hello");
     socket.write(json!({"type": "y-open", "vector": ""})).await;
     let state = socket.read().await;
@@ -366,10 +386,13 @@ async fn a_state_too_large_to_send_inline_is_fetched_with_the_headers_the_shell_
         "the state came inline, so this proves nothing: {state}"
     );
 
-    // What the shell sends: the same-origin marker every other call carries.
+    // What the shell sends: the same-origin marker every other call carries,
+    // and the read key this reader was sent, since the reference is fetched
+    // by whoever holds it rather than as the document's owner.
     let response = client()
         .get(format!("{}{reference}", server.url))
         .header("x-komodoc-client", "shell")
+        .header(crate::server::LINK_HEADER, &key)
         .send()
         .await
         .expect("a response");
@@ -384,9 +407,12 @@ async fn a_state_too_large_to_send_inline_is_fetched_with_the_headers_the_shell_
     );
 
     // And without it, refused -- which is rule A and not a property of this
-    // route, and is exactly what the reader was walking into.
+    // route, and is exactly what the reader was walking into. The key still
+    // rides along, so it is the missing marker that is on trial here rather
+    // than the read permission this reader does hold.
     let response = client()
         .get(format!("{}{reference}", server.url))
+        .header(crate::server::LINK_HEADER, &key)
         .send()
         .await
         .expect("a response");

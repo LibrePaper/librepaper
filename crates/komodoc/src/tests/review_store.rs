@@ -30,11 +30,11 @@ async fn publish(store: &store::Store, slug: &str, title: &str) {
 }
 
 /// R02: this is `review_index_conflict_stays_stale` inverted. Two stores each
-/// open on "probe" already published; the first privatises the document, and
+/// open on "probe" already published; the first names the owner, and
 /// the second's own `modify` must succeed on its first call -- by reloading
 /// and retrying once internally, not by the caller retrying -- after which
-/// `get` on the second store must report the visibility the first store set,
-/// not the stale value it started with.
+/// `get` on the second store must report the name the first store set, not
+/// the stale value it started with.
 #[tokio::test]
 async fn review_index_conflict_retries_and_converges() {
     let (_dir, blobs, config) = shared_blobs();
@@ -48,7 +48,7 @@ async fn review_index_conflict_retries_and_converges() {
 
     first
         .modify("probe", |e| {
-            e.visibility = "private".into();
+            e.publisher_name = "Alice".into();
             Ok(())
         })
         .await
@@ -62,10 +62,7 @@ async fn review_index_conflict_retries_and_converges() {
         .await
         .unwrap();
     assert_eq!(updated.title, "x");
-    assert_eq!(
-        second.get("probe").await.unwrap().visibility,
-        store::VISIBILITY_PRIVATE
-    );
+    assert_eq!(second.get("probe").await.unwrap().publisher_name, "Alice");
 }
 
 /// R02: a document published on one instance becomes visible on another

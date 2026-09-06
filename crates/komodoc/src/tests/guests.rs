@@ -109,9 +109,8 @@ async fn opening_without_a_live_link_pins_nothing() {
         get_json_keyed("", &key, &server.url, &format!("/api/documents/{slug}")).await;
     assert_eq!(status, 200, "{document}");
 
-    // Signed in, but with no key at all: this document is at the default
-    // `link` visibility, so the read still succeeds, but there is no link
-    // behind it to pin a guest against.
+    // Signed in, but with no key at all: the bare URL is not a link, so the
+    // read is refused, and there is nothing to pin a guest against.
     let (status, document) = get_json_keyed(
         &session_as("carol"),
         "",
@@ -119,7 +118,7 @@ async fn opening_without_a_live_link_pins_nothing() {
         &format!("/api/documents/{slug}"),
     )
     .await;
-    assert_eq!(status, 200, "{document}");
+    assert_eq!(status, 404, "{document}");
 
     let entry = server
         .instance

@@ -95,15 +95,15 @@ fn a_keyless_legacy_link_says_to_reset_it() {
 
 /* --------------------------------------------------------------- listing */
 
-/// With no flags, `komodoc share` prints the visibility and then one row per
-/// role in the fixed order read, comment, edit -- the order a person deciding
-/// what to change would read them in -- regardless of the order the
-/// payload's own object keys happen to be in.
+/// With no flags, `komodoc share` prints the slug, the owner's own link, and
+/// then one row per role in the fixed order read, comment, edit -- the order
+/// a person deciding what to change would read them in -- regardless of the
+/// order the payload's own object keys happen to be in.
 #[test]
-fn the_no_flag_listing_prints_visibility_then_roles_in_order() {
+fn the_no_flag_listing_prints_the_owner_then_roles_in_order() {
     let payload = json!({
         "slug": "c9k",
-        "visibility": "link",
+        "url": "/docs/c9k",
         "links": {
             "editor": {"key": "ek", "url": "/docs/c9k#k=ek", "since": "2026-01-01T00:00:00Z", "until": "", "expired": false},
             "reader": Value::Null,
@@ -111,7 +111,11 @@ fn the_no_flag_listing_prints_visibility_then_roles_in_order() {
         },
     });
     let lines = crate::cli::sharing_report_lines(&payload, "https://example.com", "c9k");
-    assert_eq!(lines[0], "c9k  link");
+    assert_eq!(lines[0], "c9k");
+    assert!(
+        lines[1].contains("owner") && lines[1].contains("https://example.com/docs/c9k "),
+        "the owner's own link is not the first row: {lines:?}"
+    );
     let read_line = lines.iter().position(|l| l.contains("reader")).unwrap();
     let comment_line = lines.iter().position(|l| l.contains("commenter")).unwrap();
     let edit_line = lines.iter().position(|l| l.contains("editor")).unwrap();
@@ -131,7 +135,6 @@ fn the_no_flag_listing_prints_visibility_then_roles_in_order() {
 fn legacy_people_print_under_their_own_heading_only_when_present() {
     let with_legacy = json!({
         "slug": "c9k",
-        "visibility": "private",
         "links": {"reader": Value::Null, "commenter": Value::Null, "editor": Value::Null},
         "legacy": {
             "editors": [{"login": "alice", "since": "2025-05-01T00:00:00Z"}],
@@ -144,11 +147,35 @@ fn legacy_people_print_under_their_own_heading_only_when_present() {
 
     let without_legacy = json!({
         "slug": "c9k",
-        "visibility": "private",
         "links": {"reader": Value::Null, "commenter": Value::Null, "editor": Value::Null},
     });
     let lines = crate::cli::sharing_report_lines(&without_legacy, "https://example.com", "c9k");
     assert!(!lines.iter().any(|l| l.contains("legacy")));
+}
+
+/* --------------------------------------------------------------- --key */
+
+/// `--key` takes the key itself or the whole link it came in, since a link
+/// is what a person has in their clipboard; a URL with no key in its
+/// fragment is an empty key, which is what a plain document URL carries.
+#[test]
+fn key_is_read_from_a_bare_key_or_a_whole_link() {
+    assert_eq!(crate::cli::link_key("abc123"), "abc123");
+    assert_eq!(crate::cli::link_key("  abc123\n"), "abc123");
+    assert_eq!(
+        crate::cli::link_key("https://x.example/docs/c9k#k=abc123"),
+        "abc123"
+    );
+    assert_eq!(
+        crate::cli::link_key("https://x.example/docs/c9k#other=1&k=a%2Bb"),
+        "a+b"
+    );
+    assert_eq!(crate::cli::link_key("https://x.example/docs/c9k"), "");
+    assert_eq!(
+        crate::cli::link_key("https://x.example/docs/c9k#nothing"),
+        ""
+    );
+    assert_eq!(crate::cli::link_key(""), "");
 }
 
 /* --------------------------------------------------------------- --link parsing */

@@ -50,29 +50,77 @@ pub async fn send(
     Ok((status, raw.to_vec()))
 }
 
-/// Encode, post, decode. An empty token sends no authorization header at all,
-/// which is what an unauthenticated call means -- a deployment whose
-/// publishers policy is "anyone" takes uploads with no bearer at all. Without
-/// a bearer, the server treats a request as cookie-authenticated and applies
-/// the cross-site checks in rule A, so the CLI carries the same marker header
-/// the browser shell does; a bearer-carrying call skips those checks
-/// regardless.
+/// The header a share link's key travels in. The browser puts the key in the
+/// URL fragment and sends it this way too; the command line has no fragment
+/// and sends it only this way.
+pub const KEY_HEADER: &str = "x-komodoc-key";
+
+/// Who is asking, as the two things a request can carry: a deployment's
+/// bearer token, which names an account, and a share link's key, which
+/// names a role on one document. Either may be empty. With both, the link
+/// authorizes and the account attributes, exactly as in the browser.
+#[derive(Clone, Debug, Default)]
+pub struct Credentials {
+    pub token: String,
+    pub key: String,
+}
+
+impl Credentials {
+    pub fn token(token: &str) -> Credentials {
+        Credentials {
+            token: token.to_string(),
+            key: String::new(),
+        }
+    }
+
+    pub fn new(token: &str, key: &str) -> Credentials {
+        Credentials {
+            token: token.to_string(),
+            key: key.to_string(),
+        }
+    }
+
+    /// The headers that say who is asking. An empty token sends no
+    /// authorization header at all, which is what an unauthenticated call
+    /// means -- a deployment whose publishers policy is "anyone" takes
+    /// uploads with no bearer at all. Without a bearer, the server treats a
+    /// request as cookie-authenticated and applies the cross-site checks in
+    /// rule A, so the CLI carries the same marker header the browser shell
+    /// does; a bearer-carrying call skips those checks regardless.
+    pub fn headers(&self) -> Vec<(&str, String)> {
+        let mut headers = vec![("x-komodoc-client", "cli".to_string())];
+        if !self.token.is_empty() {
+            headers.push(("authorization", format!("Bearer {}", self.token)));
+        }
+        if !self.key.is_empty() {
+            headers.push((KEY_HEADER, self.key.clone()));
+        }
+        headers
+    }
+}
+
+/// Encode, post, decode, as the account the token names.
 pub async fn post_json(
     target: &str,
     payload: &Value,
     token: &str,
     timeout: Duration,
 ) -> Result<(u16, Value), String> {
+    post_json_as(target, payload, &Credentials::token(token), timeout).await
+}
+
+/// Encode, post, decode, as whoever the credentials say.
+pub async fn post_json_as(
+    target: &str,
+    payload: &Value,
+    who: &Credentials,
+    timeout: Duration,
+) -> Result<(u16, Value), String> {
     let body = serde_json::to_vec(payload)
         .map_err(|err| format!("could not encode the request: {err}"))?;
-    let bearer = format!("Bearer {token}");
-    let mut headers = vec![
-        ("content-type", "application/json"),
-        ("x-komodoc-client", "cli"),
-    ];
-    if !token.is_empty() {
-        headers.push(("authorization", bearer.as_str()));
-    }
+    let owned = who.headers();
+    let mut headers: Vec<(&str, &str)> = vec![("content-type", "application/json")];
+    headers.extend(owned.iter().map(|(name, value)| (*name, value.as_str())));
     let (status, raw) = send(reqwest::Method::POST, target, &headers, Some(body), timeout).await?;
     Ok((status, decode(&raw)))
 }
@@ -114,11 +162,20 @@ pub async fn get_with_token(
     token: &str,
     timeout: Duration,
 ) -> Result<(u16, Value), String> {
-    let bearer = format!("Bearer {token}");
-    let mut headers = vec![("x-komodoc-client", "cli")];
-    if !token.is_empty() {
-        headers.push(("authorization", bearer.as_str()));
-    }
+    get_as(target, &Credentials::token(token), timeout).await
+}
+
+/// A GET as whoever the credentials say: an account, a link, or both.
+pub async fn get_as(
+    target: &str,
+    who: &Credentials,
+    timeout: Duration,
+) -> Result<(u16, Value), String> {
+    let owned = who.headers();
+    let headers: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
     let (status, raw) = send(reqwest::Method::GET, target, &headers, None, timeout).await?;
     Ok((status, decode(&raw)))
 }

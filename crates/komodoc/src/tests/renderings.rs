@@ -61,11 +61,25 @@ async fn put_rendering(
 }
 
 async fn get_rendering(cookie: &str, base: &str, slug: &str, name: &str) -> (u16, Vec<u8>) {
+    get_rendering_keyed(cookie, "", base, slug, name).await
+}
+
+/// The same, carrying a link key too, for a caller who is not the owner.
+async fn get_rendering_keyed(
+    cookie: &str,
+    key: &str,
+    base: &str,
+    slug: &str,
+    name: &str,
+) -> (u16, Vec<u8>) {
     let mut request = client()
         .get(format!("{base}/api/documents/{slug}/renderings/{name}"))
         .header("x-komodoc-client", "1");
     if !cookie.is_empty() {
         request = request.header("cookie", cookie);
+    }
+    if !key.is_empty() {
+        request = request.header(crate::server::LINK_HEADER, key);
     }
     let response = request.send().await.expect("a response");
     let status = response.status().as_u16();
@@ -75,11 +89,19 @@ async fn get_rendering(cookie: &str, base: &str, slug: &str, name: &str) -> (u16
 /// The marker header a browser attaches to a same-origin request, which every
 /// route here refuses without -- rule A, and not a property of renderings.
 async fn get_latest(cookie: &str, base: &str, slug: &str) -> (u16, Value) {
+    get_latest_keyed(cookie, "", base, slug).await
+}
+
+/// The same, carrying a link key too.
+async fn get_latest_keyed(cookie: &str, key: &str, base: &str, slug: &str) -> (u16, Value) {
     let mut request = client()
         .get(format!("{base}/api/documents/{slug}/renderings/latest"))
         .header("x-komodoc-client", "1");
     if !cookie.is_empty() {
         request = request.header("cookie", cookie);
+    }
+    if !key.is_empty() {
+        request = request.header(crate::server::LINK_HEADER, key);
     }
     let response = request.send().await.expect("a response");
     let status = response.status().as_u16();
@@ -103,10 +125,9 @@ async fn live_sha(server: &TestServer, slug: &str) -> String {
 #[tokio::test]
 async fn a_rendering_goes_up_and_comes_back_and_makes_its_own_checkpoint() {
     let server = new_test_server().await;
-    let slug = text(
-        &crate::tests::edit::publish_with_source(&server.url).await,
-        "slug",
-    );
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let room = server.instance.rooms.get(&slug).await;
 
     // The document moves on, so the text a browser would have compiled is not
@@ -135,7 +156,8 @@ async fn a_rendering_goes_up_and_comes_back_and_makes_its_own_checkpoint() {
         "storing a rendering of the live text left no checkpoint of it"
     );
 
-    let (status, back) = get_rendering("", &server.url, &slug, &sha).await;
+    // A reader holds the link `publish` printed, not merely the slug.
+    let (status, back) = get_rendering_keyed("", &key, &server.url, &slug, &sha).await;
     assert_eq!(status, 200);
     assert_eq!(back, bytes, "what came back is not what went up");
 }
@@ -145,10 +167,9 @@ async fn a_rendering_goes_up_and_comes_back_and_makes_its_own_checkpoint() {
 #[tokio::test]
 async fn the_synctex_file_sits_beside_the_pages() {
     let server = new_test_server().await;
-    let slug = text(
-        &crate::tests::edit::publish_with_source(&server.url).await,
-        "slug",
-    );
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let sha = live_sha(&server, &slug).await;
     let cookie = session_as(TEST_PUBLISHER);
 
@@ -164,10 +185,11 @@ async fn the_synctex_file_sits_beside_the_pages() {
     .await;
     assert_eq!(status, 200, "{answer}");
 
-    let (status, pages) = get_rendering("", &server.url, &slug, &sha).await;
+    let (status, pages) = get_rendering_keyed("", &key, &server.url, &slug, &sha).await;
     assert_eq!(status, 200);
     assert_eq!(pages, pdf(2), "the SyncTeX file overwrote the pages");
-    let (status, map) = get_rendering("", &server.url, &slug, &format!("{sha}.synctex")).await;
+    let (status, map) =
+        get_rendering_keyed("", &key, &server.url, &slug, &format!("{sha}.synctex")).await;
     assert_eq!(status, 200);
     assert_eq!(map, b"gzipped, in a real one");
 }
@@ -177,10 +199,9 @@ async fn the_synctex_file_sits_beside_the_pages() {
 #[tokio::test]
 async fn a_rendering_is_cached_for_a_year_because_its_name_is_its_source() {
     let server = new_test_server().await;
-    let slug = text(
-        &crate::tests::edit::publish_with_source(&server.url).await,
-        "slug",
-    );
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let sha = live_sha(&server, &slug).await;
     put_rendering(
         &session_as(TEST_PUBLISHER),
@@ -197,6 +218,7 @@ async fn a_rendering_is_cached_for_a_year_because_its_name_is_its_source() {
             server.url
         ))
         .header("x-komodoc-client", "1")
+        .header(crate::server::LINK_HEADER, &key)
         .send()
         .await
         .expect("a response");
@@ -263,10 +285,9 @@ async fn a_name_that_is_not_a_digest_is_not_a_key() {
 #[tokio::test]
 async fn a_reader_may_read_a_rendering_and_not_store_one() {
     let server = new_test_server().await;
-    let slug = text(
-        &crate::tests::edit::publish_with_source(&server.url).await,
-        "slug",
-    );
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let sha = live_sha(&server, &slug).await;
     put_rendering(
         &session_as(TEST_PUBLISHER),
@@ -277,9 +298,10 @@ async fn a_reader_may_read_a_rendering_and_not_store_one() {
     )
     .await;
 
+    // The reader link is read-only: it opens the rendering and nothing else.
     let (status, _) = put_rendering("", &server.url, &slug, &sha, pdf(7)).await;
     assert_eq!(status, 404, "a stranger stored a rendering");
-    let (status, back) = get_rendering("", &server.url, &slug, &sha).await;
+    let (status, back) = get_rendering_keyed("", &key, &server.url, &slug, &sha).await;
     assert_eq!(status, 200, "a reader could not read the rendering");
     assert_eq!(back, pdf(6), "the stranger's bytes went in anyway");
 }
@@ -320,11 +342,10 @@ async fn a_rendering_past_the_document_ceiling_is_refused() {
 #[tokio::test]
 async fn latest_says_which_rendering_and_whether_it_is_current() {
     let server = new_test_server().await;
-    let slug = text(
-        &crate::tests::edit::publish_with_source(&server.url).await,
-        "slug",
-    );
-    let (status, answer) = get_latest("", &server.url, &slug).await;
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    let (status, answer) = get_latest_keyed("", &key, &server.url, &slug).await;
     assert_eq!(status, 200);
     assert!(answer["sha"].is_null(), "a rendering appeared from nowhere");
 
@@ -340,7 +361,7 @@ async fn latest_says_which_rendering_and_whether_it_is_current() {
         pdf(8),
     )
     .await;
-    let (_, answer) = get_latest("", &server.url, &slug).await;
+    let (_, answer) = get_latest_keyed("", &key, &server.url, &slug).await;
     assert_eq!(text(&answer, "sha"), sha);
     assert_eq!(answer["current"], true, "{answer}");
     assert!(!text(&answer, "at").is_empty(), "no time on {answer}");
@@ -355,7 +376,7 @@ async fn latest_says_which_rendering_and_whether_it_is_current() {
         .await
         .set_source("# My Paper\n\nMoved on.\n", "markdown")
         .await;
-    let (_, answer) = get_latest("", &server.url, &slug).await;
+    let (_, answer) = get_latest_keyed("", &key, &server.url, &slug).await;
     assert_eq!(text(&answer, "sha"), sha, "the rendering was forgotten");
     assert_eq!(answer["current"], false, "{answer}");
     assert_eq!(
@@ -382,10 +403,9 @@ async fn pruning_keeps_the_newest_rendering_and_the_labelled_ones() {
         ..Configuration::default()
     })
     .await;
-    let slug = text(
-        &crate::tests::edit::publish_with_source(&server.url).await,
-        "slug",
-    );
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let room = server.instance.rooms.get(&slug).await;
     let cookie = session_as(TEST_PUBLISHER);
 
@@ -413,11 +433,11 @@ async fn pruning_keeps_the_newest_rendering_and_the_labelled_ones() {
         .await
         .expect("a checkpoint");
 
-    let (status, _) = get_rendering("", &server.url, &slug, &shas[0]).await;
+    let (status, _) = get_rendering_keyed("", &key, &server.url, &slug, &shas[0]).await;
     assert_eq!(status, 200, "the labelled moment's rendering was pruned");
-    let (status, _) = get_rendering("", &server.url, &slug, &shas[1]).await;
+    let (status, _) = get_rendering_keyed("", &key, &server.url, &slug, &shas[1]).await;
     assert_eq!(status, 404, "an unlabelled older rendering was kept");
-    let (status, _) = get_rendering("", &server.url, &slug, &shas[2]).await;
+    let (status, _) = get_rendering_keyed("", &key, &server.url, &slug, &shas[2]).await;
     assert_eq!(status, 200, "the newest rendering was pruned");
 }
 
@@ -481,10 +501,10 @@ async fn the_same_rendering_twice_is_stored_once() {
     );
 }
 
-/// A private document's renderings are as private as its text. Not a rule of
-/// their own: the same question, asked in another place.
+/// A document's renderings are as closed to a stranger as its text. Not a
+/// rule of their own: the same question, asked in another place.
 #[tokio::test]
-async fn a_private_document_keeps_its_renderings_private() {
+async fn a_document_keeps_its_renderings_from_strangers() {
     let server = new_test_server().await;
     let slug = text(
         &crate::tests::edit::publish_with_source(&server.url).await,
@@ -494,17 +514,8 @@ async fn a_private_document_keeps_its_renderings_private() {
     let sha = live_sha(&server, &slug).await;
     put_rendering(&cookie, &server.url, &slug, &sha, pdf(10)).await;
 
-    let (status, answer) = post_as(
-        &cookie,
-        &server.url,
-        &format!("/api/documents/{slug}/share"),
-        json!({"visibility": "private"}),
-    )
-    .await;
-    assert_eq!(status, 200, "{answer}");
-
     let (status, _) = get_rendering("", &server.url, &slug, &sha).await;
-    assert_eq!(status, 404, "a stranger read a private document's pages");
+    assert_eq!(status, 404, "a stranger read a document's pages");
     let (status, _) = get_latest("", &server.url, &slug).await;
     assert_eq!(status, 404);
     let (status, back) = get_rendering(&cookie, &server.url, &slug, &sha).await;

@@ -1,8 +1,9 @@
 //! Who may do what to a document, when the document itself says so.
 //!
 //! Every test here is against an acceptance condition in
-//! `docs/specs/sharing.md`: a document is shared with links, not people; a
-//! reader link is the way into a private document; a commenter link comments
+//! `docs/specs/sharing.md`: a document is shared with links, not people; the
+//! bare URL opens for the owner alone and a reader link is the way in for
+//! anyone else; a read link is read-only; a commenter link comments
 //! and cannot edit; an editor link edits wherever the deployment would let an
 //! anonymous caller edit, and is capped at whatever it would let one comment
 //! or read otherwise; minting a role's link again rotates it; revoking is a
@@ -32,6 +33,9 @@ async fn open_server() -> TestServer {
     .await
 }
 
+/// Publishes as `login` and takes away the read link publishing minted, so
+/// that every test here starts from a document with no links at all and the
+/// links it makes are the only ones on it. The minted link has its own test.
 async fn publish_as(base: &str, login: &str, title: &str) -> String {
     let (status, document) = post_as(
         &session_as(login),
@@ -41,7 +45,10 @@ async fn publish_as(base: &str, login: &str, title: &str) -> String {
     )
     .await;
     assert_eq!(status, 201, "upload returned {status}: {document}");
-    text(&document, "slug")
+    let slug = text(&document, "slug");
+    let (status, payload) = share(base, login, &slug, json!({"revoke": "reader"})).await;
+    assert_eq!(status, 200, "revoking the read link: {payload}");
+    slug
 }
 
 /// What the share route says, as its owner sees it.
@@ -74,6 +81,15 @@ async fn role_of(base: &str, cookie: &str, key: &str, slug: &str) -> String {
         get_json_keyed(cookie, key, base, &format!("/api/documents/{slug}")).await;
     assert_eq!(status, 200, "document returned {status}: {payload}");
     text(&payload, "role")
+}
+
+/// What the document's endpoint answers an anonymous caller holding `key`,
+/// for the keys that are meant to open nothing: a rotated, revoked or
+/// expired one reads as no link, and no link is a missing document.
+async fn refused_with(base: &str, key: &str, slug: &str) -> u16 {
+    get_json_keyed("", key, base, &format!("/api/documents/{slug}"))
+        .await
+        .0
 }
 
 /// Writes a legacy named grant straight into the index. The route that used
@@ -174,15 +190,17 @@ async fn a_legacy_grant_is_still_honoured_and_revocable_by_login() {
         "a commenter changed the document"
     );
 
-    // Revoking is deleting the row, and the person drops back to whatever the
-    // server alone gives them.
+    // Revoking is deleting the row, and the person drops back to what the
+    // bare URL gives anybody who is not on the document: nothing.
     let (status, payload) = share(&server.url, "alice", &slug, json!({"revoke": "anne"})).await;
     assert_eq!(status, 200, "{payload}");
-    assert_eq!(
-        role_of(&server.url, &session_as("anne"), "", &slug).await,
-        "commenter",
-        "a revoked editor kept the rung"
-    );
+    let (status, payload) = get_json_as(
+        &session_as("anne"),
+        &server.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
+    assert_eq!(status, 404, "a revoked editor still reads: {payload}");
     let (status, payload) = share(&server.url, "alice", &slug, json!({"revoke": "anne"})).await;
     assert_eq!(status, 400, "{payload}");
 }
@@ -263,11 +281,15 @@ async fn a_transfer_moves_the_document_and_its_quota() {
         "the document has no ceiling to be charged against"
     );
 
-    // And the former owner is a stranger to it.
-    assert_ne!(
-        role_of(&server.url, &session_as("alice"), "", &slug).await,
-        "owner"
-    );
+    // And the former owner is a stranger to it, which on the bare URL means
+    // the document is not there for them.
+    let (status, payload) = get_json_as(
+        &session_as("alice"),
+        &server.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
+    assert_eq!(status, 404, "the former owner still reads: {payload}");
     assert_eq!(
         role_of(&server.url, &session_as("bob"), "", &slug).await,
         "owner"
@@ -312,13 +334,11 @@ async fn a_transfer_to_somebody_who_may_not_publish_is_refused() {
 
 /* ------------------------------------------------------- grants by link */
 
-// A reader link is the way into a private document -- it matters nowhere
-// else, since reading is already what reaching a non-private document gives
-// -- and it carries no more than reading: a deployment that names its
-// commenters by hand does not open its comment box to a caller with no name
-// behind it at all.
+// A reader link is the way in for anyone but the owner, and it carries no
+// more than reading: a deployment that names its commenters by hand does not
+// open its comment box to a caller with no name behind it at all.
 #[tokio::test]
-async fn a_reader_link_opens_a_private_document_and_cannot_comment() {
+async fn a_reader_link_opens_a_document_and_cannot_comment() {
     let server = test_server_with(
         Configuration::default(),
         Policy::parse("any"),
@@ -327,13 +347,6 @@ async fn a_reader_link_opens_a_private_document_and_cannot_comment() {
     )
     .await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
-    share(
-        &server.url,
-        "alice",
-        &slug,
-        json!({"visibility": "private"}),
-    )
-    .await;
     let key = mint(&server.url, "alice", &slug, "reader", "").await;
 
     assert_eq!(role_of(&server.url, "", &key, &slug).await, "reader");
@@ -346,8 +359,8 @@ async fn a_reader_link_opens_a_private_document_and_cannot_comment() {
     .await;
     assert_eq!(status, 200, "a reader link could not read: {source}");
 
-    // A caller with no link at all still gets what a missing document gets,
-    // which is the whole point of `private`.
+    // A caller with no link at all gets what a missing document gets: the
+    // bare URL is not a link.
     let (status, _) = get_json(&server.url, &format!("/api/documents/{slug}")).await;
     assert_eq!(status, 404);
 
@@ -462,8 +475,8 @@ async fn an_editor_link_edits_anonymously_where_anyone_may_publish() {
 // key and its url from then on, since the key is stored rather than shown
 // once. An editor link is what makes the difference visible: with
 // `--publishers anyone` an anonymous caller who holds a live one is an
-// editor, and with none at all -- the old key, after rotation -- falls back
-// to whatever `--commenters anyone` gives everybody who reaches the document.
+// editor, and with none at all -- the old key, after rotation -- cannot open
+// the document, since the bare URL is not a link.
 #[tokio::test]
 async fn minting_again_rotates_the_link() {
     let server = test_server_with(
@@ -489,8 +502,8 @@ async fn minting_again_rotates_the_link() {
     assert_ne!(new_key, old_key, "rotating minted the same key twice");
 
     assert_eq!(
-        role_of(&server.url, "", &old_key, &slug).await,
-        "commenter",
+        refused_with(&server.url, &old_key, &slug).await,
+        404,
         "the old key is still live after a rotation"
     );
     assert_eq!(role_of(&server.url, "", &new_key, &slug).await, "editor");
@@ -532,7 +545,7 @@ async fn a_link_is_revoked_by_its_role_word() {
 
     let (status, payload) = share(&server.url, "alice", &slug, json!({"revoke": "editor"})).await;
     assert_eq!(status, 200, "{payload}");
-    assert_eq!(role_of(&server.url, "", &key, &slug).await, "commenter");
+    assert_eq!(refused_with(&server.url, &key, &slug).await, 404);
     assert!(payload["links"]["editor"].is_null(), "{payload}");
 
     // The short spelling works too, and a second revoke says there is
@@ -568,9 +581,9 @@ async fn an_expired_link_reads_as_no_link() {
         .await
         .expect("the link is expired");
     assert_eq!(
-        role_of(&server.url, "", &key, &slug).await,
-        "commenter",
-        "an expired link still carried its role"
+        refused_with(&server.url, &key, &slug).await,
+        404,
+        "an expired link still opened the document"
     );
 
     server
@@ -614,7 +627,13 @@ async fn a_comment_records_the_link_it_arrived_on() {
 
     // And no client-bound shape carries it: the export is the reviewer's
     // words, not the mechanics of how they arrived.
-    let (_, listing) = get_json(&server.url, &format!("/api/documents/{slug}/comments")).await;
+    let (_, listing) = get_json_keyed(
+        "",
+        &key,
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+    )
+    .await;
     let comments = listing["comments"].as_array().expect("comments");
     assert!(
         comments[0].get("via").is_none(),
@@ -652,14 +671,106 @@ async fn only_the_owner_may_see_or_change_the_sharing() {
     )
     .await;
     assert_eq!(status, 404);
-    let (status, _) = share(
+    let (status, _) = share(&server.url, "mallory", &slug, json!({"revoke": "editor"})).await;
+    assert_eq!(status, 404);
+}
+
+// A read link is read-only even where the deployment lets anyone comment:
+// the switch is a ceiling on what a link may carry, not a grant to whoever
+// reaches the document. The examples are the exception, since nobody holds
+// a link to one and they exist to be commented on.
+#[tokio::test]
+async fn a_read_link_is_read_only_under_an_open_comment_switch() {
+    let server = open_server().await;
+    let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let key = mint(&server.url, "alice", &slug, "reader", "").await;
+    assert_eq!(role_of(&server.url, "", &key, &slug).await, "reader");
+    assert_eq!(
+        role_of(&server.url, &session_as("carol"), &key, &slug).await,
+        "reader"
+    );
+    let (status, posted) = post_keyed(
+        "",
+        &key,
         &server.url,
-        "mallory",
-        &slug,
-        json!({"visibility": "private"}),
+        &format!("/api/documents/{slug}/comments"),
+        json!({"type": "comment", "exact": "Alice Paper", "body": "hi"}),
     )
     .await;
-    assert_eq!(status, 404);
+    assert_eq!(status, 400, "a read link commented: {posted}");
+
+    server
+        .instance
+        .store
+        .modify(&slug, |entry| {
+            entry.example = true;
+            Ok(())
+        })
+        .await
+        .expect("the example flag is recorded");
+    assert_eq!(
+        role_of(&server.url, "", "", &slug).await,
+        "commenter",
+        "an example is not open to comments under --commenters anyone"
+    );
+}
+
+// What `publish` hands back is the thing to send: a read link minted with the
+// document, which opens it for whoever holds it and for nobody without it. A
+// revision hands the same link back rather than minting another, and none at
+// all once the owner has revoked it.
+#[tokio::test]
+async fn publishing_mints_a_read_link_and_a_revision_keeps_it() {
+    let server = open_server().await;
+    let (status, document) = post_as(
+        &session_as("alice"),
+        &server.url,
+        "/api/documents",
+        json!({"title": "Alice Paper", "html": "<p>Alice Paper</p>"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{document}");
+    let slug = text(&document, "slug");
+    assert_eq!(text(&document, "url"), format!("/docs/{slug}"));
+    let share_url = text(&document, "share_url");
+    let key = share_url
+        .strip_prefix(&format!("/docs/{slug}#k="))
+        .unwrap_or_else(|| panic!("no read link came back: {document}"))
+        .to_string();
+    assert_eq!(role_of(&server.url, "", &key, &slug).await, "reader");
+    let (status, _) = get_json(&server.url, &format!("/api/documents/{slug}")).await;
+    assert_eq!(status, 404, "the bare URL opened for a stranger");
+    let sharing = sharing_of(&server.url, "alice", &slug).await;
+    assert_eq!(text(&sharing["links"]["reader"], "key"), key);
+    assert_eq!(
+        text(&sharing["links"]["reader"], "until"),
+        "",
+        "the link publish minted should not expire: {sharing}"
+    );
+
+    let (status, revised) = post_as(
+        &session_as("alice"),
+        &server.url,
+        "/api/documents",
+        json!({"title": "Alice Paper", "slug": slug, "html": "<p>a revision</p>"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{revised}");
+    assert_eq!(text(&revised, "share_url"), share_url);
+
+    share(&server.url, "alice", &slug, json!({"revoke": "reader"})).await;
+    let (status, revised) = post_as(
+        &session_as("alice"),
+        &server.url,
+        "/api/documents",
+        json!({"title": "Alice Paper", "slug": slug, "html": "<p>another</p>"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{revised}");
+    assert!(
+        revised["share_url"].is_null(),
+        "a revision minted a read link the owner had revoked: {revised}"
+    );
 }
 
 // The shape `sharing_json` answers in: links keyed by role, null where the
@@ -762,24 +873,16 @@ async fn signing_in_adopts_what_the_visitor_published() {
     );
 }
 
-/* ------------------------------------------------------------ visibility */
+/* ------------------------------------------------------------ who may read */
 
-// A private document answers 404 to a stranger, as an unowned slug does today,
-// and hello to a named reader -- whether named by a legacy grant or by link.
+// A document answers 404 to a stranger, as an unowned slug does, and hello to
+// whoever is on it -- by a legacy grant or by link.
 #[tokio::test]
-async fn a_private_document_answers_404_to_a_stranger_and_hello_to_a_named_reader() {
+async fn a_document_answers_404_to_a_stranger_and_hello_to_whoever_is_on_it() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
     grant_legacy(&server, &slug, "anne", Role::Commenter).await;
     let key = mint(&server.url, "alice", &slug, "commenter", "").await;
-    let (status, payload) = share(
-        &server.url,
-        "alice",
-        &slug,
-        json!({"visibility": "private"}),
-    )
-    .await;
-    assert_eq!(status, 200, "{payload}");
 
     // Every route a stranger could reach it by.
     for path in [
@@ -801,7 +904,7 @@ async fn a_private_document_answers_404_to_a_stranger_and_hello_to_a_named_reade
     .await;
     assert!(
         matches!(refused, Err(404)),
-        "a stranger opened a private document's socket"
+        "a stranger opened a document's socket"
     );
 
     // And the people on it are let in: by legacy name, and by link.
@@ -824,59 +927,84 @@ async fn a_private_document_answers_404_to_a_stranger_and_hello_to_a_named_reade
 }
 
 // The documents origin has no cookie of the reader's -- that is the whole
-// point of the split -- so it has no identity to check `private` against. It
-// therefore serves no private document's bytes at all, whatever its format.
+// point of the split -- so it has no identity to ask `may_read` with. It
+// serves a document's page only to a frame URL carrying the token the reader
+// fetched on the origin that does know who is asking; without one, or with
+// one for another document, it serves the empty shell.
 #[tokio::test]
-async fn a_private_document_is_not_served_from_the_documents_origin() {
+async fn the_documents_origin_serves_a_page_only_to_a_frame_token() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
-    let framed = on_docs_host(&server.url, &format!("/raw/{slug}/")).await;
-    let body = framed.text().await.unwrap_or_default();
-    assert!(
-        body.contains("Alice Paper"),
-        "an ordinary HTML document is served as itself: {body:.120}"
-    );
+    let other = publish_as(&server.url, "alice", "Other Paper").await;
 
-    share(
-        &server.url,
-        "alice",
-        &slug,
-        json!({"visibility": "private"}),
-    )
-    .await;
     let framed = on_docs_host(&server.url, &format!("/raw/{slug}/")).await;
     let body = framed.text().await.unwrap_or_default();
     assert!(
         !body.contains("Alice Paper"),
-        "a private document's text was served from the documents origin: {body:.200}"
+        "a document's text was served with no token: {body:.200}"
     );
     assert!(
         body.contains("agent.js"),
         "the empty shell should still carry the agent: {body:.200}"
     );
+
+    // A stranger is refused the token itself; the owner, and a link's
+    // holder, are given one.
+    let (status, _) = get_json_as(
+        &session_as("mallory"),
+        &server.url,
+        &format!("/api/documents/{slug}/frame"),
+    )
+    .await;
+    assert_eq!(status, 404, "a stranger was given a frame token");
+    let query = frame_query(&session_as("alice"), "", &server.url, &slug).await;
+    let framed = on_docs_host(&server.url, &format!("/raw/{slug}/?{query}")).await;
+    let body = framed.text().await.unwrap_or_default();
+    assert!(
+        body.contains("Alice Paper") && body.contains("agent.js"),
+        "the owner's token did not serve the page: {body:.200}"
+    );
+    let key = mint(&server.url, "alice", &slug, "reader", "").await;
+    let query = frame_query("", &key, &server.url, &slug).await;
+    let framed = on_docs_host(&server.url, &format!("/raw/{slug}/?{query}")).await;
+    let body = framed.text().await.unwrap_or_default();
+    assert!(
+        body.contains("Alice Paper"),
+        "a read link's token did not serve the page: {body:.200}"
+    );
+
+    // A token is for one document: the same owner's token for another slug
+    // opens nothing here, and neither does a tampered one.
+    let elsewhere = frame_query(&session_as("alice"), "", &server.url, &other).await;
+    let framed = on_docs_host(&server.url, &format!("/raw/{slug}/?{elsewhere}")).await;
+    let body = framed.text().await.unwrap_or_default();
+    assert!(
+        !body.contains("Alice Paper"),
+        "another document's token served this one: {body:.200}"
+    );
+    let forged = query.replace("until=", "until=9");
+    let framed = on_docs_host(&server.url, &format!("/raw/{slug}/?{forged}")).await;
+    let body = framed.text().await.unwrap_or_default();
+    assert!(
+        !body.contains("Alice Paper"),
+        "a token with its expiry moved served the page: {body:.200}"
+    );
 }
 
 // The landing page's filter: the examples, everything the caller holds a role
-// on by a legacy grant, and everything `listed`. A document shared by link is
-// not there, because the link is in a browser rather than on an account.
+// on by a legacy grant, and everything they are a guest of. A document shared
+// by a link nobody has opened is not there, because the link is in a browser
+// rather than on an account.
 #[tokio::test]
-async fn the_listing_shows_named_grants_and_listed_documents() {
+async fn the_listing_shows_named_grants_and_not_unopened_links() {
     let server = open_server().await;
     let mine = publish_as(&server.url, "anne", "Anne's Own").await;
     let shared = publish_as(&server.url, "alice", "Shared By Name").await;
     let by_link = publish_as(&server.url, "alice", "Shared By Link").await;
-    let listed = publish_as(&server.url, "alice", "On The Front Page").await;
     let hidden = publish_as(&server.url, "alice", "Not Anne's Business").await;
 
     grant_legacy(&server, &shared, "anne", Role::Commenter).await;
     mint(&server.url, "alice", &by_link, "commenter", "").await;
-    share(
-        &server.url,
-        "alice",
-        &listed,
-        json!({"visibility": "listed"}),
-    )
-    .await;
 
     let (status, payload) = post_as(&session_as("anne"), &server.url, "/api/list", json!({})).await;
     assert_eq!(status, 200, "{payload}");
@@ -886,10 +1014,6 @@ async fn the_listing_shows_named_grants_and_listed_documents() {
     assert!(
         slugs.contains(&shared),
         "a named grant is not listed: {slugs:?}"
-    );
-    assert!(
-        slugs.contains(&listed),
-        "a listed document is not listed: {slugs:?}"
     );
     assert!(
         !slugs.contains(&by_link),
@@ -912,16 +1036,21 @@ async fn the_listing_shows_named_grants_and_listed_documents() {
 }
 
 // `--no-listing` is the operator saying this deployment has no public front
-// page, and a document marked `listed` behaves as `link` under it.
+// page. The reserved examples are the only documents that were ever on one,
+// so under it they are listed to nobody who holds nothing on them.
 #[tokio::test]
-async fn no_listing_makes_listed_behave_as_link() {
+async fn no_listing_keeps_the_examples_off_a_strangers_list() {
     let server = open_server().await;
-    let slug = publish_as(&server.url, "alice", "On The Front Page").await;
-    share(&server.url, "alice", &slug, json!({"visibility": "listed"})).await;
-
-    // The same entry, read by a deployment whose operator has turned the front
-    // page off. Somebody with no place on the document sees it under one and
-    // not under the other, which is the whole of what the flag does.
+    let slug = publish_as(&server.url, "alice", "An Example").await;
+    server
+        .instance
+        .store
+        .modify(&slug, |entry| {
+            entry.example = true;
+            Ok(())
+        })
+        .await
+        .expect("the example flag is recorded");
     let entry = server
         .instance
         .store
@@ -941,7 +1070,7 @@ async fn no_listing_makes_listed_behave_as_link() {
             .visible(vec![entry.clone()], &stranger)
             .len(),
         1,
-        "a listed document should be listed"
+        "an example should be listed to everyone"
     );
 
     let closed = test_server_tuned(
@@ -954,21 +1083,8 @@ async fn no_listing_makes_listed_behave_as_link() {
     .await;
     assert!(
         closed.instance.visible(vec![entry], &stranger).is_empty(),
-        "--no-listing still listed a listed document"
+        "--no-listing still listed an example to a stranger"
     );
-
-    // And an owner there is not offered the choice, nor allowed to take it.
-    let theirs = publish_as(&closed.url, "alice", "Alice Paper").await;
-    let sharing = sharing_of(&closed.url, "alice", &theirs).await;
-    assert_eq!(sharing["listing"], false, "{sharing}");
-    let (status, refused) = share(
-        &closed.url,
-        "alice",
-        &theirs,
-        json!({"visibility": "listed"}),
-    )
-    .await;
-    assert_eq!(status, 403, "{refused}");
 }
 
 // Sharing is not the text: publishing a revision over a document leaves the
@@ -978,13 +1094,6 @@ async fn publishing_a_revision_keeps_the_links() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
     let key = mint(&server.url, "alice", &slug, "editor", "").await;
-    share(
-        &server.url,
-        "alice",
-        &slug,
-        json!({"visibility": "private"}),
-    )
-    .await;
 
     let (status, saved) = post_as(
         &session_as("alice"),
@@ -996,7 +1105,6 @@ async fn publishing_a_revision_keeps_the_links() {
     assert_eq!(status, 201, "{saved}");
 
     let sharing = sharing_of(&server.url, "alice", &slug).await;
-    assert_eq!(text(&sharing, "visibility"), "private");
     assert_eq!(
         text(&sharing["links"]["editor"], "key"),
         key,
@@ -1010,13 +1118,6 @@ async fn publishing_a_revision_keeps_legacy_grants() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
     grant_legacy(&server, &slug, "anne", Role::Editor).await;
-    share(
-        &server.url,
-        "alice",
-        &slug,
-        json!({"visibility": "private"}),
-    )
-    .await;
 
     let (status, saved) = post_as(
         &session_as("alice"),
@@ -1028,7 +1129,6 @@ async fn publishing_a_revision_keeps_legacy_grants() {
     assert_eq!(status, 201, "{saved}");
 
     let sharing = sharing_of(&server.url, "alice", &slug).await;
-    assert_eq!(text(&sharing, "visibility"), "private");
     assert_eq!(
         sharing["legacy"]["editors"].as_array().map(Vec::len),
         Some(1),

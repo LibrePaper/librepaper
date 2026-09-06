@@ -133,7 +133,8 @@ async fn a_tex_publish_is_stored_as_latex_with_its_own_title() {
     .await;
     assert_eq!(status, 201, "{document}");
 
-    let (status, entry) = get_json(
+    let (status, entry) = get_json_as(
+        &session_as(TEST_PUBLISHER),
         &server.url,
         &format!("/api/documents/{}", text(&document, "slug")),
     )
@@ -169,7 +170,8 @@ async fn a_tex_directory_upload_arrives_as_latex() {
         .expect("upload");
     assert_eq!(response.status().as_u16(), 201);
     let document: Value = response.json().await.expect("json");
-    let (status, entry) = get_json(
+    let (status, entry) = get_json_as(
+        &session_as(TEST_PUBLISHER),
         &server.url,
         &format!("/api/documents/{}", text(&document, "slug")),
     )

@@ -17,11 +17,25 @@ use super::*;
 use crate::tests::edit::publish_with_source;
 
 async fn get_checkpoint(cookie: &str, base: &str, slug: &str, sha: &str) -> (u16, Value) {
+    get_checkpoint_keyed(cookie, "", base, slug, sha).await
+}
+
+/// The same, carrying a link key too, for a caller who is not the owner.
+async fn get_checkpoint_keyed(
+    cookie: &str,
+    key: &str,
+    base: &str,
+    slug: &str,
+    sha: &str,
+) -> (u16, Value) {
     let mut request = client()
         .get(format!("{base}/api/documents/{slug}/history/{sha}"))
         .header("x-komodoc-client", "1");
     if !cookie.is_empty() {
         request = request.header("cookie", cookie);
+    }
+    if !key.is_empty() {
+        request = request.header(crate::server::LINK_HEADER, key);
     }
     let response = request.send().await.expect("a response");
     let status = response.status().as_u16();
@@ -30,6 +44,18 @@ async fn get_checkpoint(cookie: &str, base: &str, slug: &str, sha: &str) -> (u16
 }
 
 async fn patch_label(cookie: &str, base: &str, slug: &str, sha: &str, label: &str) -> (u16, Value) {
+    patch_label_keyed(cookie, "", base, slug, sha, label).await
+}
+
+/// The same, carrying a link key too.
+async fn patch_label_keyed(
+    cookie: &str,
+    key: &str,
+    base: &str,
+    slug: &str,
+    sha: &str,
+    label: &str,
+) -> (u16, Value) {
     let mut request = client()
         .patch(format!("{base}/api/documents/{slug}/history/{sha}"))
         .header("x-komodoc-client", "1")
@@ -38,6 +64,9 @@ async fn patch_label(cookie: &str, base: &str, slug: &str, sha: &str, label: &st
     if !cookie.is_empty() {
         request = request.header("cookie", cookie);
     }
+    if !key.is_empty() {
+        request = request.header(crate::server::LINK_HEADER, key);
+    }
     let response = request.send().await.expect("a response");
     let status = response.status().as_u16();
     let raw = response.bytes().await.unwrap_or_default();
@@ -45,11 +74,19 @@ async fn patch_label(cookie: &str, base: &str, slug: &str, sha: &str, label: &st
 }
 
 async fn history_of(cookie: &str, base: &str, slug: &str) -> Vec<Value> {
+    history_of_keyed(cookie, "", base, slug).await
+}
+
+/// The same, carrying a link key too.
+async fn history_of_keyed(cookie: &str, key: &str, base: &str, slug: &str) -> Vec<Value> {
     let mut request = client()
         .get(format!("{base}/api/documents/{slug}/history"))
         .header("x-komodoc-client", "1");
     if !cookie.is_empty() {
         request = request.header("cookie", cookie);
+    }
+    if !key.is_empty() {
+        request = request.header(crate::server::LINK_HEADER, key);
     }
     let response = request.send().await.expect("a response");
     let raw = response.bytes().await.unwrap_or_default();
@@ -69,7 +106,9 @@ async fn history_of(cookie: &str, base: &str, slug: &str) -> Vec<Value> {
 #[tokio::test]
 async fn a_checkpoint_comes_back_as_the_document_it_was() {
     let server = new_test_server().await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let room = server.instance.rooms.get(&slug).await;
     let published = room.source().await;
 
@@ -82,8 +121,12 @@ async fn a_checkpoint_comes_back_as_the_document_it_was() {
         .expect("a checkpoint")
         .expect("a sha");
 
-    let first = text(&history_of("", &server.url, &slug).await[0], "sha");
-    let (status, answer) = get_checkpoint("", &server.url, &slug, &first).await;
+    // A reader holds the link `publish` printed, not merely the slug.
+    let first = text(
+        &history_of_keyed("", &key, &server.url, &slug).await[0],
+        "sha",
+    );
+    let (status, answer) = get_checkpoint_keyed("", &key, &server.url, &slug, &first).await;
     assert_eq!(status, 200, "{answer}");
     let main = text(&answer, "main");
     assert!(!main.is_empty(), "no main file on {answer}");
@@ -93,7 +136,7 @@ async fn a_checkpoint_comes_back_as_the_document_it_was() {
         "the first checkpoint did not come back as what was published"
     );
 
-    let (status, answer) = get_checkpoint("", &server.url, &slug, &sha).await;
+    let (status, answer) = get_checkpoint_keyed("", &key, &server.url, &slug, &sha).await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(
         answer["texts"][&main].as_str().unwrap_or_default(),
@@ -111,7 +154,9 @@ async fn a_checkpoint_comes_back_as_the_document_it_was() {
 #[tokio::test]
 async fn a_checkpoint_carries_every_file_the_document_had() {
     let server = new_test_server().await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let room = server.instance.rooms.get(&slug).await;
 
     room.add_text("chapters/two.md", "# Two\n\nThe second chapter.\n")
@@ -122,7 +167,7 @@ async fn a_checkpoint_carries_every_file_the_document_had() {
         .expect("a checkpoint")
         .expect("a sha");
 
-    let (status, answer) = get_checkpoint("", &server.url, &slug, &sha).await;
+    let (status, answer) = get_checkpoint_keyed("", &key, &server.url, &slug, &sha).await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(
         answer["texts"]["chapters/two.md"]
@@ -149,26 +194,17 @@ async fn a_digest_the_manifest_does_not_name_is_not_a_checkpoint() {
     }
 }
 
-/// A private document's past is as private as its present. Not a rule of its
-/// own: the same question, asked in another place.
+/// A document's past is as closed to a stranger as its present. Not a rule of
+/// its own: the same question, asked in another place.
 #[tokio::test]
-async fn a_private_document_keeps_its_history_private() {
+async fn a_document_keeps_its_history_from_strangers() {
     let server = new_test_server().await;
     let slug = text(&publish_with_source(&server.url).await, "slug");
     let cookie = session_as(TEST_PUBLISHER);
     let sha = text(&history_of(&cookie, &server.url, &slug).await[0], "sha");
 
-    let (status, answer) = post_as(
-        &cookie,
-        &server.url,
-        &format!("/api/documents/{slug}/share"),
-        json!({"visibility": "private"}),
-    )
-    .await;
-    assert_eq!(status, 200, "{answer}");
-
     let (status, _) = get_checkpoint("", &server.url, &slug, &sha).await;
-    assert_eq!(status, 404, "a stranger read a private document's past");
+    assert_eq!(status, 404, "a stranger read a document's past");
     let (status, _) = get_checkpoint(&cookie, &server.url, &slug, &sha).await;
     assert_eq!(status, 200, "the owner could not read their own past");
 }
@@ -180,7 +216,9 @@ async fn a_private_document_keeps_its_history_private() {
 #[tokio::test]
 async fn a_checkpoint_can_be_named_and_unnamed() {
     let server = new_test_server().await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let cookie = session_as(TEST_PUBLISHER);
     let sha = text(&history_of(&cookie, &server.url, &slug).await[0], "sha");
 
@@ -188,8 +226,12 @@ async fn a_checkpoint_can_be_named_and_unnamed() {
         patch_label(&cookie, &server.url, &slug, &sha, "sent to the journal").await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(text(&answer, "label"), "sent to the journal");
+    // A reader holds the link `publish` printed, not merely the slug.
     assert_eq!(
-        text(&history_of("", &server.url, &slug).await[0], "label"),
+        text(
+            &history_of_keyed("", &key, &server.url, &slug).await[0],
+            "label"
+        ),
         "sent to the journal",
         "the label did not reach the manifest a reader is served"
     );
@@ -203,7 +245,10 @@ async fn a_checkpoint_can_be_named_and_unnamed() {
     let (status, answer) = patch_label(&cookie, &server.url, &slug, &sha, "").await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(
-        text(&history_of("", &server.url, &slug).await[0], "label"),
+        text(
+            &history_of_keyed("", &key, &server.url, &slug).await[0],
+            "label"
+        ),
         "",
         "the label would not come off"
     );
@@ -214,13 +259,23 @@ async fn a_checkpoint_can_be_named_and_unnamed() {
 #[tokio::test]
 async fn naming_a_checkpoint_takes_an_editor() {
     let server = new_test_server().await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
-    let sha = text(&history_of("", &server.url, &slug).await[0], "sha");
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    let sha = text(
+        &history_of_keyed("", &key, &server.url, &slug).await[0],
+        "sha",
+    );
 
-    let (status, _) = patch_label("", &server.url, &slug, &sha, "mine now").await;
+    // A stranger here holds the read link, and nothing more: reading every
+    // word of the history is not editing a word of it.
+    let (status, _) = patch_label_keyed("", &key, &server.url, &slug, &sha, "mine now").await;
     assert_eq!(status, 404, "a stranger named somebody else's checkpoint");
     assert_eq!(
-        text(&history_of("", &server.url, &slug).await[0], "label"),
+        text(
+            &history_of_keyed("", &key, &server.url, &slug).await[0],
+            "label"
+        ),
         ""
     );
 }
@@ -275,7 +330,9 @@ async fn naming_a_checkpoint_that_is_not_there_is_a_404() {
 #[tokio::test]
 async fn a_comment_records_the_checkpoint_it_was_made_on() {
     let server = new_test_server().await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# My Paper\n\nA sentence worth remarking on.\n", "markdown")
         .await;
@@ -297,14 +354,14 @@ async fn a_comment_records_the_checkpoint_it_was_made_on() {
     assert!(!revision.is_empty(), "the comment recorded no checkpoint");
     // And it is a checkpoint of this document, which is the whole of what the
     // field is worth: a digest nothing can be looked up in says nothing.
-    let known: Vec<String> = history_of("", &server.url, &slug)
+    let known: Vec<String> = history_of_keyed("", &key, &server.url, &slug)
         .await
         .iter()
         .map(|point| text(point, "sha"))
         .collect();
     assert!(known.contains(&revision), "{revision} is not in {known:?}");
     // The text at that checkpoint is the text the comment quotes.
-    let (_, at) = get_checkpoint("", &server.url, &slug, &revision).await;
+    let (_, at) = get_checkpoint_keyed("", &key, &server.url, &slug, &revision).await;
     let main = text(&at, "main");
     assert!(
         at["texts"][&main]

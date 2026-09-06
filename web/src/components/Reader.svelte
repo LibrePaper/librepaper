@@ -55,6 +55,7 @@
   import Comments from "./Comments.svelte";
   import History from "./History.svelte";
   import Diagnostics from "./Diagnostics.svelte";
+  import Settings from "./Settings.svelte";
   import Files from "./Files.svelte";
 
   const SLUG = location.pathname.split("/").pop();
@@ -81,7 +82,6 @@
   // named on the document. A reader who arrived by link is offered neither,
   // which is most of the point of a blind review.
   let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
-  let visibility = $state("");
 
   // Whether this browser's work is safe, which is a different question from
   // whether the socket is up. `pending` counts the updates the server has not
@@ -720,7 +720,7 @@
     // HTML painted into the shell. Source equality cannot tell those states
     // apart, so leaving history always reloads the live page and reruns its
     // scripts.
-    if (!editing && sourceFormat === "html" && visibility !== "private") {
+    if (!editing && sourceFormat === "html") {
       framedSource = null;
       navigateFrame(true);
     } else {
@@ -910,12 +910,12 @@
   // is what the source pane has always shown and what keystroke-speed feedback
   // requires; the two are different jobs.
   //
-  // A private document is the other exception, and in the other direction: the
-  // documents origin shares no cookie with this one, so it has no identity to
-  // check `private` against and never serves such a document's bytes. What
-  // arrives there is the empty shell, so this page paints it whatever its
-  // format -- and an HTML document's own scripts do not run, because painting
-  // sets innerHTML. A document that needs them is one to share by link.
+  // The documents origin shares no cookie with this one and holds no link key,
+  // so on its own it has no way to tell who is asking. It serves a document's
+  // bytes only to a frame whose URL carries a short-lived token, which this
+  // page fetches over the channel that does carry an identity -- see
+  // `navigateFrame`. That is what lets every HTML document be served as
+  // itself, scripts and all, now that reading always takes a credential.
   //
   // And a checkpoint is always painted, whatever the format: the frame is
   // served from the live document, so there is nothing on the documents origin
@@ -923,9 +923,7 @@
   const displayedFormat = $derived(
     viewing ? renderers.formatOf(viewing.main) || sourceFormat : sourceFormat,
   );
-  const paintsTheFrame = $derived(
-    Boolean(viewing) || editing || displayedFormat !== "html" || visibility === "private",
-  );
+  const paintsTheFrame = $derived(Boolean(viewing) || editing || displayedFormat !== "html");
 
   /* -------------------------------------------------------------- LaTeX */
 
@@ -996,10 +994,25 @@
   let latestPreview = null;
   let frameShowsCheckpoint = false;
 
+  // Whether the frame's current URL carries a token, and which navigation is
+  // the latest, so a token that arrives for an older one cannot put its URL
+  // in the frame over a newer one's.
+  let frameServed = false;
+  let frameRequest = 0;
+
   function navigateFrame(force = false) {
     if (!docsOrigin) return;
     const kind = framePath;
-    if (!kind || (!force && frameSrc && frameKind === kind)) return;
+    // A page frame is sent an HTML document's bytes by the documents origin
+    // only when its URL carries a short-lived token, since that origin holds
+    // no sign-in and no key of this reader's. The token is fetched here, over
+    // the channel that does, once per navigation, whether or not this page
+    // will paint over what arrives: an editor's frame is served the page as
+    // itself before the previews start, so the document's own scripts have
+    // run once, which is what the frame did before reading took a
+    // credential. The PDF viewer is sent no bytes and needs none.
+    const serves = kind === "raw";
+    if (!kind || (!force && frameSrc && frameKind === kind && (frameServed || !serves))) return;
     frameKind = kind;
     frameEpoch += 1;
     frameReady = false;
@@ -1008,7 +1021,23 @@
     issued += 1;
     renderedSha = null;
     lastRegions = lastHighlight = null;
-    frameSrc = `${docsOrigin}/${kind}/${SLUG}/?v=${++framedGeneration}`;
+    const base = `${docsOrigin}/${kind}/${SLUG}/?v=${++framedGeneration}`;
+    const request = ++frameRequest;
+    if (!serves) {
+      frameServed = false;
+      frameSrc = base;
+      return;
+    }
+    fetch(`/api/documents/${SLUG}/frame`, { headers: { ...SHELL_HEADERS, ...keyHeaders(KEY) } })
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null)
+      .then((pass) => {
+        if (request !== frameRequest) return;
+        // Without a token the origin answers the empty shell: a page with
+        // nothing in it rather than a page that never arrives.
+        frameServed = Boolean(pass?.token);
+        frameSrc = frameServed ? `${base}&until=${pass.until}&token=${pass.token}` : base;
+      });
   }
 
   function deliverPreview(payload) {
@@ -1459,7 +1488,8 @@
   let layout = $state(LAYOUTS.includes(read(LAYOUT, "split")) ? read(LAYOUT, "split") : "split");
   let sourceSide = $state(read(SOURCE_SIDE, "left") === "right" ? "right" : "left");
   // Which keys the editor answers to. A preference of the person at this
-  // browser, not of the document, and nobody's default but their own.
+  // browser, not of the document, and nobody's default but their own; set
+  // from the Settings panel, beside the rest of this browser's preferences.
   let keys = $state(read(KEYMAP, "default") === "vim" ? "vim" : "default");
 
   // The column at the left, and what is in it: the files, the comments or the
@@ -1473,6 +1503,7 @@
     { id: "history", says: "History" },
     { id: "diagnostics", says: "Diagnostics", editOnly: true },
     { id: "share", says: "Share", sharingOnly: true },
+    { id: "settings", says: "Settings" },
   ];
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
   let panel = $state(PANELS.includes(read(PANEL, null)) ? read(PANEL, null) : "files");
@@ -1569,7 +1600,6 @@
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
     if (what.startsWith("ratio-")) return setSize(PANES.editor, Number(what.slice(6)));
     if (what === "linked") return setLinked(!linked);
-    if (what === "keys") return setKeys(keys === "vim" ? "default" : "vim");
   }
 
   /* ------------------------------------------------------------------- boot */
@@ -2003,7 +2033,6 @@
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error("not found"))))
       .then((found) => {
         doc = found;
-        visibility = found.visibility || "link";
         document.title = `${found.title} · Komodoc`;
         docsOrigin = found.docs_origin || location.origin;
         // The frame is an empty page with the agent in it, on the documents
@@ -2013,10 +2042,10 @@
         // the format and so which frame this document wants.
         void prepare(found);
       })
-      // A private document answers a stranger exactly as a missing one does,
-      // which tells a stranger nothing -- and tells a named reader who has not
-      // signed in nothing either. That is what this line is for: the page was
-      // opened at a real link, so the honest thing to say is both.
+      // A document answers a stranger exactly as a missing one does, which
+      // tells a stranger nothing -- and tells an owner who has not signed in
+      // nothing either. That is what this line is for: the page was opened
+      // at a real URL, so the honest thing to say is both.
       .catch(() => {
         doc = { title: "Document not found" };
         say(
@@ -2134,14 +2163,12 @@
                   {/each}
                   <hr class="hr my-1" />
                   <!-- A preference rather than a mode: set once, and only about
-                       this arrangement. It does not earn a place in the bar. -->
+                       this arrangement. It does not earn a place in the bar,
+                       and it is here as a shortcut to the same switch the
+                       Settings panel holds. -->
                   <Menu.Item value="linked" class="menuitem">
                     <span class="w-4">{linked ? "✓" : ""}</span>
                     Keep in step
-                  </Menu.Item>
-                  <Menu.Item value="keys" class="menuitem">
-                    <span class="w-4">{keys === "vim" ? "✓" : ""}</span>
-                    Vim keys
                   </Menu.Item>
                 </Menu.Content>
               </Menu.Positioner>
@@ -2178,7 +2205,7 @@
       <div class="sidebar-activity" role="group" aria-label="Sidebar sections">
         {#each TABS.filter((tab) => (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing)) as tab (tab.id)}
           <IconButton
-            icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "triangle-alert"}
+            icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : tab.id === "settings" ? "sliders" : "triangle-alert"}
             label={tab.says} pressed={panel === tab.id}
             onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
         {/each}
@@ -2193,10 +2220,13 @@
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
       {:else if panel === "share" && canSeeSharing}
-        <Share open inline slug={SLUG} onclose={() => showPanel("")} onvisibility={(chosen) => {
-          visibility = chosen;
-          navigateFrame(true);
-        }} />
+        <Share open inline slug={SLUG} onclose={() => showPanel("")} />
+      {:else if panel === "settings"}
+        <Settings {keys} {linked} {sourceSide} ratio={sizes[PANES.editor.key]}
+                  {sourceFormat} canChooseTex={editing && mayEdit && renderers.available("latex")}
+                  onkeys={setKeys} onlinked={setLinked} onside={putSourceOn}
+                  onratio={(share) => setSize(PANES.editor, share)}
+                  onchoosetex={() => (cardOpen = true)} />
       {:else if panel === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic} />

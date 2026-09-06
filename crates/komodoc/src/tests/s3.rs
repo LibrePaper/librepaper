@@ -282,31 +282,6 @@ async fn probe_catches_a_bucket_that_ignores_conditions() {
     );
 }
 
-// A presigned URL is what lets a reader's browser fetch a document without
-// the bytes passing through this process. It has to carry its own credentials
-// and its own expiry, since nothing else will vouch for it.
-#[test]
-fn presigned_get_carries_its_own_credentials() {
-    let mut options = bucket_options("https://bucket.example");
-    options.access_key = "AKIAEXAMPLE".into();
-    let blobs = S3Store::new(&options);
-    let link = blobs
-        .presign_get(&document_key("a-paper", "abc"), 120)
-        .expect("a link");
-    for wanted in [
-        "https://bucket.example/bucket/komodoc/documents/a-paper/abc.html",
-        "X-Amz-Algorithm=AWS4-HMAC-SHA256",
-        "X-Amz-Credential=AKIAEXAMPLE",
-        "X-Amz-Expires=120",
-        "X-Amz-Signature=",
-    ] {
-        assert!(
-            link.contains(wanted),
-            "the presigned link is missing {wanted:?}:\n{link}"
-        );
-    }
-}
-
 // The signing key derivation, against the vector AWS publishes for it.
 // Signing is the part of this that cannot be checked by reading it, and a
 // wrong signature is a deployment that does not work at all.

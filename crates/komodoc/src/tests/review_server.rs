@@ -337,10 +337,10 @@ async fn a_one_file_publish_over_a_directory_keeps_the_other_files() {
 }
 
 /// R01: the inverse of the review's `review_revoked_socket_can_read_and_write`.
-/// Alice publishes a private document, grants Bob editor access, and Bob
-/// connects; once Alice revokes him his socket must be closed rather than go
-/// on answering `y-open` with the private state and accepting `y-update`, and
-/// the document itself must be untouched.
+/// Alice publishes a document, grants Bob editor access, and Bob connects;
+/// once Alice revokes him his socket must be closed rather than go on
+/// answering `y-open` with the state and accepting `y-update`, and the
+/// document itself must be untouched.
 #[tokio::test]
 async fn review_revoked_socket_is_closed_and_stops_writing() {
     let server = test_server_with(
@@ -360,17 +360,6 @@ async fn review_revoked_socket_is_closed_and_stops_writing() {
     assert_eq!(status, 201);
     let slug = text(&entry, "slug");
     let share = format!("/api/documents/{slug}/share");
-    assert_eq!(
-        post_as(
-            &session_as("alice"),
-            &server.url,
-            &share,
-            json!({"visibility": "private"}),
-        )
-        .await
-        .0,
-        200
-    );
     // A legacy grant, the only way a document names anybody by hand any more:
     // the route above no longer makes one, so this test writes it straight
     // into the index the way one made before links existed would still sit.
@@ -430,10 +419,10 @@ async fn review_revoked_socket_is_closed_and_stops_writing() {
     );
 }
 
-/// R01: making a document private must close a reader's already-open socket,
-/// the same way revoking a named grant does.
+/// R01: revoking the read link a reader came in on must close their
+/// already-open socket, the same way revoking a named grant does.
 #[tokio::test]
-async fn review_visibility_change_to_private_closes_open_sockets() {
+async fn review_revoking_the_read_link_closes_open_sockets() {
     let server = test_server_with(
         Configuration::default(),
         crate::auth::Policy::parse("any"),
@@ -450,10 +439,21 @@ async fn review_visibility_change_to_private_closes_open_sockets() {
     .await;
     assert_eq!(status, 201);
     let slug = text(&entry, "slug");
+    // The read link publishing minted, which is what a reader holds.
+    let key = text(&entry, "share_url")
+        .rsplit("#k=")
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(!key.is_empty(), "{entry}");
     let mut socket = dial_websocket_with(
         &server.url,
         &slug,
-        &format!("Cookie: {}\r\n", session_as("bob")),
+        &format!(
+            "Cookie: {}\r\n{}: {key}\r\n",
+            session_as("bob"),
+            crate::server::LINK_HEADER
+        ),
     )
     .await
     .unwrap();
@@ -465,7 +465,7 @@ async fn review_visibility_change_to_private_closes_open_sockets() {
             &session_as("alice"),
             &server.url,
             &share,
-            json!({"visibility": "private"})
+            json!({"revoke": "reader"})
         )
         .await
         .0,

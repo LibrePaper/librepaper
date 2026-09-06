@@ -121,6 +121,89 @@ async fn a_yrs_peer_writes_the_document_the_server_holds() {
     );
 }
 
+/// A peer may join on a share link's key alone, which is what `--key` sends
+/// on the upgrade: an edit link writes the document where the deployment
+/// asks for no sign-in, and a read link joins and is dropped when it writes,
+/// exactly as a browser holding the same link is.
+#[tokio::test]
+async fn a_peer_joins_on_a_link_key_and_writes_as_the_link_allows() {
+    let server = test_server_with(
+        crate::config::Configuration::default(),
+        crate::auth::Policy::parse("anyone"),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let published = publish_with_source(&server.url).await;
+    let slug = text(&published, "slug");
+    let room = server.instance.rooms.get(&slug).await;
+    let owner = session_as(TEST_PUBLISHER);
+    let (status, minted) = post_as(
+        &owner,
+        &server.url,
+        &format!("/api/documents/{slug}/share"),
+        json!({"link": {"role": "editor", "until": ""}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{minted}");
+    let edit_key = text(&minted, "key");
+
+    // No cookie, no bearer: the key is the whole of who this peer is.
+    let mut socket = dial_websocket_keyed(&server.url, &slug, &edit_key).await;
+    assert_eq!(socket.read().await["type"], "hello");
+    socket.write(json!({"type": "y-open", "vector": ""})).await;
+    let state = socket.read().await;
+    assert_eq!(state["type"], "y-state");
+    let mine = crate::session::new_doc();
+    let update = crate::room::decode_update(&text(&state, "update")).expect("base64");
+    crate::session::apply_update(&mine, &update).expect("the server's state applies");
+    let before = crate::session::encode_vector(&mine);
+    crate::session::apply_edits(
+        &mine,
+        &komodoc_text::diff(
+            &crate::session::text_of(&mine),
+            "# My Paper\n\nTyped through an edit link.\n",
+        ),
+    );
+    let written = crate::session::encode_diff(&mine, &before).expect("a diff");
+    socket
+        .write(json!({
+            "type": "y-update",
+            "update": crate::room::encode_update(&written),
+            "seq": 1,
+        }))
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        room.source().await,
+        "# My Paper\n\nTyped through an edit link.\n",
+        "an edit link's peer did not reach the document"
+    );
+
+    // The read link publishing minted joins, and is dropped when it writes.
+    let read_key = read_key_of(&published);
+    let mut reading = dial_websocket_keyed(&server.url, &slug, &read_key).await;
+    assert_eq!(reading.read().await["type"], "hello");
+    let before = room.source().await;
+    reading
+        .write(json!({
+            "type": "y-update",
+            "update": crate::room::encode_update(&written),
+            "seq": 1,
+        }))
+        .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        room.source().await,
+        before,
+        "a read link's peer changed the document"
+    );
+
+    // And no key at all is no way in.
+    let refused = dial_websocket_with(&server.url, &slug, "").await;
+    assert!(matches!(refused, Err(404)), "a stranger opened the socket");
+}
+
 /// A client that joins with what it already has is answered with the rest and
 /// nothing more, which is what makes reconnecting cheap. A client that has
 /// everything is answered with an update that changes nothing.

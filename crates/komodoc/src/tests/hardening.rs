@@ -94,6 +94,10 @@ async fn unreadable_index_is_not_treated_as_empty() {
 async fn cross_site_writes_are_refused() {
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
+    // The comment check needs to actually reach the cross-site guard rather
+    // than fail earlier for lack of read access: an anonymous caller now
+    // needs the commenter link the owner mints, same as any other reviewer.
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
 
     let shapes: Vec<(&str, HashMap<&str, String>)> = vec![
         (
@@ -105,43 +109,51 @@ async fn cross_site_writes_are_refused() {
         ),
         ("missing client header", HashMap::new()),
     ];
-    let checks: Vec<(&str, String, String, serde_json::Value)> = vec![
+    let checks: Vec<(&str, String, String, String, serde_json::Value)> = vec![
         (
             "upload",
             "/api/documents".into(),
             session_as(TEST_PUBLISHER),
+            String::new(),
             json!({"title": "x", "html": "<p>x</p>"}),
         ),
         (
             "delete",
             format!("/api/documents/{slug}/delete"),
             session_as(TEST_PUBLISHER),
+            String::new(),
             json!(null),
         ),
         (
             "comments",
             format!("/api/documents/{slug}/comments"),
             String::new(),
+            key.clone(),
             json!({"type": "comment", "exact": "hello", "body": "hi"}),
         ),
         (
             "list",
             "/api/list".into(),
             session_as(TEST_PUBLISHER),
+            String::new(),
             json!({}),
         ),
         (
             "logout",
             "/auth/logout".into(),
             session_as(TEST_PUBLISHER),
+            String::new(),
             json!(null),
         ),
     ];
-    for (name, path, cookie, body) in &checks {
+    for (name, path, cookie, key, body) in &checks {
         for (shape, headers) in &shapes {
             let mut headers = headers.clone();
             if !cookie.is_empty() {
                 headers.insert("cookie", cookie.clone());
+            }
+            if !key.is_empty() {
+                headers.insert(crate::server::LINK_HEADER, key.clone());
             }
             let (status, payload) = raw_post(&server.url, path, headers, body.clone()).await;
             assert!(
@@ -240,9 +252,14 @@ async fn comment_delete_authorization() {
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
     let path = format!("/api/documents/{slug}/comments");
+    // Every commenting caller below is a reviewer holding the commenter link
+    // the owner minted -- a switch of `anyone` is a ceiling, not a grant any
+    // more.
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
 
-    let (status, payload) = post_as(
+    let (status, payload) = post_keyed(
         &visitor_as("alpha"),
+        &key,
         &server.url,
         &path,
         json!({"type": "comment", "exact": "hello", "body": "alpha's comment", "creator": "Alpha"}),
@@ -252,8 +269,9 @@ async fn comment_delete_authorization() {
     let comment_id = text(&payload["comment"], "id");
 
     // A stranger may not delete alpha's comment.
-    let (status, payload) = post_as(
+    let (status, payload) = post_keyed(
         &visitor_as("beta"),
+        &key,
         &server.url,
         &path,
         json!({"type": "delete", "comment_id": comment_id}),
@@ -281,8 +299,9 @@ async fn comment_delete_authorization() {
     );
 
     // alpha may delete their own comment.
-    let (status, payload) = post_as(
+    let (status, payload) = post_keyed(
         &visitor_as("alpha"),
+        &key,
         &server.url,
         &path,
         json!({"type": "comment", "exact": "hello", "body": "alpha's second comment", "creator": "Alpha"}),
@@ -290,8 +309,9 @@ async fn comment_delete_authorization() {
     .await;
     assert_eq!(status, 200);
     let comment_id = text(&payload["comment"], "id");
-    let (status, payload) = post_as(
+    let (status, payload) = post_keyed(
         &visitor_as("alpha"),
+        &key,
         &server.url,
         &path,
         json!({"type": "delete", "comment_id": comment_id}),

@@ -1,104 +1,32 @@
 # SPEC: `komodoc sync`, the file on disk as a peer in the session
 
-Status: built, in `crates/komodoc/src/sync.rs`, with `crates/komodoc/src/tests/sync.rs` and
-the merge's own tests in `crates/text/src/tests.rs`. Yrs is the library on both
-sides of the Rust half and Yjs on the browser's, and the test suite joins a
-Yrs client to the real room over a real socket rather than assuming the shared
-encoding. Two things this spec describes are not in it and are noted where
-they come up: the automation client under "Follow-up", and the awareness entry
-that would put a name on this peer in the browser.
-
-## The problem
-
-A document published from markdown or typst can be edited in the page it is
-read in, by its owner and the editors the owner names (`docs/specs/sharing.md`),
-from as many tabs and machines as they like at once:
-the source is a Yjs document the server holds and relays, and what readers
-see is that document as it stands (`docs/specs/history.md`).
-That editor is the only door into a live session. The author who wrote the
-paper in vim, Positron or Emacs, and who renders it from a Makefile, has to
-choose between their own tools and the session: publish from the command line
-and the session is bypassed, or open the browser and leave the tools behind.
-
-`komodoc sync` makes the file on disk a peer in the session. Run it on the
-file a document was published from, and edits made in any local editor flow
-into the session while a browser tab types in it, edits made in the browser
-land in the file, and saving the file marks a checkpoint in the document's
-history. The browser stays the tool
-for simultaneous work and for whoever has no toolchain; the file stays the
-tool for the author who has one. Neither is an import of the other.
-
-This is also the first program that is not a browser to read and write the
-shared document. It uses Yrs in the same Rust executable as the server,
-while the browser continues to use Yjs. Compatibility is verified by
-cross-language tests, not assumed from the shared protocol.
-Whatever joins a session on behalf of an author later -- a language model
-acting on comments, a batch job -- joins it the way this command does.
+Status: built, in `crates/komodoc/src/sync.rs`, with `crates/komodoc/src/tests/sync.rs`
+and the merge's own tests in `crates/text/src/tests.rs`. The command makes the
+file a document was published from a peer in its live session: edits made in
+any local editor flow into the session as the smallest diff, edits made in the
+browser land in the file by atomic rename, a three-way merge by word keeps both
+sides' words when a stale buffer is saved over a moved session, and every
+write of the file asks the server for a checkpoint. Yrs is the library on both
+sides of the Rust half and Yjs on the browser's, and the suite joins a Yrs
+client to the real room over a real socket rather than assuming the shared
+encoding. What remains is the awareness entry that would put a name on this
+peer in the browser, and the automation client that joins a session the way
+this command does.
 
 A note on names. "Agent" already means the script the server injects into
-every document it serves (`web/src/agent`). This spec never uses the word
-for the program described here; that program is the sync client.
+every document it serves (`web/src/agent`). This spec never uses the word for
+a program that joins a session; such a program is a peer, and the two kinds
+are the sync client and the automation client.
 
-## What it looks like
+## What the remaining work builds on
 
-```sh
-komodoc sync c9k paper.typ
-```
-
-The ID is the one `list` prints, the same as `comment`, `edit` and `export`
-take. The file is the source the document was published from, or will be.
-The command runs until interrupted, and says what it is doing:
-
-```
-syncing paper.typ with https://komodoc.arelbundock.com/docs/typst-what-a-confidence-interval-does-not-say-5vvxv8ebpd
-joined the session (2 peers)
-paper.typ changed: checkpoint 4f2a91c
-session changed: wrote paper.typ
-paper.typ changed: checkpoint 8b03d77
-```
-
-Flags:
-
-| flag | meaning |
-| --- | --- |
-| `--server` | the deployment, as every other command takes it |
-| `--interval 250ms` | how long the file has to stay quiet before it is read, and the session before it is written |
-
-Writing the file asks the server for a checkpoint. In the browser nothing is
-deliberate any more -- the document is always current, and history is taken on
-the server's own schedule -- but on disk, writing the file is a deliberate act,
-and a deliberate act is worth a mark in the timeline. The checkpoint is of the
-session's text at that moment, which after reconciliation is the file's; the
-server writes nothing if that text is already the latest checkpoint.
-
-The same command on an HTML source is the case it was made for:
-
-```sh
-komodoc sync c9k paper.html
-```
-
-beside a Makefile that runs `quarto render` turns every render into a write
-of the file, and so into a checkpoint, with no step between the author's
-tools and the readers.
-
-Only an editor of a document may edit its source, in the browser and here:
-its owner, and whoever the owner has named (`docs/specs/sharing.md`). The command
-asks the document's endpoint for the caller's role before it starts and
-refuses with a plain message below `editor`, because the server drops
-anyone else's `y-*` messages silently and a sync client that ran anyway
-would sit there doing nothing.
-
-## What the server is
-
-The server holds the document as a `yrs::Doc` in the room, persists it, and
-answers `y-open` from it, so a session is never seeded by a peer and never
-ends when the last one leaves. The sync client is therefore a peer among
-peers and needs no new route. The protocol it speaks is the browser's, and
-the server's side of every row is built:
+The sync client is a peer among peers and needs no new route. The protocol it
+speaks is the browser's, every row is built on both sides, and an automation
+client speaks the same one:
 
 | direction | message | meaning |
 | --- | --- | --- |
-| in | `hello {comments}` | on connect; the comments, which the client ignores |
+| in | `hello {comments}` | on connect; the comments, which the sync client ignores |
 | out | `y-open` | I am here |
 | in | `y-state {update, count}` or `y-state {ref, count}` | the document as the server holds it, one encoded state; apply it. Above the socket message cap the state comes as a same-origin `ref` to fetch instead, after which the client sends its state vector as `y-sync` to catch up |
 | out, in | `y-update {update, seq}` | one Yjs update, base64 |
@@ -109,148 +37,37 @@ the server's side of every row is built:
 | in | `y-checkpoint {sha}` | the checkpoint was taken, possibly after the spacing `docs/specs/history.md` imposes; print it |
 
 Identity is the `Authorization: Bearer` header the command line already
-sends, on `GET /ws/<slug>`. There is no source to fetch and no SHA to hold:
-the document's text is what `y-state` carries. The updates are Yjs's
-binary v1 encoding; the server uses Yrs, the browser Yjs, and
-`crates/komodoc/src/tests/yjs.rs` holds the interoperability tests the client
-inherits.
+sends, on `GET /ws/<slug>`, or the link key `--key` sends as
+`x-komodoc-key`. The server drops the `y-*` messages of anyone below
+`editor` silently, so a client asks the document's endpoint for its role
+before it starts and refuses with a plain message rather than sitting there
+doing nothing. The updates are Yjs's binary
+v1 encoding; `crates/komodoc/src/tests/yjs.rs` holds the interoperability
+tests any Rust peer inherits.
 
-## Design
+The client holds a `yrs::Doc` with one shared text named `source`, the name
+`collab.js` uses, with text offsets in UTF-16 to match the browser. One Tokio
+task owns the document and serialises the socket and the watcher, so no Yrs
+transaction is held across an await and no remote update lands between
+reading the document and writing to it. On `y-snapshot` it encodes the full
+state as a v1 update with `replace: true`, which is what the browser does for
+an older server. If the socket drops it reconnects with backoff and sends
+`y-open` again. All of this is what an automation client reuses.
 
-### The peer
+## The peer's name in the browser
 
-The sync client holds a `yrs::Doc` with one shared text named `source`,
-the name `collab.js` uses, and compatible awareness state. A Tokio task
-owns the document and serializes events from the WebSocket transport and
-filesystem watcher; no Yrs transaction is held across an await. Configure
-text offsets to match browser UTF-16 positions and test supplementary
-Unicode characters explicitly.
+Not built: the client's own awareness entry, `{user: {name: "<login>
+(sync)", color}}`, so a caret label in the browser said where the other edits
+were coming from. Awareness is who is here now, this client has no caret to
+show, and the entry means encoding `Y.Awareness` in Rust for one label. It is
+worth doing and it is not the command.
 
-On `y-state`, apply the state, then reconcile the file against the
-document as a local change (below), so a file that has moved on since the
-client last ran becomes an edit of the document rather than a second copy of
-the same words. There is no seeding: the server has the document whether or
-not anyone is editing it.
-
-On `y-snapshot`, encode the full Yrs state as a v1 update with `replace: true`,
-which is what the browser does for an older server. On `y-awareness`, apply
-it and print who
-joined or left. The client's own awareness entry would be
-`{user: {name: "<login> (sync)", color}}`, so a caret label in the browser
-said where the other edits were coming from. Not built: awareness is who is
-here now, this client has no caret to show, and the entry would mean encoding
-Y.Awareness in Rust for one label. It is worth doing and it is not the
-command.
-
-If the socket drops, reconnect with backoff, send `y-open` again, and treat
-what comes back as above. Reconnecting is the ordinary case for a process
-that runs all day on a laptop that sleeps.
-
-### The mirror
-
-Session to disk. Every update from the socket marks the document dirty. When
-it has been quiet for the interval, the text of `source` is written to a
-temporary file beside the target and renamed over it, so an editor never
-reads half a write and a crash never leaves half a file. The digest of what
-was written is remembered, and the watcher ignores the event that write
-causes. Permissions are copied from the file being replaced.
-
-Disk to session. The file is watched with a Rust filesystem watcher on the
-parent directory. When it has been quiet
-for the interval, it is read, normalised (CRLF to LF, invalid UTF-8 refused
-with a message), and compared by digest with what was last written. If it is
-the same, nothing happened. If it differs, the change is reconciled into the
-document -- and reconciled is not replaced. Replacing the whole text would
-delete and reinsert every character, which destroys the other editors'
-concurrent insertions, every caret position, and the anchors of every
-comment. The document gets the smallest set of inserts and deletes that turn
-its text into the file's, applied in one transaction, against the text as it
-stood at the start of that transaction. Because one task does everything,
-no remote update lands between reading the document and writing to it.
-
-Then `y-checkpoint` is sent, debounced by the same interval. The server
-already spaces requested checkpoints thirty seconds apart and answers with
-the SHA when it takes one, so a burst of saves is one mark in the timeline
-and an editor's auto-save is at most two a minute.
-
-### The merge, which is the only hard part
-
-A text editor is a snapshot client. It read the file at some moment, holds
-the text in a buffer, and writes the buffer back whole when the author saves.
-If the session moved meanwhile -- the same author in a browser tab, a sync
-client on their other machine, a restore from the reader -- the buffer does
-not know, the saved file lacks those words, and a diff of the document
-against the file would remove them. That is the case the design has to get right,
-and the rest is plumbing.
-
-The fix is a three-way merge. The client keeps the **base**: the text the
-file and the session last agreed on, which is what was last written to disk
-or last read from it without conflict. On a file change:
-
-1. `local` = what the file says now; `remote` = what the document says now.
-2. If `remote == base`, nothing happened in the session: diff `base` to
-   `local`, apply. This is the common case and it is exact.
-3. Otherwise merge `base`, `local` and `remote`. Edits to different regions
-   go through, and the merged text becomes the target: diff `remote` to
-   `merged`, apply. The session's edits are already in `remote`, so they
-   survive; the file's edits are in the diff, so they arrive.
-4. Where both sides changed the same region, the **session wins**, the merged
-   text is written back to the file, and a line is printed naming the region.
-   The session is what every other peer and every reader is looking at, and
-   the file is one buffer; and the file's author is looking at a terminal
-   that just told them, while a browser tab would find out only by noticing
-   words vanish.
-
-Afterwards `base` is the document's text, whichever branch ran.
-
-The merge is by word, not by line, and it is `komodoc_text::merge` in
-`text/`, beside the `diff` the room's restore uses: disjoint edits, adjacent
-edits, the same word on both sides, an insert at the seam of a deletion, an
-edit at either end, an empty base, UTF-16 offsets and random soups are its
-tests. What the client adds is the `base` bookkeeping above and the printed
-line naming a conflict.
-
-The other direction has no merge to do. When the session changes and the
-file is written, the editor either reloads it or does not: VS Code and
-Positron reload a clean buffer without asking, vim does with `autoread` on
-its next focus or command, Emacs polls under `auto-revert-mode`. A buffer
-that is dirty when the file changes gets whatever that editor does about a
-file changed on disk, and that is the editor's prompt to give, not ours. What
-the client guarantees is that the file on disk is never behind the session
-by more than the interval.
-
-### What the client does not render
-
-The executable carries the engine, and an earlier draft had the client
-render here, feeding includes, images and bibliographies from the directory
-the file is in through the engine's file map. Nothing rendered is stored
-any more, and
-readers render for themselves, so there is nothing for the client to render
-for. What that leaves exposed is a gap the rendering used to paper over: a
-typst document that `#import`s a file or reads a `#bibliography` beside it
-renders on this machine and nowhere else, because the engine's file map in
-the browser has nothing to fill it. The browser editor has
-always had this gap; readers now have it too. Closing it means the files
-beside the source travelling with it -- a project rather than a file --
-which remains future work and which this command can feed once it exists.
-
-### A write from outside
-
-Someone runs `komodoc publish` on the same slug, restores a checkpoint from
-the reader, or types in a browser. Each is an edit into the one document,
-and the server relays it to the client as a `y-update` like any other; the
-mirror writes it to the file, the merge above keeps the author's unsaved
-words, and nothing stops. The rule an earlier draft had here -- stop
-publishing and wait for a restart -- existed because there were two copies
-of the document to disagree. There is one.
-
-## Follow-up: automation clients as peers
+## Automation clients as peers
 
 The peer module also backs a komodoc subcommand and small library for a
-headless automation client. This follows the sync command and the `--key`
-flag `docs/specs/sharing.md` gives the command line, since its credential is a
-comment or edit link rather than a person's sign-in; it is not another name
-for the annotation script in `web/src/agent`.
+headless automation client. Its credential is a comment or edit link rather
+than a person's sign-in, presented the way `--key` presents one; it is not
+another name for the annotation script in `web/src/agent`.
 
 The client joins the same Yjs session to read and edit source, and uses the
 room's `comment`, `reply`, `resolve`, and `delete` messages for annotations.
@@ -261,9 +78,8 @@ API with different concurrency rules.
 
 Provide an authenticated snapshot GET for the current source and annotations
 so a client can inspect a document before joining. Its read authorization is
-the same as the document's, including private visibility and the role the
-link carries.
-The snapshot is a read aid, not a substitute for the Yjs synchronization
+the same as the document's: its owner, and the role the link carries. The
+snapshot is a read aid, not a substitute for the Yjs synchronization
 handshake before writing. Keep source and annotation reads within one room
 snapshot and include the source SHA so the client can identify what it saw.
 
@@ -279,48 +95,13 @@ to the signed-in account behind it, or to the link's pseudonym -- a snapshot
 refused with a link minted for another document, and edits surviving the last
 headless peer leaving and the server restarting.
 
-## Edge cases, and what is decided about each
-
-- **The file does not exist.** Written from the document's text on start, and
-  said so. This is how an author pulls a document down to edit locally.
-- **No such document.** Refused: `sync` takes a document that exists,
-  `publish` makes one. The message says which to run.
-- **The editor's temporary files.** Vim's swap and backup files, Emacs's
-  `#paper.typ#`, an editor's `paper.typ~`: the watcher is on the one path,
-  and events for any other name are ignored.
-- **Editors that write by rename.** Vim, by default, writes a new file and
-  renames it over the old one, so the inode changes. the filesystem watcher reports that
-  as a rename, or a remove and a create, depending on the platform. The
-  watcher is on the parent directory, filtered to the name, so it survives.
-- **A trailing newline.** Editors add one; the browser does not. The document
-  is what it is: a newline the editor adds is an edit like any other, it
-  goes into the session, and the browser shows it. Nothing normalises it
-  away, because a rule that stripped it would fight the editor forever.
-- **Format on save.** A formatter that rewrites the file touches every line,
-  which is a diff against everyone and a re-anchor of every comment. Not
-  prevented; documented as the thing to turn off for a synced file.
-- **Two sync clients on one file.** Two people cannot have the same file,
-  but one person can run the command twice. The second is refused by a lock
-  file beside the target, with the pid of the first in it.
-- **Two sync clients on one document, different machines.** Fine. Each is a
-  peer; the session is the meeting point, as it is for two browsers.
-- **The document is deleted while syncing.** The socket closes with the
-  reason the room gives; the client prints it and exits, and leaves the file
-  alone.
-- **Binary assets, other files.** Out of scope. The session is one `Text`,
-  and project-level asset transport is not built. The existing engine ABI
-  can accept files, but the browser has no project assets to feed it. Images beside a typst file are not
-  synced, and since nothing rendered is stored, nobody sees them until the
-  file map exists; see "What the client does not render".
-
 ## What it is not
 
 It is not live collaboration from vim. The local side of the session moves
 when the file is written, and a file is written when the author saves -- or
 every second or so with an editor's auto-save, which is the setting to
 recommend. Two people typing in the same paragraph at the same time is the
-browser editor's job, and the command's documentation says so in its first
-paragraph.
+browser editor's job.
 
 It is not an editor plugin. A VS Code extension that made the editor buffer a
 real Yjs peer, with the other peers' carets drawn as decorations, would remove
@@ -335,7 +116,3 @@ It is not a general file synchroniser. One file, one document, one session.
 - **Cursor positions.** An editor that speaks LSP knows where its cursor is.
   A future sync client could take that over a local socket and put it in
   awareness, so the browser draws a caret for the file. Not now.
-
-Two questions an earlier draft had here are answered in `docs/specs/history.md`:
-the session outlives every peer, because it is the document; and a write
-from outside is merged, because there is nothing else it could be.

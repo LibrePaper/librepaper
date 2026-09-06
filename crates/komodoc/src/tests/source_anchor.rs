@@ -24,10 +24,12 @@ fn valid_anchor() -> serde_json::Value {
 #[tokio::test]
 async fn a_source_anchor_survives_broadcast_listing_and_reload() {
     let server = new_test_server().await;
-    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
     let path = format!("/api/documents/{slug}/comments");
+    let key = read_key_of(&document);
 
-    let mut socket = dial_websocket(&server.url, &slug).await;
+    let mut socket = dial_websocket_keyed(&server.url, &slug, &key).await;
     socket.read().await; // hello
 
     let (status, payload) = post(
@@ -56,7 +58,7 @@ async fn a_source_anchor_survives_broadcast_listing_and_reload() {
     assert_eq!(broadcast["comment"]["source"]["path"], "main.md");
 
     // And the listing.
-    let (status, listing) = get_json(&server.url, &path).await;
+    let (status, listing) = get_json_keyed("", &key, &server.url, &path).await;
     assert_eq!(status, 200);
     let found = listing["comments"]
         .as_array()
@@ -68,7 +70,7 @@ async fn a_source_anchor_survives_broadcast_listing_and_reload() {
 
     // And a fresh process reading the same storage.
     let (restarted, _instance) = server_over(server.dir.path(), Configuration::default()).await;
-    let (status, listing) = get_json(&restarted, &path).await;
+    let (status, listing) = get_json_keyed("", &key, &restarted, &path).await;
     assert_eq!(status, 200, "{listing}");
     let found = listing["comments"]
         .as_array()
@@ -160,11 +162,18 @@ async fn a_region_comment_ignores_a_sent_source() {
 
 /* ------------------------------------------------------- the anchor backfill */
 
-/// Posts a plain comment with no source, as whichever cookie is given, and
-/// returns its id.
-async fn post_sourceless_comment(base: &str, cookie: &str, path: &str, body: &str) -> String {
-    let (status, payload) = post_as(
+/// Posts a plain comment with no source, as whichever cookie and link key are
+/// given, and returns its id.
+async fn post_sourceless_comment(
+    base: &str,
+    cookie: &str,
+    key: &str,
+    path: &str,
+    body: &str,
+) -> String {
+    let (status, payload) = post_keyed(
         cookie,
+        key,
         base,
         path,
         json!({"type": "comment", "exact": "hello", "body": body}),
@@ -180,10 +189,15 @@ async fn anchor_backfill_is_accepted_once_from_the_author() {
     let slug = text(&publish_test_document(&server.url).await, "slug");
     let path = format!("/api/documents/{slug}/comments");
     let cookie = visitor_as("alpha");
-    let comment_id = post_sourceless_comment(&server.url, &cookie, &path, "alpha's comment").await;
+    // A comment link, since a visitor with no account still needs one to
+    // write here.
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let comment_id =
+        post_sourceless_comment(&server.url, &cookie, &key, &path, "alpha's comment").await;
 
-    let (status, payload) = post_as(
+    let (status, payload) = post_keyed(
         &cookie,
+        &key,
         &server.url,
         &path,
         json!({"type": "anchor", "comment_id": comment_id, "source": valid_anchor()}),
@@ -196,8 +210,9 @@ async fn anchor_backfill_is_accepted_once_from_the_author() {
 
     // A second try on the same comment is refused: it already has an anchor
     // of record.
-    let (status, payload) = post_as(
+    let (status, payload) = post_keyed(
         &cookie,
+        &key,
         &server.url,
         &path,
         json!({"type": "anchor", "comment_id": comment_id, "source": valid_anchor()}),
@@ -215,11 +230,19 @@ async fn anchor_backfill_is_refused_from_a_non_editor_stranger() {
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
     let path = format!("/api/documents/{slug}/comments");
-    let comment_id =
-        post_sourceless_comment(&server.url, &visitor_as("alpha"), &path, "alpha's comment").await;
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let comment_id = post_sourceless_comment(
+        &server.url,
+        &visitor_as("alpha"),
+        &key,
+        &path,
+        "alpha's comment",
+    )
+    .await;
 
-    let (status, payload) = post_as(
+    let (status, payload) = post_keyed(
         &visitor_as("beta"),
+        &key,
         &server.url,
         &path,
         json!({"type": "anchor", "comment_id": comment_id, "source": valid_anchor()}),
@@ -236,8 +259,15 @@ async fn anchor_backfill_is_accepted_from_an_editor_for_someone_elses_comment() 
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
     let path = format!("/api/documents/{slug}/comments");
-    let comment_id =
-        post_sourceless_comment(&server.url, &visitor_as("alpha"), &path, "alpha's comment").await;
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let comment_id = post_sourceless_comment(
+        &server.url,
+        &visitor_as("alpha"),
+        &key,
+        &path,
+        "alpha's comment",
+    )
+    .await;
 
     // `post` signs in as the document's owner, who is at least an editor.
     let (status, payload) = post(

@@ -223,10 +223,8 @@ pub async fn serve(options: ServeOptions) {
         commenters.clone(),
     );
     instance.google = google;
-    instance.direct_reads = options.storage.direct_reads;
-    // An operator who wants no public front page at all. A document that asks
-    // to be `listed` behaves as `link` under it, and the share dialog does not
-    // offer the choice.
+    // An operator who wants no public front page at all: the examples stop
+    // being listed to people who hold nothing on them.
     instance.listing = !options.no_listing;
     instance.latex = latex;
     let instance = Arc::new(instance);

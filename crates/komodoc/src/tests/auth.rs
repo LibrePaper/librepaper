@@ -181,17 +181,24 @@ async fn comment_policy_refuses_and_attributes() {
         true,
     )
     .await;
-    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
     let path = format!("/api/documents/{slug}/comments");
     let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor"});
 
-    let (status, payload) = post_as("", &server.url, &path, comment.clone()).await;
+    // A comment link's role is a ceiling on what the switch grants, not a
+    // grant on its own: an anonymous caller holding one is still refused
+    // for lack of a signed-in account.
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let (status, payload) = post_keyed("", &key, &server.url, &path, comment.clone()).await;
     assert_eq!(status, 400, "anonymous comment got {status} {payload}");
     assert_eq!(text(&payload, "message"), "sign in to comment");
 
     // Signed in: the name on the comment is the verified login, not the one
-    // the client asked for.
-    let (status, payload) = post_as(&session_as("someone"), &server.url, &path, comment).await;
+    // the client asked for. The switch admits this account, but writing
+    // still takes the commenter link the owner minted.
+    let (status, payload) =
+        post_keyed(&session_as("someone"), &key, &server.url, &path, comment).await;
     assert_eq!(status, 200, "signed-in comment got {status} {payload}");
     assert_eq!(payload["comment"]["creator"], "someone");
 }
@@ -321,12 +328,14 @@ async fn a_google_account_comments_under_its_name() {
         true,
     )
     .await;
-    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
     let path = format!("/api/documents/{slug}/comments");
     let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor"});
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
 
     let anne = google_session_as("10769", "anne@umontreal.ca", "Anne Grandchamp");
-    let (status, payload) = post_as(&anne, &server.url, &path, comment.clone()).await;
+    let (status, payload) = post_keyed(&anne, &key, &server.url, &path, comment.clone()).await;
     assert_eq!(
         status, 200,
         "a domain grant refused its own domain: {payload}"
@@ -341,7 +350,7 @@ async fn a_google_account_comments_under_its_name() {
     // A subdomain is not the domain, and the refusal names the switch rather
     // than a provider.
     let elsewhere = google_session_as("2", "bob@mail.umontreal.ca", "Bob");
-    let (status, payload) = post_as(&elsewhere, &server.url, &path, comment).await;
+    let (status, payload) = post_keyed(&elsewhere, &key, &server.url, &path, comment).await;
     assert_eq!(status, 400, "a subdomain was admitted: {payload}");
     assert_eq!(
         text(&payload, "message"),
@@ -700,18 +709,28 @@ async fn signed_in_comments_are_named_by_the_account() {
     // caller with no account and no visitor cookie at all gets "Anonymous"
     // rather than whatever the request claimed.
     let server = new_test_server().await;
-    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
     let path = format!("/api/documents/{slug}/comments");
     let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor"});
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
 
-    let (status, payload) =
-        post_as(&session_as("someone"), &server.url, &path, comment.clone()).await;
+    let (status, payload) = post_keyed(
+        &session_as("someone"),
+        &key,
+        &server.url,
+        &path,
+        comment.clone(),
+    )
+    .await;
     assert_eq!(status, 200);
     assert_eq!(payload["comment"]["creator"], "someone");
 
     // No visitor cookie, and no account, is "Anonymous" -- the request's own
-    // "creator" field is never taken at its word.
-    let (status, payload) = post_as("", &server.url, &path, comment).await;
+    // "creator" field is never taken at its word. This deployment's switch is
+    // `anyone`, so the commenter link is what lets an anonymous caller in;
+    // the switch alone would not have.
+    let (status, payload) = post_keyed("", &key, &server.url, &path, comment).await;
     assert_eq!(status, 200);
     assert_eq!(payload["comment"]["creator"], "Anonymous");
 }

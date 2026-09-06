@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 
 use crate::cli::{resolve_identifier, server_from};
 use crate::config::Configuration;
-use crate::http::{get_with_token, send};
+use crate::http::{get_as, send, Credentials};
 use crate::room::Comment;
 use crate::util::die;
 
@@ -116,18 +116,20 @@ pub async fn export_document(
     format: &str,
     out: String,
     from: String,
+    key: String,
 ) {
     let server = server_from(&server_flag);
-    let slug = resolve_identifier(identifier, &server).await;
+    let key = crate::cli::link_key(&key);
+    let slug = resolve_identifier(identifier, &server, &key).await;
 
-    // Every read here says who is asking. A private document answers a
-    // stranger as a missing one does, so an owner exporting their own private
-    // paper would otherwise be told it does not exist. An empty token sends
-    // no bearer, which is what a public export by an anonymous caller is.
-    let token = crate::cli::stored_token_for(&server);
-    let (status, document) = get_with_token(
+    // Every read here says who is asking: the sign-in if there is one, and
+    // the link's key if the export was run from a link. A document answers a
+    // stranger as a missing one does, so an owner exporting their own paper
+    // would otherwise be told it does not exist.
+    let who = Credentials::new(&crate::cli::stored_token_for(&server), &key);
+    let (status, document) = get_as(
         &format!("{server}/api/documents/{slug}"),
-        &token,
+        &who,
         Duration::from_secs(30),
     )
     .await
@@ -141,11 +143,11 @@ pub async fn export_document(
         .unwrap_or_default()
         .to_string();
 
-    let bearer = format!("Bearer {token}");
-    let mut headers = vec![("x-komodoc-client", "cli")];
-    if !token.is_empty() {
-        headers.push(("authorization", bearer.as_str()));
-    }
+    let owned = who.headers();
+    let headers: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
     let (status, raw) = send(
         reqwest::Method::GET,
         &format!("{server}/api/documents/{slug}/comments"),
@@ -173,7 +175,7 @@ pub async fn export_document(
     // Nothing else here does, which is why it is fetched only when asked for.
     let mut comments = listing.comments;
     if !from.is_empty() {
-        let checkpoints = manifest_of(&server, &slug, &token).await;
+        let checkpoints = manifest_of(&server, &slug, &who).await;
         let matching: Vec<String> = checkpoints
             .iter()
             .map(|point| crate::http::text(point, "sha"))
@@ -193,7 +195,7 @@ pub async fn export_document(
         "jsonld" | "" => render_jsonld(&title, &comments, &source, &config),
         "markdown" | "md" => render_markdown(&title, &comments, &source, &config),
         "response" => {
-            let now = text_as_it_stands(&server, &slug, &token).await;
+            let now = text_as_it_stands(&server, &slug, &who).await;
             render_response(&title, &comments, &source, &config, &now)
         }
         other => die(format!(
@@ -489,15 +491,15 @@ fn holds(text: &str, exact: &str) -> bool {
 /// Empty when this machine cannot render the document -- a LaTeX paper, whose
 /// compiler is in a browser, or a typst one this fails to write out. The
 /// export then leaves the **Now** line off rather than guessing.
-async fn text_as_it_stands(server: &str, slug: &str, token: &str) -> String {
-    let checkpoints = manifest_of(server, slug, token).await;
+async fn text_as_it_stands(server: &str, slug: &str, who: &Credentials) -> String {
+    let checkpoints = manifest_of(server, slug, who).await;
     let Some(newest) = checkpoints.last() else {
         return String::new();
     };
     let sha = crate::http::text(newest, "sha");
-    let (status, point) = get_with_token(
+    let (status, point) = get_as(
         &format!("{server}/api/documents/{slug}/history/{sha}"),
-        token,
+        who,
         Duration::from_secs(60),
     )
     .await
@@ -559,10 +561,10 @@ fn typst_from(main: &str, texts: &serde_json::Map<String, Value>) -> Option<Stri
 }
 
 /// The manifest, oldest first, or an empty list when there is none to read.
-async fn manifest_of(server: &str, slug: &str, token: &str) -> Vec<Value> {
-    let (status, payload) = get_with_token(
+async fn manifest_of(server: &str, slug: &str, who: &Credentials) -> Vec<Value> {
+    let (status, payload) = get_as(
         &format!("{server}/api/documents/{slug}/history"),
-        token,
+        who,
         Duration::from_secs(60),
     )
     .await

@@ -459,6 +459,65 @@ pub fn text(value: &Value, field: &str) -> String {
         .to_string()
 }
 
+/// The key inside the read link `publish` hands back: what a reader who was
+/// sent that link holds, and the only thing that opens the document for
+/// anybody but its owner.
+pub fn read_key_of(document: &Value) -> String {
+    text(document, "share_url")
+        .split_once("#k=")
+        .map(|(_, key)| key.to_string())
+        .unwrap_or_default()
+}
+
+/// Mints this document's comment link as `cookie`'s account -- its owner, in
+/// every test that calls this -- and returns the key: what a reviewer who was
+/// sent that link holds. A read link is read-only, so this is the way an
+/// anonymous caller comments, whatever `--commenters` says.
+pub async fn comment_key(cookie: &str, base: &str, slug: &str) -> String {
+    let (status, payload) = post_as(
+        cookie,
+        base,
+        &format!("/api/documents/{slug}/share"),
+        json!({"link": {"role": "commenter", "until": ""}}),
+    )
+    .await;
+    assert_eq!(status, 200, "minting a comment link: {payload}");
+    let key = text(&payload, "key");
+    assert!(!key.is_empty(), "no key came back: {payload}");
+    key
+}
+
+/// Opens a socket as the holder of a link, and nobody in particular.
+pub async fn dial_websocket_keyed(base: &str, slug: &str, key: &str) -> Socket {
+    dial_websocket_with(
+        base,
+        slug,
+        &format!("{}: {key}\r\n", crate::server::LINK_HEADER),
+    )
+    .await
+    .unwrap_or_else(|status| panic!("handshake returned {status}"))
+}
+
+/// The query a frame URL has to carry for the documents origin to serve the
+/// page rather than the empty shell: what `handle_frame` answers the caller
+/// the cookie names, or the link the key names.
+pub async fn frame_query(cookie: &str, key: &str, base: &str, slug: &str) -> String {
+    let mut request = client()
+        .get(format!("{base}/api/documents/{slug}/frame"))
+        .header("x-komodoc-client", "1");
+    if !cookie.is_empty() {
+        request = request.header("cookie", cookie);
+    }
+    if !key.is_empty() {
+        request = request.header(crate::server::LINK_HEADER, key);
+    }
+    let response = request.send().await.expect("a response");
+    let status = response.status().as_u16();
+    let answer: Value = response.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, 200, "no frame token: {answer}");
+    format!("until={}&token={}", answer["until"], text(&answer, "token"))
+}
+
 /// Asks the same server as if it were the document hostname, which is how the
 /// split is exercised without any DNS.
 pub async fn on_docs_host(base: &str, path: &str) -> reqwest::Response {
@@ -533,12 +592,6 @@ pub async fn dial_websocket_with(base: &str, slug: &str, extra: &str) -> Result<
         reader,
         writer: write,
     })
-}
-
-pub async fn dial_websocket(base: &str, slug: &str) -> Socket {
-    dial_websocket_with(base, slug, "")
-        .await
-        .unwrap_or_else(|status| panic!("handshake returned {status}"))
 }
 
 impl Socket {

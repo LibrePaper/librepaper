@@ -120,6 +120,14 @@
       ["path", "M12 3v12"],
     ],
     search: [["circle", { cx: 11, cy: 11, r: 8 }], ["path", "m21 21-4.3-4.3"]],
+    // Lucide's sliders-horizontal, for the settings panel: preferences are
+    // things set along a line, not a machine to open up.
+    sliders: [
+      ["path", "M21 4h-7"], ["path", "M10 4H3"],
+      ["path", "M21 12h-9"], ["path", "M8 12H3"],
+      ["path", "M21 20h-5"], ["path", "M12 20H3"],
+      ["path", "M14 2v4"], ["path", "M8 10v4"], ["path", "M16 18v4"],
+    ],
     // Sharing is about people rather than about a URL, so the control that
     // opens the dialog wears people; copying the link is a `link` inside it.
     users: [

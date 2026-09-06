@@ -88,14 +88,6 @@ pub struct IndexEntry {
     /// file such a document has.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub main: String,
-    /// Who may read: `link` (anyone with the link -- the default, written as
-    /// empty), `private` (the people named on the document, in any role), or
-    /// `listed` (anyone with the link, and shown on the landing page to
-    /// everyone). Discoverability and access are one value rather than a flag
-    /// each, because the combination two flags would allow and this does not
-    /// -- a private document that is listed -- means nothing.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub visibility: String,
     /// The accounts this document names, by role. A grant by name is keyed on
     /// the GitHub numeric id, exactly as ownership is, so it survives a rename
     /// and follows the person across browsers.
@@ -191,19 +183,6 @@ impl LinkGrant {
     pub fn granted(&self) -> Role {
         Role::parse(&self.role).unwrap_or(Role::Reader)
     }
-}
-
-/// The three visibilities, spelled as the index writes them.
-pub const VISIBILITY_LINK: &str = "link";
-pub const VISIBILITY_PRIVATE: &str = "private";
-pub const VISIBILITY_LISTED: &str = "listed";
-
-/// Whether a word is one of the three.
-pub fn is_visibility(value: &str) -> bool {
-    matches!(
-        value,
-        VISIBILITY_LINK | VISIBILITY_PRIVATE | VISIBILITY_LISTED
-    )
 }
 
 /// The most a document may open each role to one caller, which is what the
@@ -303,9 +282,11 @@ impl IndexEntry {
                 role = role.max(Role::Commenter);
             }
         }
-        // The server's open comment switch is a grant to everyone who reaches
-        // the document, which is what it has always meant.
-        if ceiling.comment {
+        // A read link is read-only: the switch is a ceiling on what a link may
+        // carry, not a grant to whoever reaches the document. The examples are
+        // the one exception, since nobody holds a link to an example and they
+        // exist to be commented on.
+        if ceiling.comment && self.example {
             role = role.max(Role::Commenter);
         }
         role
@@ -385,27 +366,20 @@ impl IndexEntry {
     }
 
     /// Whether a caller is on this document at all: its owner, named in any
-    /// role, or holding a live link. This is the question `private` asks.
+    /// role, or holding a live link.
     pub fn names(&self, owner_key: &str, caller_id: &str, link_hash: &str, now: i64) -> bool {
         self.owned_by(owner_key, caller_id)
             || self.named_role(caller_id).is_some()
             || self.link_role(link_hash, now).is_some()
     }
 
-    /// The visibility, with the default spelled out.
-    pub fn visibility(&self) -> &str {
-        if self.visibility.is_empty() {
-            VISIBILITY_LINK
-        } else {
-            &self.visibility
-        }
-    }
-
-    /// Whether a caller may read this document at all. Reading has never had a
-    /// switch, so everyone who can reach a document may read it -- except that
-    /// a `private` one is read by the people named on it and nobody else.
+    /// Whether a caller may read this document at all: its owner, anyone on
+    /// it by a legacy grant, and whoever holds a live link, since a read link
+    /// is the least a link carries. The URL alone opens nothing for anybody
+    /// else -- a link is the whole of sharing, and the bare slug is not one.
+    /// The reserved examples are the exception: they are there to be read.
     pub fn readable_by(&self, owner_key: &str, caller_id: &str, link_hash: &str, now: i64) -> bool {
-        self.visibility() != VISIBILITY_PRIVATE || self.names(owner_key, caller_id, link_hash, now)
+        self.example || self.names(owner_key, caller_id, link_hash, now)
     }
 
     /// When this document expires from, as seconds since the epoch.
@@ -688,7 +662,6 @@ impl Store {
             publisher_name: owner_name,
             source_format: v.source_format,
             main: v.main,
-            visibility: shared.visibility,
             editors: shared.editors,
             commenters: shared.commenters,
             links: shared.links,

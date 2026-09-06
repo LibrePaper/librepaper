@@ -101,12 +101,6 @@ pub trait BlobStore: Send + Sync {
     /// Says where these bytes are, for the line `serve` prints at startup. An
     /// operator should never have to guess which bucket they are writing to.
     fn describe(&self) -> String;
-
-    /// A URL the reader's browser can fetch one object from directly, when the
-    /// store can mint one; a directory cannot.
-    fn presigned_get(&self, _key: &str, _lifetime_seconds: u64) -> Option<String> {
-        None
-    }
 }
 
 /// How a store with no versions of its own supplies one: the digest of the

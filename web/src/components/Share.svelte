@@ -4,7 +4,7 @@
   import Modal from "./Modal.svelte";
   import { getPrivate, post } from "../lib/api.js";
 
-  let { open = $bindable(false), slug, onvisibility, onclose, inline = false } = $props();
+  let { open = $bindable(false), slug, onclose, inline = false } = $props();
   let sharing = $state(null);
   let busy = $state(false);
   let loading = $state(false);
@@ -24,12 +24,6 @@
     { id: "commenter", label: "Comment" },
     { id: "editor", label: "Edit" },
   ];
-  const access = {
-    private: { label: "Private", detail: "Only people who hold a live link may open this document." },
-    link: { label: "Anyone with the link", detail: "Anyone with the document URL can open it." },
-    listed: { label: "Publicly listed", detail: "Anyone can find this document on the project list and open it." },
-  };
-  const accessDetail = $derived(access[sharing?.visibility]?.detail || "");
   const dateOf = (iso) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   // The server answers a path, the way it does for a document's own url, so
   // the link handed to somebody is completed against this origin here.
@@ -71,9 +65,7 @@
       const answer = await post(`/api/documents/${documentSlug}/share`, body);
       if (documentSlug !== slug || request !== generation) return false;
       copyFallback = "";
-      const previous = sharing.visibility;
       sharing = answer;
-      if (answer.visibility !== previous) onvisibility?.(answer.visibility);
       feedback = message;
       return true;
     } catch (failure) {
@@ -105,27 +97,23 @@
     {#if loading}
       <p class="panel-muted" role="status">Loading sharing settings…</p>
     {:else if sharing}
-      <section class="share-section space-y-2" aria-labelledby="access-heading">
-        <h3 id="access-heading" class="panel-section-title">General access</h3>
-        <div>
-          <select class="select share-select w-full" aria-label="General access" value={sharing.visibility} disabled={busy}
-            onchange={async (event) => {
-              const field = event.currentTarget;
-              if (!await change({ visibility: field.value }, "General access updated.")) field.value = sharing.visibility;
-            }}>
-            <option value="private">{access.private.label}</option>
-            <option value="link">{access.link.label}</option>
-            {#if sharing.listing}<option value="listed">{access.listed.label}</option>{/if}
-          </select>
+      <!-- The owner's own way in: the document URL, which works by sign-in
+           and by nothing else. There is nothing to create, revoke or expire
+           about it, so it is one line and a copy button. -->
+      <section class="share-section space-y-2" aria-labelledby="own-heading">
+        <h3 id="own-heading" class="panel-section-title">Your link</h3>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="panel-muted min-w-0">Opens for you when signed in. Nobody else can use it.</p>
+          <button type="button" class="btn btn-sm text-primary-500 shrink-0" disabled={busy} aria-label="Copy your link"
+                  onclick={() => copy(fullUrl(sharing.url), "Your link copied.")}>{copied === fullUrl(sharing.url) ? "Copied" : "Copy link"}</button>
         </div>
-        <p class="panel-meta">{sharing.visibility === "private" ? accessDetail : "Reading is also allowed without a share link. Choose Private to require one."}</p>
       </section>
 
       <div class="share-links space-y-6" aria-labelledby="links-heading">
         <h3 id="links-heading" class="panel-section-title">Share links</h3>
         {#each ROLES as role (role.id)}
           {@const link = sharing.links?.[role.id] || null}
-          {@const description = role.id === "reader" ? "Anyone with this link can view the document." : role.id === "commenter" ? "Anyone with this link can leave comments." : "Anyone with this link can edit the document."}
+          {@const description = role.id === "reader" ? "Anyone with this link can read the document. Without one, only you can open it." : role.id === "commenter" ? "Anyone with this link can read and comment." : "Anyone with this link can read, comment and edit."}
           <section class="share-section space-y-2" aria-labelledby="share-{role.id}-heading">
             <h4 id="share-{role.id}-heading" class="panel-section-title">{role.label}</h4>
             <p class="panel-muted">{description}</p>

@@ -1,6 +1,6 @@
 # Komodoc
 
-Publish an HTML or Markdown document, share its unlisted link, and collect
+Publish an HTML or Markdown document, share a link to it, and collect
 comments and highlights in real time.
 
 - Highlight passages, suggest edits, and comment on figures
@@ -54,7 +54,7 @@ other document keeps an unguessable address. A link that resolves to nothing
 gets a 404 page saying so.
 
 <aside class="callout warning">
-<strong>Warning:</strong> Do not publish confidential information on the Komodoc sandbox. Normally, documents are only visible to the person who uploaded them, or to people with the randomly generated and unlisted link. But if you are gathering comments on documents about national security, you should probably <a href="#self-managed-server">host your own instance</a> or find another solution.
+<strong>Warning:</strong> Do not publish confidential information on the Komodoc sandbox. Normally, documents are only visible to the person who uploaded them, or to people holding a share link they minted. But if you are gathering comments on documents about national security, you should probably <a href="#self-managed-server">host your own instance</a> or find another solution.
 </aside>
 
 <br>
@@ -64,9 +64,11 @@ The standard web-based workflow is:
 1. Open a Komodoc server in a browser, 
 2. Sign in with GitHub (if the manager requires it), 
 3. Upload an `.html` or `.md` file,
-4. Send the (unlisted) link to your readers. 
+4. Send the read link to your readers, or mint a comment link and send that.
 
-anyone with the link can read the document. The Komodoc console only lists only the documents you own.
+Only somebody holding a live link can open the document; its bare URL opens
+for you alone. The Komodoc console lists only the documents you own or have
+been let into.
 
 Click on the thumbnails near to top of this page for screenshots of the Komodoc management console and annotation page.
 
@@ -192,15 +194,17 @@ including the ones beneath it:
 | editor | edit the source; delete any comment |
 | owner | share, transfer, destroy |
 
-A document is shared with links, not people. It holds at most three standing
-links, one per role -- reader, commenter, editor -- and minting one is the
-whole act of sharing:
+A document is shared with links, not people, and a link is the only way in.
+There are four: the owner's own, which is the document's bare URL and opens
+for the owner's sign-in alone, and three the owner mints, one per role --
+read, comment, edit -- each of which can be created, replaced, revoked and
+given an expiry. Minting one is the whole act of sharing:
 
 ```sh
-komodoc share c9k                       # print the visibility and every role's link
-komodoc share c9k --link comment        # mint (or rotate) the commenter link
+komodoc share c9k                       # print the owner's link and every role's link
+komodoc share c9k --link comment        # mint (or rotate) the comment link
 komodoc share c9k --link edit --until 30d
-komodoc share c9k --revoke edit         # turn the editor link off
+komodoc share c9k --revoke edit         # turn the edit link off
 ```
 
 That prints one URL with a key in its fragment. A fragment is never sent to a
@@ -208,34 +212,41 @@ server, so the key lands in no access log and on no `Referer` header. Minting a
 role's link again rotates it: the old key dies and the new one takes over,
 which is how a leaked link is killed without losing the role it stood for.
 Links expire after six months unless `--until` says otherwise (`--until never`
-for one that does not). A reader link only matters on a private document -- it
-is the way in -- since `link` and `listed` documents are already readable by
-anyone with the URL.
+for one that does not). `komodoc publish` mints the read link when it creates
+a document and prints that, with no expiry, so what it prints is the thing to
+send; revoke it and the document is yours alone until you mint another.
 
+A read link is read-only, whatever `--commenters` says: the switch is a
+ceiling on what a link may carry, not a grant to whoever reaches the document.
 An edit link authorizes, and the account attributes: editing requires an
 account wherever `--publishers` does, so on a server that names its publishers
 the holder of an edit link must sign in as one of them before the link edits,
-and until then it only comments. Under `--publishers anyone` it edits as it is. Anonymous commenters still need telling
-apart, so each gets a stable per-document pseudonym such as `AmberAgama`,
-shown next to their comments instead of a name they typed.
+and until then it only comments. Under `--publishers anyone` it edits as it
+is. Anonymous commenters still need telling apart, so each gets a stable
+per-document pseudonym such as `AmberAgama`, shown next to their comments
+instead of a name they typed.
+
+A stranger -- anyone with the URL and no live link -- is answered exactly as
+a deleted document answers. The reading frame is served from a separate
+documents host that holds no sign-in of yours, so the reader fetches a
+short-lived token on the origin that does and puts it on the frame's URL;
+that is what lets an HTML document's own scripts run for whoever may read it
+and for nobody else.
 
 Named grants -- an editor or a commenter added by GitHub login, from before
 links existed -- are legacy: still honoured, still revocable by that login,
 but a document never grows new ones. `komodoc share c9k` lists any that remain
 under a `people (legacy)` heading.
 
-Who may read is a property of the document rather than a role anyone holds:
+Every command that acts on one document takes `--key` with a link, or the key
+out of one, and then acts as that link's holder rather than as your sign-in:
 
 ```sh
-komodoc share c9k --visibility private   # only somebody holding a live link
-komodoc share c9k --visibility listed    # anyone with the link, and on the front page
-komodoc share c9k --visibility link      # anyone with the link; the default
+komodoc comment c9k --key 'https://komodoc.example.org/docs/c9k#k=…'
+komodoc sync c9k paper.typ --key …      # an edit link; no login needed where
+                                        # the deployment asks for none
+komodoc export c9k --key …
 ```
-
-A private document answers a stranger exactly as a deleted one does. Its text
-is painted into the reading frame rather than served to it, because the
-documents host holds no sign-in of yours to check â so a private HTML document's
-own scripts do not run. Publish such a document by link instead.
 
 The owner is one account, because the storage quota and `destroy` both need an
 answer to "whose". Handing it on is its own command, confirmed the way
@@ -252,8 +263,8 @@ and `komodoc list` marks the documents shared with you with the role you hold.
 
 ### Comment
 
-Open a listed document in your browser for commenting. The ID is the one `list`
-prints (a full slug also works):
+Open a document in your browser for commenting. The ID is the one `list`
+prints (a full slug also works), and `--key` takes a link you were sent:
 
 ```sh
 komodoc comment c9k
@@ -499,10 +510,6 @@ Comments live in the bucket too (`rooms/<slug>.json`), written as they are
 made. A second server pointed at the same bucket finds the room locked and
 serves it read-only rather than interleaving its writes.
 
-With `--s3-direct-reads`, a document's bytes are fetched by the reader's
-browser straight from the bucket rather than passing through the server. That
-needs a CORS rule on the bucket; the deployment prints the policy to paste.
-
 ### History
 
 A document is never lost, and its past is never rewritten. The server takes a
@@ -717,9 +724,9 @@ last word: a document may name its own coauthors and reviewers with
 [Share](#share), and may only ever be stricter than the server it is on.
 Nothing a document says can widen `--publishers` or `--commenters`.
 
-`--no-listing` turns the public front page off. A document whose owner marked
-it `listed` then behaves as an ordinary link, and the share dialog stops
-offering the choice.
+`--no-listing` turns the public front page off: the reserved examples stop
+being listed to people who hold nothing on them, and nothing else was ever
+listed to strangers.
 
 ### GitHub OAuth
 
