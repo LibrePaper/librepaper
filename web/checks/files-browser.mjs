@@ -22,6 +22,9 @@ const source = `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
 import { tick, createRawSnippet } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import Files from ${JSON.stringify(join(root, "web/src/components/Files.svelte"))};
+import Comments from ${JSON.stringify(join(root, "web/src/components/Comments.svelte"))};
+import History from ${JSON.stringify(join(root, "web/src/components/History.svelte"))};
+import Diagnostics from ${JSON.stringify(join(root, "web/src/components/Diagnostics.svelte"))};
 import Share from ${JSON.stringify(join(root, "web/src/components/Share.svelte"))};
 import Nav from ${JSON.stringify(join(root, "web/src/components/Nav.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
@@ -221,6 +224,30 @@ window.shareSidebarCheck = async () => {
   return true;
 };
 
+window.panelTypographyCheck = async () => {
+  const samples = [];
+  const mounted = [];
+  for (const [component, props] of [[Files, {}], [Comments, {}], [History, {}], [Diagnostics, {}], [Share, { open: true, inline: true, slug: 'paper' }]]) {
+    const host = document.createElement('div');
+    host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
+    document.body.append(host);
+    const instance = createClassComponent({ component, target: host, props });
+    mounted.push({ instance, host });
+    await flush();
+    const panel = host.querySelector('.panel');
+    const title = host.querySelector('.panel-title');
+    check(panel && title, 'every panel has a shared title');
+    const bodyStyle = getComputedStyle(panel), titleStyle = getComputedStyle(title);
+    samples.push({ body: [bodyStyle.fontFamily, bodyStyle.fontSize, bodyStyle.lineHeight, bodyStyle.padding], title: [titleStyle.fontFamily, titleStyle.fontSize, titleStyle.lineHeight, titleStyle.fontWeight] });
+  }
+  check(samples.every((sample) => JSON.stringify(sample) === JSON.stringify(samples[0])), 'all five sidebar panels have identical base typography, headings and padding');
+  document.documentElement.style.setProperty('--panel-font-size', '15px');
+  check(mounted.every(({ host }) => getComputedStyle(host.querySelector('.panel-title')).fontSize === '15px'), 'one token updates every panel heading');
+  document.documentElement.style.removeProperty('--panel-font-size');
+  for (const { instance, host } of mounted) { instance.$destroy(); host.remove(); }
+  return true;
+};
+
 window.filesCheckReady = true;
 `;
 
@@ -347,6 +374,7 @@ try {
   await send("Emulation.setDeviceMetricsOverride", { width: 780, height: 437, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate("sharingCheck()"), true);
   assert.equal(await evaluate("shareSidebarCheck()"), true);
+  assert.equal(await evaluate("panelTypographyCheck()"), true);
   if (process.env.SHARE_SCREENSHOT) {
     await send("Emulation.setDeviceMetricsOverride", { width: 900, height: 900, deviceScaleFactor: 1, mobile: false });
     await evaluate("document.querySelector('.share-sidebar').style.cssText = 'width:384px;height:800px;background:var(--color-sidebar)' ");

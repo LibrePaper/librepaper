@@ -1,7 +1,7 @@
 <script>
   import IconButton from "./IconButton.svelte";
   import CommentCard from "./CommentCard.svelte";
-  import Row from "./layout/Row.svelte";
+  import PanelHeader from "./PanelHeader.svelte";
 
   // The annotations, in document order: an annotation is about a place in the
   // text, so the column follows the page rather than the order things were
@@ -69,11 +69,22 @@
 <!-- One of the column's panels: the column itself, with the tabs that choose
      between them, is the reader's. -->
 <div class="panel">
+  <PanelHeader
+    title="Comments"
+    meta={comments.length ? `${open} open · ${comments.length} total` : undefined}
+  >
+    {#if comments.length === 0}
+      <p class="panel-muted">
+        Highlight text in the document, then choose “Comment”.
+      </p>
+    {/if}
+  </PanelHeader>
+
   <!-- The tools belong with the comments they make, and stay in view while the
        pane scrolls. Box draws on a figure, so a document with no figures has
        nothing for it to do; saying so is better than a button that silently
        does nothing. -->
-  <div class="toolrow sticky top-0 z-1 py-3">
+  <div class="toolrow sticky top-0 z-1 pb-3">
     <div class="tools flex gap-1" role="radiogroup" aria-label="Annotation tool">
       {#each TOOLS as item}
         <IconButton
@@ -90,22 +101,6 @@
       {/each}
     </div>
   </div>
-
-  <header class="mb-3">
-    <Row justify="between">
-      <h3 class="h5">Comments</h3>
-      {#if comments.length}
-        <small class="text-surface-600-400">{open} open · {comments.length} total</small>
-      {/if}
-    </Row>
-    <!-- Onboarding, not a caption: it goes once there is something in the
-         column to read. -->
-    {#if comments.length === 0}
-      <p class="text-surface-600-400 text-sm">
-        Highlight text in the document, then choose “Comment”.
-      </p>
-    {/if}
-  </header>
 
   {#if allTags.length}
     <div class="mb-3 flex flex-wrap gap-1">

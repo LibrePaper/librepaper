@@ -121,11 +121,11 @@
       </Row>
 
       {#if comment.region}
-        <blockquote class="figureref text-surface-600-400 text-sm">
+        <blockquote class="figureref panel-muted">
           Figure {comment.region.image_index + 1}
         </blockquote>
       {:else if long}
-        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3 text-sm">
+        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3">
           <span>{quoteOpen ? `“${comment.exact}”` : `“${short}`}</span>
           <!-- svelte-ignore a11y_invalid_attribute -->
           <a
@@ -141,7 +141,7 @@
           </a>
         </blockquote>
       {:else}
-        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3 text-sm">
+        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3">
           “{comment.exact}”
         </blockquote>
       {/if}
@@ -157,12 +157,12 @@
            document, by the name somebody gave that moment or by its digest.
            What replaced it is the word-level diff, and is not built. -->
       {#if went}
-        <p class="text-surface-600-400 text-sm">
+        <p class="panel-muted">
           Removed in {went.label || went.sha.slice(0, 7)}, {new Date(went.at).toLocaleDateString()}.
         </p>
       {/if}
 
-      {#if comment.body}<p class="text-sm">{comment.body}</p>{/if}
+      {#if comment.body}<p>{comment.body}</p>{/if}
 
       {#if comment.tags?.length}
         <Row gap={1} wrap>
@@ -181,14 +181,14 @@
         </Row>
       {/if}
 
-      <small class="text-surface-500 text-xs">{comment.creator} · {stamp(comment.created)}</small>
+      <small class="panel-meta">{comment.creator} · {stamp(comment.created)}</small>
 
       {#if comment.replies?.length}
         <ul class="border-surface-200-800 flex flex-col gap-2 border-l pl-3">
           {#each comment.replies as reply (reply.id)}
-            <li class="text-sm">
+            <li>
               <span>{reply.body}</span><br />
-              <small class="text-surface-500 text-xs">{reply.creator} · {stamp(reply.created)}</small>
+              <small class="panel-meta">{reply.creator} · {stamp(reply.created)}</small>
             </li>
           {/each}
         </ul>
@@ -235,7 +235,7 @@
   {#if replying}
     <form class="mt-3 flex flex-col gap-2" onsubmit={submitReply}>
       {#if !identity}
-        <p class="text-surface-600-400 text-xs">replying as {commentingAs}</p>
+        <p class="panel-meta">replying as {commentingAs}</p>
       {/if}
       <!-- The box exists because somebody just clicked Reply, so the caret
            belongs in it. The rule is about a page that takes the focus on

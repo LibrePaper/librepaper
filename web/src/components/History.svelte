@@ -13,7 +13,7 @@
   // one.
   import { shortSha, timeline } from "../lib/history.js";
   import IconButton from "./IconButton.svelte";
-  import Row from "./layout/Row.svelte";
+  import PanelHeader from "./PanelHeader.svelte";
 
   let {
     checkpoints = [],
@@ -87,29 +87,26 @@
 <!-- One of the column's panels: the column itself, with the tabs that choose
      between them, is the reader's. -->
 <div class="panel timeline">
-  <header class="mb-3 pt-3">
-    <Row justify="between">
-      <h3 class="h5">History</h3>
-      {#if checkpoints.length}
-        <small class="text-surface-600-400">{checkpoints.length} checkpoints</small>
-      {/if}
-    </Row>
+  <PanelHeader
+    title="History"
+    meta={checkpoints.length ? `${checkpoints.length} checkpoints` : undefined}
+  >
     {#if problem}
-      <p class="text-error-500 text-sm">{problem}</p>
+      <p class="text-error-500">{problem}</p>
     {:else if checkpoints.length === 0}
-      <p class="text-surface-600-400 text-sm">
+      <p class="panel-muted">
         Nothing yet. A checkpoint is taken when the typing stops, when the last
         editor leaves, and whenever the document is published to.
       </p>
     {:else if viewing}
-      <p class="text-surface-600-400 text-sm">
+      <p class="panel-muted">
         Showing an earlier version. The document pane is what it said then.
       </p>
     {/if}
-  </header>
+  </PanelHeader>
 
   {#each days as { day, rows } (day)}
-    <h4 class="text-surface-600-400 timeline-day sticky top-0 z-1 py-2 text-sm font-semibold">{day}</h4>
+    <h4 class="panel-section-title timeline-day sticky top-0 z-1 py-2">{day}</h4>
     <ol class="mb-3 flex flex-col gap-1">
       {#each rows as row (row.kind === "point" ? row.point.sha : row.first.sha)}
         {#if row.kind === "point"}
@@ -161,7 +158,7 @@
         title="Show the document as it was at {shortSha(point.sha)}"
         onclick={() => (viewing === point.sha ? onback?.() : onshow?.(point.sha))}
       >
-        <span class="timeline-when">{clock(point.at)}</span>
+        <span class="timeline-when panel-meta">{clock(point.at)}</span>
         <span class="timeline-what">
           {#if point.label}<strong>{point.label}</strong><br />{/if}
           {point.by || "somebody"} · {reason(point.why)}
@@ -179,4 +176,3 @@
     {/if}
   </li>
 {/snippet}
-

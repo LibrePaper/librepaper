@@ -39,7 +39,7 @@ body > nav {
 }
 .nav-status > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-identity > a { flex-shrink: 0; }
-.share-panel { font-family: var(--typo-base--font-family); font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.share-panel { font-family: var(--typo-base--font-family); font-size: var(--panel-font-size); line-height: var(--panel-line-height); }
 .share-field {
   font: inherit;
   border: 1px solid var(--color-surface-300-700);
@@ -104,17 +104,16 @@ main.reader {
 }
 .filelist .refusal {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: var(--panel-font-size);
   color: var(--color-error-500);
 }
 
 /* Skeleton owns tree semantics; these rules give it the project's compact rows. */
 .explorer, .explorer-menu {
   font-family: var(--typo-base--font-family);
-  font-size: var(--text-sm);
-  line-height: var(--text-sm--line-height);
+  font-size: var(--panel-font-size);
+  line-height: var(--panel-line-height);
 }
-.explorer-title { font: inherit; font-weight: 600; }
 .explorer-row {
   display: flex;
   align-items: center;
@@ -181,8 +180,20 @@ main.reader {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 0 --spacing(4) --spacing(4);
+  padding: var(--panel-padding);
+  font-family: var(--typo-base--font-family);
+  font-size: var(--panel-font-size);
+  line-height: var(--panel-line-height);
 }
+.panel-header { display: flex; flex-direction: column; gap: --spacing(2); margin-bottom: var(--panel-section-gap); }
+.panel-heading { display: flex; align-items: center; flex-wrap: wrap; gap: --spacing(2); min-height: --spacing(8); }
+.panel-title { margin: 0; margin-right: auto; font: inherit; font-weight: var(--panel-title-weight); }
+.panel-actions { display: flex; align-items: center; gap: --spacing(1); }
+.panel-section-title { font: inherit; font-weight: var(--panel-title-weight); }
+.panel-muted { color: var(--panel-muted); }
+.panel-meta { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
+.panel :where(input, textarea, select) { font-family: inherit; font-size: inherit; }
+
 /* ---------------------------------------------------------------- timeline */
 
 /* The history, in the column the comments otherwise have. What is written here
@@ -220,12 +231,9 @@ main.reader {
 .timeline-when {
   flex: none;
   font-variant-numeric: tabular-nums;
-  font-size: var(--text-sm);
-  color: var(--color-surface-600-400);
 }
 .timeline-what {
-  font-size: var(--text-sm);
-  color: var(--color-surface-600-400);
+  color: var(--panel-muted);
 }
 /* A name is the one thing in the column somebody wrote on purpose. */
 .timeline-named .timeline-what strong {
@@ -234,7 +242,7 @@ main.reader {
 .timeline-folded {
   flex: 1;
   padding: --spacing(1);
-  font-size: var(--text-sm);
+  font-size: var(--panel-font-size);
   text-align: left;
   color: var(--color-surface-600-400);
   cursor: pointer;
