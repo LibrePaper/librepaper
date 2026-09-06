@@ -165,13 +165,37 @@ deploy: seed  ## Seed the examples and serve them on this machine, no sign-in, L
 #
 #     sops exec-env deploy/keys.yaml 'wrangler deploy'
 KEYS ?= deploy/keys.yaml
-.PHONY: secrets
+.PHONY: secrets latex-push
 
 secrets:  ## Open an interactive shell with the sops-encrypted deployment keys in its environment
 	@test -f $(KEYS) || { echo "no $(KEYS)"; exit 1; }
 	@test -t 0 || { echo "make secrets opens an interactive subshell and needs a terminal" >&2; echo "use: sops exec-env $(KEYS) '<command>'" >&2; exit 2; }
 	@echo "$(KEYS) is loaded in this shell; exit to drop it"
 	@sops exec-env $(KEYS) "$${SHELL:-/bin/sh}"
+
+# The LaTeX mirror, on Cloudflare. It is served as a worker made of static
+# files, deploy/latex/wrangler.toml, so the only credential it needs is the
+# CLOUDFLARE_API_TOKEN that `make secrets` provides. What goes up is the part
+# of latex/mirror a reader can be offered -- the manifest, the package half
+# and SwiftLaTeX pdfTeX, about 260 MB in ten thousand files -- and not the
+# three distributions the manifest marks unshown, which are two gigabytes
+# nobody fetches. A file named by its digest is cached forever; the manifest
+# is not cached at all. Build the mirror first:
+#
+#     node latex/tools/mirror.mjs            # the distributions
+#     node latex/tools/mirror.mjs --scheme   # the TeX Live collections, from this machine's TeX Live
+#     cd web && node checks/latex.mjs --record   # what the corpus asks for, from upstream
+#
+# Deploys upload only files whose content changed, so updating is cheap.
+MIRROR ?= latex/mirror
+
+latex-push:  ## Push the LaTeX mirror to Cloudflare as a static-assets worker (run inside make secrets)
+	@test -f $(MIRROR)/manifest.json || { echo "no mirror at $(MIRROR); run node latex/tools/mirror.mjs"; exit 1; }
+	@test -n "$$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN is not set; run this inside make secrets"; exit 1; }
+	@printf 'busytex/\ntexlyre-busytex/\nswiftlatex-xetex/\n' > $(MIRROR)/.assetsignore
+	@printf '/*\n  Cache-Control: public, max-age=31536000, immutable\n/manifest.json\n  Cache-Control: no-store\n' > $(MIRROR)/_headers
+	@cd deploy/latex && bunx wrangler deploy
+	@echo "serve with: komodoc serve --latex https://komodoc-latex.<account>.workers.dev/"
 
 # --- the web app -----------------------------------------------------------
 #

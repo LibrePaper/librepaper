@@ -24,10 +24,12 @@
 
 use std::path::{Component, Path, PathBuf};
 
-/// Where the project keeps the mirror it builds. A deployment that passes
-/// `--latex` with no value gets this, which is the sandbox's own and is a
-/// self-hoster's to mirror or replace rather than to depend on.
-pub const DEFAULT_MIRROR: &str = "https://latex.komodoc.arelbundock.com/";
+/// Where the project keeps the mirror it builds: a Cloudflare worker of static
+/// files that `make latex-push` deploys from deploy/latex/wrangler.toml. A
+/// deployment that passes `--latex` with no value gets this, which is the
+/// sandbox's own and is a self-hoster's to mirror or replace rather than to
+/// depend on.
+pub const DEFAULT_MIRROR: &str = "https://komodoc-latex.arelbundock.workers.dev/";
 
 /// The mirror's index: the one path that is not named by a digest, and so the
 /// one that may not be cached for ever.

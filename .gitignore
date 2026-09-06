@@ -36,3 +36,6 @@ latex/corpus/*/main.pdf
 latex/corpus/*/main.synctex.gz
 latex/corpus/*/chapters/*.aux
 latex/corpus/article/article.bib
+
+# What wrangler leaves beside deploy/latex/wrangler.toml when it deploys.
+deploy/latex/.wrangler/
