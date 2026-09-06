@@ -249,6 +249,42 @@ async function setText(tab, text) {
   await tab.send("Input.insertText", { text });
 }
 
+// The names Vim mode reads out of `<...>` in a key sequence below. Vim's own
+// command-line input reads `keyCode` for Enter and Escape rather than `key`,
+// so those two carry the legacy code CDP does not infer on its own.
+const VIM_SPECIAL = {
+  Esc: { key: "Escape", keyCode: 27 },
+  Enter: { key: "Enter", keyCode: 13 },
+};
+
+/// Sends a sequence of real keydown/keyup pairs, the way `ihello<Esc>` is
+/// read: one character at a time, with `<Esc>` and `<Enter>` as named keys.
+/// Vim mode reads the keyboard, not a paste, so `Input.insertText` -- which
+/// is what `appendText` and `setText` use -- would never reach it; a letter
+/// has to carry `text` for the browser to also treat it as typed, same as
+/// Puppeteer's own `type()` does, so that a key Vim does not claim still
+/// inserts its letter.
+async function vimKeys(tab, sequence) {
+  await focusEditor(tab);
+  for (const [token, name] of sequence.matchAll(/<(\w+)>|[\s\S]/g)) {
+    if (name) {
+      const special = VIM_SPECIAL[name];
+      if (!special) throw new Error(`vimKeys: no such key <${name}>`);
+      const { key, keyCode } = special;
+      const event = { key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode };
+      await tab.send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
+      await tab.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+    } else {
+      await tab.send("Input.dispatchKeyEvent", { type: "keyDown", key: token, text: token });
+      await tab.send("Input.dispatchKeyEvent", { type: "keyUp", key: token });
+    }
+    // Entering command-line mode moves the focus to the panel's own input,
+    // which a handler does asynchronously; the next key is for whichever
+    // element ends up focused.
+    await wait(20);
+  }
+}
+
 /* ----------------------------------------------------------------- the run */
 
 const MARKDOWN = "# A Paper\n\nThe first paragraph.\n";
@@ -889,6 +925,80 @@ async function run() {
       `${bytes.length} bytes`,
     );
   }
+
+  /* ---------------------------------------------------------- vim keys ---- */
+
+  // The setting is this browser's own, in localStorage rather than clicked,
+  // because that is how a real visit finds it: already set from last time.
+  const vimDoc = await publish({ title: "Vim Keys", source: "start\n", source_format: "markdown" }, alice);
+  const vimTab = await openTab(`${BASE}/docs/${vimDoc.slug}`, [
+    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+  ]);
+  await until("the vim document's editor is mounted", async () =>
+    Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
+  );
+  await vimTab.eval(`localStorage.setItem("komodoc-keymap", JSON.stringify("vim")); return true;`);
+  await vimTab.send("Page.reload");
+  await until("Vim's status panel is drawn", async () =>
+    Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-vim-panel"))`)),
+  );
+
+  // `ihello<Esc>`: insert mode, typed, and back to normal.
+  await vimKeys(vimTab, "ihello<Esc>");
+  const typedHello = await until("hello is typed", async () =>
+    (await vimTab.eval(`return document.querySelector(".cm-content").innerText`))?.includes("hello"),
+  );
+  check("Vim's insert mode types into the document", Boolean(typedHello));
+
+  // `dd`: the line, gone.
+  await vimKeys(vimTab, "dd");
+  const emptied = await until("dd empties the line", async () =>
+    (await vimTab.eval(`return document.querySelector(".cm-content").innerText`))?.includes("hello")
+      ? null
+      : true,
+  );
+  check("Vim's dd deletes the line", Boolean(emptied));
+
+  // `u`: the same undo `Mod-z` uses, so the line comes back.
+  await vimKeys(vimTab, "u");
+  const undone = await until("u undoes the delete", async () =>
+    (await vimTab.eval(`return document.querySelector(".cm-content").innerText`))?.includes("hello"),
+  );
+  check("Vim's u undoes through CodeMirror's own history", Boolean(undone));
+
+  // `:q<Enter>`: the source pane closes, to the document alone.
+  await vimKeys(vimTab, ":q<Enter>");
+  const closed = await until("the layout closes to the document alone", async () =>
+    (await vimTab.eval(`return JSON.parse(localStorage.getItem("komodoc-layout") || "null")`)) === "document"
+      ? true
+      : null,
+  );
+  check("Vim's :q closes the source pane", Boolean(closed));
+
+  // Back to editing, and Vim off: `j` is a letter again, not a motion.
+  await vimTab.eval(`
+    document.querySelector('button[aria-label^="Layout"]').click();
+    return true;
+  `);
+  await until("the source pane reopens", async () =>
+    Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
+  );
+  await vimTab.eval(`localStorage.setItem("komodoc-keymap", JSON.stringify("default")); return true;`);
+  await vimTab.send("Page.reload");
+  await until("the editor remounts with the keys turned off", async () =>
+    Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
+  );
+  // Give the freshly mounted editor a moment to finish wiring its listeners
+  // before the next key arrives.
+  await wait(200);
+  const noPanel = await vimTab.eval(`return Boolean(document.querySelector(".cm-vim-panel"))`);
+  check("turning Vim off removes its status panel", noPanel === false);
+
+  await vimKeys(vimTab, "j");
+  const typedJ = await until("j is typed rather than moving the caret", async () =>
+    (await vimTab.eval(`return document.querySelector(".cm-content").innerText`))?.includes("j"),
+  );
+  check("with Vim off, j is a letter rather than a motion", Boolean(typedJ));
 }
 
 /* ------------------------------------------------------------------ report */

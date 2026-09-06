@@ -425,6 +425,27 @@ main.reader.source-right .editorpane {
   color: var(--color-surface-950-50);
   border-color: var(--color-surface-200-800);
 }
+/* The Vim status line -- `-- INSERT --`, a pending count, `:` and `/` as they
+ * are typed -- is a panel like the search and lint ones, and sits in the same
+ * `.cm-panels` box, so it has their colours already. The field a command is
+ * typed in is an input, and an input does not inherit its colour on its own. */
+.cm-editor .cm-vim-panel input {
+  color: inherit;
+  font: inherit;
+}
+/* Vim's block cursor in normal mode: a block the size of the letter it sits
+ * on, in the caret's colour, with the letter shown in the page's background
+ * colour on top of it. The package's own pink is a theme it injects ahead of
+ * this stylesheet, so at equal specificity these win; the letter's colour it
+ * writes on the element itself, which is what the one `!important` is for. */
+.cm-editor .cm-fat-cursor {
+  background: var(--color-primary-500);
+  color: var(--color-surface-50-950) !important;
+}
+.cm-editor:not(.cm-focused) .cm-fat-cursor {
+  background: none;
+  outline: solid 1px var(--color-primary-500);
+}
 
 /* Somebody else's caret, and their name beside it.
  *

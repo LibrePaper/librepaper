@@ -1,3 +1,58 @@
+<script module>
+  // Vim is switched on for every file at once, held in one compartment per
+  // view rather than baked into a file's state, so flipping the setting
+  // reconfigures the live editor without dropping the caret, the scroll
+  // position or the undo history -- and without tearing down `yCollab`.
+  import { Compartment } from "@codemirror/state";
+
+  const vimCompartment = new Compartment();
+
+  // The package is fetched only once a browser asks for Vim keys, and every
+  // editor on the page shares the one download and the one module. Once it
+  // has resolved, `resolvedVim` lets a later switch reconfigure a compartment
+  // right away, with nothing to await.
+  let vimPromise = null;
+  let resolvedVim = null;
+  function loadVim() {
+    if (!vimPromise) {
+      vimPromise = import("@replit/codemirror-vim").then(({ Vim, vim }) => {
+        defineExCommands(Vim);
+        resolvedVim = vim({ status: true });
+        return resolvedVim;
+      });
+    }
+    return vimPromise;
+  }
+
+  // `Vim` is a module-wide singleton: defining these twice would be
+  // redefining them, not adding a second copy, so the guard is what keeps a
+  // second mounted editor -- or a hot reload -- from doing that.
+  let exCommandsDefined = false;
+  // The Ex commands close over no component: the view they run against is
+  // whatever `cm.cm6` names, looked up here to find which editor asked.
+  const viewCallbacks = new WeakMap();
+
+  function defineExCommands(Vim) {
+    if (exCommandsDefined) return;
+    exCommandsDefined = true;
+    const save = (cm) => viewCallbacks.get(cm.cm6)?.onsave?.();
+    const quit = (cm) => viewCallbacks.get(cm.cm6)?.onquit?.();
+    // `:w` reports whether this browser's work has reached the server; there
+    // is no save to perform, so the status is the whole of the answer.
+    Vim.defineEx("write", "w", save);
+    // `:q` closes the source pane, showing the document alone.
+    Vim.defineEx("quit", "q", quit);
+    Vim.defineEx("wq", "wq", (cm) => {
+      save(cm);
+      quit(cm);
+    });
+    Vim.defineEx("xit", "x", (cm) => {
+      save(cm);
+      quit(cm);
+    });
+  }
+</script>
+
 <script>
   // The source, in CodeMirror, shared with everyone else editing it.
   //
@@ -24,7 +79,7 @@
   import { typstLanguage } from "../lib/typst-mode.js";
   import { untrack } from "svelte";
 
-  let { session, format, file = "", onchange, oncaret, onfilechange, onsave } = $props();
+  let { session, format, file = "", keys = "default", onchange, oncaret, onfilechange, onsave, onquit } = $props();
 
   let host = $state(null);
   let view = null;
@@ -208,6 +263,10 @@
     return EditorState.create({
       doc: text.toString(),
       extensions: [
+        // Vim, when the setting says so, and always first: an earlier
+        // extension has precedence, and Vim has to see a key before the
+        // default keymap does, or `j` inserts a letter instead of moving.
+        vimCompartment.of(untrack(() => keys) === "vim" && resolvedVim ? resolvedVim : []),
         lineNumbers(),
         history(),
         drawSelection(),
@@ -246,6 +305,33 @@
     });
   }
 
+  /// Reconfigures the live view's Vim compartment to match the `keys` prop.
+  /// A state built while the setting was different -- or fetched from the
+  /// cache before the package had loaded -- is brought into line here rather
+  /// than when it was built, which is the one place both are reconciled with
+  /// the browser's current choice.
+  function syncKeys(target) {
+    if (!target) return;
+    // Read without tracking: the mount effect and the file effect call this
+    // too, and neither may re-run -- rebuilding the view -- when the setting
+    // changes. The effect below is the one that follows it.
+    const want = untrack(() => keys);
+    if (want !== "vim") {
+      target.dispatch({ effects: vimCompartment.reconfigure([]) });
+      return;
+    }
+    if (resolvedVim) {
+      target.dispatch({ effects: vimCompartment.reconfigure(resolvedVim) });
+      return;
+    }
+    loadVim().then((extension) => {
+      // The setting, or the view, may have moved on while the download ran.
+      if (view === target && untrack(() => keys) === "vim") {
+        target.dispatch({ effects: vimCompartment.reconfigure(extension) });
+      }
+    });
+  }
+
   /// Shows a file, keeping the state of the one being left. The view is made
   /// once and re-stated, rather than destroyed and rebuilt, so that switching
   /// files does not flash.
@@ -275,6 +361,7 @@
       }).state);
     }
     view.setState(states.get(id));
+    syncKeys(view);
     showing = id;
     // A file this browser has open is where its caret is, which is what the
     // file list shows beside each name.
@@ -301,9 +388,12 @@
       return { first, state: states.get(first) || stateFor(first) };
     });
     view = new EditorView({ state: initial.state, parent: host });
+    untrack(() => viewCallbacks.set(view, { onsave, onquit }));
+    syncKeys(view);
     if (initial.first) session.inFile?.(initial.first);
     view.focus();
     return () => {
+      if (view) viewCallbacks.delete(view);
       view?.destroy();
       view = null;
       states.clear();
@@ -317,6 +407,21 @@
   // chooses a name in the list.
   $effect(() => {
     if (view && file) show(file);
+  });
+
+  // `:w` and `:q` run through the WeakMap rather than closing over this
+  // component, so it is kept current with whichever callbacks the reader
+  // passed in this render.
+  $effect(() => {
+    if (view) viewCallbacks.set(view, { onsave, onquit });
+  });
+
+  // Flipping the menu item reconfigures the live view in place; a state
+  // rebuilt from scratch would drop the caret, the scroll position and the
+  // undo history.
+  $effect(() => {
+    void keys;
+    if (view) syncKeys(view);
   });
 </script>
 

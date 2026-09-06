@@ -38,6 +38,10 @@ export const PANEL = "komodoc-panel";
 // this is the right place for one: it is per browser, so opening the link on a
 // phone means pasting it again, and it is cleared with everything else.
 export const KEYS = "komodoc-keys";
+// Which keys the editor answers to, "default" or "vim". A habit of the
+// person typing rather than of the document, so it lives here rather than on
+// the shared text, and a coauthor on the other end keeps whichever they chose.
+export const KEYMAP = "komodoc-keymap";
 
 // A page can keep using a link key even when persistent storage is denied. The
 // value lasts only for this page, which is the same lifetime as the fragment
