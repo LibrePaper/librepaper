@@ -1,4 +1,5 @@
 <script>
+  import PanelHeader from "./PanelHeader.svelte";
   import { tick, onDestroy } from "svelte";
   import { TreeView, createTreeViewCollection, Menu } from "@skeletonlabs/skeleton-svelte";
   import Icon from "./Icon.svelte";
@@ -195,9 +196,8 @@
 <div class="panel filelist explorer" class:explorer-drop={hover === ""} role="region" aria-label="File manager"
   onpointerdown={(event) => { if (!event.target.closest('[role="treeitem"], button, input, select, header')) selected = []; }}
   ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")} ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
-  <header class="space-y-2 py-3">
-    <div class="flex items-center gap-1">
-      <h3 class="explorer-title mr-auto">Files</h3>
+  <PanelHeader title="Files">
+    {#snippet actions()}
       {#if mayEdit}
         <div class="explorer-actions" aria-label="File actions">
           <IconButton icon="file-plus" label="New file" tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
@@ -225,18 +225,18 @@
       </Menu>
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
         onchange={(event) => { const picked = [...event.target.files]; event.target.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
-    </div>
+    {/snippet}
     {#if chosen.length > 1 && mayEdit}
-      <div class="flex items-center gap-2 text-sm"><span>{chosen.length} selected</span>
+      <div class="flex items-center gap-2"><span>{chosen.length} selected</span>
         <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => ask("move", chosen)}>Move to…</button>
         <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => ask("delete", chosen)}>Delete</button>
       </div>
     {/if}
-    {#if busy}<p class="text-sm" role="status">Uploading files…</p>{/if}
+    {#if busy}<p role="status">Uploading files…</p>{/if}
     {#if refusal && !dialog}<p class="refusal" role="alert">{refusal}</p>{/if}
     {#if editing && editing.type !== "rename"}
       <div class="space-y-1">
-        <label for="new-project-entry" class="text-sm">New {editing.type} in /{editing.parent}</label>
+        <label for="new-project-entry">New {editing.type} in /{editing.parent}</label>
         <div class="flex items-center gap-1">
           <input id="new-project-entry" class="name" aria-label="New {editing.type} name" bind:value={draft} use:focusName onkeydown={namingKey} />
           <IconButton icon="check" label="Create {editing.type}" onclick={commit} />
@@ -244,7 +244,7 @@
         </div>
       </div>
     {/if}
-  </header>
+  </PanelHeader>
 
   <TreeView {collection} selectionMode="multiple" selectedValue={selected} expandedValue={expanded}
     onExpandedChange={(event) => { expanded = event.expandedValue; }}
@@ -375,8 +375,8 @@
     opacity: 0;
     transition: opacity 120ms ease;
   }
-  .explorer header:hover .explorer-actions,
-  .explorer header:focus-within .explorer-actions {
+  .explorer :global(.panel-header:hover .explorer-actions),
+  .explorer :global(.panel-header:focus-within .explorer-actions) {
     opacity: 1;
   }
   .explorer-actions :global(button:focus-visible) {

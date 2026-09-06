@@ -131,6 +131,14 @@
 	--color-row-hover: #f0f2f1;
 	--color-row-selected: #eef3f0;
 	--color-line-number: #8d9691;
+	/* Sidebar typography and rhythm are shared by every panel. */
+	--panel-font-size: var(--text-sm);
+	--panel-line-height: 1.5;
+	--panel-title-weight: 600;
+	--panel-meta-size: var(--text-xs);
+	--panel-padding: calc(var(--spacing) * 4);
+	--panel-section-gap: calc(var(--spacing) * 6);
+	--panel-muted: var(--color-surface-400);
 	--font-editor: "JetBrains Mono", "IBM Plex Mono", "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
 	--color-root-bg-light: #ffffff;
