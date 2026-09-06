@@ -25,19 +25,7 @@ Paid storage is retained while the paid subscription remains active and is not s
 
 The paid-plan quota and price are independent configuration values and are outside the scope of this specification.
 
-## 3. Identity
-
-GitHub is the identity provider.
-
-Each user is identified internally by the immutable GitHub user ID, not by:
-
-- GitHub username;
-- email address;
-- display name.
-
-Usernames and email addresses may change over time.
-
-## 4. Contact email
+## 3. Contact email
 
 The application requests permission to read the user's GitHub email addresses.
 
@@ -54,7 +42,7 @@ The application does not provide an interface for changing this address.
 
 If a user wants to change their contact email, they must change and verify their primary email address on GitHub. The application will synchronize the new address on a subsequent login.
 
-## 5. Email synchronization
+## 4. Email synchronization
 
 On every successful GitHub login:
 
@@ -71,7 +59,7 @@ If the application cannot obtain a primary verified GitHub email during login, t
 
 The user should be directed to GitHub to correct the problem or reauthorize the required permission.
 
-## 6. Email reachability check
+## 5. Email reachability check
 
 A GitHub `verified` email establishes that GitHub has verified the address. It does not guarantee that the mailbox will remain reachable indefinitely.
 
@@ -91,7 +79,7 @@ Suggested message:
 
 If the primary GitHub email changes, send the same notification to the new address.
 
-## 7. Delivery status
+## 6. Delivery status
 
 Store at least:
 
@@ -120,7 +108,7 @@ Temporary delivery failures should not immediately mark an address permanently u
 
 The exact bounce/retry implementation depends on the transactional email provider.
 
-## 8. Undeliverable email
+## 7. Undeliverable email
 
 If an email hard-bounces, the application must not allow the user to substitute an arbitrary email address.
 
@@ -133,7 +121,7 @@ Instead, when the user next signs in:
 
 The application remains dependent on GitHub for contact identity.
 
-## 9. Definition of activity
+## 8. Definition of activity
 
 Automatic cleanup applies to free storage based on owner activity.
 
@@ -166,7 +154,7 @@ Search-engine crawlers and bots do not update it.
 
 This avoids abandoned public documents being retained forever merely because they continue receiving traffic.
 
-## 10. Free-storage inactivity period
+## 9. Free-storage inactivity period
 
 Free storage becomes eligible for deletion after:
 
@@ -191,7 +179,7 @@ July 1       six months inactive; storage eligible for deletion
 
 Exact calendar calculations should be used rather than assuming every month has 30 days.
 
-## 11. Warning emails
+## 10. Warning emails
 
 Before automatically deleting free storage, send at least two warnings.
 
@@ -218,7 +206,7 @@ Repeat:
 
 The application may also send a deletion notice after deletion.
 
-## 12. No inactivity banner
+## 11. No inactivity banner
 
 Do not show an inactivity-warning banner after the user signs in.
 
@@ -234,7 +222,7 @@ If you do not use the service for 6 months, your stored
 files may be deleted. We will email you before deletion.
 ```
 
-## 13. Cancellation of scheduled deletion
+## 12. Cancellation of scheduled deletion
 
 Before performing any deletion, check `last_activity_at` again.
 
@@ -252,7 +240,7 @@ If the user has returned since the warning was generated, deletion must not occu
 
 This protects against races between login/activity events and scheduled cleanup jobs.
 
-## 14. What gets deleted
+## 13. What gets deleted
 
 The inactivity policy applies to stored user content, not necessarily the user's identity record.
 
@@ -268,7 +256,7 @@ The application may retain the minimal account record necessary to recognize the
 
 The user should therefore be able to sign in again after cleanup and begin with empty storage.
 
-## 15. Recovery period
+## 14. Recovery period
 
 After logical deletion, deleted content may remain recoverable from backup for a short grace period.
 
@@ -296,7 +284,7 @@ permanent deletion
 
 Do not promise recovery unless the implementation actually supports it.
 
-## 16. Email failure does not prevent cleanup indefinitely
+## 15. Email failure does not prevent cleanup indefinitely
 
 Email delivery cannot be guaranteed.
 
@@ -313,7 +301,7 @@ The retention terms should therefore make clear that:
 - email notifications are a courtesy/best-effort safeguard;
 - the six-month inactivity rule ultimately determines retention.
 
-## 17. Recommended deletion-state model
+## 16. Recommended deletion-state model
 
 A simple implementation could use:
 
@@ -347,7 +335,7 @@ storage_plan
 
 When activity resumes, warning timestamps can be cleared for the new inactivity cycle.
 
-## 18. Cleanup job
+## 17. Cleanup job
 
 Run a scheduled cleanup process, for example daily.
 
@@ -378,7 +366,7 @@ For each free account:
 
 The process must be idempotent so rerunning a failed job cannot cause unexpected duplicate deletion or notifications.
 
-## 19. Paid users
+## 18. Paid users
 
 Users with an active paid storage plan are excluded from inactivity cleanup.
 
@@ -393,13 +381,13 @@ A separate specification should define what happens when:
 
 Those cases should not be silently handled by the general inactivity rule.
 
-## 20. User-facing summary
+## 19. User-facing summary
 
 The policy should be communicated in simple terms:
 
 > All features are free. Free accounts include 100 MB of storage. To prevent abandoned storage from accumulating indefinitely, files in free accounts may be deleted after 6 months without activity. Signing in resets the inactivity period. We will send advance warnings to the primary verified email address associated with your GitHub account. If you change your email address, update it on GitHub.
 
-## 21. Design principles
+## 20. Design principles
 
 The implementation should preserve the following principles:
 

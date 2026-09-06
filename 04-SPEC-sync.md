@@ -1,11 +1,11 @@
 # SPEC: `komodoc sync`, the file on disk as a peer in the session
 
-Status: proposed. Nothing here is built. Revised for `01-SPEC-history.md`, which
-makes the session the document and the server the peer that holds it; the
-publishing this spec once did is gone with the separate publication copy.
-Planned for the existing Rust command line with Tokio. Yrs references below
-are conditional on the CRDT interoperability decision in `01-SPEC-history.md`;
-they do not mark that library choice as accepted or this command as built.
+Status: the server's side is built and the client is not. The room holds
+the document as a `yrs::Doc`, speaks the protocol below, answers
+`y-checkpoint`, and the word diff and three-way merge the client needs are
+the `komodoc-text` crate in `text/`, with their tests. What is not built is
+the command itself: the peer, the mirror, the `base` bookkeeping around the
+merge, the lock file. Planned for the existing Rust command line with Tokio.
 
 ## The problem
 
@@ -89,37 +89,30 @@ would sit there doing nothing.
 
 ## What the server is
 
-The server holds the document. `01-SPEC-history.md` puts a `yrs::Doc` into the
-room: every update relayed is also applied to a document the server keeps,
-persists, and answers `y-open` from, so a session is never seeded by a peer
-and never ends when the last one leaves. The sync client is therefore a peer
-among peers and needs no new route. The two things it once had to do besides
-syncing -- seed a session from the stored source, and publish -- are the
-server's now, or nobody's. The browser editor changes in that spec, not here.
-
-The protocol the sync client speaks is the browser's:
+The server holds the document as a `yrs::Doc` in the room, persists it, and
+answers `y-open` from it, so a session is never seeded by a peer and never
+ends when the last one leaves. The sync client is therefore a peer among
+peers and needs no new route. The protocol it speaks is the browser's, and
+the server's side of every row is built:
 
 | direction | message | meaning |
 | --- | --- | --- |
 | in | `hello {comments}` | on connect; the comments, which the client ignores |
 | out | `y-open` | I am here |
-| in | `y-state {updates, count}` | the document as the server holds it, one encoded state; apply it |
-| out, in | `y-update {update, replace?}` | one Yjs update, base64; `replace` means the whole state |
+| in | `y-state {update, count}` or `y-state {ref, count}` | the document as the server holds it, one encoded state; apply it. Above the socket message cap the state comes as a same-origin `ref` to fetch instead, after which the client sends its state vector as `y-sync` to catch up |
+| out, in | `y-update {update, seq}` | one Yjs update, base64 |
+| in | `y-ack {seq}` | the update is durable; until then it is the client's to resend on reconnect |
 | out, in | `y-awareness {update}` | who is here, base64, relayed and never stored |
-| in | `y-snapshot` | send the whole state with `replace: true`; an older server asks, one that holds the document never does |
 | in | `y-peers {count}` | how many sockets the room has |
-| out | `y-checkpoint` | the file was written; take a checkpoint if the text has moved |
+| out | `y-checkpoint {why: "sync"}` | the file was written; take a checkpoint if the text has moved |
 | in | `y-checkpoint {sha}` | the checkpoint was taken, possibly after the spacing `01-SPEC-history.md` imposes; print it |
 
 Identity is the `Authorization: Bearer` header the command line already
 sends, on `GET /ws/<slug>`. There is no source to fetch and no SHA to hold:
 the document's text is what `y-state` carries. The updates are Yjs's
-binary v1 encoding. The Rust client and server use Yrs, and the browser
-uses Yjs, with interoperability tests for state vectors, updates, awareness,
-and Unicode offsets. `01-SPEC-history.md` defines authenticated HTTP transfer
-for state above the socket message cap; the client follows the same path
-as the browser. Durability acknowledgments are separate from relay messages;
-retain unacknowledged local updates and resend them on reconnect.
+binary v1 encoding; the server uses Yrs, the browser Yjs, and
+`komodoc/src/tests/yjs.rs` holds the interoperability tests the client
+inherits.
 
 ## Design
 
@@ -138,10 +131,8 @@ client last ran becomes an edit of the document rather than a second copy of
 the same words. There is no seeding: the server has the document whether or
 not anyone is editing it.
 
-On `y-snapshot`, encode the full Yrs state as a v1 update with `replace: true`,
-which is what the browser does for an older server. On `y-awareness`, apply
-it and print who
-joined or left. The client's own awareness entry is
+On `y-awareness`, apply it and print who joined or left. The client's own
+awareness entry is
 `{user: {name: "<login> (sync)", color}}`, so a caret label in the browser
 says where the other edits are coming from, even though the client has no
 caret to show.
@@ -173,9 +164,9 @@ stood at the start of that transaction. Because one task does everything,
 no remote update lands between reading the document and writing to it.
 
 Then `y-checkpoint` is sent, debounced by the same interval. The server
-spaces requested checkpoints thirty seconds apart and answers with the SHA
-when it takes one (`01-SPEC-history.md`), so a burst of saves is one mark in
-the timeline and an editor's auto-save is at most two a minute.
+already spaces requested checkpoints thirty seconds apart and answers with
+the SHA when it takes one, so a burst of saves is one mark in the timeline
+and an editor's auto-save is at most two a minute.
 
 ### The merge, which is the only hard part
 
@@ -207,15 +198,12 @@ or last read from it without conflict. On a file change:
 
 Afterwards `base` is the document's text, whichever branch ran.
 
-The merge is by word, not by line. The editable examples were just unwrapped
-into one line per paragraph, and a paragraph is the natural unit of prose
-anyway; a merge by line would call any two edits to the same paragraph a
-conflict, which is most of the conflicts an author editing in two places
-would ever have. The word diff is the one module `01-SPEC-history.md` shares
-between the Rust command line and the room's restore, with a WASM entry
-point for the browser's visual diff; the merge
-itself is a small function over two diffs, of the kind `diff3` has done for
-forty years, and it is where the tests go.
+The merge is by word, not by line, and it is `komodoc_text::merge` in
+`text/`, beside the `diff` the room's restore uses: disjoint edits, adjacent
+edits, the same word on both sides, an insert at the seam of a deletion, an
+edit at either end, an empty base, UTF-16 offsets and random soups are its
+tests. What the client adds is the `base` bookkeeping above and the printed
+line naming a conflict.
 
 The other direction has no merge to do. When the session changes and the
 file is written, the editor either reloads it or does not: VS Code and
@@ -346,23 +334,19 @@ It is not a general file synchroniser. One file, one document, one session.
    and echo suppression; disk to session as a minimal diff. Tests drive the
    watcher with real writes into a temporary directory and assert on the
    document; and drive the document and assert on the file.
-3. **The merge.** The three-way function, by word, with its table of cases:
-   disjoint edits, adjacent edits, the same word, an insert at the seam of a
-   deletion, an edit at either end of the text, an empty base. Then wired
-   into the disk-to-session path with `base` bookkeeping, and a test in
-   which an actual Yjs browser peer edits while the file holds a stale copy.
-4. **The checkpoint.** `y-checkpoint` after a file write, debounced. A test
-   writes the file and checks that the manifest gains one entry whose bytes
-   are the document's text, and that a second write of the same text gains
-   none.
+3. **The merge, wired.** `komodoc_text::merge` in the disk-to-session path
+   with `base` bookkeeping, and a test in which an actual Yjs browser peer
+   edits while the file holds a stale copy.
+4. **The checkpoint.** `y-checkpoint` sent after a file write, debounced. A
+   test writes the file and checks that the manifest gains one entry whose
+   bytes are the document's text, and that a second write of the same text
+   gains none.
 5. **The command.** The subcommand in the executable, ownership check, the
    lock file, the messages above, `--interval`. A section in the README
    under "CLI", after "Edit", which opens with what it is not.
 
-Steps 1 and 2 are a day each; step 3 is a day or two, most of it tests; 4
-and 5 are a day together. Step 3 is where the risk is, and it is the step
-with no dependency on the network, so it can be built and tested first if
-that is where the doubt is.
+Steps 1 and 2 are a day each; 3, 4 and 5 are a day or two together now
+that the merge itself exists.
 
 ## Open questions
 

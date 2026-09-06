@@ -38,9 +38,19 @@ A manifest entry:
 ```
 
 `why` is one of `quiet`, `left`, `comment`, `cli`, `sync`, `restore`,
-`label`. `label` is empty until somebody sets one, and `commit` and `dirty`
-are the git provenance step 10 fills in. The chain is linear: a restore has
-the current checkpoint as `parent` and an old one's bytes.
+`label`, and `recovered` for one the manifest lost and a later checkpoint
+found. `label` is empty until somebody sets one; `commit` and `dirty` are
+recorded as sent and checked only for shape, and step 10 is what sends them.
+`changed` lists the paths whose digest differs from the parent's. The chain
+is linear: a restore has the current checkpoint as `parent` and an old one's
+bytes.
+
+`GET /api/documents/<slug>/history` returns the manifest to anyone who may
+read the document. Over the socket, `y-checkpoint` with a `why` of `sync`,
+`restore` or `label` takes a checkpoint on request and answers with its SHA,
+and `Room::restore` diffs a checkpoint's tree into the live Yjs document so
+a tab typing at that moment keeps its words; neither has a route, a command
+or a button yet.
 
 The order of writes at a checkpoint is the checkpoint object, then the
 session state, then the index entry, then the manifest, so that a manifest
@@ -79,8 +89,7 @@ In the order they are worth having.
 
 ### The timeline
 
-`GET /api/documents/<slug>/history` returns the manifest. `komodoc history
-c9k` prints it:
+`komodoc history c9k` prints the manifest:
 
 ```
 sha      at                    by                  why      label
@@ -172,13 +181,10 @@ author can pull a sentence back from an old draft without leaving the page.
 `komodoc diff c9k 8b03d77 4f2a91c` prints the same as a unified diff of the
 sources, for a terminal or a pipe.
 
-Restore, from the panel or `komodoc restore c9k 8b03d77`, writes that
-checkpoint's source into the live session as an edit: the server diffs it
-against the current text and applies the difference to the Yjs document, so
-an owner's tab typing at that moment keeps its words and sees the rest
-change under them. It takes a checkpoint with `why: restore`. History is
-never rewritten; the checkpoint restored from is still there, and so is the
-one restored over.
+Restore, from the panel or `komodoc restore c9k 8b03d77`, puts that
+checkpoint's tree into the live session through `Room::restore`, and takes
+a checkpoint with `why: restore`. History is never rewritten; the checkpoint
+restored from is still there, and so is the one restored over.
 
 ### Pinning, later
 
@@ -223,10 +229,9 @@ checkpoint, so the author can find it; it is not a way to push or pull.
 ## Steps
 
 5. **The timeline.** The label `PATCH`, `komodoc history` and `komodoc
-   label`, the panel, viewing a checkpoint. `GET .../history` exists
-   already, and every entry carries `changed`, the paths whose digest
-   differs from the parent's: a document is a directory now, so the panel
-   lists what moved and puts a per-file diff (step 8) behind each path.
+   label`, the panel, viewing a checkpoint. A document is a directory, so
+   the panel lists each entry's `changed` paths and puts a per-file diff
+   (step 8) behind each.
 6. **Comments know their checkpoint.** The two fields, set in `apply`, in
    both exports. The passage-then-and-now line on the card.
 7. **The response export.** `--format response` and `--since`.
@@ -235,8 +240,9 @@ checkpoint, so the author can find it; it is not a way to push or pull.
    what remains is its WASM export from the engine, the list beside the
    comments, and anchoring hunks by quotation.
 9. **Diff and restore.** The merge view in the editor, `komodoc diff`,
-   `komodoc restore`, restore as a server-side diff into the document.
-10. **Provenance.** The git fields from `publish` and `sync`.
+   `komodoc restore`, and the route and panel button that call
+   `Room::restore`.
+10. **Provenance.** `publish` and `sync` send the git fields.
 
 5 to 7 are a day each and 7 is the one to demonstrate. 8 and 9 are the
 browser work and take longer. 10 can go anywhere.
@@ -246,8 +252,7 @@ repository, the checkpoint it causes records the commit the working tree was
 at and whether it was dirty. This is one process spawn, and it is the pointer
 into the history the author's files already have, which for a document
 written in Quarto is the only source history there is. `--no-git` leaves it
-out. The server records what it is sent and checks only that a commit is
-forty hex characters.
+out.
 
 ## Open questions
 
