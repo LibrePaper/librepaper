@@ -7,8 +7,8 @@
 <header class="panel-header">
   <div class="panel-heading">
     <h2 class="panel-title">{title}</h2>
-    {#if meta}<span class="panel-meta">{meta}</span>{/if}
     {#if actions}<div class="panel-actions">{@render actions()}</div>{/if}
   </div>
+  {#if meta}<span class="panel-meta">{meta}</span>{/if}
   {@render children?.()}
 </header>
