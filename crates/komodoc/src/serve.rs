@@ -281,6 +281,20 @@ pub async fn serve(options: ServeOptions) {
         }
     });
 
+    // A link's expiry is not a request anything hangs off of -- nobody asks
+    // the server "has this key gone stale yet". A socket that dialed in while
+    // it was still live would otherwise keep answering after it lapsed, so
+    // this reruns every open socket's authorization once a minute the same
+    // way a sharing change or a transfer does on the spot.
+    let reauthorizer = instance.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            ticker.tick().await;
+            reauthorizer.reauthorize_all().await;
+        }
+    });
+
     // A server on its way down writes what it holds. An acknowledged edit
     // survives a restart because it was written when it was acknowledged; this
     // is about the unacknowledged ones, which have no reason to be lost to an

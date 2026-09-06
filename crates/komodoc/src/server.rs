@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::extract::connect_info::ConnectInfo;
@@ -36,7 +37,7 @@ use crate::origins::{
 };
 use crate::render::{title_from_html, title_from_markdown};
 use crate::room::{
-    decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet,
+    decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet, Sender,
 };
 use crate::store::{
     is_visibility, random_suffix, slugify, Ceiling, Grant, IndexEntry, LinkGrant, ModifyError,
@@ -98,6 +99,27 @@ pub struct Server {
     /// bounds what one deployment will take without a write on every upload,
     /// and is the same trade the socket rate limiter already makes.
     asset_uploads: tokio::sync::Mutex<HashMap<String, (i64, usize)>>,
+    /// Every live socket, keyed by the id `run_socket` was given at attach.
+    /// Authorization is resolved once, at the handshake -- this is what lets
+    /// `reauthorize` rerun that exact resolution later, against whatever the
+    /// index says now, rather than trusting the answer the socket started
+    /// with. Inserted when a socket attaches to a room and removed on every
+    /// exit from `run_socket`, so a stale entry never outlives its socket.
+    connections: tokio::sync::Mutex<HashMap<u64, Connection>>,
+}
+
+/// One live socket's handshake inputs, kept so `reauthorize` can rerun
+/// `handle_socket`'s authorization exactly as it ran at attach: the same
+/// headers, the same query string (the link key a browser cannot send as a
+/// header rides here), and the rung -- "may edit" -- that authorization
+/// produced, so a later change to it can be told apart from no change at all.
+struct Connection {
+    slug: String,
+    headers: HeaderMap,
+    arrival: Arrival,
+    query: Option<String>,
+    is_owner: bool,
+    tx: Sender,
 }
 
 /// The header a browser presents a link key on, and the query parameter the
@@ -204,6 +226,7 @@ impl Server {
             latex: None,
             sockets: AtomicU64::new(1),
             asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
+            connections: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -1034,16 +1057,20 @@ impl Server {
         };
         let room = self.rooms.get(slug).await;
         let server = self.clone();
+        let arrival = arrival.clone();
         upgrade
             .max_message_size(1 << 20)
             .on_upgrade(move |socket| async move {
                 server
-                    .run_socket(socket, room, address, who, author, is_owner)
+                    .run_socket(
+                        socket, room, address, who, author, is_owner, headers, arrival, query,
+                    )
                     .await;
             })
             .into_response()
     }
 
+    #[allow(clippy::too_many_arguments)] // a socket's handshake is made of exactly these
     async fn run_socket(
         &self,
         socket: WebSocket,
@@ -1052,6 +1079,9 @@ impl Server {
         who: Viewer,
         author: String,
         is_owner: bool,
+        headers: HeaderMap,
+        arrival: Arrival,
+        query: Option<String>,
     ) {
         let (mut sink, mut stream) = socket.split();
         // Bounded: a reader whose connection cannot take another frame is
@@ -1062,10 +1092,21 @@ impl Server {
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
         room.attach(socket_id, address.clone(), tx.clone(), is_owner)
             .await;
+        self.connections.lock().await.insert(
+            socket_id,
+            Connection {
+                slug: room.slug.clone(),
+                headers,
+                arrival,
+                query,
+                is_owner,
+                tx: tx.clone(),
+            },
+        );
 
         // One task writes, so a broadcast from another connection never
         // interleaves with a reply to this one.
-        let writer = tokio::spawn(async move {
+        let mut writer = tokio::spawn(async move {
             while let Some(outgoing) = rx.recv().await {
                 let result = match outgoing {
                     Outgoing::Text(text) => sink.send(WsMessage::Text(text.into())).await,
@@ -1089,127 +1130,174 @@ impl Server {
             json!({"type": "hello", "comments": room.snapshot_for(&author, is_owner).await});
         let _ = tx.send(Outgoing::Text(hello.to_string())).await;
 
-        while let Some(Ok(frame)) = stream.next().await {
-            let raw = match frame {
-                WsMessage::Text(text) => text.to_string(),
-                WsMessage::Close(_) => break,
-                _ => continue,
-            };
-            let Ok(incoming) = serde_json::from_str::<RoomMessage>(&raw) else {
-                continue;
-            };
+        // Whether this socket has any reason left to keep watching the room:
+        // whether it may still read the document at all, and whether the
+        // editor rung it was handed at the handshake still holds. Sharing
+        // changes, a transfer, and link expiry all call `reauthorize`, which
+        // closes the socket rather than mutate this in place -- a downgraded
+        // editor simply reconnects and gets the reduced rights at the new
+        // handshake.
+        //
+        // The room can also have dropped this socket on its own:
+        // `send_to_all`/`persist` remove a peer from `state.sockets` when its
+        // queue is too full to take another frame, on the assumption that it
+        // reconnects. Left alone, this reader loop would never notice --
+        // its own `tx` clone keeps the channel open -- and the peer would
+        // stay connected but detached, with its updates silently ignored by
+        // `receive_update`. `housekeeping` is what notices instead.
+        let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
+        housekeeping.tick().await; // the first tick fires immediately; skip it
+        let mut writer_done = false;
+        'reader: loop {
+            tokio::select! {
+                frame = stream.next() => {
+                    let raw = match frame {
+                        Some(Ok(WsMessage::Text(text))) => text.to_string(),
+                        Some(Ok(WsMessage::Close(_))) | None => break 'reader,
+                        Some(Ok(_)) => continue 'reader,
+                        Some(Err(_)) => break 'reader,
+                    };
+                    let Ok(incoming) = serde_json::from_str::<RoomMessage>(&raw) else {
+                        continue 'reader;
+                    };
 
-            // The document belongs to the room. An update is applied there
-            // before it is relayed, and what is relayed is what was applied.
-            // Reading it is open to anyone who may read the document -- that
-            // is how a reader renders the current text -- and writing it is
-            // the editor rung, the same gate the source has always been under.
-            if incoming.kind.starts_with("y-") {
-                match incoming.kind.as_str() {
-                    // What the socket already has, or nothing on a cold join.
-                    "y-open" | "y-sync" => {
-                        let vector = decode_update(&incoming.vector).filter(|raw| !raw.is_empty());
-                        let (update, count) = room.open_state(vector.as_deref()).await;
-                        let payload = if update.len() > self.config.session.inline_state_max {
-                            // A megabyte of state does not belong in a text
-                            // frame. The socket is given a same-origin URL to
-                            // fetch it from, and catches up on whatever
-                            // arrived during the fetch by sending its state
-                            // vector back as `y-sync`.
-                            json!({
-                                "type": "y-state",
-                                "ref": self.state_reference(&room.slug),
-                                "count": count,
-                            })
-                        } else {
-                            json!({
-                                "type": "y-state",
-                                "update": encode_update(&update),
-                                "count": count,
-                            })
-                        };
-                        if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
-                            break;
-                        }
-                        room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
-                            .await;
-                    }
-                    // Where everyone's caret is, and what they are called.
-                    // Relayed and not remembered: it describes who is here
-                    // now, so it is worth nothing to whoever arrives next, and
-                    // a session that kept it would be keeping a list of ghosts.
-                    "y-awareness" => {
-                        if !is_owner || incoming.update.is_empty() {
-                            continue;
-                        }
-                        room.broadcast_except(
-                            Some(socket_id),
-                            &json!({"type": "y-awareness", "update": incoming.update}),
-                        )
-                        .await;
-                    }
-                    "y-update" => {
-                        if !is_owner || incoming.update.is_empty() {
-                            continue;
-                        }
-                        let Some(update) = decode_update(&incoming.update) else {
-                            continue;
-                        };
-                        match room
-                            .receive_update(socket_id, &update, incoming.seq, &author)
-                            .await
-                        {
-                            Applied::Ignored => continue,
-                            Applied::Refuse(reason) => {
-                                let _ = tx.send(Outgoing::Close(reason)).await;
-                                break;
+                    // The document belongs to the room. An update is applied
+                    // there before it is relayed, and what is relayed is what
+                    // was applied. Reading it is open to anyone who may read
+                    // the document -- that is how a reader renders the
+                    // current text -- and writing it is the editor rung, the
+                    // same gate the source has always been under.
+                    if incoming.kind.starts_with("y-") {
+                        match incoming.kind.as_str() {
+                            // What the socket already has, or nothing on a cold join.
+                            "y-open" | "y-sync" => {
+                                let vector =
+                                    decode_update(&incoming.vector).filter(|raw| !raw.is_empty());
+                                let (update, count) = room.open_state(vector.as_deref()).await;
+                                let payload = if update.len() > self.config.session.inline_state_max {
+                                    // A megabyte of state does not belong in a
+                                    // text frame. The socket is given a
+                                    // same-origin URL to fetch it from, and
+                                    // catches up on whatever arrived during
+                                    // the fetch by sending its state vector
+                                    // back as `y-sync`.
+                                    json!({
+                                        "type": "y-state",
+                                        "ref": self.state_reference(&room.slug),
+                                        "count": count,
+                                    })
+                                } else {
+                                    json!({
+                                        "type": "y-state",
+                                        "update": encode_update(&update),
+                                        "count": count,
+                                    })
+                                };
+                                if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
+                                    break 'reader;
+                                }
+                                room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
+                                    .await;
                             }
-                            Applied::Relay => {}
-                        }
-                        // Straight on to everyone else, readers included. The
-                        // sender already has it, and is told separately, once
-                        // storage has it, that it is durable.
-                        room.broadcast_except(
-                            Some(socket_id),
-                            &json!({"type": "y-update", "update": incoming.update}),
-                        )
-                        .await;
-                    }
-                    // A deliberate act by the author, and so a mark in the
-                    // timeline. The requester is told which checkpoint it
-                    // became, which is how `komodoc sync` knows what to print.
-                    "y-checkpoint" => {
-                        if !is_owner {
-                            continue;
-                        }
-                        let why = match incoming.why.as_str() {
-                            "sync" | "restore" | "label" => incoming.why.clone(),
-                            _ => "cli".to_string(),
-                        };
-                        if let Ok(Some(sha)) = room.checkpoint(&why, &author).await {
-                            let payload = json!({"type": "y-checkpoint", "sha": sha});
-                            if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
-                                break;
+                            // Where everyone's caret is, and what they are called.
+                            // Relayed and not remembered: it describes who is here
+                            // now, so it is worth nothing to whoever arrives next, and
+                            // a session that kept it would be keeping a list of ghosts.
+                            "y-awareness" => {
+                                if !is_owner || incoming.update.is_empty() {
+                                    continue 'reader;
+                                }
+                                room.broadcast_except(
+                                    Some(socket_id),
+                                    &json!({"type": "y-awareness", "update": incoming.update}),
+                                )
+                                .await;
                             }
+                            "y-update" => {
+                                if !is_owner || incoming.update.is_empty() {
+                                    continue 'reader;
+                                }
+                                let Some(update) = decode_update(&incoming.update) else {
+                                    continue 'reader;
+                                };
+                                match room
+                                    .receive_update(socket_id, &update, incoming.seq, &author)
+                                    .await
+                                {
+                                    Applied::Ignored => continue 'reader,
+                                    Applied::Refuse(reason) => {
+                                        let _ = tx.send(Outgoing::Close(reason)).await;
+                                        break 'reader;
+                                    }
+                                    Applied::Relay => {}
+                                }
+                                // Straight on to everyone else, readers included. The
+                                // sender already has it, and is told separately, once
+                                // storage has it, that it is durable.
+                                room.broadcast_except(
+                                    Some(socket_id),
+                                    &json!({"type": "y-update", "update": incoming.update}),
+                                )
+                                .await;
+                            }
+                            // A deliberate act by the author, and so a mark in the
+                            // timeline. The requester is told which checkpoint it
+                            // became, which is how `komodoc sync` knows what to print.
+                            "y-checkpoint" => {
+                                if !is_owner {
+                                    continue 'reader;
+                                }
+                                let why = match incoming.why.as_str() {
+                                    "sync" | "restore" | "label" => incoming.why.clone(),
+                                    _ => "cli".to_string(),
+                                };
+                                if let Ok(Some(sha)) = room.checkpoint(&why, &author).await {
+                                    let payload = json!({"type": "y-checkpoint", "sha": sha});
+                                    if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
+                                        break 'reader;
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
+                        continue 'reader;
                     }
-                    _ => {}
-                }
-                continue;
-            }
 
-            let (result, ok) = self
-                .apply_from(&room, incoming, &address, &who, &author)
-                .await;
-            if !ok {
-                if tx.send(Outgoing::Text(result.to_string())).await.is_err() {
-                    break;
+                    let (result, ok) = self
+                        .apply_from(&room, incoming, &address, &who, &author)
+                        .await;
+                    if !ok {
+                        if tx.send(Outgoing::Text(result.to_string())).await.is_err() {
+                            break 'reader;
+                        }
+                        continue 'reader;
+                    }
+                    room.broadcast(&result).await;
                 }
-                continue;
+                // The writer stops on its own when a send fails -- the
+                // browser hung up, or (see below) this connection was cut.
+                // Either way, there is nothing left to read for.
+                result = &mut writer, if !writer_done => {
+                    let _ = result;
+                    writer_done = true;
+                    break 'reader;
+                }
+                _ = housekeeping.tick() => {
+                    if !room.state.lock().await.sockets.contains_key(&socket_id) {
+                        // The room already gave up on this peer as too slow
+                        // to keep up. Its channel may already be full of
+                        // frames nobody is draining, so the transport is cut
+                        // directly rather than queuing a graceful close
+                        // behind whatever is stuck in it.
+                        writer.abort();
+                        writer_done = true;
+                        break 'reader;
+                    }
+                }
             }
-            room.broadcast(&result).await;
         }
 
+        self.connections.lock().await.remove(&socket_id);
         room.detach(socket_id).await;
         // The last editor leaving is the rule that replaces `end_editing`'s
         // forgetting: what they wrote is written out and marked, rather than
@@ -1225,8 +1313,10 @@ impl Server {
         }
         room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
             .await;
-        let _ = tx.send(Outgoing::Close("")).await;
-        let _ = writer.await;
+        if !writer_done {
+            let _ = tx.send(Outgoing::Close("")).await;
+            let _ = writer.await;
+        }
     }
 
     /// A same-origin URL a socket can fetch a large document state from,
@@ -1236,6 +1326,87 @@ impl Server {
         let until = crate::clock::now_unix() + 120;
         let token = crate::auth::sign(&self.key, &format!("state:{slug}:{until}"));
         format!("/api/documents/{slug}/state?until={until}&token={token}")
+    }
+
+    /// Reruns every live socket on `slug`'s authorization against the current
+    /// index entry, and closes whichever one may no longer read the document
+    /// or whose editor rung no longer matches what it was handed at the
+    /// handshake. This is what makes revoking a grant, making a document
+    /// private, or transferring it away actually take effect on a connection
+    /// that is already open: without it, `who`/`author`/`is_owner` are
+    /// resolved once and never again, so the room keeps relaying private
+    /// state and accepting writes from someone the index no longer names.
+    ///
+    /// A socket that is still allowed but whose rung changed is closed rather
+    /// than adjusted in place -- a downgraded editor simply reconnects and
+    /// gets the reduced rights straight from the handshake, which is simpler
+    /// and safer than mutating a room's notion of `may_edit` out from under a
+    /// running loop.
+    pub async fn reauthorize(&self, slug: &str) {
+        let entry = self.store.get(slug).await;
+        // Snapshot the affected connections and drop the registry lock before
+        // awaiting anything, so a slow lookup here never blocks another
+        // socket attaching or detaching.
+        let snapshot: Vec<(u64, HeaderMap, Arrival, Option<String>, bool, Sender)> = {
+            let connections = self.connections.lock().await;
+            connections
+                .iter()
+                .filter(|(_, connection)| connection.slug == slug)
+                .map(|(id, connection)| {
+                    (
+                        *id,
+                        connection.headers.clone(),
+                        connection.arrival.clone(),
+                        connection.query.clone(),
+                        connection.is_owner,
+                        connection.tx.clone(),
+                    )
+                })
+                .collect()
+        };
+        for (socket_id, headers, arrival, query, was_owner, tx) in snapshot {
+            let allowed = match &entry {
+                Some(entry) => {
+                    let who = self
+                        .viewer(entry, &headers, &arrival, query.as_deref())
+                        .await;
+                    self.may_read(entry, &who) && who.at_least(Role::Editor) == was_owner
+                }
+                // The document itself is gone: nothing left on it to read.
+                None => false,
+            };
+            if allowed {
+                continue;
+            }
+            // Never waited on: a socket too far behind to take the close frame
+            // must not hold up the sharing change that revoked it. It is
+            // dropped from the room instead, which stops every broadcast to
+            // it at once, and `run_socket`'s housekeeping cuts the transport
+            // within the second.
+            if tx
+                .try_send(Outgoing::Close("access changed; reconnect"))
+                .is_err()
+            {
+                let room = self.rooms.get(slug).await;
+                room.state.lock().await.sockets.remove(&socket_id);
+            }
+        }
+    }
+
+    /// The same, for every document with a live socket. Nothing else notices
+    /// a link expiring on its own -- there is no request to hang the check
+    /// off of -- so this is run on a timer instead. See `crate::serve`.
+    pub async fn reauthorize_all(&self) {
+        let slugs: std::collections::HashSet<String> = {
+            let connections = self.connections.lock().await;
+            connections
+                .values()
+                .map(|connection| connection.slug.clone())
+                .collect()
+        };
+        for slug in slugs {
+            self.reauthorize(&slug).await;
+        }
     }
 
     async fn handle_comments(
@@ -2787,6 +2958,10 @@ impl Server {
                 return write_json(500, &json!({"error": "could not record the change"}));
             }
         };
+        // Grants, revocations, and visibility all land here: whatever just
+        // changed, any socket already open on this document may no longer be
+        // entitled to what it is holding.
+        self.reauthorize(slug).await;
         let mut answer = self.sharing_json(&entry, true);
         if let Some((key, link)) = minted {
             // Shown once, and said to be: the document holds the digest and
@@ -2981,10 +3156,18 @@ impl Server {
             })
             .await;
         match moved {
-            Ok(entry) => write_json(
-                200,
-                &json!({"slug": entry.slug, "owner": entry.publisher, "title": entry.title}),
-            ),
+            Ok(entry) => {
+                // The old owner is very likely still connected, and a
+                // transfer leaves them named on the document only if they
+                // happen to hold a grant -- otherwise their socket's rung
+                // just changed from owner to whatever the document's default
+                // reading grants a stranger.
+                self.reauthorize(slug).await;
+                write_json(
+                    200,
+                    &json!({"slug": entry.slug, "owner": entry.publisher, "title": entry.title}),
+                )
+            }
             Err(ModifyError::NotFound) => write_json(404, &json!({"error": "not found"})),
             Err(ModifyError::Refused(message)) => write_json(400, &json!({"error": message})),
             Err(ModifyError::Storage(err)) => {

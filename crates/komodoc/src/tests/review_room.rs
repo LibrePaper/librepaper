@@ -516,3 +516,260 @@ async fn review_changing_main_does_not_change_format() {
 fn review_latex_main_path_is_tex_not_txt() {
     assert_eq!(room::main_path_for("", "latex"), "main.tex");
 }
+
+/// R20, inverting `review_persist_forgets_asset_and_rendering_charges`: the
+/// routine session write a `persist()` does must charge the full physical
+/// inventory -- session, history, assets and renderings -- the same total
+/// `record_size_now` uses for an asset or rendering upload, not just the
+/// session and history bytes. An ordinary edit must not drop stored asset and
+/// rendering bytes from the quota until the next checkpoint happens to
+/// recompute it.
+#[tokio::test]
+async fn review_persist_forgets_asset_and_rendering_charges() {
+    let (_dir, store, rooms) = fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
+    room.put_asset(vec![1; 100000], (200000, 200000))
+        .await
+        .unwrap();
+    let sha = room.tree().await.digest();
+    room.put_rendering(&sha, false, vec![2; 100000])
+        .await
+        .unwrap();
+    assert!(store.get("probe").await.unwrap().size >= 200000);
+    room.set_source("A changed", "markdown").await;
+    room.persist().await.unwrap();
+    let charge = store.get("probe").await.unwrap().size;
+    assert!(
+        charge >= 200000,
+        "persist must not drop stored asset/rendering bytes from the quota; recorded {charge}"
+    );
+    assert_eq!(
+        room.assets_bytes().await + room.renderings_bytes().await,
+        200000
+    );
+    println!("persist keeps the full physical charge: recorded {charge}");
+}
+
+/// R21, inverting `review_shed_history_leaks_text_blobs`: shedding a
+/// checkpoint's tree must also reclaim the text blobs nothing else names any
+/// more. With `history_max=1`, four distinct revisions must leave one
+/// checkpoint and only its one text blob, not all four.
+#[tokio::test]
+async fn review_shed_history_leaks_text_blobs() {
+    let mut config = Configuration::default();
+    config.session.history_max = 1;
+    let (_dir, store, rooms) = fixture(config).await;
+    let room = rooms.get("probe").await;
+    for s in ["B", "C", "D"] {
+        room.set_source(s, "markdown").await;
+        room.checkpoint("comment", "").await.unwrap();
+    }
+    assert_eq!(room.manifest().await.checkpoints.len(), 1);
+    let objects = store.blobs.list("history/probe/blobs/").await.unwrap();
+    assert_eq!(
+        objects.len(),
+        1,
+        "shedding checkpoints must reclaim the text blobs only they named"
+    );
+    println!("history_max=1: one checkpoint retained, only its text blob retained");
+}
+
+/// R21, the sharing case the correction calls out explicitly: a text blob
+/// named by two retained checkpoints must survive while either of them is
+/// still in the manifest, even after an earlier checkpoint that also shared
+/// it has been shed.
+#[tokio::test]
+async fn review_shed_history_keeps_blob_shared_by_retained_checkpoints() {
+    let mut config = Configuration::default();
+    config.session.history_max = 2;
+    let (_dir, store, rooms) = fixture(config).await;
+    let room = rooms.get("probe").await;
+    // A second file that never changes across the next checkpoints, so its
+    // blob is named by every one of them.
+    room.add_text("shared.txt", "SHARED").await;
+    room.checkpoint("comment", "").await.unwrap();
+    room.set_source("B", "markdown").await;
+    room.checkpoint("comment", "").await.unwrap();
+    room.set_source("C", "markdown").await;
+    room.checkpoint("comment", "").await.unwrap();
+    // history_max=2 has shed down to the two newest checkpoints by now; both
+    // still name shared.txt.
+    assert_eq!(room.manifest().await.checkpoints.len(), 2);
+    let shared_sha = crate::store::digest_of("SHARED");
+    assert!(
+        store
+            .blobs
+            .get(&blob::blob_key("probe", &shared_sha))
+            .await
+            .is_ok(),
+        "a blob shared by two retained checkpoints must survive after an earlier \
+         checkpoint sharing it was shed"
+    );
+    println!("blob shared by two retained checkpoints survives history shedding");
+}
+
+/// R22, inverting `review_concurrent_asset_admission_exceeds_limit`: two
+/// concurrent 10-byte uploads under a 15-byte aggregate ceiling must admit
+/// exactly one. The first upload's storage write is paused mid-flight, and
+/// the second is attempted while the aggregate check still has only the
+/// pre-upload total to read -- it must be refused by a reservation, not
+/// admitted alongside the first.
+#[tokio::test]
+async fn review_concurrent_asset_admission_exceeds_limit() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    rooms.attach_store(store);
+    let room = rooms.get("probe").await;
+    let key = blob::asset_key("probe", &store::digest_of_bytes(&[1; 10]));
+    *hooked.pause.lock().unwrap() = Some(("put".into(), key));
+    let task = tokio::spawn({
+        let room = room.clone();
+        async move { room.put_asset(vec![1; 10], (15, 15)).await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    let second = room.put_asset(vec![2; 10], (15, 15)).await;
+    hooked.resume.notify_one();
+    task.await.unwrap().unwrap();
+    assert!(
+        second.is_err(),
+        "a second concurrent upload must not be admitted past the aggregate ceiling"
+    );
+    assert_eq!(room.assets_bytes().await, 10);
+    println!("two concurrent 10-byte assets under a 15-byte ceiling: exactly one admitted");
+}
+
+/// R23, inverting `review_read_only_room_relays_edits`: a room held by
+/// another server must refuse a peer's update before applying or relaying
+/// it, rather than accept it into memory and let persistence be the only
+/// thing that later refuses to save it.
+#[tokio::test]
+async fn review_read_only_room_relays_edits() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    let other = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
+    other.attach_store(store);
+    let room = other.get("probe").await;
+    assert!(room.read_only());
+    let (tx, _rx) = tokio::sync::mpsc::channel(10);
+    room.attach(1, "test".into(), tx, true).await;
+    let doc = session::new_doc();
+    session::apply_update(&doc, &room.open_state(None).await.0).unwrap();
+    let before = session::encode_vector(&doc);
+    session::replace_text(&doc, "UNSAVABLE EDIT", "main.md");
+    let outcome = room
+        .receive_update(1, &session::encode_diff(&doc, &before).unwrap(), 1, "alice")
+        .await;
+    assert!(
+        matches!(outcome, room::Applied::Refuse(_)),
+        "a read-only room must refuse rather than relay a peer's update"
+    );
+    assert_ne!(room.source().await, "UNSAVABLE EDIT");
+    println!("room held by another server refuses the update before applying it");
+}
+
+/// R23, the direct mutators: a read-only room's `set_source`, `add_text` and
+/// `name_asset` must leave the in-memory document untouched rather than
+/// diverge from the copy another server is actually persisting.
+#[tokio::test]
+async fn review_read_only_room_mutators_do_not_mutate() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    let other = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
+    other.attach_store(store);
+    let room = other.get("probe").await;
+    assert!(room.read_only());
+    let update = room.set_source("SHOULD NOT LAND", "markdown").await;
+    assert!(
+        update.is_empty(),
+        "a read-only set_source must not produce an update to relay"
+    );
+    assert_eq!(room.source().await, "A");
+    room.add_text("extra.txt", "nope").await;
+    room.name_asset("fig.png", "deadbeef").await;
+    let state = room.state.lock().await;
+    assert!(!session::texts_of(&state.session.doc).contains_key("extra.txt"));
+    assert!(session::assets_of(&state.session.doc).is_empty());
+    println!("read-only room's direct mutators leave the document untouched");
+}
+
+/// R24, inverting `review_lease_error_reports_held`: a storage error reading
+/// the lock must fail closed on a first claim (`held = false`, same as
+/// another server actually holding it), and must report a renewal as
+/// unverified rather than silently extending it on the strength of an
+/// unconfirmed answer.
+#[tokio::test]
+async fn review_lease_error_reports_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let hooked = HookStore::new(Arc::new(blob::FsStore::new(dir.path())) as Arc<dyn BlobStore>);
+    *hooked.fail.lock().unwrap() = Some(blob::room_lock_key("probe"));
+    let first = blob::take_room_lease(hooked.as_ref(), "probe", "server-b", None).await;
+    assert!(
+        !first.held,
+        "a first claim under a lock read failure must fail closed"
+    );
+    let renewal = blob::take_room_lease(hooked.as_ref(), "probe", "server-b", Some(1)).await;
+    assert!(
+        renewal.held,
+        "a renewal must not be refused outright over a storage error"
+    );
+    assert!(
+        !renewal.verified,
+        "a renewal under a storage error must be reported unverified"
+    );
+    println!("lock read failure: first claim fails closed; renewal held but unverified");
+}
+
+/// R35: a slow, cold room's lease acquisition and storage reads must not
+/// hold the global room map lock -- a warm room already in memory must stay
+/// servable by `get` while an unrelated cold room's lease read is still
+/// blocked in flight.
+#[tokio::test]
+async fn review_get_does_not_block_on_a_cold_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path()));
+    let config = Arc::new(Configuration::default());
+    let store = Arc::new(
+        store::Store::open(blobs.clone(), config.clone())
+            .await
+            .unwrap(),
+    );
+    for slug in ["warm", "cold"] {
+        store
+            .put(store::Publication {
+                slug: slug.into(),
+                source: "A".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    let hooked = HookStore::new(blobs.clone());
+    let rooms = Arc::new(room::RoomSet::new(hooked.clone(), config));
+    rooms.attach_store(store);
+    // Warmed before anything is paused, so it is already cached in the map.
+    rooms.get("warm").await;
+    *hooked.pause.lock().unwrap() = Some(("get_versioned".into(), blob::room_lock_key("cold")));
+    let cold_rooms = rooms.clone();
+    let cold_task = tokio::spawn(async move { cold_rooms.get("cold").await });
+    tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    // The cold room's lease read is now blocked mid-flight. A warm room must
+    // still be servable without waiting behind it.
+    let warm_again = tokio::time::timeout(Duration::from_secs(1), rooms.get("warm")).await;
+    assert!(
+        warm_again.is_ok(),
+        "a warm room's lookup waited behind an unrelated cold room's storage I/O"
+    );
+    hooked.resume.notify_one();
+    cold_task.await.unwrap();
+    println!("warm room lookup returned while a cold room's lease read was still blocked");
+}

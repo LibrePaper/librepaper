@@ -316,6 +316,14 @@ pub struct Session {
     /// checkpoint has to record what a figure weighs and the shared document
     /// carries only its name.
     pub asset_sizes: HashMap<String, i64>,
+    /// Bytes claimed against `max_assets` for an upload that is between
+    /// checking the ceiling and either landing in `asset_sizes` or failing.
+    /// Counted alongside `asset_sizes` while an upload is in flight, so a
+    /// second concurrent upload cannot read the pre-reservation total and
+    /// pass the same ceiling the first one is still in the middle of
+    /// spending (R22). Removed on both success (replaced by the real entry)
+    /// and failure (nothing was ever written).
+    pub asset_reserved: HashMap<String, i64>,
     /// When each asset was written here, for the grace period. Uploading a
     /// figure and naming it are two requests, and an asset pruned in between
     /// is one somebody had just successfully uploaded. Held in memory only:
@@ -371,6 +379,12 @@ pub struct Room {
     /// when the room is loaded, and again if a renewal ever finds the lock in
     /// somebody else's hands.
     read_only: std::sync::atomic::AtomicBool,
+    /// How many checkpoints of this room are between their first write and
+    /// their last. The blob sweep at the end of a checkpoint deletes what no
+    /// tree names, and a checkpoint still on its way to writing its tree has
+    /// blobs nothing names yet; the sweep runs only when it is the sole
+    /// checkpoint in flight, so it can never collect those.
+    checkpointing: std::sync::atomic::AtomicUsize,
     /// This server's name in the lease, and the lease it holds. A lease is
     /// takeable again once it has gone stale, so holding a room in memory for
     /// longer than that without renewing would let a second server take it and
@@ -396,6 +410,29 @@ pub enum Applied {
     Refuse(&'static str),
 }
 
+/// A slug's own loading slot: `None` while its load is in flight, `Some` once
+/// it has landed. One `Mutex` per slug rather than one shared with `rooms`
+/// (R35) -- see `RoomSet::loading`.
+type LoadingSlot = Arc<Mutex<Option<Arc<Room>>>>;
+
+/// One checkpoint's presence in `Room::checkpointing`, counted in when made
+/// and out when dropped, so an early return counts out as surely as the end
+/// of the function does.
+struct InFlight<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> InFlight<'a> {
+    fn new(counter: &'a std::sync::atomic::AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        InFlight(counter)
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 pub struct RoomSet {
     /// Who this server is, in the lock objects it takes. A name rather than a
     /// pid, because a pid means nothing to whoever reads the refusal.
@@ -405,6 +442,12 @@ pub struct RoomSet {
     pub blobs: Arc<dyn BlobStore>,
     config: Arc<Configuration>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
+    /// One slot per slug currently being loaded, so a cold room's lease
+    /// acquisition and storage reads happen with no lock held on `rooms` --
+    /// a slow load must not stall every other document's lookup, only
+    /// concurrent callers of the same slug (R35). Removed once the load it
+    /// was made for finishes, successfully or not.
+    loading: Mutex<HashMap<String, LoadingSlot>>,
     store: Arc<std::sync::OnceLock<Arc<crate::store::Store>>>,
 }
 
@@ -432,6 +475,7 @@ impl RoomSet {
             blobs,
             config,
             rooms: Mutex::new(HashMap::new()),
+            loading: Mutex::new(HashMap::new()),
             store: Arc::new(std::sync::OnceLock::new()),
         }
     }
@@ -444,15 +488,34 @@ impl RoomSet {
     }
 
     pub async fn get(&self, slug: &str) -> Arc<Room> {
-        let mut rooms = self.rooms.lock().await;
-        if let Some(existing) = rooms.get(slug) {
+        if let Some(existing) = self.rooms.lock().await.get(slug) {
             return existing.clone();
         }
+        // A cache miss gets its own slot, one per slug, so a slow lease
+        // acquisition or storage read for this document is never made behind
+        // the map lock -- a warm room's lookup, and another slug's cold load,
+        // both proceed while this one is still in flight (R35). Two callers
+        // racing to load the same slug share one slot and one load.
+        let slot = {
+            let mut loading = self.loading.lock().await;
+            loading
+                .entry(slug.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(None)))
+                .clone()
+        };
+        let mut loaded = slot.lock().await;
+        if let Some(room) = loaded.as_ref() {
+            return room.clone();
+        }
         // A room nobody has open, held past the ceiling, is written out and
-        // let go before another is made. Done here rather than on a timer so
-        // the bound is on the map itself and cannot be outrun by arrivals.
-        if rooms.len() >= self.config.session.rooms_max {
-            evict_idle(&mut rooms, self.config.session.rooms_max).await;
+        // let go before another is made. Done under the map lock -- it is
+        // cheap, touching only rooms already in memory -- but no longer holds
+        // that lock across the load below.
+        {
+            let mut rooms = self.rooms.lock().await;
+            if rooms.len() >= self.config.session.rooms_max {
+                evict_idle(&mut rooms, self.config.session.rooms_max).await;
+            }
         }
         // Taken before anything is read, so a second server writing the same
         // bucket finds out it is second rather than interleaving its writes
@@ -470,6 +533,7 @@ impl RoomSet {
             blobs: self.blobs.clone(),
             config: self.config.clone(),
             read_only: std::sync::atomic::AtomicBool::new(!lease.held),
+            checkpointing: std::sync::atomic::AtomicUsize::new(0),
             holder: self.holder.clone(),
             lease: Mutex::new(lease),
             store: self.store.clone(),
@@ -492,6 +556,7 @@ impl RoomSet {
                     last_tree: None,
                     blobs_written: std::collections::HashSet::new(),
                     asset_sizes: HashMap::new(),
+                    asset_reserved: HashMap::new(),
                     asset_written_at: HashMap::new(),
                     rendering_sizes: HashMap::new(),
                     rendering_written_at: HashMap::new(),
@@ -504,7 +569,12 @@ impl RoomSet {
             }),
         });
         room.load().await;
-        rooms.insert(slug.to_string(), room.clone());
+        self.rooms
+            .lock()
+            .await
+            .insert(slug.to_string(), room.clone());
+        *loaded = Some(room.clone());
+        self.loading.lock().await.remove(slug);
         room
     }
 
@@ -937,7 +1007,24 @@ impl Room {
             self.read_only.store(true, Ordering::Relaxed);
             return false;
         }
-        *lease = renewed;
+        if renewed.verified {
+            *lease = renewed;
+        } else {
+            // A storage error kept this renewal from confirming anything:
+            // `renewed.held` is a provisional "nothing has shown we lost it",
+            // not a fresh proof that we still have it. Adopting its `taken_at`
+            // would push `safe_until` out on the strength of that, so the
+            // previous, actually verified `taken_at` is kept instead -- the
+            // safe interval keeps counting down, and writing here stops at
+            // its end unless a later renewal is verified before then (R24).
+            eprintln!(
+                "warning: could not verify the lease on {} against storage; its safe interval \
+                 keeps counting down from the last renewal storage actually confirmed",
+                self.slug
+            );
+            lease.holder = renewed.holder;
+            lease.epoch = renewed.epoch;
+        }
         true
     }
 
@@ -1308,6 +1395,12 @@ impl Room {
     /// document is called; a one-file publish does not and takes the name its
     /// format implies.
     pub async fn set_main_file(&self, source: &str, format: &str, named: &str) -> Vec<u8> {
+        if self.read_only() {
+            // Another server owns this room; writing our copy would only
+            // diverge from the one that is actually being persisted, and
+            // `persist` would refuse it anyway (R23).
+            return Vec::new();
+        }
         let mut state = self.state.lock().await;
         let before = session::encode_vector(&state.session.doc);
         // What the main file is called, for the one case where there is not
@@ -1373,6 +1466,17 @@ impl Room {
     /// concurrent writers can talk their way past the quota between them and
     /// the common path costs a comparison.
     pub async fn receive_update(&self, socket: u64, update: &[u8], seq: i64, by: &str) -> Applied {
+        if self.read_only() {
+            // Another server holds this room's lease. Applying and relaying
+            // the update anyway would show every other peer a document this
+            // server cannot persist, and diverge from whatever the actual
+            // holder is doing -- so it is refused before anything is touched,
+            // which closes the socket and sends the client back to reconnect
+            // (R23).
+            return Applied::Refuse(
+                "this room is being written by another server; reconnect to continue editing",
+            );
+        }
         let mut state = self.state.lock().await;
         let now = now_unix();
         {
@@ -1466,6 +1570,14 @@ impl Room {
     /// tells the sockets their updates are durable. Relaying an update is not
     /// an acknowledgment: nothing here says "saved" until storage has said so.
     pub async fn persist(&self) -> Result<bool, String> {
+        if self.read_only() {
+            // Asked before the dirty check on purpose: the direct mutators
+            // are now no-ops on a read-only room (R23), so a room that never
+            // held the lease would otherwise never go dirty and this would
+            // silently answer "nothing to do" for a caller that has every
+            // reason to be told this room cannot be written at all.
+            return Err("this room is held by another server".into());
+        }
         let mut state = self.state.lock().await;
         if !state.session.dirty {
             return Ok(false);
@@ -1474,7 +1586,6 @@ impl Room {
             return Err("this room is held by another server".into());
         }
         let body = session::encode_state(&state.session.doc);
-        let size = body.len() as i64;
         let durable: Vec<(u64, i64)> = state
             .sockets
             .iter()
@@ -1500,11 +1611,15 @@ impl Room {
                 state.sockets.remove(&id);
             }
         }
-        let history = state.manifest.bytes();
         let format = state.session.format.clone();
         let main = session::main_path(&state.session.doc);
         drop(state);
-        self.record_size(size + history, None, &format, &main).await;
+        // The full physical inventory -- session, history, assets and
+        // renderings -- the same total `record_size_now` charges an asset or
+        // rendering upload with. A routine text edit must not remove what
+        // those separately stored objects cost from the quota until the next
+        // checkpoint happens to recompute it (R20).
+        self.record_size_now(None, &format, &main).await;
         Ok(true)
     }
 
@@ -1521,6 +1636,19 @@ impl Room {
     /// repaired by the next checkpoint, which finds the object present and
     /// names it as `parent` -- `repair` below is that.
     pub async fn checkpoint(&self, why: &str, by: &str) -> Result<Option<String>, String> {
+        if self.read_only() {
+            // Refused outright rather than left to fall through to the
+            // deduplication branch below: on a read-only room whose direct
+            // mutators are now no-ops (R23), the live tree never moves away
+            // from the last checkpoint, so that branch would otherwise
+            // report an unearned success for a request this server has no
+            // business recording.
+            return Err("this room is held by another server".into());
+        }
+        // Counted for the whole of this call, every early return included:
+        // the guard's drop is what lets the sweep at the end of another
+        // checkpoint know it is alone again.
+        let _in_flight = InFlight::new(&self.checkpointing);
         let now = now_unix();
         let (tree, bodies, format, last, deferred, tree_generation) = {
             let mut state = self.state.lock().await;
@@ -1767,6 +1895,15 @@ impl Room {
         // And the renderings the new manifest no longer keeps, on the same
         // pass and under the same write-order rule.
         self.prune_renderings().await;
+        // And the text blobs under `history/<slug>/blobs/` that shedding a
+        // checkpoint's tree just now, or some earlier one, left behind (R21).
+        // Only when no other checkpoint of this room is mid-write: one that
+        // has written its blobs and not yet its tree has objects nothing names,
+        // and this pass would take them for garbage. The next lone checkpoint
+        // sweeps instead; nothing is lost by waiting.
+        if self.checkpointing.load(Ordering::Relaxed) == 1 {
+            self.prune_blobs(&tree).await;
+        }
         // The migration's one and only cleanup. A document stored the old way
         // has a rendered page and a source under the old keys; both are copies
         // of what is now a checkpoint, and this is the first moment at which
@@ -2007,6 +2144,11 @@ impl Room {
     /// never come back out of step. Returns the update to relay.
     #[allow(dead_code)] // the route that offers it to a reader is step 9
     pub async fn restore(&self, point: &Checkpoint) -> Result<Vec<u8>, String> {
+        if self.read_only() {
+            // Another server owns this room; restoring into our copy would
+            // only diverge from the one being persisted (R23).
+            return Err("this room is held by another server".into());
+        }
         let (tree, bodies) = self.checkpoint_texts(point).await?;
         let mut state = self.state.lock().await;
         let before = session::encode_vector(&state.session.doc);
@@ -2075,6 +2217,11 @@ impl Room {
     /// Puts a text at a path in the document, beside whatever is already
     /// there. What a directory publish adds each of its chapters with.
     pub async fn add_text(&self, path: &str, body: &str) {
+        if self.read_only() {
+            // Another server owns this room; adding to our copy would only
+            // diverge from the one being persisted (R23).
+            return;
+        }
         let mut state = self.state.lock().await;
         session::put_text(&state.session.doc, path, body);
         state.session.dirty = true;
@@ -2085,6 +2232,11 @@ impl Room {
     /// Names a figure in the document, at a path. The bytes are already in the
     /// store; this is what makes them a figure of this document.
     pub async fn name_asset(&self, path: &str, sha: &str) {
+        if self.read_only() {
+            // Another server owns this room; naming a figure in our copy
+            // would only diverge from the one being persisted (R23).
+            return;
+        }
         let mut state = self.state.lock().await;
         session::put_asset(&state.session.doc, path, sha);
         state.session.dirty = true;
@@ -2124,33 +2276,47 @@ impl Room {
         }
         let sha = crate::store::digest_of_bytes(&body);
         {
-            let state = self.state.lock().await;
+            let mut state = self.state.lock().await;
             if let Some(known) = state.session.asset_sizes.get(&sha) {
                 // Already here. Nothing is written and nothing is charged: the
                 // same bytes under the same name are the same object.
                 return Ok((sha, *known));
             }
-            let held: i64 = state.session.asset_sizes.values().sum();
+            // Reserved the moment the ceiling is checked, not after the
+            // write: two uploads racing the lease/storage await below would
+            // otherwise both read the same pre-upload total and both pass
+            // the same ceiling (R22). The reservation counts toward the
+            // ceiling exactly like a committed size until it either becomes
+            // one or is released below.
+            let held: i64 = state.session.asset_sizes.values().sum::<i64>()
+                + state.session.asset_reserved.values().sum::<i64>();
             if held + size > max_assets {
                 return Err(format!(
                     "this document has reached the {} MB it may keep in figures",
                     max_assets >> 20
                 ));
             }
+            state.session.asset_reserved.insert(sha.clone(), size);
         }
         if !self.hold().await {
+            self.state.lock().await.session.asset_reserved.remove(&sha);
             return Err("this room is held by another server".into());
         }
-        self.blobs
+        if let Err(err) = self
+            .blobs
             .put(
                 &crate::blob::asset_key(&self.slug, &sha),
                 body,
                 "application/octet-stream",
             )
             .await
-            .map_err(|err| err.to_string())?;
+        {
+            self.state.lock().await.session.asset_reserved.remove(&sha);
+            return Err(err.to_string());
+        }
         let (format, main) = {
             let mut state = self.state.lock().await;
+            state.session.asset_reserved.remove(&sha);
             state.session.asset_sizes.insert(sha.clone(), size);
             state
                 .session
@@ -2453,6 +2619,111 @@ impl Room {
                 state.session.asset_sizes.remove(&sha);
                 state.session.asset_written_at.remove(&sha);
             }
+        }
+    }
+
+    /// Drops the text blobs under `history/<slug>/blobs/` that no surviving
+    /// checkpoint and no live text still names. A checkpoint's tree is its
+    /// bookkeeping; the bodies it names are separate objects, written once
+    /// and shared by every tree that mentions their digest -- so shedding a
+    /// checkpoint's tree, on its own, leaves its text bodies exactly where
+    /// they were. Nothing else in `checkpoint` ever swept this namespace,
+    /// which is what let repeated distinct revisions grow it without bound
+    /// even under a tight `history_max` (R21).
+    ///
+    /// Run after the manifest naming what survives, and the tree/session/
+    /// index of the checkpoint just taken, are all written -- the same
+    /// ordering `prune_assets` and `prune_renderings` keep, so a crash here
+    /// leaves an object nothing names rather than a name pointing at one
+    /// that is gone.
+    ///
+    /// `BlobInfo` carries no modification time, so there is no grace window
+    /// to fall back on the way `prune_assets` protects a figure between its
+    /// upload and its naming. Instead this protects the two things that
+    /// could otherwise race it: the live in-memory tree (a digest just
+    /// written but not yet the newest checkpoint) and `written`, the tree
+    /// this very checkpoint just committed. Anything a retained older
+    /// checkpoint still names survives independently, because that
+    /// checkpoint stays in the manifest until its own turn to be shed.
+    ///
+    /// A retained tree this pass cannot read is not proof its blobs are
+    /// unreferenced -- only that this attempt could not tell -- so nothing at
+    /// all is deleted on a pass where that happens, the same rule
+    /// `prune_assets` follows for the same reason (R15).
+    async fn prune_blobs(&self, written: &crate::history::Tree) {
+        let (live, trees, path, id) = {
+            let state = self.state.lock().await;
+            let live: std::collections::HashSet<String> = session::texts_of(&state.session.doc)
+                .into_values()
+                .map(|body| crate::store::digest_of(&body))
+                .collect();
+            (
+                live,
+                state.manifest.checkpoints.clone(),
+                session::main_path(&state.session.doc),
+                session::main_id(&state.session.doc),
+            )
+        };
+        let mut kept = live;
+        for entry in written.files.values() {
+            if entry.kind == "text" {
+                kept.insert(entry.sha.clone());
+            }
+        }
+        for point in &trees {
+            if !point.tree {
+                continue; // a checkpoint from before directories names none
+            }
+            match crate::history::load_tree(self.blobs.as_ref(), &self.slug, point, &path, &id)
+                .await
+            {
+                Ok(tree) => {
+                    for entry in tree.files.values() {
+                        if entry.kind == "text" {
+                            kept.insert(entry.sha.clone());
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "warning: could not read checkpoint {} of {} while pruning text blobs \
+                         ({err}); skipping this pass rather than risk a blob it still names",
+                        point.sha, self.slug
+                    );
+                    return;
+                }
+            }
+        }
+        let Ok(found) = self.blobs.list(&crate::blob::blob_prefix(&self.slug)).await else {
+            return;
+        };
+        let gone: Vec<String> = found
+            .into_iter()
+            .filter_map(|object| {
+                let digest = object.key.rsplit('/').next()?;
+                if kept.contains(digest) {
+                    None
+                } else {
+                    Some(object.key.clone())
+                }
+            })
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        let digests: std::collections::HashSet<&str> = gone
+            .iter()
+            .filter_map(|key| key.rsplit('/').next())
+            .collect();
+        if self.blobs.delete(&gone).await.is_ok() {
+            // Forgotten here too, or a later checkpoint that happens to
+            // reuse this exact digest would believe it is already written
+            // and never restore the object it just deleted.
+            let mut state = self.state.lock().await;
+            state
+                .session
+                .blobs_written
+                .retain(|digest| !digests.contains(digest.as_str()));
         }
     }
 

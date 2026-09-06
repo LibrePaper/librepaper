@@ -287,6 +287,7 @@ fn a_lease_stops_being_safe_before_it_can_be_taken() {
         holder: "server-one".into(),
         epoch: 1,
         taken_at: 1_000,
+        verified: true,
     };
     assert_eq!(
         lease.safe_until(),

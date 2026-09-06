@@ -340,6 +340,12 @@ pub fn checkpoint_key(slug: &str, sha: &str) -> String {
 pub fn blob_key(slug: &str, sha: &str) -> String {
     format!("history/{slug}/blobs/{sha}")
 }
+/// Every text blob a document has ever written, regardless of which
+/// checkpoint still names it -- what a sweep that reclaims obsolete ones
+/// lists before deciding which are unreferenced (R21).
+pub fn blob_prefix(slug: &str) -> String {
+    format!("history/{slug}/blobs/")
+}
 /// One figure, by the digest of its bytes, under the document that holds it.
 ///
 /// Under the slug and nowhere else: the same figure in two documents is stored
@@ -452,6 +458,17 @@ pub struct Lease {
     pub epoch: u64,
     /// When this lease was last written, as seconds since the epoch.
     pub taken_at: i64,
+    /// Whether `taken_at` (and the rest of this answer) was actually
+    /// confirmed against storage, rather than assumed after a storage error.
+    /// A first claim that cannot even read the lock has nothing to protect
+    /// and fails closed (`held = false`), so `verified` is moot for it. A
+    /// renewal that hits a storage error other than `Conflict` still reports
+    /// `held = true` -- refusing outright would stop a holder that storage
+    /// simply could not confirm one way or the other -- but with
+    /// `verified = false`, so `Room::hold` knows not to trust this answer's
+    /// fresh `taken_at` and keeps the one from the last renewal storage
+    /// actually agreed with (R24).
+    pub verified: bool,
 }
 
 impl Lease {
@@ -472,6 +489,30 @@ pub async fn release_room_locks(blobs: &dyn BlobStore, slugs: &[String]) {
     }
 }
 
+/// What a storage error while taking or renewing the lease becomes. A first
+/// claim (`expect_epoch == None`) has no existing lease of its own to
+/// protect, so it fails closed: `held = false`, exactly as if another server
+/// were holding the room, and the room this feeds simply opens read-only. A
+/// renewal (`expect_epoch == Some`) does have one to protect: refusing it
+/// outright over a storage hiccup would stop a holder that nothing has
+/// actually shown lost the room, so it reports `held = true` but
+/// `verified = false`, which tells `Room::hold` not to trust this answer's
+/// fresh `taken_at` (R24).
+fn lease_on_storage_error(holder: &str, expect_epoch: Option<u64>, now: i64) -> Lease {
+    let renewal = expect_epoch.is_some();
+    Lease {
+        held: renewal,
+        holder: if renewal {
+            holder.to_string()
+        } else {
+            "an unknown holder (storage error)".to_string()
+        },
+        epoch: expect_epoch.unwrap_or(0),
+        taken_at: now,
+        verified: false,
+    }
+}
+
 /// Claims or renews the lease on a room. An expired lease is taken over -- its
 /// holder is gone -- and taking it over raises the epoch, which fences the old
 /// holder out for good.
@@ -479,6 +520,11 @@ pub async fn release_room_locks(blobs: &dyn BlobStore, slugs: &[String]) {
 /// `expect_epoch` is what a renewal asserts: a holder renewing its own lease
 /// passes the epoch it believes it has, and is refused if the lease has moved
 /// on without it. A first claim passes `None`.
+///
+/// A storage error reading or writing the lock is not proof anyone else holds
+/// it, but it is also not proof that we do -- see `lease_on_storage_error` for
+/// the two-sided answer this gives depending on whether it is a first claim or
+/// a renewal (R24).
 pub async fn take_room_lease(
     blobs: &dyn BlobStore,
     slug: &str,
@@ -499,6 +545,7 @@ pub async fn take_room_lease(
                     holder: held.holder,
                     epoch: held.epoch,
                     taken_at: now,
+                    verified: false,
                 };
             }
             // A renewal that finds a different epoch than the one it believes
@@ -511,6 +558,7 @@ pub async fn take_room_lease(
                         holder: held.holder,
                         epoch: held.epoch,
                         taken_at: now,
+                        verified: false,
                     };
                 }
             }
@@ -524,16 +572,7 @@ pub async fn take_room_lease(
             (at, epoch)
         }
         Err(BlobError::NotFound) => (String::new(), 1),
-        // Storage that cannot be read from is not storage that should be
-        // written to blindly, but a lease is not worth refusing to serve over.
-        Err(_) => {
-            return Lease {
-                held: true,
-                holder: holder.to_string(),
-                epoch: expect_epoch.unwrap_or(0),
-                taken_at: now,
-            }
-        }
+        Err(_) => return lease_on_storage_error(holder, expect_epoch, now),
     };
 
     let mine = RoomLock {
@@ -542,12 +581,7 @@ pub async fn take_room_lease(
         epoch,
     };
     let Ok(body) = serde_json::to_vec(&mine) else {
-        return Lease {
-            held: true,
-            holder: holder.to_string(),
-            epoch,
-            taken_at: now,
-        };
+        return lease_on_storage_error(holder, expect_epoch, now);
     };
     match blobs.swap(&key, body, &at).await {
         Ok(_) => Lease {
@@ -555,6 +589,7 @@ pub async fn take_room_lease(
             holder: holder.to_string(),
             epoch,
             taken_at: now,
+            verified: true,
         },
         // Somebody wrote the lease between our reading it and our writing it,
         // which means somebody else is claiming this room.
@@ -563,15 +598,11 @@ pub async fn take_room_lease(
             holder: "another server".to_string(),
             epoch,
             taken_at: now,
+            verified: false,
         },
         // Storage without conditional writes; the assertion stands, and the
         // conditional writes on the room's own objects are what actually
         // enforce it.
-        Err(_) => Lease {
-            held: true,
-            holder: holder.to_string(),
-            epoch,
-            taken_at: now,
-        },
+        Err(_) => lease_on_storage_error(holder, expect_epoch, now),
     }
 }
