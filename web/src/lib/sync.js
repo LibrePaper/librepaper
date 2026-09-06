@@ -30,7 +30,12 @@ function decodeInPlace(match, body) {
     const code = body[1] === "x" || body[1] === "X"
       ? parseInt(body.slice(2), 16)
       : parseInt(body.slice(1), 10);
-    decoded = Number.isFinite(code) ? String.fromCodePoint(code) : undefined;
+    // Browsers replace null, surrogate, and out-of-range numeric references
+    // with U+FFFD. Keep this heuristic decoder just as forgiving: an invalid
+    // source entity must not throw while the caller is trying to move a caret.
+    const valid = Number.isInteger(code) && code > 0 && code <= 0x10ffff &&
+      !(code >= 0xd800 && code <= 0xdfff);
+    decoded = valid ? String.fromCodePoint(code) : "\ufffd";
   }
   if (decoded === undefined) return " ".repeat(match.length);
   return decoded + " ".repeat(Math.max(0, match.length - decoded.length));

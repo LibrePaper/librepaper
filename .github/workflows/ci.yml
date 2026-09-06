@@ -21,3 +21,22 @@ jobs:
       # page. The build also checks the pages against the design system.
       - uses: oven-sh/setup-bun@v2
       - run: make test
+
+  # The fuzz targets, briefly: long enough to catch a regression on an
+  # invariant, not long enough to explore. `make fuzz` locally runs them for
+  # as long as FUZZ_SECONDS says.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            fuzz
+      - uses: oven-sh/setup-bun@v2
+      - run: cargo install cargo-fuzz --locked
+      - run: make fuzz FUZZ_SECONDS=20 FUZZ_TARGETS="merge paths document"

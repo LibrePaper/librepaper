@@ -184,7 +184,16 @@ export async function render(tree, title) {
   // needs a credential, and a credential does not belong in a page.
   if (format === "latex") {
     const { pdf, synctex, diagnostics, seconds } = await latex.compile(tree);
-    return { pdf, synctex: synctex || null, diagnostics: diagnostics || [], seconds };
+    // Keep the output channels explicit. In particular, a failed LaTeX
+    // compile has no HTML page; `undefined` would look like a page to callers
+    // that use a null check and could replace a previously good preview.
+    return {
+      html: null,
+      pdf: pdf || null,
+      synctex: synctex || null,
+      diagnostics: diagnostics || [],
+      seconds,
+    };
   }
   const wasm = await load(format);
   handOver(wasm, tree);

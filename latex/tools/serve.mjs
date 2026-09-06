@@ -29,7 +29,7 @@ import { createServer } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import { createHash } from "node:crypto";
-import { readManifest, addPackages } from "./mirror.mjs"";
+import { readManifest, addPackages } from "./mirror.mjs";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
 const REPO = dirname(HERE);

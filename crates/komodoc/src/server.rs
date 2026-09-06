@@ -54,6 +54,62 @@ const MULTIPART_SLACK: usize = 1 << 20;
 /// is a list of names rather than of paragraphs.
 const MAX_LABEL: usize = 120;
 
+// One assembly per socket; declared lengths never cause an allocation.
+#[derive(Default)]
+struct UpdateAssembly {
+    pending: Option<(i64, usize, usize, usize, Vec<u8>)>,
+}
+
+impl UpdateAssembly {
+    fn receive(
+        &mut self,
+        message: &RoomMessage,
+        ceiling: usize,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
+        const INVALID: &str = "invalid multipart document update";
+        match message.kind.as_str() {
+            "y-update-start" => {
+                if self.pending.is_some()
+                    || message.size == 0
+                    || message.size > ceiling
+                    || message.chunks == 0
+                    || message.chunks > 4096
+                    || message.chunks > message.size
+                {
+                    return Err(INVALID);
+                }
+                self.pending = Some((message.seq, message.size, message.chunks, 0, Vec::new()));
+                Ok(None)
+            }
+            "y-update-chunk" => {
+                let Some((seq, size, chunks, next, bytes)) = self.pending.as_mut() else {
+                    return Err(INVALID);
+                };
+                if message.seq != *seq || message.index != *next || *next >= *chunks {
+                    return Err(INVALID);
+                }
+                let part = decode_update(&message.update).ok_or(INVALID)?;
+                if part.is_empty() || part.len() > size.saturating_sub(bytes.len()) {
+                    return Err(INVALID);
+                }
+                bytes.extend_from_slice(&part);
+                *next += 1;
+                Ok(None)
+            }
+            "y-update-end" => {
+                let Some((seq, size, chunks, next, bytes)) = self.pending.take() else {
+                    return Err(INVALID);
+                };
+                if message.seq != seq || bytes.len() != size || next != chunks {
+                    return Err(INVALID);
+                }
+                Ok(Some(bytes))
+            }
+            _ => Err(INVALID),
+        }
+    }
+}
+
 pub struct Server {
     pub store: Arc<Store>,
     pub rooms: RoomSet,
@@ -1145,6 +1201,13 @@ impl Server {
         // its own `tx` clone keeps the channel open -- and the peer would
         // stay connected but detached, with its updates silently ignored by
         // `receive_update`. `housekeeping` is what notices instead.
+        let mut assembly = UpdateAssembly::default();
+        // CRDT history can exceed visible source, but peer memory stays bounded.
+        let update_ceiling = self
+            .config
+            .max_document
+            .saturating_mul(16)
+            .saturating_add(1 << 20);
         let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
         housekeeping.tick().await; // the first tick fires immediately; skip it
         let mut writer_done = false;
@@ -1157,9 +1220,29 @@ impl Server {
                         Some(Ok(_)) => continue 'reader,
                         Some(Err(_)) => break 'reader,
                     };
-                    let Ok(incoming) = serde_json::from_str::<RoomMessage>(&raw) else {
+                    let Ok(mut incoming) = serde_json::from_str::<RoomMessage>(&raw) else {
                         continue 'reader;
                     };
+
+                    if matches!(
+                        incoming.kind.as_str(),
+                        "y-update-start" | "y-update-chunk" | "y-update-end"
+                    ) {
+                        if !is_owner {
+                            continue 'reader;
+                        }
+                        match assembly.receive(&incoming, update_ceiling) {
+                            Ok(None) => continue 'reader,
+                            Ok(Some(update)) => {
+                                incoming.kind = "y-update".to_string();
+                                incoming.update = encode_update(&update);
+                            }
+                            Err(reason) => {
+                                let _ = tx.send(Outgoing::Close(reason)).await;
+                                break 'reader;
+                            }
+                        }
+                    }
 
                     // The document belongs to the room. An update is applied
                     // there before it is relayed, and what is relayed is what
@@ -1173,7 +1256,8 @@ impl Server {
                             "y-open" | "y-sync" => {
                                 let vector =
                                     decode_update(&incoming.vector).filter(|raw| !raw.is_empty());
-                                let (update, count) = room.open_state(vector.as_deref()).await;
+                                let (update, count, server_vector) =
+                                    room.open_state_with_vector(vector.as_deref()).await;
                                 let payload = if update.len() > self.config.session.inline_state_max {
                                     // A megabyte of state does not belong in a
                                     // text frame. The socket is given a
@@ -1184,12 +1268,14 @@ impl Server {
                                     json!({
                                         "type": "y-state",
                                         "ref": self.state_reference(&room.slug),
+                                        "vector": encode_update(&server_vector),
                                         "count": count,
                                     })
                                 } else {
                                     json!({
                                         "type": "y-state",
                                         "update": encode_update(&update),
+                                        "vector": encode_update(&server_vector),
                                         "count": count,
                                     })
                                 };
@@ -4263,4 +4349,45 @@ fn url_unescape(value: &str) -> String {
         .find(|(k, _)| k == "v")
         .map(|(_, v)| v.to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod multipart_update_tests {
+    use super::*;
+    fn message(value: Value) -> RoomMessage {
+        serde_json::from_value(value).unwrap()
+    }
+    #[test]
+    fn multipart_updates_reject_unbounded_incomplete_and_reordered_input() {
+        let start = message(json!({"type":"y-update-start","seq":7,"size":4,"chunks":2}));
+        let mut assembly = UpdateAssembly::default();
+        assert!(assembly.receive(&start, 3).is_err());
+        assert!(assembly.receive(&start, 4).unwrap().is_none());
+        assert!(assembly
+            .receive(
+                &message(json!({"type":"y-update-chunk","seq":7,"index":1,"update":"YWI="})),
+                4
+            )
+            .is_err());
+        assert!(assembly
+            .receive(&message(json!({"type":"y-update-end","seq":7})), 4)
+            .is_err());
+        assembly.receive(&start, 4).unwrap();
+        for index in 0..2 {
+            assembly
+                .receive(
+                    &message(
+                        json!({"type":"y-update-chunk","seq":7,"index":index,"update":"YWI="}),
+                    ),
+                    4,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            assembly
+                .receive(&message(json!({"type":"y-update-end","seq":7})), 4)
+                .unwrap(),
+            Some(b"abab".to_vec())
+        );
+    }
 }

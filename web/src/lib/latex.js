@@ -64,6 +64,53 @@ let name = null;
 
 let running = false;
 let queued = null; // { tree, resolve, reject } -- at most one, always the latest
+let active = null; // { reject, generation } for the worker job currently running
+let initializing = null; // { target, reject } while a worker awaits ready
+let generation = 0;
+
+function cancelActive(reason) {
+  const job = active;
+  if (!job) return;
+  active = null;
+  running = false;
+  job.reject(reason);
+}
+
+function cancelInitialization(reason) {
+  const waiter = initializing;
+  if (!waiter) return;
+  initializing = null;
+  waiter.reject(reason);
+}
+
+function invalidateCompiler(reason) {
+  generation += 1;
+  cancelActive(reason);
+  cancelInitialization(reason);
+  running = false;
+  if (worker) worker.terminate();
+  worker = null;
+  loaded = null;
+  name = null;
+}
+
+// A worker that reports an error after initialization is no longer usable.
+// Reject the current job, retire that worker, and transparently load the
+// selected distribution again so a following compile cannot post to a dead
+// worker or wait forever behind it.
+function replaceFailedWorker(target, reason) {
+  if (worker !== target) return;
+  const selected = name;
+  generation += 1;
+  cancelActive(reason);
+  cancelInitialization(reason);
+  running = false;
+  target.terminate();
+  worker = null;
+  loaded = null;
+  name = null;
+  if (selected) choose(selected).catch(() => {});
+}
 
 /// Points this module at a mirror. Called once, by whatever knows the
 /// deployment's `--latex`; the tests call it with a local one.
@@ -71,10 +118,7 @@ export function at(url) {
   if (url && url !== base) {
     base = url.endsWith("/") ? url : url + "/";
     manifest = null;
-    if (worker) worker.terminate();
-    worker = null;
-    loaded = null;
-    name = null;
+    invalidateCompiler(new Error("the LaTeX mirror changed while compiling"));
   }
   return base;
 }
@@ -153,7 +197,15 @@ export function chosen() {
 /// in words instead.
 export function choose(which, onProgress) {
   if (loaded && name === which) return loaded;
+  const mine = ++generation;
+  cancelActive(new Error("the LaTeX distribution changed while compiling"));
+  cancelInitialization(new Error("the LaTeX distribution changed while loading"));
+  // The queued run may still be waiting for distribution initialization and
+  // therefore has no active worker job yet. It is retired by the generation
+  // check below, but must release the queue's running latch immediately.
+  running = false;
   if (worker) worker.terminate();
+  worker = null;
   name = which;
   try {
     localStorage.setItem(CHOSEN, which);
@@ -165,7 +217,7 @@ export function choose(which, onProgress) {
   // which the card says.
   persist();
 
-  loaded = index()
+  const loading = index()
     .then(async (list) => {
       if (!list.distributions[which]) throw new Error(`no distribution named ${which}`);
       await warmUpFront(list.distributions[which], onProgress);
@@ -174,18 +226,40 @@ export function choose(which, onProgress) {
     .then(
     (list) =>
       new Promise((resolve, reject) => {
+        if (mine !== generation) {
+          reject(new Error("the LaTeX distribution was replaced while loading"));
+          return;
+        }
         // A module worker, so the glue and the log parser are ordinary
         // imports and the same files run under Vite and, unbundled, under
         // the headless check. Vite discovers this form and bundles the
         // worker on its own, which is why nothing in `vite.config.js`
         // changes for it.
-        worker = new Worker(new URL("./latex/worker.js", import.meta.url), { type: "module" });
+        const target = new Worker(new URL("./latex/worker.js", import.meta.url), { type: "module" });
+        worker = target;
+        let initialized = false;
+        initializing = { target, reject };
         worker.onmessage = (event) => {
           const message = event.data;
-          if (message.ready) resolve(true);
-          else if (message.failed) reject(new Error(message.failed));
+          if (mine !== generation || worker !== target) return;
+          if (message.ready) {
+            initialized = true;
+            if (initializing?.target === target) initializing = null;
+            resolve(true);
+          }
+          else if (message.failed) {
+            if (initializing?.target === target) initializing = null;
+            reject(new Error(message.failed));
+          }
         };
-        worker.onerror = (event) => reject(new Error(event.message || "the compiler worker failed"));
+        worker.onerror = (event) => {
+          const error = new Error(event.message || "the compiler worker failed");
+          if (!initialized) {
+            if (initializing?.target === target) initializing = null;
+            reject(error);
+          }
+          else if (mine === generation && worker === target) replaceFailedWorker(target, error);
+        };
         worker.postMessage({
           cmd: "choose",
           name: which,
@@ -194,11 +268,16 @@ export function choose(which, onProgress) {
         });
       }),
     );
-  loaded.catch(() => {
+  loaded = loading;
+  loading.catch(() => {
     // A failed load must not poison the module: the card is shown again and
     // the reader may choose the same one or another.
-    loaded = null;
-    name = null;
+    if (mine === generation) {
+      loaded = null;
+      name = null;
+      if (worker) worker.terminate();
+      worker = null;
+    }
   });
   return loaded;
 }
@@ -266,23 +345,43 @@ function pump() {
   if (running || !queued) return;
   const { tree, waiting, failing } = queued;
   queued = null;
+  if (!loaded) {
+    const error = new Error("no LaTeX distribution is loaded");
+    for (const reject of failing) reject(error);
+    return;
+  }
   running = true;
+  const mine = generation;
   const started = performance.now();
+  let run;
   loaded
     .then(
       () =>
         new Promise((resolve, reject) => {
-          worker.onmessage = (event) => {
+          if (mine !== generation || !worker) {
+            reject(new Error("the LaTeX distribution was replaced while compiling"));
+            return;
+          }
+          run = { generation: mine, reject };
+          active = run;
+          const target = worker;
+          target.onmessage = (event) => {
+            if (mine !== generation || worker !== target || active !== run) return;
             const message = event.data;
             if (message.compiled) resolve(message.compiled);
             else if (message.failed) reject(new Error(message.failed));
+          };
+          target.onerror = (event) => {
+            if (mine === generation && worker === target) {
+              replaceFailedWorker(target, new Error(event.message || "the compiler worker failed"));
+            }
           };
           // The tree is copied into the worker rather than moved. Moving the
           // asset buffers would empty the session's own copy of them, and a
           // figure that vanished on the second compile would be a strange
           // bug to find; a structured clone of a document's assets is
           // bounded by `max_assets` and costs milliseconds.
-          worker.postMessage({ cmd: "compile", tree });
+          target.postMessage({ cmd: "compile", tree });
         }),
     )
     .then((result) => {
@@ -293,7 +392,10 @@ function pump() {
       for (const reject of failing) reject(error);
     })
     .finally(() => {
-      running = false;
+      if (active === run) active = null;
+      // A distribution switch already reset these values and may have started
+      // a replacement queue. A retired run must not stop that newer run.
+      if (mine === generation) running = false;
       pump();
     });
 }

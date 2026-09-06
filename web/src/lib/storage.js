@@ -40,6 +40,11 @@ export const PANEL = "komodoc-panel";
 // phone means pasting it again, and it is cleared with everything else.
 export const KEYS = "komodoc-keys";
 
+// A page can keep using a link key even when persistent storage is denied. The
+// value lasts only for this page, which is the same lifetime as the fragment
+// key before it is removed from the address bar.
+const memoryKeys = new Map();
+
 /// Takes the key out of the URL fragment, keeps it, and cleans the address
 /// bar. A fragment is never sent to a server, so the key lands in nobody's
 /// access log and on no Referer header; once it is here, the visible URL has
@@ -48,6 +53,7 @@ export function takeKeyFromFragment(slug) {
   const found = /(?:^|[#&])k=([^&]+)/.exec(location.hash || "");
   if (!found) return keyFor(slug);
   const key = decodeURIComponent(found[1]);
+  memoryKeys.set(slug, key);
   const keys = read(KEYS, {});
   keys[slug] = key;
   write(KEYS, keys);
@@ -57,8 +63,11 @@ export function takeKeyFromFragment(slug) {
 
 /// The key this browser holds for a document, or "" for none.
 export function keyFor(slug) {
+  if (memoryKeys.has(slug)) return memoryKeys.get(slug);
   const keys = read(KEYS, {});
-  return typeof keys[slug] === "string" ? keys[slug] : "";
+  const key = typeof keys[slug] === "string" ? keys[slug] : "";
+  if (key) memoryKeys.set(slug, key);
+  return key;
 }
 
 /// The link to hand somebody: the one that was shared, key and all, so a link

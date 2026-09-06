@@ -1,0 +1,59 @@
+# The fuzz targets: libFuzzer driving the functions that read what a peer
+# sends. Outside the workspace because they need a nightly compiler and the
+# sanitizer runtime, and nothing that builds the binary should. `make fuzz`
+# runs every target for a minute; `cargo fuzz run <name>` from this directory
+# runs one until it finds something.
+#
+# Each target states an invariant and asserts it: a failure is a panic, and
+# libFuzzer writes the input that caused it to artifacts/<target>/. Reproduce
+# with `cargo fuzz run <target> artifacts/<target>/<file>`, then turn it into
+# a test in the crate the bug is in.
+[package]
+name = "komodoc-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+komodoc = { path = "../crates/komodoc" }
+komodoc-text = { path = "../crates/text" }
+# Pinned to what the binary uses, so a peer's raw write into the shared
+# document is made with the same encoder the room decodes.
+yrs = "0.27"
+
+# The word diff and the three-way merge.
+[[bin]]
+name = "merge"
+path = "fuzz_targets/merge.rs"
+test = false
+doc = false
+bench = false
+
+# The path rules a peer's file names go through.
+[[bin]]
+name = "paths"
+path = "fuzz_targets/paths.rs"
+test = false
+doc = false
+bench = false
+
+# A shared document built by a peer who may write any key, then repaired.
+[[bin]]
+name = "document"
+path = "fuzz_targets/document.rs"
+test = false
+doc = false
+bench = false
+
+# A v1 update off the socket, valid or damaged, against the admission ceilings.
+[[bin]]
+name = "update"
+path = "fuzz_targets/update.rs"
+test = false
+doc = false
+bench = false

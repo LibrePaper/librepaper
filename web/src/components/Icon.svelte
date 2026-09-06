@@ -8,6 +8,10 @@
   // rounded rectangle as a square-cornered path is what made these look like
   // icons from two different sets.
   const ICONS = {
+    "chevron-down": [["path", "m6 9 6 6 6-6"]],
+    "chevron-right": [["path", "m9 6 6 6-6 6"]],
+    x: [["path", "M18 6 6 18"], ["path", "m6 6 12 12"]],
+    "folder-plus": [["path", "M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2"], ["path", "M12 10v6"], ["path", "M9 13h6"]],
     book: [["path", "M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"]],
     "panel-left": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M9 3v18"]],
     "panel-right": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M15 3v18"]],

@@ -1,244 +1,353 @@
 <script>
-  // The project's directory, as a panel of the column.
-  //
-  // Paths are shown as paths. There is no folder tree to expand, because a
-  // paper has a dozen files and a tree is for hundreds: `chapters/03.tex` is
-  // one line that says where it is, and a reader of this list does not have to
-  // open two disclosures to find out.
-  //
-  // The main file is first and the rest are sorted, so the list does not
-  // reorder itself as somebody types. Beside each file are the initials of
-  // whoever has their caret in it, which is what makes a modular paper feel
-  // like one room rather than several.
-  //
-  // Everybody is shown the list: it is the shape of the project, and a reader
-  // who cannot edit still wants to know what is in it. Only an editor can
-  // open a file, because opening one means the source pane, and only an
-  // editor has one.
+  import { tick, onDestroy } from "svelte";
+  import { TreeView, createTreeViewCollection, Menu } from "@skeletonlabs/skeleton-svelte";
+  import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-  import Row from "./layout/Row.svelte";
-  import { checkPath } from "../lib/paths.js";
+  import Modal from "./Modal.svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
+  import { checkPath, collisionKey } from "../lib/paths.js";
+  import { basename, parentPath, inside, nodeKey, fileTree, folderPaths, topEntries, checkPlacement, copyPath, droppedFiles } from "../lib/file-manager.js";
 
-  let {
-    files = [],
-    open = "",
-    peers = new Map(),
-    mayEdit = false,
-    rules = {},
-    onopen,
-    onadd,
-    onrename,
-    onremove,
-    onmain,
-    onfigure,
-    ontext,
-    ondownload,
-  } = $props();
+  let { files = [], folders = [], open = "", peers = new Map(), mayEdit = false, rules = {},
+    onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onmain, onfigure, ontext, ondownload, ondownloaditem } = $props();
 
-  let adding = $state(false);
-  let renaming = $state("");
+  let selected = $state([]);
+  let expanded = $state([]);
+  let focused = $state("");
+  let editing = $state(null);
   let draft = $state("");
   let refusal = $state("");
   let chooser = $state(null);
+  let uploadTarget = "";
+  let busy = $state(false);
+  let hover = $state(null);
+  let hoverTimer;
+  let dialog = $state(null);
+  let destination = $state("");
+  let conflict = $state(null);
+  let settleConflict;
+  const dragType = "application/x-komodoc-files";
+  const dragToken = crypto.randomUUID();
+  const root = $derived(fileTree(files, folders));
+  const collection = $derived(createTreeViewCollection({ rootNode: root, nodeToValue: (node) => node.id, nodeToString: (node) => node.name,
+    nodeToChildrenCount: (node) => node.kind === "folder" ? node.children.length : undefined }));
+  const directories = $derived(folderPaths(files, folders));
+  const entries = $derived([...files, ...directories.map((path) => ({ kind: "folder", id: path, path }))]);
+  const chosen = $derived(entries.filter((entry) => selected.includes(nodeKey(entry))));
+  const currentFolder = $derived(chosen.length === 1 ? (chosen[0].kind === "folder" ? chosen[0].path : parentPath(chosen[0].path)) : "");
+  const deleting = $derived(dialog?.type === "delete" ? files.filter((file) => dialog.entries.some((entry) => entry.path === file.path || entry.kind === "folder" && inside(file.path, entry.path))) : []);
+  const protectedSelection = $derived(deleting.some((file) => file.main));
+  const openPath = $derived(files.find((file) => file.id === open)?.path);
 
-  /// A figure is chosen rather than named: its bytes come from the person's
-  /// own disk, and the name it will be known by is the name it already has.
-  /// The refusal comes first -- the extension and the ceilings are checked
-  /// here so that a file that cannot be stored is not uploaded first.
-  function chooseFigures(event) {
-    const chosen = [...(event.target.files || [])];
-    event.target.value = ""; // so the same file can be chosen twice
-    offer(chosen);
-  }
+  onDestroy(() => { clearTimeout(hoverTimer); settleConflict?.(false); });
+  // Follow an editor opened elsewhere (including diagnostics) into its folder.
+  $effect(() => {
+    if (!openPath) return;
+    let path = parentPath(openPath);
+    const parents = [];
+    while (path) { parents.push(`folder:${path}`); path = parentPath(path); }
+    // untracked state is read in the scheduled callback to avoid an expansion loop.
+    if (parents.length) queueMicrotask(() => { expanded = [...new Set([...expanded, ...parents])]; });
+  });
 
-  /// Files from a chooser or a drop. What each one becomes follows from its
-  /// name, by the same rule the server uses: a `.tex` is a text and is read
-  /// into the document, a `.png` is a figure and its bytes are stored. A name
-  /// that is neither is refused here, before anything is uploaded.
-  export function offer(chosen) {
+  function entryOf(node) { return node.kind === "folder" ? { kind: "folder", id: node.path, path: node.path } : files.find((file) => file.id === node.fileId && file.kind === node.kind); }
+  function selectionFor(node) { return selected.includes(node.id) ? topEntries(chosen) : [entryOf(node)].filter(Boolean); }
+  function expand(path) { if (path) expanded = [...new Set([...expanded, `folder:${path}`])]; }
+  function reset() { editing = null; draft = ""; refusal = ""; }
+  function focusName(element) { tick().then(() => { element.focus(); element.select(); }); }
+  function start(type, entry = null, parent = currentFolder) {
+    if (!mayEdit) return;
     refusal = "";
-    for (const file of chosen) {
-      const answer = checkPath(rules, file.name);
-      if (answer.error) {
-        refusal = answer.error;
-        continue;
+    editing = { type, entry, parent };
+    draft = type === "rename" ? basename(entry.path) : "";
+    expand(parent);
+  }
+  async function commit() {
+    if (!editing || !mayEdit) return;
+    try {
+      const path = [editing.parent, draft.trim()].filter(Boolean).join("/");
+      if (!draft.trim()) throw new Error("Enter a name.");
+      if (editing.type === "rename") await onrelocate?.([editing.entry], path, true);
+      else {
+        const kind = editing.type === "folder" ? "folder" : "text";
+        const normalized = checkPlacement(rules, { kind, path }, files, folders);
+        if (kind === "folder") await onmkdir?.(normalized);
+        else await onadd?.(normalized);
       }
-      if (files.some((known) => known.path.toLowerCase() === file.name.toLowerCase())) {
-        refusal = `${file.name}: there is already a file with that name`;
-        continue;
-      }
-      if (answer.kind === "asset") onfigure?.(file);
-      else ontext?.(file);
+      reset();
+    } catch (error) { refusal = error.message; }
+  }
+  function namingKey(event) {
+    event.stopPropagation();
+    if (event.key === "Enter") { event.preventDefault(); commit(); }
+    if (event.key === "Escape") { event.preventDefault(); reset(); }
+  }
+  function ask(type, targets) {
+    if (!mayEdit || !targets.length) return;
+    reset();
+    dialog = { type, entries: topEntries(targets) };
+    destination = "";
+  }
+  async function confirm() {
+    try {
+      if (dialog.type === "delete") await ondelete?.(dialog.entries);
+      else await onrelocate?.(dialog.entries, destination, false);
+      selected = [];
+      expand(destination);
+      dialog = null;
+      refusal = "";
+    } catch (error) { refusal = error.message; }
+  }
+  async function action(value, node) {
+    const entry = entryOf(node);
+    const targets = selectionFor(node);
+    if (!entry) return;
+    if (value === "download") { ondownloaditem?.(entry); return; }
+    if (!mayEdit) return;
+    if (value === "rename") start("rename", entry, parentPath(entry.path));
+    if (value === "move" || value === "delete") ask(value, targets);
+    if (value === "file" || value === "folder") start(value, null, entry.path);
+    if (value === "upload") choose(entry.path);
+    if (value === "main") onmain?.(entry);
+    if (value === "duplicate") {
+      try { await onduplicate?.(entry, copyPath(entry.path, files, folders)); }
+      catch (error) { refusal = error.message; }
     }
   }
-
-  // The rules refuse a name here as well as at the server, so the reason is
-  // shown where the person is typing rather than arriving as a status code.
-  // The server checks it again; this is the early word, never the enforcement.
-  function refuse(path, taken) {
-    const answer = checkPath(rules, path);
-    if (answer.error) return answer.error;
-    if (taken.some((file) => file.path.toLowerCase() === path.trim().toLowerCase())) {
-      return `${path}: there is already a file with that name`;
-    }
-    return "";
-  }
-
-  function startAdding() {
-    adding = true;
-    renaming = "";
-    draft = "";
-    refusal = "";
-  }
-
-  function startRenaming(file) {
-    renaming = file.id;
-    adding = false;
-    draft = file.path;
-    refusal = "";
-  }
-
-  function cancel() {
-    adding = false;
-    renaming = "";
-    draft = "";
-    refusal = "";
-  }
-
-  function commit() {
-    const path = draft.trim();
-    // Renaming a file to its own name is not an edit, and should not be an
-    // error either.
-    const others = renaming ? files.filter((file) => file.id !== renaming) : files;
-    const said = refuse(path, others);
-    if (said) {
-      refusal = said;
-      return;
-    }
-    if (renaming) onrename?.(renaming, path);
-    else onadd?.(path);
-    cancel();
-  }
-
   function keyed(event) {
-    if (event.key === "Enter") commit();
-    if (event.key === "Escape") cancel();
+    if (!mayEdit || event.target.closest("input, button, [role=menu]")) return;
+    if (event.key === "Escape") { selected = []; return; }
+    const targets = chosen.length ? chosen : entries.filter((entry) => nodeKey(entry) === focused);
+    if (event.key === "F2" && targets.length === 1) { event.preventDefault(); start("rename", targets[0], parentPath(targets[0].path)); }
+    if (event.key === "Delete" && targets.length) { event.preventDefault(); ask("delete", targets); }
   }
-
-  const figures = $derived(files.filter((file) => file.kind === "asset").length);
+  function choose(path = currentFolder) { uploadTarget = path; chooser?.click(); }
+  function resolveConflict(keep) { conflict = null; settleConflict?.(keep); settleConflict = null; }
+  async function upload(items, target, incomingFolders = []) {
+    if (!mayEdit || busy) return;
+    busy = true;
+    refusal = "";
+    const errors = [];
+    try {
+      for (const folder of incomingFolders) {
+        const path = [target, folder].filter(Boolean).join("/");
+        if (!directories.includes(path)) await onmkdir?.(path);
+      }
+      for (const { file, path: relative } of items) {
+        try {
+          let path = [target, relative].filter(Boolean).join("/");
+          const answer = checkPath(rules, path);
+          if (answer.error) throw new Error(answer.error);
+          if (entries.some((entry) => collisionKey(entry.path) === collisionKey(path))) {
+            conflict = path;
+            const keep = await new Promise((resolve) => { settleConflict = resolve; });
+            if (!keep) continue;
+            path = copyPath(path, files, folders);
+          }
+          path = checkPlacement(rules, { kind: answer.kind, path }, files, folders);
+          if (answer.kind === "asset") await onfigure?.(file, path);
+          else await ontext?.(file, path);
+          await tick();
+        } catch (error) { errors.push(error.message); }
+      }
+      expand(target);
+    } catch (error) { errors.push(error.message); }
+    finally { busy = false; refusal = errors.join("; "); }
+  }
+  export function offer(chosenFiles) {
+    return upload(chosenFiles.map((file) => ({ file, path: file.webkitRelativePath || file.name })), "");
+  }
+  function dragStart(event, node) {
+    if (!mayEdit || editing) { event.preventDefault(); return; }
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(dragType, JSON.stringify({ token: dragToken, entries: selectionFor(node) }));
+  }
+  function dragOver(event, path) {
+    if (!mayEdit || busy || ![...event.dataTransfer.types].some((type) => type === dragType || type === "Files")) return;
+    event.preventDefault(); event.stopPropagation();
+    event.dataTransfer.dropEffect = event.dataTransfer.types.includes(dragType) ? "move" : "copy";
+    if (hover !== path) {
+      clearTimeout(hoverTimer);
+      hover = path;
+      hoverTimer = setTimeout(() => expand(path), 650);
+    }
+  }
+  function dragEnd() { hover = null; clearTimeout(hoverTimer); }
+  async function drop(event, path) {
+    event.preventDefault(); event.stopPropagation(); dragEnd();
+    if (!mayEdit || busy) return;
+    try {
+      const payload = event.dataTransfer.getData(dragType);
+      if (payload) {
+        const data = JSON.parse(payload);
+        if (data.token !== dragToken) throw new Error("Move files within this project's explorer.");
+        await onrelocate?.(data.entries, path, false);
+        selected = []; expand(path); refusal = "";
+      } else {
+        const incoming = await droppedFiles(event.dataTransfer);
+        await upload(incoming.files, path, incoming.folders);
+      }
+    } catch (error) { refusal = error.message; }
+  }
 </script>
 
-<!-- One of the column's panels: the column itself, with the tabs that choose
-     between them, is the reader's. -->
-<div class="panel filelist">
-  <header class="mb-3 pt-3">
-    <Row justify="between">
-      <h3 class="h5">Files</h3>
-      {#if files.length}
-        <small class="text-surface-600-400">
-          {files.length} {files.length === 1 ? "file" : "files"}{figures
-            ? ` · ${figures} ${figures === 1 ? "figure" : "figures"}`
-            : ""}
-        </small>
-      {/if}
-    </Row>
-    <!-- What can be done to the directory, in one row: a text is named, a
-         figure is chosen from a disk, and the whole of it can be taken away
-         as a zip -- which is anyone's to do, since anyone here can read it. -->
-    <div class="filetools-row mt-2">
+<div class="panel filelist explorer" class:explorer-drop={hover === ""} role="region" aria-label="File manager"
+  onpointerdown={(event) => { if (!event.target.closest('[role="treeitem"], button, input, select, header')) selected = []; }}
+  ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")} ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
+  <header class="space-y-2 py-3">
+    <div class="flex items-center gap-1">
+      <h3 class="explorer-title mr-auto">Files</h3>
       {#if mayEdit}
-        <IconButton icon="file-plus" label="Add a file" onclick={startAdding} />
-        <IconButton icon="image" label="Add a figure" onclick={() => chooser?.click()} />
+        <IconButton icon="file-plus" label="New file" tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
+        <IconButton icon="folder-plus" label="New folder" tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
+        <IconButton icon="upload" label="Upload files" tone="plain" size="btn-icon-sm" disabled={busy} onclick={() => choose()} />
       {/if}
-      <IconButton icon="download" label="Download the project as a zip" title="Download" onclick={() => ondownload?.()} />
+      <Menu onSelect={({ value }) => { if (value === "download") ondownload?.(); else expanded = []; }}>
+        <Menu.Trigger class="explorer-menu-button" aria-label="Project actions">⋯</Menu.Trigger>
+        <ExplorerMenu>
+          <Menu.Item value="collapse" class="menuitem">Collapse all</Menu.Item>
+          <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
+        </ExplorerMenu>
+      </Menu>
+      {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
+        onchange={(event) => { const picked = [...event.target.files]; event.target.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
     </div>
-    {#if mayEdit}
-      <input
-        class="chooser"
-        type="file"
-        multiple
-        bind:this={chooser}
-        onchange={chooseFigures}
-        aria-label="Choose a figure to add"
-      />
+    {#if chosen.length > 1 && mayEdit}
+      <div class="flex items-center gap-2 text-sm"><span>{chosen.length} selected</span>
+        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => ask("move", chosen)}>Move to…</button>
+        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => ask("delete", chosen)}>Delete</button>
+      </div>
     {/if}
-    {#if refusal}
-      <p class="refusal mt-2" role="alert">{refusal}</p>
+    {#if busy}<p class="text-sm" role="status">Uploading files…</p>{/if}
+    {#if refusal && !dialog}<p class="refusal" role="alert">{refusal}</p>{/if}
+    {#if editing && editing.type !== "rename"}
+      <div class="space-y-1">
+        <label for="new-project-entry" class="text-sm">New {editing.type} in /{editing.parent}</label>
+        <div class="flex items-center gap-1">
+          <input id="new-project-entry" class="name" aria-label="New {editing.type} name" bind:value={draft} use:focusName onkeydown={namingKey} />
+          <IconButton icon="check" label="Create {editing.type}" onclick={commit} />
+          <IconButton icon="x" label="Cancel" onclick={reset} />
+        </div>
+      </div>
     {/if}
   </header>
 
-  <ul>
-    {#each files as file (file.id)}
-      <li class:open={file.id === open} class:mainfile={file.main}>
-        {#if renaming === file.id}
-          <!-- The field exists because somebody just asked to rename this file,
-               so the caret belongs in it. The rule is about a page that takes
-               the focus on load, which this is not. -->
-          <!-- svelte-ignore a11y_autofocus -->
-          <input
-            class="name"
-            bind:value={draft}
-            onkeydown={keyed}
-            onblur={cancel}
-            aria-label="Rename {file.path}"
-            autofocus
-          />
-        {:else if mayEdit}
-          <button class="path" onclick={() => onopen?.(file)} title={file.path}>
-            {file.path}
-          </button>
-        {:else}
-          <!-- A reader has no source pane to open a file in, so the path is
-               a fact rather than a control. -->
-          <span class="path" title={file.path}>{file.path}</span>
-        {/if}
-        {#if renaming !== file.id}
-          <span class="who">{(peers.get(file.id) || []).slice(0, 3).join(" ")}</span>
-          {#if mayEdit}
-            <span class="filetools">
-              {#if !file.main && file.kind === "text"}
-                <IconButton
-                  icon="star"
-                  tone="plain"
-                  size="btn-icon-sm"
-                  label="Make {file.path} the main file"
-                  onclick={() => onmain?.(file)}
-                />
-              {/if}
-              <IconButton
-                icon="pencil"
-                tone="plain"
-                size="btn-icon-sm"
-                label="Rename {file.path}"
-                onclick={() => startRenaming(file)}
-              />
-              {#if !file.main}
-                <IconButton
-                  icon="trash"
-                  tone="plain"
-                  size="btn-icon-sm"
-                  label="Delete {file.path}"
-                  onclick={() => onremove?.(file)}
-                />
-              {/if}
-            </span>
-          {/if}
-        {/if}
-      </li>
-    {/each}
-    {#if adding}
-      <li class="adding">
-        <!-- As above: this row exists because somebody just asked to add a file. -->
-        <!-- svelte-ignore a11y_autofocus -->
-        <input
-          class="name"
-          bind:value={draft}
-          onkeydown={keyed}
-          placeholder="chapters/03.tex"
-          aria-label="The new file's name"
-          autofocus
-        />
-      </li>
-    {/if}
-  </ul>
+  <TreeView {collection} selectionMode="multiple" selectedValue={selected} expandedValue={expanded}
+    onExpandedChange={(event) => { expanded = event.expandedValue; }}
+    onFocusChange={(event) => { focused = event.focusedValue; }}
+    onSelectionChange={(event) => {
+      selected = event.selectedValue;
+      if (selected.length === 1 && mayEdit) {
+        const entry = entries.find((entry) => nodeKey(entry) === selected[0]);
+        if (entry && entry.kind !== "folder") onopen?.(entry);
+      }
+    }}>
+    <TreeView.Label class="sr-only">Project files</TreeView.Label>
+    <TreeView.Tree onkeydown={keyed}>
+      {#each root.children as node, index (node.id)}{@render branch(node, [index])}{/each}
+    </TreeView.Tree>
+  </TreeView>
 </div>
+
+{#snippet row(node)}
+  <span class="explorer-chevron" aria-hidden="true">{#if node.kind === "folder"}<Icon name={expanded.includes(node.id) ? "chevron-down" : "chevron-right"} />{/if}</span>
+  <Icon name={node.kind === "folder" ? "folder" : node.kind === "asset" ? "image" : "file-text"} />
+  {#if editing?.type === "rename" && editing.entry.path === node.path}
+    <input class="name" aria-label="Rename {node.path}" bind:value={draft} use:focusName onkeydown={namingKey} onclick={(event) => event.stopPropagation()} />
+    <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label="Save name" onclick={commit} /><IconButton icon="x" label="Cancel rename" onclick={reset} /></span>
+  {:else}
+    <span class="explorer-name">{node.name}</span>
+    {#if node.main}<span title="Main file" aria-label="Main file"><Icon name="star" /></span>{/if}
+    <span class="who">{(peers.get(node.fileId) || []).slice(0, 3).join(" ")}</span>
+    <Menu.Trigger class="explorer-more" aria-label="Actions for {node.path}" onclick={(event) => event.stopPropagation()} onkeydown={(event) => event.stopPropagation()}>⋯</Menu.Trigger>
+  {/if}
+{/snippet}
+
+{#snippet nodeMenu(node)}
+  <ExplorerMenu>
+    {#if mayEdit}
+      {#if node.kind === "folder"}
+        <Menu.Item value="file" class="menuitem">New file</Menu.Item>
+        <Menu.Item value="folder" class="menuitem">New folder</Menu.Item>
+        <Menu.Item value="upload" class="menuitem" disabled={busy}>Upload files</Menu.Item>
+      {/if}
+      <Menu.Item value="rename" class="menuitem">Rename <span class="ml-auto text-xs">F2</span></Menu.Item>
+      <Menu.Item value="move" class="menuitem">Move to…</Menu.Item>
+      {#if node.kind !== "folder"}<Menu.Item value="duplicate" class="menuitem">Duplicate</Menu.Item>{/if}
+      {#if node.kind === "text" && !node.main}<Menu.Item value="main" class="menuitem">Set as main file</Menu.Item>{/if}
+    {/if}
+    <Menu.Item value="download" class="menuitem">Download</Menu.Item>
+    {#if mayEdit}<Menu.Item value="delete" class="menuitem" disabled={node.main}>Delete…</Menu.Item>{/if}
+  </ExplorerMenu>
+{/snippet}
+
+{#snippet branch(node, indexPath)}
+  <TreeView.NodeProvider value={{ node, indexPath }}>
+    {#if node.kind === "folder"}
+      <TreeView.Branch>
+        <Menu onSelect={({ value }) => action(value, node)}>
+          <Menu.ContextTrigger>
+            {#snippet element(attributes)}
+              <div {...attributes}>
+                <TreeView.BranchControl class="explorer-row {hover === node.path ? 'drop-target' : ''}" title={node.path}
+                  draggable={mayEdit && !editing} ondragstart={(event) => dragStart(event, node)} ondragend={dragEnd}
+                  ondragover={(event) => dragOver(event, node.path)} ondrop={(event) => drop(event, node.path)}>
+                  {@render row(node)}
+                </TreeView.BranchControl>
+              </div>
+            {/snippet}
+          </Menu.ContextTrigger>
+          {@render nodeMenu(node)}
+        </Menu>
+        <TreeView.BranchContent>
+          {#each node.children as child, index (child.id)}{@render branch(child, [...indexPath, index])}{/each}
+        </TreeView.BranchContent>
+      </TreeView.Branch>
+    {:else}
+      <Menu onSelect={({ value }) => action(value, node)}>
+        <Menu.ContextTrigger>
+          {#snippet element(attributes)}
+            <div {...attributes}>
+              <TreeView.Item class="explorer-row {open === node.fileId ? 'explorer-open' : ''} {hover === parentPath(node.path) ? 'drop-target' : ''}" title={node.path}
+                draggable={mayEdit && !editing} ondragstart={(event) => dragStart(event, node)} ondragend={dragEnd}
+                ondragover={(event) => dragOver(event, parentPath(node.path))} ondrop={(event) => drop(event, parentPath(node.path))}>
+                {@render row(node)}
+              </TreeView.Item>
+            </div>
+          {/snippet}
+        </Menu.ContextTrigger>
+        {@render nodeMenu(node)}
+      </Menu>
+    {/if}
+  </TreeView.NodeProvider>
+{/snippet}
+
+<Modal open={dialog !== null} onclose={() => { dialog = null; refusal = ""; }} title={dialog?.type === "delete" ? "Delete selected items?" : "Move selected items"}>
+  {#if dialog?.type === "delete"}
+    <p>{dialog.entries.map((entry) => basename(entry.path)).join(", ")}</p>
+    <p>{deleting.length} {deleting.length === 1 ? "file" : "files"} will be deleted. This cannot be undone.</p>
+    {#if protectedSelection}<p class="refusal">Choose another main file before deleting this file or its folder.</p>{/if}
+  {:else if dialog}
+    <label for="move-destination">Destination folder</label>
+    <select id="move-destination" class="select" bind:value={destination}>
+      <option value="">Top level</option>
+      {#each directories.filter((path) => !dialog.entries.some((entry) => entry.kind === "folder" && (entry.path === path || inside(path, entry.path)))) as path}
+        <option value={path}>{path}</option>
+      {/each}
+    </select>
+    <p class="text-sm text-surface-600-400">References in source files are not changed automatically.</p>
+  {/if}
+  {#if refusal}<p class="refusal" role="alert">{refusal}</p>{/if}
+  {#snippet footer()}
+    <button class="btn preset-outlined-surface-300-700" onclick={() => { dialog = null; refusal = ""; }}>Cancel</button>
+    <button class="btn {dialog?.type === 'delete' ? 'preset-filled-error-500' : 'preset-filled-primary-500'}" disabled={protectedSelection} onclick={confirm}>{dialog?.type === "delete" ? "Delete" : "Move"}</button>
+  {/snippet}
+</Modal>
+<Modal open={conflict !== null} onclose={() => resolveConflict(false)} title="This name is already in use">
+  <p>{conflict}</p><p>Keep both files with a new name, or skip this upload.</p>
+  {#snippet footer()}
+    <button class="btn preset-outlined-surface-300-700" onclick={() => resolveConflict(false)}>Skip</button>
+    <button class="btn preset-filled-primary-500" onclick={() => resolveConflict(true)}>Keep both</button>
+  {/snippet}
+</Modal>

@@ -97,6 +97,15 @@ const comment = (revision) => ({
 }
 
 {
+  // A checkpoint without a usable rendering is unknown. It must not be
+  // treated as an empty page and reported as the moment a passage vanished.
+  const { checkpoints, at } = history(8, 4);
+  const unknown = async (_slug, sha) => (sha === checkpoints[3].sha ? null : at(_slug, sha));
+  const found = await wentAt("slug", comment(checkpoints[0].sha), checkpoints, {}, unknown);
+  check("an unavailable checkpoint is unknown rather than empty", found === null);
+}
+
+{
   const { checkpoints, at } = history(1, -1);
   const found = await wentAt("slug", comment(checkpoints[0].sha), checkpoints, {}, at);
   check("a history of one has nothing to say", found === null);

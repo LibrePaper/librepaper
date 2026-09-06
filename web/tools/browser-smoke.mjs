@@ -99,6 +99,7 @@ class Tab {
     this.requests = [];
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
+      if ((message.sessionId || null) !== (this.sessionId || null)) return;
       if (message.id && this.pending.has(message.id)) {
         const { resolve, reject } = this.pending.get(message.id);
         this.pending.delete(message.id);
@@ -392,6 +393,28 @@ async function run() {
   );
   check("the toolbar says the socket is down rather than claiming saved", saidOffline);
 
+  await editor.evalInFrame(`
+    parent.postMessage({ komodoc: true, type: "selection",
+      selector: { exact: "The first paragraph.", prefix: "", suffix: "", position: 0 }
+    }, ${JSON.stringify(BASE)});
+    return true;
+  `, slug);
+  await until("the comment button", () => editor.eval(`return Boolean(document.querySelector("#selectionbar"))`));
+  await editor.eval(`document.querySelector("#selectionbar").click(); return true;`);
+  await until("the comment form", () => editor.eval(`return Boolean(document.querySelector("#commentForm textarea"))`));
+  await editor.eval(`
+    const input = document.querySelector("#commentForm textarea");
+    input.value = "A comment written offline.";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#commentForm").requestSubmit();
+    return true;
+  `);
+  const draftKept = await until("the failed comment is retained", () => editor.eval(`
+    const pending = document.querySelector('[aria-label="Unconfirmed comments"]');
+    return pending?.querySelector("textarea")?.value === "A comment written offline.";
+  `));
+  check("an offline comment keeps its full text for retry", draftKept);
+
   await editor.send("Network.emulateNetworkConditions", {
     offline: false,
     latency: 0,
@@ -407,6 +430,23 @@ async function run() {
     20000,
   );
   check("what was typed offline reaches the server when the socket returns", recovered);
+
+  await editor.send("Page.reload");
+  const reloadedDraft = await until("the draft survives reload and hello", () => editor.eval(`
+    return document.querySelector('[aria-label="Unconfirmed comments"] textarea')?.value === "A comment written offline.";
+  `));
+  check("an unconfirmed comment survives reload and the server snapshot", reloadedDraft);
+  await editor.eval(`
+    const card = document.querySelector('[aria-label="Unconfirmed comments"]');
+    [...card.querySelectorAll("button")].find((button) => button.textContent.trim() === "Retry").click();
+    return true;
+  `);
+  const confirmed = await until("the retried comment is confirmed", async () => {
+    const data = await fetch(`${BASE}/api/documents/${slug}/comments`).then((response) => response.json());
+    const matching = data.comments.filter((comment) => comment.body === "A comment written offline.");
+    return matching.length === 1 && await editor.eval(`return !document.querySelector('[aria-label="Unconfirmed comments"]')`);
+  });
+  check("retry stores one comment and clears the confirmed draft", confirmed);
 
   /* --- 5. a document that does not compile --------------------------------- */
 

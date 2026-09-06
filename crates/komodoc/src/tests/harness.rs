@@ -548,10 +548,13 @@ impl Socket {
         let size = body.len();
         if size < 126 {
             frame.push(size as u8 | 0x80);
-        } else {
+        } else if size <= u16::MAX as usize {
             frame.push(126 | 0x80);
             frame.push((size >> 8) as u8);
             frame.push(size as u8);
+        } else {
+            frame.push(127 | 0x80);
+            frame.extend_from_slice(&(size as u64).to_be_bytes());
         }
         let mask = crate::auth::random_bytes(4);
         frame.extend_from_slice(&mask);

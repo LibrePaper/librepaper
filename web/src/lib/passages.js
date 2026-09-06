@@ -21,6 +21,7 @@
 // the question a reviewer actually asks.
 
 import { anchorOne, flatten } from "./anchor.js";
+import * as figures from "./figures.js";
 import * as history from "./history.js";
 import * as renderers from "./renderers.js";
 
@@ -41,8 +42,30 @@ export async function textAt(slug, sha, headers = {}) {
   const pending = (async () => {
     const point = await history.checkpoint(slug, sha, headers);
     const tree = { main: point.main, texts: point.texts || {}, digests: {} };
-    const { html } = await renderers.render(tree, point.label || "Document");
-    return visibleText(html || "");
+    for (const [path, file] of Object.entries(point.files || {})) {
+      if (file.kind !== "text") tree.digests[path] = file.sha;
+    }
+
+    // Readers must never compile historical LaTeX: the PDF is already the
+    // rendering of that exact checkpoint, and asking for a browser compiler
+    // would make passage lookup depend on a local distribution choice.
+    if (renderers.formatOf(tree.main) === "latex") {
+      const response = await fetch(`/api/documents/${slug}/renderings/${sha}`, { headers });
+      if (!response.ok) return null; // unavailable is unknown, not empty text
+      const { text } = await import("./pdf/render.js");
+      return text(await response.arrayBuffer());
+    }
+
+    // A checkpoint is a whole directory. Rehydrate every referenced figure
+    // before rendering so an image-dependent Typst source is evaluated in the
+    // same tree that was stored, rather than silently compiling with holes.
+    const gathered = await figures.gather(slug, tree.digests, headers);
+    if (Object.keys(gathered.assets).length !== Object.keys(tree.digests).length) return null;
+    const { html } = await renderers.render(
+      { ...tree, assets: gathered.assets, urls: gathered.urls },
+      point.label || "Document",
+    );
+    return typeof html === "string" ? visibleText(html) : null;
   })();
   rendered.set(sha, pending);
   return pending;
@@ -59,7 +82,7 @@ export function visibleText(html) {
 /// Whether a quotation is in a text, by the same match that anchors it in the
 /// document: exactly, or with whitespace flattened on both sides.
 export function holds(text, comment) {
-  return Boolean(anchorOne(text, comment, flatten(text)));
+  return typeof text === "string" && Boolean(anchorOne(text, comment, flatten(text)));
 }
 
 /// The first checkpoint at which a comment's passage was no longer found.
@@ -84,14 +107,18 @@ export async function wentAt(slug, comment, checkpoints, headers = {}, at = text
   // checkpoint does not hold it is one whose quotation this cannot reason
   // about -- a figure annotation, or a passage the renderer no longer emits --
   // and saying nothing is better than naming a moment at random.
-  if (!holds(await at(slug, checkpoints[low].sha, headers), comment)) return null;
-  if (holds(await at(slug, checkpoints[high].sha, headers), comment)) return null;
+  const ownText = await at(slug, checkpoints[low].sha, headers);
+  if (typeof ownText !== "string" || !holds(ownText, comment)) return null;
+  const newestText = await at(slug, checkpoints[high].sha, headers);
+  if (typeof newestText !== "string" || holds(newestText, comment)) return null;
 
   // Invariant: it is in `low` and not in `high`. Each step halves the gap, so
   // the answer costs about five renders on a history of thirty.
   while (high - low > 1) {
     const middle = (low + high) >> 1;
-    if (holds(await at(slug, checkpoints[middle].sha, headers), comment)) low = middle;
+    const middleText = await at(slug, checkpoints[middle].sha, headers);
+    if (typeof middleText !== "string") return null;
+    if (holds(middleText, comment)) low = middle;
     else high = middle;
   }
   return checkpoints[high];

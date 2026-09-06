@@ -33,7 +33,7 @@ WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html 
 SOURCES := $(shell find crates -type f -not -path '*/target/*') Cargo.toml README.md
 
 .DEFAULT_GOAL := help
-.PHONY: help build test smoke serve seed examples kill clean snapshot wasm typst fmt web
+.PHONY: help build test smoke serve seed examples kill clean snapshot wasm typst fmt web fuzz
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -81,6 +81,25 @@ smoke: $(BIN)  ## Drive the reader in headless chromium (needs chromium)
 
 fmt:  ## Format every crate
 	@cargo fmt
+
+# The fuzz targets in fuzz/: libFuzzer over the functions that read what a
+# peer sends -- the word diff and merge, the path rules, the shared document
+# and its repair, and a v1 update against the admission ceilings. Each runs
+# for FUZZ_SECONDS, then stops; a finding is left in fuzz/artifacts/. Needs a
+# nightly toolchain and cargo-fuzz (`cargo install cargo-fuzz`). No sanitizer:
+# the code under test is safe Rust, the oracle is the assertions, and the
+# sanitizer doubles the build time to find nothing the panics do not.
+FUZZ_SECONDS ?= 60
+# Every target unless told otherwise. `update` is known to fail on a panic
+# inside yrs (the ignored test in crates/komodoc/src/tests/directories.rs
+# reproduces it), so CI runs the other three until that is settled.
+FUZZ_TARGETS ?= $(shell cd fuzz && cargo fuzz list)
+fuzz: $(WASM) $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SECONDS (default 60) each
+	@command -v cargo-fuzz >/dev/null || { echo "cargo-fuzz is not installed: cargo install cargo-fuzz"; exit 1; }
+	@cd fuzz && for target in $(FUZZ_TARGETS); do \
+		echo "fuzzing $$target for $(FUZZ_SECONDS)s"; \
+		cargo fuzz run -s none $$target -- -max_total_time=$(FUZZ_SECONDS) || exit 1; \
+	done
 
 # Release builds are described in .github/workflows/release.yml and run when a
 # v* tag is pushed. This does the same thing locally, without tagging.

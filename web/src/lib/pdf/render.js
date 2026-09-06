@@ -48,7 +48,7 @@ let generation = 0;
 /// appending them under the new document's.
 export async function render(bytes, root) {
   const mine = ++generation;
-  const document_ = await pdfjs.getDocument({
+  const loading = pdfjs.getDocument({
     data: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
     // No fetching of anything, from anywhere, at draw time. A PDF that names
     // a standard font gets pdf.js's own metrics; one that names a URL gets
@@ -56,69 +56,132 @@ export async function render(bytes, root) {
     // should get.
     isEvalSupported: false,
     disableFontFace: false,
-  }).promise;
-  if (mine !== generation) return 0;
-
-  // Everything is built off-document and swapped in at the end. Painting page
-  // by page into the live body would have the agent's observer republish a
-  // half-drawn document once per page, and the sidebar re-anchor every
-  // comment against text that is about to grow.
-  const staging = document.createElement("div");
-  staging.className = "pages";
-  const starts = [];
-  let offset = 0;
-
-  for (let number = 1; number <= document_.numPages; number++) {
-    const page = await document_.getPage(number);
-    if (mine !== generation) return 0;
-    const viewport = page.getViewport({ scale: SCALE });
-
-    const frame = document.createElement("div");
-    frame.className = "page";
-    frame.dataset.page = String(number);
-    frame.style.width = `${Math.floor(viewport.width)}px`;
-    frame.style.height = `${Math.floor(viewport.height)}px`;
-    // The text layer's spans size themselves from these, which is how the
-    // selection overlay stays on top of the glyphs at any scale.
-    frame.style.setProperty("--scale-factor", String(SCALE));
-    frame.style.setProperty("--user-unit", "1");
-    frame.style.setProperty("--total-scale-factor", String(SCALE));
-    frame.style.setProperty("--scale-round-x", "1px");
-    frame.style.setProperty("--scale-round-y", "1px");
-
-    const ratio = Math.min(globalThis.devicePixelRatio || 1, 2);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.floor(viewport.width * ratio);
-    canvas.height = Math.floor(viewport.height * ratio);
-    canvas.style.width = `${Math.floor(viewport.width)}px`;
-    canvas.style.height = `${Math.floor(viewport.height)}px`;
-    frame.append(canvas);
-
-    const layer = document.createElement("div");
-    layer.className = "textLayer";
-    frame.append(layer);
-    staging.append(frame);
-
-    await page.render({
-      canvasContext: canvas.getContext("2d"),
-      viewport,
-      transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
-    }).promise;
+  });
+  let document_ = null;
+  try {
+    document_ = await loading.promise;
     if (mine !== generation) return 0;
 
-    const content = await page.getTextContent();
-    const text = new pdfjs.TextLayer({ textContentSource: content, container: layer, viewport });
-    await text.render();
-    if (mine !== generation) return 0;
+    // Everything is built off-document and swapped in at the end. Painting page
+    // by page into the live body would have the agent's observer republish a
+    // half-drawn document once per page, and the sidebar re-anchor every
+    // comment against text that is about to grow.
+    const staging = document.createElement("div");
+    staging.className = "pages";
+    const starts = [];
+    let offset = 0;
 
-    starts.push(offset);
-    offset += rewrite(text.textDivs, content.items, number > 1);
-    page.cleanup();
+    for (let number = 1; number <= document_.numPages; number++) {
+      const page = await document_.getPage(number);
+      if (mine !== generation) return 0;
+      const viewport = page.getViewport({ scale: SCALE });
+
+      const frame = document.createElement("div");
+      frame.className = "page";
+      frame.dataset.page = String(number);
+      frame.style.width = `${Math.floor(viewport.width)}px`;
+      frame.style.height = `${Math.floor(viewport.height)}px`;
+      // The text layer's spans size themselves from these, which is how the
+      // selection overlay stays on top of the glyphs at any scale.
+      frame.style.setProperty("--scale-factor", String(SCALE));
+      frame.style.setProperty("--user-unit", "1");
+      frame.style.setProperty("--total-scale-factor", String(SCALE));
+      frame.style.setProperty("--scale-round-x", "1px");
+      frame.style.setProperty("--scale-round-y", "1px");
+
+      const ratio = Math.min(globalThis.devicePixelRatio || 1, 2);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(viewport.width * ratio);
+      canvas.height = Math.floor(viewport.height * ratio);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      frame.append(canvas);
+
+      const layer = document.createElement("div");
+      layer.className = "textLayer";
+      frame.append(layer);
+      staging.append(frame);
+
+      await page.render({
+        canvasContext: canvas.getContext("2d"),
+        viewport,
+        transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
+      }).promise;
+      if (mine !== generation) return 0;
+
+      const content = await page.getTextContent();
+      const text = new pdfjs.TextLayer({ textContentSource: content, container: layer, viewport });
+      await text.render();
+      if (mine !== generation) return 0;
+
+      starts.push(offset);
+      offset += rewrite(text.textDivs, content.items, number > 1);
+      page.cleanup();
+    }
+
+    root.replaceChildren(staging);
+    pageStarts = starts;
+    return document_.numPages;
+  } finally {
+    // A loading task owns a worker even after its promise resolves. Destroy
+    // both the document and task on success, failure, and generation
+    // cancellation so repeated previews do not accumulate pdf.js workers.
+    try {
+      await document_?.destroy();
+    } catch {
+      /* cleanup must not mask the render result */
+    }
+    try {
+      await loading.destroy();
+    } catch {
+      /* the document destroy above is sufficient on older pdf.js versions */
+    }
   }
+}
 
-  root.replaceChildren(staging);
-  pageStarts = starts;
-  return document_.numPages;
+/// Extract the same normalized visible text the viewer publishes, without
+/// creating a canvas or requiring a LaTeX compiler. Historical passage lookup
+/// uses this for PDFs already stored by an editor.
+export async function text(bytes) {
+  const loading = pdfjs.getDocument({
+    data: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
+    isEvalSupported: false,
+    disableFontFace: false,
+  });
+  let document_ = null;
+  try {
+    document_ = await loading.promise;
+    const pages = [];
+    for (let number = 1; number <= document_.numPages; number++) {
+      const page = await document_.getPage(number);
+      try {
+        const content = await page.getTextContent();
+        pages.push(
+          content.items
+            .filter((item) => item.str !== undefined)
+            .map((item) => ({
+              text: item.str,
+              left: item.transform[4],
+              width: item.width,
+              height: Math.hypot(item.transform[2], item.transform[3]) || item.height || 1,
+              eol: Boolean(item.hasEOL),
+            })),
+        );
+      } finally {
+        page.cleanup();
+      }
+    }
+    return piecesOf(pages)
+      .map((piece) => piece.text)
+      .join("");
+  } finally {
+    try {
+      await document_?.destroy();
+    } catch {}
+    try {
+      await loading.destroy();
+    } catch {}
+  }
 }
 
 /// Turn pdf.js's spans into something the agent can read as prose.

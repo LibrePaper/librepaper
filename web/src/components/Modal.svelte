@@ -11,22 +11,22 @@
   // open, Escape closes, the page behind does not scroll, and the heading
   // names the dialog for a screen reader. Five hand-written <dialog> elements
   // did some of that and none of them did all of it.
-  let { open = $bindable(false), title, description = null, children, footer } = $props();
+  let { open = $bindable(false), title, description = null, children, footer, onclose, wide = false } = $props();
 </script>
 
-<Dialog {open} onOpenChange={(event) => (open = event.open)}>
+<Dialog {open} onOpenChange={(event) => { open = event.open; if (!open) onclose?.(); }}>
   <Dialog.Backdrop class="fixed inset-0 z-50 bg-surface-950/50 backdrop-blur-xs" />
   <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <Dialog.Content class="card bg-surface-50-950 w-full max-w-lg space-y-4 p-6 shadow-xl">
+    <Dialog.Content class="card bg-surface-50-950 flex max-h-full w-full flex-col gap-4 p-6 shadow-xl {wide ? 'max-w-xl' : 'max-w-lg'}">
       <header>
         <Dialog.Title class="h4">{title}</Dialog.Title>
         {#if description}
           <Dialog.Description class="text-surface-600-400 text-sm">{description}</Dialog.Description>
         {/if}
       </header>
-      <Stack gap={3}>
+      <div class="min-h-0 overflow-y-auto">
         {@render children?.()}
-      </Stack>
+      </div>
       {#if footer}
         <footer class="flex justify-end gap-2 pt-2">
           {@render footer()}

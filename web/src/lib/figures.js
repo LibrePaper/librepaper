@@ -58,14 +58,18 @@ function typeOf(path) {
 /// A figure that cannot be fetched is left out rather than failing the render:
 /// the rest of the document is still worth showing, and the image is broken in
 /// the page, which is what a missing figure looks like everywhere else.
-export async function gather(slug, digests, headers = {}) {
+export async function gather(slug, digests, headers = {}, { strict = false } = {}) {
   const wanted = Object.entries(digests || {});
   const got = await Promise.all(
     wanted.map(async ([path, sha]) => {
       try {
         const body = await fetchOne(slug, sha, headers);
         if (!urls.has(sha)) {
-          urls.set(sha, URL.createObjectURL(new Blob([body], { type: typeOf(path) })));
+          const objectUrl = URL.createObjectURL(new Blob([body], { type: typeOf(path) }));
+          // Blob URLs are recreated on every page load. Keep the immutable
+          // store identity in the fragment, which is ignored by the resource
+          // fetch but available to the injected document agent.
+          urls.set(sha, `${objectUrl}#komodoc-asset=${encodeURIComponent(sha)}`);
         }
         return [path, body, urls.get(sha)];
       } catch {
@@ -75,13 +79,22 @@ export async function gather(slug, digests, headers = {}) {
   );
   const assets = {};
   const where = {};
+  const missing = [];
   for (const one of got) {
     if (!one) continue;
     const [path, body, url] = one;
     assets[path] = body;
     where[path] = url;
   }
-  return { assets, urls: where };
+  for (const [path] of wanted) {
+    if (!Object.prototype.hasOwnProperty.call(assets, path)) missing.push(path);
+  }
+  if (strict && missing.length) {
+    const error = new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
+    error.missing = missing;
+    throw error;
+  }
+  return { assets, urls: where, missing };
 }
 
 /// Whether every figure a document names is already here, which is what says a
@@ -95,7 +108,7 @@ export function ready(digests) {
 /// Forgets everything, for a page leaving a document. The blob URLs are
 /// revoked: each one holds its bytes alive in the browser until it is.
 export function release() {
-  for (const url of urls.values()) URL.revokeObjectURL(url);
+  for (const url of urls.values()) URL.revokeObjectURL(url.split("#", 1)[0]);
   urls.clear();
   bytes.clear();
   inFlight.clear();

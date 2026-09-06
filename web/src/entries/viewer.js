@@ -17,6 +17,7 @@
 
 let viewer = null; // the render module, once something has needed it
 let stage = null;
+let paintGeneration = 0;
 
 function ready() {
   if (stage) return stage;
@@ -45,10 +46,12 @@ addEventListener("message", async (event) => {
   // trip. Anything else is a caller that has not read this file.
   const bytes = message.pdf;
   if (!(bytes instanceof ArrayBuffer) && !ArrayBuffer.isView(bytes)) return;
+  const mine = ++paintGeneration;
 
   try {
     viewer ??= await import("../lib/pdf/render.js");
     const pages = await viewer.render(bytes, ready());
+    if (mine !== paintGeneration) return;
     // The page index for an offset, for the caret lock and SyncTeX. Neither
     // is built here; both need this and nothing else from the viewer, so it
     // is exposed now rather than left for them to reach into the DOM for.
@@ -58,6 +61,7 @@ addEventListener("message", async (event) => {
     // whether the change was an HTML preview or a page finishing. There is
     // deliberately no second signal here.
   } catch (error) {
+    if (mine !== paintGeneration) return;
     waiting(`this PDF could not be drawn: ${error}`);
   }
 });

@@ -1582,3 +1582,79 @@ async fn deployment_quota_admission_is_serialised_across_documents() {
         entries.keys().collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn browser_rendering_digest_matches_rust_tree_bytes() {
+    use crate::history::{Tree, TreeEntry};
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut tree = Tree {
+        main: "2".to_string(),
+        ..Tree::default()
+    };
+    let mut texts = serde_json::Map::new();
+    for (index, path) in ["2", "10", "__proto__", "\u{e000}", "\u{10000}"]
+        .iter()
+        .enumerate()
+    {
+        let body = format!("Résumé — {index}\n");
+        tree.files.insert(
+            path.to_string(),
+            TreeEntry {
+                kind: "text".to_string(),
+                id: format!("file-{index}"),
+                sha: hex::encode(Sha256::digest(body.as_bytes())),
+                size: body.len() as i64,
+            },
+        );
+        texts.insert(path.to_string(), json!(body));
+    }
+    let image = [0u8, 1, 2, 255];
+    let image_sha = hex::encode(Sha256::digest(image));
+    tree.files.insert(
+        "图.png".to_string(),
+        TreeEntry {
+            kind: "asset".to_string(),
+            id: String::new(),
+            sha: image_sha.clone(),
+            size: 4,
+        },
+    );
+    let input =
+        json!({"main":tree.main,"texts":texts,"digests":{"图.png":image_sha},"files":tree.files});
+    let mut child = Command::new("node")
+        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web"))
+        .args([
+            "--input-type=module",
+            "--eval",
+            r#"
+            import { readFileSync } from 'node:fs';
+            import { snapshotDigest } from './src/lib/tree-digest.js';
+            const tree = JSON.parse(readFileSync(0, 'utf8'));
+            console.log(await snapshotDigest(tree));
+        "#,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("node runs the browser digest module");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        tree.digest()
+    );
+}

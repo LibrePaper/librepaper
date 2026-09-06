@@ -16,8 +16,9 @@
   /// than copying it saves the copy on every recompile. Everything else is
   /// small and is cloned, as it always was.
   export function tell(message, transfer) {
-    if (!docsOrigin || !frame?.contentWindow) return;
+    if (!docsOrigin || !frame?.contentWindow) return false;
     frame.contentWindow.postMessage({ komodoc: true, ...message }, docsOrigin, transfer);
+    return true;
   }
 
   function receive(event) {
@@ -36,11 +37,13 @@
        here. While a separator is being dragged the frame is deafened: it
        swallows pointer events while it has them, and the drag would be lost
        over it. -->
-  <iframe
-    bind:this={frame}
-    title="Document"
-    {src}
-    style:pointer-events={grabbing ? "none" : null}
-    sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-  ></iframe>
+  {#key src}
+    <iframe
+      bind:this={frame}
+      title="Document"
+      {src}
+      style:pointer-events={grabbing ? "none" : null}
+      sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+    ></iframe>
+  {/key}
 </section>

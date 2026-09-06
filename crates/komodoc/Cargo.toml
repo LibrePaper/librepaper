@@ -6,6 +6,11 @@ edition = "2021"
 publish = false
 build = "build.rs"
 
+# The doc comments quote shell sessions and file layouts, not Rust: they are
+# read, never run.
+[lib]
+doctest = false
+
 [[bin]]
 name = "komodoc"
 path = "src/main.rs"

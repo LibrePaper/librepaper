@@ -6,7 +6,7 @@
   // the other, and each of them keeps their own caret, selection and undo
   // history. Everyone else's caret is drawn where they are, labelled with
   // their name.
-  import { EditorState } from "@codemirror/state";
+  import { EditorState, Transaction } from "@codemirror/state";
   import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
@@ -22,8 +22,9 @@
   import { yCollab } from "y-codemirror.next";
 
   import { typstLanguage } from "../lib/typst-mode.js";
+  import { untrack } from "svelte";
 
-  let { session, format, file = "", onchange, oncaret, onsave } = $props();
+  let { session, format, file = "", onchange, oncaret, onfilechange, onsave } = $props();
 
   let host = $state(null);
   let view = null;
@@ -252,11 +253,33 @@
     if (!view || !id || id === showing) return;
     if (showing) states.set(showing, view.state);
     if (!states.has(id)) states.set(id, stateFor(id));
+    const state = states.get(id);
+    const text = session.textOf?.(id) || (id === session.mainId?.() ? session.text : null);
+    // While a file is inactive its Y.Text can still receive remote edits, but
+    // its CodeMirror binding is not mounted to dispatch those edits. Reconcile
+    // the cached state before showing it, preserving its history and selection.
+    if (text && state.doc.toString() !== text.toString()) {
+      const old = state.doc.toString();
+      const next = text.toString();
+      let from = 0;
+      while (from < old.length && from < next.length && old.charCodeAt(from) === next.charCodeAt(from)) from++;
+      let oldEnd = old.length;
+      let nextEnd = next.length;
+      while (oldEnd > from && nextEnd > from && old.charCodeAt(oldEnd - 1) === next.charCodeAt(nextEnd - 1)) {
+        oldEnd--;
+        nextEnd--;
+      }
+      states.set(id, state.update({
+        changes: { from, to: oldEnd, insert: next.slice(from, nextEnd) },
+        annotations: Transaction.addToHistory.of(false),
+      }).state);
+    }
     view.setState(states.get(id));
     showing = id;
     // A file this browser has open is where its caret is, which is what the
     // file list shows beside each name.
     session.inFile?.(id);
+    onfilechange?.(id);
     // The marks belong to files, so they are drawn again for the file now on
     // screen. What the compiler said has not changed; where it applies has.
     setDiagnostics(all);
@@ -271,14 +294,14 @@
 
   $effect(() => {
     if (!host || !session || view) return;
-    const first = file || session.mainId?.() || "";
-    showing = first;
-    if (first) states.set(first, stateFor(first));
-    view = new EditorView({
-      state: states.get(first) || stateFor(first),
-      parent: host,
+    const initial = untrack(() => {
+      const first = file || session.mainId?.() || "";
+      showing = first;
+      if (first && !states.has(first)) states.set(first, stateFor(first));
+      return { first, state: states.get(first) || stateFor(first) };
     });
-    if (first) session.inFile?.(first);
+    view = new EditorView({ state: initial.state, parent: host });
+    if (initial.first) session.inFile?.(initial.first);
     view.focus();
     return () => {
       view?.destroy();

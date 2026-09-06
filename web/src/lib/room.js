@@ -13,9 +13,12 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
   let socket = null;
   let backoff = 500;
   let dropped = null;
+  let reconnect = null;
+  let generation = 0;
   let closed = false;
 
   function connected(up) {
+    if (closed) return;
     clearTimeout(dropped);
     if (up) {
       onConnected(true);
@@ -25,24 +28,36 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
   }
 
   function connect() {
+    if (closed) return;
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     // The one request a browser cannot put a header on, so the link key rides
     // in the query string here. Over TLS that is seen by this server and by
     // nobody else, and what the server logs is the digest.
     const query = key ? `?k=${encodeURIComponent(key)}` : "";
-    socket = new WebSocket(`${scheme}://${location.host}/ws/${slug}${query}`);
-    socket.onopen = () => {
+    const current = ++generation;
+    const next = new WebSocket(`${scheme}://${location.host}/ws/${slug}${query}`);
+    socket = next;
+    next.onopen = () => {
+      if (closed || current !== generation || socket !== next) return;
       backoff = 500;
       connected(true);
     };
-    socket.onmessage = (event) => onMessage(JSON.parse(event.data));
-    socket.onclose = () => {
-      if (closed) return;
+    next.onmessage = (event) => {
+      if (closed || current !== generation || socket !== next) return;
+      onMessage(JSON.parse(event.data));
+    };
+    next.onclose = () => {
+      if (closed || current !== generation || socket !== next) return;
       connected(false);
-      setTimeout(connect, backoff);
+      reconnect = setTimeout(() => {
+        reconnect = null;
+        connect();
+      }, backoff);
       backoff = Math.min(backoff * 2, 15000);
     };
-    socket.onerror = () => socket.close();
+    next.onerror = () => {
+      if (current === generation && socket === next) next.close();
+    };
   }
   connect();
 
@@ -52,20 +67,53 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
     send(message) {
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(message));
-        return;
+        return { ok: true, via: "socket" };
       }
-      fetch(`/api/documents/${slug}/comments`, {
+      // Yjs messages must be delivered by the room socket. Sending a Yjs
+      // update through the comments endpoint would return an error and, more
+      // dangerously, make callers believe that the document was persisted.
+      if (message.type?.startsWith("y-")) {
+        return { ok: false, error: new Error("room is disconnected") };
+      }
+      return fetch(`/api/documents/${slug}/comments`, {
         method: "POST",
         headers: { "content-type": "application/json", ...SHELL_HEADERS, ...keyHeaders(key) },
         body: JSON.stringify(message),
       })
-        .then((response) => response.json())
-        .then(onMessage)
-        .catch(() => connected(false));
+        .then(async (response) => {
+          if (!response.ok) {
+            const body = await response.json().catch(() => ({}));
+            throw new Error(body.error || `comment submission failed (${response.status})`);
+          }
+          const event = await response.json();
+          onMessage(event);
+          return { ok: true, via: "http", event };
+        })
+        .catch((error) => {
+          connected(false);
+          // The temporary id lets the caller retain precisely this optimistic
+          // draft. Existing callers may ignore the event; recovery-aware
+          // callers can display it and offer retry.
+          if (message.temp_id) {
+            onMessage({
+              type: "submission-failed",
+              temp_id: message.temp_id,
+              message: error?.message || "comment submission failed",
+            });
+          }
+          return { ok: false, error };
+        });
     },
     close() {
       closed = true;
-      socket?.close();
+      clearTimeout(reconnect);
+      clearTimeout(dropped);
+      reconnect = null;
+      dropped = null;
+      generation++;
+      const old = socket;
+      socket = null;
+      old?.close();
     },
   };
 }

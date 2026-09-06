@@ -543,3 +543,51 @@ async fn awareness_reaches_the_other_editors_and_is_not_kept() {
         "a session remembered a caret: {state}"
     );
 }
+
+#[tokio::test]
+async fn browser_submission_retries_are_idempotent_and_author_scoped() {
+    use crate::room::Message;
+    let server = new_test_server().await;
+    let published = publish_test_document(&server.url).await;
+    let slug = text(&published, "slug");
+    let room = server.instance.rooms.get(&slug).await;
+    let request = Message {
+        kind: "comment".into(),
+        exact: "passage".into(),
+        body: "A comment whose acknowledgment was lost".into(),
+        temp_id: crate::util::new_id(),
+        ..Default::default()
+    };
+    let (first, ok) = room
+        .apply(request.clone(), "", "visitor:alice", "", false)
+        .await;
+    assert!(ok);
+    assert_eq!(first["comment"]["id"], request.temp_id);
+    let (again, ok) = room
+        .apply(request.clone(), "", "visitor:alice", "", false)
+        .await;
+    assert!(ok);
+    assert_eq!(first, again);
+    assert_eq!(room.counts().await.0, 1);
+    let (_, ok) = room
+        .apply(request.clone(), "", "visitor:bob", "", true)
+        .await;
+    assert!(
+        !ok,
+        "even a moderator cannot reuse another author's submission ID"
+    );
+    let reply = Message {
+        kind: "reply".into(),
+        comment_id: request.temp_id,
+        body: "A reply".into(),
+        temp_id: crate::util::new_id(),
+        ..Default::default()
+    };
+    let (first, ok) = room
+        .apply(reply.clone(), "", "visitor:alice", "", false)
+        .await;
+    assert!(ok);
+    let (again, ok) = room.apply(reply, "", "visitor:alice", "", false).await;
+    assert!(ok);
+    assert_eq!(first, again);
+}

@@ -272,6 +272,20 @@ just opens that page:
 komodoc edit c9k
 ```
 
+The **Files** sidebar is a folder tree. Its toolbar creates files and folders
+inside the selection, or uploads files from your computer. Drag files or
+folders onto another folder to move them; drop onto empty space in the sidebar
+to move them to the top level. Dropping files or directories from your computer uploads them with
+their folder structure. Upload name collisions offer **Keep both** or **Skip**.
+
+Right-click an item or use its **⋯** menu to rename, move, download, or delete
+it; files can also be duplicated. Use Ctrl/Cmd-click or Shift-click to select
+several items, F2 to rename, and Delete to open the deletion confirmation.
+Empty folders survive browser reloads and are included in browser ZIP
+downloads. Moves preserve collaborative text editing, but references in source
+files are not rewritten. A folder containing the main file cannot be deleted
+until another file is made the main file.
+
 The editor is offered to whoever may replace the document, and the document
 opens ready to work on. There is nothing to save: what is typed is the
 document, readers see it a moment later, and the comments survive it â as you

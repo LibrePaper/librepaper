@@ -10,7 +10,11 @@
   import * as history from "../lib/history.js";
   import * as passages from "../lib/passages.js";
   import * as latex from "../lib/latex.js";
+  import { checkPlacement, basename, inside } from "../lib/file-manager.js";
+  import { snapshotDigest } from "../lib/tree-digest.js";
   import { openRoom } from "../lib/room.js";
+  import { submissions } from "../lib/submissions.js";
+  import PendingAnnotations from "./PendingAnnotations.svelte";
   import {
     SHELL_HEADERS,
     config as loadConfig,
@@ -87,8 +91,28 @@
   /* --------------------------------------------------------------- anchoring */
 
   let comments = $state([]);
+  let unconfirmed = $state([]);
+  const outbox = submissions({ slug: SLUG, changed: (items) => (unconfirmed = items) });
+
+  function sendAnnotation(message) {
+    outbox.keep(message);
+    room?.send(message);
+  }
+
+  function discardAnnotation(id) {
+    outbox.discard(id);
+    comments = comments.filter((comment) => comment.temp_id !== id).map((comment) => ({
+      ...comment, replies: comment.replies.filter((reply) => reply.temp_id !== id),
+    }));
+    applyHighlights();
+  }
   let commentsReady = false;
   let frameReady = false;
+  // Readiness belongs to one iframe navigation. A `ready` from the old
+  // document is not a promise that the newly navigated document received the
+  // preview that was posted while it was loading.
+  let frameEpoch = 0;
+  let frameReadyEpoch = -1;
   let docText = null; // the joined visible text, invariant across repaints
   let docView = null; // flatten(docText), so anchoring does not redo it per call
   let figureAt = $state([]); // text offset of each figure, by its index
@@ -168,12 +192,16 @@
         // trigger a second one. Only the first `ready` paints: the agent
         // sends one after every repaint, and painting on each would be a
         // loop.
-        const first = !frameReady;
+        const first = frameReadyEpoch !== frameEpoch;
+        frameReadyEpoch = frameEpoch;
         frameReady = true;
         // Whatever was painted before is gone with the rebuilt DOM.
         lastRegions = lastHighlight = null;
         reanchor();
-        if (first) paintPreview();
+        if (first) {
+          replayPreview();
+          void paintPreview();
+        }
         break;
       case "selection":
         showSelection(message.selector, message.rect);
@@ -280,7 +308,7 @@
     anchorAll(docText || "", [optimistic], docText === null ? null : docView);
     comments = [...comments, optimistic];
     applyHighlights();
-    room?.send({ type: "comment", ...pending, motivation, body, tags, creator, temp_id });
+    sendAnnotation({ type: "comment", ...pending, motivation, body, tags, creator, temp_id });
     pending = null;
   }
 
@@ -328,7 +356,7 @@
       { id: temp_id, body, creator: name || "Anonymous", created: new Date().toISOString(), temp_id },
     ];
     comments = comments;
-    room?.send({ type: "reply", comment_id: comment.id, body, creator: name, temp_id });
+    sendAnnotation({ type: "reply", comment_id: comment.id, body, creator: name, temp_id });
   }
 
   /* -------------------------------------------------------------------- room */
@@ -336,13 +364,20 @@
   let room = null;
 
   function receive(event) {
+    outbox.acknowledge(event);
     if (event.type === "hello") {
+      outbox.reconcile(event.comments);
       comments = event.comments;
       commentsReady = true;
       reanchor();
       return;
     }
+    if (event.type === "submission-failed") {
+      outbox.failed(event.temp_id, event.message);
+      return;
+    }
     if (event.type === "error") {
+      outbox.failed(event.temp_id, event.message);
       // Roll the optimistic row back.
       if (event.temp_id) {
         comments = comments
@@ -515,6 +550,7 @@
   // The checkpoint being shown in the document pane, whole -- its tree and its
   // texts -- or null for the document as it stands.
   let viewing = $state(null);
+  let navigationGeneration = 0;
   // Which checkpoint the reader arrived asking for, out of the link somebody
   // sent them. Read once, because after that the panel is where the answer is.
   const ARRIVED_AT = new URLSearchParams(location.search).get("at") || "";
@@ -540,24 +576,46 @@
     for (const [path, file] of Object.entries(point.files || {})) {
       if (file.kind !== "text") digests[path] = file.sha;
     }
-    return { main: point.main, texts: point.texts || {}, digests };
+    return { main: point.main, texts: point.texts || {}, digests, files: point.files || {} };
   }
 
   async function showCheckpoint(sha) {
+    const mine = ++navigationGeneration;
+    renderingRequest += 1;
+    issued += 1;
+    dropHeldRendering();
     try {
-      viewing = await history.checkpoint(SLUG, sha, keyHeaders(KEY));
+      const point = await history.checkpoint(SLUG, sha, keyHeaders(KEY));
+      if (mine !== navigationGeneration) return;
+      viewing = point;
       historyProblem = "";
     } catch (error) {
+      if (mine !== navigationGeneration) return;
       historyProblem = error.message || "that checkpoint could not be read";
       return;
     }
-    await paintPreview();
+    if (mine === navigationGeneration) await paintPreview();
   }
 
   function backToNow() {
-    if (!viewing) return;
+    const wasCheckpoint = Boolean(viewing) || frameShowsCheckpoint;
+    navigationGeneration += 1;
+    renderingRequest += 1;
+    issued += 1;
+    dropHeldRendering();
+    if (!wasCheckpoint) return;
     viewing = null;
-    paintPreview();
+    frameShowsCheckpoint = false;
+    // A live HTML page is an active document, while a checkpoint was inert
+    // HTML painted into the shell. Source equality cannot tell those states
+    // apart, so leaving history always reloads the live page and reruns its
+    // scripts.
+    if (!editing && sourceFormat === "html" && visibility !== "private") {
+      framedSource = null;
+      navigateFrame(true);
+    } else {
+      void paintPreview();
+    }
   }
 
   async function nameCheckpoint(sha, given) {
@@ -648,7 +706,11 @@
     const named =
       { typst: "main.typ", markdown: "main.md", html: "main.html", latex: "main.tex" }[sourceFormat] ||
       "main.txt";
-    return { main: named, texts: { [named]: session.text.toString() }, digests: {} };
+    return {
+      main: named,
+      texts: { [named]: session.text.toString() },
+      digests: {},
+    };
   }
 
   // Painting the preview is sending it to the frame: the draft is a document,
@@ -657,6 +719,13 @@
   // against what was just typed.
   let issued = 0;
   let painted = 0;
+  let sourceGeneration = 0;
+  // Reader-level serialization keeps the identity of a LaTeX result tied to
+  // the tree that was actually rendered. The compiler module may coalesce
+  // requests, but an older caller must never label a newer PDF with its own
+  // snapshot digest.
+  let latexPaintBusy = false;
+  let latexPaintQueued = false;
   let previewTimer = null;
 
   // What the last compile said. When it is painted is `diagnostics.js`'s
@@ -729,8 +798,11 @@
   // And a checkpoint is always painted, whatever the format: the frame is
   // served from the live document, so there is nothing on the documents origin
   // that is the document as it was on Tuesday.
+  const displayedFormat = $derived(
+    viewing ? renderers.formatOf(viewing.main) || sourceFormat : sourceFormat,
+  );
   const paintsTheFrame = $derived(
-    Boolean(viewing) || editing || sourceFormat !== "html" || visibility === "private",
+    Boolean(viewing) || editing || displayedFormat !== "html" || visibility === "private",
   );
 
   /* -------------------------------------------------------------- LaTeX */
@@ -738,7 +810,7 @@
   // A LaTeX document has no HTML to paint, so its frame is the PDF viewer on
   // the documents origin rather than the empty shell. Everything else about
   // the frame is the same: same origin, same CSP, same agent, same channel.
-  const framePath = $derived(sourceFormat === "latex" ? "pdf" : "raw");
+  const framePath = $derived(displayedFormat === "latex" ? "pdf" : "raw");
 
   // Whether a compiler has been chosen in this browser. Not a promise and not
   // a fetch: the card is drawn from this before anything is downloaded.
@@ -795,6 +867,62 @@
   // live document a moment earlier.
   let framedSource = null;
   let framedGeneration = 0;
+  let frameKind = null;
+  // A preview fetched before the frame announces readiness stays here for the
+  // new frame. PDF bytes are retained as a Uint8Array; delivery gives the
+  // frame a copy so transfer cannot detach this replayable value.
+  let latestPreview = null;
+  let frameShowsCheckpoint = false;
+
+  function navigateFrame(force = false) {
+    if (!docsOrigin) return;
+    const kind = framePath;
+    if (!kind || (!force && frameSrc && frameKind === kind)) return;
+    frameKind = kind;
+    frameEpoch += 1;
+    frameReady = false;
+    frameReadyEpoch = -1;
+    renderingRequest += 1;
+    issued += 1;
+    renderedSha = null;
+    lastRegions = lastHighlight = null;
+    frameSrc = `${docsOrigin}/${kind}/${SLUG}/?v=${++framedGeneration}`;
+  }
+
+  function deliverPreview(payload) {
+    const kind = payload?.kind === "html" ? "raw" : payload?.kind;
+    if (!payload || !frameReady || frameReadyEpoch !== frameEpoch || kind !== frameKind) {
+      return false;
+    }
+    if (payload.kind === "pdf") {
+      const bytes = payload.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload.bytes);
+      const buffer = bytes.slice().buffer;
+      tell({ type: "preview", pdf: buffer }, [buffer]);
+      renderedSha = payload.sha || null;
+    } else if (payload.kind === "html") {
+      tell({ type: "preview", html: payload.html });
+    } else {
+      return false;
+    }
+    frameShowsCheckpoint = Boolean(viewing);
+    everPainted = true;
+    everPaintedShown = true;
+    return true;
+  }
+
+  function replayPreview() {
+    if (!paintsTheFrame) return false;
+    return deliverPreview(latestPreview);
+  }
+
+  // The kind of frame follows the tree being displayed, including a
+  // historical tree. This effect is also what navigates when the live main
+  // file changes from Markdown/Typst/HTML to LaTeX or back.
+  $effect(() => {
+    void docsOrigin;
+    void framePath;
+    navigateFrame();
+  });
 
   function refreshFramedPage() {
     if (paintsTheFrame || !session || !docsOrigin) return;
@@ -809,7 +937,7 @@
     // and the path is the document's own, so this is the same page from the
     // same origin under the same CSP -- the scripts it carries run exactly as
     // they did on the first load.
-    frameSrc = `${docsOrigin}/${framePath}/${SLUG}/?v=${++framedGeneration}`;
+    navigateFrame(true);
   }
 
   // What a LaTeX document's frame is showing: the checkpoint the stored
@@ -819,6 +947,7 @@
   // The SHA whose bytes are in the frame, so a poll that finds the same
   // rendering costs one small request rather than a PDF.
   let renderedSha = null;
+  let renderingRequest = 0;
 
   // The line under the badge for a LaTeX document, and the whole of what makes
   // storing a derived thing honest. A rendering is named by the digest of the
@@ -826,7 +955,7 @@
   // is the text as it stands, it is older than the text and here is when, or
   // nobody has rendered this yet.
   const renderedNote = $derived(
-    sourceFormat !== "latex" || compilesHere
+    displayedFormat !== "latex" || (compilesHere && !viewing)
       ? ""
       : !rendering
         ? "not yet rendered"
@@ -845,6 +974,7 @@
   // rendering itself is named by a digest and cached for a year, so it is
   // fetched once however often this is called.
   async function paintRendering() {
+    const request = ++renderingRequest;
     const headers = { ...SHELL_HEADERS, ...keyHeaders(KEY) };
     let found;
     if (viewing) {
@@ -859,7 +989,9 @@
         .catch(() => null);
       if (!found) return;
     }
-    rendering = found.sha ? found : null;
+    if (request !== renderingRequest) return;
+    const requestedSha = found.sha || null;
+    rendering = requestedSha ? found : null;
     // Nothing this browser does produces a rendering, so the only way a newer
     // one turns up is that somebody else compiled. Asked again, slowly, until
     // what is shown is the text as it stands.
@@ -867,34 +999,25 @@
     if (!viewing && (!rendering || !rendering.current)) {
       previewTimer = setTimeout(paintPreview, RENDERING_POLL);
     }
-    if (!rendering || rendering.sha === renderedSha) return;
-    const bytes = await fetch(`/api/documents/${SLUG}/renderings/${rendering.sha}`, { headers })
+    if (!requestedSha || requestedSha === renderedSha) return;
+    if (latestPreview?.kind === "pdf" && latestPreview.sha === requestedSha) {
+      deliverPreview(latestPreview);
+      return;
+    }
+    const bytes = await fetch(`/api/documents/${SLUG}/renderings/${requestedSha}`, { headers })
       .then((response) => (response.ok ? response.arrayBuffer() : null))
       .catch(() => null);
+    if (request !== renderingRequest) return;
     // A rendering the manifest names and the store has lost is nothing to
     // paint over what is already on the screen with; a version nobody
     // rendered is said in the note instead.
     if (!bytes) {
-      if (viewing) rendering = { ...rendering, missing: true };
+      if (viewing && request === renderingRequest) rendering = { ...rendering, missing: true };
       return;
     }
-    renderedSha = rendering.sha;
-    tell({ type: "preview", pdf: bytes }, [bytes]);
-    everPainted = true;
-    everPaintedShown = true;
-  }
-
-  // What a rendering compiled now is named. A checkpoint picked out of the
-  // timeline is its own SHA; the live text's is the digest it would take as
-  // one, which the server says beside `latest` so that it is named the same
-  // way on both sides.
-  async function renderingNameNow() {
-    if (viewing) return viewing.sha;
-    const headers = { ...SHELL_HEADERS, ...keyHeaders(KEY) };
-    const found = await fetch(`/api/documents/${SLUG}/renderings/latest`, { headers })
-      .then((response) => (response.ok ? response.json() : null))
-      .catch(() => null);
-    return found?.live || null;
+    if (request !== renderingRequest) return;
+    latestPreview = { kind: "pdf", sha: requestedSha, bytes: new Uint8Array(bytes) };
+    deliverPreview(latestPreview);
   }
 
   // The PDF this browser compiled, kept by the server so that a reader never
@@ -911,9 +1034,9 @@
   let heldRendering = null;
   let renderingTimer;
 
-  function holdRendering(name, bytes, synctex) {
+  function holdRendering(name, bytes, synctex, current = true) {
     clearTimeout(renderingTimer);
-    heldRendering = { name, bytes, synctex };
+    heldRendering = { name, bytes, synctex, current };
     renderingTimer = setTimeout(storeHeldRendering, RENDERING_QUIET);
   }
 
@@ -926,18 +1049,21 @@
     clearTimeout(renderingTimer);
     const held = heldRendering;
     heldRendering = null;
-    if (held) storeRendering(held.name, held.bytes, held.synctex);
+    if (held) storeRendering(held.name, held.bytes, held.synctex, held.current);
   }
 
-  async function storeRendering(name, bytes, synctex) {
+  async function storeRendering(name, bytes, synctex, current = true) {
+    const source = sourceGeneration;
+    const navigation = navigationGeneration;
     const headers = { ...SHELL_HEADERS, ...keyHeaders(KEY) };
     const put = (suffix, body) =>
       fetch(`/api/documents/${SLUG}/renderings/${name}${suffix}`, { method: "PUT", headers, body })
         .then((response) => response.ok)
         .catch(() => false);
     if (!(await put("", bytes))) return;
-    rendering = { sha: name, at: new Date().toISOString(), current: !viewing };
-    renderedSha = name;
+    if (source === sourceGeneration && navigation === navigationGeneration) {
+      rendering = { sha: name, at: new Date().toISOString(), current };
+    }
     if (synctex) await put(".synctex", synctex);
   }
 
@@ -945,7 +1071,7 @@
     // A LaTeX document is compiled in an editor's browser and nowhere else,
     // so everybody else is shown the PDF the server kept from the last one
     // who did. See `docs/specs/latex.md`.
-    if (sourceFormat === "latex" && !compilesHere) {
+    if (displayedFormat === "latex" && (Boolean(viewing) || !compilesHere)) {
       await paintRendering();
       return;
     }
@@ -955,6 +1081,19 @@
     }
     const mine = ++issued;
     const tree = treeNow();
+    const snapshotViewing = viewing;
+    const snapshotNavigation = navigationGeneration;
+    const snapshotSource = sourceGeneration;
+    const slow = renderers.formatOf(tree.main) === "latex";
+    let ownsLatexLatch = false;
+    if (slow && compilesHere) {
+      if (latexPaintBusy) {
+        latexPaintQueued = true;
+        return;
+      }
+      latexPaintBusy = true;
+      ownsLatexLatch = true;
+    }
     try {
       // The figures, if this document has any. A figure not yet here is
       // awaited before the first compile that needs it, and the page that is
@@ -963,7 +1102,19 @@
       // as a flicker rather than as progress.
       if (Object.keys(tree.digests || {}).length) {
         const held = await figures.gather(SLUG, tree.digests, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
-        if (mine <= painted) return;
+        if (
+          mine <= painted ||
+          snapshotNavigation !== navigationGeneration ||
+          snapshotSource !== sourceGeneration
+        ) return;
+        if (slow) {
+          const missing = Object.keys(tree.digests).filter(
+            (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
+          );
+          if (missing.length) {
+            throw new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
+          }
+        }
         tree.assets = held.assets;
         tree.urls = held.urls;
       }
@@ -971,13 +1122,17 @@
       // says one is running. The last page that compiled stays up under it:
       // an author who is typing has something to look at, which is the whole
       // difference between this and a pane that blanks for four seconds.
-      const slow = renderers.formatOf(tree.main) === "latex";
       if (slow) compiling = true;
       // What a rendering compiled now will be stored as. Asked before the
       // compile rather than after, because a compile takes seconds and the
       // text may move meanwhile: what comes out is of the text as it was, and
       // a name the text has moved past is refused by the server.
-      const renderingName = slow ? await renderingNameNow() : null;
+      // Checkpoint SHAs are already canonical server tree digests. For live
+      // text, hash this exact immutable tree, after asset bytes have arrived
+      // so asset sizes agree with the server's TreeEntry values.
+      const renderingName = slow
+        ? snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}))
+        : null;
       let rendered;
       try {
         rendered = await renderers.render(tree, await headingOf(tree));
@@ -988,7 +1143,11 @@
       }
       const { html, pdf, synctex, diagnostics: said, seconds } = rendered;
       // A slower render that resolves late must not paint over a newer one.
-      if (mine <= painted) return;
+      if (
+        mine <= painted ||
+        snapshotNavigation !== navigationGeneration ||
+        snapshotSource !== sourceGeneration
+      ) return;
       painted = mine;
       if (slow && seconds) lastCompile = seconds;
       // A render carries `html` or `pdf`, and the reader posts whichever it
@@ -996,24 +1155,31 @@
       // and this page has no further use for it once the frame has it.
       if (pdf) {
         const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
+        latestPreview = { kind: "pdf", sha: renderingName, bytes: new Uint8Array(buffer.slice(0)) };
         // Held for the readers, from a copy: the hand-over to the frame below
         // empties this page's own.
-        if (renderingName) holdRendering(renderingName, buffer.slice(0), synctex);
-        tell({ type: "preview", pdf: buffer }, [buffer]);
-        everPainted = true;
-        everPaintedShown = true;
+        if (renderingName) {
+          holdRendering(
+            renderingName,
+            buffer.slice(0),
+            synctex,
+            !snapshotViewing &&
+              snapshotNavigation === navigationGeneration &&
+              snapshotSource === sourceGeneration,
+          );
+        }
+        deliverPreview(latestPreview);
         diagnosticPainter.rendered({ page: "", diagnostics: said || [] });
         return;
       }
-      if (html !== null) {
+      if (typeof html === "string") {
         // The page is what the document says now, so every error said about an
         // earlier state of it is cleared at once. The warnings that came with
         // this page are painted on the same slow schedule the errors are, so
         // that a font name half typed does not flash a badge on every
         // keystroke.
-        tell({ type: "preview", html });
-        everPainted = true;
-        everPaintedShown = true;
+        latestPreview = { kind: "html", html };
+        deliverPreview(latestPreview);
         diagnosticPainter.rendered({ page: html, diagnostics: said || [] });
         return;
       }
@@ -1034,6 +1200,14 @@
       // Not a document that did not compile: a renderer that could not be
       // fetched, which is this page's problem rather than the author's.
       if (mine > painted) say(error.message || "could not render", true);
+    } finally {
+      if (ownsLatexLatch) {
+        latexPaintBusy = false;
+        if (latexPaintQueued) {
+          latexPaintQueued = false;
+          void paintPreview();
+        }
+      }
     }
   }
 
@@ -1052,6 +1226,7 @@
   const RENDERING_POLL = 30_000;
 
   function sourceChanged() {
+    sourceGeneration += 1;
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
     clearTimeout(previewTimer);
@@ -1181,7 +1356,11 @@
   // a page nobody can see the history behind is a page with no way back.
   // Opening it is what fetches the manifest.
   function showPanel(name, remembered = true) {
-    if (panel === "history" && name !== "history") backToNow();
+    if (panel === "history" && name !== "history") {
+      const hadCheckpoint = Boolean(viewing);
+      backToNow();
+      if (!hadCheckpoint) navigationGeneration += 1;
+    }
     panel = name;
     if (name) lastPanel = name;
     if (remembered) write(PANEL, name);
@@ -1271,6 +1450,7 @@
       onState: (state_) => (persistence = state_),
       name: identity || read(AUTHOR, "Anonymous"),
       slug: SLUG,
+      key: KEY,
       mayEdit,
     });
     session.watchSource(sourceChanged);
@@ -1294,6 +1474,7 @@
   // as state rather than derived, because what they are derived from is a
   // CRDT that changes outside Svelte's knowledge.
   let files = $state([]);
+  let folders = $state([]);
   let openFile = $state("");
   let peersByFile = $state(new Map());
   // The deployment's rules, which say what a path may be and what may sit at
@@ -1314,7 +1495,18 @@
   // the arriving text triggers, as it always was.
   function refreshFiles() {
     if (!session) return;
+    const previousFigure = shownFigure;
+    const previousFiles = files;
     files = session.list();
+    folders = session.folders();
+    if (previousFigure) {
+      const moved = files.filter((file) => file.kind === "asset" && file.sha === previousFigure.sha
+        && !previousFiles.some((previous) => previous.path === file.path));
+      const current = files.find((file) => file.kind === "asset" && file.path === previousFigure.path)
+        || (moved.length === 1 ? moved[0] : null);
+      shownFigure = current || null;
+      if (current && openFile === previousFigure.id) openFile = current.id;
+    }
     // A file that went away under this browser -- somebody else deleted it --
     // leaves the editor showing something that is not there any more, so it
     // falls back to the document itself.
@@ -1343,7 +1535,7 @@
   // what a compiler would produce.
   function filesChanged() {
     refreshFiles();
-    paintPreview();
+    sourceChanged();
   }
 
   function refreshPeers() {
@@ -1385,21 +1577,21 @@
   });
 
   function addFile(path) {
+    if (!mayEdit) throw new Error("This project is read-only.");
+    path = checkPlacement(rules, { kind: "text", path }, session.list(), session.folders());
     openFile = session.addText(path, "");
     paintPreview();
   }
 
-  function renameFile(id, path) {
-    session.renameFile(id, path);
+  function relocateFiles(entries, destination, rename) {
+    const plan = session.relocate(entries, destination, rules, rename);
+    if (plan.files.some((file) => file.path !== file.previousPath)) {
+      say("Files moved. References in source files are not changed automatically.");
+    }
   }
 
-  function removeFile(file) {
-    // The main file is the document. Removing it would leave nothing to
-    // render, so the list does not offer it and this does not do it.
-    if (file.id === session.mainId()) return;
-    if (file.kind === "asset") session.removeAsset(file.path);
-    else session.removeFile(file.id);
-    if (openFile === file.id) openFile = session.mainId();
+  function deleteFiles(entries) {
+    session.removeEntries(entries);
     paintPreview();
   }
 
@@ -1416,14 +1608,16 @@
   /// The two are separate requests, which is why the server keeps a figure
   /// nothing refers to for an hour: between them there is a moment when the
   /// bytes are stored and nothing names them.
-  async function addFigure(file) {
-    try {
-      const { sha } = await uploadAsset(SLUG, file, KEY);
-      session.putAsset(file.name, sha);
-      paintPreview();
-    } catch (error) {
-      say(error.message || "could not add that figure", true);
-    }
+  async function addFigure(file, path = file.name) {
+    if (!mayEdit) throw new Error("This project is read-only.");
+    const activeSession = session;
+    path = checkPlacement(rules, { kind: "asset", path }, activeSession.list(), activeSession.folders());
+    const { sha } = await uploadAsset(SLUG, file, KEY);
+    // An upload yields to other editors; recheck before installing its name.
+    if (session !== activeSession || !mayEdit) throw new Error("The editing session changed during upload.");
+    checkPlacement(rules, { kind: "asset", path }, session.list(), session.folders());
+    session.putAsset(path, sha);
+    paintPreview();
   }
 
   /// The whole directory, as a zip. Built here rather than by a route,
@@ -1432,39 +1626,81 @@
   /// asking the server to assemble what is already here would be a round trip
   /// to be told what we know.
   async function downloadTree() {
-    const tree = treeNow();
-    const files = { ...tree.texts };
-    if (Object.keys(tree.digests || {}).length) {
-      const held = await figures.gather(SLUG, tree.digests, {
-        ...SHELL_HEADERS,
-        ...keyHeaders(KEY),
-      });
-      Object.assign(files, held.assets);
+    try {
+      const tree = treeNow();
+      const files = { ...tree.texts };
+      for (const path of folders) files[`${path}/`] = new Uint8Array();
+      if (Object.keys(tree.digests || {}).length) {
+        const held = await figures.gather(SLUG, tree.digests, {
+          ...SHELL_HEADERS,
+          ...keyHeaders(KEY),
+        });
+        const missing = Object.keys(tree.digests).filter(
+          (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
+        );
+        if (missing.length) {
+          throw new Error(`could not download ${missing.join(", ")}`);
+        }
+        Object.assign(files, held.assets);
+      }
+      // Loaded when it is asked for. A reader who never downloads a document
+      // should not carry the code that would have built one.
+      const { zip } = await import("../lib/zip.js");
+      const url = URL.createObjectURL(zip(files));
+      const link = document.createElement("a");
+      link.href = url;
+      // Named for the document rather than for its main file: what is being
+      // downloaded is the directory, and the slug is what a person knows it by.
+      link.download = `${SLUG}.zip`;
+      link.click();
+      // Revoked on a later turn: revoking it now would race the download the
+      // click has only just started.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (error) {
+      say(error.message || "could not download the project", true);
     }
-    // Loaded when it is asked for. A reader who never downloads a document
-    // should not carry the code that would have built one.
-    const { zip } = await import("../lib/zip.js");
-    const url = URL.createObjectURL(zip(files));
-    const link = document.createElement("a");
-    link.href = url;
-    // Named for the document rather than for its main file: what is being
-    // downloaded is the directory, and the slug is what a person knows it by.
-    link.download = `${SLUG}.zip`;
-    link.click();
-    // Revoked on a later turn: revoking it now would race the download the
-    // click has only just started.
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
 
   // A text dropped or chosen is read and added as a file. Its bytes are
   // words, so they belong in the shared document rather than in the store.
-  async function addDroppedText(file) {
+  async function addDroppedText(file, path = file.name) {
+    if (!mayEdit) throw new Error("This project is read-only.");
+    const activeSession = session;
+    const text = await file.text();
+    if (session !== activeSession || !mayEdit) throw new Error("The editing session changed during upload.");
+    path = checkPlacement(rules, { kind: "text", path }, session.list(), session.folders());
+    openFile = session.addText(path, text);
+    paintPreview();
+  }
+
+  async function downloadEntry(entry) {
     try {
-      openFile = session.addText(file.name, await file.text());
-      paintPreview();
-    } catch (error) {
-      say(error.message || "could not read that file", true);
-    }
+      const tree = treeNow();
+      const selected = (path) => entry.kind === "folder" ? inside(path, entry.path) : path === entry.path;
+      const content = Object.fromEntries(Object.entries(tree.texts).filter(([path]) => selected(path)));
+      const digests = Object.fromEntries(Object.entries(tree.digests || {}).filter(([path]) => selected(path)));
+      if (Object.keys(digests).length) {
+        const held = await figures.gather(SLUG, digests, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
+        if (Object.keys(digests).some((path) => !Object.prototype.hasOwnProperty.call(held.assets, path))) throw new Error("Could not download all selected files.");
+        Object.assign(content, held.assets);
+      }
+      let blob;
+      if (entry.kind === "folder") {
+        for (const path of folders) if (path === entry.path || selected(path)) content[path + "/"] = new Uint8Array();
+        content[entry.path + "/"] = new Uint8Array();
+        const { zip } = await import("../lib/zip.js");
+        blob = zip(content);
+      } else {
+        if (!(entry.path in content)) throw new Error("This file is no longer available.");
+        blob = new Blob([content[entry.path]]);
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = basename(entry.path) + (entry.kind === "folder" ? ".zip" : "");
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (error) { say(error.message || "Could not download this item.", true); }
   }
 
   // Dropping a file on the source pane does what the controls in the list do:
@@ -1522,13 +1758,30 @@
     // mirror decides only whether an editor is offered a compiler.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
     renderers.offerLatex(list.includes("latex"));
-    latexReady = format === "latex" && Boolean(latex.chosen());
+    latexReady = false;
     if (format !== "latex" && (!list.includes(format) || !renderers.available(format))) {
       say(`${format} documents are read where their renderer is built`, true);
       return;
     }
     mayEdit = Boolean(allowed);
     renderers.warm(format);
+    // localStorage remembers a preference, not a running worker. Restore the
+    // worker before claiming that LaTeX is ready; if the distribution was
+    // removed from this mirror, the card remains available for a new choice.
+    if (format === "latex" && mayEdit && renderers.available("latex")) {
+      const saved = latex.chosen();
+      if (saved) {
+        latex
+          .choose(saved)
+          .then(() => {
+            latexReady = true;
+            void paintPreview();
+          })
+          .catch(() => {
+            latexReady = false;
+          });
+      }
+    }
     joinSession(document_);
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
@@ -1537,7 +1790,11 @@
     // opens the panel too, so that what is on the screen is explained by
     // something the reader can see and leave.
     if (ARRIVED_AT) {
-      showPanel("history", false).then(() => showCheckpoint(ARRIVED_AT));
+      showPanel("history", false).then(() => {
+        // The history request may outlive the panel. Do not enter a
+        // checkpoint after the reader has explicitly left history.
+        if (panel === "history") void showCheckpoint(ARRIVED_AT);
+      });
     } else if (panel === "history") {
       // The column reopened where it was left, and this panel has to fetch
       // what it shows.
@@ -1551,6 +1808,7 @@
   function reconnected(up) {
     connected = up;
     if (!up) {
+      outbox.disconnected();
       session?.disconnected();
       return;
     }
@@ -1581,8 +1839,7 @@
         // LaTeX document, a PDF an editor's browser compiled, which needs a
         // frame that can draw one. Set after `prepare`, which is what settles
         // the format and so which frame this document wants.
-        prepare(found);
-        frameSrc = `${docsOrigin}/${framePath}/${SLUG}/`;
+        void prepare(found);
       })
       // A private document answers a stranger exactly as a missing one does,
       // which tells a stranger nothing -- and tells a named reader who has not
@@ -1647,28 +1904,27 @@
 
 <Nav {me}>
   {#snippet children()}
-    <!-- The column's switch sits over the column: at the left, before the
-         title. Which panel it opens on is the tabs' business, in the column. -->
-    <IconButton
-      icon="panel-left-open"
-      label="Show or hide the files, comments and history"
-      title="Files, comments and history"
-      pressed={Boolean(panel)}
-      onclick={toggleColumn}
-    />
+    <IconButton icon="panel-left-open" label="Show or hide the files, comments and history"
+      title="Files, comments and history" pressed={Boolean(panel)} onclick={toggleColumn} />
     <span id="docTitle" class="text-surface-600-400 truncate text-sm">{doc.title ?? ""}</span>
-    <!-- Silent while the socket is up: it only has something to say when the
-         live updates have stopped. -->
-    {#if !connected}
-      <small class="badge preset-tonal-warning whitespace-nowrap">reconnecting…</small>
+  {/snippet}
+  {#snippet status()}
+    {#if !connected}<small class="badge preset-tonal-warning" title="Reconnecting">reconnecting…</small>{/if}
+    {#if viewing}<small class="badge preset-tonal-warning" title={new Date(viewing.at).toLocaleString()}>Showing {viewingName}</small>{/if}
+    {#if renderedNote}<small class="badge preset-tonal-surface" title={renderedNote}>{renderedNote}</small>{/if}
+    {#if editing}
+      {#if persistenceBadge}<small class="badge preset-tonal-warning" title={persistenceBadge}>{persistenceBadge}</small>{/if}
+      {#if peers > 1}<small class="badge preset-tonal-secondary">{peers} editing</small>{/if}
+      {#if compileBadge}<small class="badge preset-tonal-surface" title={compileBadge}><span class="spinner" aria-hidden="true"></span>{compileBadge}</small>{/if}
+      {#if diagnosticBadge}
+        <button type="button" onclick={goToDiagnostic} title="Go to the next problem"
+          class="badge {errorCount ? 'preset-tonal-error' : 'preset-tonal-warning'}">{diagnosticBadge}</button>
+      {/if}
+      {#if state}<small class="badge {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}" title={state}>{state}</small>{/if}
     {/if}
   {/snippet}
-
   {#snippet tools()}
     <Row gap={3}>
-      <!-- How the source and the document are arranged, which only means
-           anything while editing. The column is switched from the other end
-           of the bar, above where it opens. -->
       <ControlGroup label="Layout">
         {#snippet children()}
           {#if editing}
@@ -1719,88 +1975,16 @@
           {/if}
         {/snippet}
       </ControlGroup>
-      <!-- The bar over an old version. It says which one is showing, because a
-           document that is not the current one and does not say so is a way to
-           quote something that was withdrawn a month ago; and it offers the
-           way out, and the link that puts somebody else where the reader is.
-           Naming lives on every row of the panel rather than only on this one,
-           which is the same offer in a better place. -->
       {#if viewing}
-        <small class="badge preset-tonal-warning whitespace-nowrap">
-          Showing {viewingName} · {new Date(viewing.at).toLocaleString()}
-        </small>
-        <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
-                onclick={backToNow}>
-          Back to now
-        </button>
+        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={backToNow}>Back to now</button>
         <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
       {/if}
-      <!-- What the frame is showing, for a LaTeX document this browser does
-           not compile, when it is not simply the text as it stands. Said to
-           readers as well as to editors, because a reader is the person who
-           most needs to know that the pages in front of them are of an
-           earlier version -- and because "not yet rendered" is the honest
-           answer for a document no browser has compiled. Empty, and so
-           absent, when the rendering is current; a browser that compiles has
-           the compile badge instead. -->
-      {#if renderedNote}
-        <small class="badge preset-tonal-surface whitespace-nowrap">{renderedNote}</small>
+      {#if editing && sourceFormat === "latex" && latexReady}
+        <IconButton icon="book" label="Choose a different TeX distribution" title="TeX distribution"
+          pressed={cardOpen} onclick={() => (cardOpen = !cardOpen)} />
       {/if}
-      {#if editing}
-        <!-- There is no save. What the toolbar says instead is whether this
-             browser's work has reached the server, which is a different
-             question from whether the socket is open and the only one worth
-             answering. It is empty when there is nothing to say. -->
-        {#if persistenceBadge}
-          <small class="badge preset-tonal-warning whitespace-nowrap">{persistenceBadge}</small>
-        {/if}
-        <!-- Said only when there is more than one person editing. -->
-        {#if peers > 1}
-          <small class="badge preset-tonal-secondary whitespace-nowrap">{peers} editing</small>
-        {/if}
-        <!-- What the compiler said, counted. Clicking it goes to the first
-             thing it complained about, and again to the next. -->
-        <!-- A compile takes seconds, so the pane says one is running, and
-             after the first says how long the last one took. Nothing is said
-             between compiles: the page on screen is the answer. -->
-        {#if compileBadge}
-          <small class="badge preset-tonal-surface whitespace-nowrap">
-            <span class="spinner" aria-hidden="true"></span>
-            {compileBadge}
-          </small>
-        {/if}
-        {#if sourceFormat === "latex" && latexReady}
-          <IconButton
-            icon="book"
-            label="Choose a different TeX distribution"
-            title="TeX distribution"
-            pressed={cardOpen}
-            onclick={() => (cardOpen = !cardOpen)}
-          />
-        {/if}
-        {#if diagnosticBadge}
-          <button type="button" onclick={goToDiagnostic}
-                  title="Go to the next problem"
-                  class="badge whitespace-nowrap {errorCount ? 'preset-tonal-error' : 'preset-tonal-warning'}">
-            {diagnosticBadge}
-          </button>
-        {/if}
-        {#if state}
-          <small class="badge whitespace-nowrap {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}">
-            {state}
-          </small>
-        {/if}
-      {/if}
-      <!-- Sharing is the copy-link button grown up: copying the link is still
-           the first thing inside it. Somebody with no place on the document
-           gets the plain copy button, which is all it ever was for them. -->
       {#if canSeeSharing}
-        <IconButton
-          icon="users"
-          label="Share this document"
-          title="Share"
-          onclick={() => (sharingOpen = true)}
-        />
+        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (sharingOpen = true)}>Share</button>
       {:else}
         <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
       {/if}
@@ -1815,9 +1999,13 @@
     // Making a document private changes where its bytes come from, so the
     // frame is reloaded rather than left showing what it was served before.
     visibility = chosen;
-    if (docsOrigin) frameSrc = `${docsOrigin}/${framePath}/${SLUG}/?v=${++framedGeneration}`;
+    navigateFrame(true);
   }}
 />
+
+<PendingAnnotations items={unconfirmed}
+  onretry={(id) => outbox.retry(id, (message) => room?.send(message))}
+  ondiscard={discardAnnotation} />
 
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
@@ -1837,11 +2025,12 @@
         {/each}
       </div>
       {#if panel === "files"}
-        <Files bind:this={fileList} {files} open={openFile} peers={peersByFile}
+        <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
                {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
-               onrename={renameFile} onremove={removeFile} onmain={makeMain}
+               onmkdir={(path) => session.addFolder(path, rules)} onrelocate={relocateFiles}
+               ondelete={deleteFiles} onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
                onfigure={addFigure} ontext={addDroppedText}
-               ondownload={downloadTree} />
+               ondownload={downloadTree} ondownloaditem={downloadEntry} />
       {:else if panel === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
                  problem={historyProblem}
@@ -1881,7 +2070,8 @@
       {:else if Editor}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={sourceFormat} file={openFile}
-                  onchange={sourceChanged} oncaret={followCaret} onsave={reportPersistence} />
+                  onchange={sourceChanged} oncaret={followCaret} onsave={reportPersistence}
+                  onfilechange={(id) => { openFile = id; shownFigure = null; }} />
         {/key}
       {/if}
     </section>

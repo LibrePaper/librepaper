@@ -3,7 +3,6 @@
   // project is a document and the directory around it -- its chapters and its
   // figures -- and it is found here by any of them.
   import Nav from "./Nav.svelte";
-  import CopyLink from "./CopyLink.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import Modal from "./Modal.svelte";
@@ -251,21 +250,26 @@
       return;
     }
     busy = true;
-    const form = new FormData();
-    form.append("file", chosen, chosen.name);
-    form.append("title", title);
-    const response = await upload(form);
-    busy = false;
-    if (!response.ok) {
-      problem((await response.json().catch(() => ({}))).error || "upload failed");
-      return;
+    try {
+      const form = new FormData();
+      form.append("file", chosen, chosen.name);
+      form.append("title", title);
+      const response = await upload(form);
+      if (!response.ok) {
+        problem((await response.json().catch(() => ({}))).error || "upload failed");
+        return;
+      }
+      const doc = await response.json();
+      chosen = null;
+      title = "";
+      await showList();
+      shared = new URL(doc.url, location.origin).href;
+      sharing = true;
+    } catch (error) {
+      problem(error?.message || "upload failed");
+    } finally {
+      busy = false;
     }
-    const doc = await response.json();
-    chosen = null;
-    title = "";
-    await showList();
-    shared = new URL(doc.url, location.origin).href;
-    sharing = true;
   }
 
   $effect(() => {
@@ -489,11 +493,6 @@
                           listed
                         </span>
                       {/if}
-                      <CopyLink
-                        href={new URL(`/docs/${doc.slug}`, location.origin).href}
-                        label="Copy the link to {doc.title}"
-                        tone="plain"
-                      />
                     </Row>
                   </td>
                   <td>{paths.has(doc.slug) ? paths.get(doc.slug).length : "—"}</td>
