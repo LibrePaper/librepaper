@@ -186,7 +186,9 @@ export async function addScheme(collections, out, manifest, write) {
         mkdirSync(dirname(where), { recursive: true });
         writeFileSync(where, bytes);
       }
-      store[key] = { url, sha256: digest, size: bytes.length };
+      // Marked as this machine's, so a recording compile can replace it with
+      // the upstream's own -- see `addPackages` in mirror.mjs for why.
+      store[key] = { url, sha256: digest, size: bytes.length, from: "local" };
       per[collection].files += 1;
       per[collection].bytes += bytes.length;
     }

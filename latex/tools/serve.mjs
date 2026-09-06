@@ -32,7 +32,8 @@ import { createHash } from "node:crypto";
 import { readManifest, addPackages } from "./mirror.mjs";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
-const REPO = dirname(HERE);
+// This file is latex/tools/serve.mjs, so the repository is two directories up.
+const REPO = dirname(dirname(HERE));
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -93,8 +94,11 @@ async function servePackage(url, response) {
   const key = `${engine}/${format}/${name}`;
   let manifest = readManifest(MIRROR);
   let entry = manifest.packages?.[key];
-  if (!entry && RECORD && !manifest.absent?.[key]) {
-    await addPackages([name], engine, format, MIRROR);
+  // Recording fetches a name the mirror does not have, and asks upstream
+  // once more for one it has only from the TeX Live on this machine, since
+  // the engine's format may be older than that file expects.
+  if (RECORD && !manifest.absent?.[key] && (!entry || entry.from !== "upstream")) {
+    await addPackages([name], engine, format, MIRROR, { replace: Boolean(entry) });
     manifest = readManifest(MIRROR);
     entry = manifest.packages?.[key];
   }

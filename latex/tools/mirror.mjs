@@ -58,7 +58,8 @@ import { unzip } from "./unzip.mjs";
 import { SCHEME, addScheme } from "./scheme.mjs";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
-const REPO = dirname(HERE);
+// This file is latex/tools/mirror.mjs, so the repository is two directories up.
+const REPO = dirname(dirname(HERE));
 
 /* --------------------------------------------------------------- arguments */
 
@@ -226,7 +227,24 @@ function kpsewhich(name) {
 /// wanted and did not get rather than leaving a compile to fail with nothing
 /// to point at. A name recorded as missing is remembered, so a document that
 /// asks for a font that does not exist is not re-fetched on every run.
-export async function addPackages(names, engine = "pdftex", format = "0", out = OUT) {
+///
+/// Where a file came from matters, and the manifest says: `from` is
+/// `upstream` for the TeX Live that matches the engine's preloaded format,
+/// and `local` for the one on this machine. The two disagree on any package
+/// that has changed since the format was built -- `amsmath` from a 2025 TeX
+/// Live calls a kernel command a 2020 format has never heard of, and the
+/// compile stops there. So a `local` file is provisional: `replace` asks
+/// upstream again for a name the mirror already has and keeps the upstream
+/// bytes when it answers, which is what `serve.mjs --record` does for every
+/// file a compile touches. A file marked `local` after a failed attempt is
+/// one upstream does not have, and is not asked for again.
+export async function addPackages(
+  names,
+  engine = "pdftex",
+  format = "0",
+  out = OUT,
+  { replace = false } = {},
+) {
   const manifest = readManifest(out);
   const store = (manifest.packages ||= {});
   const absent = (manifest.absent ||= {});
@@ -234,17 +252,32 @@ export async function addPackages(names, engine = "pdftex", format = "0", out = 
   const missing = [];
   for (const name of names) {
     const key = `${engine}/${format}/${name}`;
-    if (store[key] || absent[key]) continue;
+    if (absent[key]) continue;
+    const had = store[key];
+    // A `from` that is missing is a manifest written before the field
+    // existed, which was built local-first and is treated as local.
+    if (had && !(replace && had.from !== "upstream")) continue;
     let bytes = null;
+    let from = "upstream";
     try {
       const response = await fetch(`${SWIFTLATEX_UPSTREAM}/${engine}/${format}/${name}`);
       if (response.ok) bytes = Buffer.from(await response.arrayBuffer());
     } catch {
       /* fall through to the TeX Live on this machine */
     }
+    if (!bytes && had) {
+      // Upstream has no better answer; what is here stays, and is not asked
+      // about again.
+      store[key] = { ...had, from: "local" };
+      writeManifest(manifest, out);
+      continue;
+    }
     if (!bytes) {
       const path = kpsewhich(name);
-      if (path) bytes = readFileSync(path);
+      if (path) {
+        bytes = readFileSync(path);
+        from = "local";
+      }
     }
     if (!bytes) {
       absent[key] = true;
@@ -258,7 +291,7 @@ export async function addPackages(names, engine = "pdftex", format = "0", out = 
       mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, bytes);
     }
-    store[key] = { url, sha256: digest, size: bytes.length };
+    store[key] = { url, sha256: digest, size: bytes.length, from };
     found.push(name);
   }
   if (found.length || missing.length) writeManifest(manifest, out);
@@ -374,7 +407,11 @@ async function mirror() {
     const rest = argv.slice(PACKAGES + 1);
     const engine = rest[0] === "pdftex" || rest[0] === "xetex" ? rest.shift() : "pdftex";
     const format = /^\d+$/.test(rest[0]) ? rest.shift() : "0";
-    const { found, missing } = await addPackages(rest, engine, format);
+    // `--replace` asks upstream again for names the mirror already has from
+    // the TeX Live on this machine.
+    const replace = rest.includes("--replace");
+    const names = rest.filter((name) => name !== "--replace");
+    const { found, missing } = await addPackages(names, engine, format, OUT, { replace });
     console.log(`mirror: ${found.length} package files added, ${missing.length} not on this machine`);
     if (missing.length) console.log(`mirror: missing ${missing.join(" ")}`);
   }
