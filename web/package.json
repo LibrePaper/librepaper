@@ -9,6 +9,7 @@
     "check:browser": "node checks/editor-browser.mjs && node checks/files-browser.mjs",
     "check:typst-pdf": "node checks/typst-pdf.mjs",
     "check:typst-viewer": "node checks/typst-viewer.mjs",
+    "check:latex-cache": "node checks/latex-cache-browser.mjs",
     "check:typst-browser": "node tools/typst-pdf-browser.mjs ../target/release/komodoc"
   },
   "devDependencies": {

@@ -176,6 +176,13 @@ impl Mirror {
                     Some(url) if package_key(&url).is_none() => {
                         let mut served = self.fetch(&url).await;
                         served.file_id = file_id(&url);
+                        // This URL names a package, not its bytes. The manifest
+                        // may change which file it resolves to, and old cached
+                        // responses can even lack the fileid header the engine
+                        // needs to keep packages separate in its filesystem.
+                        if served.status == 200 {
+                            served.cache_control = "no-cache";
+                        }
                         served
                     }
                     _ => absent(),
@@ -399,15 +406,18 @@ fn file_id(url: &str) -> Option<String> {
 }
 
 /// The engine's name for a file, if this is a request for one: four
-/// components, `packages`, an engine, a numeric format code and a name that is
-/// not already a digested file name. A digested name starts with sixteen hex
-/// digits and a dash, which no TeX Live file does.
+/// components: `packages` (or `packages-v2`), an engine, a numeric format code,
+/// and a name that is not already digested. A digested name starts with sixteen
+/// hex digits and a dash, which no TeX Live file does.
 fn package_key(path: &str) -> Option<String> {
     let parts: Vec<&str> = path.split('/').collect();
     let [prefix, engine, format, name] = parts[..] else {
         return None;
     };
-    if prefix != "packages"
+    // The v2 endpoint bypasses legacy immutable HTTP responses that predate
+    // the required fileid header. Both names resolve through the same index;
+    // only actual digest URLs may be cached as immutable.
+    if !matches!(prefix, "packages" | "packages-v2")
         || engine.is_empty()
         || format.is_empty()
         || !format.bytes().all(|byte| byte.is_ascii_digit())
@@ -512,8 +522,8 @@ mod tests {
     use super::*;
 
     // The engine asks for a TeX Live file by name, and the manifest says
-    // which digested file that is. A name the manifest has is that file, with
-    // the cache life a digested file earns; a name it does not have is a 301,
+    // which digested file that is. A name the manifest has is that file,
+    // revalidated on the next fetch; a name it does not have is a 301,
     // the one status the engine reads as "does not exist"; and a digested path
     // asked for directly is untouched by any of this.
     #[tokio::test]
@@ -531,17 +541,20 @@ mod tests {
         std::fs::write(dir.path().join(file), b"\\ProvidesClass").expect("the class");
         let mirror = Mirror::Directory(dir.path().to_path_buf());
 
-        let served = mirror.get("packages/pdftex/26/article.cls").await;
-        assert_eq!(served.status, 200);
-        assert_eq!(served.bytes, b"\\ProvidesClass");
-        assert_eq!(served.cache_control, "public, max-age=31536000, immutable");
-        // The engine files it under this name, so it must be there and must
-        // name the bytes rather than the request.
-        assert_eq!(served.file_id.as_deref(), Some("b20a30ef79872ed1"));
+        for prefix in ["packages", "packages-v2"] {
+            let served = mirror.get(&format!("{prefix}/pdftex/26/article.cls")).await;
+            assert_eq!(served.status, 200);
+            assert_eq!(served.bytes, b"\\ProvidesClass");
+            assert_eq!(served.cache_control, "no-cache");
+            // The engine files it under this name, so it must be there and must
+            // name the bytes rather than the request.
+            assert_eq!(served.file_id.as_deref(), Some("b20a30ef79872ed1"));
+        }
 
         for name in [
             "packages/pdftex/26/nothere.sty",
             "packages/pdftex/26/nowhere.sty",
+            "packages-v2/pdftex/26/nothere.sty",
         ] {
             let served = mirror.get(name).await;
             assert_eq!(served.status, 301, "{name}");
@@ -551,6 +564,7 @@ mod tests {
         let served = mirror.get(file).await;
         assert_eq!(served.status, 200);
         assert_eq!(served.bytes, b"\\ProvidesClass");
+        assert_eq!(served.cache_control, "public, max-age=31536000, immutable");
     }
 
     #[test]
@@ -562,6 +576,10 @@ mod tests {
         assert_eq!(
             package_key("packages/xetex/3/cmr10").as_deref(),
             Some("xetex/3/cmr10")
+        );
+        assert_eq!(
+            package_key("packages-v2/pdftex/10/swiftlatexpdftex.fmt").as_deref(),
+            Some("pdftex/10/swiftlatexpdftex.fmt")
         );
         assert_eq!(
             package_key("packages/pdftex/84/843c4a4ee0404b93-amsmath.sty"),

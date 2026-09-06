@@ -17,6 +17,15 @@ newest one there is. What remains is SyncTeX and the optional local
 command. Neither is required for the project to have LaTeX: an author has an
 editor with comments, and readers have renderings, without them.
 
+SwiftLaTeX package requests use `packages-v2/` to bypass old immutable HTTP
+responses that lacked the required `fileid` header. Without that header the
+engine stored different packages under the same filename, which could surface
+as a fatal format-file error on the next pass. Named package URLs now require
+revalidation because the mirror's index may change; the actual digested files
+remain immutable. This migration does not clear document or browser storage.
+`node web/checks/latex-cache-browser.mjs` reproduces the legacy cache failure
+and verifies three PDF revisions in Firefox and Chromium without clearing it.
+
 ## What the remaining work builds on
 
 | where | what |

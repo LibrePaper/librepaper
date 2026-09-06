@@ -40,7 +40,9 @@ const READY = "ok";
 
 export async function create({ name, base, distribution }) {
   const xetex = name === "swiftlatex-xetex";
-  const packages = new URL("packages/", base).href;
+  // The v2 namespace bypasses legacy immutable cache entries that may have
+  // stored package bytes without the fileid header SwiftLaTeX needs.
+  const packages = new URL("packages-v2/", base).href;
 
   const tex = await start(
     distribution.files[xetex ? "swiftlatexxetex.js" : "swiftlatexpdftex.js"],

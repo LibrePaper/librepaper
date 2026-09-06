@@ -85,7 +85,8 @@ function resolve(url) {
 async function servePackage(url, response) {
   // `<engine>/<format code>/<name>`; the format code is the engine's idea of
   // what kind of file it wants and does not change the answer.
-  const parts = url.slice("/packages/".length).split("/");
+  const namespace = url.startsWith("/packages-v2/") ? "/packages-v2/" : "/packages/";
+  const parts = url.slice(namespace.length).split("/");
   const engine = parts[0] === "xetex" ? "xetex" : "pdftex";
   const name = parts[parts.length - 1];
   // The format code is part of the key. A font is asked for as `cmr10`, and
@@ -118,7 +119,8 @@ async function servePackage(url, response) {
     fileid: entry.sha256.slice(0, 32),
     "access-control-expose-headers": "fileid",
     "access-control-allow-origin": "*",
-    "cache-control": "public, max-age=31536000, immutable",
+    // A fixed alias must be revalidated: the manifest can change its bytes.
+    "cache-control": "no-cache",
   });
   response.end(bytes);
 }
@@ -145,7 +147,7 @@ const server = createServer(async (request, response) => {
     }
     // The engine builds this URL itself, from the base it was given, so it
     // arrives under the mirror rather than beside it.
-    if (url.startsWith("/mirror/packages/")) {
+    if (url.startsWith("/mirror/packages/") || url.startsWith("/mirror/packages-v2/")) {
       return await servePackage(url.slice("/mirror".length), response);
     }
 
