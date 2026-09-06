@@ -28,6 +28,30 @@ body > nav {
   background: color-mix(in srgb, var(--color-shell) 94%, transparent);
   backdrop-filter: blur(12px);
 }
+.nav-status {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: --spacing(2);
+  overflow: hidden;
+}
+.nav-status > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-identity > a { flex-shrink: 0; }
+.share-panel { font-family: var(--typo-base--font-family); font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.share-field {
+  font: inherit;
+  border: 1px solid var(--color-surface-300-700);
+  border-radius: var(--radius-base);
+  padding: --spacing(2) --spacing(3);
+}
+.share-access { padding: --spacing(3); border: 1px solid var(--color-surface-200-800); border-radius: var(--radius-base); }
+.share-tabs { display: flex; gap: --spacing(4); border-bottom: 1px solid var(--color-surface-200-800); }
+.share-tab { padding-block: --spacing(2); border-bottom: 2px solid transparent; color: var(--color-surface-600-400); font: inherit; }
+.share-tab[data-selected] { border-bottom-color: var(--color-primary-500); color: var(--color-surface-950-50); font-weight: 600; }
+.share-person { display: flex; align-items: center; gap: --spacing(2); padding-block: --spacing(2); }
+.share-avatar { display: grid; place-items: center; width: --spacing(7); height: --spacing(7); flex-shrink: 0; border-radius: 50%; background: var(--color-surface-100-900); color: var(--color-surface-600-400); }
 
 /* ------------------------------------------------------------------ reader */
 

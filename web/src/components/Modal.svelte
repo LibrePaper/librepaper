@@ -1,6 +1,5 @@
 <script>
   import { Dialog } from "@skeletonlabs/skeleton-svelte";
-  import Stack from "./layout/Stack.svelte";
 
   // Every dialog in the application, so there is one answer to what a dialog
   // is: a card in the middle of a dimmed page, with a heading, whatever it is
@@ -18,17 +17,17 @@
   <Dialog.Backdrop class="fixed inset-0 z-50 bg-surface-950/50 backdrop-blur-xs" />
   <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
     <Dialog.Content class="card bg-surface-50-950 flex max-h-full w-full flex-col gap-4 p-6 shadow-xl {wide ? 'max-w-xl' : 'max-w-lg'}">
-      <header>
+      <header class="shrink-0">
         <Dialog.Title class="h4">{title}</Dialog.Title>
         {#if description}
           <Dialog.Description class="text-surface-600-400 text-sm">{description}</Dialog.Description>
         {/if}
       </header>
-      <div class="min-h-0 overflow-y-auto">
+      <div class="flex min-h-0 flex-col gap-3 overflow-y-auto">
         {@render children?.()}
       </div>
       {#if footer}
-        <footer class="flex justify-end gap-2 pt-2">
+        <footer class="flex shrink-0 justify-end gap-2 pt-2">
           {@render footer()}
         </footer>
       {/if}

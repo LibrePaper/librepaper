@@ -1211,9 +1211,8 @@
     }
   }
 
-  // Sixty milliseconds for an editor: short enough to read as live -- the
-  // renderer takes single-digit milliseconds -- and long enough that a burst
-  // of typing is one render. A second for a reader, who is watching somebody
+  // Wait for a brief typing pause before refreshing the preview.
+  // A second for a reader, who is watching somebody
   // else type and should never be shown a word half written.
   const READER_DEBOUNCE = 1000;
 
@@ -1249,7 +1248,7 @@
       sourceFormat === "latex"
         ? Math.max(latex.DEBOUNCE, editing ? 0 : READER_DEBOUNCE)
         : editing
-          ? 60
+          ? 300
           : READER_DEBOUNCE;
     previewTimer = setTimeout(paintPreview, wait);
   }
@@ -1453,7 +1452,10 @@
       key: KEY,
       mayEdit,
     });
-    session.watchSource(sourceChanged);
+    session.watchSource(() => {
+      // Directory files are already covered by the deep observer below.
+      if (!session.mainId()) sourceChanged();
+    });
     // The text the editor is bound to is not the text it was bound to when a
     // migrated document's maps arrive. Re-keying the component is what makes
     // it bind again; the words do not change, only which type holds them.
@@ -1533,8 +1535,9 @@
   // A file added, renamed, removed, or made the main one: the list is redrawn
   // and the document is rendered again, because every one of those changes
   // what a compiler would produce.
-  function filesChanged() {
-    refreshFiles();
+  function filesChanged(events) {
+    // Nested text edits change the preview, but not the file list.
+    if (!Array.isArray(events) || events.some((event) => event.target === session.files)) refreshFiles();
     sourceChanged();
   }
 
@@ -2070,7 +2073,7 @@
       {:else if Editor}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={sourceFormat} file={openFile}
-                  onchange={sourceChanged} oncaret={followCaret} onsave={reportPersistence}
+                  oncaret={followCaret} onsave={reportPersistence}
                   onfilechange={(id) => { openFile = id; shownFigure = null; }} />
         {/key}
       {/if}

@@ -1,7 +1,6 @@
 <script>
   import Logo from "./Logo.svelte";
   import IconButton from "./IconButton.svelte";
-  import Row from "./layout/Row.svelte";
   import { signInHref, signOut } from "../lib/api.js";
 
   // The bar every page wears: the mark, whatever the page puts in the middle,

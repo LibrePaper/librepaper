@@ -20,8 +20,10 @@ const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
-import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
+import { tick, createRawSnippet } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import Files from ${JSON.stringify(join(root, "web/src/components/Files.svelte"))};
+import Share from ${JSON.stringify(join(root, "web/src/components/Share.svelte"))};
+import Nav from ${JSON.stringify(join(root, "web/src/components/Nav.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 const session = joinSession({ send() {}, mayEdit: true });
@@ -120,6 +122,89 @@ window.filesCheck = async () => {
   check(!document.querySelector('[draggable="true"]'), 'read-only drag disabled');
   return { passed: true, files: session.list().map((file) => file.path) };
 };
+window.sharingSetup = async () => {
+  component.$destroy(); session.leave();
+  document.body.style.width = '100%';
+  document.body.style.height = '100vh';
+  document.body.style.paddingTop = '0';
+  window.shareRequests = [];
+  window.copiedLink = '';
+  let snapshot = { slug: 'paper', can_share: true, visibility: 'private', listing: true,
+    owner: { name: 'Alice', provider: 'github' }, editors: [], commenters: [], links: [],
+    link_commenter: false, link_editor: true };
+  window.setShareOwner = (owner) => { snapshot.can_share = owner; };
+  window.fetch = async (_url, options = {}) => {
+    if (options.method !== 'POST') return new Response(JSON.stringify(snapshot));
+    const body = JSON.parse(options.body);
+    window.shareRequests.push(body);
+    if (body.grant?.login === 'missing') return new Response(JSON.stringify({ error: 'Account not found' }), { status: 404 });
+    if (body.visibility === 'listed') return new Response(JSON.stringify({ error: 'Listing disabled' }), { status: 403 });
+    if (body.visibility) snapshot.visibility = body.visibility;
+    if (body.grant) snapshot[body.grant.role === 'editor' ? 'editors' : 'commenters'].push({ name: body.grant.login, login: body.grant.login, provider: 'github' });
+    if (body.link) {
+      const id = 'link-' + snapshot.links.length;
+      snapshot.links.push({ ...body.link, id, expired: false });
+      return new Response(JSON.stringify({ ...snapshot, key_id: id, key: 'test-access-token' }));
+    }
+    if (body.revoke) {
+      snapshot.links = snapshot.links.filter((link) => link.id !== body.revoke);
+      snapshot.commenters = snapshot.commenters.filter((person) => person.login !== body.revoke);
+    }
+    return new Response(JSON.stringify(snapshot));
+  };
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedLink = value; } } });
+  const snippet = (html) => createRawSnippet(() => ({ render: () => html }));
+  window.testNav = createClassComponent({ component: Nav, target: document.body, props: {
+    children: snippet('<span>Example project</span>'),
+    tools: snippet('<div><button>Layout</button><button>Share</button></div>'),
+    status: snippet('<small class="badge preset-tonal-warning">Changes are only saved in this browser</small>'),
+  } });
+  window.testShare = createClassComponent({ component: Share, target: document.body, props: { open: true, slug: 'paper' } });
+  await flush();
+};
+window.sharingCheck = async () => {
+  const visibleButton = (text) => [...document.querySelectorAll('button')].find((element) => element.textContent.trim() === text && element.getClientRects().length);
+  const chooseTab = async (value) => { document.querySelector('[role="tab"][data-value="' + value + '"]').click(); await flush(); };
+  const setInput = async (element, value) => { element.value = value; element.dispatchEvent(new Event('input', { bubbles: true })); await flush(); };
+  check(document.querySelector('[aria-label="General access"]').value === 'private', 'restricted access shown');
+  const copy = visibleButton('Copy link');
+  const rect = copy.getBoundingClientRect();
+  check(rect.top >= 0 && rect.bottom <= innerHeight, 'copy action visible on short viewport');
+  copy.click(); await flush(); check(window.copiedLink.endsWith('/docs/paper'), 'copies document link');
+  await setInput(document.querySelector('#share-person'), 'missing');
+  visibleButton('Add person').click(); await flush();
+  check(document.querySelector('#share-person').value === 'missing', 'failed grant preserves username');
+  check(document.querySelector('[role="alert"]').textContent.includes('Account not found'), 'grant error visible');
+  await setInput(document.querySelector('#share-person'), 'bob');
+  visibleButton('Add person').click(); await flush();
+  check(document.querySelector('[aria-label="People with access"]').textContent.includes('@bob'), 'new person appears');
+  check(document.querySelector('#share-person').value === '', 'successful grant clears field');
+  await chooseTab('links');
+  visibleButton('Create access link').click(); await flush();
+  check(document.querySelector('[aria-label="Access link permissions"]').value === 'editor', 'allowed link role selected');
+  await setInput(document.querySelector('#share-link-label'), 'Review team');
+  visibleButton('Create link').click(); await flush();
+  const link = document.querySelector('[aria-label="Access link for Review team"]');
+  check(link?.value.includes('#k='), 'new access link available');
+  visibleButton('Copy').click(); await flush(); check(window.copiedLink === link.value, 'copies access token link');
+  document.querySelector('[aria-label="Revoke Review team"]').click(); await flush();
+  check(!document.querySelector('[aria-label="Access link for Review team"]'), 'revoked key removed');
+  const visibility = document.querySelector('[aria-label="General access"]');
+  visibility.value = 'listed'; visibility.dispatchEvent(new Event('change', { bubbles: true })); await flush();
+  check(visibility.value === 'private', 'refused access change restores displayed setting');
+  visibleButton('Done').click(); await flush();
+  const status = document.querySelector('.nav-status').getBoundingClientRect();
+  const actions = document.querySelector('.nav-actions').getBoundingClientRect();
+  check(status.right <= actions.left, 'warnings do not split or overlap action icons');
+  check(!document.querySelector('.nav-actions .badge'), 'status outside action group');
+  window.setShareOwner(false); window.testShare.$set({ open: true }); await flush();
+  check(!document.querySelector('[aria-label="General access"]'), 'non-owner cannot change visibility');
+  check(!document.querySelector('#share-person'), 'non-owner cannot add people');
+  check(!document.querySelector('[role="tab"][data-value="links"]'), 'non-owner cannot manage access links');
+  visibleButton('Done').click(); await flush();
+  return true;
+};
+
 window.filesCheckReady = true;
 `;
 
@@ -236,7 +321,16 @@ try {
   if (process.env.FILES_SCREENSHOT) writeFileSync(process.env.FILES_SCREENSHOT, Buffer.from(screenshot.result.data, "base64"));
   const result = await evaluate("filesCheck()");
   assert.equal(result.passed, true);
-  console.log("files-browser: creation, nesting, rename, keyboard, drag/drop, move dialog, duplication, delete, uploads, collisions, read-only passed");
+  await evaluate("sharingSetup()");
+  if (process.env.SHARE_SCREENSHOT) {
+    await send("Emulation.setDeviceMetricsOverride", { width: 900, height: 820, deviceScaleFactor: 1, mobile: false });
+    await evaluate("new Promise(r => setTimeout(r, 100))");
+    const shot = await send("Page.captureScreenshot", { format: "png" });
+    writeFileSync(process.env.SHARE_SCREENSHOT, Buffer.from(shot.result.data, "base64"));
+  }
+  await send("Emulation.setDeviceMetricsOverride", { width: 780, height: 437, deviceScaleFactor: 1, mobile: false });
+  assert.equal(await evaluate("sharingCheck()"), true);
+  console.log("files-browser: creation, nesting, rename, keyboard, drag/drop, move dialog, duplication, delete, uploads, collisions, read-only, sharing and navbar passed");
 } finally {
   socket?.close();
   browser?.kill();

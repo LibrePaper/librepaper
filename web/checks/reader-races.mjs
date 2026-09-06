@@ -18,7 +18,7 @@ const showCheckpoint = body("  async function showCheckpoint(sha)", "  async fun
 const backToNow = body("  function backToNow()", "  async function nameCheckpoint");
 const paintRendering = body("  async function paintRendering()", "  // The PDF this browser compiled");
 const deliverAndReplay = body("  function deliverPreview(payload)", "  // The kind of frame follows");
-const paintPreview = body("  async function paintPreview()", "  // Sixty milliseconds for an editor");
+const paintPreview = body("  async function paintPreview()", "  // Wait for a brief typing pause");
 
 const deferred = () => {
   let resolve;
@@ -167,3 +167,21 @@ const context = (values) => vm.createContext({
 }
 
 console.log("reader-races: all checks passed");
+
+// A nested edit schedules the preview without rebuilding the directory.
+{
+  let refreshes = 0;
+  let changes = 0;
+  const files = {};
+  const ctx = context({ session: { files }, refreshFiles: () => refreshes++, sourceChanged: () => changes++ });
+  vm.runInContext(body("  function filesChanged(events)", "  function refreshPeers()"), ctx);
+  ctx.events = [{ target: {} }];
+  vm.runInContext("filesChanged(events)", ctx);
+  assert.equal(refreshes, 0);
+  assert.equal(changes, 1);
+  ctx.events = [{ target: files }];
+  vm.runInContext("filesChanged(events)", ctx);
+  vm.runInContext("filesChanged({})", ctx);
+  assert.equal(refreshes, 2);
+  assert.equal(changes, 3);
+}
