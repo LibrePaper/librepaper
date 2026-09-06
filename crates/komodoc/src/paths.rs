@@ -142,9 +142,25 @@ pub fn kind_of(rules: &Rules, path: &str) -> Result<Kind, String> {
 
 /// The name a file with no usable one is given, so that a path the rules
 /// refuse becomes a file somebody can see and rename rather than a key
-/// nothing reaches. The id is in it because two of them must not collide.
+/// nothing reaches. The id is in it so that two of them seldom collide, and
+/// the repair moves one aside when they do.
+///
+/// Only the letters and digits of the id, and not many of them: the id is a
+/// key a peer wrote into the shared document, so it can be `/`, a control
+/// character, or a kilobyte long, and a name built from it raw would be one
+/// the rules refuse -- which the repair would then report, without effect,
+/// after every update for the rest of the document's life.
 pub fn placeholder(id: &str) -> String {
-    format!("unnamed-{id}.txt")
+    let clean: String = id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(12)
+        .collect();
+    if clean.is_empty() {
+        "unnamed.txt".to_string()
+    } else {
+        format!("unnamed-{clean}.txt")
+    }
 }
 
 /// The next spelling of a path that is already taken: `paper.tex` becomes

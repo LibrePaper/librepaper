@@ -1,0 +1,5 @@
+# What libFuzzer accumulates. An artifact worth keeping becomes a test in the
+# crate the bug was in, not a file here.
+corpus/
+artifacts/
+coverage/

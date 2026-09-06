@@ -276,20 +276,6 @@ pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
     let mut done = Vec::new();
     let mut txn = doc.transact_mut();
 
-    // The old bundle's text, folded into the main file. Only ever reached
-    // during a deploy, when a tab loaded before it is still writing where it
-    // was taught to.
-    let stale = source.get_string(&txn);
-    if !stale.is_empty() && files.len(&txn) > 0 {
-        if let Some(id) = string_at(&meta, &txn, MAIN) {
-            if let Some(text) = text_at(&files, &txn, &id) {
-                edit_text(&mut txn, &text, &stale);
-                source.remove_range(&mut txn, 0, stale.encode_utf16().count() as u32);
-                done.push(Repair::Folded);
-            }
-        }
-    }
-
     // Paths, in a fixed order, so that two servers repairing the same document
     // make the same corrections: which of two colliding files is the one moved
     // aside cannot depend on the order a hash map happened to iterate in.
@@ -393,6 +379,22 @@ pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
             done.push(Repair::Remained { id: id.clone() });
         }
     }
+
+    // The old bundle's text, folded into the main file. Only ever reached
+    // during a deploy, when a tab loaded before it is still writing where it
+    // was taught to. Last, once the main file is settled: a document whose
+    // `meta.main` named nothing has one by now, and the fold must not wait
+    // for the next update to find it. (Found by fuzz/fuzz_targets/document.rs.)
+    let stale = source.get_string(&txn);
+    if !stale.is_empty() {
+        if let Some(id) = string_at(&meta, &txn, MAIN) {
+            if let Some(text) = text_at(&files, &txn, &id) {
+                edit_text(&mut txn, &text, &stale);
+                source.remove_range(&mut txn, 0, stale.encode_utf16().count() as u32);
+                done.push(Repair::Folded);
+            }
+        }
+    }
     done
 }
 
@@ -400,9 +402,23 @@ pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
 /// it arrives from a socket, and a socket is not to be trusted with the
 /// process.
 pub fn apply_update(doc: &Doc, update: &[u8]) -> Result<(), String> {
-    let update = Update::decode_v1(update).map_err(|err| err.to_string())?;
+    let update = decode(update)?;
     let mut txn = doc.transact_mut();
     txn.apply_update(update).map_err(|err| err.to_string())
+}
+
+/// Decodes a v1 update, and answers an error where yrs would panic. Its
+/// decoder asserts on some of what it reads -- a client id with its high bits
+/// set, for one -- and an assertion is a panic, which a peer could cause with
+/// twelve bytes. The catch is around the decoder alone: it has touched no
+/// document yet, so there is nothing half-done to be left behind. (Found by
+/// fuzz/fuzz_targets/update.rs.)
+fn decode(update: &[u8]) -> Result<Update, String> {
+    match std::panic::catch_unwind(|| Update::decode_v1(update)) {
+        Ok(Ok(update)) => Ok(update),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Err("not a v1 update".to_string()),
+    }
 }
 
 /// What `admit_update` decided about an update that arrived on a socket.
@@ -480,7 +496,7 @@ fn measure(doc: &Doc) -> (usize, usize) {
 /// small -- so it is answered on the scratch copy whenever the document is
 /// already at its limit, which is the only time the answer can change.
 pub fn admit_update(doc: &Doc, update: &[u8], ceiling: usize, max_files: usize) -> Admission {
-    if Update::decode_v1(update).is_err() {
+    if decode(update).is_err() {
         return Admission::Malformed;
     }
     let (bytes, keys) = measure(doc);

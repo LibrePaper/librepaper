@@ -179,6 +179,113 @@ fn a_refused_path_is_renamed_rather_than_dropped() {
 }
 
 #[test]
+fn a_file_under_an_id_that_is_not_a_name_is_still_given_one_that_passes() {
+    // Found by fuzz/fuzz_targets/document.rs. An id is a key a peer wrote, so
+    // it can be anything; a placeholder built from `/` raw was `unnamed-/.txt`,
+    // a path the rules refuse, and every repair after the first reported the
+    // same rename again without changing anything.
+    let doc = session::new_doc();
+    for id in ["/", "\u{7}", "a/b", &"x".repeat(300)] {
+        let files = doc.get_or_insert_map("files");
+        let mut txn = doc.transact_mut();
+        files.insert(
+            &mut txn,
+            id.to_string(),
+            yrs::types::text::TextPrelim::new("kept\n"),
+        );
+    }
+    let config = rules();
+
+    let first = session::repair(&doc, &config.paths());
+    let named = first
+        .iter()
+        .filter(|done| matches!(done, session::Repair::Renamed { .. }))
+        .count();
+    assert_eq!(named, 4, "every orphan is named: {first:?}");
+    for path in session::texts_of(&doc).keys() {
+        assert_eq!(
+            paths::check(&config.paths(), path),
+            Ok(paths::Kind::Text),
+            "{path:?} is a name the rules refuse"
+        );
+    }
+    let second = session::repair(&doc, &config.paths());
+    assert!(second.is_empty(), "a second repair found work: {second:?}");
+}
+
+#[test]
+fn a_damaged_update_is_refused_rather_than_panicking_inside_yrs() {
+    // Found by fuzz/fuzz_targets/update.rs. One client, one block, and a
+    // client id whose high bits are set: yrs asserts on that id while
+    // decoding, before any transaction, and the assertion is a panic. The
+    // bytes come off a socket, so the panic would have been a peer's to
+    // cause.
+    let damaged: [u8; 12] = [
+        1, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1,
+    ];
+    let doc = one_file("main.typ", "words\n");
+    let before = session::encode_state(&doc);
+    assert_eq!(
+        session::admit_update(&doc, &damaged, 4 << 20, 200),
+        Admission::Malformed
+    );
+    assert!(session::apply_update(&doc, &damaged).is_err());
+    assert_eq!(session::encode_state(&doc), before);
+}
+
+#[test]
+#[ignore = "open: yrs 0.27 divides by zero in BlockStore::find_index while committing this update"]
+fn a_decodable_update_with_a_damaged_block_does_not_panic_at_commit() {
+    // Found by fuzz/fuzz_targets/update.rs, and not yet fixed. The encoded
+    // state of a one-file document with one byte flipped and one dropped: it
+    // decodes, `admit_update` says it fits, and applying it panics inside yrs
+    // (block_store.rs, `clock / end` with `end` 0) as the transaction
+    // commits -- after the document has been touched, which is why the catch
+    // around the decoder does not cover it. Reproduce with
+    // `cargo test -p komodoc -- --ignored damaged_block`.
+    let damaged: [u8; 77] = [
+        1, 3, 166, 141, 204, 167, 187, 253, 145, 3, 0, 39, 1, 5, 102, 105, 108, 101, 115, 12, 48,
+        101, 99, 49, 99, 52, 53, 48, 57, 102, 51, 51, 2, 4, 0, 166, 141, 204, 167, 187, 253, 145,
+        0, 8, 0, 0, 0, 0, 1, 34, 37, 34, 40, 1, 5, 112, 97, 116, 104, 115, 12, 48, 101, 99, 49, 99,
+        52, 53, 48, 57, 102, 51, 51, 1, 119, 0, 0,
+    ];
+    let doc = one_file("main.typ", "= Title\n\nA paragraph of prose.");
+    session::put_text(&doc, "chapters/one.typ", "one");
+    let _ = session::apply_update(&doc, &damaged);
+}
+
+#[test]
+fn what_the_old_bundle_wrote_is_folded_in_the_same_repair_that_finds_a_main() {
+    // Found by fuzz/fuzz_targets/document.rs. A document with words in the
+    // retired text and a `meta.main` that names nothing: the first repair
+    // used to settle the main file and leave the fold for the next update,
+    // so the same document was repaired twice with two different answers.
+    let doc = old_session("from the old tab\n");
+    let files = doc.get_or_insert_map("files");
+    let path_map = doc.get_or_insert_map("paths");
+    {
+        let mut txn = doc.transact_mut();
+        files.insert(
+            &mut txn,
+            "abcdefabcdef".to_string(),
+            yrs::types::text::TextPrelim::new("the new file\n"),
+        );
+        path_map.insert(&mut txn, "abcdefabcdef".to_string(), "main.typ".to_string());
+    }
+    let config = rules();
+
+    let first = session::repair(&doc, &config.paths());
+    assert!(
+        first.contains(&session::Repair::Folded),
+        "the fold waited for another update: {first:?}"
+    );
+    assert_eq!(session::text_of(&doc), "from the old tab\n");
+    assert_eq!(retired(&doc), "");
+    let second = session::repair(&doc, &config.paths());
+    assert!(second.is_empty(), "a second repair found work: {second:?}");
+}
+
+#[test]
 fn two_files_at_one_path_both_survive_and_one_is_moved_aside() {
     // Two people create `notes.md` at the same instant. Neither loses their
     // file: a CRDT has no way to refuse the second, so the repair names it
