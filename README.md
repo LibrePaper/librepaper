@@ -198,37 +198,42 @@ including the ones beneath it:
 | editor | edit the source; delete any comment |
 | owner | share, transfer, destroy |
 
-Everyone who has the link is a reader, and the server's `--commenters` makes
-them commenters where it is open. Beyond that, a document names people:
+A document is shared with links, not people. It holds at most three standing
+links, one per role -- reader, commenter, editor -- and minting one is the
+whole act of sharing:
 
 ```sh
-komodoc share c9k                              # print who it is shared with
-komodoc share c9k --editor annegrandchamp      # a coauthor, by GitHub account
-komodoc share c9k --commenter rmcelreath
-komodoc share c9k --revoke annegrandchamp
-```
-
-A grant by name is to a GitHub account, recorded by its numeric id, so it
-survives a rename and follows the person across browsers. Reviewers of a paper
-often have no GitHub account, and a blind reviewer must not be named at all, so
-a role can also travel in a link:
-
-```sh
-komodoc share c9k --link commenter --label "reviewer 2" --until 180d
+komodoc share c9k                       # print the visibility and every role's link
+komodoc share c9k --link comment        # mint (or rotate) the commenter link
+komodoc share c9k --link edit --until 30d
+komodoc share c9k --revoke edit         # turn the editor link off
 ```
 
 That prints one URL with a key in its fragment. A fragment is never sent to a
-server, so the key lands in no access log and on no `Referer` header; the
-document stores only its digest, which is why the key is shown once and cannot
-be shown again. Links expire after six months unless `--until` says otherwise,
-and `komodoc share c9k --revoke <id>` ends one early. A link names nobody, so it
-can only carry a role the deployment already allows without a sign-in: on a
-server that names its publishers, a link cannot edit.
+server, so the key lands in no access log and on no `Referer` header. Minting a
+role's link again rotates it: the old key dies and the new one takes over,
+which is how a leaked link is killed without losing the role it stood for.
+Links expire after six months unless `--until` says otherwise (`--until never`
+for one that does not). A reader link only matters on a private document -- it
+is the way in -- since `link` and `listed` documents are already readable by
+anyone with the URL.
+
+An edit link authorizes, and the account attributes: editing requires an
+account wherever `--publishers` does, so on a server that names its publishers
+the holder of an edit link must sign in as one of them before the link edits,
+and until then it only comments. Under `--publishers anyone` it edits as it is. Anonymous commenters still need telling
+apart, so each gets a stable per-document pseudonym such as `AmberAgama`,
+shown next to their comments instead of a name they typed.
+
+Named grants -- an editor or a commenter added by GitHub login, from before
+links existed -- are legacy: still honoured, still revocable by that login,
+but a document never grows new ones. `komodoc share c9k` lists any that remain
+under a `people (legacy)` heading.
 
 Who may read is a property of the document rather than a role anyone holds:
 
 ```sh
-komodoc share c9k --visibility private   # only the people named on it
+komodoc share c9k --visibility private   # only somebody holding a live link
 komodoc share c9k --visibility listed    # anyone with the link, and on the front page
 komodoc share c9k --visibility link      # anyone with the link; the default
 ```

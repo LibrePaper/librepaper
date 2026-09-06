@@ -35,13 +35,14 @@ use crate::config::Configuration;
 use crate::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
+use crate::pseudonym::pseudonym_for;
 use crate::render::{title_from_html, title_from_markdown};
 use crate::room::{
     decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet, Sender,
 };
 use crate::store::{
-    is_visibility, random_suffix, slugify, Ceiling, Grant, IndexEntry, LinkGrant, ModifyError,
-    Publication, PutError, Role, Store, VISIBILITY_LISTED, VISIBILITY_PRIVATE,
+    is_visibility, random_suffix, slugify, Ceiling, Grant, Guest, IndexEntry, LinkGrant,
+    ModifyError, Publication, PutError, Role, Store, VISIBILITY_LISTED, VISIBILITY_PRIVATE,
 };
 use crate::util::clean;
 
@@ -421,16 +422,15 @@ impl Server {
 
     /// The most this deployment's switches will let a document give one
     /// caller. `--publishers` governs editing, because an editor puts content
-    /// on the server; `--commenters` governs commenting. The `link_*` halves
-    /// ask the same switches about a caller with no account at all, which is
-    /// what a link is: it carries a role and names nobody, so it may only
-    /// carry what the switch grants without a sign-in.
+    /// on the server; `--commenters` governs commenting. A link asks the same
+    /// question with an empty handle, since it names nobody, and that is
+    /// exactly what makes "a link cannot edit unless the deployment lets
+    /// anyone publish" fall out of the same switch a named caller is asked
+    /// against, rather than out of a rule of its own.
     pub fn ceiling_for(&self, id: &Identity) -> Ceiling {
         Ceiling {
             comment: self.commenters.allows(&id.handle),
             edit: self.publishers.allows(&id.handle),
-            link_comment: self.commenters.public,
-            link_edit: self.publishers.public,
         }
     }
 
@@ -515,10 +515,13 @@ impl Server {
 
     /// Narrows a listing to what one caller should see: the reserved examples,
     /// the documents that predate ownership, their own uploads, everything
-    /// shared with them by name, and everything `listed`.
+    /// shared with them by name, everything they are a recorded guest of, and
+    /// everything `listed`.
     ///
-    /// A document shared by link is not here, and cannot be: the link lives in
-    /// one browser rather than on an account, so that browser's own list is
+    /// A document shared by a link nobody has opened yet is not here, and
+    /// cannot be: the link lives in one browser rather than on an account, so
+    /// that browser's own list is where it belongs until somebody signed in
+    /// actually uses it, at which point they are a guest and this is exactly
     /// where it belongs. Under `--no-listing` there is no public front page,
     /// so `listed` behaves as `link` and adds nothing.
     pub fn visible(&self, entries: Vec<IndexEntry>, who: &Caller) -> Vec<IndexEntry> {
@@ -528,6 +531,7 @@ impl Server {
                 entry.example
                     || entry.owned_by(&who.key, &who.id)
                     || entry.named_role(&who.id).is_some()
+                    || entry.guests.iter().any(|guest| guest.id == who.id)
                     || (self.listing && entry.visibility() == VISIBILITY_LISTED)
             })
             .collect()
@@ -539,12 +543,29 @@ impl Server {
     /// a listing that carried link digests would put them in every reader's
     /// browser.
     fn listing_row(&self, entry: &IndexEntry, who: &Caller) -> Value {
+        let now = crate::clock::now_unix();
+        // A guest holds no key and no link in this request -- the listing
+        // asks for every document at once, not through the one link that got
+        // them onto any single one of them -- so their role is read back off
+        // the link hash recorded when they were pinned rather than derived
+        // from anything this request carries. A rotated link means the
+        // pinning that pointed at it was already pruned, so a guest row here
+        // always names a link that is still live.
+        // The link is handed to `role_of` rather than read off directly, so a
+        // guest whose link says "editor" on a deployment that will not let
+        // them publish is listed as the commenter they actually are.
+        let link = entry
+            .guests
+            .iter()
+            .find(|guest| guest.id == who.id)
+            .map(|guest| guest.link.clone())
+            .unwrap_or_default();
         let role = entry.role_of(
             &who.key,
             &who.id,
-            "",
+            &link,
             self.ceiling_for(&who.identity()),
-            crate::clock::now_unix(),
+            now,
         );
         json!({
             "slug": entry.slug,
@@ -592,25 +613,27 @@ impl Server {
                 false,
             );
         }
-        // A signed-in commenter is named by their account, whether or not
-        // signing in was required. Only anonymous readers type a name.
-        // The name, not the handle: this is what other readers see, and a
-        // Google account's handle is its email, which is shown to nobody.
-        if id.is_signed_in() {
-            incoming.creator = id.name.clone();
-        }
+        // The client's name is never trusted, for a comment or for a reply to
+        // one: a signed-in commenter is named by their account, and anyone
+        // else is given the same pseudonym every time they return to this
+        // document, keyed on the visitor digest rather than anything they
+        // typed. A caller with no visitor cookie yet (nothing to key a
+        // pseudonym on) is "Anonymous", the same fallback the room itself
+        // used to apply.
+        incoming.creator = if id.is_signed_in() {
+            id.name.clone()
+        } else if author.is_empty() {
+            "Anonymous".to_string()
+        } else {
+            pseudonym_for(author, &room.slug)
+        };
         // Every comment sits on a checkpoint by construction: what the
         // reviewer was looking at is on record the moment they say something
         // about it, rather than being reconstructed later from a document that
         // has moved on. A checkpoint whose text is already the current one
         // costs nothing and adds no entry.
         if incoming.kind == "comment" {
-            let by = if id.is_signed_in() {
-                id.name.clone()
-            } else {
-                incoming.creator.clone()
-            };
-            if let Err(err) = room.checkpoint("comment", &by).await {
+            if let Err(err) = room.checkpoint("comment", &incoming.creator).await {
                 // Not a reason to refuse the comment: the comment is the
                 // reader's work, and the checkpoint is bookkeeping about it.
                 eprintln!(
@@ -964,6 +987,57 @@ async fn handle(
             let files: Vec<String> = room.tree().await.files.into_keys().collect();
             let role = who.role;
             let owned = role.at_least(Role::Editor);
+            // What the comment form would sign this caller's name as, if they
+            // said something right now: the account name when there is one,
+            // otherwise the pseudonym their visitor cookie earns them, or ""
+            // when there is not even a cookie yet to key one on.
+            let author_key = server.comment_author(request.headers(), &arrival, &who.id);
+            let commenting_as = if who.id.is_signed_in() {
+                who.id.name.clone()
+            } else if author_key.is_empty() {
+                String::new()
+            } else {
+                pseudonym_for(&author_key, slug)
+            };
+            // A signed-in caller who is not the owner and reached this
+            // document on a live link is a guest of it: worth recording once,
+            // so the owner's listing shows the document is pinned to them and
+            // the role the link they came in on actually carries. Checked
+            // against the copy already in hand first, so an open that is not
+            // this caller's first never asks the store to write anything.
+            let now = crate::clock::now_unix();
+            if who.id.is_signed_in()
+                && !entry.owned_by(&who.key, &who.id.id)
+                && entry.link_role(&who.link, now).is_some()
+                && !entry
+                    .guests
+                    .iter()
+                    .any(|guest| guest.id == who.id.id && guest.link == who.link)
+            {
+                let guest = Guest {
+                    id: who.id.id.clone(),
+                    name: who.id.name.clone(),
+                    since: crate::clock::timestamp(),
+                    link: who.link.clone(),
+                };
+                // Not a reason to refuse the document: the pin is bookkeeping
+                // about the visit, and the visit itself is what matters.
+                if let Err(err) =
+                    server
+                        .store
+                        .modify(slug, |entry| {
+                            if !entry.guests.iter().any(|existing| {
+                                existing.id == guest.id && existing.link == guest.link
+                            }) {
+                                entry.guests.push(guest.clone());
+                            }
+                            Ok(())
+                        })
+                        .await
+                {
+                    eprintln!("warning: could not record a guest on {slug}: {err:?}");
+                }
+            }
             return write_json(
                 200,
                 &json!({
@@ -988,6 +1062,11 @@ async fn handle(
                     // above. `can_edit` and `can_moderate` are the same answer
                     // in the older shape, kept so a cached page still works.
                     "role": role.as_str(),
+                    // What the comment form should sign this caller's remarks
+                    // as, computed the same way `apply_from` computes it, so
+                    // the name shown while typing is the name the comment
+                    // actually lands under.
+                    "commenting_as": commenting_as,
                     // Who may read this document, which is a property of the
                     // document rather than a role anyone holds. The reader
                     // needs it because a private document is painted into the
@@ -997,9 +1076,14 @@ async fn handle(
                     // the owner's to change. Somebody named on the document
                     // sees who else is in the room; a reader who arrived by
                     // link sees no Share button at all.
+                    // Only the owner ever sees the share route now, so this is
+                    // the same question `can_share` is: a named editor used
+                    // to see a read-only dialog, but the route that drew it is
+                    // 404 to anyone who is not the owner, and offering a
+                    // button to a route that refuses would be worse than not
+                    // offering one.
                     "can_share": role.at_least(Role::Owner),
-                    "can_see_sharing": role.at_least(Role::Owner)
-                        || entry.named_role(&who.id.id).is_some(),
+                    "can_see_sharing": role.at_least(Role::Owner),
                     // Whether this caller may replace the document, which is what
                     // an editor does on save.
                     "can_edit": owned,
@@ -2907,24 +2991,21 @@ impl Server {
         let who = self
             .viewer(&entry, &headers, arrival, query.as_deref())
             .await;
-        let owner = who.at_least(Role::Owner);
-        // Everything here answers 404 rather than 403 to a caller with no
-        // place on the document, on the same reasoning the delete route
-        // follows: a guessed slug should not tell you it is there.
-        if !owner && entry.named_role(&who.id.id).is_none() {
+        // The share route is the owner's alone now: a named editor used to be
+        // shown a read-only version of it, but a document names its coauthors
+        // through a link these days, and a stranger -- named or not -- learns
+        // nothing from this route, not even that the document is there.
+        if !who.at_least(Role::Owner) {
             return write_json(404, &json!({"error": "not found"}));
         }
         if method == Method::GET {
-            return write_json(200, &self.sharing_json(&entry, owner));
+            return write_json(200, &self.sharing_json(&entry));
         }
         if method != Method::POST {
             return plain(405, "method not allowed");
         }
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
-        }
-        if !owner {
-            return write_json(404, &json!({"error": "not found"}));
         }
 
         let Ok(body) = to_bytes(request.into_body(), 1 << 16).await else {
@@ -2934,37 +3015,20 @@ impl Server {
             return write_json(400, &json!({"error": "bad request"}));
         };
 
-        // A grant by name needs the account behind the name, because a grant
-        // is keyed on the numeric id: a login can be renamed and the id
-        // cannot. That is one question to GitHub, asked before anything is
-        // written.
-        let mut named: Option<(Identity, Role)> = None;
-        if let Some(grant) = &asked.grant {
-            let Some(role) = Role::parse(&grant.role) else {
-                return write_json(400, &json!({"error": "a grant is 'commenter' or 'editor'"}));
-            };
-            if names_an_address(&grant.login) {
-                return write_json(404, &json!({"error": EMAIL_GRANTS_UNAVAILABLE}));
-            }
-            let Some(account) = self.accounts.lookup(&grant.login).await else {
-                return write_json(404, &json!({"error": no_such_account(&grant.login)}));
-            };
-            if let Err(refusal) = self.grant_allowed(&account, role) {
-                return write_json(403, &json!({"error": refusal}));
-            }
-            named = Some((account, role));
-        }
-
-        // A new link's key exists for exactly as long as this response: the
-        // document keeps its digest, and there is no second chance to read it.
+        // A new link's key is minted before the write, because the write is
+        // what commits it; whether it does anything for anybody is `role_of`'s
+        // business from here on, so minting is never itself refused. This is
+        // also the rotation: `set_link` below replaces whatever already
+        // carried this role, so minting again is how a leaked link is killed
+        // without losing the role it stood for.
         let mut minted: Option<(String, LinkGrant)> = None;
         if let Some(wanted) = &asked.link {
-            let Some(role) = Role::parse(&wanted.role) else {
-                return write_json(400, &json!({"error": "a link is 'commenter' or 'editor'"}));
+            let Some(role) = parse_role_word(&wanted.role) else {
+                return write_json(
+                    400,
+                    &json!({"error": "a link is 'reader', 'commenter' or 'editor'"}),
+                );
             };
-            if let Err(refusal) = self.link_allowed(role) {
-                return write_json(403, &json!({"error": refusal}));
-            }
             let until = match link_expiry(&wanted.until) {
                 Ok(until) => until,
                 Err(message) => return write_json(400, &json!({"error": message})),
@@ -2975,9 +3039,10 @@ impl Server {
                 LinkGrant {
                     hash: hash_link_key(&key),
                     role: role.as_str().to_string(),
-                    label: clean(wanted.label.trim(), 80),
+                    key: key.clone(),
                     since: crate::clock::timestamp(),
                     until,
+                    ..Default::default()
                 },
             ));
         }
@@ -2998,37 +3063,33 @@ impl Server {
         }
 
         let revoke = asked.revoke.clone().unwrap_or_default();
+        let now = crate::clock::now_unix();
         let updated = self
             .store
             .modify(slug, |entry| {
                 if let Some(visibility) = &asked.visibility {
                     entry.visibility = visibility.clone();
                 }
-                if let Some((account, role)) = &named {
-                    // One person holds one role here, so a re-grant moves them
-                    // rather than leaving them on two rows.
-                    entry
-                        .editors
-                        .retain(|grant| stored_id(&grant.id) != account.id);
-                    entry
-                        .commenters
-                        .retain(|grant| stored_id(&grant.id) != account.id);
-                    let grant = Grant {
-                        id: account.id.clone(),
-                        login: account.handle.clone(),
-                        since: crate::clock::timestamp(),
-                        name: account.name.clone(),
+                let asked_revoke = revoke.trim();
+                if !asked_revoke.is_empty() {
+                    // A role word revokes that role's link; anything else is a
+                    // legacy row, named by login or by the first characters of
+                    // a link's id.
+                    let went = match parse_role_word(asked_revoke) {
+                        Some(role) => entry.drop_link(role),
+                        None => revoke_from(entry, asked_revoke),
                     };
-                    match role {
-                        Role::Editor => entry.editors.push(grant),
-                        _ => entry.commenters.push(grant),
+                    if !went {
+                        return Err(format!("nothing shared with {asked_revoke:?} to revoke"));
                     }
-                }
-                if !revoke.trim().is_empty() && !revoke_from(entry, revoke.trim()) {
-                    return Err(format!("nothing shared with {:?} to revoke", revoke.trim()));
+                    entry.prune_guests(now);
                 }
                 if let Some((_, link)) = &minted {
-                    entry.links.push(link.clone());
+                    entry.set_link(link.clone());
+                    // A rotated link's old hash names nothing any more, so a
+                    // guest recorded against it is not a guest of this
+                    // document's link any longer either.
+                    entry.prune_guests(now);
                 }
                 Ok(())
             })
@@ -3044,36 +3105,33 @@ impl Server {
                 return write_json(500, &json!({"error": "could not record the change"}));
             }
         };
-        // Grants, revocations, and visibility all land here: whatever just
+        // Rotations, revocations, and visibility all land here: whatever just
         // changed, any socket already open on this document may no longer be
         // entitled to what it is holding.
         self.reauthorize(slug).await;
-        let mut answer = self.sharing_json(&entry, true);
-        if let Some((key, link)) = minted {
-            // Shown once, and said to be: the document holds the digest and
-            // nothing that could recover the key.
+        let mut answer = self.sharing_json(&entry);
+        if let Some((key, _)) = minted {
+            // The document keeps this link's key from here on -- see
+            // `LinkGrant::key` -- but it is worth putting at the top level too,
+            // since this is the response the dialog and the command line are
+            // actually looking at right after asking for it.
             answer["key"] = json!(key);
-            answer["key_id"] = json!(link_id(&link.hash));
         }
         write_json(200, &answer)
     }
 
-    /// Everything the share dialog draws: the document's visibility, the
-    /// people on it, the links, and what this deployment's switches will let
-    /// the owner offer. A link's key is never here -- only what it is called
-    /// and when it stops working.
-    fn sharing_json(&self, entry: &IndexEntry, owner: bool) -> Value {
+    /// Everything the share dialog draws: the document's visibility, its
+    /// three role links, the legacy people still named on it, and what this
+    /// deployment's switches will let the owner offer. Only the owner ever
+    /// asks for this now, so nothing here is held back from the caller.
+    fn sharing_json(&self, entry: &IndexEntry) -> Value {
         let now = crate::clock::now_unix();
-        // A handle reaches only the owner, who typed it and names it again to
-        // revoke; everyone else named on the document sees the name and the
-        // provider, which is what the dialog draws. A Google handle is an
-        // email address, and the spec shows it to nobody.
         let people = |grants: &Vec<Grant>| -> Vec<Value> {
             grants
                 .iter()
                 .map(|grant| {
                     json!({
-                        "login": if owner { grant.login.clone() } else { String::new() },
+                        "login": grant.login,
                         "name": grant.shown(),
                         "provider": provider_of(&grant.id),
                         "id": grant.id,
@@ -3082,28 +3140,35 @@ impl Server {
                 })
                 .collect()
         };
-        let links: Vec<Value> = entry
-            .links
-            .iter()
-            .map(|link| {
-                json!({
-                    "id": link_id(&link.hash),
-                    "role": link.role,
-                    "label": link.label,
-                    "since": link.since,
-                    "until": link.until,
-                    "expired": !link.live_at(now),
-                })
+        // One row per role, or null where the document has never had one.
+        // `url` is built exactly the way `handle_publish` builds a document's
+        // own `url`: a path on this same origin, since that is what a dialog
+        // reading this response is already served from.
+        let link_json = |role: Role| -> Value {
+            let Some(link) = entry.link_for(role) else {
+                return Value::Null;
+            };
+            let url = if link.key.is_empty() {
+                String::new()
+            } else {
+                format!("/docs/{}#k={}", entry.slug, link.key)
+            };
+            json!({
+                "key": link.key,
+                "url": url,
+                "since": link.since,
+                "until": link.until,
+                "expired": !link.live_at(now),
             })
-            .collect();
-        json!({
+        };
+        let mut answer = json!({
             "slug": entry.slug,
             "visibility": entry.visibility(),
             // A visitor's key names a browser rather than a person, and is the
-            // same value that owns their other uploads, so it is not a thing to
-            // print: the dialog says "this browser" instead.
+            // same value that owns their other uploads, so it is not a thing
+            // to print: the dialog says "this browser" instead.
             "owner": {
-                "login": if entry.publisher.starts_with(VISITOR_PREFIX) || !owner {
+                "login": if entry.publisher.starts_with(VISITOR_PREFIX) {
                     String::new()
                 } else {
                     entry.publisher.clone()
@@ -3117,60 +3182,34 @@ impl Server {
                 "id": entry.publisher_id,
                 "visitor": entry.publisher.starts_with(VISITOR_PREFIX),
             },
-            "editors": people(&entry.editors),
-            "commenters": people(&entry.commenters),
-            // The links are the owner's business: a commenter reading this
-            // dialog sees who is named, not how many strangers hold a key.
-            "links": if owner { json!(links) } else { json!([]) },
-            // Whether this caller may change any of it, which is the
-            // difference between the dialog and a read-only view of it.
-            "can_share": owner,
+            "links": {
+                "reader": link_json(Role::Reader),
+                "commenter": link_json(Role::Commenter),
+                "editor": link_json(Role::Editor),
+            },
+            "can_share": true,
             // What the deployment's switches allow, so the dialog offers only
             // the choices that would actually be accepted.
             "publishers": self.publishers.describe(),
             "commenters_policy": self.commenters.describe(),
-            "link_editor": self.publishers.public,
-            "link_commenter": self.commenters.public,
             "listing": self.listing,
-        })
-    }
-
-    /// Whether the deployment's switches allow this account to be named in
-    /// this role. The refusal names the switch, because the answer to it is
-    /// the operator's flag rather than anything about the document.
-    fn grant_allowed(&self, account: &Identity, role: Role) -> Result<(), String> {
-        match role {
-            Role::Editor if !self.publishers.allows(&account.handle) => Err(format!(
-                "{} may not edit here; this deployment's --publishers allows {}",
-                account.handle,
-                self.publishers.describe()
-            )),
-            Role::Commenter if !self.commenters.allows(&account.handle) => Err(format!(
-                "{} may not comment here; this deployment's --commenters allows {}",
-                account.handle,
-                self.commenters.describe()
-            )),
-            _ => Ok(()),
+            // Whether editing, and commenting, ask for a sign-in at all: a
+            // link cannot carry a role the deployment itself would refuse an
+            // anonymous caller.
+            "edit_needs_signin": !self.publishers.public,
+            "comment_needs_signin": !self.commenters.public,
+        });
+        // The people named before links existed: still honoured, still
+        // revocable by login, but never grown, so this is left out entirely
+        // once the last of them is gone rather than shown as two empty lists
+        // forever.
+        if !entry.editors.is_empty() || !entry.commenters.is_empty() {
+            answer["legacy"] = json!({
+                "editors": people(&entry.editors),
+                "commenters": people(&entry.commenters),
+            });
         }
-    }
-
-    /// The same question for a link, which names nobody: it may only carry a
-    /// role the switch grants without a sign-in. This is where "a link cannot
-    /// make an editor unless the server lets anyone publish" falls out -- an
-    /// edit made under a link has no name behind it, and the history would
-    /// record `by: nobody`.
-    fn link_allowed(&self, role: Role) -> Result<(), String> {
-        match role {
-            Role::Editor if !self.publishers.public => Err(format!(
-                "a link cannot edit here; this deployment's --publishers allows {}",
-                self.publishers.describe()
-            )),
-            Role::Commenter if !self.commenters.public => Err(format!(
-                "a link cannot comment here; this deployment's --commenters allows {}",
-                self.commenters.describe()
-            )),
-            _ => Ok(()),
-        }
+        answer
     }
 
     /// Hands a document to another account: its history, its comments and its
@@ -3951,15 +3990,14 @@ struct Upload {
 }
 
 /// What one call to the share route asks for. Every field is optional, and
-/// several may arrive together: the dialog changes visibility and adds a
-/// person in one round trip when somebody does both.
+/// several may arrive together: the dialog changes visibility and mints a
+/// link in one round trip when somebody does both.
 #[derive(Deserialize, Default)]
 struct ShareRequest {
     #[serde(default)]
     visibility: Option<String>,
-    #[serde(default)]
-    grant: Option<NamedGrant>,
-    /// A login, or the first characters of a link's id.
+    /// A role word (`read`/`reader`, `comment`/`commenter`, `edit`/`editor`),
+    /// or, for a legacy row, a login or the first characters of a link's id.
     #[serde(default)]
     revoke: Option<String>,
     #[serde(default)]
@@ -3967,31 +4005,26 @@ struct ShareRequest {
 }
 
 #[derive(Deserialize, Default)]
-struct NamedGrant {
-    #[serde(default)]
-    login: String,
-    #[serde(default)]
-    role: String,
-}
-
-#[derive(Deserialize, Default)]
 struct LinkRequest {
     #[serde(default)]
     role: String,
-    #[serde(default)]
-    label: String,
     /// A duration such as `180d` or `24h`, `never` for a link that does not
     /// expire, or absent for the default.
     #[serde(default)]
     until: String,
 }
 
-/// What a link is called in the dialog and on the command line: the first
-/// characters of its digest, which is the only thing about it the document
-/// keeps. Long enough that two links on one document do not collide, short
-/// enough to type into `--revoke`.
-pub fn link_id(hash: &str) -> String {
-    hash.chars().take(12).collect()
+/// The word a link's role or a revoke may be spelled with. The document
+/// stores the long form, but the dialog and the command line offer the short
+/// verb too -- `read`, `comment`, `edit` -- because that is what somebody
+/// asking to share a document actually types.
+fn parse_role_word(value: &str) -> Option<Role> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "read" | "reader" => Some(Role::Reader),
+        "comment" | "commenter" => Some(Role::Commenter),
+        "edit" | "editor" => Some(Role::Editor),
+        _ => None,
+    }
 }
 
 /// When a new link stops working. Absent means the default, `never` means it

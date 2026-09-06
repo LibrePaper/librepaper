@@ -1,11 +1,13 @@
 <script>
   import Row from "./layout/Row.svelte";
-  import { AUTHOR, read, write } from "../lib/storage.js";
 
   // One annotation, and everything said about it.
   let {
     comment,
     identity = "",
+    // The name the server would give this reply if nobody is signed in: the
+    // account name when there is one, otherwise the per-document pseudonym.
+    commentingAs = "Anonymous",
     canModerate = false,
     // The manifest entry at which this comment's passage stopped being found,
     // when it has been looked up and there was an answer. Null otherwise, and
@@ -29,12 +31,7 @@
   let quoteOpen = $state(false);
   let replying = $state(false);
   let replyBody = $state("");
-  // What an anonymous reader is called, which is theirs to type. Held apart
-  // from `identity` rather than seeded from it: the account arrives a moment
-  // after this card is built, and a name captured before it landed would leave
-  // a signed-in reader replying as "Anonymous" for the rest of the session.
-  let typed = $state(read(AUTHOR, "Anonymous"));
-  const replyName = $derived(identity || typed);
+  const replyName = $derived(identity || commentingAs);
 
   const collapsed = $derived(Boolean(comment.resolved) && !expanded);
   $effect(() => {
@@ -79,7 +76,6 @@
   function submitReply(event) {
     event.preventDefault();
     if (!replyBody.trim()) return;
-    if (!identity) write(AUTHOR, typed);
     onreply?.(comment, replyBody, replyName);
     replyBody = "";
   }
@@ -227,7 +223,7 @@
   {#if replying}
     <form class="mt-3 flex flex-col gap-2" onsubmit={submitReply}>
       {#if !identity}
-        <input class="input" placeholder="Name" maxlength="80" bind:value={typed} />
+        <p class="text-surface-600-400 text-xs">replying as {commentingAs}</p>
       {/if}
       <!-- The box exists because somebody just clicked Reply, so the caret
            belongs in it. The rule is about a page that takes the focus on

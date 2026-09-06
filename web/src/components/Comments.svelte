@@ -12,6 +12,7 @@
     comments = [],
     figureAt = [],
     identity = "",
+    commentingAs = "Anonymous",
     canModerate = false,
     tool = "commenting",
     hasFigures = false,
@@ -125,6 +126,7 @@
       <CommentCard
         {comment}
         {identity}
+        {commentingAs}
         {canModerate}
         went={went[comment.id] || null}
         ontoggleTag={toggleTag}

@@ -695,8 +695,10 @@ async fn the_google_callback_refuses_an_off_origin_next() {
 
 #[tokio::test]
 async fn signed_in_comments_are_named_by_the_account() {
-    // Commenting is open to anyone here, so a name may be typed. Signing in
-    // should still override it: the account is the author.
+    // Commenting is open to anyone here, so a name may be typed, but it is
+    // never trusted: the account overrides it when there is one, and a
+    // caller with no account and no visitor cookie at all gets "Anonymous"
+    // rather than whatever the request claimed.
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
     let path = format!("/api/documents/{slug}/comments");
@@ -707,10 +709,11 @@ async fn signed_in_comments_are_named_by_the_account() {
     assert_eq!(status, 200);
     assert_eq!(payload["comment"]["creator"], "someone");
 
-    // Anonymous readers still name themselves.
+    // No visitor cookie, and no account, is "Anonymous" -- the request's own
+    // "creator" field is never taken at its word.
     let (status, payload) = post_as("", &server.url, &path, comment).await;
     assert_eq!(status, 200);
-    assert_eq!(payload["comment"]["creator"], "Impostor");
+    assert_eq!(payload["comment"]["creator"], "Anonymous");
 }
 
 #[tokio::test]
@@ -880,54 +883,48 @@ async fn a_google_owner_is_shown_by_name_and_never_by_email() {
     let slug = text(&payload, "slug");
     let share = format!("/api/documents/{slug}/share");
 
-    // A grant by email is not available yet, and the refusal says so rather
-    // than asking GitHub about an address.
-    let (status, payload) = post_as(
-        &anne,
-        &server.url,
-        &share,
-        json!({"grant": {"login": "jean@umontreal.ca", "role": "editor"}}),
-    )
-    .await;
-    assert_eq!(status, 404, "{payload}");
-    assert!(
-        text(&payload, "error").contains("email address"),
-        "the refusal did not say why: {payload}"
-    );
+    // A legacy grant, the only way a document names anybody by hand any more
+    // -- the share route no longer makes one, but it still honours one
+    // already on record and still lets the owner revoke it by login.
+    server
+        .instance
+        .store
+        .modify(&slug, |entry| {
+            entry.editors.push(crate::store::Grant {
+                id: "github:vincent".into(),
+                login: "vincent".into(),
+                since: crate::clock::timestamp(),
+                name: "vincent".into(),
+            });
+            Ok(())
+        })
+        .await
+        .expect("the grant is recorded");
 
-    let (status, payload) = post_as(
-        &anne,
-        &server.url,
-        &share,
-        json!({"grant": {"login": "vincent", "role": "editor"}}),
-    )
-    .await;
-    assert_eq!(status, 200, "{payload}");
-
-    // The named editor sees a name and a provider, and no address anywhere.
+    // The share route is the owner's alone now: a named editor -- even one
+    // who may still write the document through the socket -- learns nothing
+    // from it, not the owner's email or anything else.
     let (status, payload) = get_json_as(&session_as("vincent"), &server.url, &share).await;
-    assert_eq!(status, 200, "{payload}");
-    let body = payload.to_string();
-    assert!(
-        !body.contains("anne@umontreal.ca"),
-        "the owner's email reached a named editor: {body}"
-    );
-    assert_eq!(text(&payload["owner"], "name"), "Anne Grandchamp");
-    assert_eq!(text(&payload["owner"], "provider"), "google");
-    assert_eq!(text(&payload["owner"], "login"), "");
-    assert_eq!(text(&payload["editors"][0], "name"), "vincent");
-    assert_eq!(text(&payload["editors"][0], "provider"), "github");
-    assert_eq!(text(&payload["editors"][0], "login"), "");
+    assert_eq!(status, 404, "an editor saw the sharing: {payload}");
 
-    // The owner sees the handles, which are theirs to know and to revoke by.
+    // The owner sees their own login, which for a Google account is the
+    // email address they signed in with, and the legacy editor's name and
+    // provider.
     let (status, payload) = get_json_as(&anne, &server.url, &share).await;
     assert_eq!(status, 200, "{payload}");
     assert_eq!(text(&payload["owner"], "login"), "anne@umontreal.ca");
     assert_eq!(text(&payload["owner"], "name"), "Anne Grandchamp");
-    assert_eq!(text(&payload["editors"][0], "login"), "vincent");
+    assert_eq!(text(&payload["owner"], "provider"), "google");
+    assert_eq!(text(&payload["legacy"]["editors"][0], "login"), "vincent");
+    assert_eq!(text(&payload["legacy"]["editors"][0], "name"), "vincent");
+    assert_eq!(text(&payload["legacy"]["editors"][0], "provider"), "github");
+
     let (status, payload) = post_as(&anne, &server.url, &share, json!({"revoke": "vincent"})).await;
     assert_eq!(status, 200, "{payload}");
-    assert!(payload["editors"].as_array().is_some_and(Vec::is_empty));
+    assert!(
+        payload.get("legacy").is_none(),
+        "a fully revoked legacy grant should leave no trace: {payload}"
+    );
 
     // An entry from before names were recorded shows its login, which is a
     // GitHub login and so is its name.

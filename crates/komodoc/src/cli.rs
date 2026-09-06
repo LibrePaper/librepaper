@@ -1107,16 +1107,29 @@ pub fn open_url(target: &str) {
 // names its coauthors and its reviewers, and the flags are the ceiling it may
 // not open past. These commands are that, on the command line.
 
+/// The word a `--link` flag may spell a role with. The wire already accepts
+/// both spellings (see `parse_role_word` on the server), so this exists only
+/// to die locally with a clear message rather than spending a round trip to
+/// learn that "editorr" is not a role. It returns the canonical, long-form
+/// word, which is what a person reading the response back would expect to
+/// see echoed.
+pub(crate) fn parse_link_role(word: &str) -> Result<&'static str, String> {
+    match word {
+        "read" | "reader" => Ok("reader"),
+        "comment" | "commenter" => Ok("commenter"),
+        "edit" | "editor" => Ok("editor"),
+        _ => Err(format!(
+            "{word:?} is not a role: --link takes read, comment, or edit"
+        )),
+    }
+}
+
 /// `komodoc share c9k` with nothing else prints what the document says; with a
 /// flag, changes it and prints the result.
-#[allow(clippy::too_many_arguments)] // one flag per thing a share can change
 pub async fn share_document(
     identifier: &str,
     server_flag: String,
-    editor: String,
-    commenter: String,
     link: String,
-    label: String,
     until: String,
     visibility: String,
     revoke: String,
@@ -1126,19 +1139,13 @@ pub async fn share_document(
     let target = format!("{server}/api/documents/{slug}/share");
 
     let mut change = json!({});
-    if !editor.is_empty() {
-        change["grant"] = json!({"login": editor, "role": "editor"});
-    }
-    if !commenter.is_empty() {
-        if change.get("grant").is_some() {
-            die("name one person at a time: --editor or --commenter");
-        }
-        change["grant"] = json!({"login": commenter, "role": "commenter"});
-    }
+    let mut minted_role: Option<&'static str> = None;
     if !link.is_empty() {
-        change["link"] = json!({"role": link, "label": label, "until": until});
-    } else if !label.is_empty() || !until.is_empty() {
-        die("--label and --until describe a link; pass --link commenter or --link editor");
+        let role = parse_link_role(&link).unwrap_or_else(|err| die(err));
+        minted_role = Some(role);
+        change["link"] = json!({"role": role, "until": until});
+    } else if !until.is_empty() {
+        die("--until describes a link; pass --link read, --link comment, or --link edit");
     }
     if !visibility.is_empty() {
         change["visibility"] = json!(visibility);
@@ -1172,71 +1179,86 @@ pub async fn share_document(
         die(format!("share failed ({status}): {}", detail_of(&payload)));
     }
 
-    // A new link's key is in this response and nowhere else, so it is printed
-    // before anything that might scroll it away, and said to be the only time.
-    if let Some(key) = payload.get("key").and_then(Value::as_str) {
-        println!("{server}/docs/{slug}#k={key}");
-        eprintln!("\n  This link is shown once and cannot be shown again.");
-        eprintln!(
-            "  Revoke it with:  komodoc share {identifier} --revoke {}\n",
-            text(&payload, "key_id")
-        );
+    // A mint prints just the link it made and its expiry: the document keeps
+    // the key now (see `LinkGrant::key`), so there is nothing left to warn
+    // about, and a full listing would only bury the one line somebody ran
+    // this command to see.
+    if let Some(role) = minted_role {
+        let empty = Value::Null;
+        let link = payload
+            .get("links")
+            .and_then(|links| links.get(role))
+            .unwrap_or(&empty);
+        println!("{}", format_role_row(role, link, &server));
+        return;
     }
-    print_sharing(&payload, &slug);
+    print_sharing(&payload, &server, &slug);
 }
 
-fn print_sharing(payload: &Value, slug: &str) {
-    println!("{slug}  {}", text(payload, "visibility"));
-    let owner = payload
-        .get("owner")
-        .map(|owner| text(owner, "login"))
-        .unwrap_or_default();
-    println!(
-        "  owner       {}",
-        if owner.is_empty() {
-            "nobody in particular".to_string()
-        } else {
-            format!("@{owner}")
-        }
-    );
-    for (field, role) in [("editors", "editor"), ("commenters", "commenter")] {
-        for grant in payload
-            .get(field)
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-        {
-            let mut since = text(&grant, "since");
-            since.truncate(10);
-            println!("  {role:<11} @{}  {since}", text(&grant, "login"));
+/// One row of `komodoc share`'s listing: the role, the link if it has one,
+/// and what state that link is in. `server` and the row's own `url` (a path
+/// on that origin) are joined here because that is the whole point of the
+/// row -- a link nobody can paste anywhere is not much of a share.
+pub(crate) fn format_role_row(role: &str, link: &Value, server: &str) -> String {
+    if link.is_null() {
+        return format!("  {role:<8} off");
+    }
+    let key = text(link, "key");
+    if key.is_empty() {
+        // A link written before the key was kept: the document still knows
+        // it existed, but cannot show it, so the only way forward is a new
+        // one.
+        return format!("  {role:<8} legacy link, reset to get a new one");
+    }
+    let url = text(link, "url");
+    let expired = link.get("expired") == Some(&Value::Bool(true));
+    let mut until = text(link, "until");
+    until.truncate(10);
+    let state = if expired {
+        "expired".to_string()
+    } else if until.is_empty() {
+        "no expiry".to_string()
+    } else {
+        format!("expires {until}")
+    };
+    format!("  {role:<8} {server}{url}   {state}")
+}
+
+/// The full listing `komodoc share` with no flags prints, one line per entry:
+/// the visibility, then one row per role in the fixed order a reader, a
+/// commenter, and an editor matter to somebody deciding what to change, then
+/// whatever legacy people are still named on the document. Built as a plain
+/// `Vec<String>` rather than printed straight away, so the order and the
+/// content of the report can be checked without capturing stdout.
+pub(crate) fn sharing_report_lines(payload: &Value, server: &str, slug: &str) -> Vec<String> {
+    let mut lines = vec![format!("{slug}  {}", text(payload, "visibility"))];
+    let links = payload.get("links").cloned().unwrap_or(Value::Null);
+    let empty = Value::Null;
+    for role in ["reader", "commenter", "editor"] {
+        let link = links.get(role).unwrap_or(&empty);
+        lines.push(format_role_row(role, link, server));
+    }
+    if let Some(legacy) = payload.get("legacy") {
+        lines.push("  people (legacy)".to_string());
+        for (field, role) in [("editors", "editor"), ("commenters", "commenter")] {
+            for grant in legacy
+                .get(field)
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                let mut since = text(&grant, "since");
+                since.truncate(10);
+                lines.push(format!("    {role:<9} @{}  {since}", text(&grant, "login")));
+            }
         }
     }
-    for link in payload
-        .get("links")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-    {
-        let mut until = text(&link, "until");
-        until.truncate(10);
-        let state = if link.get("expired") == Some(&Value::Bool(true)) {
-            "expired".to_string()
-        } else if until.is_empty() {
-            "no expiry".to_string()
-        } else {
-            format!("until {until}")
-        };
-        let label = text(&link, "label");
-        println!(
-            "  link        {}  {}  {state}{}",
-            text(&link, "id"),
-            text(&link, "role"),
-            if label.is_empty() {
-                String::new()
-            } else {
-                format!("  {label:?}")
-            }
-        );
+    lines
+}
+
+fn print_sharing(payload: &Value, server: &str, slug: &str) {
+    for line in sharing_report_lines(payload, server, slug) {
+        println!("{line}");
     }
 }
 

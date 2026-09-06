@@ -365,12 +365,29 @@ async fn review_revoked_socket_is_closed_and_stops_writing() {
             &session_as("alice"),
             &server.url,
             &share,
-            json!({"visibility": "private", "grant": {"login": "bob", "role": "editor"}}),
+            json!({"visibility": "private"}),
         )
         .await
         .0,
         200
     );
+    // A legacy grant, the only way a document names anybody by hand any more:
+    // the route above no longer makes one, so this test writes it straight
+    // into the index the way one made before links existed would still sit.
+    server
+        .instance
+        .store
+        .modify(&slug, |entry| {
+            entry.editors.push(crate::store::Grant {
+                id: "github:bob".into(),
+                login: "bob".into(),
+                since: crate::clock::timestamp(),
+                name: "bob".into(),
+            });
+            Ok(())
+        })
+        .await
+        .expect("the grant is recorded");
     let mut socket = dial_websocket_with(
         &server.url,
         &slug,

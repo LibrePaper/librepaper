@@ -103,10 +103,29 @@ pub struct IndexEntry {
     pub editors: Vec<Grant>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commenters: Vec<Grant>,
-    /// The links that carry a role. Only the digest of each key is kept: the
-    /// key is shown once, when the link is made, and never again.
+    /// The links that carry a role: at most one per role, since minting a
+    /// role's link again rotates it rather than adding a second one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<LinkGrant>,
+    /// Accounts that opened this document through a link while signed in. A
+    /// link names nobody, so this is how an owner learns who is actually on
+    /// the other end of one without either side signing anything more than
+    /// being logged in. Pruned whenever the link that let a guest in is
+    /// rotated or dropped, since a guest with no live link behind it is not a
+    /// guest of anything any more.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guests: Vec<Guest>,
+}
+
+/// One account that opened a document through a link while signed in. `link`
+/// is the hash of the link that let them in, which is what `prune_guests`
+/// matches against when a link is rotated or revoked.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Guest {
+    pub id: String,
+    pub name: String,
+    pub since: String,
+    pub link: String,
 }
 
 /// One account named on a document. The id is what the grant is matched on;
@@ -138,12 +157,19 @@ impl Grant {
 
 /// One link that carries a role. `hash` is the SHA-256 of the key in hex, and
 /// `until` is an expiry -- empty for none -- past which the link answers as no
-/// link at all.
+/// link at all. `key` is the key itself, kept so the owner can copy the link
+/// again rather than only ever seeing it once; a link written before this
+/// field existed has an empty one and cannot be shown again, which is what
+/// "legacy link, reset to get a new one" means. `label` is legacy too: a new
+/// link is never given one, but an old one still deserialises with whatever
+/// it was labelled.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LinkGrant {
     pub hash: String,
     pub role: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
     #[serde(default)]
     pub since: String,
@@ -188,13 +214,11 @@ pub fn is_visibility(value: &str) -> bool {
 pub struct Ceiling {
     /// Whether this caller may comment here at all.
     pub comment: bool,
-    /// Whether this caller may publish here, and so be named an editor.
+    /// Whether this caller may publish here, and so be named an editor. A
+    /// link names nobody, so it is asked with an empty handle, and that is
+    /// true only under `--publishers anyone`: a link cannot edit anywhere
+    /// this deployment would otherwise ask for a sign-in first.
     pub edit: bool,
-    /// Whether the switch is open to callers with no account, which is what a
-    /// link is: it names nobody, so it may only carry a role the switch grants
-    /// without a sign-in.
-    pub link_comment: bool,
-    pub link_edit: bool,
 }
 
 impl IndexEntry {
@@ -256,6 +280,9 @@ impl IndexEntry {
         let mut role = Role::Reader;
         // A named editor whom `--publishers` no longer allows keeps whatever
         // `--commenters` still gives them, rather than dropping to a reader.
+        // This is legacy: no document is given a new named grant any more,
+        // but one recorded before links existed is still honoured exactly
+        // this way.
         if let Some(named) = self.named_role(caller_id) {
             if named == Role::Editor && ceiling.edit {
                 role = role.max(Role::Editor);
@@ -263,10 +290,16 @@ impl IndexEntry {
                 role = role.max(Role::Commenter);
             }
         }
+        // A link asks the same ceiling a named grant does, because a link is
+        // not a different kind of caller, it is a caller with no name: an
+        // editor link edits under exactly the switch that lets an anonymous
+        // caller edit at all, and a reader link never has to ask, since
+        // reading is the rung everybody who reaches the document already
+        // holds.
         if let Some(by_link) = self.link_role(link_hash, now) {
-            if by_link == Role::Editor && ceiling.link_edit {
+            if by_link == Role::Editor && ceiling.edit {
                 role = role.max(Role::Editor);
-            } else if ceiling.link_comment {
+            } else if by_link.at_least(Role::Commenter) && ceiling.comment {
                 role = role.max(Role::Commenter);
             }
         }
@@ -308,6 +341,47 @@ impl IndexEntry {
             .iter()
             .find(|link| link.hash == link_hash && link.live_at(now))
             .map(LinkGrant::granted)
+    }
+
+    /// The link that carries a role, live or not. The dead one still matters:
+    /// it is what lets the dialog say "expired" or "legacy link, reset to get
+    /// a new one" instead of just "off".
+    pub fn link_for(&self, role: Role) -> Option<&LinkGrant> {
+        self.links.iter().find(|link| link.granted() == role)
+    }
+
+    /// Replaces whatever link already carries this role. A document holds at
+    /// most one link per role, so minting a role that already has one is a
+    /// rotation: the old key stops meaning anything the moment this returns,
+    /// because its hash is no longer on the document at all.
+    pub fn set_link(&mut self, link: LinkGrant) {
+        let role = link.granted();
+        self.links.retain(|existing| existing.granted() != role);
+        self.links.push(link);
+    }
+
+    /// Removes the link carrying this role, if there is one. Returns whether
+    /// a row actually went, the way `revoke_from` does, so a revoke that
+    /// matched nothing can say so.
+    pub fn drop_link(&mut self, role: Role) -> bool {
+        let before = self.links.len();
+        self.links.retain(|link| link.granted() != role);
+        before != self.links.len()
+    }
+
+    /// Drops every guest whose link no longer lives. Called whenever a link
+    /// is rotated or revoked, since rotating replaces the row a guest's hash
+    /// pointed at and revoking removes it outright -- either way, a guest
+    /// recorded against a hash nothing here still answers to is not a guest
+    /// of anything any more.
+    pub fn prune_guests(&mut self, now: i64) {
+        let live: std::collections::HashSet<String> = self
+            .links
+            .iter()
+            .filter(|link| link.live_at(now))
+            .map(|link| link.hash.clone())
+            .collect();
+        self.guests.retain(|guest| live.contains(&guest.link));
     }
 
     /// Whether a caller is on this document at all: its owner, named in any
@@ -367,13 +441,15 @@ impl Role {
         }
     }
 
-    /// The role a grant names, or None for a word that is not one a document
-    /// hands out. Only two rungs parse: nobody is granted `reader`, since
-    /// reading is what reaching the document already gives, and nobody is
-    /// granted `owner`, since the owner is one account and `transfer` is how
-    /// that moves.
+    /// The role a grant or a link names, or None for a word that is not one a
+    /// document hands out. `reader` parses now too, because a link may carry
+    /// it -- on a `private` document that is the only thing a reader link is
+    /// for, since reading is otherwise what reaching the document already
+    /// gives. Nobody is granted `owner`, since the owner is one account and
+    /// `transfer` is how that moves.
     pub fn parse(value: &str) -> Option<Role> {
         match value {
+            "reader" => Some(Role::Reader),
             "commenter" => Some(Role::Commenter),
             "editor" => Some(Role::Editor),
             _ => None,
@@ -616,6 +692,7 @@ impl Store {
             editors: shared.editors,
             commenters: shared.commenters,
             links: shared.links,
+            guests: shared.guests,
         };
         let previous = state.entries.insert(v.slug.clone(), entry.clone());
         let mut written = self.save_locked(&mut state).await;

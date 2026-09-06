@@ -25,7 +25,6 @@ export function write(key, value) {
 
 export const VIEWED = "komodoc-viewed";
 export const FAVORITES = "komodoc-favorites";
-export const AUTHOR = "komodoc-author";
 export const LINKED = "komodoc-linked";
 // How the window was last divided, and which side the source was on. Both are
 // one reader's habit rather than anything about a document, so reopening an

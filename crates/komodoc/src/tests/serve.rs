@@ -193,6 +193,9 @@ async fn comments_broadcast_to_every_reader() {
         assert_eq!(hello["type"], "hello");
     }
 
+    // The "creator" the socket sends is never trusted; with no visitor
+    // cookie on this connection there is nothing to key a pseudonym on, so
+    // the comment lands as "Anonymous" regardless of what was typed here.
     author
         .write(json!({"type": "comment", "exact": "hello", "body": "a note", "creator": "Reader", "temp_id": "t1"}))
         .await;
@@ -204,7 +207,7 @@ async fn comments_broadcast_to_every_reader() {
         assert_eq!(event["type"], "comment", "got {event}");
         let comment = &event["comment"];
         assert_eq!(comment["body"], "a note");
-        assert_eq!(comment["creator"], "Reader");
+        assert_eq!(comment["creator"], "Anonymous");
         assert_eq!(comment["exact"], "hello");
         assert_eq!(comment["resolved"], false);
         assert_eq!(comment["seq"], 1);

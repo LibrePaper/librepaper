@@ -491,12 +491,13 @@ async function run() {
       "x-komodoc-client": "1",
       cookie: `komodoc_session=${alice}`,
     },
-    body: JSON.stringify({ link: { role: "commenter", label: "reviewer 2" } }),
+    body: JSON.stringify({ link: { role: "commenter", until: "180d" } }),
   }).then((r) => r.json());
-  check("the share route mints a key", Boolean(minted.key), JSON.stringify(minted).slice(0, 120));
+  const mintedKey = minted.links?.commenter?.key;
+  check("the share route mints a key", Boolean(mintedKey), JSON.stringify(minted).slice(0, 120));
 
   // A reviewer's browser: no account, and the key in the fragment.
-  const reviewer = await openTab(`${BASE}/docs/${shared.slug}#k=${minted.key}`, [], {
+  const reviewer = await openTab(`${BASE}/docs/${shared.slug}#k=${mintedKey}`, [], {
     ownProfile: true,
   });
   const kept = await until("the key is kept and the bar cleaned", async () => {
@@ -509,7 +510,7 @@ async function run() {
     `);
     return state.stored && state.text.includes("Under Review") ? state : null;
   });
-  check("a link key is taken from the fragment and kept in this browser", kept?.stored === minted.key);
+  check("a link key is taken from the fragment and kept in this browser", kept?.stored === mintedKey);
   check(
     "the visible URL is cleaned once the key is stored",
     kept && kept.hash === "",
@@ -535,7 +536,7 @@ async function run() {
     const keys = JSON.parse(localStorage.getItem("komodoc-keys"));
     return location.origin + "/docs/${shared.slug}#k=" + encodeURIComponent(keys["${shared.slug}"]);
   `);
-  check("the copied link carries the key back", copied.endsWith(`#k=${minted.key}`));
+  check("the copied link carries the key back", copied.endsWith(`#k=${mintedKey}`));
 
   /* --- 7. a private HTML document is painted rather than served ------------ */
 

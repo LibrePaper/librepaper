@@ -24,7 +24,6 @@
     uploadAsset,
   } from "../lib/api.js";
   import {
-    AUTHOR,
     LAYOUT,
     LINKED,
     PANEL,
@@ -266,7 +265,7 @@
   let commenting = $state(false);
   let identifying = $state(false);
   let deleting = $state(false);
-  let draft = $state({ body: "", tags: "", creator: read(AUTHOR, "Anonymous") });
+  let draft = $state({ body: "", tags: "" });
   let pendingDelete = null;
 
   function barClicked() {
@@ -286,8 +285,10 @@
 
   function submitAnnotation({ motivation, body, tags }) {
     if (!pending) return;
-    const creator = identity || draft.creator;
-    if (!identity) write(AUTHOR, creator);
+    // The name shown here is only a guess until the broadcast comes back: the
+    // server decides the real creator (the account name, or the per-document
+    // pseudonym), and never trusts anything this browser sends.
+    const creator = identity || doc.commenting_as || "Anonymous";
     const temp_id = crypto.randomUUID();
     const optimistic = {
       id: temp_id,
@@ -297,7 +298,7 @@
       motivation,
       body,
       tags,
-      creator: creator || "Anonymous",
+      creator,
       created: new Date().toISOString(),
       resolved: false,
       resolved_at: null,
@@ -308,7 +309,7 @@
     anchorAll(docText || "", [optimistic], docText === null ? null : docView);
     comments = [...comments, optimistic];
     applyHighlights();
-    sendAnnotation({ type: "comment", ...pending, motivation, body, tags, creator, temp_id });
+    sendAnnotation({ type: "comment", ...pending, motivation, body, tags, temp_id });
     pending = null;
   }
 
@@ -356,7 +357,9 @@
       { id: temp_id, body, creator: name || "Anonymous", created: new Date().toISOString(), temp_id },
     ];
     comments = comments;
-    sendAnnotation({ type: "reply", comment_id: comment.id, body, creator: name, temp_id });
+    // The server ignores a client-supplied creator for a reply too, so there
+    // is nothing to send here beyond what identifies the comment and its body.
+    sendAnnotation({ type: "reply", comment_id: comment.id, body, temp_id });
   }
 
   /* -------------------------------------------------------------------- room */
@@ -1447,7 +1450,7 @@
       send: (message) => room.send(message),
       onPeers: (count) => (peers = Math.max(peers, count)),
       onState: (state_) => (persistence = state_),
-      name: identity || read(AUTHOR, "Anonymous"),
+      name: identity || doc.commenting_as || "Anonymous",
       slug: SLUG,
       key: KEY,
       mayEdit,
@@ -1824,10 +1827,7 @@
 
     whoami().then((who) => {
       me = who;
-      if (who.name) {
-        draft.creator = who.name;
-        session?.rename(who.name);
-      }
+      if (who.name) session?.rename(who.name);
     });
 
     fetch(`/api/documents/${SLUG}`, { headers: keyHeaders(KEY) })
@@ -2039,7 +2039,7 @@
                  problem={historyProblem}
                  onshow={showCheckpoint} onback={backToNow} onname={nameCheckpoint} />
       {:else}
-        <Comments {comments} {figureAt} {identity} {canModerate} {tool} {went}
+        <Comments {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went}
                   hasFigures={figureAt.length > 0}
                   ontool={chooseTool}
                   onreveal={(comment) => tell({ type: "reveal", id: comment.id })}
@@ -2157,10 +2157,11 @@
           <a class="anchor" href={signInHref()}>Sign in</a> to comment on this document.
         </p>
       {:else}
-        <label class="label">
-          <span class="label-text">Name</span>
-          <input class="input" maxlength="80" bind:value={draft.creator} />
-        </label>
+        <!-- No name to type: the server hands out a per-document pseudonym for
+             an anonymous commenter, so this is only ever a statement. -->
+        <p class="text-surface-600-400 text-sm">
+          commenting as {doc.commenting_as || "Anonymous"}
+        </p>
       {/if}
       <label class="label">
         <span class="label-text">Comment</span>
@@ -2222,7 +2223,7 @@
       class="btn preset-filled-primary-500"
       onclick={() => { identifying = false; commenting = true; }}
     >
-      Enter a name
+      Continue as {doc.commenting_as || "Anonymous"}
     </button>
   {/snippet}
 </Modal>

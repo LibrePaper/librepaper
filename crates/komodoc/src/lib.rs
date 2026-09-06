@@ -18,6 +18,7 @@ mod http;
 mod latex;
 mod origins;
 pub mod paths;
+mod pseudonym;
 mod render;
 mod retention;
 mod room;
@@ -222,32 +223,26 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
-    /// Show or change who a document is shared with
+    /// Show or change how a document is shared
     Share {
         /// A full slug, or one of the short handles `list` prints
         id: String,
-        /// Name a GitHub account as an editor: they may edit the source and
-        /// the history, and delete any comment
-        #[arg(long, value_name = "LOGIN")]
-        editor: Option<String>,
-        /// Name a GitHub account as a commenter
-        #[arg(long, value_name = "LOGIN")]
-        commenter: Option<String>,
-        /// Mint a link carrying a role: 'commenter' or 'editor'. Its key is
-        /// printed once and never again
+        /// Mint or rotate the link carrying this role: 'read', 'comment', or
+        /// 'edit' (also accepted as 'reader', 'commenter', 'editor'). Minting
+        /// a role that already has a link replaces it, so the old one stops
+        /// working
         #[arg(long, value_name = "ROLE")]
         link: Option<String>,
-        /// What to call the new link, for telling reviewers apart
-        #[arg(long, value_name = "TEXT")]
-        label: Option<String>,
-        /// When the new link stops working, such as 180d; 'never' for no expiry
+        /// When the new link stops working, such as 30d; 'never' for no
+        /// expiry
         #[arg(long, value_name = "DURATION")]
         until: Option<String>,
         /// Who may read: 'link' (default), 'private', or 'listed'
         #[arg(long, value_name = "WHO")]
         visibility: Option<String>,
-        /// Take away a grant: a GitHub login, or a link's id
-        #[arg(long, value_name = "WHO")]
+        /// Turn off a role's link ('read', 'comment', or 'edit'), or take
+        /// away a legacy login
+        #[arg(long, value_name = "ROLE")]
         revoke: Option<String>,
         #[arg(long, value_name = "URL")]
         server: Option<String>,
@@ -383,10 +378,7 @@ pub async fn main() {
         }
         Command::Share {
             id,
-            editor,
-            commenter,
             link,
-            label,
             until,
             visibility,
             revoke,
@@ -395,10 +387,7 @@ pub async fn main() {
             cli::share_document(
                 &id,
                 server.unwrap_or_default(),
-                editor.unwrap_or_default(),
-                commenter.unwrap_or_default(),
                 link.unwrap_or_default(),
-                label.unwrap_or_default(),
                 until.unwrap_or_default(),
                 visibility.unwrap_or_default(),
                 revoke.unwrap_or_default(),
