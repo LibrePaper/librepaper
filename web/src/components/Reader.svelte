@@ -1138,6 +1138,7 @@
     if (request !== renderingRequest) return;
     const requestedSha = found.sha || null;
     rendering = requestedSha ? found : null;
+    renderingChecked = true;
     // Nothing this browser does produces a rendering, so the only way a newer
     // one turns up is that somebody else compiled. Asked again, slowly, until
     // what is shown is the text as it stands.
@@ -1179,10 +1180,40 @@
   const RENDERING_QUIET = 60_000;
   let heldRendering = null;
   let renderingTimer;
+  // Whether the server has been asked which rendering it has. `rendering`
+  // being null means either "asked, and none" or "not asked yet", and the
+  // first rendering rule below needs to tell the two apart.
+  let renderingChecked = false;
 
-  function holdRendering(name, bytes, synctex, current = true) {
+  // Whether nobody has rendered this document yet, which is the one case the
+  // quiet minute buys nothing: readers have no pages at all, and a compile
+  // that succeeded is worth more to them now than a quieter one in a minute.
+  // Asked of the server once if this page has not already asked.
+  async function noRenderingYet() {
+    if (rendering) return false;
+    if (renderingChecked) return true;
+    const found = await fetch(`/api/documents/${SLUG}/renderings/latest`, {
+      headers: { ...SHELL_HEADERS, ...keyHeaders(KEY) },
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null);
+    if (!found) return false; // unknown is not "none"; the quiet rule applies
+    renderingChecked = true;
+    return !found.sha;
+  }
+
+  async function holdRendering(name, bytes, synctex, current = true) {
     clearTimeout(renderingTimer);
     heldRendering = { name, bytes, synctex, current };
+    // A document's first rendering is stored at once; every later one waits
+    // for the text to stay quiet. An edit while the question is being asked
+    // drops the held rendering, and what is stored then is nothing, which
+    // is right: the next compile holds its own.
+    if (current && (await noRenderingYet())) {
+      storeHeldRendering();
+      return;
+    }
+    if (!heldRendering) return;
     renderingTimer = setTimeout(storeHeldRendering, RENDERING_QUIET);
   }
 

@@ -9,8 +9,10 @@ and `web/src/lib/pdf/` draw a PDF with comments anchored into its text layer,
 is the card, and the renderings routes in `crates/komodoc/src/server.rs` with
 their storage and pruning in `crates/komodoc/src/room.rs` are what readers
 see, with `crates/komodoc/src/tests/renderings.rs`. The reader stores a
-rendering after the quiet minute or on naming a checkpoint, and shows everyone
-else the newest one there is. What remains is SyncTeX and the optional local
+document's first rendering the moment a compile succeeds, since the quiet
+minute buys readers nothing when they have no pages at all, every later one
+after the quiet minute or on naming a checkpoint, and shows everyone else the
+newest one there is. What remains is SyncTeX and the optional local
 command. Neither is required for the project to have LaTeX: an author has an
 editor with comments, and readers have renderings, without them.
 

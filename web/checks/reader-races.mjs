@@ -298,3 +298,44 @@ for (const outcome of ["same", "recreated", "disconnected"]) {
   assert.equal(sent.length, outcome === "same" ? 1 : 0);
   assert.equal(reloads, outcome === "recreated" ? 1 : 0);
 }
+
+// A document's first rendering is stored the moment a compile succeeds; every
+// later one waits for the quiet minute. The server is asked once whether a
+// rendering exists, and an edit while it is being asked drops what was held.
+{
+  const holdRendering = body("  async function noRenderingYet()", "  function dropHeldRendering()");
+  const run = async ({ rendering, latest, current = true, editDuringAsk = false }) => {
+    const stored = [];
+    const timers = [];
+    let asked = 0;
+    const ctx = context({
+      rendering, renderingChecked: false, heldRendering: null, renderingTimer: null,
+      RENDERING_QUIET: 60_000, SLUG: "doc", KEY: "", SHELL_HEADERS: {}, keyHeaders: () => ({}),
+      storeHeldRendering: () => stored.push(ctx.heldRendering),
+      fetch: async () => {
+        asked++;
+        if (editDuringAsk) ctx.heldRendering = null;
+        return { ok: true, json: async () => latest };
+      },
+      setTimeout: (_fn, ms) => timers.push(ms),
+    });
+    vm.runInContext(holdRendering, ctx);
+    await vm.runInContext(`holdRendering("sha1", new ArrayBuffer(4), null, ${current})`, ctx);
+    return { stored, timers, asked };
+  };
+  const first = await run({ rendering: null, latest: { live: "sha1" } });
+  assert.equal(first.stored.length, 1, "the first rendering is stored at once");
+  assert.equal(first.stored[0]?.name, "sha1");
+  assert.equal(first.timers.length, 0);
+  const later = await run({ rendering: null, latest: { live: "sha1", sha: "sha0" } });
+  assert.equal(later.stored.length, 0, "a document with a rendering waits for the quiet minute");
+  assert.deepEqual(later.timers, [60_000]);
+  const known = await run({ rendering: { sha: "sha0" }, latest: { live: "sha1" } });
+  assert.equal(known.asked, 0, "a rendering this page already knows of is not asked about");
+  assert.deepEqual(known.timers, [60_000]);
+  const stale = await run({ rendering: null, latest: { live: "sha1" }, current: false });
+  assert.equal(stale.stored.length, 0, "a compile of a text that has moved on is never the first rendering");
+  const edited = await run({ rendering: null, latest: { live: "sha1" }, editDuringAsk: true });
+  assert.equal(edited.stored[0], null, "an edit while asking drops what was held");
+}
+console.log("reader-races: the first rendering is stored at once, later ones after the quiet minute");
