@@ -3,7 +3,6 @@
   import PanelHeader from "./PanelHeader.svelte";
   import Modal from "./Modal.svelte";
   import { getPrivate, post } from "../lib/api.js";
-  import IconButton from "./IconButton.svelte";
 
   let { open = $bindable(false), slug, onvisibility, onclose, inline = false } = $props();
   let sharing = $state(null);
@@ -192,11 +191,7 @@
 
 {#if inline}
   <section class="panel share-sidebar" aria-label="Share document">
-    <PanelHeader title="Share">
-      {#snippet actions()}
-      <IconButton icon="x" label="Close sharing" tone="plain" size="btn-icon-sm" onclick={() => { open = false; onclose?.(); }} />
-      {/snippet}
-    </PanelHeader>
+    <PanelHeader title="Share" />
     {@render content()}
   </section>
 {:else}

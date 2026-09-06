@@ -242,7 +242,7 @@ window.shareSidebarCheck = async () => {
   navigator.clipboard.writeText = writeClipboard;
   button('Copy Read link').click(); await flush();
   check(!button('Link to copy manually'), 'successful copy hides manual fallback');
-  check(button('Close sharing'), 'sidebar offers close control');
+  check(!button('Close sharing'), 'sharing uses the activity rail to close like other sidebars');
   return true;
 };
 
