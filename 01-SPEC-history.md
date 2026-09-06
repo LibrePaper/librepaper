@@ -5,9 +5,13 @@ holds the document as a `yrs::Doc`, persists it, takes checkpoints, and serves
 readers who render from the live source; `komodoc/src/session.rs`,
 `komodoc/src/room.rs`, `komodoc/src/history.rs` and `web/src/lib/collab.js` are
 the record of it, with the tests in `komodoc/src/tests/` and `make smoke`.
-What remains is steps 5 to 10 below: the timeline, the checkpoint fields on a
-comment, the response export, the word-level diff, restore, and git
-provenance. Each of them reads the manifest the server already writes.
+The timeline is built too, and so are the checkpoint fields on a comment and
+the response export -- steps 5 to 7, whose record is `komodoc/src/export.rs`,
+`web/src/lib/history.js`, `web/src/lib/passages.js` and
+`web/src/components/History.svelte`, with `komodoc/src/tests/timeline.rs` and
+the two checks under `web/scripts/`. What remains is steps 8 to 10 below: the
+word-level diff, restore, and git provenance. Each of them reads the manifest
+the server already writes.
 
 ## What the remaining work builds on
 
@@ -222,14 +226,14 @@ checkpoint, so the author can find it; it is not a way to push or pull.
 
 ## Steps
 
-5. **The timeline.** The label `PATCH`, `komodoc history` and `komodoc
-   label`, the panel, viewing a checkpoint. `GET .../history` exists
-   already, and every entry carries `changed`, the paths whose digest
-   differs from the parent's: a document is a directory now, so the panel
-   lists what moved and puts a per-file diff (step 8) behind each path.
-6. **Comments know their checkpoint.** The two fields, set in `apply`, in
-   both exports. The passage-then-and-now line on the card.
-7. **The response export.** `--format response` and `--since`.
+5 to 7 are built: the timeline and its panel, the two checkpoint fields on a
+comment, and the response export. Two things the spec asked for above are not
+in them, and both wait on step 8. The panel lists a checkpoint but does not put
+a per-file diff behind each changed path, and neither the comment card nor the
+response says what replaced a passage -- only whether it is still there, and
+the moment it stopped being there, which is what the anchoring can answer on
+its own.
+
 8. **What changed since.** The word-level diff is built, as the
    `komodoc-text` crate (`text/`), which `komodoc sync`'s merge also uses;
    what remains is its WASM export from the engine, the list beside the
@@ -238,8 +242,7 @@ checkpoint, so the author can find it; it is not a way to push or pull.
    `komodoc restore`, restore as a server-side diff into the document.
 10. **Provenance.** The git fields from `publish` and `sync`.
 
-5 to 7 are a day each and 7 is the one to demonstrate. 8 and 9 are the
-browser work and take longer. 10 can go anywhere.
+8 and 9 are the browser work and take longer. 10 can go anywhere.
 
 Git provenance, in step 10: when `publish` or `sync` runs inside a git
 repository, the checkpoint it causes records the commit the working tree was
