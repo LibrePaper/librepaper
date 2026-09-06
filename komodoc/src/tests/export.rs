@@ -247,3 +247,152 @@ fn short_ids_keep_short_slugs_whole() {
     );
     assert_eq!(ids["cv"], "cv");
 }
+
+/* ---------------------------------------------------- the response to reviewers */
+
+fn a_review() -> Vec<Comment> {
+    vec![
+        Comment {
+            id: "a".into(),
+            seq: 1,
+            motivation: "commenting".into(),
+            exact: "with 95% probability, the true value lies in the interval".into(),
+            body: "The confidence interval does not say that.".into(),
+            creator: "annegrandchamp".into(),
+            created: "2026-09-05T16:40:03Z".into(),
+            revision: "c07e1aa".repeat(10)[..64].to_string(),
+            resolved: true,
+            resolved_at: Some("2026-09-05T17:02:19Z".into()),
+            resolved_in: "d1e0f42".repeat(10)[..64].to_string(),
+            replies: vec![Reply {
+                id: "r".into(),
+                body: "Fixed as suggested; see also the new footnote.".into(),
+                creator: "Vincent".into(),
+                created: "2026-09-05T17:00:00Z".into(),
+                author: String::new(),
+            }],
+            ..Comment::default()
+        },
+        Comment {
+            id: "b".into(),
+            seq: 2,
+            motivation: "commenting".into(),
+            exact: "the estimator is unbiased".into(),
+            body: "Under what assumptions?".into(),
+            creator: "annegrandchamp".into(),
+            created: "2026-09-05T16:45:00Z".into(),
+            revision: "c07e1aa".repeat(10)[..64].to_string(),
+            ..Comment::default()
+        },
+        Comment {
+            id: "c".into(),
+            seq: 3,
+            motivation: "commenting".into(),
+            exact: "the estimator is unbiased".into(),
+            body: "Agreed with the other reviewer.".into(),
+            creator: "Reviewer Two".into(),
+            created: "2026-09-06T09:00:00Z".into(),
+            revision: "d1e0f42".repeat(10)[..64].to_string(),
+            ..Comment::default()
+        },
+    ]
+}
+
+/// The response is a document an author edits, not a log: grouped by reviewer,
+/// numbered within each, with the passage as the reviewer saw it and what
+/// became of it, and the thread underneath as the answer.
+#[test]
+fn the_response_is_grouped_by_reviewer_and_says_what_became_of_the_passage() {
+    let comments = a_review();
+    // The document as it now stands: the second passage survives, the first
+    // was rewritten.
+    let now = "The interval covers the true value in 95% of repeated samples. \
+               Under the stated assumptions the estimator is unbiased.";
+    let out = crate::export::render_response(
+        "My Paper",
+        &comments,
+        "https://komodoc.example.org/docs/c9k",
+        &Configuration::default(),
+        now,
+    );
+
+    assert!(out.contains("## Reviewer: annegrandchamp"), "{out}");
+    assert!(out.contains("## Reviewer: Reviewer Two"), "{out}");
+    // Numbered within a reviewer, so the author can answer "your point 2".
+    assert!(
+        out.contains("### 1. commenting, resolved in d1e0f42"),
+        "{out}"
+    );
+    assert!(out.contains("### 2. commenting\n"), "{out}");
+    // The reviewer's remark, then the passage as they saw it.
+    assert!(
+        out.contains("> The confidence interval does not say that."),
+        "{out}"
+    );
+    assert!(
+        out.contains("**Then:** “with 95% probability, the true value lies in the interval”"),
+        "{out}"
+    );
+    // And what became of it: one passage is gone, the other is as it was.
+    assert!(out.contains("**Now:** no longer in the document."), "{out}");
+    assert!(out.contains("**Now:** unchanged."), "{out}");
+    // The thread is the response, and the replier is named, because a thread
+    // can carry another reviewer's words as well as the author's.
+    assert!(
+        out.contains("**Vincent:** Fixed as suggested; see also the new footnote."),
+        "{out}"
+    );
+    // Each reviewer's numbering starts again, which is what "grouped by
+    // reviewer" has to mean for the numbers to be usable.
+    let two = out
+        .split("## Reviewer: Reviewer Two")
+        .nth(1)
+        .expect("a section");
+    assert!(two.contains("### 1. commenting"), "{two}");
+}
+
+/// Without a rendering of the current document there is nothing honest to say
+/// about the passage now, so nothing is said. A LaTeX paper is the case:
+/// its compiler is in a browser and not in this binary.
+#[test]
+fn the_response_leaves_now_out_when_it_cannot_render_the_document() {
+    let out = crate::export::render_response(
+        "My Paper",
+        &a_review(),
+        "urn:komodoc:test",
+        &Configuration::default(),
+        "",
+    );
+    assert!(out.contains("**Then:**"), "{out}");
+    assert!(!out.contains("**Now:**"), "{out}");
+}
+
+/// `--since` is a question about the timeline: which comments were made at or
+/// after one checkpoint. A comment from before checkpoints were recorded on
+/// one is read as made on the oldest moment the manifest still has.
+#[test]
+fn since_keeps_the_comments_made_at_or_after_a_checkpoint() {
+    let checkpoints: Vec<Value> = ["c07e1aa", "d1e0f42", "e2f0a55"]
+        .iter()
+        .map(|stem| serde_json::json!({"sha": stem.repeat(10)[..64].to_string()}))
+        .collect();
+    let second = crate::http::text(&checkpoints[1], "sha");
+
+    let kept = crate::export::since(a_review(), &checkpoints, &second);
+    assert_eq!(kept.len(), 1, "kept {kept:?}");
+    assert_eq!(kept[0].id, "c");
+
+    // From the oldest, everything -- including a comment with no checkpoint at
+    // all, which is read as made on that oldest moment.
+    let mut older = a_review();
+    older[0].revision = String::new();
+    let first = crate::http::text(&checkpoints[0], "sha");
+    assert_eq!(crate::export::since(older, &checkpoints, &first).len(), 3);
+
+    // A checkpoint the manifest does not have filters nothing away, rather
+    // than silently emptying the document somebody asked for.
+    assert_eq!(
+        crate::export::since(a_review(), &checkpoints, "nowhere").len(),
+        3
+    );
+}

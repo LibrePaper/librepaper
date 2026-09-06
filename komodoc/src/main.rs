@@ -264,13 +264,16 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
-    /// Annotations as W3C JSON-LD or markdown
+    /// Annotations as W3C JSON-LD, markdown, or a response to reviewers
     Export {
         /// A full slug, or one of the short handles `list` prints
         id: String,
-        /// jsonld (W3C Web Annotation) or markdown
+        /// jsonld (W3C Web Annotation), markdown, or response
         #[arg(long, value_name = "FORMAT", default_value = "jsonld")]
         format: String,
+        /// Only comments made at or after this checkpoint, as `history` prints it
+        #[arg(long, value_name = "SHA")]
+        since: Option<String>,
         /// File to write; defaults to standard output
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
@@ -396,6 +399,7 @@ async fn main() {
         Command::Export {
             id,
             format,
+            since,
             out,
             server,
         } => {
@@ -404,6 +408,7 @@ async fn main() {
                 server.unwrap_or_default(),
                 &format,
                 out.unwrap_or_default(),
+                since.unwrap_or_default(),
             )
             .await
         }
