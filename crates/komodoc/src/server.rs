@@ -808,6 +808,10 @@ async fn handle(
         set(&mut response, "content-type", served.content_type);
         set(&mut response, "cache-control", served.cache_control);
         set(&mut response, "x-content-type-options", "nosniff");
+        // The name the engine keeps a TeX Live file under; see `Served`.
+        if let Some(id) = &served.file_id {
+            set(&mut response, "fileid", id);
+        }
         return response;
     }
 

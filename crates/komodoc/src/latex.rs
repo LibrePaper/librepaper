@@ -58,6 +58,13 @@ pub struct Served {
     pub bytes: Vec<u8>,
     pub content_type: &'static str,
     pub cache_control: &'static str,
+    /// The name the engine keeps a TeX Live file under in its own
+    /// filesystem, sent as the `fileid` header on a file asked for by name.
+    /// It has to be stable for the same bytes and distinct for different
+    /// ones, which the digest in the file's own path already is; without it
+    /// the engine files every package under the same null name, and a class
+    /// read back after a font definition is whatever was written last.
+    pub file_id: Option<String>,
 }
 
 impl Mirror {
@@ -166,7 +173,11 @@ impl Mirror {
         if let Some(key) = package_key(&path) {
             return match self.resolve(&key).await {
                 Resolved::File(url) => match safe_path(&url) {
-                    Some(url) if package_key(&url).is_none() => self.fetch(&url).await,
+                    Some(url) if package_key(&url).is_none() => {
+                        let mut served = self.fetch(&url).await;
+                        served.file_id = file_id(&url);
+                        served
+                    }
                     _ => absent(),
                 },
                 Resolved::NotThere => absent(),
@@ -272,6 +283,7 @@ impl Mirror {
                     bytes,
                     content_type,
                     cache_control,
+                    file_id: None,
                 },
                 Err(_) => missing(),
             },
@@ -285,6 +297,7 @@ impl Mirror {
                         bytes: b"the LaTeX mirror is unreachable".to_vec(),
                         content_type: "text/plain; charset=utf-8",
                         cache_control: "no-store",
+                        file_id: None,
                     };
                 };
                 // The upstream's own answer, passed through: a 403 on a bucket
@@ -297,6 +310,7 @@ impl Mirror {
                         bytes,
                         content_type: "text/plain; charset=utf-8",
                         cache_control: "no-store",
+                        file_id: None,
                     };
                 }
                 Served {
@@ -304,6 +318,7 @@ impl Mirror {
                     bytes,
                     content_type,
                     cache_control,
+                    file_id: None,
                 }
             }
         }
@@ -316,6 +331,7 @@ fn missing() -> Served {
         bytes: b"not found".to_vec(),
         content_type: "text/plain; charset=utf-8",
         cache_control: "no-store",
+        file_id: None,
     }
 }
 
@@ -328,6 +344,7 @@ fn absent() -> Served {
         bytes: b"no such file".to_vec(),
         content_type: "text/plain; charset=utf-8",
         cache_control: "no-store",
+        file_id: None,
     }
 }
 
@@ -337,6 +354,7 @@ fn unreachable() -> Served {
         bytes: b"the LaTeX mirror is unreachable".to_vec(),
         content_type: "text/plain; charset=utf-8",
         cache_control: "no-store",
+        file_id: None,
     }
 }
 
@@ -368,6 +386,16 @@ const INDEX_REFRESH: Duration = Duration::from_secs(30);
 fn indexes() -> &'static Mutex<HashMap<String, Arc<Index>>> {
     static INDEXES: OnceLock<Mutex<HashMap<String, Arc<Index>>>> = OnceLock::new();
     INDEXES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The engine's name for a file's bytes, from the digested path that holds
+/// them: the sixteen hex digits before the dash, which name the bytes and
+/// nothing else.
+fn file_id(url: &str) -> Option<String> {
+    let name = url.rsplit('/').next()?;
+    let (digest, _) = name.split_once('-')?;
+    (digest.len() == 16 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| digest.to_string())
 }
 
 /// The engine's name for a file, if this is a request for one: four
@@ -507,6 +535,9 @@ mod tests {
         assert_eq!(served.status, 200);
         assert_eq!(served.bytes, b"\\ProvidesClass");
         assert_eq!(served.cache_control, "public, max-age=31536000, immutable");
+        // The engine files it under this name, so it must be there and must
+        // name the bytes rather than the request.
+        assert_eq!(served.file_id.as_deref(), Some("b20a30ef79872ed1"));
 
         for name in [
             "packages/pdftex/26/nothere.sty",
