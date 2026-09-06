@@ -7,6 +7,8 @@
   import * as diagnosticsRule from "../lib/diagnostics.js";
   import * as collab from "../lib/collab.js";
   import * as figures from "../lib/figures.js";
+  import * as history from "../lib/history.js";
+  import * as passages from "../lib/passages.js";
   import { openRoom } from "../lib/room.js";
   import {
     SHELL_HEADERS,
@@ -43,6 +45,7 @@
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
   import Sidebar from "./Sidebar.svelte";
+  import History from "./History.svelte";
   import Files from "./Files.svelte";
 
   const SLUG = location.pathname.split("/").pop();
@@ -144,6 +147,7 @@
     anchorAll(docText, comments.filter((comment) => !comment.region), docView);
     comments = comments;
     applyHighlights();
+    tracePassages();
   }
 
   function fromFrame(message) {
@@ -498,6 +502,136 @@
     return doc.title || (await renderers.titleOf(tree)) || "Untitled";
   }
 
+  /* --------------------------------------------------------- the timeline */
+
+  // What this document used to say, and when. The manifest is fetched when the
+  // panel is opened and not before: a reader who never asks for the history
+  // costs no request for it.
+  let historyOpen = $state(false);
+  let checkpoints = $state([]);
+  let historyProblem = $state("");
+  // The checkpoint being shown in the document pane, whole -- its tree and its
+  // texts -- or null for the document as it stands.
+  let viewing = $state(null);
+  // Which checkpoint the reader arrived asking for, out of the link somebody
+  // sent them. Read once, because after that the panel is where the answer is.
+  const ARRIVED_AT = new URLSearchParams(location.search).get("at") || "";
+
+  async function loadHistory() {
+    try {
+      checkpoints = await history.load(SLUG, keyHeaders(KEY));
+      historyProblem = "";
+    } catch (error) {
+      historyProblem = error.message || "the history could not be read";
+    }
+  }
+
+  // Closing the timeline is leaving it: what the document pane shows goes back
+  // to the text as it stands, because a page nobody can see the history behind
+  // is a page with no way back.
+  function closeHistory() {
+    historyOpen = false;
+    backToNow();
+  }
+
+  async function toggleHistory() {
+    if (historyOpen) return closeHistory();
+    historyOpen = true;
+    commentsOpen = false;
+    await loadHistory();
+  }
+
+  // A checkpoint as a renderer takes it. Its texts came with it; its figures
+  // did not, because a figure is served immutably by its digest and the ones
+  // this checkpoint used may well be the ones on the screen already.
+  function checkpointTree(point) {
+    const digests = {};
+    for (const [path, file] of Object.entries(point.files || {})) {
+      if (file.kind !== "text") digests[path] = file.sha;
+    }
+    return { main: point.main, texts: point.texts || {}, digests };
+  }
+
+  async function showCheckpoint(sha) {
+    try {
+      viewing = await history.checkpoint(SLUG, sha, keyHeaders(KEY));
+      historyProblem = "";
+    } catch (error) {
+      historyProblem = error.message || "that checkpoint could not be read";
+      return;
+    }
+    await paintPreview();
+  }
+
+  function backToNow() {
+    if (!viewing) return;
+    viewing = null;
+    paintPreview();
+  }
+
+  async function nameCheckpoint(sha, given) {
+    try {
+      await history.label(SLUG, sha, given, keyHeaders(KEY));
+    } catch (error) {
+      toastProblem(error.message || "that checkpoint could not be named");
+      return;
+    }
+    await loadHistory();
+    // The bar over the document says what it is showing by name, so a rename
+    // of the checkpoint on the screen has to reach it too.
+    if (viewing?.sha === sha) viewing = { ...viewing, label: given };
+  }
+
+  // The link to a moment: the document's own link with the checkpoint on it.
+  // A query rather than a fragment, because the fragment is where a link key
+  // travels and the two must not have to share.
+  function checkpointLink(sha) {
+    const link = new URL(linkFor(SLUG));
+    link.searchParams.set("at", sha);
+    return link.href;
+  }
+
+  /* -------------------------------------------- the passage, then and now */
+
+  // Where each orphaned comment's passage went, by comment id: the manifest
+  // entry at which it stopped being found. This is what replaces "Needs
+  // re-anchoring" on the card, which told the person who wrote the comment
+  // nothing they did not already know.
+  let went = $state({});
+  // The comments already looked into, so a repaint does not search again for
+  // an answer that has not changed.
+  const traced = new Set();
+
+  // A document with nothing orphaned costs nothing at all: no manifest, no
+  // renders. The first passage that has gone is what buys the manifest, and
+  // every comment after it is answered from the same list.
+  async function tracePassages() {
+    const lost = comments.filter(
+      (comment) => comment.orphaned && !comment.region && !traced.has(comment.id),
+    );
+    if (!lost.length || viewing) return;
+    for (const comment of lost) traced.add(comment.id);
+    if (!checkpoints.length) await loadHistory();
+    const list = checkpoints;
+    if (!list.length) return;
+    for (const comment of lost) {
+      try {
+        const point = await passages.wentAt(SLUG, comment, list, keyHeaders(KEY));
+        if (point) went = { ...went, [comment.id]: point };
+      } catch {
+        // A checkpoint that cannot be read or rendered is one this cannot say
+        // anything about, and the card falls back to saying the passage is
+        // not in the document -- which is still true and still useful.
+      }
+    }
+  }
+
+  // What the bar over the document calls what it is showing: the name somebody
+  // gave the moment, or the digest, which is the name it has anyway.
+  const viewingName = $derived(
+    !viewing ? "" : viewing.label || history.shortSha(viewing.sha),
+  );
+
   // The document as a renderer takes it: every text in it, the figures by
   // digest, and which file is the document. A compiler given only the main
   // file produces the error a reader would otherwise be shown.
@@ -509,6 +643,11 @@
   // what is rendered before the maps land and what is rendered after are the
   // same document under the same title.
   function treeNow() {
+    // A checkpoint picked out of the timeline is shown in the document pane in
+    // place of the live text. Everything downstream -- the render, the frame,
+    // the agent, the anchoring -- is the same as for the live document,
+    // because to all of it a checkpoint is just another directory.
+    if (viewing) return checkpointTree(viewing);
     if (!session) return { main: "", texts: {}, digests: {} };
     const tree = session.tree();
     if (tree.main) return tree;
@@ -585,7 +724,13 @@
   // arrives there is the empty shell, so this page paints it whatever its
   // format -- and an HTML document's own scripts do not run, because painting
   // sets innerHTML. A document that needs them is one to share by link.
-  const paintsTheFrame = $derived(editing || sourceFormat !== "html" || visibility === "private");
+  //
+  // And a checkpoint is always painted, whatever the format: the frame is
+  // served from the live document, so there is nothing on the documents origin
+  // that is the document as it was on Tuesday.
+  const paintsTheFrame = $derived(
+    Boolean(viewing) || editing || sourceFormat !== "html" || visibility === "private",
+  );
 
   // What the frame was showing the last time it was loaded, so a reload
   // happens when the document has changed and not merely because somebody's
@@ -775,7 +920,17 @@
   let width = $state(innerWidth);
 
   // What every measurement below is made against.
-  const panes = $derived({ layout, comments: commentsOpen, editing, sourceSide, sizes, width });
+  // The column to the right holds one of two things -- the comments or the
+  // timeline -- so what the layout needs to know is whether it is there, not
+  // which of them is in it.
+  const panes = $derived({
+    layout,
+    comments: commentsOpen || historyOpen,
+    editing,
+    sourceSide,
+    sizes,
+    width,
+  });
   const shown = $derived(showing(panes));
 
   // What the reader asked for is kept; what fits is worked out again every
@@ -817,6 +972,9 @@
 
   function toggleComments() {
     commentsOpen = !commentsOpen;
+    // The two share a column, so showing one puts the other away rather than
+    // stacking them or splitting what is already the narrowest pane.
+    if (commentsOpen && historyOpen) closeHistory();
   }
 
   /* ------------------------------------------------------------------- boot */
@@ -1063,6 +1221,12 @@
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
     if (mayEdit) startEditing();
+    // Somebody sent a link to a moment rather than to the document. Opening it
+    // opens the panel too, so that what is on the screen is explained by
+    // something the reader can see and leave.
+    if (ARRIVED_AT) {
+      toggleHistory().then(() => showCheckpoint(ARRIVED_AT));
+    }
   }
 
   // The socket is up or down. A socket that comes back has to rejoin: the
@@ -1227,6 +1391,13 @@
             </Menu>
           {/if}
           <IconButton
+            icon="history"
+            label="Show or hide the history"
+            title="History"
+            pressed={historyOpen}
+            onclick={toggleHistory}
+          />
+          <IconButton
             icon="message-square"
             label="Show or hide the comments"
             title="Comments"
@@ -1235,6 +1406,22 @@
           />
         {/snippet}
       </ControlGroup>
+      <!-- The bar over an old version. It says which one is showing, because a
+           document that is not the current one and does not say so is a way to
+           quote something that was withdrawn a month ago; and it offers the
+           way out, and the link that puts somebody else where the reader is.
+           Naming lives on every row of the panel rather than only on this one,
+           which is the same offer in a better place. -->
+      {#if viewing}
+        <small class="badge preset-tonal-warning whitespace-nowrap">
+          Showing {viewingName} · {new Date(viewing.at).toLocaleString()}
+        </small>
+        <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
+                onclick={backToNow}>
+          Back to now
+        </button>
+        <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
+      {/if}
       {#if editing}
         <!-- There is no save. What the toolbar says instead is whether this
              browser's work has reached the server, which is a different
@@ -1348,15 +1535,21 @@
            away={!shown.document} />
 
   {#if shown.comments}
-    <Grip pane={PANES.sidebar} label="Resize the comment pane" panes={panes}
+    <Grip pane={PANES.sidebar} label="Resize the right-hand column" panes={panes}
           onsize={(size) => setSize(PANES.sidebar, size)}
           onguide={(where) => (guide = where)}
           ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }} />
-    <Sidebar {comments} {figureAt} {identity} {canModerate} {tool}
-             hasFigures={figureAt.length > 0}
-             ontool={chooseTool}
-             onreveal={(comment) => tell({ type: "reveal", id: comment.id })}
-             onresolve={resolve} ondelete={askDelete} onreply={reply} />
+    {#if historyOpen}
+      <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
+               problem={historyProblem}
+               onshow={showCheckpoint} onback={backToNow} onname={nameCheckpoint} />
+    {:else}
+      <Sidebar {comments} {figureAt} {identity} {canModerate} {tool} {went}
+               hasFigures={figureAt.length > 0}
+               ontool={chooseTool}
+               onreveal={(comment) => tell({ type: "reveal", id: comment.id })}
+               onresolve={resolve} ondelete={askDelete} onreply={reply} />
+    {/if}
   {/if}
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer

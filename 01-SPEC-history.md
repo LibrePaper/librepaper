@@ -1,17 +1,21 @@
 # SPEC: history, as a document that is never lost
 
-Status: the foundation is built and is no longer described here. The server
-holds the document as a `yrs::Doc`, persists it, takes checkpoints, and serves
-readers who render from the live source; `komodoc/src/session.rs`,
-`komodoc/src/room.rs`, `komodoc/src/history.rs` and `web/src/lib/collab.js` are
-the record of it, with the tests in `komodoc/src/tests/` and `make smoke`.
-What remains is steps 5 to 10 below: the timeline, the checkpoint fields on a
-comment, the response export, the word-level diff, restore, and git
-provenance. Each of them reads the manifest the server already writes.
+Status: the foundation and the timeline are built and are no longer
+described here. The server holds the document as a `yrs::Doc`, persists it,
+takes checkpoints, and serves readers who render from the live source;
+`komodoc/src/session.rs`, `komodoc/src/room.rs`, `komodoc/src/history.rs`
+and `web/src/lib/collab.js` are the record of it. The timeline panel, the
+checkpoint fields on a comment and the response export are
+`komodoc/src/export.rs`, `web/src/lib/history.js`,
+`web/src/lib/passages.js` and `web/src/components/History.svelte`, with
+`komodoc/src/tests/timeline.rs` and the two checks under `web/scripts/`.
+What remains is steps 8 to 10 below: the word-level diff in the browser,
+restore, and git provenance. Each of them reads the manifest the server
+already writes.
 
 ## What the remaining work builds on
 
-The parts of the built foundation the steps below depend on, kept here
+The parts of what is built that the steps below depend on, kept here
 because other specs cite them.
 
 | key | contents | who may read |
@@ -39,18 +43,20 @@ A manifest entry:
 
 `why` is one of `quiet`, `left`, `comment`, `cli`, `sync`, `restore`,
 `label`, and `recovered` for one the manifest lost and a later checkpoint
-found. `label` is empty until somebody sets one; `commit` and `dirty` are
-recorded as sent and checked only for shape, and step 10 is what sends them.
-`changed` lists the paths whose digest differs from the parent's. The chain
-is linear: a restore has the current checkpoint as `parent` and an old one's
-bytes.
+found. `label` is set by a `PATCH` to the entry, from the panel or `komodoc
+label`; `commit` and `dirty` are recorded as sent and checked only for
+shape, and step 10 is what sends them. `changed` lists the paths whose
+digest differs from the parent's. The chain is linear: a restore has the
+current checkpoint as `parent` and an old one's bytes.
 
-`GET /api/documents/<slug>/history` returns the manifest to anyone who may
-read the document. Over the socket, `y-checkpoint` with a `why` of `sync`,
-`restore` or `label` takes a checkpoint on request and answers with its SHA,
-and `Room::restore` diffs a checkpoint's tree into the live Yjs document so
-a tab typing at that moment keeps its words; neither has a route, a command
-or a button yet.
+`GET /api/documents/<slug>/history` returns the manifest and `GET
+.../history/<sha>` a checkpoint, to anyone who may read the document;
+`komodoc history` prints the one and the panel fetches the other on demand.
+Over the socket, `y-checkpoint` with a `why` of `sync`, `restore` or
+`label` takes a checkpoint on request and answers with its SHA, and
+`Room::restore` diffs a checkpoint's tree into the live Yjs document so a
+tab typing at that moment keeps its words; restore has no route, command or
+button yet.
 
 The order of writes at a checkpoint is the checkpoint object, then the
 session state, then the index entry, then the manifest, so that a manifest
@@ -59,65 +65,16 @@ checkpoint from outside the room is deferred if one was taken within the last
 thirty seconds, so a burst of saves is one mark. Quota is shed from the
 oldest unlabelled checkpoint, then the oldest labelled, never the newest.
 
-## Comments know their checkpoint
-
-Two fields on `Comment`, both set by the server in `apply`, never by the
-client:
-
-- `revision`: the SHA of the checkpoint the comment was made on, which is
-  the checkpoint `apply` takes or finds current.
-- `resolved_in`: the SHA current when it was resolved, alongside
-  `resolved_at`.
-
-A comment from before the fields existed has neither, and is treated as made
-on the oldest checkpoint the manifest knows. Both fields travel in the
-JSON-LD export as extra properties, which the Web Annotation model permits
-and the export already relies on for `resolved`.
-
-With these, a comment's passage can be looked up in any checkpoint's text
-by the match that anchors it in the reader: the browser renders the
-checkpoint, takes the visible text the way the agent does, and searches it.
-Found at its own checkpoint, followed forward until the checkpoint where it
-stops being found, and quoted from the current text if it is still there.
-That lookup is the primitive under everything in the next section, and it
-runs entirely in the browser, from the manifest and the checkpoints it
-fetches on demand.
+A comment carries `revision`, the SHA of the checkpoint it was made on, and
+`resolved_in`, the SHA current when it was resolved, both set by the server
+and both in the exports. With them the browser looks a comment's passage up
+in any checkpoint's visible text, the way the agent takes it, and follows it
+forward to the checkpoint where it stops being found. That lookup is what
+the card's "then and now" line and the response export run on, and it
+answers whether a passage is still there and when it went. It does not say
+what replaced it: that is the word-level diff, and it is step 8.
 
 ## What is built on it
-
-In the order they are worth having.
-
-### The timeline
-
-`komodoc history c9k` prints the manifest:
-
-```
-sha      at                    by                  why      label
-8b03d77  2026-09-03 09:12:40   vincentarelbundock  cli
-4f2a91c  2026-09-05 14:02:11   vincentarelbundock  sync     sent to the journal
-c07e1aa  2026-09-05 16:40:03   annegrandchamp      comment
-d1e0f42  2026-09-05 17:02:19   vincentarelbundock  left     *
-```
-
-In the reader, a `history` button in the toolbar, in reading and editing
-alike, opens a panel listing checkpoints by day, newest first, with the
-author and the reason, labelled ones standing out, and runs of unlabelled
-checkpoints by one person folded to their first and last. Selecting one
-shows it in the document pane, read-only, with a bar saying which
-checkpoint is showing and offering "Back to now", "Restore", "Name this
-point" and "Copy link". A label is a `PATCH` to the manifest entry, for
-editors, from the panel or from `komodoc label c9k 4f2a91c "sent to the
-journal"`.
-
-### The passage, then and now
-
-Every comment card gains one line when the passage has changed since the
-comment was made: what it said then, what it says now, or that it is gone,
-with the checkpoint where it went. This replaces the badge as the answer to
-"Needs re-anchoring": the comment is still shown as needing a home, but the
-reader can see what happened to the passage instead of guessing. A document
-with no changed passages costs one request for the manifest and nothing
-more.
 
 ### What changed since
 
@@ -138,40 +95,11 @@ painting a diff into rendered HTML is a research problem and painting it
 into a typst document is not possible, whereas anchoring a quotation is a
 thing the reader does already.
 
-### The response to reviewers
-
-```sh
-komodoc export c9k --format response --since 4f2a91c
-```
-
-For every comment made at or after the given checkpoint -- all of them
-without `--since` -- a section with the passage as the reviewer saw it, the
-thread, and the passage as it now stands or the note that it was removed,
-and for a resolved comment the checkpoint it was resolved in. Grouped by
-reviewer, because that is how a response is organised, and in the markdown
-the `export` command already writes, so it goes into a Quarto document as it
-is:
-
-```markdown
-## Reviewer: annegrandchamp
-
-### 1. commenting, resolved in d1e0f42
-
-> The confidence interval does not say that the parameter is inside it with 95% probability.
-
-**Then:** "…with 95% probability, the true value lies in the interval…"
-
-**Now:** "…95% of intervals built this way, over repeated samples, cover the true value…"
-
-Fixed as suggested; see also the new footnote on coverage.
-```
-
-The last line is the author's reply from the thread, which is where the
-response gets written from now on: replying to the comment in the reader is
-writing the response document. That is the feature to show first, because
-nobody else can build it -- their comments do not live on the text a reader
-was shown -- and because it is cheap: one export format over the lookup
-above.
+The same diff closes two gaps the timeline left. The panel lists each
+entry's `changed` paths but puts nothing behind them; a per-file diff goes
+there. And the comment card and the response say a passage is gone, and
+when, but not what stands in its place; with the diff, the "now" line can
+quote the replacement.
 
 ### Diff and restore
 
@@ -184,7 +112,9 @@ sources, for a terminal or a pipe.
 Restore, from the panel or `komodoc restore c9k 8b03d77`, puts that
 checkpoint's tree into the live session through `Room::restore`, and takes
 a checkpoint with `why: restore`. History is never rewritten; the checkpoint
-restored from is still there, and so is the one restored over.
+restored from is still there, and so is the one restored over. The bar the
+panel shows over an earlier version gains "Restore" beside "Name this
+point", and a "Copy link" to that checkpoint.
 
 ### Pinning, later
 
@@ -195,16 +125,15 @@ gives it to them, as a decision about the text): "readers see this
 checkpoint", after which the reader page shows that checkpoint to everyone
 but the editors, with a line saying a newer text exists, until an editor
 unpins or pins a later one. The history panel is where it is set. It is
-left out of the first version because it is a policy on top of the timeline
-and needs the timeline first; and because it may turn out that nobody asks
-for it.
+left out because it is a policy on top of the timeline, and because it may
+turn out that nobody asks for it.
 
-## What changes elsewhere
+### The latest checkpoint that compiles
 
-**In the reader.** The toolbar gains `history`, while editing and while
-reading alike, and the panel behind it.
-
-**In the README.** A paragraph about the timeline goes in.
+A reader who joins a document that does not compile is shown the engine's
+diagnostics page. The better answer is the latest checkpoint that compiles,
+which the panel can now find: the manifest is in the browser, and a
+checkpoint is one fetch.
 
 ## What it is not
 
@@ -228,24 +157,18 @@ checkpoint, so the author can find it; it is not a way to push or pull.
 
 ## Steps
 
-5. **The timeline.** The label `PATCH`, `komodoc history` and `komodoc
-   label`, the panel, viewing a checkpoint. A document is a directory, so
-   the panel lists each entry's `changed` paths and puts a per-file diff
-   (step 8) behind each.
-6. **Comments know their checkpoint.** The two fields, set in `apply`, in
-   both exports. The passage-then-and-now line on the card.
-7. **The response export.** `--format response` and `--since`.
 8. **What changed since.** The word-level diff is built, as the
    `komodoc-text` crate (`text/`), which `komodoc sync`'s merge also uses;
    what remains is its WASM export from the engine, the list beside the
-   comments, and anchoring hunks by quotation.
+   comments, anchoring hunks by quotation, the per-file diff behind a
+   changed path in the panel, and the replacement text on the card and in
+   the response.
 9. **Diff and restore.** The merge view in the editor, `komodoc diff`,
-   `komodoc restore`, and the route and panel button that call
-   `Room::restore`.
+   `komodoc restore`, the route and the panel's "Restore" that call
+   `Room::restore`, and "Copy link" on a checkpoint.
 10. **Provenance.** `publish` and `sync` send the git fields.
 
-5 to 7 are a day each and 7 is the one to demonstrate. 8 and 9 are the
-browser work and take longer. 10 can go anywhere.
+8 and 9 are the browser work and take longer. 10 can go anywhere.
 
 Git provenance, in step 10: when `publish` or `sync` runs inside a git
 repository, the checkpoint it causes records the commit the working tree was
@@ -269,9 +192,3 @@ out.
   enough that a paragraph is a checkpoint and not each sentence of it,
   short enough that a session's worth of work is many points rather than
   one. The last-editor rule bounds the loss in any case.
-
-## Waiting on the timeline
-
-A reader who joins a document that does not compile is shown the engine's
-diagnostics page. The better answer is the latest checkpoint that compiles,
-and it waits on step 5 to expose the manifest to the browser.

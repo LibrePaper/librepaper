@@ -23,5 +23,6 @@ mod s3;
 mod seed;
 mod serve;
 mod sharing;
+mod timeline;
 mod visitor;
 pub mod yjs;

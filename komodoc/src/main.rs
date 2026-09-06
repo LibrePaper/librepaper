@@ -246,13 +246,34 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Annotations as W3C JSON-LD or markdown
+    /// What a document used to say, and when
+    History {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
+    /// Name a checkpoint, so it stands out in the timeline
+    Label {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// The checkpoint, as the digest `history` prints or the start of it
+        sha: String,
+        /// What to call it; omit to take an existing name away
+        text: Option<String>,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
+    /// Annotations as W3C JSON-LD, markdown, or a response to reviewers
     Export {
         /// A full slug, or one of the short handles `list` prints
         id: String,
-        /// jsonld (W3C Web Annotation) or markdown
+        /// jsonld (W3C Web Annotation), markdown, or response
         #[arg(long, value_name = "FORMAT", default_value = "jsonld")]
         format: String,
+        /// Only comments made at or after this checkpoint, as `history` prints it
+        #[arg(long, value_name = "SHA")]
+        since: Option<String>,
         /// File to write; defaults to standard output
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
@@ -358,9 +379,27 @@ async fn main() {
             server,
             yes,
         } => cli::transfer_document(&id, &to, server.unwrap_or_default(), yes).await,
+        Command::History { id, server } => {
+            cli::history_document(&id, server.unwrap_or_default()).await
+        }
+        Command::Label {
+            id,
+            sha,
+            text,
+            server,
+        } => {
+            cli::label_checkpoint(
+                &id,
+                &sha,
+                text.unwrap_or_default(),
+                server.unwrap_or_default(),
+            )
+            .await
+        }
         Command::Export {
             id,
             format,
+            since,
             out,
             server,
         } => {
@@ -369,6 +408,7 @@ async fn main() {
                 server.unwrap_or_default(),
                 &format,
                 out.unwrap_or_default(),
+                since.unwrap_or_default(),
             )
             .await
         }

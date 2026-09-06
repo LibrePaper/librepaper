@@ -108,7 +108,7 @@ It prints an address and an eight-character code:
 ```
 
 Open that page in any browser, on any machine, and sign in there with whichever
-provider the deployment offers — GitHub, Google, or both. The page names the
+provider the deployment offers â GitHub, Google, or both. The page names the
 code and the account it would sign in, and nothing happens until you press
 *Approve*, so a link somebody else sends you cannot put your account on their
 terminal.
@@ -146,7 +146,7 @@ komodoc publish paper/ --title "My Paper"
 ```
 
 Everything in it goes: the chapters, the `.bib`, the figures. Three things are
-left behind — names beginning with a dot, the main file's own `.pdf`, and
+left behind â names beginning with a dot, the main file's own `.pdf`, and
 whatever git ignores, since a `.gitignore` is the author's own statement of
 what is derived. Which file is the document is the one text at the top level
 that Komodoc renders, or `main.*`; when neither settles it, `--main` does:
@@ -156,7 +156,7 @@ komodoc publish paper/ --main chapters/thesis.typ
 ```
 
 Publishing a single file that reads its neighbours says so rather than
-publishing a document that compiles here and nowhere else — a reader renders
+publishing a document that compiles here and nowhere else â a reader renders
 it themselves, and would get the error you never saw:
 
 ```
@@ -235,7 +235,7 @@ komodoc share c9k --visibility link      # anyone with the link; the default
 
 A private document answers a stranger exactly as a deleted one does. Its text
 is painted into the reading frame rather than served to it, because the
-documents host holds no sign-in of yours to check — so a private HTML document's
+documents host holds no sign-in of yours to check â so a private HTML document's
 own scripts do not run. Publish such a document by link instead.
 
 The owner is one account, because the storage quota and `destroy` both need an
@@ -274,7 +274,7 @@ komodoc edit c9k
 
 The editor is offered to whoever may replace the document, and the document
 opens ready to work on. There is nothing to save: what is typed is the
-document, readers see it a moment later, and the comments survive it — as you
+document, readers see it a moment later, and the comments survive it â as you
 type, they re-anchor against the edited text, and one whose passage is gone is
 marked as needing re-anchoring rather than quietly dropped.
 
@@ -297,7 +297,7 @@ the first version of this, and are what a restore, a diff and the timeline in
 the toolbar will be built on; none of those three exists yet.
 
 Rendering happens in the browser, by the same compiler the command line
-renders with, built for WebAssembly — for readers as much as for editors. The
+renders with, built for WebAssembly â for readers as much as for editors. The
 deployment stores the source and nothing rendered from it, so what a reader
 sees is by construction what the source says, and a live document costs the
 deployment no CPU and no bandwidth beyond relaying a few dozen bytes per
@@ -315,7 +315,7 @@ The formats, and they are not available in the same places:
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
 no `typst` binary on your PATH, because the compiler is inside Komodoc, and it
-is the same one the editor runs — so a document cannot render one way when it
+is the same one the editor runs â so a document cannot render one way when it
 is published and another way when it is edited.
 
 The typst module is thirty megabytes, typst itself and the fonts it sets
@@ -348,7 +348,7 @@ fix that cannot wait for a render.
 #### LaTeX
 
 `komodoc publish paper.tex` stores a `.tex` file as `latex`, and
-`komodoc publish paper/` takes the whole directory — the chapters, the `.bib`,
+`komodoc publish paper/` takes the whole directory â the chapters, the `.bib`,
 the figures. Nothing is compiled on the way: Komodoc carries no TeX, no build
 embeds one, and there is no `make latex`.
 
@@ -364,7 +364,7 @@ Two things follow from that, and both are worth knowing before you rely on it.
 
 Readers see nothing until an editor has opened the document. Nobody is asked
 to download a compiler in order to read a paper, and storing a rendering
-beside the document — so a reader gets pages rather than "not yet rendered" —
+beside the document â so a reader gets pages rather than "not yet rendered" â
 is a later step and is not built yet.
 
 The package set is bounded, and is a mirror rather than a TeX Live. What is
@@ -372,8 +372,8 @@ carried is TeX Live's `latex-recommended`, `latex-extra`, `fonts-recommended`
 and `mathscience` collections: about 190 MB of files, fetched one at a time by
 name as a compile asks for them. `tikz` and `biblatex` are in collections that
 are not mirrored and will not be found. And the engine's preloaded format is
-LaTeX2e 2020-02-02, so a package that checks the kernel date — `siunitx` is
-one — refuses to load however completely it was mirrored. When any of this
+LaTeX2e 2020-02-02, so a package that checks the kernel date â `siunitx` is
+one â refuses to load however completely it was mirrored. When any of this
 happens you get the engine's own error, in the badge and the gutter that typst
 errors already appear in.
 
@@ -389,7 +389,7 @@ komodoc serve --latex                             # or the project's own
 Without `--latex` a deployment stores and shows `.tex` files and offers no
 LaTeX editor: `/api/config` says so, and the reader offers the source rather
 than the card. Whichever you pass, browsers only ever fetch `/latex/` on your
-own origin — the server reads from the bucket, the browser never does, because
+own origin â the server reads from the bucket, the browser never does, because
 the list of packages a document asks for is a description of the document and
 should go no further than the deployment that already has the source. An
 `http:` mirror is refused at startup, since the page a document is framed in
@@ -403,8 +403,8 @@ By default a server keeps everything in a directory:
 komodoc serve --data ./komodoc-data
 ```
 
-It can keep it in any S3-compatible bucket instead — R2, AWS, MinIO, Backblaze
-— so a small server holds no durable state of its own and the bytes, the bill
+It can keep it in any S3-compatible bucket instead â R2, AWS, MinIO, Backblaze
+â so a small server holds no durable state of its own and the bytes, the bill
 and the ownership of the data are yours:
 
 ```sh
@@ -426,7 +426,7 @@ touches a key outside its own prefix.
 
 At startup the bucket is probed. The index is kept correct by conditional
 writes, so a bucket that does not support them is refused rather than run on
-quietly — pass `--single-writer` to assert that only this process writes
+quietly â pass `--single-writer` to assert that only this process writes
 these keys, which is true of a single server, and it will use its own lock
 instead. It is printed at startup either way.
 
@@ -438,6 +438,41 @@ With `--s3-direct-reads`, a document's bytes are fetched by the reader's
 browser straight from the bucket rather than passing through the server. That
 needs a CORS rule on the bucket; the deployment prints the policy to paste.
 
+### History
+
+A document is never lost, and its past is never rewritten. The server takes a
+checkpoint when the typing stops, when the last editor leaves, whenever
+somebody comments, and whenever the document is published to; each one records
+the whole directory at that moment, so a chapter and the file that includes it
+can never come back out of step.
+
+```sh
+komodoc history c9k
+```
+
+```
+sha      at                    by                  why      label
+8b03d77  2026-09-03 09:12:40   vincentarelbundock  cli
+4f2a91c  2026-09-05 14:02:11   vincentarelbundock  cli      sent to the journal
+c07e1aa  2026-09-05 16:40:03   annegrandchamp      comment
+d1e0f42  2026-09-05 17:02:19   vincentarelbundock  left     *
+```
+
+Name a moment so it stands out, and so it is the last thing shed if a quota
+ever bites:
+
+```sh
+komodoc label c9k 4f2a91c "sent to the journal"
+komodoc label c9k 4f2a91c            # and to take the name off again
+```
+
+In the reader, the history button opens the same list beside the document, in
+reading and in editing alike. Picking a moment shows the document as it was at
+that moment, with a bar saying which one; "Back to now" leaves, and the copy
+button beside it gives a link that puts somebody else exactly where you are.
+A name can be given to any row from there too. Nothing on that screen changes
+the document: viewing the past is reading.
+
 ### Export
 
 Export annotations as readable Markdown. `export` takes the same ID `comment`
@@ -448,6 +483,42 @@ komodoc export c9k --format markdown --out comments.md
 ```
 
 Without `--format markdown`, Komodoc exports W3C Web Annotation JSON-LD.
+
+### Response to reviewers
+
+The one export that is not a list of what was said. `--format response` writes
+the document an author has to produce anyway: grouped by reviewer, numbered
+within each, with the remark, the passage as that reviewer saw it, what became
+of it since, and the thread underneath as the answer.
+
+```sh
+komodoc export c9k --format response --since 4f2a91c --out response.md
+```
+
+```markdown
+## Reviewer: annegrandchamp
+
+### 1. commenting, resolved in d1e0f42
+
+> The confidence interval does not say that the parameter is inside it with 95% probability.
+
+**Then:** “with 95% probability, the true value lies in the interval”
+
+**Now:** no longer in the document.
+
+**Vincent:** Fixed as suggested; see also the new footnote on coverage.
+```
+
+Replying to a comment in the reader is writing this document. `--since` takes
+a checkpoint from `komodoc history` and keeps the comments made at or after
+it, which is a round of review.
+
+**Then** is a quotation rather than a recollection, because every comment
+records the checkpoint it was made on. **Now** says whether the passage is
+still in the document; what replaced it is not claimed, because a word-level
+diff of the two versions is not built yet. The line is left out entirely for a
+document this machine cannot render -- a LaTeX paper, whose compiler is in a
+browser.
 
 ### Destroy
 
@@ -508,7 +579,7 @@ hourly pass, and once at startup.
 `komodoc serve` keeps documents, comments and the session key in the directory
 named by `--data` or `KOMODOC_DATA`, `komodoc-data` in the working directory by
 default; back it up if the instance holds real work. Point it at a bucket
-instead and the server holds nothing of its own — see
+instead and the server holds nothing of its own â see
 [Bring your own bucket](#bring-your-own-bucket).
 
 Six flags bound what a deployment will store:
@@ -588,7 +659,7 @@ own, GitHub's or Google's. A server where both `--publishers` and
 `--commenters` are `anyone` never asks, and runs without either.
 
 Create the app at [github.com/settings/developers](https://github.com/settings/developers)
-(New OAuth App). Point its two URLs at the server's own address — the
+(New OAuth App). Point its two URLs at the server's own address â the
 public HTTPS address it sits behind, with the same `/auth/callback` path:
 
 ```text
@@ -604,7 +675,7 @@ export KOMODOC_GITHUB_CLIENT_ID="..."
 export KOMODOC_GITHUB_CLIENT_SECRET="..."
 ```
 
-Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `KOMODOC_GOOGLE_CLIENT_ID` and `KOMODOC_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review — but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
+Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `KOMODOC_GOOGLE_CLIENT_ID` and `KOMODOC_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review â but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
 
 Signing in cannot be undone one account at a time. `komodoc logout` deletes a
 terminal's token, and rotating the server's session key signs every browser and
@@ -651,8 +722,8 @@ Three builds go into one binary.
 | `web/` | the pages: Svelte, Skeleton, CodeMirror 6, Yjs | bun and vite |
 | `komodoc/` | the server and the command line | cargo |
 
-The engine is built twice — natively into the binary, and to WebAssembly for
-the browser — so the editor's preview and the command line's output come from
+The engine is built twice â natively into the binary, and to WebAssembly for
+the browser â so the editor's preview and the command line's output come from
 the same code. The web build writes into `src/shell`, which the binary embeds;
 nothing under that directory is edited by hand.
 

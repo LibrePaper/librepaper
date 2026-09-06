@@ -1098,3 +1098,126 @@ pub async fn destroy_document(identifier: &str, server_flag: String, yes: bool) 
     }
     println!("deleted {slug}");
 }
+
+/* --------------------------------------------------------------- the timeline */
+
+/// What this document used to say, and when.
+///
+/// One line per checkpoint, oldest first, which is the order the manifest is
+/// in and the order a history reads in. The newest is marked, because "where
+/// am I" is the first question anybody asks of a list like this, and a label
+/// is printed as it was given: it is somebody's own words about a moment.
+pub async fn history_document(identifier: &str, server_flag: String) {
+    let server = server_from(&server_flag);
+    let slug = resolve_identifier(identifier, &server).await;
+    let (status, payload) = get_with_token(
+        &format!("{server}/api/documents/{slug}/history"),
+        &stored_token(),
+        Duration::from_secs(60),
+    )
+    .await
+    .unwrap_or_else(|err| die(err));
+    if status != 200 {
+        die(format!(
+            "history failed ({status}): {}",
+            detail_of(&payload)
+        ));
+    }
+    let checkpoints = payload
+        .get("checkpoints")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if checkpoints.is_empty() {
+        println!("no checkpoints yet");
+        return;
+    }
+    println!("sha      at                    by                  why      label");
+    let last = checkpoints.len() - 1;
+    for (n, point) in checkpoints.iter().enumerate() {
+        let sha = text(point, "sha");
+        // Seven characters, which is what git prints and what the panel and
+        // `komodoc label` both accept.
+        let short = sha.chars().take(7).collect::<String>();
+        // The stored time is ISO 8601 in UTC; a table reads better with the
+        // T and the Z taken out and nothing else changed.
+        let at = text(point, "at")
+            .replace('T', " ")
+            .trim_end_matches('Z')
+            .to_string();
+        let label = text(point, "label");
+        // The newest carries a star, because "where am I" is the first
+        // question anybody asks of a list like this.
+        let mark = match (n == last, label.is_empty()) {
+            (false, _) => "",
+            (true, true) => "*",
+            (true, false) => "  *",
+        };
+        println!(
+            "{short:<7}  {at:<19}  {:<18}  {:<7}  {label}{mark}",
+            text(point, "by"),
+            text(point, "why"),
+        );
+    }
+}
+
+/// Names a checkpoint, or takes its name away with an empty one.
+///
+/// The SHA may be the short form the table prints, which is resolved against
+/// the manifest here rather than on the server: the server takes one name for
+/// a checkpoint, its whole digest, and a prefix that matched two of them would
+/// be a thing for a person to disambiguate rather than for a route to guess.
+pub async fn label_checkpoint(identifier: &str, sha: &str, label: String, server_flag: String) {
+    let server = server_from(&server_flag);
+    let slug = resolve_identifier(identifier, &server).await;
+    let token = require_token();
+    let (status, payload) = get_with_token(
+        &format!("{server}/api/documents/{slug}/history"),
+        &token,
+        Duration::from_secs(60),
+    )
+    .await
+    .unwrap_or_else(|err| die(err));
+    if status != 200 {
+        die(format!(
+            "history failed ({status}): {}",
+            detail_of(&payload)
+        ));
+    }
+    let checkpoints = payload
+        .get("checkpoints")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let matching: Vec<String> = checkpoints
+        .iter()
+        .map(|point| text(point, "sha"))
+        .filter(|known| known.starts_with(sha))
+        .collect();
+    let full = match matching.len() {
+        0 => die(format!("no checkpoint of {slug} starts with {sha:?}")),
+        1 => matching[0].clone(),
+        many => die(format!(
+            "{sha:?} names {many} checkpoints of {slug}; give more of the digest"
+        )),
+    };
+
+    let (status, payload) = crate::http::patch_json(
+        &format!("{server}/api/documents/{slug}/history/{full}"),
+        &json!({"label": label}),
+        &token,
+        Duration::from_secs(60),
+    )
+    .await
+    .unwrap_or_else(|err| die(err));
+    if status != 200 {
+        die(format!("label failed ({status}): {}", detail_of(&payload)));
+    }
+    let given = text(&payload, "label");
+    let short = full.chars().take(7).collect::<String>();
+    if given.is_empty() {
+        println!("{short}  unnamed");
+    } else {
+        println!("{short}  {given}");
+    }
+}
