@@ -29,6 +29,7 @@ import { IndexeddbPersistence } from "y-indexeddb";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate } from "y-protocols/awareness.js";
 import { SHELL_HEADERS, keyHeaders } from "./api.js";
 import { keyFor } from "./storage.js";
+import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
 
 // Keep each JSON WebSocket frame comfortably below the server's one-megabyte
 // receive limit. Base64 expands the binary update by a third, and the JSON
@@ -251,6 +252,71 @@ export function join({ send, onPeers, onState, name, slug, key = "", mayEdit = t
     },
 
     /* --------------------------------------------------------- the directory */
+
+    // Empty directories are metadata, never fake source files. Using one key
+    // per path lets unrelated folder creations merge, and the existing server
+    // metadata byte ceiling accounts for the names. Older clients ignore them.
+    folders() {
+      return [...meta.keys()].filter((key) => key.startsWith("folder:")).map((key) => key.slice(7));
+    },
+
+    addFolder(path, rules) {
+      if (!mayEdit) throw new Error("This project is read-only.");
+      path = checkPlacement(rules, { kind: "folder", path }, this.list(), this.folders());
+      meta.set(`folder:${path}`, true);
+      return path;
+    },
+
+    relocate(entries, destination, rules, rename = false) {
+      if (!mayEdit) throw new Error("This project is read-only.");
+      const plan = relocation(this.list(), this.folders(), entries, destination, rules, rename);
+      doc.transact(() => {
+        // Remove asset keys first, so a batch move never overwrites a source.
+        for (const file of plan.files) if (file.kind === "asset") assets.delete(file.previousPath);
+        for (const file of plan.files) {
+          if (file.kind === "asset") assets.set(file.path, file.sha);
+          else paths.set(file.id, file.path);
+        }
+        for (const path of plan.oldFolders) meta.delete(`folder:${path}`);
+        for (const path of [...plan.folders, ...plan.parents]) meta.set(`folder:${path}`, true);
+      });
+      return plan;
+    },
+
+    removeEntries(entries) {
+      if (!mayEdit) throw new Error("This project is read-only.");
+      const roots = topEntries(entries);
+      const current = this.list();
+      const folders = folderPaths(current, this.folders());
+      for (const entry of roots) {
+        const exists = entry.kind === "folder" ? folders.includes(entry.path) : current.some((file) => file.id === entry.id && file.kind === entry.kind && file.path === entry.path);
+        if (!exists) throw new Error(`${entry.path}: this item changed or was removed. Select it again.`);
+      }
+      const selected = (path) => roots.some((entry) => path === entry.path || (entry.kind === "folder" && inside(path, entry.path)));
+      const removed = current.filter((file) => selected(file.path));
+      if (removed.some((file) => file.main)) throw new Error("Choose another main file before deleting this file or its folder.");
+      doc.transact(() => {
+        for (const file of removed) {
+          if (file.kind === "asset") assets.delete(file.path);
+          else { files.delete(file.id); paths.delete(file.id); }
+        }
+        for (const path of this.folders()) if (selected(path)) meta.delete(`folder:${path}`);
+        for (const entry of roots) {
+          const parent = parentPath(entry.path);
+          if (parent) meta.set(`folder:${parent}`, true);
+        }
+      });
+    },
+
+    duplicateEntry(entry, path, rules) {
+      if (!mayEdit) throw new Error("This project is read-only.");
+      const file = this.list().find((file) => file.kind === entry.kind && file.id === entry.id && file.path === entry.path);
+      if (!file) throw new Error("This file changed or was removed. Select it again.");
+      path = checkPlacement(rules, { ...file, path }, this.list(), this.folders());
+      if (file.kind === "text") return this.addText(path, this.textOf(file.id).toString());
+      assets.set(path, file.sha);
+      return path;
+    },
 
     /// Every file in the document: its id, its path, and whether it is the
     /// main one. Sorted with the main file first and the rest by path, which

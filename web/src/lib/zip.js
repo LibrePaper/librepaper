@@ -2,7 +2,7 @@
 //
 // Written here rather than taken from a package, because what is needed is the
 // smallest part of the format: entries stored rather than deflated, no
-// encryption, no zip64, no directory entries. That is a local header and a
+// encryption, no zip64. That is a local header and a
 // central directory record per file and a fixed tail, which is the ninety
 // lines below -- against a dependency whose compression this does not use and
 // whose other ninety per cent would ship to every reader of every document.
@@ -73,7 +73,7 @@ export function zip(files) {
   const encoder = new TextEncoder();
   const entries = Object.entries(files).map(([path, body]) => {
     const bytes = typeof body === "string" ? encoder.encode(body) : body;
-    return { name: encoder.encode(path), bytes, crc: crc32(bytes) };
+    return { name: encoder.encode(path), directory: path.endsWith("/"), bytes, crc: crc32(bytes) };
   });
   const { time, date } = dosTime(new Date());
 
@@ -116,7 +116,7 @@ export function zip(files) {
     out.u16(0);
     out.u16(0);
     out.u16(0);
-    out.u32(0);
+    out.u32(one.directory ? 0x10 : 0); // DOS directory attribute
     out.u32(offsets[index]);
     out.raw(one.name);
   });

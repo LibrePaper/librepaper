@@ -10,6 +10,7 @@
   import * as history from "../lib/history.js";
   import * as passages from "../lib/passages.js";
   import * as latex from "../lib/latex.js";
+  import { checkPlacement, basename, inside } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
   import { openRoom } from "../lib/room.js";
   import { submissions } from "../lib/submissions.js";
@@ -1473,6 +1474,7 @@
   // as state rather than derived, because what they are derived from is a
   // CRDT that changes outside Svelte's knowledge.
   let files = $state([]);
+  let folders = $state([]);
   let openFile = $state("");
   let peersByFile = $state(new Map());
   // The deployment's rules, which say what a path may be and what may sit at
@@ -1493,7 +1495,18 @@
   // the arriving text triggers, as it always was.
   function refreshFiles() {
     if (!session) return;
+    const previousFigure = shownFigure;
+    const previousFiles = files;
     files = session.list();
+    folders = session.folders();
+    if (previousFigure) {
+      const moved = files.filter((file) => file.kind === "asset" && file.sha === previousFigure.sha
+        && !previousFiles.some((previous) => previous.path === file.path));
+      const current = files.find((file) => file.kind === "asset" && file.path === previousFigure.path)
+        || (moved.length === 1 ? moved[0] : null);
+      shownFigure = current || null;
+      if (current && openFile === previousFigure.id) openFile = current.id;
+    }
     // A file that went away under this browser -- somebody else deleted it --
     // leaves the editor showing something that is not there any more, so it
     // falls back to the document itself.
@@ -1564,30 +1577,21 @@
   });
 
   function addFile(path) {
+    if (!mayEdit) throw new Error("This project is read-only.");
+    path = checkPlacement(rules, { kind: "text", path }, session.list(), session.folders());
     openFile = session.addText(path, "");
     paintPreview();
   }
 
-  function renameFile(id, path, kind) {
-    const file = files.find((one) => one.id === id);
-    if (kind === "asset" || (kind === undefined && file?.kind === "asset")) {
-      session.renameFile(id, path, "asset");
-      if (openFile === id) openFile = path;
-      if (shownFigure?.id === id || shownFigure?.path === id) {
-        shownFigure = { ...shownFigure, id: path, path };
-      }
-      return;
+  function relocateFiles(entries, destination, rename) {
+    const plan = session.relocate(entries, destination, rules, rename);
+    if (plan.files.some((file) => file.path !== file.previousPath)) {
+      say("Files moved. References in source files are not changed automatically.");
     }
-    session.renameFile(id, path, "text");
   }
 
-  function removeFile(file) {
-    // The main file is the document. Removing it would leave nothing to
-    // render, so the list does not offer it and this does not do it.
-    if (file.id === session.mainId()) return;
-    if (file.kind === "asset") session.removeAsset(file.path);
-    else session.removeFile(file.id);
-    if (openFile === file.id) openFile = session.mainId();
+  function deleteFiles(entries) {
+    session.removeEntries(entries);
     paintPreview();
   }
 
@@ -1604,14 +1608,16 @@
   /// The two are separate requests, which is why the server keeps a figure
   /// nothing refers to for an hour: between them there is a moment when the
   /// bytes are stored and nothing names them.
-  async function addFigure(file) {
-    try {
-      const { sha } = await uploadAsset(SLUG, file, KEY);
-      session.putAsset(file.name, sha);
-      paintPreview();
-    } catch (error) {
-      say(error.message || "could not add that figure", true);
-    }
+  async function addFigure(file, path = file.name) {
+    if (!mayEdit) throw new Error("This project is read-only.");
+    const activeSession = session;
+    path = checkPlacement(rules, { kind: "asset", path }, activeSession.list(), activeSession.folders());
+    const { sha } = await uploadAsset(SLUG, file, KEY);
+    // An upload yields to other editors; recheck before installing its name.
+    if (session !== activeSession || !mayEdit) throw new Error("The editing session changed during upload.");
+    checkPlacement(rules, { kind: "asset", path }, session.list(), session.folders());
+    session.putAsset(path, sha);
+    paintPreview();
   }
 
   /// The whole directory, as a zip. Built here rather than by a route,
@@ -1623,6 +1629,7 @@
     try {
       const tree = treeNow();
       const files = { ...tree.texts };
+      for (const path of folders) files[`${path}/`] = new Uint8Array();
       if (Object.keys(tree.digests || {}).length) {
         const held = await figures.gather(SLUG, tree.digests, {
           ...SHELL_HEADERS,
@@ -1656,13 +1663,44 @@
 
   // A text dropped or chosen is read and added as a file. Its bytes are
   // words, so they belong in the shared document rather than in the store.
-  async function addDroppedText(file) {
+  async function addDroppedText(file, path = file.name) {
+    if (!mayEdit) throw new Error("This project is read-only.");
+    const activeSession = session;
+    const text = await file.text();
+    if (session !== activeSession || !mayEdit) throw new Error("The editing session changed during upload.");
+    path = checkPlacement(rules, { kind: "text", path }, session.list(), session.folders());
+    openFile = session.addText(path, text);
+    paintPreview();
+  }
+
+  async function downloadEntry(entry) {
     try {
-      openFile = session.addText(file.name, await file.text());
-      paintPreview();
-    } catch (error) {
-      say(error.message || "could not read that file", true);
-    }
+      const tree = treeNow();
+      const selected = (path) => entry.kind === "folder" ? inside(path, entry.path) : path === entry.path;
+      const content = Object.fromEntries(Object.entries(tree.texts).filter(([path]) => selected(path)));
+      const digests = Object.fromEntries(Object.entries(tree.digests || {}).filter(([path]) => selected(path)));
+      if (Object.keys(digests).length) {
+        const held = await figures.gather(SLUG, digests, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
+        if (Object.keys(digests).some((path) => !Object.prototype.hasOwnProperty.call(held.assets, path))) throw new Error("Could not download all selected files.");
+        Object.assign(content, held.assets);
+      }
+      let blob;
+      if (entry.kind === "folder") {
+        for (const path of folders) if (path === entry.path || selected(path)) content[path + "/"] = new Uint8Array();
+        content[entry.path + "/"] = new Uint8Array();
+        const { zip } = await import("../lib/zip.js");
+        blob = zip(content);
+      } else {
+        if (!(entry.path in content)) throw new Error("This file is no longer available.");
+        blob = new Blob([content[entry.path]]);
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = basename(entry.path) + (entry.kind === "folder" ? ".zip" : "");
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (error) { say(error.message || "Could not download this item.", true); }
   }
 
   // Dropping a file on the source pane does what the controls in the list do:
@@ -2060,11 +2098,12 @@
         {/each}
       </div>
       {#if panel === "files"}
-        <Files bind:this={fileList} {files} open={openFile} peers={peersByFile}
+        <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
                {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
-               onrename={renameFile} onremove={removeFile} onmain={makeMain}
+               onmkdir={(path) => session.addFolder(path, rules)} onrelocate={relocateFiles}
+               ondelete={deleteFiles} onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
                onfigure={addFigure} ontext={addDroppedText}
-               ondownload={downloadTree} />
+               ondownload={downloadTree} ondownloaditem={downloadEntry} />
       {:else if panel === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
                  problem={historyProblem}

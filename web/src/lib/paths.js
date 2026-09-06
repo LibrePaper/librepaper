@@ -35,35 +35,42 @@ export function collisionKey(path) {
 /// `{ kind: "text" | "asset" }`, or `{ error }` with the sentence to show
 /// whoever offered it.
 export function checkPath(rules, path) {
+  const error = checkDirectoryPath(rules, path);
+  if (error) return { error };
+  return kindOf(rules, normalisePath(path));
+}
+
+/// Folder names obey the same path rules, without requiring a file extension.
+export function checkDirectoryPath(rules, path) {
   const it = normalisePath(path);
   const bytes = new TextEncoder().encode(it).length;
   const max = rules?.max_path || 200;
-  if (!it) return { error: "a file needs a name" };
-  if (bytes > max) return { error: `${it}: a path may be at most ${max} bytes` };
+  if (!it) return "a file or folder needs a name";
+  if (bytes > max) return `${it}: a path may be at most ${max} bytes`;
   if (it.startsWith("/")) {
-    return { error: `${it}: a path is relative, so it cannot begin with /` };
+    return `${it}: a path is relative, so it cannot begin with /`;
   }
-  if (it.includes("\\")) return { error: `${it}: paths are separated by /, not by \\` };
+  if (it.includes("\\")) return `${it}: paths are separated by /, not by \\`;
   // Anything a terminal would obey rather than print, written as escapes so
   // the rule survives being read and copied about.
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(it)) {
-    return { error: `${it}: a path cannot carry control characters` };
+    return `${it}: a path cannot carry control characters`;
   }
   const segments = it.split("/");
   if (segments.length > MAX_SEGMENTS) {
-    return { error: `${it}: a path may be at most ${MAX_SEGMENTS} segments deep` };
+    return `${it}: a path may be at most ${MAX_SEGMENTS} segments deep`;
   }
   for (const segment of segments) {
-    if (!segment) return { error: `${it}: a path cannot have an empty segment` };
+    if (!segment) return `${it}: a path cannot have an empty segment`;
     if (segment === "." || segment === "..") {
-      return { error: `${it}: a path cannot climb with . or ..` };
+      return `${it}: a path cannot climb with . or ..`;
     }
     if (segment.startsWith(".")) {
-      return { error: `${it}: a dotfile is not part of a document` };
+      return `${it}: a dotfile is not part of a document`;
     }
   }
-  return kindOf(rules, it);
+  return "";
 }
 
 /// The kind an extension names, or the reason there is none.

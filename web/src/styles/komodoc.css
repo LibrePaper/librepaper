@@ -64,53 +64,9 @@ main.reader {
 
 /* ------------------------------------------------------------- the files */
 
-/* The project is a directory, and this is it, in the column: paths shown as
-   paths, main file first, the rest sorted. No folder tree -- a paper has a
-   dozen files, and a tree is for hundreds. */
-.filelist ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  font-size: var(--text-sm);
-}
-.filelist li {
-  display: flex;
-  align-items: center;
-  gap: --spacing(2);
-  padding-inline: --spacing(2);
-  border-radius: var(--radius-base);
-}
-.filelist li.open {
-  background: var(--color-surface-100-900);
-}
-.filelist .path {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  padding-block: --spacing(1);
-  cursor: pointer;
-}
-/* The main file is the document; the rest are its parts. */
-.filelist li.mainfile .path {
-  font-weight: 600;
-}
 .filelist .who {
   color: var(--color-surface-600-400);
   font-variant: all-small-caps;
-}
-/* The tools appear on the row being pointed at or edited, so twelve files
-   are a list and not a wall of buttons. They stay for a keyboard, which
-   reaches them by focus and never by hover. */
-.filelist .filetools {
-  display: flex;
-  visibility: hidden;
-}
-.filelist li:hover .filetools,
-.filelist li:focus-within .filetools {
-  visibility: visible;
 }
 .filelist .name {
   flex: 1;
@@ -127,6 +83,36 @@ main.reader {
   font-size: var(--text-sm);
   color: var(--color-error-500);
 }
+
+/* Skeleton owns tree semantics; these rules give it the project's compact rows. */
+.explorer-row, .explorer-root {
+  display: flex;
+  align-items: center;
+  gap: --spacing(2);
+  min-height: --spacing(8);
+  width: 100%;
+  padding-block: --spacing(1);
+  padding-inline: --spacing(2);
+  border-radius: var(--radius-base);
+  text-align: left;
+  cursor: pointer;
+}
+.explorer-row { padding-left: calc(var(--depth, 1) * --spacing(3)); }
+.explorer-root { color: var(--color-surface-600-400); font-size: var(--text-sm); }
+.explorer-row:hover, .explorer-root:hover, .explorer-open { background: var(--color-surface-100-900); }
+.explorer-row[data-selected] { background: var(--color-primary-100-900); }
+.explorer [data-part="branch"][data-selected] > [data-part="context-trigger"] .explorer-row { background: var(--color-primary-100-900); }
+.explorer-row:focus-visible, .explorer [data-part="branch"]:focus-visible > [data-part="context-trigger"] .explorer-row {
+  outline: 2px solid var(--color-primary-500);
+  outline-offset: -2px;
+}
+.explorer .drop-target { background: var(--color-primary-100-900); outline: 2px dashed var(--color-primary-500); outline-offset: -2px; }
+.explorer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-row svg, .explorer-root svg { width: --spacing(4); height: --spacing(4); flex-shrink: 0; }
+.explorer-chevron { width: --spacing(2); flex-shrink: 0; }
+.explorer-more { margin-left: auto; padding-inline: --spacing(2); border-radius: var(--radius-base); opacity: 0; }
+.explorer-row:hover .explorer-more, .explorer-row:focus-within .explorer-more, .explorer-more[data-state="open"] { opacity: 1; }
+@media (hover: none) { .explorer-more { opacity: 1; } }
 .viewport {
   flex: 1 1 auto;
   min-width: 0;
@@ -679,12 +665,6 @@ main.reader.source-right .editorpane {
   border: 0;
 }
 
-/* What can be done to the directory, side by side: a text is named, a figure
-   is chosen from a disk, the whole of it is taken away as a zip. */
-.filelist .filetools-row {
-  display: flex;
-  gap: --spacing(1);
-}
 .filelist .chooser {
   display: none;
 }
