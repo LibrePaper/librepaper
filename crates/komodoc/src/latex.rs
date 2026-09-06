@@ -22,7 +22,7 @@
 //! `latex/tools/mirror.mjs` -- so it is immutable for a year and a new release is a
 //! new path rather than a cache to invalidate.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -177,12 +177,10 @@ impl Mirror {
     }
 
     /// Which digested file a name is, from the manifest's package index. The
-    /// index is read once and kept; a name it does not have is looked up again
-    /// only if the copy is older than `INDEX_REFRESH`, so a mirror updated in
-    /// place is noticed within that, and a document asking for a file that
-    /// does not exist costs one manifest read per refresh rather than one per
-    /// request. A name the manifest itself records as absent is answered
-    /// without a second look.
+    /// index is kept for `INDEX_REFRESH` and read again after that, on the
+    /// next name asked for, so a mirror updated in place is noticed within
+    /// that and a compile costs one manifest read per refresh rather than one
+    /// per file.
     async fn resolve(&self, key: &str) -> Resolved {
         let name = self.describe();
         let cached = indexes()
@@ -190,13 +188,19 @@ impl Mirror {
             .expect("the index lock")
             .get(&name)
             .cloned();
-        if let Some(index) = &cached {
-            if let Some(url) = index.packages.get(key) {
-                return Resolved::File(url.clone());
-            }
-            if index.absent.contains(key) || index.loaded.elapsed() < INDEX_REFRESH {
-                return Resolved::NotThere;
-            }
+        // Fresh enough to answer from, whichever way it answers. A mirror
+        // can replace a file in place -- `serve.mjs --record` does, when
+        // upstream has a better copy than this machine's TeX Live -- and
+        // that changes which digested file a name is, so a hit on an old
+        // copy of the index is as stale as a miss.
+        if let Some(index) = cached
+            .as_ref()
+            .filter(|index| index.loaded.elapsed() < INDEX_REFRESH)
+        {
+            return match index.packages.get(key) {
+                Some(url) => Resolved::File(url.clone()),
+                None => Resolved::NotThere,
+            };
         }
         match self.load_index().await {
             Some(index) => {
@@ -218,8 +222,8 @@ impl Mirror {
         }
     }
 
-    /// The manifest's `packages` and `absent` maps, read through the same
-    /// path a browser reads the manifest by.
+    /// The manifest's `packages` map, read through the same path a browser
+    /// reads the manifest by.
     async fn load_index(&self) -> Option<Index> {
         let served = self.fetch(MANIFEST).await;
         if served.status != 200 {
@@ -239,14 +243,8 @@ impl Mirror {
                     .collect()
             })
             .unwrap_or_default();
-        let absent = manifest
-            .get("absent")
-            .and_then(|value| value.as_object())
-            .map(|entries| entries.keys().cloned().collect())
-            .unwrap_or_default();
         Some(Index {
             packages,
-            absent,
             loaded: Instant::now(),
         })
     }
@@ -343,12 +341,12 @@ fn unreachable() -> Served {
 }
 
 /// The manifest's package index: the engine's name for a file, as
-/// `<engine>/<format code>/<name>`, to the digested path that holds it, plus
-/// the names the mirror recorded as having nowhere to fetch from.
+/// `<engine>/<format code>/<name>`, to the digested path that holds it. The
+/// names the mirror recorded as having nowhere to fetch from are not kept;
+/// a name that is not here is not there, whatever the reason.
 #[derive(Debug)]
 struct Index {
     packages: HashMap<String, String>,
-    absent: HashSet<String>,
     loaded: Instant,
 }
 
@@ -358,10 +356,10 @@ enum Resolved {
     Unreachable,
 }
 
-/// How long a name that is not in the index is trusted to be absent before
-/// the manifest is read again. Long enough that a document asking for a
-/// package nobody has does not read the manifest on every compile; short
-/// enough that a mirror updated in place is noticed without a restart.
+/// How long the index is answered from before the manifest is read again.
+/// Long enough that a compile, which asks for hundreds of files, reads the
+/// manifest once; short enough that a mirror updated in place is noticed
+/// without a restart.
 const INDEX_REFRESH: Duration = Duration::from_secs(30);
 
 /// One index per mirror, by the name `describe` gives it. A process has one
