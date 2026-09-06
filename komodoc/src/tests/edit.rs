@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::blob::BlobError;
+use crate::config::{Configuration, SessionLimit};
 use crate::render::render_markdown_document;
 
 pub const TEST_MARKDOWN: &str = "# My Paper\n\nHello *world*.\n";
@@ -322,4 +323,72 @@ async fn an_html_document_is_stored_once() {
     let (status, payload) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
     assert_eq!(status, 200, "{payload}");
     assert_eq!(text(&payload, "source"), page);
+}
+
+/* ------------------------------------------- a document too large to send inline */
+
+/// A document whose state will not fit in a text frame is fetched over HTTP
+/// instead, and that fetch is an API call like every other one: the signature
+/// on the URL says the link was minted here, not who is holding it, so the
+/// route asks again -- which means rule A's same-origin marker applies.
+///
+/// This is what the notebook examples were failing on. A Jupyter or Quarto
+/// page is comfortably past the inline ceiling, the reader fetched the
+/// reference with no marker header, and every one of them answered "could not
+/// fetch the document" while the small examples worked.
+#[tokio::test]
+async fn a_state_too_large_to_send_inline_is_fetched_with_the_headers_the_shell_sends() {
+    let server = test_server_with(
+        Configuration {
+            session: SessionLimit {
+                // Smaller than any real document, so the reference path is the
+                // one this test takes rather than a matter of luck.
+                inline_state_max: 16,
+                ..Configuration::default().session
+            },
+            ..Configuration::default()
+        },
+        crate::auth::Policy::parse(TEST_PUBLISHER),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let slug = text(&publish_with_source(&server.url).await, "slug");
+
+    let mut socket = dial_websocket(&server.url, &slug).await;
+    assert_eq!(socket.read().await["type"], "hello");
+    socket.write(json!({"type": "y-open", "vector": ""})).await;
+    let state = socket.read().await;
+    assert_eq!(state["type"], "y-state");
+    let reference = text(&state, "ref");
+    assert!(
+        !reference.is_empty() && state.get("update").is_none(),
+        "the state came inline, so this proves nothing: {state}"
+    );
+
+    // What the shell sends: the same-origin marker every other call carries.
+    let response = client()
+        .get(format!("{}{reference}", server.url))
+        .header("x-komodoc-client", "shell")
+        .send()
+        .await
+        .expect("a response");
+    assert_eq!(response.status().as_u16(), 200);
+    let raw = response.bytes().await.expect("the state").to_vec();
+    let mine = crate::session::new_doc();
+    crate::session::apply_update(&mine, &raw).expect("the state applies");
+    assert_eq!(
+        crate::session::text_of(&mine),
+        server.instance.rooms.get(&slug).await.source().await,
+        "the fetched state is not the document"
+    );
+
+    // And without it, refused -- which is rule A and not a property of this
+    // route, and is exactly what the reader was walking into.
+    let response = client()
+        .get(format!("{}{reference}", server.url))
+        .send()
+        .await
+        .expect("a response");
+    assert_eq!(response.status().as_u16(), 403);
 }

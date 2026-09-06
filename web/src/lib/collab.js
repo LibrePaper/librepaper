@@ -27,6 +27,8 @@
 import * as Y from "yjs";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate } from "y-protocols/awareness.js";
+import { SHELL_HEADERS, keyHeaders } from "./api.js";
+import { keyFor } from "./storage.js";
 
 // Updates are binary and the room's socket carries JSON, so they travel
 // base64-encoded. A keystroke is a few dozen bytes either way.
@@ -363,7 +365,17 @@ export function join({ send, onPeers, onState, name, slug, mayEdit = true }) {
         // Same origin, signed, and short-lived. Whatever arrives during the
         // fetch is caught up by the state sent below, which is why the fetch
         // does not have to be atomic with anything.
-        const response = await fetch(state.ref, { credentials: "same-origin" });
+        //
+        // It carries what every other call to the API carries. The signature
+        // on the URL says the link was minted here; it does not say who is
+        // holding it, so the route asks again -- and asking means the
+        // same-origin marker rule A turns on, and the link key a reader
+        // arrived with. Without them a document too large to send inline was
+        // refused, which is what the notebook examples were doing.
+        const response = await fetch(state.ref, {
+          credentials: "same-origin",
+          headers: { ...SHELL_HEADERS, ...keyHeaders(keyFor(slug)) },
+        });
         if (!response.ok) throw new Error("could not fetch the document");
         Y.applyUpdate(doc, new Uint8Array(await response.arrayBuffer()), "remote");
       } else if (state.update) {
