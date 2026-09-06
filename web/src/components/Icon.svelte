@@ -8,6 +8,12 @@
   // rounded rectangle as a square-cornered path is what made these look like
   // icons from two different sets.
   const ICONS = {
+    users: [
+      ["path", "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"],
+      ["path", "M16 3.128a4 4 0 0 1 0 7.744"],
+      ["path", "M22 21v-2a4 4 0 0 0-3-3.87"],
+      ["circle", { cx: 9, cy: 7, r: 4 }],
+    ],
     "chevron-down": [["path", "m6 9 6 6 6-6"]],
     "chevron-right": [["path", "m9 6 6 6-6 6"]],
     x: [["path", "M18 6 6 18"], ["path", "m6 6 12 12"]],

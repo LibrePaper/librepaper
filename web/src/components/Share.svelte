@@ -4,7 +4,7 @@
   import { getPrivate, post } from "../lib/api.js";
   import { linkFor } from "../lib/storage.js";
 
-  let { open = $bindable(false), slug, onvisibility } = $props();
+  let { open = $bindable(false), slug, onvisibility, inline = false } = $props();
   let sharing = $state(null);
   let busy = $state(false);
   let loading = $state(false);
@@ -97,7 +97,7 @@
   }
 </script>
 
-<Modal bind:open title="Share document" wide>
+{#snippet content()}
   <div class="share-panel space-y-5">
     {#if loading}
       <p class="text-surface-600-400" role="status">Loading sharing settings…</p>
@@ -183,7 +183,9 @@
     {/if}
     {#if feedback}<p class="text-surface-600-400" role="status">{feedback}</p>{/if}
   </div>
-  {#snippet footer()}
+{/snippet}
+
+{#snippet footer()}
     <div class="share-panel w-full space-y-2 border-t border-surface-200-800 pt-3">
       <label for="share-document-link" class="font-medium">Document link</label>
       <div class="flex gap-2">
@@ -192,8 +194,23 @@
       </div>
       <div class="flex items-center justify-between gap-3">
         <p class="text-surface-600-400">{sharing?.visibility === "private" ? "Copying this link does not grant additional access." : "Share this URL to open the document."}</p>
-        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (open = false)}>Done</button>
+        {#if !inline}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (open = false)}>Done</button>{/if}
       </div>
     </div>
-  {/snippet}
-</Modal>
+{/snippet}
+
+{#if inline}
+  <section class="panel share-sidebar space-y-4 pt-4" aria-label="Share document">
+    <h3 class="text-sm font-semibold">Share</h3>
+    {@render content()}
+    {@render footer()}
+  </section>
+{:else}
+  <Modal bind:open title="Share document" wide {footer}>
+    {@render content()}
+  </Modal>
+{/if}
+
+<style>
+  .share-sidebar :global(select) { max-width: 100%; }
+</style>

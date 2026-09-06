@@ -188,6 +188,23 @@ window.sharingCheck = async () => {
   return true;
 };
 
+window.shareSidebarCheck = async () => {
+  window.testShare.$set({ open: true, inline: true });
+  await flush();
+  const panel = document.querySelector('.share-sidebar');
+  check(panel && !panel.closest('[role="dialog"]'), 'sharing opens inside a panel');
+  panel.style.width = '192px';
+  panel.style.height = '320px';
+  await flush();
+  check(panel.scrollWidth <= panel.clientWidth + 1, 'sharing controls fit the minimum sidebar width');
+  check(panel.scrollHeight > panel.clientHeight, 'long sharing settings scroll in the panel');
+  const copy = [...panel.querySelectorAll('button')].find((item) => item.textContent.trim() === 'Copy link');
+  copy.click(); await flush();
+  check(window.copiedLink.endsWith('/docs/paper'), 'sidebar copies the document link');
+  check(panel.querySelector('[aria-label="General access"]'), 'sidebar exposes access settings');
+  return true;
+};
+
 window.filesCheckReady = true;
 `;
 
@@ -313,6 +330,7 @@ try {
   }
   await send("Emulation.setDeviceMetricsOverride", { width: 780, height: 437, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate("sharingCheck()"), true);
+  assert.equal(await evaluate("shareSidebarCheck()"), true);
   console.log("files-browser: creation, nesting, rename, keyboard, drag/drop, move dialog, duplication, delete, uploads, collisions, read-only, sharing and navbar passed");
 } finally {
   socket?.close();

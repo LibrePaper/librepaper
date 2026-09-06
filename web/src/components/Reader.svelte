@@ -79,7 +79,6 @@
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
   // named on the document. A reader who arrived by link is offered neither,
   // which is most of the point of a blind review.
-  let sharingOpen = $state(false);
   let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
   let visibility = $state("");
 
@@ -1367,6 +1366,7 @@
     { id: "comments", says: "Comments" },
     { id: "history", says: "History" },
     { id: "diagnostics", says: "Diagnostics", editOnly: true },
+    { id: "share", says: "Share", sharingOnly: true },
   ];
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
   let panel = $state(PANELS.includes(read(PANEL, null)) ? read(PANEL, null) : "files");
@@ -1805,6 +1805,7 @@
     }
     mayEdit = Boolean(allowed);
     if (!mayEdit && panel === "diagnostics") showPanel("files", false);
+    if (!canSeeSharing && panel === "share") showPanel("files", false);
     renderers.warm(format);
     // localStorage remembers a preference, not a running worker. Restore the
     // worker before claiming that LaTeX is ready; if the distribution was
@@ -2052,25 +2053,12 @@
         <IconButton icon="book" label="Choose a different TeX distribution" title="TeX distribution"
           pressed={cardOpen} onclick={() => (cardOpen = !cardOpen)} />
       {/if}
-      {#if canSeeSharing}
-        <button type="button" class="btn btn-sm h-8 preset-filled-primary-500" onclick={() => (sharingOpen = true)}>Share</button>
-      {:else}
+      {#if !canSeeSharing}
         <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
       {/if}
     </Row>
   {/snippet}
 </Nav>
-
-<Share
-  bind:open={sharingOpen}
-  slug={SLUG}
-  onvisibility={(chosen) => {
-    // Making a document private changes where its bytes come from, so the
-    // frame is reloaded rather than left showing what it was served before.
-    visibility = chosen;
-    navigateFrame(true);
-  }}
-/>
 
 <PendingAnnotations items={unconfirmed}
   onretry={(id) => outbox.retry(id, (message) => room?.send(message))}
@@ -2084,9 +2072,9 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
     <aside class="sidebar" class:collapsed={!shown.comments} ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <div class="sidebar-activity" role="group" aria-label="Sidebar sections">
-        {#each TABS.filter((tab) => !tab.editOnly || editing) as tab (tab.id)}
+        {#each TABS.filter((tab) => (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing)) as tab (tab.id)}
           <IconButton
-            icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : "box"}
+            icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "box"}
             label={tab.says} pressed={panel === tab.id}
             onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
         {/each}
@@ -2100,6 +2088,11 @@
                ondelete={deleteFiles} onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
+      {:else if panel === "share" && canSeeSharing}
+        <Share open inline slug={SLUG} onvisibility={(chosen) => {
+          visibility = chosen;
+          navigateFrame(true);
+        }} />
       {:else if panel === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic} />
