@@ -53,6 +53,7 @@
   import Grip from "./Grip.svelte";
   import Comments from "./Comments.svelte";
   import History from "./History.svelte";
+  import Diagnostics from "./Diagnostics.svelte";
   import Files from "./Files.svelte";
 
   const SLUG = location.pathname.split("/").pop();
@@ -720,12 +721,11 @@
   let issued = 0;
   let painted = 0;
   let sourceGeneration = 0;
-  // Reader-level serialization keeps the identity of a LaTeX result tied to
-  // the tree that was actually rendered. The compiler module may coalesce
-  // requests, but an older caller must never label a newer PDF with its own
-  // snapshot digest.
-  let latexPaintBusy = false;
-  let latexPaintQueued = false;
+  // Keep one render in flight and coalesce requests into the latest tree.
+  // This bounds the worker queue while typing, and keeps each LaTeX PDF
+  // tied to the snapshot digest of the tree that produced it.
+  let previewPaintBusy = false;
+  let previewPaintQueued = false;
   let previewTimer = null;
 
   // What the last compile said. When it is painted is `diagnostics.js`'s
@@ -770,10 +770,23 @@
     editor?.setDiagnostics?.(list);
   }
 
-  // Clicking the badge goes to the first thing the compiler complained about,
-  // and again to the next, round the list.
+  // General compiler warnings need no source location to be readable.
   function goToDiagnostic() {
-    editor?.nextDiagnostic?.();
+    void showPanel("diagnostics");
+  }
+
+  function diagnosticFile(item) {
+    if (!(item.line > 0)) return null;
+    const id = item.file ? session?.idOf(item.file) : session?.mainId();
+    return files.find((file) => file.id === id && file.kind === "text") || null;
+  }
+
+  async function openDiagnostic(item) {
+    const file = diagnosticFile(item);
+    if (!file) return;
+    openTheFile(file);
+    await tick();
+    editor?.openAt?.(file.id, item.line, item.column || 1);
   }
 
   // A document whose format is `html` is served into the frame as the page it
@@ -1068,6 +1081,8 @@
   }
 
   async function paintPreview() {
+    clearTimeout(previewTimer);
+    previewTimer = null;
     // A LaTeX document is compiled in an editor's browser and nowhere else,
     // so everybody else is shown the PDF the server kept from the last one
     // who did. See `docs/specs/latex.md`.
@@ -1085,15 +1100,11 @@
     const snapshotNavigation = navigationGeneration;
     const snapshotSource = sourceGeneration;
     const slow = renderers.formatOf(tree.main) === "latex";
-    let ownsLatexLatch = false;
-    if (slow && compilesHere) {
-      if (latexPaintBusy) {
-        latexPaintQueued = true;
-        return;
-      }
-      latexPaintBusy = true;
-      ownsLatexLatch = true;
+    if (previewPaintBusy) {
+      previewPaintQueued = true;
+      return;
     }
+    previewPaintBusy = true;
     try {
       // The figures, if this document has any. A figure not yet here is
       // awaited before the first compile that needs it, and the page that is
@@ -1105,7 +1116,8 @@
         if (
           mine <= painted ||
           snapshotNavigation !== navigationGeneration ||
-          snapshotSource !== sourceGeneration
+          (slow && snapshotSource !== sourceGeneration) ||
+          tree.main !== treeNow().main
         ) return;
         if (slow) {
           const missing = Object.keys(tree.digests).filter(
@@ -1142,11 +1154,14 @@
         if (slow && mine > painted) compiling = false;
       }
       const { html, pdf, synctex, diagnostics: said, seconds } = rendered;
-      // A slower render that resolves late must not paint over a newer one.
+      // An in-flight HTML preview may finish after another keystroke: show
+      // that progress while the queued render catches up. Navigation and
+      // main-file changes still invalidate it; LaTeX keeps its digest guard.
       if (
         mine <= painted ||
         snapshotNavigation !== navigationGeneration ||
-        snapshotSource !== sourceGeneration
+        (slow && snapshotSource !== sourceGeneration) ||
+        tree.main !== treeNow().main
       ) return;
       painted = mine;
       if (slow && seconds) lastCompile = seconds;
@@ -1180,11 +1195,14 @@
         // keystroke.
         latestPreview = { kind: "html", html };
         deliverPreview(latestPreview);
-        diagnosticPainter.rendered({ page: html, diagnostics: said || [] });
+        if (snapshotSource === sourceGeneration) {
+          diagnosticPainter.rendered({ page: html, diagnostics: said || [] });
+        }
         return;
       }
       // No page: the last one that compiled stays up, and what is said is that
       // it does not compile now, and where -- once the typing has stopped.
+      if (snapshotSource !== sourceGeneration) return;
       diagnosticPainter.rendered({ page: null, diagnostics: said || [] });
       // Unless nothing was ever painted, which is what someone who opens the
       // editor on a document that does not compile sees. Then the frame shows
@@ -1201,19 +1219,16 @@
       // fetched, which is this page's problem rather than the author's.
       if (mine > painted) say(error.message || "could not render", true);
     } finally {
-      if (ownsLatexLatch) {
-        latexPaintBusy = false;
-        if (latexPaintQueued) {
-          latexPaintQueued = false;
-          void paintPreview();
-        }
+      previewPaintBusy = false;
+      if (previewPaintQueued) {
+        previewPaintQueued = false;
+        void paintPreview();
       }
     }
   }
 
-  // Wait for a brief typing pause before refreshing the preview.
-  // A second for a reader, who is watching somebody
-  // else type and should never be shown a word half written.
+  // Editors refresh at a bounded cadence even during continuous typing.
+  // Readers wait for a pause so they do not see every half-written word.
   const READER_DEBOUNCE = 1000;
 
   // How long a LaTeX document this browser does not compile waits before
@@ -1228,6 +1243,7 @@
     sourceGeneration += 1;
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
+    if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
     clearTimeout(previewTimer);
     if (sourceFormat === "latex" && !compilesHere) {
       // The text has moved, so what is in the frame is a rendering of an
@@ -1343,6 +1359,7 @@
     { id: "files", says: "Files" },
     { id: "comments", says: "Comments" },
     { id: "history", says: "History" },
+    { id: "diagnostics", says: "Diagnostics", editOnly: true },
   ];
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
   let panel = $state(PANELS.includes(read(PANEL, null)) ? read(PANEL, null) : "files");
@@ -1444,11 +1461,18 @@
   // is the source pane unfolding over the document this page already holds.
   function joinSession(document_) {
     session = collab.join({
-      send: (message) => room.send(message),
+      send: (message) => {
+        // While reconnecting, keep edits in the local document until the
+        // server's document identity has been checked. start() sends them
+        // together once this session has rejoined the same document.
+        if (message.type.startsWith("y-update") && !session?.joined) return;
+        return room.send(message);
+      },
       onPeers: (count) => (peers = Math.max(peers, count)),
       onState: (state_) => (persistence = state_),
       name: identity || read(AUTHOR, "Anonymous"),
       slug: SLUG,
+      createdAt: document_.created_at,
       key: KEY,
       mayEdit,
     });
@@ -1467,7 +1491,6 @@
     session.awareness.on("change", refreshPeers);
     refreshFiles();
     room.send(session.open());
-    void document_;
   }
 
   /* ------------------------------------------------------------- the files */
@@ -1767,6 +1790,7 @@
       return;
     }
     mayEdit = Boolean(allowed);
+    if (!mayEdit && panel === "diagnostics") showPanel("files", false);
     renderers.warm(format);
     // localStorage remembers a preference, not a running worker. Restore the
     // worker before claiming that LaTeX is ready; if the distribution was
@@ -1808,14 +1832,41 @@
   // The socket is up or down. A socket that comes back has to rejoin: the
   // server hands the document out on `y-open` and nothing else, so without
   // this the changes made on either side of the gap never reach the other.
-  function reconnected(up) {
+  let rejoinRequest = 0;
+  async function reconnected(up) {
+    const request = ++rejoinRequest;
     connected = up;
     if (!up) {
       outbox.disconnected();
       session?.disconnected();
       return;
     }
-    if (session) room.send(session.open());
+    const active = session;
+    if (!active) return;
+    active.disconnected();
+    try {
+      const response = await fetch(`/api/documents/${SLUG}`, { headers: keyHeaders(KEY) });
+      if (request !== rejoinRequest || session !== active) return;
+      if (!response.ok) {
+        // A deleted document or a changed role must go through normal boot.
+        location.reload();
+        return;
+      }
+      const latest = await response.json();
+      if (request !== rejoinRequest || session !== active) return;
+      if (doc.created_at && latest.created_at !== doc.created_at) {
+        // Redeployment can recreate an example at the same URL. Its old
+        // session stays in its own cache; boot joins the new document.
+        location.reload();
+        return;
+      }
+      room.send(active.open());
+    } catch {
+      // A temporary metadata failure must not send unchecked CRDT updates.
+      setTimeout(() => {
+        if (request === rejoinRequest && session === active) void reconnected(true);
+      }, 1000);
+    }
   }
 
   $effect(() => {
@@ -1871,11 +1922,10 @@
   // for it to do: the document is already durable. What it must not do is
   // claim that pending writes are saved, so it says what is actually true.
   function reportPersistence() {
-    if (!connected) {
-      say(persistence.local ? "offline, changes kept in this browser" : "offline", true);
-      return;
-    }
-    say(persistence.pending ? "saving\u2026" : "saved on the server");
+    // Pending and offline status already have a reactive badge. Copying them
+    // into a static message leaves a second "saving" behind after the ack.
+    if (!connected || persistence.pending) return;
+    say("saved on the server");
     setTimeout(() => {
       if (state === "saved on the server") say("");
     }, 2000);
@@ -1907,8 +1957,8 @@
 
 <Nav {me}>
   {#snippet children()}
-    <IconButton icon="panel-left-open" label="Show or hide the files, comments and history"
-      title="Files, comments and history" pressed={Boolean(panel)} onclick={toggleColumn} />
+    <IconButton icon="panel-left-open" label="Show or hide the sidebar"
+      title="Show or hide the sidebar" pressed={Boolean(panel)} onclick={toggleColumn} />
     <span id="docTitle" class="text-surface-600-400 truncate text-sm">{doc.title ?? ""}</span>
   {/snippet}
   {#snippet status()}
@@ -1920,7 +1970,7 @@
       {#if peers > 1}<small class="badge preset-tonal-secondary">{peers} editing</small>{/if}
       {#if compileBadge}<small class="badge preset-tonal-surface" title={compileBadge}><span class="spinner" aria-hidden="true"></span>{compileBadge}</small>{/if}
       {#if diagnosticBadge}
-        <button type="button" onclick={goToDiagnostic} title="Go to the next problem"
+        <button type="button" onclick={goToDiagnostic} title="Show warnings and errors"
           class="badge {errorCount ? 'preset-tonal-error' : 'preset-tonal-warning'}">{diagnosticBadge}</button>
       {/if}
       {#if state}<small class="badge {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}" title={state}>{state}</small>{/if}
@@ -2018,8 +2068,8 @@
   {#if shown.comments}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <aside class="sidebar" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
-      <div class="paneltabs" role="tablist" aria-label="Files, comments and history">
-        {#each TABS as tab (tab.id)}
+      <div class="paneltabs" role="tablist" aria-label="Sidebar tabs">
+        {#each TABS.filter((tab) => !tab.editOnly || editing) as tab (tab.id)}
           <button type="button" role="tab" class="paneltab"
                   aria-selected={panel === tab.id}
                   onclick={() => showPanel(tab.id)}>
@@ -2034,6 +2084,9 @@
                ondelete={deleteFiles} onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
+      {:else if panel === "diagnostics"}
+        <Diagnostics {diagnostics} main={session?.mainPath() || ""}
+                     canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic} />
       {:else if panel === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
                  problem={historyProblem}

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::blob::FsStore;
 use crate::config::Configuration;
 use crate::room::Region;
-use crate::seed::{seed_into, visible_text, SeedAnnotation, SeedDocument};
+use crate::seed::{latex_prose, seed_into, visible_text, SeedAnnotation, SeedDocument};
 use crate::seed_examples::seed_documents;
 use crate::store::Store;
 
@@ -151,6 +151,8 @@ async fn seeded_annotations_anchor() {
                 Some(rendered) => rendered,
                 None => panic!("{}: {}", document.file, compiled.message()),
             }
+        } else if crate::render::is_latex(&document.file) {
+            latex_prose(&source)
         } else {
             source
         };
@@ -261,18 +263,23 @@ fn the_editable_examples_are_not_hard_wrapped() {
     const WRAPPED_AT_MOST: usize = 140;
     let mut checked = 0;
     for document in seed_documents() {
-        if !crate::render::is_markdown(&document.file) && !crate::render::is_typst(&document.file) {
+        if crate::render::is_html(&document.file) {
             continue;
         }
         let Ok(source) = std::fs::read_to_string(example_path(&document.file)) else {
             continue;
         };
         checked += 1;
-        // Prose only: a heading, a maths block or a table row is as long as it
-        // is, and none of them is a paragraph somebody wrapped.
+        // Prose only: a heading, a maths block, a table row or a LaTeX command
+        // is as long as it is, and none of them is a paragraph somebody
+        // wrapped.
         let paragraphs = source
             .lines()
-            .filter(|line| !line.trim_start().starts_with(['#', '=', '$', '|', '<']))
+            .filter(|line| {
+                !line
+                    .trim_start()
+                    .starts_with(['#', '=', '$', '|', '<', '\\'])
+            })
             .filter(|line| line.trim().len() > 40);
         let longest = paragraphs.clone().map(str::len).max().unwrap_or(0);
         assert!(

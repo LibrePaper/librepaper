@@ -19,7 +19,9 @@ use crate::cli::{server_from, stored_token_for};
 use crate::clock::timestamp;
 use crate::config::Configuration;
 use crate::http::{detail_of, get_json, post_json, text};
-use crate::render::{is_markdown, is_typst, render_markdown_document, render_typst_document};
+use crate::render::{
+    is_latex, is_markdown, is_typst, render_markdown_document, render_typst_document,
+};
 use crate::room::{Comment, Message, Region, Reply, Room, RoomSet};
 use crate::storage::{open_storage, StorageOptions};
 use crate::store::{example_suffix, slugify, Publication, Store};
@@ -49,11 +51,12 @@ pub struct SeedDocument {
     pub annotations: Vec<SeedAnnotation>,
 }
 
-/// The HTML to store, and -- for the examples Komodoc renders itself -- the
-/// source it was rendered from. An example that keeps its source opens in
-/// the editor, which is the point of having one of each. The rest arrive as
-/// HTML from the tool that made them, and stay read-only, because Komodoc
-/// cannot render them again.
+/// What to anchor the annotations against, the source to store, and its
+/// format. The markdown and typst examples are rendered here the way
+/// publishing renders them; the HTML one is its own rendering; and the LaTeX
+/// one is not rendered at all, because nothing on this side of the network
+/// can. Its annotations are anchored against the prose of the source, and the
+/// browser re-anchors them into the PDF's text once it has compiled one.
 pub fn read_seed_document(document: &SeedDocument) -> (String, String, String) {
     let raw = std::fs::read_to_string(&document.file).unwrap_or_else(|err| {
         die(format!(
@@ -79,9 +82,24 @@ pub fn read_seed_document(document: &SeedDocument) -> (String, String, String) {
             .unwrap_or_else(|| die(format!("could not render {}", document.file)));
         return (rendered, raw, "typst".into());
     }
+    if is_latex(&document.file) {
+        return (latex_prose(&raw), raw, "latex".into());
+    }
     // An HTML example is its own source, through the identity renderer, and is
     // as editable as the other two.
     (raw.clone(), raw, "html".into())
+}
+
+/// The words of a LaTeX source, near enough: comments dropped, and whitespace
+/// collapsed the way `visible_text` collapses it. Macros stay, so a seeded
+/// passage has to be plain prose -- a run of words with no `\cite` or `\emph`
+/// inside it -- which is also what survives the trip through pdf.js on the
+/// other side.
+pub fn latex_prose(source: &str) -> String {
+    let comment = regex::Regex::new(r"(?m)(^|[^\\])%.*$").expect("pattern");
+    let space = regex::Regex::new(r"\s+").expect("pattern");
+    let text = comment.replace_all(source, "$1");
+    space.replace_all(&text, " ").to_string()
 }
 
 pub async fn seed(options: StorageOptions, documents: &[SeedDocument]) {

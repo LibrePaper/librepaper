@@ -310,6 +310,18 @@ async function run() {
   );
   check("what is typed is rendered into the frame", typed);
 
+  // A live preview must also advance while typing continues without a pause.
+  await appendText(editor, "\n\nContinuous typing ");
+  let liveWhileTyping = false;
+  for (let i = 0; i < 25; i++) {
+    await editor.send("Input.insertText", { text: "word " });
+    if ((await editor.evalInFrame("return document.body.innerText", slug))?.includes("Continuous typing")) {
+      liveWhileTyping = true;
+    }
+    await wait(100);
+  }
+  check("the preview advances during continuous typing", liveWhileTyping);
+
   /* --- 2. read-only live updates ------------------------------------------ */
 
   // A document owned by somebody, so a second browser is a reader rather than

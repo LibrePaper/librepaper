@@ -23,10 +23,14 @@ const entry = join(temporary, "entry.js");
 const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
+import * as Y from ${JSON.stringify(join(root, "web/node_modules/yjs/dist/yjs.mjs"))};
+import { IndexeddbPersistence } from ${JSON.stringify(join(root, "web/node_modules/y-indexeddb/src/y-indexeddb.js"))};
+import { cacheName } from ${JSON.stringify(join(root, "web/src/lib/collab-cache.js"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
 import { undoDepth } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/commands/dist/index.js"))};
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
+import Diagnostics from ${JSON.stringify(join(root, "web/src/components/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
@@ -73,6 +77,89 @@ window.editorCheck = async () => {
     },
     sameView: firstView === finalView,
   };
+};
+window.collabCacheCheck = async () => {
+  const slug = "cache-upgrade";
+  const sessions = [];
+  const create = (props = {}) => {
+    const value = joinSession({ send: () => {}, mayEdit: true, ...props });
+    sessions.push(value);
+    return value;
+  };
+  const snapshot = (value) => ({ update: btoa(String.fromCharCode(...Y.encodeStateAsUpdate(value.doc))) });
+  const cached = async (createdAt) => {
+    let ready;
+    const local = new Promise((resolve) => { ready = resolve; });
+    const value = create({ slug, createdAt, onState: (state) => { if (state.local) ready(); } });
+    await local;
+    return value;
+  };
+  try {
+    const server = create();
+    const main = server.addText("main.md", "server");
+    server.setMain(main);
+    const old = create();
+    Y.applyUpdate(old.doc, Y.encodeStateAsUpdate(server.doc));
+    const legacyStore = new IndexeddbPersistence(cacheName(slug), old.doc);
+    await legacyStore.whenSynced;
+    old.textOf(main).insert(0, "unsent ");
+    await legacyStore.destroy();
+
+    const upgraded = await cached("first-creation");
+    await upgraded.start(snapshot(server));
+    const migrated = upgraded.text.toString();
+    upgraded.text.insert(0, "new offline ");
+    upgraded.leave();
+    const reopened = await cached("first-creation");
+    await reopened.start(snapshot(server));
+    const recovered = reopened.text.toString();
+
+    const replacement = create();
+    const newMain = replacement.addText("main.md", "reseeded");
+    replacement.setMain(newMain);
+    const recreated = await cached("second-creation");
+    await recreated.start(snapshot(replacement));
+    recreated.text.insert(0, "edited ");
+    const result = {
+      migrated, recovered,
+      files: recreated.list().length,
+      main: recreated.mainId() === newMain,
+      preview: recreated.tree().texts["main.md"],
+    };
+    const retained = create();
+    const retainedStore = new IndexeddbPersistence(cacheName(slug), retained.doc);
+    await retainedStore.whenSynced;
+    result.legacy = retained.text.toString();
+    await retainedStore.destroy();
+    return result;
+  } finally {
+    sessions.forEach((value) => value.leave());
+  }
+};
+window.diagnosticsCheck = async () => {
+  const host = document.createElement("aside");
+  document.body.append(host);
+  let chosen;
+  const component = createClassComponent({ component: Diagnostics, target: host, props: {
+    main: "main.typ",
+    diagnostics: [
+      { severity: "warning", message: "General compiler warning", hints: ["Try this suggestion"], line: 0 },
+      { severity: "error", message: "Unknown name", file: "chapter.typ", line: 4, column: 2 },
+    ],
+    canOpen: (item) => item.line > 0,
+    onopen: (item) => { chosen = item; },
+  } });
+  await tick();
+  const text = host.textContent;
+  const links = host.querySelectorAll("button");
+  const link = links[0]?.textContent.trim();
+  links[0]?.click();
+  component.$set({ diagnostics: [] });
+  await tick();
+  const result = { text, links: links.length, link, chosen, empty: host.textContent };
+  component.$destroy();
+  host.remove();
+  return result;
 };
 window.editorCheckReady = true;
 `;
@@ -178,6 +265,23 @@ try {
   assert.equal(result.before.caret + 7, result.after.caret);
   assert.equal(result.after.text, "REMOTE LOCAL alpha");
   console.log("editor-browser: file state, undo, caret, and inactive remote text preserved");
+  const diagnostics = await evaluate("diagnosticsCheck()");
+  assert.match(diagnostics.text, /General compiler warning/);
+  assert.match(diagnostics.text, /Try this suggestion/);
+  assert.match(diagnostics.text, /Unknown name/);
+  assert.equal(diagnostics.links, 1);
+  assert.equal(diagnostics.link, "chapter.typ:4:2");
+  assert.equal(diagnostics.chosen.file, "chapter.typ");
+  assert.match(diagnostics.empty, /No warnings or errors/);
+  console.log("editor-browser: diagnostics, hints, source links and empty state passed");
+  const cache = await evaluate("collabCacheCheck()");
+  assert.equal(cache.migrated, "unsent server");
+  assert.equal(cache.recovered, "new offline unsent server");
+  assert.equal(cache.files, 1);
+  assert.equal(cache.main, true);
+  assert.equal(cache.preview, "edited reseeded");
+  assert.equal(cache.legacy, "unsent server");
+  console.log("editor-browser: cache upgrade preserves offline edits and isolates recreated documents");
 } finally {
   socket?.close();
   browser?.kill();

@@ -1,11 +1,7 @@
 dist/
 komodoc-data/
 examples/*.html
-# ...except this one, which is the hand-written HTML example: it is a source
-# file that no tool renders, which is the whole point of it.
-!examples/style-guide.html
 examples/*_files/
-examples/.calepin/
 .envrc
 .env
 
@@ -13,8 +9,6 @@ examples/.calepin/
 # copied in beside it: everything under web/dist is a build output that the
 # binary embeds.
 web/dist/
-examples/.venv/
-examples/__marimo__/
 .claude
 
 # Cargo build output.

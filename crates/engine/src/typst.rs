@@ -194,6 +194,13 @@ pub fn compile_html(source: &str, name: &str, files: Files, today: Option<Today>
 
     let compiled = typst::compile::<typst_html::HtmlDocument>(&world);
     let mut diagnostics = describe(&world, &compiled.warnings);
+    // HTML export is our chosen output format. Its unconditional status
+    // warning is not something an author can fix in their document.
+    diagnostics.retain(|diagnostic| {
+        !(diagnostic.severity == Severity::Warning
+            && diagnostic.line == 0
+            && diagnostic.message == "html export is under active development and incomplete")
+    });
     let page = match compiled.output {
         Ok(document) => {
             match typst_html::html(&document, &typst_html::HtmlOptions { pretty: false }) {
@@ -501,9 +508,14 @@ mod tests {
         );
         assert!(compiled.page.is_some(), "{:?}", compiled.diagnostics);
         assert!(
-            compiled.warnings().count() > 0,
+            compiled
+                .warnings()
+                .any(|warning| warning.message.contains("unknown font family")),
             "an unknown font family warned about nothing"
         );
+        assert!(compiled.diagnostics.iter().all(|diagnostic| {
+            diagnostic.message != "html export is under active development and incomplete"
+        }));
         assert_eq!(compiled.errors().count(), 0);
     }
 

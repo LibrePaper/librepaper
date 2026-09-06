@@ -178,12 +178,14 @@ main.reader {
 }
 .paneltabs {
   display: flex;
+  flex-wrap: wrap;
   flex: none;
   gap: --spacing(1);
   padding: --spacing(2) --spacing(3) 0;
   border-bottom: 1px solid var(--color-surface-200-800);
 }
 .paneltab {
+  flex-shrink: 0;
   padding: --spacing(1) --spacing(2);
   margin-bottom: -1px;
   border-bottom: 2px solid transparent;

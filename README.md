@@ -39,13 +39,10 @@ The Komodoc sandbox is a free website where anyone can upload small (<4MB) short
 
 If you do not want to log in but want to try annotating some documents, you can try one of these live examples:
 
-- [HTML: A Short Style Guide for Quantitative Writing](https://komodoc.arelbundock.com/docs/html-a-short-style-guide-for-quantitative-writing-72wgqautjz)
 - [Markdown: What a Regression Table Is Hiding](https://komodoc.arelbundock.com/docs/markdown-what-a-regression-table-is-hiding-c9kqgt7acs)
 - [Typst: What a Confidence Interval Does Not Say](https://komodoc.arelbundock.com/docs/typst-what-a-confidence-interval-does-not-say-5vvxv8ebpd)
-- [Quarto: What the Bootstrap Actually Resamples](https://komodoc.arelbundock.com/docs/quarto-what-the-bootstrap-actually-resamples-j9iu5cqy7b)
-- [Calepin: Newton's Method Is Not Always Your Friend](https://komodoc.arelbundock.com/docs/calepin-newton-s-method-is-not-always-your-friend-2sdp6b6aga)
-- [Jupyter: Simpson's Paradox Is Not a Paradox](https://komodoc.arelbundock.com/docs/jupyter-simpson-s-paradox-is-not-a-paradox-b5serei7j7)
-- [Marimo: How Far Does a Drunk Walk?](https://komodoc.arelbundock.com/docs/marimo-how-far-does-a-drunk-walk-2c9n8gwd6i)
+- [HTML: What the Bootstrap Actually Resamples](https://komodoc.arelbundock.com/docs/html-what-the-bootstrap-actually-resamples-g6zm9dbzpa) (rendered by Quarto)
+- [LaTeX: What a Standard Error Assumes](https://komodoc.arelbundock.com/docs/latex-what-a-standard-error-assumes-75x2fwzpc8)
 - [Publication and management console](https://komodoc.arelbundock.com) (requires Github Login)
 
 A published document lives at `/docs/<title>-<suffix>`, where the suffix is
@@ -177,13 +174,10 @@ komodoc list
 ```
 
 ```
-2c9  2026-09-04  Marimo: How Far Does a Drunk Walk?
-b5s  2026-09-04  Jupyter: Simpson's Paradox Is Not a Paradox
-2sd  2026-09-04  Calepin: Newton's Method Is Not Always Your Friend
-j9i  2026-09-04  Quarto: What the Bootstrap Actually Resamples
-c9k  2026-09-04  Markdown: What a Regression Table Is Hiding
-5vv  2026-09-04  Typst: What a Confidence Interval Does Not Say
-72w  2026-09-04  HTML: A Short Style Guide for Quantitative Writing
+75x  2026-09-06  LaTeX: What a Standard Error Assumes
+g6z  2026-09-06  HTML: What the Bootstrap Actually Resamples
+5vv  2026-09-06  Typst: What a Confidence Interval Does Not Say
+c9k  2026-09-06  Markdown: What a Regression Table Is Hiding
 ```
 
 ### Share
