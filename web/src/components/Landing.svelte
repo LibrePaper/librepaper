@@ -14,9 +14,16 @@
   import { problem } from "../lib/toast.svelte.js";
   import { SHELL_HEADERS, config as loadConfig, get, me as whoami, upload } from "../lib/api.js";
   import { FAVORITES, VIEWED, read, write } from "../lib/storage.js";
+  import { day as isoDay } from "../lib/dates.js";
 
   let me = $state({});
-  let config = $state({ max_document: 4 * 1024 * 1024, extensions: [".html", ".htm", ".md", ".markdown"] });
+  // Replaced by the server's own on load; this is only what the drop zone
+  // says in the instant before that arrives. Keep it in step with
+  // `Configuration::default` in `crates/komodoc/src/config.rs`.
+  let config = $state({
+    max_document: 4 * 1024 * 1024,
+    extensions: [".html", ".htm", ".md", ".markdown", ".typ", ".tex"],
+  });
   let documents = $state([]);
   let counts = $state(new Map());
   // Every path in each project, by slug. What a search matches besides the
@@ -44,6 +51,10 @@
 
   const maxLabel = $derived(Math.round(config.max_document / (1024 * 1024)) + " MB");
 
+  // The columns a narrow screen drops; see `.col-when` at the foot of this
+  // file for why these two and not the others.
+  const DATE_COLUMNS = new Set(["updated", "viewed"]);
+
   /* ------------------------------------------------------------- the listing */
 
   // "3 days ago" rather than a date: for something you did yourself, how long
@@ -53,7 +64,7 @@
     if (days <= 0) return "today";
     if (days === 1) return "yesterday";
     if (days < 30) return `${days} days ago`;
-    return new Date(stamp).toISOString().slice(0, 10);
+    return isoDay(stamp);
   }
 
   // One comparison per column. Documents never opened sort as if they were
@@ -418,7 +429,7 @@
                 </th>
                 <th class="w-8"></th>
                 {#each [["title", "Project"], ["files", "Files"], ["comments", "Comments"], ["updated", "Updated"], ["viewed", "Opened"]] as [column, name]}
-                  <th>
+                  <th class={DATE_COLUMNS.has(column) ? "col-when" : ""}>
                     <button
                       type="button"
                       class="cursor-pointer {sortBy === column ? 'text-primary-500 font-semibold' : ''}"
@@ -475,7 +486,8 @@
                         class="badge preset-tonal-surface text-xs"
                         title="Published from {doc.source_format || 'html'}"
                       >
-                        {({ markdown: ".md", typst: ".typ" })[doc.source_format] || ".html"}
+                        {({ markdown: ".md", typst: ".typ", latex: ".tex" })[doc.source_format] ||
+                          ".html"}
                       </span>
                       <!-- What you hold on somebody else's document. Your own
                            say nothing: everything unmarked here is yours. -->
@@ -488,8 +500,8 @@
                   </td>
                   <td>{paths.has(doc.slug) ? paths.get(doc.slug).length : "—"}</td>
                   <td>{counts.has(doc.slug) ? counts.get(doc.slug) : "—"}</td>
-                  <td class="whitespace-nowrap">{doc.updated_at.slice(0, 10)}</td>
-                  <td class="whitespace-nowrap {viewed[doc.slug] ? '' : 'text-surface-400-600'}">
+                  <td class="col-when whitespace-nowrap">{isoDay(doc.updated_at)}</td>
+                  <td class="col-when whitespace-nowrap {viewed[doc.slug] ? '' : 'text-surface-400-600'}">
                     {viewed[doc.slug] ? sinceWhen(viewed[doc.slug]) : "never"}
                   </td>
                 </tr>
@@ -536,3 +548,15 @@
 </Modal>
 
 <Toasts />
+
+<style>
+  /* The two date columns are what a phone has no room for: the listing is
+     read there to find a project, and the day it changed is not how anyone
+     finds one. Hiding them is what lets the table fit the screen -- the
+     alternative is a sideways scroll with no scrollbar drawn to say so, which
+     is a column the reader never learns is there. Sorting by them still
+     works; the button is in the header on a wider screen. */
+  @media (max-width: 640px) {
+    .col-when { display: none; }
+  }
+</style>

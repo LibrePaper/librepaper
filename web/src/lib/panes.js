@@ -56,6 +56,8 @@ export const PANES = {
     reset: 360, // px, a comfortable comment card
     min: 240, // px, about the narrowest a comment card reads at
     max: 0.6, // of the window, so what it sits beside always keeps 40%
+    // And on a narrow window, less: see `shareOf`.
+    narrow: 0.38,
   },
 };
 
@@ -100,9 +102,28 @@ function clampSidebar(width, state) {
     separators(state) -
     (shown.source ? PANES.editor.min : 0) -
     (shown.document ? DOCUMENT_MIN : 0);
-  const ceiling = Math.max(PANES.sidebar.min, Math.min(state.width * PANES.sidebar.max, spare));
+  const ceiling = Math.max(
+    PANES.sidebar.min,
+    Math.min(state.width * shareOf(state.width), spare),
+  );
   return Math.round(Math.max(PANES.sidebar.min, Math.min(width, ceiling)));
 }
+
+/// The most of the window the column may take, which is not one number.
+///
+/// A comfortable column is 360px, and on a wide window that is a third of it
+/// and nobody notices. On a narrow one the same 360px is nearly half the
+/// screen spent on a file list, with the document it is about squeezed into
+/// what is left -- so the column gives way first, down to `PANES.sidebar.min`,
+/// which is still a readable comment card.
+function shareOf(window) {
+  return window < NARROW ? PANES.sidebar.narrow : PANES.sidebar.max;
+}
+
+/// Under this the window is being shared rather than laid out: the column's
+/// natural width stops being a third of it. Above the mobile breakpoint in
+/// `komodoc.css`, where the panes stop sharing a row at all.
+const NARROW = 1000;
 
 /// The source's share of the surface, within what both of them can read at.
 function clampShare(share, state) {

@@ -17,8 +17,15 @@
     <a class="flex items-center gap-2" href="/" aria-label="Komodoc home">
       <Logo />
     </a>
-    {#if children}<span class="nav-divider" aria-hidden="true">/</span>{/if}
-    {@render children?.()}
+    <!-- The separator and the name it separates are one thing, so a bar too
+         narrow to show the name drops the slash with it rather than leaving
+         it standing on its own. -->
+    {#if children}
+      <span class="nav-trail flex min-w-0 items-center gap-3">
+        <span class="nav-divider" aria-hidden="true">/</span>
+        {@render children()}
+      </span>
+    {/if}
   </div>
 
   {#if status}<div class="nav-status" role="status">{@render status()}</div>{/if}
@@ -50,10 +57,22 @@
 </nav>
 
 <style>
-  .nav-divider { color: var(--color-surface-400-600); user-select: none; }
+  .nav-divider { color: var(--color-surface-400-600); user-select: none; flex: none; }
+  /* The logo is not allowed to shrink, so without this it paints over
+     whatever the bar puts beside it as soon as the row runs out of room.
+     Clipping is the floor; the rules below are what keep it from being
+     reached. */
+  .nav-identity { overflow: hidden; }
+  .nav-trail { flex: 0 1 auto; }
   @media (max-width: 760px) {
-    .nav-identity { flex: 1; }
+    .nav-identity { flex: 0 1 auto; }
     .nav-actions { gap: var(--spacing); }
     .nav-actions > small { display: none; }
+  }
+  /* Narrower than this the bar carries the logo, the status and the tools and
+     nothing else: the file name is squeezed to nothing here anyway, and both
+     the Files panel and the mobile bar still name it. */
+  @media (max-width: 600px) {
+    .nav-trail { display: none; }
   }
 </style>

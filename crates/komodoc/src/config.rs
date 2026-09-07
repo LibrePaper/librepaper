@@ -218,7 +218,14 @@ impl Default for Configuration {
                 uploads_per_hour: 30,
             },
             max_annotations: 256 * 1024,
-            extensions: [".html", ".htm", ".md", ".markdown"]
+            // What the upload form takes. Every one of these is a source
+            // format `document_format` names and `storable_source` allows, so
+            // the list a person is shown and the list the publish route
+            // accepts are the same list. A `.typ` or a `.tex` dropped on its
+            // own is a document like any other -- one that reaches its
+            // figures and its bibliography only if it came with them, which
+            // is what `publish <directory>` is for.
+            extensions: [".html", ".htm", ".md", ".markdown", ".typ", ".tex"]
                 .map(String::from)
                 .to_vec(),
             // HTML is a source format like the other two, and its renderer is

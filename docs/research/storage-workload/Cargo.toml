@@ -1,0 +1,11 @@
+[package]
+name = "komodoc-cost-measure"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone research harness, outside the application workspace.
+[workspace]
+
+[dependencies]
+komodoc = { path = "../../../crates/komodoc" }

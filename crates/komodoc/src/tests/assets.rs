@@ -102,19 +102,22 @@ fn no_font_is_fetched_from_elsewhere() {
     );
 }
 
-// The logo is served from here, as the icon every page names in its head.
+// The mark is served from here, as the icon every page names in its head; the
+// full logo, word and all, is served beside it for anywhere it is drawn large.
 #[test]
 fn the_logo_is_served_as_the_icon() {
     let shell = shell();
-    let logo = shell
-        .get("/assets/komodoc-logo.svg")
-        .expect("the logo is served");
-    assert_eq!(logo.kind, "image/svg+xml");
+    for name in ["komodoc-icon.svg", "komodoc-logo.svg"] {
+        let art = shell
+            .get(&format!("/assets/{name}"))
+            .unwrap_or_else(|| panic!("{name} is served"));
+        assert_eq!(art.kind, "image/svg+xml");
+    }
     for (route, asset) in &shell {
         if route.ends_with(".html") && route != "/viewer.html" {
             assert!(
-                asset.text().contains(r#"href="/assets/komodoc-logo.svg""#),
-                "{route} does not name the logo as its icon"
+                asset.text().contains(r#"href="/assets/komodoc-icon.svg""#),
+                "{route} does not name the icon as its icon"
             );
         }
     }

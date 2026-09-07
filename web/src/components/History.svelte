@@ -120,7 +120,9 @@
 <div class="panel timeline">
   <PanelHeader
     title="History"
-    meta={checkpoints.length ? `${checkpoints.length} checkpoints` : undefined}
+    meta={checkpoints.length
+      ? `${checkpoints.length} checkpoint${checkpoints.length === 1 ? "" : "s"}`
+      : undefined}
   >
     {#if problem}
       <p class="text-error-500">{problem}</p>

@@ -10,6 +10,7 @@
 // checking: a history of two hundred marks is not a list anybody scrolls.
 
 import { SHELL_HEADERS } from "./api.js";
+import { day as isoDay } from "./dates.js";
 import * as renderers from "./renderers.js";
 
 const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
@@ -133,11 +134,9 @@ function windowAround(text, start, end, context) {
 }
 
 /// The day a checkpoint belongs to, in the reader's own timezone, because a
-/// history is read as "Tuesday" and Tuesday is where the reader is.
-function dayOf(at) {
-  const when = new Date(at);
-  return Number.isNaN(when.getTime()) ? "" : when.toLocaleDateString();
-}
+/// history is read as "Tuesday" and Tuesday is where the reader is. Written
+/// the way every other date in the app is written -- see `dates.js`.
+const dayOf = isoDay;
 
 /// How many unlabelled marks by one person in a row are shown before the
 /// middle of the run is folded away. Two is not a run; three is the smallest

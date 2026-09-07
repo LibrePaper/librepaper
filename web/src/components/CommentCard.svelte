@@ -4,6 +4,7 @@
   import Row from "./layout/Row.svelte";
   import * as history from "../lib/history.js";
   import { runsFor } from "../lib/suggestions.js";
+  import { day as isoDay } from "../lib/dates.js";
 
   // One annotation, and everything said about it.
   let {
@@ -246,7 +247,7 @@
            document, and the inserted side of the shared word-level diff. -->
       {#if went}
         <p class="panel-muted">
-          Removed in {went.label || went.sha.slice(0, 7)}, {new Date(went.at).toLocaleDateString()}.
+          Removed in {went.label || went.sha.slice(0, 7)}, {isoDay(went.at)}.
         </p>
       {/if}
       {#if replacement !== null}

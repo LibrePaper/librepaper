@@ -18,6 +18,13 @@
 let viewer = null; // the render module, once something has needed it
 let stage = null;
 let paintGeneration = 0;
+// The last PDF drawn, kept so a resize can redraw it. The pages are sized to
+// the width the frame has (see `pdf/render.js`), and the frame's width is not
+// fixed: the pane beside the source is dragged, the layout button gives the
+// document the whole window, and a phone is turned on its side. Without this
+// the page keeps whatever width it was first drawn at and is clipped or
+// stranded in the middle of the frame.
+let drawn = null;
 
 function ready() {
   if (stage) return stage;
@@ -33,25 +40,26 @@ function waiting(message) {
   note.textContent = message;
   document.body.replaceChildren(note);
   stage = null;
+  drawn = null;
 }
 
-addEventListener("message", async (event) => {
-  if (event.source !== parent) return;
-  const message = event.data;
-  if (!message || message.komodoc !== true) return;
-  if (message.type !== "preview" || !message.pdf) return;
-
-  // The bytes cross the frame boundary as an ArrayBuffer -- structured clone
-  // takes one whole, where a PDF re-encoded as a string would not survive the
-  // trip. Anything else is a caller that has not read this file.
-  const bytes = message.pdf;
-  if (!(bytes instanceof ArrayBuffer) && !ArrayBuffer.isView(bytes)) return;
+/// Draw `bytes`, which may be the ones already on screen.
+///
+/// One path for a new preview and for a redraw, so the two cannot drift about
+/// what `komodocViewer` holds or which generation won.
+async function paint(bytes) {
   const mine = ++paintGeneration;
-
+  // pdf.js hands the buffer to its worker, which detaches it. So `drawn` is
+  // taken first and every draw is given a copy of it: what is kept has to
+  // outlive the draw that is about to eat it, redraws included.
+  const keep = ArrayBuffer.isView(bytes)
+    ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).slice()
+    : new Uint8Array(bytes).slice();
   try {
     viewer ??= await import("../lib/pdf/render.js");
-    const pages = await viewer.render(bytes, ready());
+    const pages = await viewer.render(keep.slice(), ready());
     if (mine !== paintGeneration) return;
+    drawn = keep;
     // The page index for an offset, for the caret lock and SyncTeX. Neither
     // is built here; both need this and nothing else from the viewer, so it
     // is exposed now rather than left for them to reach into the DOM for.
@@ -64,6 +72,37 @@ addEventListener("message", async (event) => {
     if (mine !== paintGeneration) return;
     waiting(`this PDF could not be drawn: ${error}`);
   }
+}
+
+// A drag of the pane separator is a stream of resizes and each redraw is a
+// full rasterisation, so the redraw waits for the drag to stop. A width that
+// comes back to where it started asks for no work at all.
+let lastWidth = 0;
+let resizeTimer = 0;
+addEventListener("resize", () => {
+  if (!drawn) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const width = document.documentElement.clientWidth;
+    if (!width || width === lastWidth) return;
+    lastWidth = width;
+    void paint(drawn);
+  }, 150);
+});
+
+addEventListener("message", async (event) => {
+  if (event.source !== parent) return;
+  const message = event.data;
+  if (!message || message.komodoc !== true) return;
+  if (message.type !== "preview" || !message.pdf) return;
+
+  // The bytes cross the frame boundary as an ArrayBuffer -- structured clone
+  // takes one whole, where a PDF re-encoded as a string would not survive the
+  // trip. Anything else is a caller that has not read this file.
+  const bytes = message.pdf;
+  if (!(bytes instanceof ArrayBuffer) && !ArrayBuffer.isView(bytes)) return;
+  lastWidth = document.documentElement.clientWidth;
+  await paint(bytes);
 });
 
 waiting("nothing to show yet");
