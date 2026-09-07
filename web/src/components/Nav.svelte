@@ -3,7 +3,7 @@
   import IconButton from "./IconButton.svelte";
   import { signInHref, signOut } from "../lib/api.js";
 
-  // The bar every page wears: the mark, whatever the page puts in the middle,
+  // The bar every page wears: the logo, whatever the page puts in the middle,
   // and who you are.
   //
   // One row, centred, with a gap: the vertical rhythm is decided here and
@@ -16,7 +16,6 @@
   <div class="nav-identity flex min-w-0 items-center gap-3">
     <a class="flex items-center gap-2" href="/" aria-label="Komodoc home">
       <Logo />
-      <strong class="wordmark"><span class="wordmark-komo">komo</span><span class="wordmark-doc">doc</span></strong>
     </a>
     {#if children}<span class="nav-divider" aria-hidden="true">/</span>{/if}
     {@render children?.()}

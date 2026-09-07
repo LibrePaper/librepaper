@@ -15,20 +15,6 @@ Sources are listed at the bottom.
 
 ## 1. Editing
 
-- **Split editor / preview** by default; "View" menu switches to editor-only or
-  preview-only, or pops the preview into a **separate window** for a second
-  monitor.
-- **Live preview** — recompiles as you type; Typst's incremental compiler makes
-  this effectively instantaneous, which is the app's headline differentiator
-  from the LaTeX-based competition.
-- **Per-user preview target** — the eye icon in the file panel picks which
-  `.typ` file is previewed; this choice is *session- and user-local*, so
-  collaborators can preview different files in the same project.
-- **File panel** with three file classes:
-  - `.typ` Typst source — editable, one designated as preview/export root;
-  - text/data files (`.csv`, `.json`, `.bib`, …) — editable in-app;
-  - binary files (images, fonts) — viewable, but must be re-uploaded to change.
-- **File upload** for images and other assets.
 - **Compiler error assistance** (free tier) — errors explained inline.
 - Per-user editor settings: spellcheck, text size, editor font.
 - **Search** across the project.
@@ -45,17 +31,11 @@ Sources are listed at the bottom.
   compile time; the limits are storage and file count instead (see §7). Worth
   noting for komodoc's cost-bounding design — Typst's compiler is fast enough
   that they don't need to meter it.
-- **Conversion on import**: convert files from LaTeX, Word, and Markdown into
-  Typst (free tier).
 
 ## 3. Collaboration
 
-- **Real-time synchronization with co-authors** — simultaneous editing is free
-  tier, not gated.
-- **Share links** granting view or edit access to anyone holding the link.
 - **Project members** — signed-in users with permanent access that survives
   revoking a share link.
-- **Invite by email** *(Pro)*.
 - **Comments** *(Pro for the project owner to enable)*:
   - anchored to a selected text range, and stay anchored as the document
     changes;
@@ -116,10 +96,6 @@ Sources are listed at the bottom.
   - once created, any write-access collaborator can read and force-sync it —
     but if the *creator leaves the project*, the file degrades to a plain text
     file.
-- **Single sign-on**.
-- **No AI features** shipped in the app (contrast Overleaf/Writefull). Third
-  parties fill the gap (e.g. TypeTeX).
-- **No Dropbox sync**, no publisher/journal submission integrations.
 
 ## 7. Plans and limits
 
@@ -143,29 +119,6 @@ Sources are listed at the bottom.
 | Org-wide package & font distribution | — | — | ✓ |
 | LDAP access control | — | — | ✓ |
 | Priority support | — | — | ✓ |
-
-## 8. Presentation mode *(Pro)*
-
-- A **Present** button appears automatically when the app detects a 16:9 or 4:3
-  page aspect ratio; also under View > Present.
-- Fullscreen on the current monitor by default; **Speaker Mode** puts the
-  presentation in a separate window and speaker controls in the main one.
-- Speaker view: current slide, next slide, elapsed time, progress indicator;
-  navigate by click or arrow keys.
-- **Laser pointer** (`L`), **drawing/ink annotation** with color choice
-  (`Shift+L`), **lights off / hide content** (`B`).
-- **No speaker notes yet** — documented as planned.
-- Intended to pair with the polylux and touying slide packages.
-
-## 9. Open source and self-hosting
-
-- The **compiler** is open source (Apache-2.0, `typst/typst` on GitHub); the
-  **web app is not** — it is the commercial product.
-- **On-premises** licensing runs the web app in your own data center, no data
-  leaving your infrastructure, with org-wide package/font distribution and LDAP.
-- Because the app is closed, third-party self-hosted collaborative front-ends
-  exist (e.g. Collabst) — evidence of unmet demand for an open collaborative
-  Typst workspace.
 
 ## 10. Typst vs. Overleaf: the deltas
 

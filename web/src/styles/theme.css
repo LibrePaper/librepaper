@@ -112,9 +112,8 @@
 	--color-surface-900: #0c1012;
 	--color-surface-950: #080a0b;
 
-	/* One typeface for the interface and one for a source, and the wordmark
-	   is the only thing set in IBM Plex. A document in the frame carries its
-	   own, from the engine, and is not styled from here. */
+	/* One typeface for the interface and one for a source. A document in the
+	   frame carries its own, from the engine, and is not styled from here. */
 	--typo-base--font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 	--typo-heading--font-family: var(--typo-base--font-family);
 	--typo-heading--font-weight: 650;

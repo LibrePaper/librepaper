@@ -87,35 +87,37 @@ fn bundles_are_immutable_and_pages_are_not() {
     }
 }
 
-// The wordmark's font is served from this deployment, never from a font host,
-// so a page still reaches out to nobody.
+// The logo is drawn, not set in a brand font, and nothing else wants one: a
+// page still reaches out to no font host.
 #[test]
-fn the_wordmark_font_is_served_from_here() {
-    let shell = shell();
+fn no_font_is_fetched_from_elsewhere() {
     let css = stylesheets();
-    assert!(
-        css.contains("/fonts/ibm-plex-sans-600.woff2"),
-        "the stylesheet does not point at the font route"
-    );
     assert!(
         !css.contains("fonts.googleapis") && !css.contains("fonts.gstatic"),
         "an external font host"
     );
+    assert!(
+        !css.contains("@font-face"),
+        "a font face is declared, but no font is served from here"
+    );
+}
 
-    let font = shell
-        .get("/fonts/ibm-plex-sans-600.woff2")
-        .expect("the font is served");
-    assert_eq!(font.kind, "font/woff2");
-    assert!(
-        font.body.starts_with(b"wOF2"),
-        "what is served is not a woff2 file"
-    );
-    // Complete and unmodified, so the reserved family name stays honest.
-    assert!(
-        font.body.len() > 40_000,
-        "the font is {} bytes; a subset would raise an OFL naming question",
-        font.body.len()
-    );
+// The logo is served from here, as the icon every page names in its head.
+#[test]
+fn the_logo_is_served_as_the_icon() {
+    let shell = shell();
+    let logo = shell
+        .get("/assets/komodoc-logo.svg")
+        .expect("the logo is served");
+    assert_eq!(logo.kind, "image/svg+xml");
+    for (route, asset) in &shell {
+        if route.ends_with(".html") && route != "/viewer.html" {
+            assert!(
+                asset.text().contains(r#"href="/assets/komodoc-logo.svg""#),
+                "{route} does not name the logo as its icon"
+            );
+        }
+    }
 }
 
 #[test]

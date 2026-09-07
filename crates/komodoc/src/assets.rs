@@ -116,7 +116,7 @@ fn documentation() -> Result<String, String> {
     let source = file("README.md")
         .ok_or("missing README.md in the shell: run make build, which copies it in")?;
     let body = komodoc_engine::markdown::render_body(&String::from_utf8_lossy(source));
-    // The page opens with the mark and the wordmark, as the landing page does,
+    // The page opens with the logo, as the landing page does,
     // so the README's own title would say the name twice.
     let leading = regex::Regex::new(r"(?s)^\s*<h1[^>]*>.*?</h1>").expect("a constant pattern");
     Ok(leading.replace(&body, "").to_string())

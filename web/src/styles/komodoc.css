@@ -541,37 +541,9 @@ main.reader.source-right .editorpane {
 
 /* ------------------------------------------------------------------- brand */
 
-/* The komodo draws itself; see Logo.svelte. What is left here is the word
-   beside it, which the pages set at two sizes. */
-.wordmark {
-  font-family: "IBM Plex Sans", var(--typo-base--font-family);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-/* "komo" is the animal, "doc" is the document -- the same split as the mark. */
-.wordmark-komo {
-  color: var(--color-primary-500);
-}
-.wordmark-doc {
-  color: var(--color-surface-800-200);
-}
-/* The same pair again, larger and centred, at the top of a page that shows it. */
-.hero .wordmark {
-  font-size: var(--text-3xl);
-}
-
-/* ------------------------------------------------------------------- fonts */
-
-/* IBM Plex Sans, SemiBold, complete and unmodified. SIL OFL 1.1; the licence
-   is in fonts/OFL.txt. Served from this deployment, never from a font host, so
-   a page still reaches out to nobody. */
-@font-face {
-  font-family: "IBM Plex Sans";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/ibm-plex-sans-600.woff2") format("woff2");
-}
+/* The logo is the word itself, drawn as paths that take their colours from
+   the theme; see Logo.svelte. There is no wordmark set in type, and so no
+   brand font to serve: a page still reaches out to nobody. */
 
 /* ---------------------------------------------------------- documentation */
 
