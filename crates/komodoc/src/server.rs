@@ -189,6 +189,10 @@ struct Connection {
 /// key itself never reaches a log: what is recorded anywhere is its hash.
 pub const LINK_HEADER: &str = "x-komodoc-key";
 pub const LINK_PARAM: &str = "k";
+/// Explicitly marks a request as an agent/automation request. In this mode a
+/// cached account is used for attribution and deployment policy only: the
+/// supplied link bounds authority, so an owner login cannot elevate it.
+pub const AUTOMATION_HEADER: &str = "x-komodoc-automation";
 
 /// How long a frame token stands. One navigation's worth: the reader asks
 /// for one right before it sets the frame's URL, and asks again next time.
@@ -221,6 +225,10 @@ pub struct Viewer {
     /// ordinary comment ceiling for that key.
     pub comment_budget: Option<i64>,
     pub role: Role,
+    /// Whether the request explicitly uses link-bounded automation mode.
+    /// This keeps a cached account available for attribution while preventing
+    /// its owner or named grants from becoming authority.
+    pub automation: bool,
 }
 
 impl Viewer {
@@ -418,6 +426,15 @@ impl Server {
     /// comment without turning the raw cookie -- which also names the caller's
     /// uploads -- into something a comment payload carries around.
     pub fn comment_author(&self, headers: &HeaderMap, arrival: &Arrival, id: &Identity) -> String {
+        // A link-only automation peer has no visitor cookie to key its
+        // pseudonym on. Use the link digest instead, which is already the
+        // server-side attribution boundary and never exposes the credential.
+        if !id.is_signed_in() && Self::is_automation(headers) {
+            let link = self.link_hash(headers, None);
+            if !link.is_empty() {
+                return format!("link:{link}");
+            }
+        }
         if id.is_signed_in() {
             // A GitHub comment stays keyed on `github:<login>`, which is what
             // every comment already written carries. Google has no login to
@@ -470,6 +487,15 @@ impl Server {
         hash_link_key(&key)
     }
 
+    pub fn is_automation(headers: &HeaderMap) -> bool {
+        header_of(headers, AUTOMATION_HEADER).is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+    }
+
     /// Who is asking, and what they may do here. Every gate goes through this,
     /// so the answer to "what may this caller do to this document" is worked
     /// out in one place from the identity, the link, and the switches.
@@ -480,11 +506,36 @@ impl Server {
         arrival: &Arrival,
         query: Option<&str>,
     ) -> Viewer {
+        // Automation is link-bounded even when the command runs beside a
+        // browser's cookies. Keep the account for attribution and policy
+        // ceilings, while preventing the cached owner session from widening
+        // the link's authority.
+        let automation = Self::is_automation(headers);
         let id = self.whoami(headers, arrival).await;
-        let key = self.owner(headers, arrival, &id);
+        let key = if automation {
+            String::new()
+        } else {
+            self.owner(headers, arrival, &id)
+        };
         let presented_link = self.link_hash(headers, query);
         let now = crate::clock::now_unix();
-        let role = entry.role_of(&key, &id.id, &presented_link, self.ceiling_for(&id), now);
+        let role = if automation {
+            // In automation mode only the supplied live link contributes a
+            // role. Do not call role_of with empty owner/caller fields: an
+            // unowned entry treats an empty caller as its owner. Examples
+            // likewise remain read-only without an explicit edit link.
+            match entry.link_role(&presented_link, now) {
+                Some(Role::Editor) if self.ceiling_for(&id).edit => Role::Editor,
+                Some(Role::Editor | Role::Commenter) if self.ceiling_for(&id).comment => {
+                    Role::Commenter
+                }
+                Some(Role::Editor | Role::Commenter | Role::Reader) => Role::Reader,
+                None => Role::Reader,
+                Some(Role::Owner) => Role::Reader,
+            }
+        } else {
+            entry.role_of(&key, &id.id, &presented_link, self.ceiling_for(&id), now)
+        };
         // Only a live row supplies rate metadata or a `via` attribution. A
         // signed-in caller cannot attach an invented key merely to obtain a
         // fresh rate bucket.
@@ -497,6 +548,7 @@ impl Server {
             link,
             comment_budget,
             role,
+            automation,
         }
     }
 
@@ -504,6 +556,13 @@ impl Server {
     /// holds a live link, and anybody at all for an example. The bare URL
     /// opens nothing for anyone else.
     pub fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
+        if who.automation {
+            return entry.example
+                || (!who.link.is_empty()
+                    && entry
+                        .link_role(&who.link, crate::clock::now_unix())
+                        .is_some());
+        }
         entry.readable_by(&who.key, &who.id.id, &who.link, crate::clock::now_unix())
     }
 
@@ -611,6 +670,7 @@ impl Server {
         author: &str,
     ) -> (Value, bool) {
         let id = &who.id;
+        let request_id = incoming.request_id.clone();
         // The rung, not the switch: a document may name a commenter on a
         // deployment whose switch names nobody, and may be closed to a caller
         // the switch would have allowed.
@@ -626,7 +686,9 @@ impl Server {
                 "sign in to comment".to_string()
             };
             return (
-                json!({"type": "error", "message": reason, "temp_id": incoming.temp_id}),
+                json!({"type": "error", "message": reason, "temp_id": incoming.temp_id,
+                    "request_id": request_id, "version": 1,
+                    "protocol": "komodoc.room.v1"}),
                 false,
             );
         }
@@ -662,15 +724,22 @@ impl Server {
         // Which link the remark came in on, so an owner can tell reviewer two
         // from reviewer three without either having signed anything. Empty for
         // a commenter by name.
-        room.apply(
-            incoming,
-            address,
-            author,
-            &who.link,
-            who.comment_budget,
-            is_owner,
-        )
-        .await
+        let (mut result, ok) = room
+            .apply(
+                incoming,
+                address,
+                author,
+                &who.link,
+                who.comment_budget,
+                is_owner,
+            )
+            .await;
+        if !request_id.is_empty() {
+            result["request_id"] = json!(request_id);
+        }
+        result["version"] = json!(1);
+        result["protocol"] = json!("komodoc.room.v1");
+        (result, ok)
     }
 }
 
@@ -679,6 +748,15 @@ impl Server {
 /// A parsed request path, in the shapes the routes below look for.
 fn segments(path: &str) -> Vec<&str> {
     path.trim_start_matches('/').split('/').collect()
+}
+
+fn bundled_documentation(path: &str) -> Option<&'static str> {
+    match path {
+        "/skills/komodoc/SKILL.md" => Some(include_str!("../../../skills/komodoc/SKILL.md")),
+        "/docs/protocol/room-v1.md" => Some(include_str!("../../../docs/protocol/room-v1.md")),
+        "/docs/protocol/chat.md" => Some(include_str!("../../../docs/protocol/chat.md")),
+        _ => None,
+    }
 }
 
 fn is_sha(value: &str) -> bool {
@@ -931,6 +1009,10 @@ async fn handle(
         }
     }
 
+    if let ["api", "documents", slug, "chat", tail @ ..] = &parts[..] {
+        return server.handle_chat(request, &arrival, slug, tail).await;
+    }
+
     // The figures. Putting one takes an editor, because it puts bytes on the
     // server; reading one takes whatever reading the document takes, so a
     // private paper's figures are as private as its text.
@@ -998,6 +1080,17 @@ async fn handle(
         if method == Method::GET {
             return server
                 .handle_source(request.headers(), &arrival, slug, request.uri().query())
+                .await;
+        }
+    }
+
+    // One consistent read for automation clients: source and annotations are
+    // captured from the same room state, and the source digest identifies
+    // exactly what the client inspected.
+    if let ["api", "documents", slug, "snapshot"] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_snapshot(request.headers(), &arrival, slug, request.uri().query())
                 .await;
         }
     }
@@ -1135,6 +1228,23 @@ async fn handle(
         return server.handle_comments(request, peer, &arrival, slug).await;
     }
 
+    // Public, fixed documentation assets linked by the README and the
+    // distributable agent skill. Keep this allowlist compile-time embedded;
+    // no request may turn it into an arbitrary filesystem read.
+    if matches!(method, Method::GET | Method::HEAD) {
+        if let Some(body) = bundled_documentation(&path) {
+            let mut response = Response::new(if method == Method::HEAD {
+                Body::empty()
+            } else {
+                Body::from(body)
+            });
+            set(&mut response, "content-type", "text/plain; charset=utf-8");
+            set(&mut response, "cache-control", "no-store");
+            privacy_headers(&mut response);
+            return response;
+        }
+    }
+
     // --- the shell -------------------------------------------------------
     let mut page = path.clone();
     if !server.shell.contains_key(&page) {
@@ -1216,7 +1326,12 @@ impl Server {
             return plain(404, "not found");
         }
         let id = who.id.clone();
-        let author = self.comment_author(&headers, arrival, &id);
+        let author = if Self::is_automation(&headers) && !id.is_signed_in() && !who.link.is_empty()
+        {
+            format!("link:{}", who.link)
+        } else {
+            self.comment_author(&headers, arrival, &id)
+        };
         // What this caller may do here, asked once: the `y-*` gate and the
         // moderation of anyone else's comment are both the editor rung.
         let is_owner = who.at_least(Role::Editor);
@@ -1268,7 +1383,7 @@ impl Server {
             socket_id,
             Connection {
                 slug: room.slug.clone(),
-                headers,
+                headers: headers.clone(),
                 arrival,
                 query,
                 is_owner,
@@ -1347,6 +1462,18 @@ impl Server {
                         "y-update-start" | "y-update-chunk" | "y-update-end"
                     ) {
                         if !is_owner {
+                            let _ = tx
+                                .send(Outgoing::Text(
+                                    json!({
+                                        "type": "error",
+                                        "message": "editing is not permitted",
+                                        "request_id": incoming.request_id,
+                                        "version": 1,
+                                        "protocol": "komodoc.room.v1",
+                                    })
+                                    .to_string(),
+                                ))
+                                .await;
                             continue 'reader;
                         }
                         match assembly.receive(&incoming, update_ceiling) {
@@ -1418,17 +1545,48 @@ impl Server {
                                 .await;
                             }
                             "y-update" => {
-                                if !is_owner || incoming.update.is_empty() {
+                                if !is_owner {
+                                    let _ = tx
+                                        .send(Outgoing::Text(
+                                            json!({
+                                                "type": "error",
+                                                "message": "editing is not permitted",
+                                                "request_id": incoming.request_id,
+                                                "version": 1,
+                                                "protocol": "komodoc.room.v1",
+                                            })
+                                            .to_string(),
+                                        ))
+                                        .await;
+                                    continue 'reader;
+                                }
+                                if incoming.update.is_empty() {
                                     continue 'reader;
                                 }
                                 let Some(update) = decode_update(&incoming.update) else {
+                                    if who.automation {
+                                        let _ = tx.send(Outgoing::Text(json!({
+                                            "type": "error", "message": "invalid encoded update",
+                                            "request_id": incoming.request_id, "seq": incoming.seq,
+                                            "version": 1, "protocol": "komodoc.room.v1",
+                                        }).to_string())).await;
+                                    }
                                     continue 'reader;
                                 };
                                 match room
                                     .receive_update(socket_id, &update, incoming.seq, &author)
                                     .await
                                 {
-                                    Applied::Ignored => continue 'reader,
+                                    Applied::Ignored => {
+                                        if who.automation {
+                                            let _ = tx.send(Outgoing::Text(json!({
+                                                "type": "error", "message": "update was rejected",
+                                                "request_id": incoming.request_id, "seq": incoming.seq,
+                                                "version": 1, "protocol": "komodoc.room.v1",
+                                            }).to_string())).await;
+                                        }
+                                        continue 'reader;
+                                    }
                                     Applied::Refuse(reason) => {
                                         let _ = tx.send(Outgoing::Close(reason)).await;
                                         break 'reader;
@@ -1449,17 +1607,53 @@ impl Server {
                             // became, which is how `komodoc sync` knows what to print.
                             "y-checkpoint" => {
                                 if !is_owner {
+                                    let payload = json!({
+                                        "type": "error",
+                                        "message": "editing is not permitted",
+                                        "request_id": incoming.request_id,
+                                        "version": 1,
+                                        "protocol": "komodoc.room.v1",
+                                    });
+                                    if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
+                                        break 'reader;
+                                    }
                                     continue 'reader;
                                 }
                                 let why = match incoming.why.as_str() {
                                     "sync" | "restore" | "label" => incoming.why.clone(),
                                     _ => "cli".to_string(),
                                 };
-                                if let Ok(Some(sha)) = room.checkpoint(&why, &author).await {
-                                    let payload = json!({"type": "y-checkpoint", "sha": sha});
-                                    if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
-                                        break 'reader;
-                                    }
+                                let immediate = who.automation || !incoming.request_id.is_empty();
+                                let result = if immediate {
+                                    room.checkpoint_now(&why, &author).await
+                                } else {
+                                    room.checkpoint(&why, &author).await
+                                };
+                                let payload = match result {
+                                    Ok(Some(sha)) => json!({
+                                        "type": "y-checkpoint", "sha": sha,
+                                        "request_id": incoming.request_id,
+                                        "durable": true,
+                                        "version": 1,
+                                        "protocol": "komodoc.room.v1",
+                                    }),
+                                    Ok(None) if !immediate => continue 'reader,
+                                    Ok(None) => json!({
+                                        "type": "y-checkpoint", "noop": true,
+                                        "request_id": incoming.request_id,
+                                        "durable": true,
+                                        "version": 1,
+                                        "protocol": "komodoc.room.v1",
+                                    }),
+                                    Err(message) => json!({
+                                        "type": "error", "message": message,
+                                        "request_id": incoming.request_id,
+                                        "version": 1,
+                                        "protocol": "komodoc.room.v1",
+                                    }),
+                                };
+                                if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
+                                    break 'reader;
                                 }
                             }
                             _ => {}
@@ -3339,6 +3533,131 @@ impl Server {
                 "format": format, "source": source,
             }),
         )
+    }
+
+    async fn handle_snapshot(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return write_json(404, &json!({"error": "not found"}));
+        };
+        let who = self.viewer(&entry, headers, arrival, query).await;
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let author = self.comment_author(headers, arrival, &who.id);
+        let is_owner = who.at_least(Role::Editor);
+        let room = self.rooms.get(slug).await;
+        let (source, held_format, tree, texts, comments) =
+            room.snapshot_bundle(&author, is_owner).await;
+        let format = if held_format.is_empty() {
+            if entry.source_format.is_empty() {
+                "html".to_string()
+            } else {
+                entry.source_format.clone()
+            }
+        } else {
+            held_format
+        };
+        let files = tree.files.clone();
+        write_json(
+            200,
+            &json!({
+                "version": 1,
+                "protocol": "komodoc.snapshot.v1",
+                "slug": entry.slug,
+                "title": entry.title,
+                "format": format,
+                "main": tree.main,
+                "tree": tree,
+                "files": files,
+                "texts": texts,
+                "source": source,
+                "source_sha": crate::store::digest_of(&source),
+                "comments": comments,
+                "role": who.role.as_str(),
+                "capabilities": {
+                    "read": true,
+                    "comment": who.at_least(Role::Commenter),
+                    "edit": who.at_least(Role::Editor),
+                },
+            }),
+        )
+    }
+
+    async fn handle_chat(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+        tail: &[&str],
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error":"bad slug"}));
+        }
+        if cross_site_refused(request.headers(), arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return write_json(404, &json!({"error":"not found"}));
+        };
+        let who = self
+            .viewer(&entry, request.headers(), arrival, request.uri().query())
+            .await;
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error":"not found"}));
+        }
+        let token = request
+            .headers()
+            .get("x-komodoc-chat-token")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let id = tail.first().copied().unwrap_or("");
+        let action = match (request.method().as_str(), tail) {
+            ("POST", []) => crate::chat::Action::Create,
+            ("GET", [_]) => {
+                let after =
+                    url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+                        .find(|(key, _)| key == "after")
+                        .map(|(_, value)| value.parse::<u64>())
+                        .transpose();
+                match after {
+                    Ok(after) => crate::chat::Action::Read(after.unwrap_or(0)),
+                    Err(_) => return write_json(400, &json!({"error":"invalid cursor"})),
+                }
+            }
+            ("POST", [_]) => {
+                let bytes = match to_bytes(request.into_body(), 64 * 1024).await {
+                    Ok(bytes) => bytes,
+                    Err(_) => return write_json(413, &json!({"error":"message too large"})),
+                };
+                match serde_json::from_slice(&bytes) {
+                    Ok(post) => crate::chat::Action::Post(post),
+                    Err(_) => return write_json(400, &json!({"error":"invalid message"})),
+                }
+            }
+            ("POST", [_, "listen"]) => crate::chat::Action::Listen,
+            ("DELETE", [_]) => crate::chat::Action::Delete,
+            _ => return write_json(405, &json!({"error":"unsupported mailbox operation"})),
+        };
+        let mut response =
+            match crate::chat::request(&self.store.blobs, slug, id, &token, action).await {
+                Ok(result) => write_json(200, &result),
+                Err((status, error)) => write_json(status, &json!({"error":error})),
+            };
+        set(&mut response, "cache-control", "no-store");
+        response
     }
 
     /// Who a document is shared with, and -- for its owner -- the changes to

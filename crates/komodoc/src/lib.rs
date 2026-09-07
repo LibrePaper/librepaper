@@ -9,6 +9,7 @@
 mod assets;
 mod auth;
 mod blob;
+mod chat;
 mod checkpoint_cache;
 mod cli;
 mod clock;
@@ -20,6 +21,7 @@ mod latex;
 mod local;
 mod origins;
 pub mod paths;
+pub mod peer;
 mod pseudonym;
 mod render;
 mod retention;
@@ -365,6 +367,11 @@ enum Command {
         #[command(subcommand)]
         command: LocalCommand,
     },
+    /// Run a provider-neutral automation operation against a document link.
+    Agent {
+        #[command(subcommand)]
+        command: peer::AgentCommand,
+    },
     /// Delete one document and its comments
     Destroy {
         /// The document to delete, by ID or slug
@@ -581,6 +588,11 @@ pub async fn main() {
             }
         }
         Command::Local { command } => local::cli::run(LocalArgs { command }).await,
+        Command::Agent { command } => {
+            if let Err(err) = peer::run_cli(command).await {
+                die(err);
+            }
+        }
         Command::Destroy {
             document,
             server,

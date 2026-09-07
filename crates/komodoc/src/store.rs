@@ -1069,6 +1069,7 @@ impl Store {
                 room_key(slug),
                 room_lock_key(slug),
                 crate::blob::session_key(slug),
+                format!("chat/{slug}.json"),
             ])
             .await;
 

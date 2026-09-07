@@ -67,6 +67,25 @@ pub async fn sync_document(
     } else {
         stored_token_for(&server)
     };
+    let presence_name = if token.is_empty() {
+        "komodoc".to_string()
+    } else {
+        match crate::http::get_with_token(
+            &format!("{server}/api/me"),
+            &token,
+            Duration::from_secs(30),
+        )
+        .await
+        {
+            Ok((200, payload)) => crate::http::text(&payload, "name"),
+            _ => String::new(),
+        }
+    };
+    let presence_name = if presence_name.is_empty() {
+        "komodoc".to_string()
+    } else {
+        presence_name
+    };
     let slug = resolve_identifier(identifier, &server, &key).await;
 
     // Only an editor may change a document's source, in the browser and here.
@@ -106,8 +125,9 @@ pub async fn sync_document(
     let _watcher = watch(&target, events).unwrap_or_else(|err| die(err));
 
     let mut wait = RECONNECT_FIRST;
-    let mut client =
-        Client::new(target.clone(), every, server.clone(), token.clone()).with_key(&key);
+    let mut client = Client::new(target.clone(), every, server.clone(), token.clone())
+        .with_key(&key)
+        .with_presence_name(&presence_name);
     loop {
         match client.run(&slug, &mut watched).await {
             // The room closed the socket and said why -- the document was
@@ -172,6 +192,9 @@ pub struct Client {
     /// The share link's key, when the client joined by one; sent beside the
     /// bearer on the upgrade and on the one fetch, the way a browser sends it.
     key: String,
+    presence_clock: u32,
+    last_presence: Instant,
+    presence_name: String,
     /// What is to be sent, in order. Every method below writes here rather
     /// than to the socket, so the whole of this client -- the merge included
     /// -- can be driven by a test with no socket at all, and so that nothing
@@ -187,6 +210,9 @@ impl Client {
             server,
             token,
             key: String::new(),
+            presence_clock: 1,
+            last_presence: Instant::now(),
+            presence_name: "komodoc".to_string(),
             outbox: Vec::new(),
             doc: session::new_doc(),
             base: String::new(),
@@ -202,6 +228,11 @@ impl Client {
     /// The same client, joining by a share link's key.
     pub fn with_key(mut self, key: &str) -> Client {
         self.key = key.to_string();
+        self
+    }
+
+    fn with_presence_name(mut self, name: &str) -> Client {
+        self.presence_name = name.to_string();
         self
     }
 
@@ -249,9 +280,13 @@ impl Client {
                     .map_err(|_| "the link key is not a header value".to_string())?,
             );
         }
-        let (socket, _) = tokio_tungstenite::connect_async(request)
-            .await
-            .map_err(|err| format!("could not join the session: {err}"))?;
+        let (socket, _) = tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio_tungstenite::connect_async(request),
+        )
+        .await
+        .map_err(|_| "timed out joining the session".to_string())?
+        .map_err(|err| format!("could not join the session: {err}"))?;
         let (mut write, mut read) = socket.split();
 
         // What this client already has, so the server answers with the rest
@@ -260,6 +295,18 @@ impl Client {
         self.say(
             json!({"type": "y-open", "vector": encode_update(&session::encode_vector(&self.doc))}),
         );
+        // Awareness identifies the headless client in the browser's peer
+        // list. It carries no caret or editor state: the sync process has no
+        // position to publish, and presence never changes its authority.
+        self.say(json!({
+            "type": "y-awareness",
+            "update": encode_update(&crate::peer::awareness_update(
+                crate::peer::awareness_client_id(&self.doc),
+                self.presence_clock,
+                &format!("{} (sync)", self.presence_name),
+                "#4f46e5",
+            )),
+        }));
         self.flush(&mut write).await?;
 
         let mut ticker = tokio::time::interval(self.every);
@@ -293,6 +340,19 @@ impl Client {
                     self.from_disk = Some(Instant::now());
                 }
                 _ = ticker.tick() => {
+                    if self.last_presence.elapsed() >= Duration::from_secs(10) {
+                        self.presence_clock = self.presence_clock.wrapping_add(1).max(1);
+                        self.last_presence = Instant::now();
+                        self.say(json!({
+                            "type": "y-awareness",
+                            "update": encode_update(&crate::peer::awareness_update(
+                                crate::peer::awareness_client_id(&self.doc),
+                                self.presence_clock,
+                                &format!("{} (sync)", self.presence_name),
+                                "#4f46e5",
+                            )),
+                        }));
+                    }
                     self.settle()?;
                     self.flush(&mut write).await?;
                 }

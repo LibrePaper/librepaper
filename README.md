@@ -516,6 +516,57 @@ stops you running two of these on it by accident. Turn off format-on-save for
 a synced file: a formatter that rewrites every line is a change against
 everyone and re-anchors every comment.
 
+### Agents
+
+Give an agent a Komodoc link and it can work on the document with that link's
+permissions. A read link reads, a comment link also annotates, and an edit
+link also changes source. Signing in supplies attribution and satisfies the
+deployment's sign-in policy; it does not give an agent using a read link the
+owner's editing rights.
+
+Install the [Komodoc skill](skills/komodoc/SKILL.md) in your agent's skill
+directory. It explains how to install the single Komodoc binary locally and
+use its commands. Any agent that can run commands can use it:
+
+```sh
+komodoc agent capabilities 'https://komodoc.example.org/docs/paper#k=YOUR_KEY'
+komodoc agent read 'https://komodoc.example.org/docs/paper#k=YOUR_KEY'
+komodoc agent comment 'https://komodoc.example.org/docs/paper#k=YOUR_KEY' \
+  --exact 'selected words' --body 'Please explain this assumption.'
+```
+
+Each command returns JSON. Read the current source before editing, save the
+revised text locally, and pass the source SHA you read:
+
+```sh
+komodoc agent edit "$KOMODOC_DOCUMENT" --file revised.md --expected-sha SOURCE_SHA
+komodoc agent checkpoint "$KOMODOC_DOCUMENT"
+```
+
+`--file` names the local input; `--path` selects a remote file inside a
+project. A stale SHA refuses the edit so the agent can read again and account
+for other people's changes. Edits synchronize through the same collaborative
+session as the browser and wait for durable acknowledgement.
+
+The robot icon opens a private conversation mailbox. Start your preferred
+agent yourself, then give it the connection instructions from that panel.
+The agent uses `komodoc agent chat watch` to receive messages and
+`komodoc agent chat post` to reply. It uses the same document commands above
+for comments and edits. No local service, pairing, provider adapter, or
+agent launcher is needed.
+
+The panel can queue messages while the agent is away. Its listening indicator
+means an agent has recently checked the mailbox; Komodoc cannot wake or stop
+an external agent. Messages are stored on the Komodoc server separately from
+shared document comments. Both document access and a separate conversation
+credential are required to read or post. The panel remembers that credential
+for the current browser tab, and deleting the conversation removes its
+history and revokes access. An agent may send content to its chosen model
+provider according to its own configuration.
+
+See the [sidebar mailbox interface](docs/protocol/chat.md) and the
+[existing room operations](docs/protocol/room-v1.md) for client integration.
+
 ### Storage
 
 By default a server keeps everything in a directory:

@@ -53,6 +53,7 @@
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
   import Comments from "./Comments.svelte";
+  import Agent from "./Agent.svelte";
   import History from "./History.svelte";
   import Diagnostics from "./Diagnostics.svelte";
   import Settings from "./Settings.svelte";
@@ -1884,6 +1885,7 @@
   const TABS = [
     { id: "files", says: "Files", editorOnly: true },
     { id: "comments", says: "Comments" },
+    { id: "agent", says: "Agent" },
     // History is readable by link-holders too: reviewers need the “since”
     // view even when they cannot edit or restore the live source.
     { id: "history", says: "History" },
@@ -2684,7 +2686,7 @@
               </div>
             {:else}
               <IconButton
-                icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
+                icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
                 label={tab.says} pressed={panel === tab.id}
                 onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
             {/if}
@@ -2704,6 +2706,8 @@
                ondelete={deleteFiles} onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
+      {:else if panel === "agent"}
+        <Agent slug={SLUG} link={linkFor(SLUG)} path={session?.paths?.get(openFile) || ""} selection={pending} />
       {:else if panel === "share" && canSeeSharing}
         <Share open inline slug={SLUG} onclose={() => showPanel("")} />
       {:else if panel === "settings" && mayEdit}
