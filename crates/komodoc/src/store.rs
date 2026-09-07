@@ -34,12 +34,17 @@ use crate::blob::{
     document_key, document_prefix, examples_key, legacy_source_key, room_key, room_lock_key,
     source_key, source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
 };
+use crate::catalog::{Account, Catalog, CatalogError, NewDocument};
 use crate::clock::{now_unix, parse_timestamp, timestamp};
 use crate::config::Configuration;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IndexEntry {
     pub slug: String,
+    /// Immutable catalogue identity. Older JSON entries have no identity and
+    /// continue to use their slug as the object prefix until republished.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub storage_id: String,
     pub title: String,
     pub sha: String,
     #[serde(default)]
@@ -451,6 +456,9 @@ pub struct Store {
     pub blobs: Arc<dyn BlobStore>,
     pub config: Arc<Configuration>,
     pub state: Mutex<StoreState>,
+    /// The authoritative catalogue for new deployments. `None` is retained
+    /// only for the small compatibility surface used by legacy fixtures.
+    pub catalog: Option<Arc<Catalog>>,
 }
 
 pub struct StoreState {
@@ -560,6 +568,29 @@ impl Store {
                 index_version,
                 refreshed_at: None,
             }),
+            catalog: None,
+        })
+    }
+
+    /// Open a store backed by the transactional catalogue. The old
+    /// `open` constructor intentionally remains available for isolated tests
+    /// and old callers, but production startup uses this constructor so no
+    /// whole-file JSON index is read or written.
+    pub async fn open_with_catalog(
+        blobs: Arc<dyn BlobStore>,
+        config: Arc<Configuration>,
+        catalog: Arc<Catalog>,
+    ) -> Result<Store, String> {
+        let entries = catalog_entries(&catalog).map_err(|err| err.to_string())?;
+        Ok(Store {
+            blobs,
+            config,
+            state: Mutex::new(StoreState {
+                entries,
+                index_version: String::new(),
+                refreshed_at: None,
+            }),
+            catalog: Some(catalog),
         })
     }
 
@@ -571,6 +602,14 @@ impl Store {
     /// -- the overwhelming majority of calls -- paying for a reload it does
     /// not need.
     pub async fn get(&self, slug: &str) -> Option<IndexEntry> {
+        if let Some(catalog) = &self.catalog {
+            return catalog
+                .document(slug)
+                .ok()
+                .flatten()
+                .filter(|document| document.status == "active")
+                .map(IndexEntry::from_catalog);
+        }
         {
             let mut state = self.state.lock().await;
             if let Some(entry) = state.entries.get(slug).cloned() {
@@ -596,6 +635,14 @@ impl Store {
 
     /// Every document, newest first, as the listing endpoint wants.
     pub async fn list(&self) -> Vec<IndexEntry> {
+        if let Some(catalog) = &self.catalog {
+            let mut entries: Vec<_> = catalog_entries(catalog)
+                .unwrap_or_default()
+                .into_values()
+                .collect();
+            entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            return entries;
+        }
         let state = self.state.lock().await;
         let mut documents: Vec<IndexEntry> = state.entries.values().cloned().collect();
         documents.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -614,14 +661,28 @@ impl Store {
                 None => return Err(BlobError::NotFound),
             }
         };
-        match self.blobs.get(&source_key(slug, &digest)).await {
+        let prefix = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.document(slug).ok().flatten())
+            .map(|document| document.storage_id)
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| slug.to_string());
+        match self.blobs.get(&source_key(&prefix, &digest)).await {
             Err(BlobError::NotFound) => self.blobs.get(&legacy_source_key(slug)).await,
             other => other,
         }
     }
 
     pub async fn read(&self, slug: &str, digest: &str) -> Result<Vec<u8>, BlobError> {
-        self.blobs.get(&document_key(slug, digest)).await
+        let identity = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.document(slug).ok().flatten())
+            .map(|document| document.storage_id)
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| slug.to_string());
+        self.blobs.get(&document_key(&identity, digest)).await
     }
 
     /// Names a document in the index. It writes no bytes of the document
@@ -635,7 +696,16 @@ impl Store {
     pub async fn put(&self, v: Publication) -> Result<IndexEntry, PutError> {
         let size = v.source.len() as i64;
         let mut state = self.state.lock().await;
-        self.admit(&state, &v.slug, &v.owner, size, now_unix())?;
+        let admission_owner = v.owner.clone();
+        let admission_owner_id = v.owner_id.clone();
+        self.admit(
+            &state,
+            &v.slug,
+            &admission_owner,
+            &admission_owner_id,
+            size,
+            now_unix(),
+        )?;
         let now = timestamp();
         let mut created = now.clone();
         let mut example = false;
@@ -657,6 +727,12 @@ impl Store {
         let shared = state.entries.get(&v.slug).cloned().unwrap_or_default();
         let entry = IndexEntry {
             slug: v.slug.clone(),
+            storage_id: state
+                .entries
+                .get(&v.slug)
+                .map(|existing| existing.storage_id.clone())
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| random_storage_id()),
             title: v.title,
             // The digest of the source, which is the checkpoint the room is
             // about to write. From here the index's `sha` names the newest
@@ -677,6 +753,85 @@ impl Store {
             guests: shared.guests,
         };
         let previous = state.entries.insert(v.slug.clone(), entry.clone());
+        if let Some(catalog) = &self.catalog {
+            let result = if previous.is_none() {
+                let owner_id = (!entry.publisher_id.is_empty()).then(|| entry.publisher_id.clone());
+                if let Some(owner_id) = &owner_id {
+                    let provider = owner_id
+                        .split_once(':')
+                        .map(|(provider, _)| provider)
+                        .unwrap_or("github");
+                    if let Err(err) = catalog.upsert_account(&Account {
+                        id: owner_id.clone(),
+                        provider: provider.to_string(),
+                        handle: entry.publisher.clone(),
+                        name: entry.publisher_name.clone(),
+                        email: if entry.publisher.contains('@') {
+                            entry.publisher.clone()
+                        } else {
+                            String::new()
+                        },
+                        first_seen: entry.created_at.clone(),
+                        last_seen: entry.updated_at.clone(),
+                        plan: "default".to_string(),
+                        status: "active".to_string(),
+                        session_generation: random_storage_id(),
+                        erasure_cursor: None,
+                    }) {
+                        match previous {
+                            Some(old) => {
+                                state.entries.insert(v.slug.clone(), old);
+                            }
+                            None => {
+                                state.entries.remove(&v.slug);
+                            }
+                        }
+                        return Err(PutError::Storage(err.to_string()));
+                    }
+                }
+                let owner_key = if owner_id.is_some() {
+                    String::new()
+                } else if entry.publisher.is_empty() {
+                    format!("example:{}", entry.slug)
+                } else {
+                    entry.publisher.clone()
+                };
+                catalog
+                    .create_document(&NewDocument {
+                        slug: entry.slug.clone(),
+                        storage_id: entry.storage_id.clone(),
+                        title: entry.title.clone(),
+                        sha: entry.sha.clone(),
+                        created_at: entry.created_at.clone(),
+                        published_at: entry.created_at.clone(),
+                        updated_at: entry.updated_at.clone(),
+                        example: entry.example,
+                        owner_key,
+                        owner_id,
+                        status: "active".to_string(),
+                        size: entry.size,
+                        counted_size: entry.size,
+                        maintenance_reserved: 0,
+                        last_auto_checkpoint_at: now_unix(),
+                        source_format: entry.source_format.clone(),
+                        main: entry.main.clone(),
+                    })
+                    .map(|_| ())
+            } else {
+                update_catalog_document(catalog, &entry)
+            };
+            if let Err(err) = result {
+                match previous {
+                    Some(old) => {
+                        state.entries.insert(v.slug.clone(), old);
+                    }
+                    None => {
+                        state.entries.remove(&v.slug);
+                    }
+                }
+                return Err(PutError::Storage(err.to_string()));
+            }
+        }
         let mut written = self.save_locked(&mut state).await;
         // Another process moved the index between our reading it and our
         // writing it. The quota was decided against an index that no longer
@@ -696,7 +851,14 @@ impl Store {
                 index_version: state.index_version.clone(),
                 refreshed_at: state.refreshed_at,
             };
-            if let Err(refused) = self.admit(&fresh, &v.slug, &entry.publisher, size, now_unix()) {
+            if let Err(refused) = self.admit(
+                &fresh,
+                &v.slug,
+                &admission_owner,
+                &admission_owner_id,
+                size,
+                now_unix(),
+            ) {
                 state.entries.remove(&v.slug);
                 let _ = self.save_locked(&mut state).await;
                 return Err(refused);
@@ -722,7 +884,14 @@ impl Store {
     /// not the document. A failure leaves objects behind for a later pass and
     /// is not worth reporting: nothing depends on them any more.
     pub async fn drop_derived(&self, slug: &str) {
-        for prefix in [document_prefix(slug), source_prefix(slug)] {
+        let identity = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.document(slug).ok().flatten())
+            .map(|document| document.storage_id)
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| slug.to_string());
+        for prefix in [document_prefix(&identity), source_prefix(&identity)] {
             if let Ok(found) = self.blobs.list(&prefix).await {
                 let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
                 if !keys.is_empty() {
@@ -972,6 +1141,7 @@ impl Store {
         state: &StoreState,
         slug: &str,
         owner: &str,
+        owner_id: &str,
         size: i64,
         now: i64,
     ) -> Result<(), PutError> {
@@ -985,7 +1155,12 @@ impl Store {
         let cutoff = now - 3600;
         for (key, entry) in &state.entries {
             total_bytes += entry.size;
-            if entry.publisher != owner {
+            let same_owner = if !owner_id.is_empty() {
+                entry.publisher_id == owner_id
+            } else {
+                entry.publisher == owner
+            };
+            if !same_owner {
                 continue;
             }
             owner_bytes += entry.size;
@@ -1034,6 +1209,43 @@ impl Store {
     /// does the document is still listed, which is a better half-state than a
     /// listing pointing at nothing.
     pub async fn remove(&self, slug: &str) -> Result<usize, String> {
+        if let Some(catalog) = &self.catalog {
+            let document = catalog
+                .document(slug)
+                .map_err(|err| err.to_string())?
+                .ok_or_else(|| format!("document {slug} was not found"))?;
+            let identity = document.storage_id.clone();
+            catalog.begin_delete(slug).map_err(|err| err.to_string())?;
+            let mut removed = 0;
+            if let Ok(found) = self.blobs.list(&document_prefix(&identity)).await {
+                let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
+                if !keys.is_empty() && self.blobs.delete(&keys).await.is_ok() {
+                    removed = keys.len();
+                }
+            }
+            if let Ok(found) = self
+                .blobs
+                .list(&crate::blob::history_prefix(&identity))
+                .await
+            {
+                let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
+                if !keys.is_empty() {
+                    let _ = self.blobs.delete(&keys).await;
+                }
+            }
+            let _ = self
+                .blobs
+                .delete(&[
+                    examples_key(slug),
+                    room_key(slug),
+                    room_lock_key(slug),
+                    crate::blob::session_key(slug),
+                    format!("chat/{slug}.json"),
+                ])
+                .await;
+            catalog.finish_delete(slug).map_err(|err| err.to_string())?;
+            return Ok(removed);
+        }
         let mut removed = 0;
         if let Ok(found) = self.blobs.list(&document_prefix(slug)).await {
             let keys: Vec<String> = found.into_iter().map(|o| o.key).collect();
@@ -1098,6 +1310,13 @@ impl Store {
     /// conflict is reported rather than retried, because what to do about it
     /// is the caller's decision.
     pub async fn save_locked(&self, state: &mut StoreState) -> Result<(), BlobError> {
+        if let Some(catalog) = &self.catalog {
+            for entry in state.entries.values() {
+                update_catalog_document(catalog, entry)
+                    .map_err(|err| BlobError::Other(err.to_string()))?;
+            }
+            return Ok(());
+        }
         let raw =
             serde_json::to_vec(&state.entries).map_err(|err| BlobError::Other(err.to_string()))?;
         let at = self
@@ -1231,4 +1450,90 @@ pub fn digest_of(html: &str) -> String {
 /// The same, for bytes nobody is going to read as text: a figure, a font.
 pub fn digest_of_bytes(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn random_storage_id() -> String {
+    hex::encode(crate::auth::random_bytes(16))
+}
+
+impl IndexEntry {
+    fn from_catalog(document: crate::catalog::Document) -> Self {
+        Self {
+            slug: document.slug,
+            storage_id: document.storage_id,
+            title: document.title,
+            sha: document.sha,
+            created_at: document.created_at,
+            updated_at: document.updated_at,
+            example: document.example,
+            // Signed-in owners are represented by owner_id in the catalogue;
+            // visitors by owner_key. Keep the old authorization model's
+            // fields populated so the rest of the HTTP layer remains stable.
+            publisher: document.owner_key,
+            publisher_id: document.owner_id.unwrap_or_default(),
+            publisher_name: String::new(),
+            size: document.size,
+            source_format: document.source_format,
+            main: document.main,
+            ..Self::default()
+        }
+    }
+}
+
+fn catalog_entries(catalog: &Catalog) -> Result<HashMap<String, IndexEntry>, CatalogError> {
+    catalog.with_connection(|connection| {
+        let mut statement = connection.prepare(
+            "SELECT slug, storage_id, title, sha, created_at, updated_at, example,
+                    owner_key, owner_id, size, source_format, main
+             FROM documents WHERE status = 'active'",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut entries = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let document = crate::catalog::Document {
+                slug: row.get(0)?,
+                storage_id: row.get(1)?,
+                title: row.get(2)?,
+                sha: row.get(3)?,
+                created_at: row.get(4)?,
+                published_at: String::new(),
+                updated_at: row.get(5)?,
+                example: row.get::<_, i64>(6)? != 0,
+                owner_key: row.get(7)?,
+                owner_id: row.get(8)?,
+                status: "active".to_string(),
+                size: row.get(9)?,
+                counted_size: row.get(9)?,
+                maintenance_reserved: 0,
+                comment_seq: 0,
+                last_auto_checkpoint_at: 0,
+                pending_publication: None,
+                last_publication_id: String::new(),
+                source_format: row.get(10)?,
+                main: row.get(11)?,
+            };
+            entries.insert(document.slug.clone(), IndexEntry::from_catalog(document));
+        }
+        Ok(entries)
+    })
+}
+
+fn update_catalog_document(catalog: &Catalog, entry: &IndexEntry) -> Result<(), CatalogError> {
+    catalog.with_connection(|connection| {
+        connection.execute(
+            "UPDATE documents SET title = ?2, sha = ?3, updated_at = ?4,
+                    size = ?5, source_format = ?6, main = ?7
+             WHERE slug = ?1 AND status = 'active'",
+            rusqlite::params![
+                entry.slug,
+                entry.title,
+                entry.sha,
+                entry.updated_at,
+                entry.size,
+                entry.source_format,
+                entry.main,
+            ],
+        )?;
+        Ok(())
+    })
 }

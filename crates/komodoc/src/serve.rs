@@ -123,6 +123,9 @@ pub fn sign_in_advice(
 }
 
 pub async fn serve(options: ServeOptions) {
+    let mut storage = options.storage.clone();
+    storage.fill_from_environment();
+    let (_, deployment_paths) = storage.profile().unwrap_or_else(|err| die(err));
     let env = |name: &str| std::env::var(name).unwrap_or_default();
     let retention = parse_retention(&first_of(&[
         &options.expire_after,
@@ -141,9 +144,7 @@ pub async fn serve(options: ServeOptions) {
         &env("KOMODOC_EXPIRE_FROM"),
     ]))
     .unwrap_or_else(|err| die(err));
-    let blobs = open_storage(options.storage.clone())
-        .await
-        .unwrap_or_else(|err| die(err));
+    let blobs = open_storage(storage).await.unwrap_or_else(|err| die(err));
     // One pass, and nothing to do on a store that never had the old layout.
     let moved = migrate_legacy_source(blobs.as_ref()).await;
     if moved > 0 {
@@ -208,9 +209,19 @@ pub async fn serve(options: ServeOptions) {
     let key = session_key(blobs.as_ref())
         .await
         .unwrap_or_else(|err| die(err));
-    let store = Store::open(blobs.clone(), config.clone())
-        .await
-        .unwrap_or_else(|err| die(err));
+    let store = if let Some(path) = deployment_paths.catalog.as_ref() {
+        let catalog = Arc::new(
+            crate::catalog::Catalog::open(path)
+                .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
+        );
+        Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
+            .await
+            .unwrap_or_else(|err| die(err))
+    } else {
+        Store::open(blobs.clone(), config.clone())
+            .await
+            .unwrap_or_else(|err| die(err))
+    };
     let rooms = RoomSet::new(blobs.clone(), config.clone());
     let mut instance = Server::new(
         store,

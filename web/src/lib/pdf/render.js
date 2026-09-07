@@ -14,33 +14,9 @@
 import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { piecesOf } from "./text.js";
+import { scaleFor } from "./fit.js";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-
-// One and a half CSS pixels per PDF point, doubled on a retina screen by the
-// canvas' backing store rather than by the layout, so the text layer's
-// percentages and the canvas agree at any device pixel ratio.
-//
-// This is the scale a page is drawn at when there is room for it. There is
-// not always room: the pane beside the source is half a window wide, and a
-// phone is narrower than one page at any magnification, so a fixed scale
-// leaves a letter-sized page clipped on both sides with a horizontal
-// scrollbar under it. `scaleFor` spends the width the frame actually has,
-// never more than SCALE and never less than MIN_SCALE -- below that the
-// glyphs stop being readable and scrolling sideways is the better bargain.
-const SCALE = 1.5;
-const MIN_SCALE = 0.35;
-// What `viewer.html` puts either side of the page: `main`'s 16px padding.
-const GUTTER = 32;
-
-/// The scale `width` CSS pixels of frame can afford for a page `points` wide.
-///
-/// Exported because the frame re-renders on a resize and the check in
-/// `checks/` asks this the same question without a browser.
-export function scaleFor(width, points) {
-  if (!width || !points) return SCALE;
-  return Math.max(MIN_SCALE, Math.min(SCALE, (width - GUTTER) / points));
-}
 
 /// Where each page starts in the joined text, so the caret lock and SyncTeX
 /// -- steps 3 and 6, neither built here -- can ask "which page is this

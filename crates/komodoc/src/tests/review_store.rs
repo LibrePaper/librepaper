@@ -94,6 +94,39 @@ async fn review_put_on_first_store_visible_on_second() {
     assert_eq!(seen.unwrap().title, "Fresh");
 }
 
+/// New deployments keep document metadata in SQLite and survive a Store
+/// restart without reconstructing an index JSON object.
+#[tokio::test]
+async fn catalog_store_round_trips_documents_without_index_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    std::fs::create_dir_all(dir.path().join("objects")).unwrap();
+    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let config = Arc::new(Configuration::default());
+    let first = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+        .await
+        .unwrap();
+    first
+        .put(store::Publication {
+            slug: "catalogued".into(),
+            title: "Catalogued".into(),
+            source: "# hello".into(),
+            source_format: "markdown".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!dir.path().join("objects/index.json").exists());
+
+    let second = store::Store::open_with_catalog(blobs, config, catalog)
+        .await
+        .unwrap();
+    let entry = second.get("catalogued").await.unwrap();
+    assert_eq!(entry.title, "Catalogued");
+    assert!(!entry.storage_id.is_empty());
+}
+
 /// R02: a `record_history` write that loses the compare-and-swap -- because
 /// another instance moved the index in between -- reloads and retries once
 /// rather than dropping the checkpoint's size and sha on the floor, and the

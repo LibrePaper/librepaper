@@ -26,8 +26,6 @@ pub struct S3Store {
     prefix: String, // every key komodoc writes lives under this
     access_key: String,
     secret_key: String,
-    /// Turns the conditional write off: see StorageOptions.
-    single_writer: bool,
 }
 
 impl S3Store {
@@ -43,7 +41,6 @@ impl S3Store {
             prefix,
             access_key: options.access_key.clone(),
             secret_key: options.secret_key.clone(),
-            single_writer: options.single_writer,
         }
     }
 
@@ -279,8 +276,6 @@ impl ProbeReport {
         );
         out.push_str(if !self.reachable {
             "  bucket: unreachable\n"
-        } else if options.single_writer {
-            "  bucket: single-writer, asserted; the index is written unconditionally\n"
         } else if self.conditional_writes {
             "  bucket: conditional writes work; the index is safe against a racing writer\n"
         } else {
@@ -401,11 +396,6 @@ impl BlobStore for S3Store {
     }
 
     async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
-        // With one writer asserted, the caller's mutex is the coordination and
-        // the bucket is asked for nothing it may not support.
-        if self.single_writer {
-            return self.write(key, body, "application/json", &[]).await;
-        }
         let condition = if expect.is_empty() {
             ("If-None-Match", "*".to_string())
         } else {

@@ -26,6 +26,16 @@
   .bar {
     height: 1.4rem;
   }
+  /* The word is nearly eight times as wide as it is tall, so on the bar it is
+     measured in width whatever the height says: at 1.4rem it takes 176px, and
+     a phone has 390px to divide between the logo, the compile status and the
+     tools. It gives up a little height here so the status beside it keeps
+     enough width to say a whole word. */
+  @media (max-width: 760px) {
+    .bar {
+      height: 1.05rem;
+    }
+  }
   .hero {
     height: 3rem;
   }

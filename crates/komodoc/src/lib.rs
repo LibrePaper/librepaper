@@ -9,6 +9,7 @@
 mod assets;
 mod auth;
 mod blob;
+pub mod catalog;
 mod chat;
 mod checkpoint_cache;
 mod cli;

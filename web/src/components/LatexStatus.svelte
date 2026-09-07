@@ -61,9 +61,14 @@
 
 {#if status.phase !== "idle"}
   <span class="latex-status">
-    <small class="badge {tone}" title={hint || explanation || status.message}>
+    <!-- The title says the whole line, backend and all, because the line
+         itself may be narrowed to the words alone; see `.latex-backend`. -->
+    <small
+      class="badge {tone}"
+      title={hint || explanation || `${status.message}${chip ? ` · ${chip}` : ""}`}
+    >
       {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
-      {status.message}{chip ? ` · ${chip}` : ""}
+      {status.message}{#if chip}<span class="latex-backend"> · {chip}</span>{/if}
     </small>
     {#if status.progress}
       <span
@@ -115,6 +120,15 @@
     align-items: center;
     flex-wrap: wrap;
     gap: calc(var(--spacing) * 2);
+  }
+
+  /* Which backend compiled it -- "· browser", "· local" -- is a third of the
+     line's width and the least of what it says. On a bar with no room for the
+     whole line the words are what survive: a phone that keeps "· browser" and
+     loses "Current preview ready" has kept the footnote and dropped the fact.
+     The `title` still carries the whole of it. */
+  @media (max-width: 760px) {
+    .latex-backend { display: none; }
   }
 
   .latex-actions {

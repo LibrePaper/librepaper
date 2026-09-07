@@ -251,6 +251,15 @@ impl BlobStore for FsStore {
                 // a document that is not there.
                 if let Some(parent) = name.parent() {
                     let _ = std::fs::remove_dir(parent);
+                    // Directory-entry removal must be durable before the
+                    // catalogue releases the corresponding capacity.
+                    if let Some(container) = parent.parent() {
+                        if let Ok(directory) = std::fs::File::open(container) {
+                            let _ = directory.sync_all();
+                        }
+                    } else if let Ok(directory) = std::fs::File::open(parent) {
+                        let _ = directory.sync_all();
+                    }
                 }
             }
             Ok(())
@@ -376,7 +385,19 @@ pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
         .map(|part| part.to_string_lossy())
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("object"));
     let temporary = name.with_file_name(format!(".{basename}.tmp-{}-{serial}", std::process::id()));
-    let result = std::fs::write(&temporary, body).and_then(|_| std::fs::rename(&temporary, name));
+    let result = std::fs::write(&temporary, body)
+        .and_then(|_| {
+            let file = std::fs::OpenOptions::new().read(true).open(&temporary)?;
+            file.sync_all()
+        })
+        .and_then(|_| std::fs::rename(&temporary, name))
+        .and_then(|_| {
+            if let Some(parent) = name.parent() {
+                let directory = std::fs::File::open(parent)?;
+                directory.sync_all()?;
+            }
+            Ok(())
+        });
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
@@ -391,11 +412,30 @@ pub const INDEX_KEY: &str = "index.json";
 /// holds no local state does not sign every reader out when it restarts.
 pub const SESSION_KEY_KEY: &str = "session.key";
 
-pub fn document_key(slug: &str, digest: &str) -> String {
-    format!("documents/{slug}/{digest}.html")
+/// Prefix for all immutable objects owned by one document identity. The
+/// identity, not the mutable public slug, is the deletion and object-reuse
+/// boundary.
+pub fn content_prefix(storage_id: &str) -> String {
+    format!("content/{storage_id}/")
 }
-pub fn document_prefix(slug: &str) -> String {
-    format!("documents/{slug}/")
+pub fn tree_key(storage_id: &str, tree_sha: &str) -> String {
+    format!("content/{storage_id}/trees/{tree_sha}")
+}
+pub fn content_blob_key(storage_id: &str, sha: &str) -> String {
+    format!("content/{storage_id}/blobs/{sha}")
+}
+pub fn content_asset_key(storage_id: &str, sha: &str) -> String {
+    format!("content/{storage_id}/assets/{sha}")
+}
+pub fn content_rendering_key(storage_id: &str, tree_sha: &str, suffix: &str) -> String {
+    let suffix = suffix.trim_start_matches('/');
+    format!("content/{storage_id}/renderings/{tree_sha}/{suffix}")
+}
+pub fn document_key(storage_id: &str, digest: &str) -> String {
+    tree_key(storage_id, digest)
+}
+pub fn document_prefix(storage_id: &str) -> String {
+    content_prefix(storage_id)
 }
 /// A source is stored under the digest of the version it was rendered into,
 /// exactly as the HTML is, so publishing a new version never writes over the
@@ -403,10 +443,10 @@ pub fn document_prefix(slug: &str) -> String {
 /// a source written for a version the index never named is unreachable --
 /// which is the half-state to prefer.
 pub fn source_key(slug: &str, digest: &str) -> String {
-    format!("sources/{slug}/{digest}")
+    content_blob_key(slug, digest)
 }
 pub fn source_prefix(slug: &str) -> String {
-    format!("sources/{slug}/")
+    format!("content/{slug}/blobs/")
 }
 /// Where a source lived before it was versioned: one key for the document,
 /// whatever version it was at. Read for documents published then, never
@@ -438,19 +478,19 @@ pub fn history_index_key(slug: &str) -> String {
 /// themselves, which is why nothing here needs rewriting -- an entry the
 /// manifest does not mark as a tree is read as a tree of one file.
 pub fn checkpoint_key(slug: &str, sha: &str) -> String {
-    format!("history/{slug}/{sha}")
+    tree_key(slug, sha)
 }
 /// One text a checkpoint names, by the digest of its bytes. Every tree that
 /// mentions that digest shares this one object, so a chapter untouched between
 /// twenty checkpoints is stored once.
 pub fn blob_key(slug: &str, sha: &str) -> String {
-    format!("history/{slug}/blobs/{sha}")
+    content_blob_key(slug, sha)
 }
 /// Every text blob a document has ever written, regardless of which
 /// checkpoint still names it -- what a sweep that reclaims obsolete ones
 /// lists before deciding which are unreferenced (R21).
 pub fn blob_prefix(slug: &str) -> String {
-    format!("history/{slug}/blobs/")
+    format!("content/{slug}/blobs/")
 }
 /// One figure, by the digest of its bytes, under the document that holds it.
 ///
@@ -459,13 +499,13 @@ pub fn blob_prefix(slug: &str) -> String {
 /// and no moment at which it may be deleted, and the bytes are cheaper than
 /// the bookkeeping that would answer either question.
 pub fn asset_key(slug: &str, sha: &str) -> String {
-    format!("assets/{slug}/{sha}")
+    content_asset_key(slug, sha)
 }
 pub fn asset_prefix(slug: &str) -> String {
-    format!("assets/{slug}/")
+    format!("content/{slug}/assets/")
 }
 pub fn history_prefix(slug: &str) -> String {
-    format!("history/{slug}/")
+    format!("content/{slug}/trees/")
 }
 
 /// The PDF an editor's browser compiled from a checkpoint, named by that
@@ -474,13 +514,13 @@ pub fn history_prefix(slug: &str) -> String {
 /// disagree with that source silently -- either the live text has that SHA, or
 /// the reader is told it does not.
 pub fn rendering_key(slug: &str, sha: &str) -> String {
-    format!("renderings/{slug}/{sha}")
+    content_rendering_key(slug, sha, "pdf")
 }
 /// The SyncTeX file that rode along with it, gzipped as the compiler wrote it.
 /// Beside the PDF rather than inside it, so a reader who wants only the pages
 /// fetches only the pages.
 pub fn rendering_synctex_key(slug: &str, sha: &str) -> String {
-    format!("renderings/{slug}/{sha}.synctex")
+    content_rendering_key(slug, sha, "synctex")
 }
 /// The provenance object a browser or the local app sent beside the PDF:
 /// which backend produced it, the engine, the release, and the tools used.
@@ -488,26 +528,32 @@ pub fn rendering_synctex_key(slug: &str, sha: &str) -> String {
 /// reader can ask for it without downloading the PDF, and so pruning a
 /// rendering prunes its provenance in the same sweep.
 pub fn rendering_provenance_key(slug: &str, sha: &str) -> String {
-    format!("renderings/{slug}/{sha}.provenance.json")
+    content_rendering_key(slug, sha, "provenance.json")
 }
 pub fn rendering_prefix(slug: &str) -> String {
-    format!("renderings/{slug}/")
+    format!("content/{slug}/renderings/")
+}
+
+/// Shared edit-journal objects have their own ownership and retirement
+/// metadata. They must never be swept by a document's content prefix.
+pub fn journal_prefix(deployment_id: &str) -> String {
+    format!("journal/{deployment_id}/")
+}
+pub fn journal_segment_key(deployment_id: &str, segment_id: &str) -> String {
+    format!("journal/{deployment_id}/segments/{segment_id}")
+}
+pub fn journal_manifest_key(deployment_id: &str, revision: &str) -> String {
+    format!("journal/{deployment_id}/manifests/{revision}")
+}
+pub fn journal_base_key(deployment_id: &str, storage_id: &str, revision: &str) -> String {
+    format!("journal/{deployment_id}/bases/{storage_id}/{revision}")
 }
 
 /// Removes everything komodoc wrote and nothing else. Seeding starts from
 /// nothing, and on a bucket somebody else supplied, "nothing" means our keys
 /// -- never the container, and never what else is in it.
 pub async fn clear_storage(blobs: &dyn BlobStore) {
-    for prefix in [
-        "documents/",
-        "sources/",
-        "rooms/",
-        "examples/",
-        "sessions/",
-        "history/",
-        "assets/",
-        "renderings/",
-    ] {
+    for prefix in ["content/", "journal/"] {
         let Ok(found) = blobs.list(prefix).await else {
             continue;
         };
