@@ -460,6 +460,11 @@ pub struct Room {
     session_write: Mutex<()>,
     /// Keep checkpoint snapshots and their commits in the same order.
     checkpoint_write: Mutex<()>,
+    /// A restore spans several storage reads and two checkpoints. Serializing
+    /// that whole operation keeps a later restore from choosing the first
+    /// restore's intermediate state as its merge base, while ordinary edits
+    /// continue to use the session lock independently.
+    restore_write: Mutex<()>,
     /// Manifest writers serialize independently of edits and session persistence.
     manifest_write: Mutex<()>,
     pub state: Mutex<RoomState>,
@@ -608,6 +613,7 @@ impl RoomSet {
             store: self.store.clone(),
             session_write: Mutex::new(()),
             checkpoint_write: Mutex::new(()),
+            restore_write: Mutex::new(()),
             manifest_write: Mutex::new(()),
             state: Mutex::new(RoomState {
                 seq: 0,
@@ -2422,6 +2428,7 @@ impl Room {
         point: &Checkpoint,
         by: &str,
     ) -> Result<(Vec<u8>, String), String> {
+        let _restore_writer = self.restore_write.lock().await;
         if self.read_only() {
             return Err("this room is held by another server".into());
         }
@@ -2545,7 +2552,11 @@ impl Room {
             }
             let before = session::encode_vector(&state.session.doc);
             session::restore_by_path(&state.session.doc, &effective_tree, &merged);
-            let derived = format_from_path(&effective_tree.main);
+            // The membership merge may retain a peer deletion of the target's
+            // old main path, so derive the format from the actual CRDT main
+            // path after restore rather than from a possibly discarded tree
+            // pointer.
+            let derived = format_from_path(&session::main_path(&state.session.doc));
             if !derived.is_empty() {
                 state.session.format = derived;
             }

@@ -446,6 +446,84 @@ async fn review_revisiting_checkpoint_leaves_wrong_head() {
     println!("A -> B -> A: index head follows A back; manifest chronology is undisturbed");
 }
 
+/// Two restores on one room serialize their base/read/mutate/checkpoint
+/// sequence. The second request must wait while the first is reading its
+/// selected tree, rather than merging against the first request's half-made
+/// state.
+#[tokio::test]
+async fn review_concurrent_restores_are_serialized() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    reopened.attach_store(store.clone());
+    let room = reopened.get("probe").await;
+
+    room.set_source("first", "markdown").await;
+    let first = room
+        .checkpoint_now("quiet", "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    room.set_source("second", "markdown").await;
+    let second = room
+        .checkpoint_now("quiet", "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    let first_point = room
+        .manifest()
+        .await
+        .checkpoints
+        .into_iter()
+        .find(|point| point.sha == first)
+        .unwrap();
+    let second_point = room
+        .manifest()
+        .await
+        .checkpoints
+        .into_iter()
+        .find(|point| point.sha == second)
+        .unwrap();
+
+    *hooked.pause.lock().unwrap() = Some(("get".into(), blob::checkpoint_key("probe", &first)));
+    let one = tokio::spawn({
+        let room = room.clone();
+        async move { room.restore_and_checkpoint(&first_point, "alice").await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    let mut two = tokio::spawn({
+        let room = room.clone();
+        async move { room.restore_and_checkpoint(&second_point, "alice").await }
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut two)
+            .await
+            .is_err(),
+        "the second restore passed the first restore's operation gate"
+    );
+    hooked.resume.notify_one();
+    let (_, restored_first) = one.await.unwrap().unwrap();
+    let (_, restored_second) = two.await.unwrap().unwrap();
+    let manifest = room.manifest().await;
+    for (sha, expected) in [(restored_first, "first"), (restored_second, "second")] {
+        let point = manifest
+            .checkpoints
+            .iter()
+            .find(|point| point.sha == sha)
+            .unwrap();
+        let (tree, bodies) = room.checkpoint_texts(point).await.unwrap();
+        assert_eq!(bodies[&tree.files[&tree.main].sha], expected);
+    }
+    assert_eq!(room.source().await, "second");
+}
+
 /// R26, inverting `review_quiet_room_never_reports_idle`: a clean room with no
 /// sockets and nothing new since its checkpoint must report idle on the very
 /// first tick, without hashing the whole tree.
