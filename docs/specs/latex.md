@@ -61,12 +61,27 @@ The browser engines write SyncTeX with every pass and the reader stores the
 The viewer's two gestures -- the caret's line scrolls the page to its box,
 and a double-click on the page moves the caret to the line -- read that file.
 
+## What was verified
+
+`web/tools/latex-e2e.mjs` drives the routing table against the built binary
+in headless Chromium: the corpus compiles in the browser with citations and
+SyncTeX; a biblatex project gets its bibliography from a paired local app in
+about five seconds, and from the browser VM in a minute or two on a cold
+cache; a project needing a package the mirror lacks is compiled natively by
+the paired app and stays on that route until "Try browser compilation".
+XeTeX and LuaTeX documents compile in the browser.
+
 ## Remaining
 
+- The WasmTex XeTeX core writes no SyncTeX, so a XeLaTeX document has no
+  source mapping until the engine is rebuilt with it; pdfTeX and LuaTeX do.
 - Reproducing the engine binaries and their formats from the pinned WasmTex
   sources, rather than mirroring the verified upstream build; the manifest
   says `reproduced: false` until that is done.
+- The compact initial resource set is the union of what the corpus needed
+  (about 17 MB); measuring real documents should trim it.
 - Detaching `komodoc local start` from its terminal and registering the
-  `komodoc://` protocol on each desktop platform.
+  `komodoc://` protocol on each desktop platform; `bibtex8` selection in
+  the native controller.
 - The acceptance matrices on Firefox and Safari and on memory-constrained
   devices; the numbers so far are single Chromium runs.
