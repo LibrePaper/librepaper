@@ -117,6 +117,17 @@ PORT       ?= 8081
 DATA       ?= komodoc-data
 PUBLISHERS ?= any
 COMMENTERS ?= anyone
+# Who owns the seeded examples. Empty means nobody, and a document nobody owns
+# is everybody's: each visitor holds the owner's controls on it. That is fine
+# where nobody signs in and wrong where somebody does, since the point of a
+# sign-in is that everybody else meets the examples as a reader or a
+# commenter. Defaults to the one account `--publishers` names, when it names
+# exactly one; `any`, `anyone` and a list name nobody in particular.
+comma := ,
+OWNER      ?= $(if $(filter any anyone,$(PUBLISHERS)),,$(if $(findstring $(comma),$(PUBLISHERS)),,$(PUBLISHERS)))
+# Whether .env has supplied a way to sign people in. `deploy` reads this to
+# decide between a server that asks for a sign-in and one that never does.
+SIGN_IN    := $(strip $(KOMODOC_GITHUB_CLIENT_ID)$(KOMODOC_GOOGLE_CLIENT_ID))
 # Where LaTeX distributions come from: a mirror directory or an https bucket.
 # Empty means no `--latex`, so `.tex` documents are stored and shown but not
 # compiled. `deploy` below passes the bare flag, which is the project's own
@@ -146,7 +157,7 @@ examples/%.html: examples/%.qmd
 
 # Not in the help: it is a step of `deploy`, not a thing to run on its own.
 seed: $(BIN) $(EXAMPLES)
-	@$(BIN) seed --data $(DATA)
+	@$(BIN) seed --data $(DATA) $(if $(OWNER),--owner $(OWNER))
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
@@ -154,11 +165,20 @@ kill:  ## Stop a server started with make serve
 
 .PHONY: deploy
 
-# No sign-in at all: publishing and commenting are both open, so this needs
-# no GitHub OAuth app and no `komodoc login`. LaTeX is on, from the project's
-# mirror unless LATEX= names another, so the seeded .tex example compiles.
-deploy: seed  ## Seed the examples and serve them on this machine, no sign-in, LaTeX on (LATEX=)
-	@$(MAKE) serve PUBLISHERS=anyone COMMENTERS=anyone LATEX_FLAG="--latex $(LATEX)"
+# The whole app on this machine. With a GitHub app in .env (see .env.example)
+# it asks people to sign in exactly as a deployment does, and the examples
+# belong to OWNER: sign in as them to hold every right, and open a link they
+# minted in a private window to see what a reader or a commenter gets.
+# Without one, publishing and commenting are both open, so a trial needs no
+# OAuth app and no `komodoc login`. LaTeX is on either way, from the
+# project's mirror unless LATEX= names another, so the seeded .tex example
+# compiles.
+deploy: $(BIN) $(EXAMPLES)  ## Seed the examples and serve them here; sign-in when .env has an OAuth app, LaTeX on (LATEX=)
+ifneq ($(SIGN_IN),)
+	@$(MAKE) seed serve LATEX_FLAG="--latex $(LATEX)"
+else
+	@$(MAKE) seed serve OWNER= PUBLISHERS=anyone COMMENTERS=anyone LATEX_FLAG="--latex $(LATEX)"
+endif
 
 # The deployment keys -- the Cloudflare token, the endpoints, the GitHub app
 # -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the

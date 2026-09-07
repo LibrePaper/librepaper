@@ -49,6 +49,7 @@ async fn seeding_locally_is_stable_across_runs() {
         seed_into(
             blobs.clone(),
             Arc::new(Configuration::default()),
+            "",
             &documents,
         )
         .await;
@@ -100,8 +101,8 @@ async fn seeding_writes_annotations_with_their_state() {
     let dir = tempfile::tempdir().unwrap();
     let blobs = Arc::new(FsStore::new(dir.path()));
     let config = Arc::new(Configuration::default());
-    seed_into(blobs.clone(), config.clone(), &documents).await;
-    seed_into(blobs.clone(), config.clone(), &documents).await;
+    seed_into(blobs.clone(), config.clone(), "", &documents).await;
+    seed_into(blobs.clone(), config.clone(), "", &documents).await;
 
     let entries = Store::open(blobs.clone(), config.clone())
         .await
@@ -117,6 +118,62 @@ async fn seeding_writes_annotations_with_their_state() {
     assert!(comments[0].resolved, "seed lost the resolved state");
     assert_eq!(comments[0].replies.len(), 1);
     assert_eq!(comments[0].replies[0].body, "Curated reply");
+}
+
+// A local seed with `--owner` hands the examples to that account, keyed the
+// way `Server::owner` keys a signed-in caller: their handle, lowercased.
+// Nobody else -- a visitor with a cookie, or a signed-in stranger -- owns
+// them, which is what lets one laptop show the reader's and the commenter's
+// side of the app. Without an owner they stay everybody's, as before.
+#[tokio::test]
+async fn seeding_with_an_owner_makes_the_examples_theirs() {
+    let source = tempfile::tempdir().unwrap();
+    let file = source.path().join("example.html");
+    std::fs::write(&file, "<h1>Owned</h1><p>A phrase.</p>").unwrap();
+    let documents = vec![SeedDocument {
+        file: file.display().to_string(),
+        title: "Owned example",
+        annotations: vec![],
+    }];
+    let config = Arc::new(Configuration::default());
+
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(FsStore::new(dir.path()));
+    seed_into(blobs.clone(), config.clone(), " Alice ", &documents).await;
+    let entries = Store::open(blobs, config.clone())
+        .await
+        .unwrap()
+        .list()
+        .await;
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(
+        entry.publisher, "alice",
+        "the owner key is the lowercased handle"
+    );
+    assert_eq!(entry.owner_name(), "Alice", "the name is shown as written");
+    assert!(
+        entry.owned_by("alice", "github:1"),
+        "the account named does not own its examples"
+    );
+    assert!(
+        !entry.owned_by("visitor:abc", ""),
+        "a visitor owns the examples"
+    );
+    assert!(
+        !entry.owned_by("bob", "github:2"),
+        "another account owns the examples"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(FsStore::new(dir.path()));
+    seed_into(blobs.clone(), config.clone(), "", &documents).await;
+    let entries = Store::open(blobs, config).await.unwrap().list().await;
+    assert!(entries[0].publisher.is_empty());
+    assert!(
+        entries[0].owned_by("visitor:abc", ""),
+        "with no owner the examples are everybody's"
+    );
 }
 
 #[test]
@@ -228,7 +285,7 @@ async fn seeding_leaves_no_room_locks_behind() {
     let dir = tempfile::tempdir().unwrap();
     let blobs = Arc::new(FsStore::new(dir.path()));
     let config = Arc::new(Configuration::default());
-    seed_into(blobs.clone(), config.clone(), &documents).await;
+    seed_into(blobs.clone(), config.clone(), "", &documents).await;
 
     let left = crate::blob::BlobStore::list(blobs.as_ref(), "rooms/")
         .await
