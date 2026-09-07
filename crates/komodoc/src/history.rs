@@ -80,6 +80,25 @@ pub struct TreeEntry {
     pub size: i64,
 }
 
+/// The compiler settings a checkpoint was taken under: what a change in
+/// engine or pinned release must be able to make a new tree identity, even
+/// when not one byte of source moved. Both fields empty is the same as no
+/// settings at all -- see `Tree::normalized` -- so a document that has never
+/// touched either serializes exactly as it did before this existed.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CompileSettings {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub engine: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub release: String,
+}
+
+impl CompileSettings {
+    fn is_empty(&self) -> bool {
+        self.engine.is_empty() && self.release.is_empty()
+    }
+}
+
 /// What a checkpoint records: which file is the main one, and every path with
 /// the digest of what was at it. A `BTreeMap` because the object is named by
 /// the digest of its own bytes, so the same directory must serialize to the
@@ -88,9 +107,32 @@ pub struct TreeEntry {
 pub struct Tree {
     pub main: String,
     pub files: BTreeMap<String, TreeEntry>,
+    /// The engine and release this tree was (or would be) compiled under.
+    /// Placed after `files` so a tree with no settings serializes
+    /// byte-for-byte as it did before this field existed, and every old
+    /// checkpoint keeps its sha. `None` and `Some` of two empty strings are
+    /// the same tree; `normalized` is what keeps that true no matter how the
+    /// caller built it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<CompileSettings>,
 }
 
 impl Tree {
+    /// Collapses a settings object with nothing in it to `None`, so that
+    /// a caller which always sets `settings` from the live document's meta
+    /// (empty engine, empty release, meta never touched) still produces the
+    /// same tree, and the same digest, as one that never mentions settings.
+    pub fn normalized(mut self) -> Tree {
+        if self
+            .settings
+            .as_ref()
+            .is_some_and(CompileSettings::is_empty)
+        {
+            self.settings = None;
+        }
+        self
+    }
+
     /// The name of this tree: the sha256 of the JSON that is stored, so that
     /// naming it and writing it can never disagree.
     pub fn digest(&self) -> String {
@@ -135,6 +177,7 @@ impl Tree {
         Tree {
             main: path.to_string(),
             files,
+            settings: None,
         }
     }
 

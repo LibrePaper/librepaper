@@ -1,38 +1,72 @@
-# SPEC: remaining LaTeX work
+# SPEC: LaTeX in Komodoc
 
-The compiler selection, resource distribution, SyncTeX integration and optional
-local compilation plan are superseded by [SPEC-wasmtex.md](../../SPEC-wasmtex.md).
-The notes below describe the earlier implementation and are historical context.
+The compiler, its resources, the local fallback and the browser Biber VM are
+specified in [SPEC-wasmtex.md](../../SPEC-wasmtex.md); the module boundaries
+that implement it are in [wasmtex-interfaces.md](wasmtex-interfaces.md). This
+page is the short account of what a person sees, and of what remains.
+
+## What happens when a LaTeX document opens
+
+A reader sees the stored PDF at once and downloads no compiler. An editor's
+browser loads Komodoc's own pinned WasmTex release from the deployment's
+`/latex/` mirror -- the engine the project needs and nothing else -- and
+compiles automatically after the source has been quiet for a second and a
+half, or at once from Compile now. There is no distribution to choose and no
+bundle to download by hand: packages arrive one file at a time from the
+mirror as a compile asks for them, and the ones every document needs arrive
+together before the first pass. Verified files stay in browser storage,
+namespaced by release, so the second document costs nothing to fetch.
+
+BibTeX runs in the browser. Biber does not: when a document asks for it, the
+reader checks for a local Komodoc app on this machine, runs a compatible
+native Biber there, and continues typesetting in the browser. Without the
+app, or without a compatible Biber, the reader boots a small Linux guest in a
+worker -- v86 and a Debian image holding Biber and nothing else -- and runs
+the real Biber there. It is slower than native and needs no installation.
+
+When browser compilation itself fails -- an engine that will not initialise, a
+resource the mirror lacks, a crash, a timeout, or a TeX error -- the reader
+asks the local app to compile the whole project natively, once per snapshot.
+A success is an ordinary preview with local provenance; the browser attempt's
+log stays in Diagnostics. A project stays on the native route for the rest of
+the session, with "Try browser compilation" to come back.
+
+## What the local app is
+
+`komodoc local start` runs a loopback service on this machine, prints a
+pairing code, and waits. The reader connects with that code once per origin
+and project; later fallbacks are automatic. `komodoc local doctor` says which
+of pdfLaTeX, XeLaTeX, LuaLaTeX, BibTeX, Biber and makeindex it found, at
+which versions, and whether it can confine them; `komodoc local status` and
+`komodoc local disconnect` do what their names say. The service accepts
+structured jobs -- a snapshot's files with their digests, an engine name, a
+job name -- and never a command. It runs the tools with shell escape off,
+inside `bwrap` or `sandbox-exec` where the platform has them, and reports
+plainly when it cannot confine them. It installs nothing.
+
+## Settings
+
+The Settings panel of a LaTeX document has four things: the project engine
+(Automatic, pdfLaTeX, XeLaTeX, LuaLaTeX), the pinned browser release with an
+explicit update, the local connection with its status and controls, and the
+compiler cache with its size and a clear. The engine and the release are
+project settings, kept in the shared document and part of every checkpoint's
+identity, so a change of engine can never reuse a PDF compiled under another.
+The local connection is this device's alone.
 
 ## SyncTeX
 
-The reader already has a place-mapping between the source and the page for
-Markdown and Typst, `sync.sourcePlaceFor`, built on the text the engine emits.
-Typst's PDF text layer uses that same text-based heuristic; it does not require
-SyncTeX. For LaTeX's PDF the mapping is SyncTeX's, and the compiler writes it for
-free where the engine can: `compile` returns `synctex` from TeXlyre's
-BusyTeX, whose pipeline runs with `-synctex=1`, and `null` from SwiftLaTeX,
-whose modules export no SyncTeX at all, and from BusyTeX, whose pipeline
-does not ask for one. So this step waits on a distribution with SyncTeX
-being shown, or on SwiftLaTeX being rebuilt with it, and the gestures below
-are inert when `synctex` is null.
+The browser engines write SyncTeX with every pass and the reader stores the
+`.synctex.gz` beside the PDF it came from, never one from a different job.
+The viewer's two gestures -- the caret's line scrolls the page to its box,
+and a double-click on the page moves the caret to the line -- read that file.
 
-The `.synctex.gz` is parsed in the viewer into two tables, source line to
-page and box, and page position to source line, and the two existing
-gestures are wired to them: the caret's line scrolls the frame to its box
-and outlines it for a moment, and a double-click on the page moves the
-editor's caret to the line. `komodocViewer.pageForOffset` is the viewer's
-half of the first. Neither is needed for reading and commenting, which is
-why they are the last step and not the first; both are what the research
-note calls table stakes for a LaTeX editor, and both are a parse of a file
-the compiler already produces.
+## Remaining
 
-## The optional local command
-
-The command line stores the source with format `latex` and renders nothing.
-Optional local compilation is a later step. First choose and test a local
-runner for the same browser compiler artifacts: the Rust executable does not
-supply the JavaScript environment the Emscripten glue needs. A separately
-installed runner may be required for that optional command, but never for
-`serve`, source-only publishing, or reading. The distribution cache belongs
-on the client machine, and no compilation is moved to the deployment.
+- Reproducing the engine binaries and their formats from the pinned WasmTex
+  sources, rather than mirroring the verified upstream build; the manifest
+  says `reproduced: false` until that is done.
+- Detaching `komodoc local start` from its terminal and registering the
+  `komodoc://` protocol on each desktop platform.
+- The acceptance matrices on Firefox and Safari and on memory-constrained
+  devices; the numbers so far are single Chromium runs.

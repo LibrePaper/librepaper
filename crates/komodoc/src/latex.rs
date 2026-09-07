@@ -191,6 +191,30 @@ impl Mirror {
                 Resolved::Unreachable => unreachable(),
             };
         }
+        // The WasmTex half of the mirror (`docs/specs/wasmtex-interfaces.md`
+        // section 1): a name asked for as `texlive/<snapshot>/<engine>/
+        // <format>/<name>`, resolved through `manifest.texlive[<snapshot>]
+        // .files`. Unlike the SwiftLaTeX route above, an absent name is a
+        // **404**: the WasmTex workers read any status >= 400 as "does not
+        // exist" (see `tryFetch` in `wasm-build/pdftex-worker.js`), so there
+        // is no 301-shaped special case to preserve here.
+        if let Some((snapshot, key)) = texlive_key(&path) {
+            return match self.resolve_texlive(&snapshot, &key).await {
+                Resolved::File(url) => match safe_path(&url) {
+                    Some(url) if texlive_key(&url).is_none() => {
+                        let mut served = self.fetch(&url).await;
+                        served.file_id = file_id(&url);
+                        if served.status == 200 {
+                            served.cache_control = "no-cache";
+                        }
+                        served
+                    }
+                    _ => not_found(),
+                },
+                Resolved::NotThere => not_found(),
+                Resolved::Unreachable => unreachable(),
+            };
+        }
         self.fetch(&path).await
     }
 
@@ -240,8 +264,46 @@ impl Mirror {
         }
     }
 
-    /// The manifest's `packages` map, read through the same path a browser
-    /// reads the manifest by.
+    /// Which digested file a WasmTex package name is, for one snapshot, from
+    /// `manifest.texlive[<snapshot>].files`. The same refresh and caching
+    /// discipline as `resolve` above, and for the same reason: a compile
+    /// asks for hundreds of names, and the manifest is a shared bucket a
+    /// recording server can update in place.
+    async fn resolve_texlive(&self, snapshot: &str, key: &str) -> Resolved {
+        let name = self.describe();
+        let cached = indexes()
+            .lock()
+            .expect("the index lock")
+            .get(&name)
+            .cloned();
+        if let Some(index) = cached
+            .as_ref()
+            .filter(|index| index.loaded.elapsed() < INDEX_REFRESH)
+        {
+            return match index.texlive.get(snapshot).and_then(|files| files.get(key)) {
+                Some(url) => Resolved::File(url.clone()),
+                None => Resolved::NotThere,
+            };
+        }
+        match self.load_index().await {
+            Some(index) => {
+                let index = Arc::new(index);
+                indexes()
+                    .lock()
+                    .expect("the index lock")
+                    .insert(name, index.clone());
+                match index.texlive.get(snapshot).and_then(|files| files.get(key)) {
+                    Some(url) => Resolved::File(url.clone()),
+                    None => Resolved::NotThere,
+                }
+            }
+            None if cached.is_some() => Resolved::NotThere,
+            None => Resolved::Unreachable,
+        }
+    }
+
+    /// The manifest's `packages` and `texlive` maps, read through the same
+    /// path a browser reads the manifest by.
     async fn load_index(&self) -> Option<Index> {
         let served = self.fetch(MANIFEST).await;
         if served.status != 200 {
@@ -261,8 +323,29 @@ impl Mirror {
                     .collect()
             })
             .unwrap_or_default();
+        let texlive = manifest
+            .get("texlive")
+            .and_then(|value| value.as_object())
+            .map(|snapshots| {
+                snapshots
+                    .iter()
+                    .filter_map(|(snapshot, entry)| {
+                        let files = entry.get("files")?.as_object()?;
+                        let files = files
+                            .iter()
+                            .filter_map(|(key, file)| {
+                                let url = file.get("url")?.as_str()?;
+                                Some((key.clone(), url.to_string()))
+                            })
+                            .collect();
+                        Some((snapshot.clone(), files))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Some(Index {
             packages,
+            texlive,
             loaded: Instant::now(),
         })
     }
@@ -355,6 +438,19 @@ fn absent() -> Served {
     }
 }
 
+/// A WasmTex package name the mirror does not have: an ordinary 404, since
+/// the WasmTex workers read any status >= 400 as "not there" (unlike the
+/// SwiftLaTeX 301 above, which is specific to that engine's protocol).
+fn not_found() -> Served {
+    Served {
+        status: 404,
+        bytes: b"no such file".to_vec(),
+        content_type: "text/plain; charset=utf-8",
+        cache_control: "no-store",
+        file_id: None,
+    }
+}
+
 fn unreachable() -> Served {
     Served {
         status: 502,
@@ -372,6 +468,9 @@ fn unreachable() -> Served {
 #[derive(Debug)]
 struct Index {
     packages: HashMap<String, String>,
+    /// `manifest.texlive[<snapshot>].files`, keyed by snapshot and then by
+    /// `<engine>/<format>/<name>`.
+    texlive: HashMap<String, HashMap<String, String>>,
     loaded: Instant,
 }
 
@@ -432,6 +531,36 @@ fn package_key(path: &str) -> Option<String> {
         return None;
     }
     Some(format!("{engine}/{format}/{name}"))
+}
+
+/// The WasmTex name for a file, if this is a request for one: five
+/// components, `texlive`, a snapshot id, an engine, a numeric format code,
+/// and a name that is not already digest-shaped. A digest-shaped path (a
+/// static file under `texlive/<snapshot>/<2hex>/<16hex>-<name>`, or the
+/// bloom filter beside it) is four components, and is left to the ordinary
+/// static route. Returns `(snapshot, "<engine>/<format>/<name>")`, the exact
+/// key `wasmtex.mjs` and `serve.mjs` record it under.
+fn texlive_key(path: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = path.split('/').collect();
+    let [prefix, snapshot, engine, format, name] = parts[..] else {
+        return None;
+    };
+    if prefix != "texlive"
+        || snapshot.is_empty()
+        || engine.is_empty()
+        || format.is_empty()
+        || !format.bytes().all(|byte| byte.is_ascii_digit())
+        || name.is_empty()
+    {
+        return None;
+    }
+    let digested = name.len() > 17
+        && name.as_bytes()[16] == b'-'
+        && name.bytes().take(16).all(|byte| byte.is_ascii_hexdigit());
+    if digested {
+        return None;
+    }
+    Some((snapshot.to_string(), format!("{engine}/{format}/{name}")))
 }
 
 /// The path a request may have, or nothing. Percent escapes are decoded first,
@@ -645,5 +774,84 @@ mod tests {
             Ok(Mirror::Directory(_))
         ));
         assert!(Mirror::open("/no/such/mirror/anywhere").is_err());
+    }
+
+    // A WasmTex package name is asked for the same way a SwiftLaTeX one is,
+    // through a name the manifest resolves, but it is a distinct URL shape
+    // (`texlive/<snapshot>/...`, five parts, not `packages/...`) and it gets
+    // a 404 rather than a 301 when absent -- see the comment on `not_found`
+    // for why: the WasmTex workers do not speak SwiftLaTeX's protocol.
+    #[tokio::test]
+    async fn a_texlive_name_is_the_file_the_manifest_names_and_a_404_when_absent() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let file = "texlive/2026-ba38749b8714505a/8b/8bf35130be39e123-amsmath.sty";
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            format!(
+                r#"{{"version":1,"distributions":{{}},"texlive":{{"2026-ba38749b8714505a":{{"files":{{"pdftex/26/amsmath.sty":{{"url":"{file}","size":9}}}}}}}}}}"#
+            ),
+        )
+        .expect("manifest");
+        std::fs::create_dir_all(dir.path().join("texlive/2026-ba38749b8714505a/8b"))
+            .expect("directory");
+        std::fs::write(dir.path().join(file), b"\\ProvidesPackage").expect("the package");
+        let mirror = Mirror::Directory(dir.path().to_path_buf());
+
+        let served = mirror
+            .get("texlive/2026-ba38749b8714505a/pdftex/26/amsmath.sty")
+            .await;
+        assert_eq!(served.status, 200);
+        assert_eq!(served.bytes, b"\\ProvidesPackage");
+        assert_eq!(served.cache_control, "no-cache");
+        assert_eq!(served.file_id.as_deref(), Some("8bf35130be39e123"));
+
+        // A name the manifest has never heard of, and a snapshot it has
+        // never heard of: both are absent, both are 404, neither is 301.
+        for name in [
+            "texlive/2026-ba38749b8714505a/pdftex/26/nowhere.sty",
+            "texlive/no-such-snapshot/pdftex/26/amsmath.sty",
+        ] {
+            let served = mirror.get(name).await;
+            assert_eq!(served.status, 404, "{name}");
+            assert_eq!(served.cache_control, "no-store");
+        }
+
+        // The digest path itself, fetched directly, is the ordinary static
+        // route: immutable, no name lookup involved.
+        let served = mirror.get(file).await;
+        assert_eq!(served.status, 200);
+        assert_eq!(served.cache_control, "public, max-age=31536000, immutable");
+    }
+
+    #[test]
+    fn a_texlive_key_is_a_name_under_its_snapshot_and_never_a_digested_file() {
+        assert_eq!(
+            texlive_key("texlive/2026-ba38749b8714505a/pdftex/26/amsmath.sty"),
+            Some((
+                "2026-ba38749b8714505a".to_string(),
+                "pdftex/26/amsmath.sty".to_string()
+            ))
+        );
+        // The xetex/luatex workers fetch through the same `pdftex/` URL
+        // space (see docs/specs/wasmtex-interfaces.md section 1), so the
+        // engine segment in a real key is always the literal `pdftex`, but
+        // the parser itself does not care what the segment says.
+        assert_eq!(
+            texlive_key("texlive/2026-ba38749b8714505a/pdftex/3/cmr10"),
+            Some((
+                "2026-ba38749b8714505a".to_string(),
+                "pdftex/3/cmr10".to_string()
+            ))
+        );
+        assert_eq!(
+            texlive_key("texlive/2026-ba38749b8714505a/8b/8bf35130be39e123-amsmath.sty"),
+            None
+        );
+        assert_eq!(
+            texlive_key("texlive/2026-ba38749b8714505a/bloom-filter.v2.bin"),
+            None
+        );
+        assert_eq!(texlive_key("packages/pdftex/26/amsmath.sty"), None);
+        assert_eq!(texlive_key("manifest.json"), None);
     }
 }

@@ -137,6 +137,47 @@ pub fn main_path(doc: &Doc) -> String {
     string_at(&path_map, &txn, &id).unwrap_or_default()
 }
 
+/// The key in `meta` an editor's browser writes the requested compile engine
+/// under, and the one for the pinned browser release. See
+/// `docs/specs/wasmtex-interfaces.md`, section 3: readers never write these.
+pub const LATEX_ENGINE: &str = "latex.engine";
+pub const LATEX_RELEASE: &str = "latex.release";
+
+/// The compile settings a document's `meta` carries: `(engine, release)`,
+/// each "" when unset or when what was found there does not look like a
+/// value the browser would have written.
+///
+/// `"auto"` is folded into "": it is the browser's own default and recording
+/// it would mint a checkpoint identity distinct from a document that has
+/// never touched the setting, for no reason a reader could tell apart. An
+/// engine outside the fixed set, or a release with a character outside
+/// `[A-Za-z0-9+._-]` or longer than 128 bytes, is dropped the same way --
+/// `meta` is a shared CRDT map any peer can write, so a value that reached
+/// this far without validation would let a stray write mint tree identities
+/// forever.
+pub fn latex_settings(doc: &Doc) -> (String, String) {
+    let (_, _, _, meta) = maps(doc);
+    let txn = doc.transact();
+    let engine = string_at(&meta, &txn, LATEX_ENGINE).unwrap_or_default();
+    let engine = match engine.as_str() {
+        "" | "auto" => String::new(),
+        "pdflatex" | "xelatex" | "lualatex" => engine,
+        _ => String::new(),
+    };
+    let release = string_at(&meta, &txn, LATEX_RELEASE).unwrap_or_default();
+    let release = if release.len() <= 128
+        && !release.is_empty()
+        && release
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'.' | b'_' | b'-'))
+    {
+        release
+    } else {
+        String::new()
+    };
+    (engine, release)
+}
+
 /// Names the main file. An editor's act rather than a keystroke: the server
 /// needs it to render a checkpoint and to say what format the document is in.
 #[allow(dead_code)] // the file list that calls it is step 2

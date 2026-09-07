@@ -317,6 +317,51 @@ async fn nothing_outside_the_mirror_is_reachable_through_it() {
     }
 }
 
+// The WasmTex package route, through the actual HTTP route rather than the
+// `Mirror::get` function directly -- a name resolved, a 404 for one that is
+// not, and the digest path underneath still immutable.
+#[tokio::test]
+async fn the_texlive_route_resolves_names_and_404s_absent_ones() {
+    let dir = mirror_directory();
+    let file = "texlive/2026-ba38749b8714505a/8b/8bf35130be39e123-amsmath.sty";
+    std::fs::create_dir_all(dir.path().join("texlive/2026-ba38749b8714505a/8b"))
+        .expect("directory");
+    std::fs::write(dir.path().join(file), b"\\ProvidesPackage").expect("the package");
+    std::fs::write(
+        dir.path().join("manifest.json"),
+        format!(
+            r#"{{"version":1,"distributions":{{}},"texlive":{{"2026-ba38749b8714505a":{{"files":{{"pdftex/26/amsmath.sty":{{"url":"{file}","size":9}}}}}}}}}}"#
+        ),
+    )
+    .expect("manifest");
+    let server =
+        test_server_latex(Mirror::open(&dir.path().display().to_string()).expect("a directory"))
+            .await;
+
+    let response = fetch(
+        &server.url,
+        "/latex/texlive/2026-ba38749b8714505a/pdftex/26/amsmath.sty",
+    )
+    .await;
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(header(&response, "cache-control"), "no-cache");
+    assert_eq!(header(&response, "fileid"), "8bf35130be39e123");
+
+    let response = fetch(
+        &server.url,
+        "/latex/texlive/2026-ba38749b8714505a/pdftex/26/nowhere.sty",
+    )
+    .await;
+    assert_eq!(response.status().as_u16(), 404);
+
+    let response = fetch(&server.url, &format!("/latex/{file}")).await;
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        header(&response, "cache-control"),
+        "public, max-age=31536000, immutable"
+    );
+}
+
 // A deployment with no mirror has no route either. The reader has already been
 // told `latex: false` and has no reason to ask, but a page cached from a
 // deployment that did have one would.

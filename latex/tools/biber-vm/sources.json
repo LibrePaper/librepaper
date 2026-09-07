@@ -1,0 +1,55 @@
+{
+  "recipe": "latex/tools/biber-vm",
+  "note": "Every network source this recipe touches, with the digest verified at fetch time. No credentials appear anywhere in this file or in the built image.",
+  "base_image": {
+    "image": "debian:bookworm-slim",
+    "digest": "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+    "platform": "linux/386",
+    "note": "Same pinned digest already verified by latex/benchmark/candidates/tinytex-v86. Docker's linux/386 platform on an amd64 host needs no binfmt/QEMU emulation: the host CPU executes 32-bit x86 instructions natively, only the userland ABI (dpkg arch i386) differs. Confirmed with `docker run --rm --platform=linux/386 debian:bookworm-slim dpkg --print-architecture` -> i386."
+  },
+  "biber": {
+    "version": "2.21",
+    "requirement_evidence": {
+      "browser_release_biblatex": "https://texlive.corca.ai/snapshots/2026-ba38749b8714505a/2026/pdftex/26/biblatex.sty",
+      "found": "\\def\\blx@bcfversion{3.11}",
+      "conclusion": "bcf format 3.11 requires Biber 2.21, matching manifest.releases.<id>.bibliography.biber.compatible = [\"2.21\"] in docs/specs/wasmtex-interfaces.md section 1.",
+      "local_texlive_2025_cross_check": "The developer machine's TeX Live 2025 (nixos.org build) also ships biblatex with \\blx@bcfversion{3.11}, so the local fixture .bcf used for vm-smoke.mjs is bit-compatible with the browser release's expectation."
+    },
+    "option_evaluation": {
+      "a_debian_bookworm_package": {
+        "tried": true,
+        "result": "rejected",
+        "detail": "`apt-cache policy biber` inside the i386 bookworm-slim container reports candidate 2.18-1, older than the required 2.21."
+      },
+      "b_texlive_i386_linux_binary": {
+        "tried": true,
+        "result": "used",
+        "detail": "TeX Live 2026's dated historic snapshot repository (https://texlive.info/historic/systems/texlive/2026/tlnet-final/) returns 404 as of this build (2026 has not been archived as a historic/final year yet). The current rolling mirror (https://mirror.ctan.org/systems/texlive/tlnet/) still ships an i386-linux biber binary but its texlive.tlpdb gives no exact upstream version number and would not be reproducible (it moves). TeX Live 2025's frozen tlnet-final repository -- the same one latex/benchmark/candidates/tinytex-v86 already pins and validated -- ships biber.i386-linux revision 75738, and `biber --version` from that archive reports exactly 2.21. Used this: pinned, historic, already-verified elsewhere in this repository."
+      },
+      "c_cpan": {
+        "tried": false,
+        "result": "not needed",
+        "detail": "Option (b) succeeded, so CPAN/Perl compilation (slowest, largest guest) was not attempted."
+      }
+    },
+    "download": {
+      "url": "https://texlive.info/historic/systems/texlive/2025/tlnet-final/archive/biber.i386-linux.r75738.tar.xz",
+      "sha256": "1183201963297c95653f789962076549ce030c8c68b2770292a9538f25ad3e9d",
+      "note": "The build extracts bin/i386-linux/biber from this archive on the HOST (bookworm-slim ships no xz-utils, and installing one merely to unpack once would add unnecessary guest-image bloat) and COPYs the plain 32-bit ELF executable into the image.",
+      "extracted_binary_sha256": "96dd2377914e35bfdef8c296a691885538325db6f2cd800e051b437330bf1856",
+      "runtime_dependencies": "ldd inside an i386 bookworm-slim container: linux-gate.so.1 (vDSO), libpthread.so.0, libc.so.6, /lib/ld-linux.so.2 -- all already present in debian:bookworm-slim. No Perl, no fontconfig, no CA certificates, no additional libraries were installed."
+    }
+  },
+  "v86_runtime": {
+    "recipe_pin": "d01200eb642187eb3b00b02084500844906cbeef",
+    "note": "Same pinned revision string as latex/benchmark/candidates/tinytex-v86/assets-lock.json for the emulator/runtime files, though this guest carries no TinyTeX packages. See that directory's assets-lock.json for the exact per-file URLs/digests reused here (libv86.js, v86.wasm, seabios.bin, vgabios.bin, buildroot-bzimage68.bin).",
+    "licence": "BSD-2-Clause",
+    "licence_evidence": "libv86.js top-of-file header and https://github.com/copy/v86/blob/master/LICENSE both state BSD-2-Clause."
+  },
+  "licences": {
+    "v86_runtime": "BSD-2-Clause",
+    "debian_base_image": "various OSI licences per Debian package (no packages beyond the base bookworm-slim rootfs are installed in the guest)",
+    "biber": "Artistic-2.0 (confirmed via https://raw.githubusercontent.com/plk/biber/dev/README.md: 'modify it under the terms of the Artistic License 2.0')",
+    "perl": "not shipped in the guest -- the Biber TeX Live binary is self-contained and requires no Perl interpreter at runtime"
+  }
+}

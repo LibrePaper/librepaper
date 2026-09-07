@@ -352,6 +352,7 @@ fn one_input_digest(main: &str, source: &str) -> String {
     let mut tree = crate::history::Tree {
         main: main.to_string(),
         files: std::collections::BTreeMap::new(),
+        settings: None,
     };
     tree.files.insert(
         main.to_string(),

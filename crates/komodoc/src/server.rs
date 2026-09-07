@@ -54,6 +54,12 @@ const MULTIPART_SLACK: usize = 1 << 20;
 /// is a list of names rather than of paragraphs.
 const MAX_LABEL: usize = 120;
 
+/// The longest an `x-komodoc-provenance` header may be, in bytes. See
+/// `docs/specs/wasmtex-interfaces.md`, section 2.1's `Provenance` shape --
+/// a backend name, a bibliography route and a handful of tool versions, not
+/// a file.
+const MAX_PROVENANCE_BYTES: usize = 2048;
+
 // One assembly per socket; declared lengths never cause an allocation.
 #[derive(Default)]
 struct UpdateAssembly {
@@ -2969,6 +2975,30 @@ impl Server {
                 Err(err) => return write_json(500, &json!({"error": err})),
             }
         }
+        // Provenance rides with the PDF as a header rather than a second
+        // body: a name and a handful of tool versions, not a file. Read and
+        // validated before a single byte of the PDF is, so an oversized or
+        // malformed header is refused before anything is written -- the
+        // browser sends the PDF and its provenance as one request, and a
+        // request this server cannot make sense of stores neither.
+        let provenance = match header_of(request.headers(), "x-komodoc-provenance") {
+            None => None,
+            Some(raw) if raw.len() > MAX_PROVENANCE_BYTES => {
+                return write_json(
+                    400,
+                    &json!({"error": "x-komodoc-provenance is larger than 2048 bytes"}),
+                );
+            }
+            Some(raw) => match serde_json::from_str::<Value>(&raw) {
+                Ok(Value::Object(_)) => Some(raw),
+                _ => {
+                    return write_json(
+                        400,
+                        &json!({"error": "x-komodoc-provenance must be a JSON object"}),
+                    );
+                }
+            },
+        };
         let ceiling = self.config.max_document.saturating_add(1);
         let Ok(body) = to_bytes(request.into_body(), ceiling).await else {
             return write_json(413, &json!({"error": "that rendering is too large"}));
@@ -2988,26 +3018,44 @@ impl Server {
                 }
             }
         }
-        if current_only {
+        let reply = if current_only {
             match room
                 .put_current_rendering(&content_sha, &expected_inputs, synctex, body.to_vec())
                 .await
             {
-                Ok(Some(size)) => write_json(200, &json!({"sha": sha, "size": size})),
-                Ok(None) => write_json(
-                    409,
-                    &json!({"error": "the source tree changed before its PDF could be stored"}),
-                ),
-                Err(why) => write_json(413, &json!({"error": why})),
+                Ok(Some(size)) => Ok(size),
+                Ok(None) => {
+                    return write_json(
+                        409,
+                        &json!({"error": "the source tree changed before its PDF could be stored"}),
+                    );
+                }
+                Err(why) => Err(why),
             }
         } else {
-            match room
-                .put_rendering(&content_sha, synctex, body.to_vec())
+            room.put_rendering(&content_sha, synctex, body.to_vec())
                 .await
-            {
-                Ok(size) => write_json(200, &json!({"sha": sha, "size": size})),
-                Err(why) => write_json(413, &json!({"error": why})),
+        };
+        match reply {
+            Ok(size) => {
+                // The PDF and its provenance are one job's output, so the
+                // provenance is stored the moment the PDF is, under the same
+                // checkpoint identity -- never for the SyncTeX request, which
+                // carries no header of its own and would otherwise overwrite
+                // real provenance with nothing.
+                if !synctex {
+                    if let Some(raw) = provenance {
+                        if let Err(why) = room
+                            .put_rendering_provenance(&content_sha, raw.into_bytes())
+                            .await
+                        {
+                            return write_json(500, &json!({"error": why}));
+                        }
+                    }
+                }
+                write_json(200, &json!({"sha": sha, "size": size}))
             }
+            Err(why) => write_json(413, &json!({"error": why})),
         }
     }
 
@@ -3103,16 +3151,32 @@ impl Server {
         let live = current_tree.digest();
         let inputs = current_tree.input_digest();
         match room.newest_rendering().await {
-            Some((sha, at, current)) => write_json(
-                200,
-                &json!({
+            Some((sha, at, current)) => {
+                // The content identity, not the (possibly-a-restore) history
+                // event SHA: provenance is stored beside the PDF under the
+                // checkpoint's tree identity, exactly as the PDF itself is.
+                let content_sha = room
+                    .rendering_sha(&sha)
+                    .await
+                    .unwrap_or_else(|| sha.clone());
+                let provenance = room
+                    .read_rendering_provenance(&content_sha)
+                    .await
+                    .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
+                let mut body = json!({
                     "sha": sha,
                     "at": at,
                     "current": current,
                     "live": live,
                     "inputs": inputs
-                }),
-            ),
+                });
+                if let Some(provenance) = provenance {
+                    if let Some(fields) = body.as_object_mut() {
+                        fields.insert("provenance".to_string(), provenance);
+                    }
+                }
+                write_json(200, &body)
+            }
             None => write_json(200, &json!({"live": live, "inputs": inputs})),
         }
     }
@@ -4069,6 +4133,21 @@ impl Server {
                     // operator's business, and the browser has no use for it --
                     // it fetches `/latex/`, on this origin, and nothing else.
                     fields.insert("latex".to_string(), json!(self.latex.is_some()));
+                    // Where the local bridge listens, so the browser knows
+                    // what to probe without guessing a port. The address is
+                    // fixed; the local app's own pairing decides whether this
+                    // browser may use it (docs/specs/wasmtex-interfaces.md,
+                    // section 2.6).
+                    fields.insert(
+                        "latex_local".to_string(),
+                        json!({
+                            "address": format!(
+                                "http://127.0.0.1:{}/",
+                                crate::local::protocol::DEFAULT_PORT
+                            ),
+                            "protocol": 1,
+                        }),
+                    );
                 }
                 Some(write_json(200, &body))
             }

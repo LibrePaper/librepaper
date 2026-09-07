@@ -177,16 +177,16 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 
 # The LaTeX mirror, on Cloudflare. It is served as a worker made of static
 # files, deploy/latex/wrangler.toml, so the only credential it needs is the
-# CLOUDFLARE_API_TOKEN that `make secrets` provides. What goes up is the part
-# of latex/mirror a reader can be offered -- the manifest, the package half
-# and SwiftLaTeX pdfTeX, about 260 MB in ten thousand files -- and not the
-# three distributions the manifest marks unshown, which are two gigabytes
-# nobody fetches. A file named by its digest is cached forever; the manifest
-# is not cached at all. Build the mirror first:
+# CLOUDFLARE_API_TOKEN that `make secrets` provides. What goes up is the
+# WasmTex release, its TeX Live snapshot files and the Biber VM image -- see
+# latex/tools/README.md -- and not the legacy distributions an older mirror
+# directory may still hold. A file named by its digest is cached forever; the
+# manifest is not cached at all. Build the mirror first:
 #
-#     node latex/tools/mirror.mjs            # the distributions
-#     node latex/tools/mirror.mjs --scheme   # the TeX Live collections, from this machine's TeX Live
-#     cd web && node checks/latex.mjs --record   # what the corpus asks for, from upstream
+#     node latex/tools/wasmtex.mjs                      # the engine release
+#     node latex/tools/wasmtex-record.mjs               # the package set the corpus asks for
+#     node latex/tools/wasmtex.mjs --texlive-root icudt68l.dat
+#     node latex/tools/biber-vm/build.mjs               # the Biber VM (needs Docker)
 #
 # Deploys upload only files whose content changed, so updating is cheap.
 MIRROR ?= latex/mirror
@@ -196,7 +196,7 @@ latex-push:  ## Push the LaTeX mirror to Cloudflare as a static-assets worker (r
 	@test -n "$$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN is not set; run this inside make secrets"; exit 1; }
 	@# The three distributions the card does not show, and the download cache
 	@# mirror.mjs keeps beside them, which holds the release archives whole.
-	@printf '.cache/\nbusytex/\ntexlyre-busytex/\nswiftlatex-xetex/\n' > $(MIRROR)/.assetsignore
+	@printf '.cache/\nbusytex/\ntexlyre-busytex/\nswiftlatex-xetex/\nswiftlatex-pdftex/\npackages/\n' > $(MIRROR)/.assetsignore
 	@printf '/*\n  Cache-Control: public, max-age=31536000, immutable\n/manifest.json\n  Cache-Control: no-store\n' > $(MIRROR)/_headers
 	@cd deploy/latex && bunx wrangler deploy
 	@echo "serve with: komodoc serve --latex https://komodoc-latex.<account>.workers.dev/"

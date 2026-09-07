@@ -110,7 +110,7 @@ export function formatOf(path) {
 /// A render carries `html` or `pdf`, never both, and the caller posts
 /// whichever it has: flow documents are painted into the shell and paged
 /// documents into the PDF frame, and that is the whole difference here.
-export async function render(tree, title) {
+export async function render(tree, title, { manual = false } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = formatOf(tree.main);
   // HTML's renderer is the identity, so there is nothing to fetch and nothing
@@ -128,7 +128,7 @@ export async function render(tree, title) {
   // assets/<sha>` out of anything rendered: on a private document that route
   // needs a credential, and a credential does not belong in a page.
   if (format === "latex") {
-    const { pdf, synctex, diagnostics, seconds, log } = await latex.compile(tree);
+    const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok } = await latex.compile(tree, { manual });
     // Keep the output channels explicit. In particular, a failed LaTeX
     // compile has no HTML page; `undefined` would look like a page to callers
     // that use a null check and could replace a previously good preview.
@@ -141,6 +141,14 @@ export async function render(tree, title) {
       // The log travels too, for the one case the list is empty and the log
       // is the only account of why there is no PDF.
       log: log || "",
+      // `latex.js` may have fallen back to a local or VM backend; the reader
+      // shows that provenance and both attempts' logs (SPEC "Failure
+      // presentation") rather than the browser-only shape this used to be.
+      attempts,
+      provenance,
+      failure,
+      job,
+      ok,
     };
   }
   // Checkpoints may be Svelte proxies, which cannot cross a worker boundary.

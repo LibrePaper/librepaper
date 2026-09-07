@@ -20,7 +20,7 @@ komodoc-engine = { path = "../engine" }
 komodoc-text = { path = "../text" }
 
 # The server. WebSockets come with axum, so nothing here frames them by hand.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal", "process"] }
 axum = { version = "0.8", features = ["ws", "multipart", "http1"] }
 http-body-util = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }

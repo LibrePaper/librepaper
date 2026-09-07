@@ -482,6 +482,14 @@ pub fn rendering_key(slug: &str, sha: &str) -> String {
 pub fn rendering_synctex_key(slug: &str, sha: &str) -> String {
     format!("renderings/{slug}/{sha}.synctex")
 }
+/// The provenance object a browser or the local app sent beside the PDF:
+/// which backend produced it, the engine, the release, and the tools used.
+/// Stored as its own object rather than folded into the PDF's headers so a
+/// reader can ask for it without downloading the PDF, and so pruning a
+/// rendering prunes its provenance in the same sweep.
+pub fn rendering_provenance_key(slug: &str, sha: &str) -> String {
+    format!("renderings/{slug}/{sha}.provenance.json")
+}
 pub fn rendering_prefix(slug: &str) -> String {
     format!("renderings/{slug}/")
 }

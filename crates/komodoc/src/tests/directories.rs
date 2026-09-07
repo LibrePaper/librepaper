@@ -681,6 +681,7 @@ fn a_concurrent_rename_does_not_assign_one_ytext_to_two_paths() {
     let tree = Tree {
         main: "old.md".to_string(),
         files,
+        settings: None,
     };
     let bodies = HashMap::from([
         ("old-sha".to_string(), "old\n".to_string()),

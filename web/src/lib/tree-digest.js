@@ -67,9 +67,22 @@ export async function snapshotDigest(tree, assets = tree?.assets || {}) {
   // JSON.stringify reorders integer-looking object keys regardless of
   // insertion order. Emit the BTreeMap entries explicitly so paths such as
   // `10` and `2`, or `__proto__`, retain their Rust order and meaning.
+  //
+  // `settings` mirrors Rust's `Tree.settings: Option<CompileSettings>`: a
+  // tree with no engine or release pinned serializes exactly as before, so
+  // every checkpoint taken before compile settings existed keeps its sha.
+  // When present, `engine` comes before `release` and an empty string is
+  // omitted, the same as `CompileSettings`'s two
+  // `skip_serializing_if = "String::is_empty"` fields.
+  const engine = tree?.settings?.engine || "";
+  const release = tree?.settings?.release || "";
+  const settingsFields = [];
+  if (engine) settingsFields.push(`"engine":${JSON.stringify(engine)}`);
+  if (release) settingsFields.push(`"release":${JSON.stringify(release)}`);
+  const settingsJson = settingsFields.length ? `,"settings":{${settingsFields.join(",")}}` : "";
   const json = `{"main":${JSON.stringify(String(tree?.main || ""))},"files":{${files
     .map(([path, entry]) => `${JSON.stringify(path)}:${JSON.stringify(entry)}`)
-    .join(",")}}}`;
+    .join(",")}}${settingsJson}}`;
   return digest(encoder.encode(json));
 }
 

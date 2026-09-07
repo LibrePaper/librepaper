@@ -171,7 +171,12 @@ pub struct OutputEntry {
 }
 
 /// One diagnostic, in the shape `web/src/lib/latex/log.js` emits, with the
-/// workspace path already normalised back to the project-relative one.
+/// workspace path already normalised back to the project-relative one. The
+/// wire table in section 5 shows only `severity`/`message`/`file`/`line`;
+/// `hints`, `column`, `end_line` and `end_column` are carried too, additively,
+/// so a native diagnostic is the same shape `engine/src/diagnostic.rs` and
+/// `log.js` already agree on, and a consumer that only reads the four wire
+/// fields is unaffected.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Diagnostic {
     pub severity: String,
@@ -180,6 +185,14 @@ pub struct Diagnostic {
     pub file: String,
     #[serde(default)]
     pub line: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<String>,
+    #[serde(default)]
+    pub column: u32,
+    #[serde(default)]
+    pub end_line: u32,
+    #[serde(default)]
+    pub end_column: u32,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -290,7 +303,17 @@ mod tests {
     fn a_relative_path_is_safe_and_an_escaping_one_is_not() {
         assert!(safe_relative_path("main.tex"));
         assert!(safe_relative_path("chapters/01.tex"));
-        for bad in ["", "/etc/passwd", "../x", "a/../b", "a/./b", "a\\b", "a\u{0}b", "a//b", "x\n"] {
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "a/../b",
+            "a/./b",
+            "a\\b",
+            "a\u{0}b",
+            "a//b",
+            "x\n",
+        ] {
             assert!(!safe_relative_path(bad), "{bad:?} was allowed");
         }
     }

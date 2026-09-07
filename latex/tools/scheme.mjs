@@ -130,6 +130,50 @@ function runFilesOf(stanza) {
   return files;
 }
 
+/// The key derivation shared with `wasmtex.mjs --scheme`: every
+/// `pdftex/<format>/<name>` key pdfTeX's mirror protocol could ask for out of
+/// a set of TeX Live collections, by collection, with no bytes touched. Which
+/// keys a collection needs is a property of the TeX Live package database
+/// alone; where the bytes come from -- this machine's TEXMFDIST for the
+/// SwiftLaTeX mirror (`addScheme`, below), a pinned upstream 2026 snapshot for
+/// the WasmTex one (`wasmtex.mjs --scheme`) -- is a different question with a
+/// different answer, so this function answers only the first one.
+///
+/// A package depended on by two collections is owned by the first that names
+/// it, matching `addScheme`'s "counted under the first" rule, so the two stay
+/// consistent about what a given collection "is".
+export async function schemeKeys(collections, out) {
+  const text = await database(out);
+  const all = stanzas(text);
+
+  const owner = new Map();
+  for (const collection of collections) {
+    const stanza = all.get(`collection-${collection}`);
+    if (!stanza) throw new Error(`no collection-${collection} in the package database`);
+    for (const name of dependsOf(stanza)) if (!owner.has(name)) owner.set(name, collection);
+  }
+
+  const keys = new Map(); // key -> { collection, name }
+  let skipped = 0;
+  for (const [pkg, collection] of owner) {
+    const stanza = all.get(pkg);
+    if (!stanza) continue;
+    for (const path of runFilesOf(stanza)) {
+      const name = basename(path);
+      const shape = formatFor(name);
+      // Same reasoning as `addScheme`: a file pdfTeX has no format code for
+      // is not a file the mirror protocol can ever be asked for.
+      if (!shape) {
+        skipped += 1;
+        continue;
+      }
+      const key = `pdftex/${shape.format}/${shape.bare ? name.slice(0, name.lastIndexOf(".")) : name}`;
+      if (!keys.has(key)) keys.set(key, { collection, name });
+    }
+  }
+  return { keys, skipped };
+}
+
 /// Mirrors every file of those collections that pdfTeX could ask for.
 ///
 /// Idempotent in the same way as everything else here: a key already in the

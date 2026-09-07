@@ -2925,6 +2925,50 @@ impl Room {
         self.blobs.get(&key).await.ok()
     }
 
+    /// Stores the provenance object a browser or the local app sent beside a
+    /// rendering: how it was produced, kept as a sibling of the PDF under the
+    /// same checkpoint identity. The caller has already validated the bytes
+    /// parse as a JSON object and are within the size a header may carry;
+    /// what is decided here is only that they are not already held and that
+    /// writing them is this server's to do, exactly like `put_rendering`.
+    pub async fn put_rendering_provenance(&self, sha: &str, body: Vec<u8>) -> Result<i64, String> {
+        let size = body.len() as i64;
+        let name = rendering_provenance_name(sha);
+        if !self.hold().await {
+            return Err("this room is held by another server".into());
+        }
+        self.blobs
+            .put(
+                &crate::blob::rendering_provenance_key(&self.slug, sha),
+                body,
+                "application/json",
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        let (format, main) = {
+            let mut state = self.state.lock().await;
+            state.session.rendering_sizes.insert(name.clone(), size);
+            state.session.rendering_written_at.insert(name, now_unix());
+            (
+                state.session.format.clone(),
+                session::main_path(&state.session.doc),
+            )
+        };
+        self.record_size_now(None, &format, &main).await;
+        Ok(size)
+    }
+
+    /// A rendering's stored provenance, when one was sent with it. `None`
+    /// covers both "nothing has rendered this yet" and "the rendering was
+    /// stored before a browser sent provenance" -- the reader shows the same
+    /// thing either way.
+    pub async fn read_rendering_provenance(&self, sha: &str) -> Option<Vec<u8>> {
+        self.blobs
+            .get(&crate::blob::rendering_provenance_key(&self.slug, sha))
+            .await
+            .ok()
+    }
+
     /// The newest checkpoint that has a rendering, when it was taken, and
     /// whether it is the text as it stands. This is the whole of what a reader
     /// needs to decide between showing a PDF and saying "not yet rendered",
@@ -3011,7 +3055,10 @@ impl Room {
         };
         let mut gone = Vec::new();
         for name in held.keys() {
-            let sha = name.strip_suffix(".synctex").unwrap_or(name);
+            let sha = name
+                .strip_suffix(".synctex")
+                .or_else(|| name.strip_suffix(".provenance.json"))
+                .unwrap_or(name);
             if kept.contains(sha) {
                 continue;
             }
@@ -3378,10 +3425,17 @@ pub fn tree_of(
             },
         );
     }
+    let (engine, release) = session::latex_settings(doc);
+    let settings = if engine.is_empty() && release.is_empty() {
+        None
+    } else {
+        Some(crate::history::CompileSettings { engine, release })
+    };
     (
         Tree {
             main: session::main_path(doc),
             files,
+            settings,
         },
         bodies,
     )
@@ -3439,6 +3493,13 @@ pub fn rendering_name(sha: &str, synctex: bool) -> String {
     } else {
         sha.to_string()
     }
+}
+
+/// The name a rendering's provenance object is tracked under in
+/// `rendering_sizes`/`rendering_written_at`, so it is counted in the quota
+/// and pruned alongside the PDF it describes.
+pub fn rendering_provenance_name(sha: &str) -> String {
+    format!("{sha}.provenance.json")
 }
 
 /// Base64, which is how a binary update travels on a JSON socket.

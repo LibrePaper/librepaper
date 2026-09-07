@@ -5,14 +5,14 @@
   "scripts": {
     "build": "node checks/vocabulary.js && vite build && vite build --config vite.agent.config.js",
     "dev": "vite build --watch",
-    "check": "node checks/vocabulary.js && node checks/diagnostics.mjs && node checks/sync.js && node checks/timeline.mjs && node checks/passages.mjs && node checks/anchor.mjs && node checks/orphan.mjs && node checks/latex-log.mjs && node checks/latex.mjs && node checks/viewer.mjs && node checks/review-fixes.mjs && node checks/submissions.mjs && node checks/latex-worker.mjs && node checks/renderer-worker.mjs && node checks/renderer-wasm.mjs && node checks/tree-digest.mjs && node checks/reader-races.mjs && node checks/file-manager.mjs && node checks/latex-engine.mjs && node checks/latex-resources.mjs && node checks/latex-controller.mjs && node checks/latex-route.mjs && node checks/latex-bibliography.mjs && node checks/latex-local.mjs && node checks/latex-vm.mjs && node checks/latex-reader.mjs",
+    "check": "node checks/vocabulary.js && node checks/diagnostics.mjs && node checks/sync.js && node checks/timeline.mjs && node checks/passages.mjs && node checks/anchor.mjs && node checks/orphan.mjs && node checks/latex-log.mjs && node checks/viewer.mjs && node checks/review-fixes.mjs && node checks/submissions.mjs && node checks/renderer-worker.mjs && node checks/renderer-wasm.mjs && node checks/tree-digest.mjs && node checks/reader-races.mjs && node checks/file-manager.mjs && node checks/latex-engine.mjs && node checks/latex-resources.mjs && node checks/latex-controller.mjs && node checks/latex-route.mjs && node checks/latex-bibliography.mjs && node checks/latex-local.mjs && node checks/latex-vm.mjs && node checks/latex-reader.mjs",
     "check:browser": "node checks/editor-browser.mjs && node checks/files-browser.mjs",
     "check:history-browser": "node tools/history-browser.mjs",
     "check:history-merge": "node checks/history-merge-browser.mjs",
     "check:typst-pdf": "node checks/typst-pdf.mjs",
     "check:typst-viewer": "node checks/typst-viewer.mjs",
-    "check:latex-cache": "node checks/latex-cache-browser.mjs",
-    "check:typst-browser": "node tools/typst-pdf-browser.mjs ../target/release/komodoc"
+    "check:typst-browser": "node tools/typst-pdf-browser.mjs ../target/release/komodoc",
+    "check:latex-browser": "node checks/latex-wasmtex-browser.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

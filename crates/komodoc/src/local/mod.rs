@@ -13,3 +13,4 @@ pub mod native;
 pub mod pairing;
 pub mod protocol;
 pub mod service;
+pub mod texlog;

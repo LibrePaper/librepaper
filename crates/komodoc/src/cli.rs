@@ -1071,6 +1071,7 @@ fn input_digest_for_typst(
     let mut tree = crate::history::Tree {
         main: main.to_string(),
         files: std::collections::BTreeMap::new(),
+        settings: None,
     };
     for (path, bytes) in files {
         let kind = match crate::paths::check(rules, path) {

@@ -360,7 +360,42 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
         digests[path] = sha;
         entries[path] = { kind: "asset", sha };
       }
-      return { main: this.mainPath(), texts, digests, files: entries };
+      // Compile settings ride in `meta` beside `main`, so they travel with
+      // the project rather than with this browser. Only written when an
+      // editor's browser has actually pinned one: a tree with neither key
+      // set omits `settings` entirely, which is what lets
+      // `tree-digest.js`/`history.rs` keep every existing checkpoint's sha.
+      const engine = meta.get("latex.engine") || "";
+      const release = meta.get("latex.release") || "";
+      const settings = engine || release ? { engine, release } : undefined;
+      return { main: this.mainPath(), texts, digests, files: entries, ...(settings ? { settings } : {}) };
+    },
+
+    /// This project's LaTeX compile settings: the engine an editor picked
+    /// (or "auto", the default), and the browser release pinned for it, or
+    /// null before any editor's browser has compiled it. Shared with every
+    /// collaborator through `meta`, the same map `main` lives in.
+    latexSettings() {
+      return {
+        engine: meta.get("latex.engine") || "auto",
+        release: meta.get("latex.release") || null,
+      };
+    },
+
+    /// Changes the project's engine and/or pinned release. Only the keys
+    /// that actually change are written, so an editor picking the same
+    /// engine again does not touch `release`'s history. A reader never calls
+    /// this -- `mayEdit` refuses it the way every other write here does.
+    setLatexSettings(next) {
+      if (!mayEdit) throw new Error("This project is read-only.");
+      const current = this.latexSettings();
+      if (next.engine !== undefined && next.engine !== current.engine) {
+        meta.set("latex.engine", next.engine);
+      }
+      if (next.release !== undefined && next.release !== current.release) {
+        if (next.release) meta.set("latex.release", next.release);
+        else meta.delete("latex.release");
+      }
     },
 
     /// The text at a path, for the caller that has a path and not an id --

@@ -1793,3 +1793,121 @@ fn browser_rendering_digest_matches_rust_tree_bytes() {
         tree.digest()
     );
 }
+
+/// A tree with no settings serializes exactly as it did before `settings`
+/// existed, so every checkpoint recorded before this change keeps its sha.
+/// The old digest is computed by hand from the literal `{"main":..,"files":
+/// ..}` JSON, independent of `Tree::to_bytes`, so a bug that reintroduced the
+/// field into the "no settings" case would still be caught.
+#[test]
+fn tree_without_settings_serializes_as_before() {
+    use crate::history::{CompileSettings, Tree, TreeEntry};
+    use sha2::{Digest, Sha256};
+
+    let mut files = std::collections::BTreeMap::new();
+    files.insert(
+        "main.md".to_string(),
+        TreeEntry {
+            kind: "text".to_string(),
+            id: "file-1".to_string(),
+            sha: "abc123".to_string(),
+            size: 12,
+        },
+    );
+    let tree = Tree {
+        main: "main.md".to_string(),
+        files,
+        settings: None,
+    };
+    let expected = concat!(
+        r#"{"main":"main.md","files":{"main.md":{"#,
+        r#""kind":"text","id":"file-1","sha":"abc123","size":12}}}"#
+    );
+    assert_eq!(
+        String::from_utf8(tree.to_bytes()).unwrap(),
+        expected,
+        "adding `settings` changed how a tree without it serializes"
+    );
+    let old_digest = hex::encode(Sha256::digest(expected.as_bytes()));
+    assert_eq!(
+        tree.digest(),
+        old_digest,
+        "a tree without settings must keep the digest it had before settings existed"
+    );
+
+    // `Some` of two empty strings is the same tree as `None`: whatever fills
+    // `settings` from the live document's meta must not mint a new identity
+    // for a document that never touched engine or release.
+    let normalized = Tree {
+        settings: Some(CompileSettings::default()),
+        ..tree.clone()
+    }
+    .normalized();
+    assert_eq!(normalized.settings, None);
+    assert_eq!(normalized.digest(), old_digest);
+}
+
+/// Changing either the engine or the release changes both the tree digest
+/// and the source-only `input_digest`: a compile setting is as much a part
+/// of what produced a rendering as the source bytes are, so a settings
+/// change must not silently reuse an artifact identified only by source.
+#[test]
+fn compile_settings_change_the_tree_digest() {
+    use crate::history::{CompileSettings, Tree, TreeEntry};
+
+    let mut files = std::collections::BTreeMap::new();
+    files.insert(
+        "main.md".to_string(),
+        TreeEntry {
+            kind: "text".to_string(),
+            id: "file-1".to_string(),
+            sha: "abc123".to_string(),
+            size: 12,
+        },
+    );
+    let bare = Tree {
+        main: "main.md".to_string(),
+        files: files.clone(),
+        settings: None,
+    };
+    let with_engine = Tree {
+        settings: Some(CompileSettings {
+            engine: "xelatex".to_string(),
+            release: String::new(),
+        }),
+        ..bare.clone()
+    };
+    let with_release = Tree {
+        settings: Some(CompileSettings {
+            engine: String::new(),
+            release: "2026-8b7946970153c52e".to_string(),
+        }),
+        ..bare.clone()
+    };
+    let with_both = Tree {
+        settings: Some(CompileSettings {
+            engine: "xelatex".to_string(),
+            release: "2026-8b7946970153c52e".to_string(),
+        }),
+        ..bare.clone()
+    };
+
+    assert_ne!(bare.digest(), with_engine.digest());
+    assert_ne!(bare.digest(), with_release.digest());
+    assert_ne!(bare.digest(), with_both.digest());
+    assert_ne!(with_engine.digest(), with_release.digest());
+    assert_ne!(with_engine.digest(), with_both.digest());
+    assert_ne!(with_release.digest(), with_both.digest());
+
+    assert_ne!(bare.input_digest(), with_engine.digest());
+    assert_ne!(bare.input_digest(), with_engine.input_digest());
+    assert_ne!(bare.input_digest(), with_release.input_digest());
+    assert_ne!(with_engine.input_digest(), with_release.input_digest());
+
+    // `input_digest` still clears Yjs item ids, settings or not.
+    let mut retitled = with_engine.clone();
+    for entry in retitled.files.values_mut() {
+        entry.id = "a-different-yjs-id".to_string();
+    }
+    assert_eq!(with_engine.input_digest(), retitled.input_digest());
+}

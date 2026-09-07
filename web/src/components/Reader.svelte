@@ -56,9 +56,22 @@
   import History from "./History.svelte";
   import Diagnostics from "./Diagnostics.svelte";
   import Settings from "./Settings.svelte";
+  import LatexStatus from "./LatexStatus.svelte";
   import Files from "./Files.svelte";
+  import { renderedNoteText } from "../lib/latex/status-text.js";
 
   const SLUG = location.pathname.split("/").pop();
+
+  // A one-time migration: the old distribution chooser kept its choice under
+  // this key, in this browser, forever. WasmTex initializes automatically --
+  // there is nothing left to remember here, and a stale entry is only ever
+  // read by code that no longer exists.
+  try {
+    localStorage.removeItem("komodoc-latex");
+  } catch {
+    // Storage can be unavailable (private browsing, a locked-down profile);
+    // there is nothing to migrate away from in that case either.
+  }
 
   // The key a reader arrived with, taken out of the fragment before anything
   // asks the server a question. A fragment never leaves the browser, so this
@@ -1192,9 +1205,6 @@
   const pdfOutput = $derived(renderers.producesPdf(displayedFormat));
   const framePath = $derived(renderers.outputKind(displayedFormat) === "pdf" ? "pdf" : "raw");
 
-  // Whether a compiler has been chosen in this browser. Not a promise and not
-  // a fetch: the card is drawn from this before anything is downloaded.
-  let latexReady = $state(false);
   // How long the last compile took, and whether one is running now. Paged
   // formats expose the same short-lived loading state; the elapsed time is
   // especially useful for LaTeX, whose compiler can take seconds.
@@ -1206,47 +1216,50 @@
   // PDF nor an error the parser could name. Empty when the list says it.
   let pdfFailureReason = $state("");
 
-  // The card is offered to somebody who can act on it and to nobody else. A
-  // reader is never asked to download a compiler to read a paper: what they
-  // get is "not yet rendered" and the source, until a stored rendering makes
-  // that unnecessary.
-  // Reopened from the toolbar to switch distribution, which is the only way
-  // back to it once one has been chosen.
-  let cardOpen = $state(false);
-  const showsCard = $derived(
-    sourceFormat === "latex" &&
-      editing &&
-      mayEdit &&
-      renderers.available("latex") &&
-      (!latexReady || cardOpen),
-  );
+  // The project's LaTeX settings, mirrored into state because the Yjs `meta`
+  // map they live in is not itself reactive: Settings.svelte needs to redraw
+  // when a settings change arrives from another collaborator, not only when
+  // this browser writes one. Kept current by the `meta.observe` handler set
+  // up beside `latex.configure` in `prepare`.
+  let latexSettingsState = $state({ engine: "auto", release: null });
 
-  // Whether this browser is the one producing the pages. An editor with a
-  // distribution loaded compiles here and stores the result on the server;
-  // everybody else -- a reader, an editor who has not loaded one, anyone on a
-  // deployment with no mirror -- is shown what the server kept.
+  // The most recent LaTeX compile result -- success or failure -- kept whole
+  // for Diagnostics' "Compiled with" block and "Earlier attempts" list
+  // (SPEC-wasmtex.md: "Preserve both attempts' logs when a browser failure
+  // led to a local attempt."). Null for every other format.
+  let lastLatexResult = $state(null);
+
+  // Set by the "Compile now" button and read once, at the next
+  // `renderers.render` call: the plainest way to ask for
+  // `latex.compile(tree, {manual: true})` semantics without `renderers.js`
+  // growing a LaTeX-specific parameter of its own. Cleared as soon as it is
+  // read, so it applies to exactly the one compile it was meant for.
+  let manualCompile = false;
+  function compileNow() {
+    manualCompile = true;
+    paintPreview();
+  }
+
+  // Whether this browser is the one producing the pages. There is no chooser
+  // and no "not ready yet" gate any more: an editor's browser initializes
+  // WasmTex automatically the first time it is asked to compile (`paintPreview`
+  // below), and the loading itself is what the status line under the toolbar
+  // reports. Everybody else -- a reader, or anyone on a deployment with no
+  // mirror -- is shown what the server kept.
   const compilesHere = $derived(
     editing && mayEdit && (
       sourceFormat === "typst"
         ? renderers.compilerAvailable("typst")
-      : sourceFormat === "latex" && latexReady && renderers.compilerAvailable("latex")
+      : sourceFormat === "latex" && renderers.compilerAvailable("latex")
     ),
   );
   const unrendered = $derived(pdfOutput && !compilesHere && !everPaintedShown);
   const failedBeforeRender = $derived(pdfOutput && compilesHere && pdfFailure && !everPaintedShown);
 
-  // A distribution is loaded: the card goes, and the document is compiled at
-  // once rather than on the next keystroke. This is the only place a compile
-  // is started other than an edit, and it is the person asking for one.
-  function latexChosen() {
-    latexReady = true;
-    cardOpen = false;
-    paintPreview();
-  }
-
   // A paged compile that is running says so, and says how long the last one
   // took once there has been one. Before the first, there is no honest number
-  // to give.
+  // to give. LaTeX has its own, richer status line -- `LatexStatus.svelte`,
+  // fed straight from `latex.subscribe` -- so this badge is Typst's alone.
   const compileBadge = $derived(
     !compiling ? "" : lastCompile ? `compiling… (last took ${lastCompile.toFixed(1)}s)` : "compiling…",
   );
@@ -1373,18 +1386,16 @@
   // The line under the badge for a LaTeX document, and the whole of what makes
   // storing a derived thing honest. A rendering is named by the digest of the
   // source it was compiled from, so there are exactly three things to say: it
-  // is the text as it stands, it is older than the text and here is when, or
-  // nobody has rendered this yet.
+  // is the text as it stands, it is older than the text and here is when
+  // (with what compiled it, when the server kept that), or nobody has
+  // rendered this yet. The wording for the last two comes from
+  // `renderedNoteText`, shared with checks/latex-reader.mjs.
   const renderedNote = $derived(
     !pdfOutput || (compilesHere && !viewing)
       ? ""
       : !rendering
         ? "not yet rendered"
-        : rendering.missing
-          ? "this version was never rendered"
-          : rendering.current
-            ? ""
-            : `rendered from an earlier version, ${(rendering.at || "").slice(0, 10)}`,
+        : renderedNoteText(rendering),
   );
 
   // The PDF an editor's browser compiled, drawn for everybody else.
@@ -1477,9 +1488,9 @@
     return !found.sha;
   }
 
-  async function holdRendering(name, bytes, synctex, current = true) {
+  async function holdRendering(name, bytes, synctex, current = true, provenance = null) {
     clearTimeout(renderingTimer);
-    heldRendering = { name, bytes, synctex, current };
+    heldRendering = { name, bytes, synctex, current, provenance };
     // A document's first rendering is stored at once; every later one waits
     // for the text to stay quiet. An edit while the question is being asked
     // drops the held rendering, and what is stored then is nothing, which
@@ -1501,20 +1512,28 @@
     clearTimeout(renderingTimer);
     const held = heldRendering;
     heldRendering = null;
-    if (held) storeRendering(held.name, held.bytes, held.synctex, held.current);
+    if (held) storeRendering(held.name, held.bytes, held.synctex, held.current, held.provenance);
   }
 
-  async function storeRendering(name, bytes, synctex, current = true) {
+  async function storeRendering(name, bytes, synctex, current = true, provenance = null) {
     const source = sourceGeneration;
     const navigation = navigationGeneration;
-    const headers = { ...SHELL_HEADERS, ...keyHeaders(KEY) };
+    // `x-komodoc-provenance` travels on both PUTs of the same job's bytes --
+    // never a SyncTeX map paired with a different job's PDF -- so the server
+    // can answer a reader's `renderedNote` with what actually produced this
+    // rendering (section 4 of the interfaces doc).
+    const headers = {
+      ...SHELL_HEADERS,
+      ...keyHeaders(KEY),
+      ...(provenance ? { "x-komodoc-provenance": JSON.stringify(provenance) } : {}),
+    };
     const put = (suffix, body) =>
       fetch(`/api/documents/${SLUG}/renderings/${name}${suffix}`, { method: "PUT", headers, body })
         .then((response) => response.ok)
         .catch(() => false);
     if (!(await put("", bytes))) return;
     if (source === sourceGeneration && navigation === navigationGeneration) {
-      rendering = { sha: name, at: new Date().toISOString(), current };
+      rendering = { sha: name, at: new Date().toISOString(), current, provenance };
     }
     if (synctex) await put(".synctex", synctex);
   }
@@ -1603,15 +1622,28 @@
       const renderingName = paged
         ? snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}))
         : null;
+      // A manual compile is asked for once; the flag is read here, at the
+      // one call site that reaches the compiler, and cleared immediately so
+      // it cannot linger onto an edit's ordinary debounced compile.
+      // `typeof` rather than a bare read: checks/reader-races.mjs runs this
+      // function's body in isolation, pulled out of the component by a text
+      // marker, against a context that supplies only the variables each test
+      // needs -- `manualCompile` among them only here, where it is read, not
+      // there. `typeof` is the one operator that does not throw on a name a
+      // context never declared; the assignment below is unconditional
+      // because assigning an undeclared name is not an error.
+      const manual = typeof manualCompile === "boolean" && manualCompile;
+      manualCompile = false;
       let rendered;
       try {
-        rendered = await renderers.render(tree, await headingOf(tree));
+        rendered = await renderers.render(tree, await headingOf(tree), manual ? { manual: true } : undefined);
       } finally {
         // Only the newest compile owns the badge. An older one finishing
         // afterwards must not turn the spinner off under a newer one.
         if (paged && mine > painted) compiling = false;
       }
-      const { html, pdf, synctex, diagnostics: said, seconds, log } = rendered;
+      if (format === "latex") lastLatexResult = rendered;
+      const { html, pdf, synctex, diagnostics: said, seconds, log, provenance } = rendered;
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
       // catches up. Navigation and main-file changes still invalidate it;
@@ -1640,6 +1672,7 @@
             buffer.slice(0),
             synctex,
             !snapshotViewing && snapshotNavigation === navigationGeneration,
+            provenance || null,
           );
         }
         deliverPreview(latestPreview);
@@ -2316,7 +2349,6 @@
     // whether an authorized editor compiles locally.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
     renderers.offerLatex(list.includes("latex"));
-    latexReady = false;
     if (!renderers.outputKind(format)) {
       say(`${format} documents are read where their renderer is built`, true);
       settled = true;
@@ -2331,24 +2363,55 @@
     // Typst is loaded automatically for editors. Readers use the stored PDF
     // and must remain usable on a deployment with no Typst module at all.
     if (mayEdit) renderers.warm(format);
-    // localStorage remembers a preference, not a running worker. Restore the
-    // worker before claiming that LaTeX is ready; if the distribution was
-    // removed from this mirror, the card remains available for a new choice.
-    if (format === "latex" && mayEdit && renderers.available("latex")) {
-      const saved = latex.chosen();
-      if (saved) {
-        latex
-          .choose(saved)
-          .then(() => {
-            latexReady = true;
-            void paintPreview();
-          })
-          .catch(() => {
-            latexReady = false;
-          });
+    joinSession(document_);
+    // No chooser and no saved distribution: `latex.configure` tells the
+    // controller which project this is and what it is allowed to do, and the
+    // first `paintPreview` (from `startEditing` below, or an edit) is what
+    // actually starts loading WasmTex. `session.latexSettings()` needs the
+    // session that `joinSession` just built, which is why this comes after
+    // it rather than beside the old restore-a-distribution code above.
+    if (format === "latex") {
+      latexSettingsState = session.latexSettings();
+      latex.configure({
+        project: SLUG,
+        settings: latexSettingsState,
+        mayCompile: mayEdit && renderers.available("latex"),
+      });
+      if (mayEdit) {
+        // A settings change is a project change, not a local preference: it
+        // can arrive from another collaborator's Settings panel as easily as
+        // this browser's own, and either way the controller and the running
+        // preview both need to hear about it (SPEC "A settings change
+        // re-runs the compile").
+        session.meta.observe((event) => {
+          const changed = [...event.changes.keys.keys()];
+          if (!changed.includes("latex.engine") && !changed.includes("latex.release")) return;
+          latexSettingsState = session.latexSettings();
+          latex.setSettings(latexSettingsState);
+          void paintPreview();
+        });
+        // A project nobody has compiled yet has no browser release pinned.
+        // The first editor whose browser is about to compile it pins the
+        // validated default -- never a reader, who never reaches this
+        // branch at all (SPEC "Project configuration and identity" /
+        // "Migration": "Existing projects without a browser release pin
+        // receive one through the normal editable project configuration
+        // path; readers do not mutate projects merely by opening them.").
+        if (!session.latexSettings().release) {
+          latex
+            .releases()
+            .then((info) => {
+              if (info?.default && !session.latexSettings().release) {
+                session.setLatexSettings({ release: info.default });
+              }
+            })
+            .catch(() => {
+              // No mirror, or it is unreachable: nothing to pin yet, and the
+              // ordinary compile failure path explains that to the editor.
+            });
+        }
       }
     }
-    joinSession(document_);
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
     if (mayEdit) startEditing();
@@ -2551,7 +2614,11 @@
     {#if editing}
       {#if persistenceBadge}<small class="badge preset-tonal-warning" title={persistenceBadge}>{persistenceBadge}</small>{/if}
       {#if peers > 1}<small class="badge preset-tonal-secondary">{peers} editing</small>{/if}
-      {#if compileBadge}<small class="badge preset-tonal-surface" title={compileBadge}><span class="spinner" aria-hidden="true"></span>{compileBadge}</small>{/if}
+      {#if sourceFormat === "latex"}
+        <LatexStatus onconnect={() => showPanel("settings")} onretrybrowser={() => void paintPreview()} />
+      {:else if compileBadge}
+        <small class="badge preset-tonal-surface" title={compileBadge}><span class="spinner" aria-hidden="true"></span>{compileBadge}</small>
+      {/if}
       {#if state}<small class="badge {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}" title={state}>{state}</small>{/if}
     {/if}
   {/snippet}
@@ -2570,9 +2637,13 @@
         {#if mayEdit}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restoreCheckpoint(viewing.sha)}>Restore this version</button>{/if}
         <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
       {/if}
-      {#if editing && sourceFormat === "latex" && latexReady}
-        <IconButton icon="book" label="Choose a different TeX distribution" title="TeX distribution"
-          pressed={cardOpen} onclick={() => (cardOpen = !cardOpen)} />
+      {#if editing && sourceFormat === "latex" && compilesHere}
+        <!-- Automatic compilation covers every edit; this is only for asking
+             again right now -- after fixing an error, or after connecting
+             local Komodoc -- without waiting for the debounce or typing a
+             fresh keystroke. No "play" icon exists in Icon.svelte's set, so
+             this reuses "check": the label carries the meaning. -->
+        <IconButton icon="check" label="Compile now" title="Compile now" onclick={compileNow} />
       {/if}
       {#if !canSeeSharing}
         <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
@@ -2637,13 +2708,14 @@
         <Share open inline slug={SLUG} onclose={() => showPanel("")} />
       {:else if panel === "settings" && mayEdit}
         <Settings {keys} {linked} {sourceSide} ratio={sizes[PANES.editor.key]}
-                  {sourceFormat} canChooseTex={editing && mayEdit && renderers.available("latex")}
+                  {sourceFormat} {mayEdit} latexSettings={latexSettingsState}
                   onkeys={setKeys} onlinked={setLinked} onside={putSourceOn}
                   onratio={(share) => setSize(PANES.editor, share)}
-                  onchoosetex={() => (cardOpen = true)} />
+                  onlatexsettings={(next) => session?.setLatexSettings(next)} />
       {:else if panel === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
-                     canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic} />
+                     canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
+                     provenance={lastLatexResult?.provenance || null} attempts={lastLatexResult?.attempts || []} />
       {:else if panel === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
                  problem={historyProblem}
@@ -2740,16 +2812,13 @@
   {/if}
 
   <!-- What stands where the document would be, before there is one to show.
-       LaTeX has its compiler card; every paged format gets an explicit
-       not-yet-rendered state until a stored PDF arrives. Readers never load a
-       compiler merely to read an existing artifact. -->
-  {#if shown.document && showsCard}
-    <section class="latexpane">
-      {#await import("./LatexCard.svelte") then { default: LatexCard }}
-        <LatexCard onchosen={latexChosen} onerror={(why) => say(why, true)} />
-      {/await}
-    </section>
-  {:else if shown.document && failedBeforeRender}
+       There is no compiler card any more: an editor's browser initializes
+       WasmTex on its own, automatically, and the status line under the
+       toolbar carries the loading and failure states. Every paged format
+       still gets an explicit not-yet-rendered state until a stored PDF
+       arrives -- readers never load a compiler merely to read an existing
+       artifact. -->
+  {#if shown.document && failedBeforeRender}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">Could not render</h2>
@@ -2779,7 +2848,7 @@
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
-           away={!shown.document || showsCard || unrendered || failedBeforeRender} />
+           away={!shown.document || unrendered || failedBeforeRender} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every

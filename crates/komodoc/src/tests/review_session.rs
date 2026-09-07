@@ -41,6 +41,7 @@ fn review_restore_keeps_a_disjoint_peer_word() {
     let tree = Tree {
         main: "main.md".to_string(),
         files,
+        settings: None,
     };
     let mut bodies = HashMap::new();
     bodies.insert("main.md".to_string(), merged);

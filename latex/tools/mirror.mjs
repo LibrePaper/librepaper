@@ -85,7 +85,10 @@ export function readManifest(out = OUT) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function writeManifest(manifest, out = OUT) {
+// Used by `serve.mjs --record` to write back the `texlive.<snapshot>` section
+// (see `wasmtex.mjs`, which owns the rest of that shape) without duplicating
+// the write-and-newline convention every manifest writer here follows.
+export function writeManifest(manifest, out = OUT) {
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 }
@@ -426,6 +429,20 @@ async function mirror() {
   if (packages.length) {
     const bytes = packages.reduce((sum, one) => sum + one.size, 0);
     console.log(`mirror: ${"packages".padEnd(18)} ${packages.length} files, ${mb(bytes)}`);
+  }
+  // The WasmTex half, built by `wasmtex.mjs` into the same manifest: printed
+  // here too so `mirror.mjs` alone still shows the whole mirror's shape.
+  for (const [id, release] of Object.entries(final.releases || {})) {
+    const marker = id === final.default_release ? " (default)" : "";
+    console.log(`mirror: ${("release " + id).padEnd(18)} ${mb(release.sizes.pdftex)} pdftex engine+format${marker}`);
+  }
+  for (const [snapshot, entry] of Object.entries(final.texlive || {})) {
+    const files = Object.values(entry.files || {});
+    const bytes = files.reduce((sum, one) => sum + one.size, 0);
+    console.log(
+      `mirror: ${("texlive " + snapshot).padEnd(18)} ${files.length} files, ${mb(bytes)}, ` +
+        `${Object.keys(entry.absent || {}).length} recorded absent`,
+    );
   }
   console.log(`mirror: written to ${OUT}`);
 }

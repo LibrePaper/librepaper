@@ -345,7 +345,7 @@ The formats, and they are not available in the same places:
 | **Markdown** | `komodoc publish paper.md` | comrak | ~130 KB compressed |
 | **Typst** | `komodoc publish paper.typ` | typst | ~13 MB compressed |
 | **HTML** | `komodoc publish paper.html` | the identity | nothing |
-| **LaTeX** | `komodoc publish paper.tex` | a TeX the browser fetches | ~2 MB, then ~17 MB inside the first compile |
+| **LaTeX** | `komodoc publish paper.tex` | WasmTex, fetched by the browser | ~6 MB for pdfTeX and its format, then the packages a document asks for |
 
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
@@ -354,8 +354,7 @@ is the same one the editor runs â so a document cannot render one way when 
 is published and another way when it is edited.
 
 The Typst module contains the compiler and embedded fonts. It is optional at
-build time and downloaded automatically when an editor needs it, without a
-TeX distribution chooser. Renderer URLs include their content digest and are
+build time and downloaded automatically when an editor needs it. Renderer URLs include their content digest and are
 cached for a year. A deployment without Typst WASM can still serve stored PDFs.
 
 Typst uses its paged PDF exporter, preserving page layout, columns, headers,
@@ -390,52 +389,70 @@ fix that cannot wait for a render.
 #### LaTeX
 
 `komodoc publish paper.tex` stores a `.tex` file as `latex`, and
-`komodoc publish paper/` takes the whole directory â the chapters, the `.bib`,
+`komodoc publish paper/` takes the whole directory — the chapters, the `.bib`,
 the figures. Nothing is compiled on the way: Komodoc carries no TeX, no build
 embeds one, and there is no `make latex`.
 
-LaTeX is compiled in the browser instead, by a TeX distribution built for
-WebAssembly that an editor's browser downloads once and keeps. The first time
-you open a LaTeX document, the preview pane offers the distributions this
-deployment serves and fetches nothing until you choose one; the choice is
-remembered in that browser and is not asked for again, for that document or
-any other. The compilers are AGPL-3.0 and MIT works of their own, fetched at
-run time rather than linked into Komodoc, and the card names each licence.
+LaTeX is compiled in the browser, by Komodoc's own pinned release of the
+[WasmTex](https://github.com/corca-ai/wasmtex) engines — pdfTeX, XeTeX,
+LuaTeX and BibTeX built for WebAssembly, with the formats generated for those
+exact binaries and a pinned TeX Live package snapshot. An editor's browser
+loads the engine the project needs the first time it opens a LaTeX document
+and compiles automatically from then on; readers see the stored PDF and fetch
+no compiler at all. Packages arrive from the deployment's mirror one file at a
+time as a compile asks for them, and verified files stay in browser storage
+so the next document costs nothing to fetch. The engines are GPL works of
+their own, fetched at run time rather than linked into Komodoc; their notices
+travel with the mirror.
 
-Two things follow from that, and both are worth knowing before you rely on it.
+The project engine — Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX — and the pinned
+browser release are project settings in the Settings panel. Automatic honours
+a `% !TEX program = xelatex` line in the main file, then looks for packages
+that only a Unicode engine can load, and otherwise uses pdfLaTeX.
 
-Readers see nothing until an editor has opened the document. Nobody is asked
-to download a compiler in order to read a paper, and storing a rendering
-beside the document â so a reader gets pages rather than "not yet rendered" â
-is a later step and is not built yet.
+BibTeX runs in the browser. Biber does not, and two things stand in for it.
+If Komodoc's local app is running on your machine, the reader hands it the
+`.bcf` and the `.bib` files, runs your own Biber, and continues typesetting
+in the browser. Without the app, the reader boots a small Linux guest in a
+worker — a Debian image holding Biber and nothing else, run by v86 — and runs
+the real Biber there; slower, but nothing to install.
 
-The package set is bounded, and is a mirror rather than a TeX Live. What is
-carried is TeX Live's `latex-recommended`, `latex-extra`, `fonts-recommended`
-and `mathscience` collections: about 190 MB of files, fetched one at a time by
-name as a compile asks for them. `tikz` and `biblatex` are in collections that
-are not mirrored and will not be found. And the engine's preloaded format is
-LaTeX2e 2020-02-02, so a package that checks the kernel date â `siunitx` is
-one â refuses to load however completely it was mirrored. When any of this
-happens you get the engine's own error, in the badge and the gutter that typst
-errors already appear in.
+The local app is the same binary:
 
-A self-hoster says where the distributions come from:
+```sh
+komodoc local start        # a loopback service; prints a pairing code
+komodoc local doctor       # which TeX tools it found, and whether it can confine them
+komodoc local status
+komodoc local disconnect --all
+```
+
+Enter the code once in the document's Settings panel and later fallbacks are
+automatic. When browser compilation fails outright — an engine that will not
+start, a package the mirror lacks, a crash, a TeX error — the reader asks the
+app to compile the whole project natively with your installed TeX, once per
+version of the source, and shows the result as an ordinary preview that says
+it was made locally. The app accepts structured jobs rather than commands,
+runs the tools with shell escape off, confines them with `bwrap` or
+`sandbox-exec` where the platform has them, and says so when it cannot. It
+never installs packages or changes your TeX installation.
+
+A self-hoster says where the browser distribution comes from:
 
 ```sh
 komodoc serve --latex /srv/komodoc/latex          # a mirror built by
-                                                  # node latex/tools/mirror.mjs
+                                                  # node latex/tools/wasmtex.mjs
 komodoc serve --latex https://mirror.example.com  # or a bucket serving one
 komodoc serve --latex                             # or the project's own
 ```
 
 Without `--latex` a deployment stores and shows `.tex` files and offers no
 LaTeX editor: `/api/config` says so, and the reader offers the source rather
-than the card. Whichever you pass, browsers only ever fetch `/latex/` on your
-own origin â the server reads from the bucket, the browser never does, because
-the list of packages a document asks for is a description of the document and
-should go no further than the deployment that already has the source. An
-`http:` mirror is refused at startup, since the page a document is framed in
-will not load a compiler over one.
+than a compiler. Whichever you pass, browsers only ever fetch `/latex/` on
+your own origin — the server reads from the bucket, the browser never does,
+because the list of packages a document asks for is a description of the
+document and should go no further than the deployment that already has the
+source. An `http:` mirror is refused at startup, since the page a document is
+framed in will not load a compiler over one.
 
 ### Sync
 
