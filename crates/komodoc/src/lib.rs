@@ -17,6 +17,7 @@ mod export;
 mod history;
 mod http;
 mod latex;
+mod local;
 mod origins;
 pub mod paths;
 mod pseudonym;
@@ -353,6 +354,12 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
+    /// The local compilation service: run native TeX on this machine for
+    /// the browser editor when its own compiler cannot
+    Local {
+        #[command(subcommand)]
+        command: LocalCommand,
+    },
     /// Delete one document and its comments
     Destroy {
         /// The document to delete, by ID or slug
@@ -364,6 +371,40 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+}
+
+/// `komodoc local <command>`. See `local::cli`.
+#[derive(Subcommand, Clone, Debug)]
+pub enum LocalCommand {
+    /// Start the loopback service and print its pairing code
+    Start {
+        /// Port to listen on (default 8763)
+        #[arg(long, value_name = "PORT", default_value_t = 0)]
+        port: u16,
+        /// Stay attached to the terminal rather than detaching
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// Whether the service is running, its address, code and pairings
+    Status,
+    /// Which native tools were found, and what is missing
+    Doctor,
+    /// Revoke pairings
+    Disconnect {
+        /// The browser origin to revoke; all of them with --all
+        #[arg(long, value_name = "URL")]
+        origin: Option<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Refresh the discovered tools
+    Rescan,
+}
+
+/// The arguments `komodoc local` hands to `local::cli::run`.
+#[derive(Clone, Debug)]
+pub struct LocalArgs {
+    pub command: LocalCommand,
 }
 
 #[tokio::main]
@@ -530,6 +571,7 @@ pub async fn main() {
                 _ => seed::seed(storage.options(), &documents).await,
             }
         }
+        Command::Local { command } => local::cli::run(LocalArgs { command }).await,
         Command::Destroy {
             document,
             server,

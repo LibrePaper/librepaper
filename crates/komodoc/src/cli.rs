@@ -42,7 +42,7 @@ pub fn server_from(flag: &str) -> String {
 /// everything else can be pure and tested by handing it a base directory
 /// directly rather than mutating `$HOME` or `$XDG_CONFIG_HOME` for the whole
 /// process.
-fn config_home() -> PathBuf {
+pub(crate) fn config_home() -> PathBuf {
     match std::env::var("XDG_CONFIG_HOME") {
         Ok(base) if !base.is_empty() => PathBuf::from(base),
         _ => {
