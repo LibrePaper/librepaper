@@ -39,6 +39,8 @@ mod serve;
 mod share_cli;
 mod sharing;
 mod source_anchor;
+mod suggest_cli;
+mod suggestions;
 mod sync;
 mod timeline;
 mod visitor;
