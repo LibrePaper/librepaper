@@ -113,13 +113,11 @@ let newestResolvedGeneration = -1;
 // needing an explicit invalidation path.
 let routeState = route.initialState({});
 const bibCache = new Map(); // identity -> BiberResult
-let lastStaged = null;
+let lastStaged = null; // { project, inputs, bibIdentity, generated }
 // The manifest entry of the release the running job compiles under, for
 // the backends that need more than its id (the VM image hangs off it).
 let currentReleaseEntry = null;
 
-/// The mirror base as an absolute URL, which is what every backend that
-/// fetches from the mirror resolves relative paths against.
 /// Routing decisions, on the console, when `localStorage["komodoc-latex-debug"]`
 /// is set: the one way to see why a compile went where it went without a
 /// debugger attached to a worker.
@@ -131,9 +129,11 @@ function trace(...words) {
   }
 }
 
+/// The mirror base as an absolute URL, which is what every backend that
+/// fetches from the mirror resolves relative paths against.
 function absoluteBase() {
   return typeof location !== "undefined" ? new URL(base, location.href).href : base;
-} // { project, inputs, bibIdentity, generated }
+}
 
 class WorkerDied extends Error {
   constructor(message) {
