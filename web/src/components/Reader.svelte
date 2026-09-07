@@ -10,6 +10,7 @@
   import * as history from "../lib/history.js";
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
+  import { attribution, itemsFor } from "../lib/redlines.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
@@ -142,6 +143,7 @@
   // agent's DOM was rebuilt then and needs the full repaint regardless.
   let lastRegions = null;
   let lastHighlight = null;
+  let lastRedlines = null;
 
   function applyHighlights() {
     if (!frameReady) return;
@@ -185,6 +187,28 @@
     if (highlight !== lastHighlight) {
       lastHighlight = highlight;
       tell({ type: "highlight", ranges: JSON.parse(highlight) });
+    }
+  }
+
+  // The "Show in document" toggle in the history panel. Items are sent only
+  // while the toggle is on, the history panel is the one showing, the
+  // format has text to paint into, and the panel actually has a diff to
+  // show -- every other state means an empty list, which is what clears
+  // whatever was painted before. `who` is computed once for the whole
+  // comparison (the checkpoints between the baseline and the compare point,
+  // or the baseline and the live document when there is no compare point),
+  // since redlines describe one span, not one hunk at a time.
+  function applyRedlines() {
+    if (!frameReady) return;
+    const showable = historyRedlines && panel === "history" && !redlinesDisabledReason &&
+      historyBaseline && Array.isArray(historyChanges);
+    const items = showable
+      ? itemsFor(historyChanges, attribution(checkpoints, historyBaseline.sha, historyComparePoint?.sha || null))
+      : [];
+    const payload = JSON.stringify(items);
+    if (payload !== lastRedlines) {
+      lastRedlines = payload;
+      tell({ type: "redlines", items: JSON.parse(payload) });
     }
   }
 
@@ -286,9 +310,15 @@
         frameReadyEpoch = frameEpoch;
         frameReady = true;
         // Whatever was painted before is gone with the rebuilt DOM.
-        lastRegions = lastHighlight = null;
+        lastRegions = lastHighlight = lastRedlines = null;
         reanchor();
         revealPendingHistory();
+        // A repaint rebuilds the frame's document from scratch, so redlines
+        // need resending here just as highlights do in `reanchor` -- the
+        // `computeHistoryChanges` branch below covers the case where the
+        // hunks themselves are stale, but the common case is the same hunks
+        // painted onto a freshly built DOM.
+        applyRedlines();
         if (panel === "history" && historyBaseline && (!viewing || historyComparePoint)) void computeHistoryChanges();
         if (first) {
           replayPreview();
@@ -795,6 +825,24 @@
   let historyComparePoint = $state(null);
   let historyChanges = $state(null);
   let historyChangedPaths = $state([]);
+  // "Show in document": paints the panel's hunks inline in the frame as
+  // redlines, rather than only listing them here. A reader preference, kept
+  // across baseline changes the way `historyBaseline` itself is not (see
+  // `applyRedlines`, which is what actually decides whether anything is
+  // sent for it).
+  let historyRedlines = $state(false);
+  // Typst and LaTeX render to a PDF drawn by a browser VM -- the frame has
+  // no text there for a mark to land on, so the toggle stays off and says
+  // why rather than silently doing nothing.
+  const redlinesDisabledReason = $derived(
+    sourceFormat === "typst" || sourceFormat === "latex"
+      ? "Redlines cannot be shown in a document rendered to PDF."
+      : "",
+  );
+  function setHistoryRedlines(on) {
+    historyRedlines = Boolean(on) && !redlinesDisabledReason;
+    applyRedlines();
+  }
   let fileDiff = $state(null);
   let mergeTarget = $state(null);
   let historyBaselineGeneration = 0;
@@ -841,6 +889,7 @@
       if (historyComparePoint?.sha === sha) historyComparePoint = null;
       historyChanges = null;
       historyChangedPaths = [];
+      applyRedlines();
       fileDiff = null;
       fileDiffGeneration += 1;
       mergeTarget = null;
@@ -859,6 +908,7 @@
     if (!sha) {
       historyComparePoint = null;
       historyChanges = null;
+      applyRedlines();
       await computeHistoryChanges();
       return;
     }
@@ -870,6 +920,7 @@
       historyComparePoint = point;
       historyChanges = null;
       fileDiff = null;
+      applyRedlines();
       await computeHistoryChanges();
     } catch (error) {
       if (request === historyBaselineGeneration) historyProblem = error.message || "that checkpoint could not be read";
@@ -893,6 +944,7 @@
       if (typeof oldVisible !== "string" || typeof targetVisible !== "string") {
         historyChanges = [];
         historyProblem = "Changes are unavailable for this checkpoint.";
+        applyRedlines();
         return;
       }
       const edits = await history.wordDiff(oldVisible, targetVisible, sourceFormat);
@@ -936,10 +988,12 @@
       }
       historyChangedPaths = [...paths].sort();
       historyProblem = "";
+      applyRedlines();
     } catch (error) {
       if (request === historyDiffGeneration && baselineGeneration === historyBaselineGeneration) {
         historyChanges = [];
         historyProblem = error.message || "Changes are unavailable for this checkpoint.";
+        applyRedlines();
       }
     }
   }
@@ -2014,6 +2068,9 @@
     }
     panel = name;
     if (remembered) write(PANEL, name);
+    // Leaving the history panel clears whatever redlines were painted; the
+    // history panel itself is what `applyRedlines` reads to decide that.
+    applyRedlines();
     return name === "history" ? loadHistory() : Promise.resolve();
   }
 
@@ -2815,6 +2872,8 @@
                  problem={historyProblem}
                  baseline={historyBaseline} changes={historyChanges}
                  changedPaths={historyChangedPaths}
+                 redlines={historyRedlines} onredlines={setHistoryRedlines}
+                 {redlinesDisabledReason}
                  {fileDiff}
                  currentLabel={historyComparePoint?.label || (historyComparePoint ? history.shortSha(historyComparePoint.sha) : "now")}
                  target={historyComparePoint}

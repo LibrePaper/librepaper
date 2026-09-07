@@ -26,6 +26,9 @@
     ontarget,
     changes = null,
     changedPaths = [],
+    redlines = false,
+    onredlines,
+    redlinesDisabledReason = "",
     fileDiff = null,
     onclosefilediff,
     onbaseline,
@@ -141,6 +144,19 @@
           <small class="panel-meta">{baselineName} → {currentLabel}</small>
         {/if}
       </div>
+      <label class="label mb-2 flex items-center gap-2" title={redlinesDisabledReason || undefined}>
+        <input
+          type="checkbox"
+          class="checkbox"
+          checked={redlines}
+          disabled={Boolean(redlinesDisabledReason)}
+          onchange={(event) => onredlines?.(event.currentTarget.checked)}
+        />
+        <span class="label-text text-xs">Show in document</span>
+      </label>
+      {#if redlinesDisabledReason}
+        <p class="panel-muted text-xs mb-2">{redlinesDisabledReason}</p>
+      {/if}
       <label class="label mb-2">
         <span class="label-text text-xs">Compare with</span>
         <select class="select select-sm" value={baseline?.sha || ""} onchange={(event) => onbaseline?.(event.currentTarget.value)}>

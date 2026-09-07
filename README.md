@@ -595,6 +595,39 @@ the earlier directory through the shared editing session, then records the
 restore in history. Both versions remain available, subject to the deployment's
 history quota. Use `--key` with a share link on either command.
 
+### Suggestions
+
+A suggestion is a comment that proposes a replacement for a passage, inert
+until an editor decides it. Propose one by naming the passage rather than a
+position, so it still finds its place after the file has moved on underneath
+it:
+
+```sh
+komodoc suggest c9k --find "with 95% probability" --replace "in 95% of samples"
+```
+
+`--find` must occur exactly once in the file (the main file by default;
+`--path` names another one); `komodoc suggest` refuses and says how many
+times otherwise, so the anchor is never ambiguous. An empty `--replace`
+proposes deleting the passage; `--note` adds an optional remark. It prints
+the new comment's id, which is what `accept` and `reject` take:
+
+```sh
+komodoc accept c9k 22222222-2222-4222-8222-222222222222
+komodoc reject c9k 22222222-2222-4222-8222-222222222222
+```
+
+`accept` requires editor access. It applies the proposal to the live source
+through the shared editing session, the way `restore` does, and records a
+checkpoint whose sha it prints; `reject` resolves the suggestion without
+touching the document. When the passage has changed too much since the
+suggestion was made for the change to land -- even against a three-way merge
+with whatever else happened meanwhile -- `accept` exits with status 3 rather
+than the usual 1, so a script can tell a stale suggestion apart from an
+outright refusal and fall back to the reader's merge editor instead of
+retrying blindly. Use `--key` with a share link on all three commands, the
+same as `comment`.
+
 ### Export
 
 Export annotations as readable Markdown. `export` takes the same ID `comment`

@@ -326,6 +326,52 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
+    /// Propose a replacement for a passage, for an editor to accept or reject
+    Suggest {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// The passage to replace, found once in the file
+        #[arg(long, value_name = "TEXT")]
+        find: String,
+        /// What to put in its place; empty proposes deleting the passage
+        #[arg(long, value_name = "TEXT", default_value = "")]
+        replace: String,
+        /// Which file the passage is in; defaults to the document's main file
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
+        /// An optional note explaining the suggestion
+        #[arg(long, value_name = "TEXT")]
+        note: Option<String>,
+        /// A comment or editor share link, or the key from one
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
+    /// Apply a suggestion to the live document
+    Accept {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// The suggestion's comment id, as `suggest` printed it
+        comment_id: String,
+        /// An editor share link, or the key from one
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
+    /// Resolve a suggestion without applying it
+    Reject {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// The suggestion's comment id, as `suggest` printed it
+        comment_id: String,
+        /// An editor share link, or the key from one
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
     /// Annotations as W3C JSON-LD, markdown, or a response to reviewers
     Export {
         /// A full slug, or one of the short handles `list` prints
@@ -543,6 +589,54 @@ pub async fn main() {
                 &sha,
                 text.unwrap_or_default(),
                 server.unwrap_or_default(),
+            )
+            .await
+        }
+        Command::Suggest {
+            id,
+            find,
+            replace,
+            path,
+            note,
+            key,
+            server,
+        } => {
+            cli::suggest_passage(
+                &id,
+                &find,
+                &replace,
+                path.unwrap_or_default(),
+                note.unwrap_or_default(),
+                server.unwrap_or_default(),
+                key.unwrap_or_default(),
+            )
+            .await
+        }
+        Command::Accept {
+            id,
+            comment_id,
+            key,
+            server,
+        } => {
+            cli::accept_suggestion(
+                &id,
+                &comment_id,
+                server.unwrap_or_default(),
+                key.unwrap_or_default(),
+            )
+            .await
+        }
+        Command::Reject {
+            id,
+            comment_id,
+            key,
+            server,
+        } => {
+            cli::reject_suggestion(
+                &id,
+                &comment_id,
+                server.unwrap_or_default(),
+                key.unwrap_or_default(),
             )
             .await
         }

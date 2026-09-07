@@ -84,6 +84,34 @@
     }
   `;
   document.head.appendChild(proposedStyle);
+
+  // Redlines: what changed since a history checkpoint, painted inline. An
+  // insertion is a mark wrapping the words themselves, same as a highlight;
+  // a deletion has no words left to wrap, so it is an empty mark whose
+  // `::before` draws the struck-through text CSS keeps, not the DOM --
+  // exactly the `data-proposed` trick above, so the offset tables below
+  // never see it as a character of real content.
+  const redlineStyle = document.createElement("style");
+  redlineStyle.dataset.komodocRedlines = "1";
+  redlineStyle.textContent = `
+    mark.komodoc-ins {
+      background: hsl(145 45% 88%);
+      color: inherit;
+      text-decoration: underline;
+      text-decoration-color: hsl(145 45% 32%);
+    }
+    mark.komodoc-del {
+      background: transparent;
+      padding: 0;
+    }
+    mark.komodoc-del::before {
+      content: attr(data-deleted);
+      background: hsl(0 45% 93%);
+      color: hsl(0 55% 40%);
+      text-decoration: line-through;
+    }
+  `;
+  document.head.appendChild(redlineStyle);
   function adoptStyles(parsed) {
     document.documentElement.classList.add("komodoc-preview");
     document.documentElement.classList.toggle("komodoc-flow", !parsed.body.querySelector(":scope > svg.typst-doc"));
@@ -305,6 +333,95 @@
     // This rescan is not a third scan by the time republish() gets involved:
     // the painting above ran inside `quietly`, so the observer never saw it
     // and there is no queued republish() to race with this one.
+    scan();
+  }
+
+  // The redlines last asked for, remembered for the same reason `lastRanges`
+  // is: a document rebuild (a "preview" replacing the body, a fresh "ready")
+  // needs to put them back without waiting on a round trip to the sidebar.
+  let lastRedlineItems = [];
+
+  // Marks from a previous `redlines()` call, cleared without disturbing
+  // `highlight()`'s marks -- a different class, so the two coexist and
+  // either can be repainted without the other flickering. An insert mark
+  // wraps real text and is unwrapped the way a highlight mark is; a delete
+  // mark wraps nothing and is simply removed.
+  function clearRedlineMarks() {
+    quietly(() => {
+      document.querySelectorAll("mark.komodoc-ins").forEach((mark) => mark.replaceWith(...mark.childNodes));
+      document.querySelectorAll("mark.komodoc-del").forEach((mark) => mark.remove());
+      document.body.normalize();
+    });
+  }
+
+  // The redline equivalent of `shiftRanges`: a preview rebuild during typing
+  // moves everything after the edit point by however much the text grew or
+  // shrank, before the sidebar's own recomputed hunks arrive.
+  function shiftRedlineItems(items) {
+    const before = published || "";
+    scan();
+    const after = text();
+    let same = 0;
+    while (same < before.length && same < after.length && before[same] === after[same]) same++;
+    const delta = after.length - before.length;
+    if (!delta) return items;
+    return items.map((item) =>
+      item.kind === "insert"
+        ? item.start >= same ? { ...item, start: item.start + delta, end: item.end + delta } : item
+        : item.at >= same ? { ...item, at: item.at + delta } : item,
+    );
+  }
+
+  // Paint, from a list of `{start, end, kind:"insert", who}` and
+  // `{at, kind:"delete", text, who}` items the sidebar worked out from the
+  // history panel's word diff -- see `redlines.js`'s `itemsFor`. Deletes go
+  // in first, since they only ever insert an empty marker and never change
+  // any offset an insert range depends on; inserts then reuse `piecesFor`,
+  // the same segment machinery `highlight` paints with, so a passage that
+  // crosses element boundaries is still covered piece by piece.
+  function redlines(items) {
+    lastRedlineItems = items;
+    clearRedlineMarks();
+    scan();
+
+    const deletes = [...items.filter((item) => item.kind === "delete")].sort((a, b) => b.at - a.at);
+    quietly(() => {
+      for (const item of deletes) {
+        const at = Number(item.at) || 0;
+        if (at < 0 || at > text().length || !table.nodes.length) continue;
+        const index = nodeAt(at);
+        const node = table.nodes[index];
+        if (!node) continue;
+        const range = document.createRange();
+        range.setStart(node, at - table.starts[index]);
+        range.collapse(true);
+        const mark = document.createElement("mark");
+        mark.className = "komodoc-del";
+        mark.dataset.deleted = item.text || "";
+        if (item.who) mark.title = item.who;
+        range.insertNode(mark);
+      }
+    });
+    // The delete markers above split text nodes at their offsets; the table
+    // has to catch up before piecesFor, below, can trust it.
+    scan();
+
+    const inserts = items.filter((item) => item.kind === "insert" && item.end > item.start);
+    quietly(() => {
+      for (const item of [...inserts].reverse()) {
+        for (const piece of piecesFor(item.start, item.end)) {
+          const range = document.createRange();
+          range.setStart(piece.node, piece.from);
+          range.setEnd(piece.node, piece.to);
+          const mark = document.createElement("mark");
+          mark.className = "komodoc-ins";
+          if (item.who) mark.title = item.who;
+          range.surroundContents(mark);
+        }
+      }
+    });
+    // Same reasoning as `highlight`'s closing rescan: surroundContents split
+    // nodes the table no longer describes.
     scan();
   }
 
@@ -593,6 +710,7 @@
     if (!message || message.komodoc !== true) return;
     if (message.type === "highlight") highlight(message.ranges || []);
     if (message.type === "regions") paintRegions(message.regions || []);
+    if (message.type === "redlines") redlines(message.items || []);
     // The tool the sidebar is on: only "region" makes figures draggable, and
     // it also stops text selection fighting the drag.
     if (message.type === "tool") {
@@ -645,6 +763,7 @@
       // was typed, which is a few characters for a few milliseconds, and then
       // the sidebar's own answer arrives and corrects them.
       if (lastRanges.length) highlight(shiftRanges(lastRanges));
+      if (lastRedlineItems.length) redlines(shiftRedlineItems(lastRedlineItems));
       // Directly, not through the observer: the observer waits a quarter of a
       // second before republishing, and a preview should keep up with typing.
       publish(true);
