@@ -545,6 +545,15 @@ export async function mirrorScheme(collections) {
     writeManifest(manifest);
   }
 
+  // updmap generates this map; it is not a package-owned file in tlpdb.
+  // Fonts can all be present yet pdfTeX cannot embed any of them without it.
+  // Fetch the snapshot's generated map on every scheme build, including
+  // incremental builds, and require it rather than accepting an absent key.
+  const support = await ensureTexlive(["pdftex/11/pdftex.map"]);
+  if (!support.present["pdftex/11/pdftex.map"]) {
+    throw new Error("wasmtex: the snapshot lacks its required generated pdftex.map");
+  }
+
   for (const [name, tally] of Object.entries(per)) {
     console.log(
       `wasmtex: scheme ${name.padEnd(18)} ${tally.files} files, ${mb(tally.bytes)}, ${tally.absent} absent`,

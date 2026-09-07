@@ -765,7 +765,9 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       ok: false,
       failure: {
         kind: "resources",
-        message: `LaTeX release "${releaseId}" is not available in this deployment's mirror. Retained releases: ${retained}.`,
+        message: releaseId
+          ? `LaTeX release "${releaseId}" is not available in this deployment's mirror. Retained releases: ${retained}.`
+          : "This deployment's LaTeX mirror has no default WasmTex release. The operator must build and deploy the current mirror (make latex-mirror, then make latex-push), or serve it with LATEX=latex/mirror.",
         stage: "browser",
       },
       provenance: baseProvenance(engine, releaseId),

@@ -3,7 +3,7 @@
 // published LaTeX project as its editor, and the stored rendering's
 // provenance saying which backend produced it.
 //
-//   node web/tools/latex-e2e.mjs <binary> <mode> <fixture> [seconds]
+//   node web/tools/latex-e2e.mjs <binary> <mode> <fixture> [seconds] [mirror]
 //
 //     mode     local   -- start the local app and pair the page with it
 //              vm      -- no local app: Biber must run in the browser VM
@@ -34,6 +34,7 @@ const BINARY = resolve(process.argv[2] || "dist/komodoc");
 const MODE = process.argv[3] || "local";
 const FIXTURE = resolve(process.argv[4] || join(ROOT, "latex", "corpus", "e2e", "biber"));
 const WAIT = Number(process.argv[5] || 300);
+const MIRROR = process.argv[6] || `${ROOT}/latex/mirror`;
 const OUT = mkdtempSync(join(tmpdir(), "komodoc-latex-e2e-"));
 const PORT = 8600 + Math.floor(Math.random() * 200);
 const LOCAL_PORT = 8763;
@@ -44,7 +45,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const data = mkdtempSync(join(tmpdir(), "komodoc-e2e-"));
 const config = mkdtempSync(join(tmpdir(), "komodoc-e2e-config-"));
 const profile = mkdtempSync(join(tmpdir(), "komodoc-e2e-profile-"));
-const server = spawn(BINARY, ["serve", "--port", String(PORT), "--data", data, "--publishers", "anyone", "--commenters", "anyone", "--latex", `${ROOT}/latex/mirror`], { stdio: ["ignore", "ignore", "ignore"] });
+const server = spawn(BINARY, ["serve", "--port", String(PORT), "--data", data, "--publishers", "anyone", "--commenters", "anyone", "--latex", MIRROR], { stdio: ["ignore", "ignore", "ignore"] });
 let local = null;
 const localOut = [];
 if (!["local", "vm", "browser"].includes(MODE)) throw new Error(`unknown mode ${MODE}`);
@@ -122,15 +123,47 @@ try {
     if (stable >= 4) { console.log(`  gave up at ${((Date.now() - t0) / 1000).toFixed(0)}s: ${line}`); break; }
   }
   console.log("latest:", JSON.stringify(latest).slice(0, 400), "after", ((Date.now() - t0) / 1000).toFixed(0), "s");
+  if (!latest?.sha) {
+    await send("Runtime.evaluate", { expression: `Array.from(document.querySelectorAll("button")).find(b => /diagnostics/i.test(b.textContent + b.getAttribute("aria-label") + b.title))?.click()` }, sessionId);
+    await wait(100);
+    const details = await send("Runtime.evaluate", { expression: "document.body.innerText", returnByValue: true }, sessionId);
+    throw new Error(`No PDF was produced within ${WAIT}s. ${details.result.value}`);
+  }
   if (latest.sha) {
     const pdf = await fetch(`${BASE}/api/documents/${slug}/renderings/${latest.sha}`, { headers: HEADERS });
     const bytes = Buffer.from(await pdf.arrayBuffer());
+    if (!pdf.ok || bytes.subarray(0, 5).toString() !== "%PDF-") throw new Error("Stored rendering is not a PDF");
+    if (MODE === "browser" && latest.provenance?.backend !== "browser") throw new Error("Expected a browser compile, not a local fallback");
     writeFileSync(`${OUT}/rendering.pdf`, bytes);
     let text = "";
     try { text = execFileSync("pdftotext", [`${OUT}/rendering.pdf`, "-"], { encoding: "utf8" }); } catch {}
     console.log("pdf bytes", bytes.length, "text:", text.replace(/\s+/g, " ").slice(0, 200));
     console.log("provenance:", JSON.stringify(latest.provenance));
   }
+
+  // A stored PDF alone does not prove that the deployed viewer can draw it.
+  // Inspect the real document frame, including a cross-origin iframe target.
+  let drawn = false;
+  const frameSessions = new Map();
+  for (let i = 0; i < 100 && !drawn; i++) {
+    const expression = '!!document.querySelector(".page canvas") && !!document.querySelector(".textLayer")?.textContent.trim()';
+    const { targetInfos } = await send("Target.getTargets");
+    const frame = targetInfos.find(t => t.type === "iframe" && t.url.includes(`/${slug}/`));
+    if (frame) {
+      if (!frameSessions.has(frame.targetId)) frameSessions.set(frame.targetId, (await send("Target.attachToTarget", { targetId: frame.targetId, flatten: true })).sessionId);
+      drawn = (await send("Runtime.evaluate", { expression, returnByValue: true }, frameSessions.get(frame.targetId))).result.value;
+    } else {
+      const { frameTree } = await send("Page.getFrameTree", {}, sessionId);
+      const frameId = frameTree.childFrames?.[0]?.frame.id;
+      if (frameId) {
+        const { executionContextId } = await send("Page.createIsolatedWorld", { frameId, worldName: "latex-smoke" }, sessionId);
+        drawn = (await send("Runtime.evaluate", { expression, contextId: executionContextId, returnByValue: true }, sessionId)).result.value;
+      }
+    }
+    if (!drawn) await wait(100);
+  }
+  if (!drawn) throw new Error("PDF was compiled but the viewer did not draw its pages and selectable text");
+  console.log("viewer: PDF pages and selectable text rendered");
   const text = await send("Runtime.evaluate", { expression: "document.body.innerText.replace(/\\s+/g,' ').slice(0,300)", returnByValue: true }, sessionId);
   console.log("page:", text.result.value);
   console.log("--- logs ---");

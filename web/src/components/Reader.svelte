@@ -1705,7 +1705,7 @@
         // why it stopped.
         pdfFailureReason = said?.length
           ? ""
-          : (log || "").trim().split("\n").slice(-12).join("\n") ||
+          : rendered.failure?.message || (log || "").trim().split("\n").slice(-12).join("\n") ||
             "the compiler produced no PDF and no log";
         if (pdfFailureReason) console.error("latex: could not render:", pdfFailureReason);
       }

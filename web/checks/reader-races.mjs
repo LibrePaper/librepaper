@@ -349,6 +349,16 @@ for (const invalidate of [null, "navigation", "main"]) {
   await vm.runInContext("paintPreview()", ctx);
   assert.equal(ctx.pdfFailure, true, "structured Typst diagnostics set the PDF failure state");
   assert.equal(ctx.latestPreview, null, "a failed first Typst compile leaves no blank success preview");
+
+  // A compiler setup failure has neither a TeX log nor source diagnostics.
+  // Its structured reason must reach the failure pane.
+  ctx.sourceFormat = "latex";
+  ctx.displayedFormat = "latex";
+  ctx.treeNow = () => ({ main: "main.tex", texts: { "main.tex": "source" }, digests: {} });
+  ctx.renderers.formatOf = () => "latex";
+  ctx.renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no WasmTex release" } });
+  await vm.runInContext("paintPreview()", ctx);
+  assert.equal(ctx.pdfFailureReason, "The mirror has no WasmTex release");
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
