@@ -49,8 +49,8 @@ use yrs::types::text::TextPrelim;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Array, Doc, GetString, Map, MapRef, OffsetKind, Options, Out, ReadTxn, StateVector, Text,
-    TextRef, Transact, TransactionMut, Update,
+    Array, Doc, GetString, Map, MapRef, OffsetKind, Options, Out, ReadTxn, RootRef, StateVector,
+    Text, TextRef, Transact, TransactionMut, Update,
 };
 
 use crate::paths::{self, Rules};
@@ -402,9 +402,7 @@ pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
 /// it arrives from a socket, and a socket is not to be trusted with the
 /// process.
 pub fn apply_update(doc: &Doc, update: &[u8]) -> Result<(), String> {
-    let update = decode(update)?;
-    let mut txn = doc.transact_mut();
-    txn.apply_update(update).map_err(|err| err.to_string())
+    apply_decoded_update(doc, decode_update(update)?)
 }
 
 /// Decodes a v1 update, and answers an error where yrs would panic. Its
@@ -413,7 +411,7 @@ pub fn apply_update(doc: &Doc, update: &[u8]) -> Result<(), String> {
 /// twelve bytes. The catch is around the decoder alone: it has touched no
 /// document yet, so there is nothing half-done to be left behind. (Found by
 /// fuzz/fuzz_targets/update.rs.)
-fn decode(update: &[u8]) -> Result<Update, String> {
+pub fn decode_update(update: &[u8]) -> Result<Update, String> {
     match std::panic::catch_unwind(|| Update::decode_v1(update)) {
         Ok(Ok(update)) => Ok(update),
         Ok(Err(err)) => Err(err.to_string()),
@@ -495,37 +493,57 @@ fn any_bytes(any: &yrs::Any) -> usize {
 /// happens to mention its id: `files` and `paths` describe the same file,
 /// so counting both would let a document of `max_files / 2` legitimate files
 /// reject its own no-op edits.
-fn measure(doc: &Doc) -> (usize, usize) {
-    let (files, path_map, assets, meta) = maps(doc);
-    // Named before the transaction is taken, never inside it: asking a
-    // document for a type it may not have yet needs a write transaction, and
-    // taking one while a read transaction is open is a deadlock.
-    let source = doc.get_or_insert_text(SOURCE);
+struct Measurement {
+    bytes: usize,
+    files: usize,
+    pending: bool,
+}
+
+fn measure(doc: &Doc) -> Measurement {
+    // `new_doc` names all of these roots before any socket can write. Read the
+    // references through one read transaction instead of calling
+    // `get_or_insert_*`, which opens an exclusive transaction for each root.
+    // Missing roots are treated as empty; this preserves the old behavior for
+    // a partially initialized document while keeping admission read-only.
     let txn = doc.transact();
+    let files = MapRef::root(FILES).get(&txn);
+    let path_map = MapRef::root(PATHS).get(&txn);
+    let assets = MapRef::root(ASSETS).get(&txn);
+    let meta = MapRef::root(META).get(&txn);
     let mut bytes = 0;
     let mut files_count = 0;
-    for (id, value) in files.iter(&txn) {
-        bytes += id.len();
-        files_count += 1;
-        bytes += value_bytes(&txn, &value);
+    if let Some(files) = files {
+        for (id, value) in files.iter(&txn) {
+            bytes += id.len();
+            files_count += 1;
+            bytes += value_bytes(&txn, &value);
+        }
     }
-    for (id, value) in path_map.iter(&txn) {
-        bytes += id.len();
-        bytes += value_bytes(&txn, &value);
+    if let Some(path_map) = path_map {
+        for (id, value) in path_map.iter(&txn) {
+            bytes += id.len();
+            bytes += value_bytes(&txn, &value);
+        }
     }
-    for (path, value) in assets.iter(&txn) {
-        bytes += path.len();
-        files_count += 1;
-        bytes += value_bytes(&txn, &value);
+    if let Some(assets) = assets {
+        for (path, value) in assets.iter(&txn) {
+            bytes += path.len();
+            files_count += 1;
+            bytes += value_bytes(&txn, &value);
+        }
     }
-    for (key, value) in meta.iter(&txn) {
-        bytes += key.len();
-        bytes += value_bytes(&txn, &value);
+    if let Some(meta) = meta {
+        for (key, value) in meta.iter(&txn) {
+            bytes += key.len();
+            bytes += value_bytes(&txn, &value);
+        }
     }
     // The retired text, so that a document being written by a browser on the
     // old bundle is measured for what it holds rather than for what it will
     // hold once the repair has folded it in.
-    bytes += source.get_string(&txn).len();
+    if let Some(source) = TextRef::root(SOURCE).get(&txn) {
+        bytes += source.get_string(&txn).len();
+    }
     // Any root this schema did not name. `new_doc` names every root it uses
     // up front for exactly this reason -- see its comment -- but an update
     // decoded from a socket is not obliged to have come from this code, and
@@ -538,7 +556,72 @@ fn measure(doc: &Doc) -> (usize, usize) {
         bytes += name.len();
         bytes += value_bytes(&txn, &value);
     }
-    (bytes, files_count)
+    Measurement {
+        bytes,
+        files: files_count,
+        pending: txn.has_missing_updates(),
+    }
+}
+
+/// The result of admitting an already-decoded update. `Fits` carries the
+/// parsed update so the caller can apply it without decoding the same bytes a
+/// second time.
+pub enum DecodedAdmission {
+    Fits(Update),
+    TooLarge,
+    TooMany,
+    Malformed,
+}
+
+/// Applies a decoded v1 update. Keeping this separate from [`apply_update`]
+/// lets a socket validate and apply one parsed update on the ordinary path.
+pub fn apply_decoded_update(doc: &Doc, update: Update) -> Result<(), String> {
+    let mut txn = doc.transact_mut();
+    txn.apply_update(update).map_err(|err| err.to_string())
+}
+
+/// Decides whether an already-decoded update fits, retaining the parsed value
+/// when it does so that the caller can apply it without another decode.
+/// `encoded` must be the same v1 bytes that produced `update`. It is used only
+/// by the exact rehearsal, while the conservative size/file bounds use its
+/// length because those bounds are on the wire payload.
+pub fn admit_decoded_update(
+    doc: &Doc,
+    update: Update,
+    encoded: &[u8],
+    ceiling: usize,
+    max_files: usize,
+) -> DecodedAdmission {
+    let measured = measure(doc);
+    let bytes_fit = measured.bytes.saturating_add(encoded.len()) <= ceiling;
+    let files_fit = measured.files.saturating_add(encoded.len()) <= max_files;
+    // A yrs document may retain an out-of-order update in its pending store.
+    // It is included by encode_state but absent from the visible roots that
+    // measure walks. Rehearse whenever one is present, or a later predecessor
+    // could integrate the pending payload after this cheap check and cross
+    // the quota without being measured.
+    if !measured.pending && bytes_fit && files_fit {
+        return DecodedAdmission::Fits(update);
+    }
+
+    // The bound was not enough to decide. Rehearse it somewhere that is not
+    // the document, then return the parsed value for the live application if
+    // the exact result fits.
+    let scratch = new_doc();
+    if apply_update(&scratch, &encode_state(doc)).is_err() {
+        return DecodedAdmission::Malformed;
+    }
+    if apply_update(&scratch, encoded).is_err() {
+        return DecodedAdmission::Malformed;
+    }
+    let measured = measure(&scratch);
+    if measured.bytes > ceiling {
+        DecodedAdmission::TooLarge
+    } else if measured.files > max_files {
+        DecodedAdmission::TooMany
+    } else {
+        DecodedAdmission::Fits(update)
+    }
 }
 
 /// Decides whether an update may be applied, **without applying it**. The
@@ -553,12 +636,14 @@ fn measure(doc: &Doc) -> (usize, usize) {
 ///   so the document after applying is at most the document before plus the
 ///   update's own byte length; deletions only shrink it. When that bound is
 ///   inside the ceiling -- which it is for every keystroke of every document
-///   that is not already near its limit -- nothing more is needed, and
-///   admission costs one comparison.
+///   that is not already near its limit -- the bound avoids the scratch
+///   rehearsal. Admission has still measured the current document first, so
+///   this makes the post-measurement decision a comparison rather than making
+///   the whole admission constant-time in the document size.
 /// * **The rehearsal.** Only when the bound is exceeded is the exact answer
 ///   worth buying: the update is applied to a scratch copy of the document and
-///   the result measured. That is one encode and one decode of the document,
-///   and it happens on the path where a socket is about to be closed anyway.
+///   the result measured. This encodes and decodes the complete current CRDT
+///   state and applies the incoming update, so it scales with retained history.
 ///
 /// The count of files needs a bound of the same shape as the byte ceiling's,
 /// or the cheap branch below is unsound: encoding a new file (a `Y.Text` and
@@ -575,31 +660,14 @@ fn measure(doc: &Doc) -> (usize, usize) {
 /// file count was under the ceiling, which said nothing about how many files
 /// the update itself adds.
 pub fn admit_update(doc: &Doc, update: &[u8], ceiling: usize, max_files: usize) -> Admission {
-    if decode(update).is_err() {
+    let Ok(decoded) = decode_update(update) else {
         return Admission::Malformed;
-    }
-    let (bytes, files) = measure(doc);
-    let bytes_fit = bytes.saturating_add(update.len()) <= ceiling;
-    let files_fit = files.saturating_add(update.len()) <= max_files;
-    if bytes_fit && files_fit {
-        return Admission::Fits;
-    }
-    // The bound was not enough to decide. Rehearse it somewhere that is not
-    // the document.
-    let scratch = new_doc();
-    if apply_update(&scratch, &encode_state(doc)).is_err() {
-        return Admission::Malformed;
-    }
-    if apply_update(&scratch, update).is_err() {
-        return Admission::Malformed;
-    }
-    let (bytes, files) = measure(&scratch);
-    if bytes > ceiling {
-        Admission::TooLarge
-    } else if files > max_files {
-        Admission::TooMany
-    } else {
-        Admission::Fits
+    };
+    match admit_decoded_update(doc, decoded, update, ceiling, max_files) {
+        DecodedAdmission::Fits(_) => Admission::Fits,
+        DecodedAdmission::TooLarge => Admission::TooLarge,
+        DecodedAdmission::TooMany => Admission::TooMany,
+        DecodedAdmission::Malformed => Admission::Malformed,
     }
 }
 
@@ -723,12 +791,16 @@ pub fn apply_edits(doc: &Doc, edits: &[komodoc_text::Edit]) {
     let Some(text) = text_at(&files, &txn, &id) else {
         return;
     };
+    apply_text_edits(&mut txn, &text, edits);
+}
+
+fn apply_text_edits(txn: &mut TransactionMut, text: &TextRef, edits: &[komodoc_text::Edit]) {
     for edit in edits.iter().rev() {
         if edit.delete > 0 {
-            text.remove_range(&mut txn, edit.at as u32, edit.delete as u32);
+            text.remove_range(txn, edit.at as u32, edit.delete as u32);
         }
         if !edit.insert.is_empty() {
-            text.insert(&mut txn, edit.at as u32, &edit.insert);
+            text.insert(txn, edit.at as u32, &edit.insert);
         }
     }
 }
@@ -778,17 +850,40 @@ pub fn put_asset(doc: &Doc, path: &str, sha: &str) {
 /// restore is one moment, and a chapter and the file that includes it can
 /// never come back out of step.
 ///
-/// A file present on both sides keeps its id and takes the prefix-and-suffix
-/// edit rather than being deleted and made again, so an editor watching a
-/// restore sees the words change under their caret instead of their file
-/// disappearing and a new one arriving in its place.
-#[allow(dead_code)] // reached through `Room::restore`, whose route is step 6
+/// A file present on both sides keeps its id and takes word-level edits rather
+/// than being deleted and made again, so an editor watching a restore sees the
+/// words change under their caret instead of their file disappearing and a new
+/// one arriving in its place.
+#[allow(dead_code)] // retained for directory/history unit tests
 pub fn restore(doc: &Doc, tree: &crate::history::Tree, bodies: &HashMap<String, String>) {
+    restore_with(doc, tree, |_, entry| {
+        bodies.get(&entry.sha).cloned().unwrap_or_default()
+    });
+}
+
+/// Restores a tree while supplying text by path.  A digest-keyed map is the
+/// historic API above, but a merge can produce different text for two files
+/// which happened to have the same old digest, so the room uses this form.
+pub fn restore_by_path(doc: &Doc, tree: &crate::history::Tree, bodies: &HashMap<String, String>) {
+    restore_with(doc, tree, |path, _| {
+        bodies.get(path).cloned().unwrap_or_default()
+    });
+}
+
+fn restore_with(
+    doc: &Doc,
+    tree: &crate::history::Tree,
+    mut body_for: impl FnMut(&str, &crate::history::TreeEntry) -> String,
+) {
     let (files, path_map, assets, meta) = maps(doc);
     let here = paths_of(doc);
     let mut by_path: HashMap<String, String> = HashMap::new();
+    let mut by_id: HashSet<String> = HashSet::new();
+    let mut path_by_id: HashMap<String, String> = HashMap::new();
     for (id, path) in &here {
         by_path.insert(path.clone(), id.clone());
+        by_id.insert(id.clone());
+        path_by_id.insert(id.clone(), path.clone());
     }
     let mut txn = doc.transact_mut();
     let mut kept: HashSet<String> = HashSet::new();
@@ -798,27 +893,56 @@ pub fn restore(doc: &Doc, tree: &crate::history::Tree, bodies: &HashMap<String, 
             assets.insert(&mut txn, path.clone(), entry.sha.clone());
             continue;
         }
-        let body = bodies.get(&entry.sha).cloned().unwrap_or_default();
-        let id = match by_path.get(path) {
-            Some(id) => {
-                if let Some(text) = text_at(&files, &txn, id) {
-                    edit_text(&mut txn, &text, &body);
+        // A concurrent rename can leave an effective tree with both the
+        // checkpoint's old path and the live path for one Y.Text id. Keep the
+        // live path when it is present; assigning the id to both paths would
+        // make the path map lose one of them nondeterministically.
+        if let Some(live_path) = path_by_id.get(&entry.id) {
+            if live_path != path && tree.files.contains_key(live_path) {
+                if *path == tree.main {
+                    if let Some(id) = by_path.get(live_path) {
+                        main = id.clone();
+                    }
                 }
-                id.clone()
+                continue;
             }
-            None => {
-                // The id the tree recorded, so that restoring twice does not
-                // make two files, and so that a file that was renamed away and
-                // restored comes back as itself.
-                let id = if entry.id.is_empty() {
-                    mint_id()
-                } else {
-                    entry.id.clone()
-                };
-                files.insert(&mut txn, id.clone(), TextPrelim::new(body));
-                path_map.insert(&mut txn, id.clone(), path.clone());
-                id
+        }
+        if by_path.get(path).is_some_and(|id| kept.contains(id))
+            || (!entry.id.is_empty() && kept.contains(&entry.id))
+        {
+            continue;
+        }
+        let body = body_for(path, entry);
+        let id = if let Some(id) = by_path.get(path).cloned() {
+            if let Some(text) = text_at(&files, &txn, &id) {
+                let edits = komodoc_text::diff(&text.get_string(&txn), &body);
+                apply_text_edits(&mut txn, &text, &edits);
             }
+            id
+        } else if !entry.id.is_empty() && by_id.contains(&entry.id) {
+            // A file may have been renamed since this checkpoint. Reuse the
+            // existing Y.Text by its recorded id, then move its path. Replacing
+            // the map value with a new TextPrelim at the same key would sever
+            // the identity that concurrent peers and their carets still hold.
+            let id = entry.id.clone();
+            if let Some(text) = text_at(&files, &txn, &id) {
+                let edits = komodoc_text::diff(&text.get_string(&txn), &body);
+                apply_text_edits(&mut txn, &text, &edits);
+            }
+            path_map.insert(&mut txn, id.clone(), path.clone());
+            id
+        } else {
+            // The id the tree recorded, so that restoring twice does not
+            // make two files. A missing id is from a malformed/legacy tree,
+            // and gets a fresh one rather than colliding with a live file.
+            let id = if entry.id.is_empty() {
+                mint_id()
+            } else {
+                entry.id.clone()
+            };
+            files.insert(&mut txn, id.clone(), TextPrelim::new(body));
+            path_map.insert(&mut txn, id.clone(), path.clone());
+            id
         };
         if *path == tree.main {
             main = id.clone();
@@ -836,7 +960,7 @@ pub fn restore(doc: &Doc, tree: &crate::history::Tree, bodies: &HashMap<String, 
     let stale: Vec<String> = assets
         .iter(&txn)
         .map(|(path, _)| path.to_string())
-        .filter(|path| !tree.files.contains_key(path))
+        .filter(|path| !matches!(tree.files.get(path), Some(entry) if entry.kind == "asset"))
         .collect();
     for path in stale {
         assets.remove(&mut txn, &path);

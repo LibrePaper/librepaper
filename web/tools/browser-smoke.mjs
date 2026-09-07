@@ -526,7 +526,7 @@ async function run() {
 
   /* --- 6. sharing: the key's path through the browser ---------------------- */
 
-  // The half of `docs/specs/sharing.md` that only a browser can check: a key
+  // Sharing behavior that only a browser can check: a key
   // arriving in the fragment, being kept, being cleaned out of the address
   // bar, and being presented on every later request for that document.
   const alice = sessionCookie("alice");

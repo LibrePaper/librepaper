@@ -35,6 +35,93 @@ struct Failing {
     refuse: std::sync::Mutex<Vec<String>>,
 }
 
+/// A restore is an editor write with a durable event of its own. The old
+/// checkpoint remains readable, and the restored event points at the
+/// checkpoint current before the operation.
+#[tokio::test]
+async fn restore_is_authorized_durable_and_linear() {
+    let server = new_test_server().await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let old = server
+        .instance
+        .rooms
+        .get(&slug)
+        .await
+        .manifest()
+        .await
+        .latest()
+        .cloned()
+        .expect("the publish checkpoint");
+    let room = server.instance.rooms.get(&slug).await;
+    room.set_source("# My Paper\n\nA newer draft.\n", "markdown")
+        .await;
+    let current_sha = room
+        .checkpoint_now("quiet", "vincent")
+        .await
+        .expect("checkpoint")
+        .expect("checkpoint SHA");
+    assert_ne!(current_sha, old.sha);
+
+    let (status, payload) = post(
+        &server.url,
+        &format!("/api/documents/{slug}/restore"),
+        json!({"sha": old.sha}),
+    )
+    .await;
+    assert_eq!(status, 200, "restore returned {status}: {payload}");
+    let restored_sha = text(&payload, "sha");
+    assert_ne!(restored_sha, old.sha, "the restore event was deduplicated");
+    assert_eq!(room.source().await, TEST_MARKDOWN);
+    let manifest = room.manifest().await;
+    let restored = manifest
+        .checkpoints
+        .last()
+        .expect("restore event in the manifest");
+    assert_eq!(restored.sha, restored_sha);
+    assert_eq!(restored.parent, current_sha);
+    assert_eq!(restored.why, "restore");
+    // A later quiet/comment checkpoint must reuse the restore event as the
+    // current head, rather than jumping back to the old content SHA that the
+    // restore tree happens to share.
+    assert_eq!(
+        room.checkpoint_now("quiet", "vincent")
+            .await
+            .expect("quiet checkpoint")
+            .as_deref(),
+        Some(restored_sha.as_str())
+    );
+    assert_eq!(room.manifest().await.latest().unwrap().sha, restored_sha);
+}
+
+/// A read link can fetch a checkpoint but cannot invoke the restore write.
+#[tokio::test]
+async fn a_reader_cannot_restore_a_checkpoint() {
+    let server = new_test_server().await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let old = server
+        .instance
+        .rooms
+        .get(&slug)
+        .await
+        .manifest()
+        .await
+        .latest()
+        .map(|point| point.sha.clone())
+        .expect("checkpoint");
+    let key = read_key_of(&document);
+    let (status, _) = post_keyed(
+        "",
+        &key,
+        &server.url,
+        &format!("/api/documents/{slug}/restore"),
+        json!({"sha": old}),
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
 impl Failing {
     fn over(inner: Arc<dyn BlobStore>) -> Arc<Failing> {
         Arc::new(Failing {
@@ -1387,12 +1474,11 @@ async fn a_refused_update_is_still_refused_after_a_reconnect_and_a_restart() {
 }
 
 /// What admission costs on a document that is actually large. The ordinary
-/// path is a comparison and must not depend on the size of the document; the
-/// rehearsal is bought only when the bound cannot decide. This asserts the
-/// shape of that -- a keystroke stays in microseconds on a document at the
-/// ceiling -- and prints both numbers, since "measure it" is the requirement.
+/// path measures its visible content but avoids a full CRDT rehearsal when
+/// the bound can decide. This checks a generous latency ceiling and prints
+/// both timings; the production file-count boundary is covered separately.
 #[test]
-fn admission_costs_a_comparison_on_a_large_document() {
+fn admission_measures_a_large_document_without_rehearsing_small_updates() {
     let ceiling = 4 * 1024 * 1024;
     let doc = crate::session::new_doc();
     // A realistic large source: a megabyte of prose, inserted the way an

@@ -29,6 +29,11 @@ use crate::blob::{history_index_key, BlobError, BlobStore, BlobVersion};
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Checkpoint {
     pub sha: String,
+    /// The digest of the tree contents. Restore events have a unique `sha` so
+    /// the timeline records the event, while this points at the immutable tree
+    /// content they restored.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tree_sha: String,
     /// The checkpoint before this one. Empty on the first.
     #[serde(default)]
     pub parent: String,
@@ -187,14 +192,36 @@ impl Manifest {
     /// label is somebody saying this moment matters.
     ///
     /// Returns the SHAs dropped, for the caller to delete.
-    pub fn shed(&mut self, mut keep: impl FnMut(&Manifest) -> bool) -> Vec<String> {
+    #[allow(dead_code)]
+    pub fn shed(&mut self, keep: impl FnMut(&Manifest) -> bool) -> Vec<String> {
+        self.shed_protected("", keep)
+    }
+
+    /// Sheds history while retaining the selected source, even when it is old
+    /// and unlabelled. A restore has selected that point, so pruning it before
+    /// its tree and assets are read would make the operation fail halfway.
+    pub fn shed_protected(
+        &mut self,
+        protected: &str,
+        mut keep: impl FnMut(&Manifest) -> bool,
+    ) -> Vec<String> {
         let mut dropped = Vec::new();
         while !keep(self) && self.checkpoints.len() > 1 {
             let oldest_unlabelled = self.checkpoints[..self.checkpoints.len() - 1]
                 .iter()
-                .position(|point| point.label.is_empty());
+                .position(|point| point.label.is_empty() && point.sha != protected);
             // Every checkpoint labelled: the oldest goes.
-            let index = oldest_unlabelled.unwrap_or_default();
+            let index = oldest_unlabelled.or_else(|| {
+                self.checkpoints[..self.checkpoints.len() - 1]
+                    .iter()
+                    .position(|point| point.sha != protected)
+            });
+            let Some(index) = index else {
+                // The only shed candidate is the selected restore source.
+                // Leave it in place; a later checkpoint can shed it after
+                // the restore has completed.
+                break;
+            };
             let gone = self.checkpoints.remove(index);
             // The chain stays linear: whoever pointed at the dropped entry now
             // points where it did.

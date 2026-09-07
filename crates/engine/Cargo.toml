@@ -25,6 +25,8 @@ markdown = ["dep:comrak"]
 typst = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-assets", "dep:ecow"]
 
 [dependencies]
+komodoc-text = { path = "../text" }
+serde_json = "1"
 # CommonMark plus the GitHub extensions: tables, strikethrough, task lists,
 # autolinks, footnotes. What goldmark rendered before the port.
 comrak = { version = "0.54", default-features = false, optional = true }

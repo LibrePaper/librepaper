@@ -19,11 +19,13 @@
 //! There is one interface, and two implementations of it.
 
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 
 use crate::clock::{parse_timestamp, timestamp};
 
@@ -119,14 +121,22 @@ pub struct FsStore {
     dir: PathBuf,
     /// One writer at a time, so a swap cannot be overtaken between reading a
     /// version and writing the next one.
-    swapping: Mutex<()>,
+    swapping: Arc<Mutex<()>>,
+    /// Filesystem calls are synchronous, so keep them off Tokio's worker
+    /// threads. The bound matters for a burst of uploads or a sweep over many
+    /// rooms: `spawn_blocking` otherwise creates an unbounded queue of work
+    /// that can consume every blocking worker at once.
+    blocking: Arc<Semaphore>,
 }
+
+const FS_BLOCKING_CONCURRENCY: usize = 8;
 
 impl FsStore {
     pub fn new(dir: impl Into<PathBuf>) -> FsStore {
         FsStore {
             dir: dir.into(),
-            swapping: Mutex::new(()),
+            swapping: Arc::new(Mutex::new(())),
+            blocking: Arc::new(Semaphore::new(FS_BLOCKING_CONCURRENCY)),
         }
     }
 
@@ -139,10 +149,13 @@ impl FsStore {
         for component in Path::new(key).components() {
             match component {
                 Component::Normal(part) => cleaned.push(part),
-                Component::ParentDir => {
-                    cleaned.pop();
+                Component::CurDir => {}
+                // A key is an object name, not a path to normalize. Rejecting
+                // traversal keeps an invalid key from silently aliasing a
+                // different object while preserving the store root boundary.
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(BlobError::Other("invalid object key".into()));
                 }
-                _ => {}
             }
         }
         if cleaned.as_os_str().is_empty() {
@@ -151,69 +164,135 @@ impl FsStore {
         Ok(self.dir.join(cleaned))
     }
 
-    fn read_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
-        let body = std::fs::read(self.path_for(key)?)?;
-        let version = version_of(&body);
-        Ok((body, version))
+    async fn blocking<T, F>(&self, operation: F) -> BlobResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> BlobResult<T> + Send + 'static,
+    {
+        let permit = self
+            .blocking
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| BlobError::Other("filesystem worker pool closed".into()))?;
+        tokio::task::spawn_blocking(move || {
+            let result = operation();
+            drop(permit);
+            result
+        })
+        .await
+        .map_err(|err| BlobError::Other(format!("filesystem worker failed: {err}")))?
     }
 
-    fn write(&self, key: &str, body: &[u8]) -> BlobResult<()> {
-        write_file_atomically(&self.path_for(key)?, body)?;
-        Ok(())
+    /// The directory to scan for a prefix. A prefix ending at a path
+    /// separator identifies a whole subtree; otherwise scan its parent so
+    /// arbitrary string prefixes retain `starts_with` semantics (for example,
+    /// `documents/a` also includes `documents/a-copy`).
+    fn list_scope(&self, prefix: &str) -> BlobResult<Option<PathBuf>> {
+        let scope = if prefix.is_empty() || !prefix.ends_with('/') {
+            prefix
+                .rsplit_once('/')
+                .map(|(parent, _)| parent)
+                .unwrap_or("")
+        } else {
+            prefix.trim_end_matches('/')
+        };
+        if scope.is_empty() {
+            return Ok(Some(self.dir.clone()));
+        }
+        match self.path_for(scope) {
+            Ok(path) => Ok(Some(path)),
+            // Listing is a prefix query. An invalid/traversal prefix cannot
+            // name an object in this store, so it has the same empty result
+            // as any other prefix with no matches. Object operations still
+            // reject the same key through `path_for`.
+            Err(BlobError::Other(message)) if message == "invalid object key" => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 }
 
 #[async_trait]
 impl BlobStore for FsStore {
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
-        Ok(self.read_versioned(key)?.0)
+        let path = self.path_for(key)?;
+        self.blocking(move || std::fs::read(path).map_err(BlobError::from))
+            .await
     }
 
     async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
-        self.read_versioned(key)
+        let path = self.path_for(key)?;
+        self.blocking(move || read_versioned_path(&path)).await
     }
 
     async fn put(&self, key: &str, body: Vec<u8>, _content_type: &str) -> BlobResult<()> {
-        self.write(key, &body)
+        let path = self.path_for(key)?;
+        self.blocking(move || {
+            write_file_atomically(&path, &body)?;
+            Ok(())
+        })
+        .await
     }
 
     async fn delete(&self, keys: &[String]) -> BlobResult<()> {
-        for key in keys {
-            let name = self.path_for(key)?;
-            match std::fs::remove_file(&name) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err.into()),
+        let paths: Vec<PathBuf> = keys
+            .iter()
+            .map(|key| self.path_for(key))
+            .collect::<BlobResult<_>>()?;
+        self.blocking(move || {
+            for name in paths {
+                match std::fs::remove_file(&name) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err.into()),
+                }
+                // The directory a key lived in is part of the key, not a thing of
+                // its own: an empty one left behind would show up in a listing as
+                // a document that is not there.
+                if let Some(parent) = name.parent() {
+                    let _ = std::fs::remove_dir(parent);
+                }
             }
-            // The directory a key lived in is part of the key, not a thing of
-            // its own: an empty one left behind would show up in a listing as
-            // a document that is not there.
-            if let Some(parent) = name.parent() {
-                let _ = std::fs::remove_dir(parent);
-            }
-        }
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
+        let Some(scope) = self.list_scope(prefix)? else {
+            return Ok(Vec::new());
+        };
+        let root = self.dir.clone();
+        let prefix = prefix.to_string();
         let mut found = Vec::new();
-        walk(&self.dir, &self.dir, prefix, &mut found)?;
-        found.sort_by(|a, b| a.key.cmp(&b.key));
-        Ok(found)
+        self.blocking(move || {
+            walk(&root, &scope, &prefix, &mut found)?;
+            found.sort_by(|a, b| a.key.cmp(&b.key));
+            Ok(found)
+        })
+        .await
     }
 
     async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
-        let _guard = self.swapping.lock().expect("swap lock poisoned");
-        let current = match self.read_versioned(key) {
-            Ok((_, version)) => version,
-            Err(BlobError::NotFound) => String::new(),
-            Err(err) => return Err(err),
-        };
-        if current != expect {
-            return Err(BlobError::Conflict);
-        }
-        self.write(key, &body)?;
-        Ok(version_of(&body))
+        let path = self.path_for(key)?;
+        let swapping = self.swapping.clone();
+        let expect = expect.to_string();
+        self.blocking(move || {
+            let _guard = swapping
+                .lock()
+                .map_err(|_| BlobError::Other("swap lock poisoned".into()))?;
+            let current = match read_versioned_path(&path) {
+                Ok((_, version)) => version,
+                Err(BlobError::NotFound) => String::new(),
+                Err(err) => return Err(err),
+            };
+            if current != expect {
+                return Err(BlobError::Conflict);
+            }
+            write_file_atomically(&path, &body)?;
+            Ok(version_of(&body))
+        })
+        .await
     }
 
     fn describe(&self) -> String {
@@ -221,18 +300,40 @@ impl BlobStore for FsStore {
     }
 }
 
+fn read_versioned_path(path: &Path) -> BlobResult<(Vec<u8>, BlobVersion)> {
+    let body = std::fs::read(path)?;
+    let version = version_of(&body);
+    Ok((body, version))
+}
+
 fn walk(root: &Path, dir: &Path, prefix: &str, found: &mut Vec<BlobInfo>) -> BlobResult<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         // A directory that vanished mid-walk is not a listing failure.
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(())
+        }
         Err(err) => return Err(err.into()),
     };
     for entry in entries {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
-        if path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             walk(root, &path, prefix, found)?;
+            continue;
+        }
+        if !file_type.is_file() {
             continue;
         }
         let Ok(relative) = path.strip_prefix(root) else {
@@ -263,12 +364,23 @@ pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = name.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let temporary = name.with_extension(match name.extension() {
-        Some(ext) => format!("{}.tmp", ext.to_string_lossy()),
-        None => "tmp".to_string(),
-    });
-    std::fs::write(&temporary, body)?;
-    std::fs::rename(&temporary, name)
+    // A deterministic sibling such as `index.json.tmp` is unsafe when two
+    // unconditional puts of one object overlap: one writer can rename or
+    // replace the other writer's temporary file. Unique names retain the
+    // same-directory atomic rename while allowing independent puts to run in
+    // separate blocking workers.
+    static TEMPORARY: AtomicU64 = AtomicU64::new(0);
+    let serial = TEMPORARY.fetch_add(1, Ordering::Relaxed);
+    let basename = name
+        .file_name()
+        .map(|part| part.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("object"));
+    let temporary = name.with_file_name(format!(".{basename}.tmp-{}-{serial}", std::process::id()));
+    let result = std::fs::write(&temporary, body).and_then(|_| std::fs::rename(&temporary, name));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 /* ----------------------------------------------------------------- keys */

@@ -9,10 +9,10 @@
 
 use std::collections::HashMap;
 
-use yrs::{GetString, Map, Text, Transact};
+use yrs::{GetString, Map, Out, Text, Transact};
 
 use crate::config::Configuration;
-use crate::history::{Checkpoint, Tree};
+use crate::history::{Checkpoint, Tree, TreeEntry};
 use crate::paths;
 use crate::session::{self, Admission};
 
@@ -618,6 +618,95 @@ fn a_restore_of_a_one_file_tree_reaches_a_directory() {
     session::restore(&doc, &old, &bodies);
     assert_eq!(session::text_of(&doc), "then\n");
     assert_eq!(session::main_path(&doc), "main.typ");
+}
+
+#[test]
+fn restoring_a_renamed_file_keeps_its_ytext_identity() {
+    let doc = one_file("old.md", "then\n");
+    let id = session::main_id(&doc);
+    let (recorded, bodies) = crate::room::tree_of(&doc, &HashMap::new());
+    let files = doc.get_or_insert_map("files");
+    let original = {
+        let txn = doc.transact();
+        match files.get(&txn, &id) {
+            Some(Out::YText(text)) => text,
+            other => panic!("main file is not a Y.Text: {other:?}"),
+        }
+    };
+
+    // The live file was renamed while somebody was typing into its existing
+    // Y.Text. Restoring the old path must move that same object back.
+    let path_map = doc.get_or_insert_map("paths");
+    {
+        let mut txn = doc.transact_mut();
+        path_map.insert(&mut txn, id.clone(), "new.md".to_string());
+        original.insert(&mut txn, 0, "live ");
+    }
+    session::restore(&doc, &recorded, &bodies);
+    assert_eq!(session::texts_of(&doc)["old.md"], "then\n");
+
+    // A reference retained by a peer before the rename still addresses the
+    // restored file. Replacing the map value with TextPrelim would leave this
+    // update on a detached object.
+    {
+        let mut txn = doc.transact_mut();
+        original.insert(&mut txn, 0, "after ");
+    }
+    assert_eq!(session::texts_of(&doc)["old.md"], "after then\n");
+}
+
+#[test]
+fn a_concurrent_rename_does_not_assign_one_ytext_to_two_paths() {
+    let doc = one_file("new.md", "live\n");
+    let id = session::main_id(&doc);
+    let mut files = std::collections::BTreeMap::new();
+    files.insert(
+        "old.md".to_string(),
+        TreeEntry {
+            kind: "text".to_string(),
+            id: id.clone(),
+            sha: "old-sha".to_string(),
+            size: 4,
+        },
+    );
+    files.insert(
+        "new.md".to_string(),
+        TreeEntry {
+            kind: "text".to_string(),
+            id,
+            sha: "new-sha".to_string(),
+            size: 5,
+        },
+    );
+    let tree = Tree {
+        main: "old.md".to_string(),
+        files,
+    };
+    let bodies = HashMap::from([
+        ("old-sha".to_string(), "old\n".to_string()),
+        ("new-sha".to_string(), "new\n".to_string()),
+    ]);
+
+    session::restore(&doc, &tree, &bodies);
+    let texts = session::texts_of(&doc);
+    assert_eq!(
+        texts,
+        std::collections::BTreeMap::from([(String::from("new.md"), String::from("new\n"))])
+    );
+    assert_eq!(session::main_path(&doc), "new.md");
+}
+
+#[test]
+fn restoring_text_removes_an_asset_left_at_the_same_path() {
+    let doc = one_file("main.md", "then\n");
+    session::put_asset(&doc, "main.md", "asset-sha");
+    let id = session::main_id(&doc);
+    let tree = Tree::of_one_file("main.md", &id, "text-sha", 5);
+    let bodies = HashMap::from([(String::from("text-sha"), String::from("then\n"))]);
+
+    session::restore(&doc, &tree, &bodies);
+    assert!(session::assets_of(&doc).is_empty());
+    assert_eq!(session::texts_of(&doc)["main.md"], "then\n");
 }
 
 /* ------------------------------------------------------- publishing a directory */

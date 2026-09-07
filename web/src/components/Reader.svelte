@@ -1,7 +1,7 @@
 <script>
   // One document: the source beside it, the page itself, and everything said
   // about it.
-  import { anchorAll, anchorAllSources, flatten } from "../lib/anchor.js";
+  import { anchorAll, anchorAllSources, anchorOne, flatten } from "../lib/anchor.js";
   import * as sync from "../lib/sync.js";
   import * as renderers from "../lib/renderers.js";
   import * as diagnosticsRule from "../lib/diagnostics.js";
@@ -268,6 +268,8 @@
         // Whatever was painted before is gone with the rebuilt DOM.
         lastRegions = lastHighlight = null;
         reanchor();
+        revealPendingHistory();
+        if (panel === "history" && historyBaseline && (!viewing || historyComparePoint)) void computeHistoryChanges();
         if (first) {
           replayPreview();
           void paintPreview();
@@ -483,6 +485,7 @@
       comments = event.comments;
       commentsReady = true;
       reanchor();
+      if (panel === "history" && !historyBaseline) void loadHistory();
       return;
     }
     if (event.type === "submission-failed") {
@@ -629,6 +632,7 @@
   // opened, so a reader never pays for it. The session is not the editor: a
   // reader joins it too, because that is where the text comes from.
   let Editor = $state(null);
+  let MergeEditor = $state(null);
   let editor = $state(null);
   let session = $state(null);
   let editing = $state(false);
@@ -677,6 +681,17 @@
   // costs no request for it.
   let checkpoints = $state([]);
   let historyProblem = $state("");
+  // Comparison state is independent of `viewing`: opening an old page is
+  // navigation, while “since” is a reader preference that survives returning
+  // to the live document.
+  let historyBaseline = $state(null);
+  let historyComparePoint = $state(null);
+  let historyChanges = $state(null);
+  let historyChangedPaths = $state([]);
+  let fileDiff = $state(null);
+  let mergeTarget = $state(null);
+  let historyBaselineGeneration = 0;
+  let historyDiffGeneration = 0;
   // The checkpoint being shown in the document pane, whole -- its tree and its
   // texts -- or null for the document as it stands.
   let viewing = $state(null);
@@ -693,8 +708,221 @@
     try {
       checkpoints = await history.load(SLUG, keyHeaders(KEY));
       historyProblem = "";
+      if (!historyBaseline && checkpoints.length) {
+        const remembered = read(`komodoc-history-baseline:${SLUG}`, "");
+        const own = [...comments].reverse().find((comment) =>
+          comment.mine && comment.revision && checkpoints.some((point) => point.sha === comment.revision),
+        );
+        const sha = checkpoints.some((point) => point.sha === remembered)
+          ? remembered
+          : own?.revision || checkpoints[0].sha;
+        await chooseHistoryBaseline(sha);
+      }
     } catch (error) {
       historyProblem = error.message || "the history could not be read";
+    }
+  }
+
+  async function chooseHistoryBaseline(sha) {
+    const request = ++historyBaselineGeneration;
+    const point = checkpoints.find((candidate) => candidate.sha === sha);
+    if (!point) return;
+    try {
+      const loaded = point.texts ? point : await history.checkpoint(SLUG, sha, keyHeaders(KEY));
+      if (request !== historyBaselineGeneration) return;
+      historyBaseline = loaded;
+      if (historyComparePoint?.sha === sha) historyComparePoint = null;
+      historyChanges = null;
+      historyChangedPaths = [];
+      fileDiff = null;
+      fileDiffGeneration += 1;
+      mergeTarget = null;
+      write(`komodoc-history-baseline:${SLUG}`, sha);
+      await computeHistoryChanges(loaded);
+    } catch (error) {
+      if (request === historyBaselineGeneration) historyProblem = error.message || "that checkpoint could not be read";
+    }
+  }
+
+  async function chooseHistoryTarget(sha) {
+    const request = ++historyBaselineGeneration;
+    mergeTarget = null;
+    fileDiff = null;
+    fileDiffGeneration += 1;
+    if (!sha) {
+      historyComparePoint = null;
+      historyChanges = null;
+      await computeHistoryChanges();
+      return;
+    }
+    const listed = checkpoints.find((candidate) => candidate.sha === sha);
+    if (!listed) return;
+    try {
+      const point = listed.texts ? listed : await history.checkpoint(SLUG, sha, keyHeaders(KEY));
+      if (request !== historyBaselineGeneration) return;
+      historyComparePoint = point;
+      historyChanges = null;
+      fileDiff = null;
+      await computeHistoryChanges();
+    } catch (error) {
+      if (request === historyBaselineGeneration) historyProblem = error.message || "that checkpoint could not be read";
+    }
+  }
+
+  async function computeHistoryChanges(point = historyBaseline) {
+    if (!point || !session || docText === null || (!historyComparePoint && viewing)) return;
+    const baselineGeneration = historyBaselineGeneration;
+    const targetPoint = historyComparePoint;
+    const liveVisible = docText;
+    const request = ++historyDiffGeneration;
+    try {
+      // Passage hunks use rendered text, keeping the list faithful to what a
+      // reviewer reads rather than exposing source markup as visible prose.
+      const oldVisible = await passages.textAt(SLUG, point.sha, keyHeaders(KEY));
+      const targetVisible = targetPoint
+        ? await passages.textAt(SLUG, targetPoint.sha, keyHeaders(KEY))
+        : liveVisible;
+      if (request !== historyDiffGeneration || baselineGeneration !== historyBaselineGeneration || targetPoint !== historyComparePoint || (!targetPoint && liveVisible !== docText)) return;
+      if (typeof oldVisible !== "string" || typeof targetVisible !== "string") {
+        historyChanges = [];
+        historyProblem = "Changes are unavailable for this checkpoint.";
+        return;
+      }
+      const edits = await history.wordDiff(oldVisible, targetVisible, sourceFormat);
+      if (request !== historyDiffGeneration || baselineGeneration !== historyBaselineGeneration || targetPoint !== historyComparePoint || (!targetPoint && liveVisible !== docText)) return;
+      let shift = 0;
+      historyChanges = history.hunks(oldVisible, targetVisible, edits).map((hunk) => {
+        const newAt = hunk.at + shift;
+        shift += (hunk.insert || "").length - (hunk.delete || 0);
+        return {
+          ...hunk,
+          path: point.main || "document",
+          new: hunk.insert || "",
+          exact: hunk.insert || "",
+          position: newAt,
+          prefix: hunk.currentBefore || "",
+          suffix: hunk.currentAfter || "",
+          contextBefore: hunk.insert ? (hunk.currentBefore || hunk.before || "") : (hunk.before || ""),
+          contextAfter: hunk.insert ? (hunk.currentAfter || hunk.after || "") : (hunk.after || ""),
+        };
+      });
+      const paths = new Set();
+      const baselineTexts = point.texts || {};
+      // `treeNow` intentionally follows `viewing` for rendering. Diffing must
+      // always compare with the live session, even while an old page is open.
+      const now = targetPoint ? targetPoint : session.tree();
+      for (const path of new Set([...Object.keys(baselineTexts), ...Object.keys(now.texts || {})])) {
+        if ((baselineTexts[path] || "") !== (now.texts?.[path] || "")) paths.add(path);
+      }
+      const oldFiles = point.files || {};
+      const newFiles = now.files || {};
+      for (const path of new Set([...Object.keys(oldFiles), ...Object.keys(newFiles)])) {
+        const oldEntry = oldFiles[path] || null;
+        const newEntry = newFiles[path] || null;
+        if (!oldEntry || !newEntry || oldEntry.kind !== newEntry.kind) {
+          paths.add(path);
+        } else if (oldEntry.kind === "asset" && oldEntry.sha !== newEntry.sha) {
+          paths.add(path);
+        } else if (oldEntry.kind === "text" && (baselineTexts[path] || "") !== (now.texts?.[path] || "")) {
+          paths.add(path);
+        }
+      }
+      historyChangedPaths = [...paths].sort();
+      historyProblem = "";
+    } catch (error) {
+      if (request === historyDiffGeneration && baselineGeneration === historyBaselineGeneration) {
+        historyChanges = [];
+        historyProblem = error.message || "Changes are unavailable for this checkpoint.";
+      }
+    }
+  }
+
+  let pendingHistoryReveal = null;
+  function revealPendingHistory() {
+    const pending = pendingHistoryReveal;
+    if (!pending || docText === null || (viewing?.sha || "") !== pending.sha) return;
+    const found = anchorOne(docText, pending.hunk, docView);
+    if (!found) return;
+    pendingHistoryReveal = null;
+    tell({ type: "locate", start: found.start, length: found.end - found.start });
+  }
+
+  async function revealHistoryHunk(hunk) {
+    if (!hunk.exact) return;
+    const sha = historyComparePoint?.sha || "";
+    pendingHistoryReveal = { hunk, sha };
+    if ((viewing?.sha || "") !== sha) {
+      if (sha) await showCheckpoint(sha);
+      else backToNow();
+    } else {
+      revealPendingHistory();
+    }
+  }
+
+  async function restoreCheckpoint(sha) {
+    if (!mayEdit || !sha) return;
+    try {
+      const response = await fetch(`/api/documents/${SLUG}/restore`, {
+        method: "POST",
+        headers: { ...SHELL_HEADERS, ...keyHeaders(KEY), "content-type": "application/json" },
+        body: JSON.stringify({ sha }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "that checkpoint could not be restored");
+      mergeTarget = null;
+      backToNow();
+      await loadHistory();
+    } catch (error) {
+      toastProblem(error.message || "that checkpoint could not be restored");
+    }
+  }
+
+  let fileDiffGeneration = 0;
+  async function openCheckpointFile(point, path) {
+    if (!checkpoints.some((candidate) => candidate.sha === point.parent)) {
+      historyProblem = "The previous checkpoint is no longer available for this comparison.";
+      return;
+    }
+    await chooseHistoryBaseline(point.parent);
+    if (historyBaseline?.sha !== point.parent) return;
+    await chooseHistoryTarget(point.sha);
+    if (historyComparePoint?.sha === point.sha) await openFileDiff(path);
+  }
+
+  async function openFileDiff(path) {
+    if (!historyBaseline || !session) return;
+    const request = ++fileDiffGeneration;
+    const base = historyBaseline;
+    const target = historyComparePoint;
+    const activeSession = session;
+    const targetTree = target || activeSession.tree();
+    const oldText = base.texts?.[path];
+    const newText = targetTree.texts?.[path];
+    mergeTarget = null;
+    fileDiff = { path, loading: true };
+    try {
+      const edits = await history.wordDiff(oldText ?? "", newText ?? "");
+      if (request !== fileDiffGeneration || base !== historyBaseline || target !== historyComparePoint || activeSession !== session) return;
+      fileDiff = {
+        path, old: oldText, new: newText,
+        hunks: history.hunks(oldText ?? "", newText ?? "", edits),
+        oldEntry: base.files?.[path], newEntry: targetTree.files?.[path],
+      };
+      if (!mayEdit || !editing || newText === undefined) return;
+      const component = (await import("./MergeEditor.svelte")).default;
+      if (request !== fileDiffGeneration || base !== historyBaseline || target !== historyComparePoint || activeSession !== session || !mayEdit || !editing) return;
+      const id = activeSession.idOf(path);
+      MergeEditor = component;
+      fileDiff = null;
+      mergeTarget = {
+        path, oldText: oldText ?? "", newText,
+        liveText: target ? null : id ? activeSession.textOf(id) : null,
+        awareness: target ? null : activeSession.awareness,
+        editable: !target && Boolean(id),
+        targetLabel: target?.label || (target ? history.shortSha(target.sha) : "Live document"),
+      };
+    } catch (error) {
+      if (request === fileDiffGeneration) fileDiff = { path, problem: error.message || "This comparison is unavailable." };
     }
   }
 
@@ -711,6 +939,8 @@
 
   async function showCheckpoint(sha) {
     const mine = ++navigationGeneration;
+    historyDiffGeneration += 1;
+    if (!historyComparePoint) historyChanges = null;
     renderingRequest += 1;
     issued += 1;
     dropHeldRendering();
@@ -718,6 +948,7 @@
       const point = await history.checkpoint(SLUG, sha, keyHeaders(KEY));
       if (mine !== navigationGeneration) return;
       viewing = point;
+      write(`komodoc-history-baseline:${SLUG}`, sha);
       historyProblem = "";
     } catch (error) {
       if (mine !== navigationGeneration) return;
@@ -780,31 +1011,44 @@
   // re-anchoring" on the card, which told the person who wrote the comment
   // nothing they did not already know.
   let went = $state({});
-  // The comments already looked into, so a repaint does not search again for
-  // an answer that has not changed.
-  const traced = new Set();
+  let replacements = $state({});
+  let passageTraceGeneration = 0;
+  let lastPassageTrace = null;
 
-  // A document with nothing orphaned costs nothing at all: no manifest, no
-  // renders. The first passage that has gone is what buys the manifest, and
-  // every comment after it is answered from the same list.
   async function tracePassages() {
-    const lost = comments.filter(
-      (comment) => comment.orphaned && !comment.region && !traced.has(comment.id),
-    );
-    if (!lost.length || viewing) return;
-    for (const comment of lost) traced.add(comment.id);
-    if (!checkpoints.length) await loadHistory();
+    if (viewing || docText === null || !session) return;
+    const lost = comments.filter((comment) => comment.orphaned && !comment.region);
+    const ids = lost.map((comment) => comment.id + ":" + comment.revision).join("|");
+    if (lastPassageTrace?.source === sourceGeneration && lastPassageTrace?.visible === docText && lastPassageTrace?.ids === ids) return;
+    const visible = docText;
+    const source = sourceGeneration;
+    lastPassageTrace = { source, visible, ids };
+    const mine = ++passageTraceGeneration;
+    const currentTree = session.tree();
+    const nextWent = {};
+    const nextReplacements = {};
+    if (lost.length && !checkpoints.length) await loadHistory();
     const list = checkpoints;
-    if (!list.length) return;
     for (const comment of lost) {
+      if (mine !== passageTraceGeneration || viewing || source !== sourceGeneration || visible !== docText) return;
       try {
         const point = await passages.wentAt(SLUG, comment, list, keyHeaders(KEY));
-        if (point) went = { ...went, [comment.id]: point };
+        if (point) nextWent[comment.id] = point;
+        if (!comment.revision) continue;
+        const oldText = comment.source
+          ? await passages.sourceTextAt(SLUG, comment.revision, comment.source.path, keyHeaders(KEY))
+          : await passages.textAt(SLUG, comment.revision, keyHeaders(KEY));
+        const current = comment.source ? currentTree.texts[comment.source.path] ?? "" : visible;
+        const replacement = await passages.replacementAt(oldText, current, comment.source || comment);
+        if (replacement !== null) nextReplacements[comment.id] = replacement;
       } catch {
-        // A checkpoint that cannot be read or rendered is one this cannot say
-        // anything about, and the card falls back to saying the passage is
-        // not in the document -- which is still true and still useful.
+        // A missing checkpoint or rendering cannot establish a replacement.
+        if (mine === passageTraceGeneration) lastPassageTrace = null;
       }
+    }
+    if (mine === passageTraceGeneration && !viewing && source === sourceGeneration && visible === docText) {
+      went = nextWent;
+      replacements = nextReplacements;
     }
   }
 
@@ -1602,13 +1846,14 @@
   // starts with -- and every visit after that opens where they left it.
   //
   // Somebody who came by a read or a comment link is shown the document and
-  // its comments and nothing else: no files, no history, no settings. The
-  // source is the editor's, and so is everything that is about the source
-  // rather than the page. Their column opens on the comments, and closes.
+  // its comments first. History is available to compare review rounds; files
+  // and editor settings remain in the editor workspace.
   const TABS = [
     { id: "files", says: "Files", editorOnly: true },
     { id: "comments", says: "Comments" },
-    { id: "history", says: "History", editorOnly: true },
+    // History is readable by link-holders too: reviewers need the “since”
+    // view even when they cannot edit or restore the live source.
+    { id: "history", says: "History" },
     { id: "diagnostics", says: "Diagnostics", editOnly: true },
     { id: "share", says: "Share", sharingOnly: true },
     { id: "settings", says: "Settings", editorOnly: true },
@@ -2109,9 +2354,8 @@
     if (mayEdit) startEditing();
     // Somebody sent a link to a moment rather than to the document. Opening it
     // opens the panel too, so that what is on the screen is explained by
-    // something the reader can see and leave. The history is an editor's:
-    // anyone else who follows such a link is shown the document as it stands.
-    if (ARRIVED_AT && mayEdit) {
+    // something every reader with a live share link can see and leave.
+    if (ARRIVED_AT) {
       showPanel("history", false).then(() => {
         // The history request may outlive the panel. Do not enter a
         // checkpoint after the reader has explicitly left history.
@@ -2144,6 +2388,7 @@
       if (request !== rejoinRequest || session !== active) return;
       if (!response.ok) {
         // A deleted document or a changed role must go through normal boot.
+        passages.clearPassageCache();
         location.reload();
         return;
       }
@@ -2204,6 +2449,7 @@
       // The session on the server ends when the last person in it
       // disconnects, which the socket closing does on its own; this is only
       // this browser letting go of its half.
+      passages.clearPassageCache();
       session?.leave();
       room?.close();
     };
@@ -2321,6 +2567,7 @@
       </div>
       {#if viewing}
         <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={backToNow}>Back to now</button>
+        {#if mayEdit}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restoreCheckpoint(viewing.sha)}>Restore this version</button>{/if}
         <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
       {/if}
       {#if editing && sourceFormat === "latex" && latexReady}
@@ -2397,12 +2644,23 @@
       {:else if panel === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic} />
-      {:else if panel === "history" && mayEdit}
+      {:else if panel === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
                  problem={historyProblem}
-                 onshow={showCheckpoint} onback={backToNow} onname={nameCheckpoint} />
+                 baseline={historyBaseline} changes={historyChanges}
+                 changedPaths={historyChangedPaths}
+                 {fileDiff}
+                 currentLabel={historyComparePoint?.label || (historyComparePoint ? history.shortSha(historyComparePoint.sha) : "now")}
+                 target={historyComparePoint}
+                 onbaseline={chooseHistoryBaseline}
+                 ontarget={chooseHistoryTarget}
+                 onshow={showCheckpoint} onback={backToNow} onname={nameCheckpoint}
+                 onrestore={restoreCheckpoint} oncopy={checkpointLink}
+                 onreveal={revealHistoryHunk}
+                 oncheckpointfile={openCheckpointFile}
+                 onfilediff={openFileDiff} onclosefilediff={() => { fileDiffGeneration += 1; fileDiff = null; }} />
       {:else}
-        <Comments {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went}
+        <Comments {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
                   hasFigures={figureAt.length > 0}
                   ontool={chooseTool}
                   onreveal={(comment) => {
@@ -2440,7 +2698,14 @@
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
-      {#if shownFigure}
+      {#if mergeTarget && MergeEditor}
+        <MergeEditor path={mergeTarget.path} oldText={mergeTarget.oldText} newText={mergeTarget.newText}
+                     liveText={mergeTarget.liveText} awareness={mergeTarget.awareness}
+                     editable={mergeTarget.editable !== false && mayEdit && editing}
+                     targetLabel={mergeTarget.targetLabel}
+                     onlive={historyComparePoint ? async () => { const path = mergeTarget.path; await chooseHistoryTarget(""); await openFileDiff(path); } : null}
+                     onclose={() => (mergeTarget = null)} />
+      {:else if shownFigure}
         <div class="figureview">
           {#if !figureUrl}
             <p>Fetching {shownFigure.path}…</p>

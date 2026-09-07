@@ -1,9 +1,52 @@
 //! Regression tests for the findings of REVIEW-codex-crates.md (session group).
 #![allow(unused_imports)]
 use super::*;
+use std::collections::{BTreeMap, HashMap};
 
+use crate::history::{Tree, TreeEntry};
 use crate::session;
 use yrs::{Map, Transact};
+
+/// Restoring a target after a peer update must leave a disjoint peer word in
+/// place. The peer update is encoded and applied through Yrs exactly as the
+/// browser path does; the room's three-way merge then supplies the body that
+/// the path-based restore applies as separate word edits.
+#[test]
+fn review_restore_keeps_a_disjoint_peer_word() {
+    let doc = session::new_doc();
+    let base = "alpha beta gamma";
+    let id = session::put_text(&doc, "main.md", base);
+
+    // A second Yrs peer starts from the same state and inserts a word beside
+    // the region the selected checkpoint will replace.
+    let peer = session::new_doc();
+    session::apply_update(&peer, &session::encode_state(&doc)).expect("peer state");
+    session::replace_text(&peer, "alpha beta PEER gamma", "main.md");
+    session::apply_update(&doc, &session::encode_state(&peer)).expect("peer update");
+
+    let target = "alpha TARGET gamma";
+    let merged = komodoc_text::merge(base, &session::text_of(&doc), target).text;
+    assert_eq!(merged, "alpha TARGET PEER gamma");
+    let sha = crate::store::digest_of(target);
+    let mut files = BTreeMap::new();
+    files.insert(
+        "main.md".to_string(),
+        TreeEntry {
+            kind: "text".to_string(),
+            id,
+            sha: sha.clone(),
+            size: target.len() as i64,
+        },
+    );
+    let tree = Tree {
+        main: "main.md".to_string(),
+        files,
+    };
+    let mut bodies = HashMap::new();
+    bodies.insert("main.md".to_string(), merged);
+    session::restore_by_path(&doc, &tree, &bodies);
+    assert_eq!(session::text_of(&doc), "alpha TARGET PEER gamma");
+}
 
 /// R14: `edit_text` computed its common prefix/suffix over raw UTF-16 code
 /// units. Two distinct emoji sharing a surrogate could make that boundary

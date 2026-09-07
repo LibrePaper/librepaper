@@ -167,12 +167,8 @@ async fn review_checkpoint_race_drops_dirty_edit() {
     println!("checkpoint race: edit after the session snapshot stays dirty and persists");
 }
 
-/// R07, a second injection point: a checkpoint whose own session write is
-/// paused holds the room lock across that write (the same lock `set_source`
-/// needs), so a concurrent edit cannot interleave with it at all any more --
-/// it simply waits its turn. This asserts that outcome: the edit is not lost,
-/// applies right after the checkpoint releases the lock, and the room is left
-/// dirty for it.
+/// Edits proceed during a checkpoint's storage write and remain dirty until
+/// their own generation has been written.
 #[tokio::test]
 async fn review_edit_during_session_write_stays_dirty() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
@@ -194,16 +190,14 @@ async fn review_edit_during_session_write_stays_dirty() {
     tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    // Spawned rather than awaited directly: the checkpoint above holds the
-    // room's lock across the paused write, so this simply queues behind it
-    // rather than landing inside the paused window.
-    let edit = tokio::spawn({
-        let room = room.clone();
-        async move { room.set_source("C DURING SESSION WRITE", "markdown").await }
-    });
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        room.set_source("C DURING SESSION WRITE", "markdown"),
+    )
+    .await
+    .expect("storage must not block editing");
     hooked.resume.notify_one();
     task.await.unwrap().unwrap();
-    edit.await.unwrap();
     assert_eq!(room.source().await, "C DURING SESSION WRITE");
     assert!(room.state.lock().await.session.dirty);
     assert!(room.persist().await.unwrap());
@@ -280,7 +274,13 @@ async fn review_concurrent_label_is_lost_by_checkpoint() {
     tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    // The checkpoint is now paused mid-write, holding the room's own lock.
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        room.set_source("C while manifest saves", "markdown"),
+    )
+    .await
+    .expect("manifest storage must not block edits");
+    // The checkpoint is paused mid-write, holding the manifest write gate.
     // Spawning `label` only after that pause is confirmed guarantees it
     // queues up behind the checkpoint's critical section rather than racing
     // it -- which is exactly the fix: the two can no longer interleave, so
@@ -772,4 +772,209 @@ async fn review_get_does_not_block_on_a_cold_room() {
     hooked.resume.notify_one();
     cold_task.await.unwrap();
     println!("warm room lookup returned while a cold room's lease read was still blocked");
+}
+
+/// A save acknowledges only its captured updates. Another save queues behind
+/// it, but an editor can advance the document while storage is paused.
+#[tokio::test]
+async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    reopened.attach_store(store.clone());
+    let room = reopened.get("probe").await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    room.attach(123, "test".into(), tx, true).await;
+    room.set_source("B", "markdown").await;
+    room.state.lock().await.sockets.get_mut(&123).unwrap().sent = 1;
+    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
+    let save = tokio::spawn({
+        let room = room.clone();
+        async move { room.persist().await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        room.set_source("newer, longer C", "markdown"),
+    )
+    .await
+    .expect("an editor must not wait on storage");
+    room.state.lock().await.sockets.get_mut(&123).unwrap().sent = 2;
+    assert!(
+        rx.try_recv().is_err(),
+        "no acknowledgement before storage succeeds"
+    );
+    hooked.resume.notify_one();
+    assert!(save.await.unwrap().unwrap());
+    assert!(room.state.lock().await.session.dirty);
+    let room::Outgoing::Text(ack) = rx.recv().await.unwrap() else {
+        panic!("expected ack")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&ack).unwrap()["seq"],
+        1
+    );
+    let saved = session::new_doc();
+    session::apply_update(
+        &saved,
+        &store.blobs.get(&blob::session_key("probe")).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(session::text_of(&saved), "B");
+    let (one, two) = tokio::join!(room.persist(), room.persist());
+    assert_ne!(
+        one.unwrap(),
+        two.unwrap(),
+        "only one writer saves the same generation"
+    );
+    assert!(!room.state.lock().await.session.dirty);
+    let saved = session::new_doc();
+    session::apply_update(
+        &saved,
+        &store.blobs.get(&blob::session_key("probe")).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(session::text_of(&saved), "newer, longer C");
+    let room::Outgoing::Text(ack) = rx.recv().await.unwrap() else {
+        panic!("expected ack")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&ack).unwrap()["seq"],
+        2
+    );
+}
+
+#[tokio::test]
+async fn persistence_failure_leaves_the_session_retryable() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    let room = reopened.get("probe").await;
+    room.set_source("retry me", "markdown").await;
+    let version = room.state.lock().await.session_version.clone();
+    *hooked.fail.lock().unwrap() = Some(blob::session_key("probe"));
+    assert!(room.persist().await.is_err());
+    {
+        let state = room.state.lock().await;
+        assert!(state.session.dirty);
+        assert_eq!(state.session_version, version);
+    }
+    *hooked.fail.lock().unwrap() = None;
+    assert!(room.persist().await.unwrap());
+    assert!(!room.state.lock().await.session.dirty);
+}
+
+/// A slow save in one room must not delay the next room's scheduled save.
+#[tokio::test]
+async fn sweeper_saves_other_rooms_while_one_write_is_paused() {
+    let mut config = Configuration::default();
+    config.session.write_after_seconds = 0;
+    config.session.checkpoint_seconds = i64::MAX;
+    let (_dir, store, _rooms) = fixture(config.clone()).await;
+    store
+        .put(store::Publication {
+            slug: "second".into(),
+            source: "second source".into(),
+            source_format: "markdown".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let rooms = Arc::new(room::RoomSet::new(hooked.clone(), Arc::new(config)));
+    rooms.attach_store(store.clone());
+    let first = rooms.get("probe").await;
+    let second = rooms.get("second").await;
+    first.set_source("first changed", "markdown").await;
+    second.set_source("second changed", "markdown").await;
+    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
+    let sweep = tokio::spawn({
+        let rooms = rooms.clone();
+        async move { rooms.sweep().await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !second.state.lock().await.session.dirty {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("other rooms must save before the paused write resumes");
+    assert!(first.state.lock().await.session.dirty);
+    hooked.resume.notify_one();
+    sweep.await.unwrap();
+    let saved = session::new_doc();
+    session::apply_update(
+        &saved,
+        &store.blobs.get(&blob::session_key("second")).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(session::text_of(&saved), "second changed");
+}
+
+#[tokio::test]
+async fn concurrent_checkpoints_commit_in_snapshot_order() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    rooms.attach_store(store.clone());
+    let room = rooms.get("probe").await;
+    room.set_source("B", "markdown").await;
+    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
+    let first = tokio::spawn({
+        let room = room.clone();
+        async move { room.checkpoint_now("quiet", "alice").await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    room.set_source("C", "markdown").await;
+    let second = tokio::spawn({
+        let room = room.clone();
+        async move { room.checkpoint_now("quiet", "alice").await }
+    });
+    hooked.resume.notify_one();
+    let first = first.await.unwrap().unwrap().unwrap();
+    let second = second.await.unwrap().unwrap().unwrap();
+    assert_ne!(first, second);
+    let manifest = room.manifest().await;
+    let latest = manifest.latest().unwrap();
+    assert_eq!(latest.sha, second);
+    assert_eq!(latest.parent, first);
+    assert_eq!(store.get("probe").await.unwrap().sha, second);
+    let saved = session::new_doc();
+    session::apply_update(
+        &saved,
+        &store.blobs.get(&blob::session_key("probe")).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(session::text_of(&saved), "C");
 }

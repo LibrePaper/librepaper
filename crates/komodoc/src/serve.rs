@@ -273,6 +273,7 @@ pub async fn serve(options: ServeOptions) {
     let sweeper = instance.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
             sweeper.rooms.sweep().await;

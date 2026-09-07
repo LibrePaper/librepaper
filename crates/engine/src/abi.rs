@@ -269,6 +269,39 @@ pub unsafe extern "C" fn title_of(source: *const u8, len: usize) -> usize {
     answer(Ok(heading(text_at(source, len))))
 }
 
+/// Computes the shared word-level diff. The result is a JSON array of
+/// `{at, delete, insert}` edits, where `at` and `delete` are UTF-16 code-unit
+/// offsets in `old` and `insert` is UTF-8 text from `new`. Keeping this beside
+/// the renderer ABI means the history panel and the native sync code use the
+/// same tokenisation and hunk boundaries.
+///
+/// # Safety
+/// `old`, `old_len`, `new` and `new_len` must describe UTF-8 written into this
+/// module's memory.
+#[no_mangle]
+pub unsafe extern "C" fn word_diff(
+    old: *const u8,
+    old_len: usize,
+    new: *const u8,
+    new_len: usize,
+) -> usize {
+    let edits = komodoc_text::diff(text_at(old, old_len), text_at(new, new_len));
+    let result = serde_json::to_string(
+        &edits
+            .iter()
+            .map(|edit| {
+                serde_json::json!({
+                    "at": edit.at,
+                    "delete": edit.delete,
+                    "insert": edit.insert,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string());
+    answer(Ok(result))
+}
+
 #[cfg(feature = "typst")]
 fn heading(source: &str) -> String {
     crate::typst::title_of(source)

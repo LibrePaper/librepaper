@@ -485,3 +485,64 @@ async fn the_export_carries_the_checkpoint_a_comment_was_made_on() {
         "an empty revision was exported as an answer"
     );
 }
+
+/// Cached source bytes must not cache a label, permission, or membership decision.
+#[tokio::test]
+async fn cached_checkpoint_rechecks_labels_access_and_manifest_membership() {
+    let server = new_test_server().await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    let owner = session_as(TEST_PUBLISHER);
+    let sha = text(&history_of(&owner, &server.url, &slug).await[0], "sha");
+    let (status, first) = get_checkpoint_keyed("", &key, &server.url, &slug, &sha).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        patch_label(&owner, &server.url, &slug, &sha, "fresh label")
+            .await
+            .0,
+        200
+    );
+    let (status, next) = get_checkpoint_keyed("", &key, &server.url, &slug, &sha).await;
+    assert_eq!(status, 200);
+    assert_eq!(next["label"], "fresh label");
+    assert_eq!(next["texts"], first["texts"]);
+    let response = client()
+        .get(format!("{}/api/documents/{slug}/history/{sha}", server.url))
+        .header("x-komodoc-client", "1")
+        .header("cookie", &owner)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let (status, answer) = post_as(
+        &owner,
+        &server.url,
+        &format!("/api/documents/{slug}/share"),
+        json!({"revoke": "reader"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        get_checkpoint_keyed("", &key, &server.url, &slug, &sha)
+            .await
+            .0,
+        404
+    );
+    // Simulate a pruned manifest while bytes remain in both storage and cache.
+    server
+        .instance
+        .rooms
+        .get(&slug)
+        .await
+        .state
+        .lock()
+        .await
+        .manifest
+        .checkpoints
+        .clear();
+    assert_eq!(
+        get_checkpoint(&owner, &server.url, &slug, &sha).await.0,
+        404
+    );
+}

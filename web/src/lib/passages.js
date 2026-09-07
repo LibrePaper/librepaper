@@ -29,6 +29,36 @@ import * as figures from "./figures.js";
 import * as history from "./history.js";
 import * as renderers from "./renderers.js";
 
+// Passage lookups can outlive a single comment card in a long-lived reader.
+// Keep enough history for the usual review, while making navigation across
+// many documents unable to retain every source and rendered string forever.
+const CACHE_LIMIT = 64;
+
+// A checkpoint SHA can be shared by documents and a reader can arrive with a
+// link key. Partition entries by the supplied authentication context. The
+// value is kept only in this private in-memory key and is never sent or
+// logged; the server still checks authorization on every miss.
+function authScope(headers) {
+  const entries = typeof Headers !== "undefined" && headers instanceof Headers
+    ? Array.from(headers.entries())
+    : Object.entries(headers || {});
+  return JSON.stringify(entries
+    .filter(([name]) => name.toLowerCase() !== "x-komodoc-client")
+    .map(([name, value]) => `${name.toLowerCase()}:${String(value)}`)
+    .sort());
+}
+
+const cacheKey = (slug, sha, headers) => `${slug}\u0000${sha}\u0000${authScope(headers)}`;
+
+function remember(cache, key, value) {
+  cache.set(key, value);
+  while (cache.size > CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
 // One rendering per document/checkpoint, whatever asks for it. A document
 // under review has a handful of comments on one or two moments, so this is
 // nearly always one entry deep.
@@ -42,7 +72,7 @@ const rendered = new Map();
 /// `anchorOne`'s flattened second pass is for, and it is why this is used to
 /// answer "is the passage here" rather than to place anything.
 export async function textAt(slug, sha, headers = {}, services = {}) {
-  const key = `${slug}\u0000${sha}`;
+  const key = cacheKey(slug, sha, headers);
   if (rendered.has(key)) return rendered.get(key);
   const pending = (async () => {
     const historyApi = services.history || history;
@@ -76,7 +106,7 @@ export async function textAt(slug, sha, headers = {}, services = {}) {
     );
     return typeof html === "string" ? visibleText(html) : null;
   })();
-  rendered.set(key, pending);
+  remember(rendered, key, pending);
   // A rendering may be uploaded after the first lookup (for example while a
   // reader opens history during an editor's compile). Do not remember a
   // missing artifact or a transient fetch failure forever. The identity check
@@ -92,11 +122,19 @@ export async function textAt(slug, sha, headers = {}, services = {}) {
   return pending;
 }
 
-// One checkpoint fetch per sha, whatever asks for it -- the same sharing
-// `textAt` gives the rendering, kept separately because a comment can have
-// both a source anchor and, on an older version, a rendered one, and the two
-// must not evict each other.
+// One checkpoint fetch per document/sha, whatever asks for it -- the same
+// sharing `textAt` gives the rendering, kept separately because a comment can
+// have both a source anchor and, on an older version, a rendered one, and the
+// two must not evict each other.
 const points = new Map();
+
+/// Drop historical passage responses when a reader changes link or signs out.
+/// In-flight calls may finish, but their identity checks cannot repopulate a
+/// map entry that has since been replaced.
+export function clearPassageCache() {
+  rendered.clear();
+  points.clear();
+}
 
 /// The text of one file of a checkpoint, as it was written. Unlike `textAt`
 /// this asks for nothing but the tree the server already has on hand: no
@@ -105,10 +143,17 @@ const points = new Map();
 /// answers null, which `holds` already reads as "not here" rather than as
 /// "unknown", the same as an empty page would.
 export async function sourceTextAt(slug, sha, path, headers = {}) {
-  if (!points.has(sha)) {
-    points.set(sha, history.checkpoint(slug, sha, headers));
+  const key = cacheKey(slug, sha, headers);
+  if (!points.has(key)) {
+    const pending = history.checkpoint(slug, sha, headers);
+    remember(points, key, pending);
+    // A failed request must not poison this checkpoint forever. The identity
+    // check preserves a newer retry if eviction or another caller replaced it.
+    pending.catch(() => {
+      if (points.get(key) === pending) points.delete(key);
+    });
   }
-  const point = await points.get(sha);
+  const point = await points.get(key);
   const texts = point.texts || {};
   return Object.prototype.hasOwnProperty.call(texts, path) ? texts[path] : null;
 }
@@ -174,4 +219,64 @@ export async function wentAt(slug, comment, checkpoints, headers = {}, at = text
     else high = middle;
   }
   return checkpoints[high];
+}
+
+/// Finds what replaced a comment's quotation between two versions. The
+/// returned text is the quoted old range transformed through the edits, so
+/// unchanged words between two replacements remain visible (`blue fox at calm
+/// river`, rather than just the two inserted fragments). Null means the
+/// quotation could not be anchored or the versions did not replace any part of
+/// it. A whitespace-only insertion is retained because it can be the only
+/// change inside a quoted source selection.
+export async function replacementAt(oldText, newText, selector, diffApi) {
+  if (typeof oldText !== "string" || typeof newText !== "string" || !selector?.exact) return null;
+  const found = anchorOne(oldText, selector, flatten(oldText));
+  if (!found) return null;
+  const compute = diffApi || ((before, after) => history.wordDiff(before, after));
+  const edits = await compute(oldText, newText);
+  const overlapping = edits.filter((edit) => {
+    const start = Number(edit.at) || 0;
+    const end = start + (Number(edit.delete) || 0);
+    // An insertion at the quoted boundary belongs to the replacement only
+    // when it is inside the selection, not when it merely follows it.
+    return (end > found.start && start < found.end)
+      || (end === start && start >= found.start && start < found.end);
+  });
+  if (!overlapping.length) return null;
+  const start = found.start;
+  const end = found.end;
+  let cursor = start;
+  let replacement = "";
+  for (const edit of edits) {
+    const editStart = Number(edit.at) || 0;
+    const editEnd = editStart + (Number(edit.delete) || 0);
+    if (editEnd <= start) continue;
+    if (editStart >= end) break;
+    if (editStart > cursor) replacement += oldText.slice(cursor, Math.min(editStart, end));
+    let insert = edit.insert || "";
+    // A token hunk can begin just before the quote or end just after it. Drop
+    // unchanged outside context when the edit gives us a defensible boundary.
+    // When that context also changed, the diff cannot identify which part of
+    // the insertion replaces the selected passage.
+    if (editStart < start) {
+      const outside = oldText.slice(editStart, start);
+      if (outside && insert) {
+        if (!insert.startsWith(outside)) return null;
+        insert = insert.slice(outside.length);
+      }
+    }
+    if (editEnd > end) {
+      const outside = oldText.slice(end, editEnd);
+      if (outside && insert) {
+        if (!insert.endsWith(outside)) return null;
+        insert = insert.slice(0, -outside.length);
+      }
+    }
+    if (insert && (editEnd > start || (editStart >= start && editStart < end))) {
+      replacement += insert;
+    }
+    cursor = Math.max(cursor, Math.min(editEnd, end));
+  }
+  if (cursor < end) replacement += oldText.slice(cursor, end);
+  return replacement;
 }

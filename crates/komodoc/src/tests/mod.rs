@@ -5,6 +5,7 @@
 mod harness;
 pub use harness::*;
 
+mod admission;
 mod assets;
 mod auth;
 mod blob;

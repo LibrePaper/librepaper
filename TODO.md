@@ -145,6 +145,5 @@ deliberately not done:
 - The table of pending terminal sign-ins is capped at a thousand in total.
   One caller can fill it and keep every new `komodoc login` waiting for ten
   minutes; nothing else. A per-address cap would be the better bound.
-- `Grant.login` holds a handle, not a login, since providers arrived; see
-  `docs/specs/sharing.md` for the rename that goes with resolving a grant to a
-  handle nobody has signed in with.
+- `Grant.login` holds a handle, not a login, since providers arrived; rename
+  the field to reflect provider-neutral handles.

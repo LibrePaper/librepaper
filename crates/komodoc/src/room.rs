@@ -14,8 +14,10 @@ use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::Digest;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::blob::{
@@ -219,6 +221,9 @@ fn to_stored(items: &[Comment]) -> Value {
 pub struct CommentView {
     #[serde(flatten)]
     pub comment: Comment,
+    /// Whether this comment belongs to the caller. The author key itself
+    /// remains private; clients use this to decide which controls to show.
+    pub mine: bool,
     pub deletable: bool,
 }
 
@@ -336,6 +341,8 @@ pub struct Session {
     /// was taken rather than trusting that nothing moved between one await
     /// and the next.
     pub generation: u64,
+    /// Encoded size for one exact generation; quota checks reuse it until an edit.
+    encoded_size: Option<(u64, i64)>,
     /// The generation the newest checkpoint's tree actually covers. Compared
     /// against `generation` to say whether the document has changed since
     /// then, so an idle room is not re-hashed every second to answer that.
@@ -425,6 +432,7 @@ pub const RENEW_AFTER_SECONDS: i64 = LOCK_STALE_SECONDS / 3;
 pub struct Room {
     pub slug: String,
     blobs: Arc<dyn BlobStore>,
+    checkpoint_cache: Arc<crate::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     /// True when another server holds this room's lock: it can be read and
     /// served, but nothing here may write over what that server is doing. Set
@@ -448,6 +456,12 @@ pub struct Room {
     /// the newest checkpoint. Set once, after the store exists, because the
     /// store and the rooms are made in that order.
     store: Arc<std::sync::OnceLock<Arc<crate::store::Store>>>,
+    /// Serializes session snapshots and conditional writes without blocking edits.
+    session_write: Mutex<()>,
+    /// Keep checkpoint snapshots and their commits in the same order.
+    checkpoint_write: Mutex<()>,
+    /// Manifest writers serialize independently of edits and session persistence.
+    manifest_write: Mutex<()>,
     pub state: Mutex<RoomState>,
 }
 
@@ -492,6 +506,7 @@ pub struct RoomSet {
     /// Comments live wherever the documents do. On a bucket that makes the
     /// server genuinely stateless.
     pub blobs: Arc<dyn BlobStore>,
+    checkpoint_cache: Arc<crate::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
     /// One slot per slug currently being loaded, so a cold room's lease
@@ -525,6 +540,7 @@ impl RoomSet {
         RoomSet {
             holder: this_server(),
             blobs,
+            checkpoint_cache: Arc::new(crate::checkpoint_cache::CheckpointCache::default()),
             config,
             rooms: Mutex::new(HashMap::new()),
             loading: Mutex::new(HashMap::new()),
@@ -583,12 +599,16 @@ impl RoomSet {
         let room = Arc::new(Room {
             slug: slug.to_string(),
             blobs: self.blobs.clone(),
+            checkpoint_cache: self.checkpoint_cache.clone(),
             config: self.config.clone(),
             read_only: std::sync::atomic::AtomicBool::new(!lease.held),
             checkpointing: std::sync::atomic::AtomicUsize::new(0),
             holder: self.holder.clone(),
             lease: Mutex::new(lease),
             store: self.store.clone(),
+            session_write: Mutex::new(()),
+            checkpoint_write: Mutex::new(()),
+            manifest_write: Mutex::new(()),
             state: Mutex::new(RoomState {
                 seq: 0,
                 comments: Vec::new(),
@@ -598,6 +618,7 @@ impl RoomSet {
                     doc: session::new_doc(),
                     dirty: false,
                     generation: 0,
+                    encoded_size: None,
                     checkpoint_generation: 0,
                     updated_at: 0,
                     by: String::new(),
@@ -634,6 +655,12 @@ impl RoomSet {
     /// Reached only through the delete route, which checks ownership first.
     pub async fn purge(&self, slug: &str) {
         let room = self.get(slug).await;
+        // Wait for session/checkpoint writers before deleting their objects.
+        // Fencing the retained room also prevents queued writers resurrecting it.
+        let _checkpoint_writer = room.checkpoint_write.lock().await;
+        let _manifest_writer = room.manifest_write.lock().await;
+        let _session_writer = room.session_write.lock().await;
+        room.read_only.store(true, Ordering::Relaxed);
         {
             let mut state = room.state.lock().await;
             state.comments.clear();
@@ -662,6 +689,9 @@ impl RoomSet {
                 }
             }
         }
+        self.checkpoint_cache
+            .invalidate_prefix(&crate::blob::history_prefix(slug))
+            .await;
         self.rooms.lock().await.remove(slug);
     }
 
@@ -679,12 +709,13 @@ impl RoomSet {
                 .map(|(slug, room)| (slug.clone(), room.clone()))
                 .collect()
         };
-        let mut idle = Vec::new();
-        for (slug, room) in open {
-            if room.tick().await {
-                idle.push(slug);
-            }
-        }
+        // Bound storage concurrency while letting other rooms save during a slow write.
+        let idle: Vec<String> = stream::iter(open)
+            .map(|(slug, room)| async move { room.tick().await.then_some(slug) })
+            .buffer_unordered(4)
+            .filter_map(|slug| async move { slug })
+            .collect()
+            .await;
         // Kept for a while after the last socket closes: a reader who
         // reloads the page should not pay for a state transfer from storage.
         // The ceiling in `get` is what bounds the map; this only trims it.
@@ -1138,9 +1169,41 @@ impl Room {
             .iter()
             .map(|item| CommentView {
                 comment: item.clone(),
+                mine: !author.is_empty() && item.author == author,
                 deletable: deletable(item, author, is_owner),
             })
             .collect()
+    }
+
+    /// Adds the same caller-specific controls to a newly-created comment
+    /// event that a hello or REST snapshot carries. The shared broadcast can
+    /// use an empty author (so every other caller sees `mine: false`), while
+    /// the submitting socket or HTTP response asks for its own view.
+    pub async fn comment_event_for(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
+        if payload.get("type").and_then(Value::as_str) != Some("comment") {
+            return payload.clone();
+        }
+        let Some(id) = payload
+            .get("comment")
+            .and_then(|comment| comment.get("id"))
+            .and_then(Value::as_str)
+        else {
+            return payload.clone();
+        };
+        let state = self.state.lock().await;
+        let Some(comment) = state.comments.iter().find(|comment| comment.id == id) else {
+            return payload.clone();
+        };
+        let view = CommentView {
+            comment: comment.clone(),
+            mine: !author.is_empty() && comment.author == author,
+            deletable: deletable(comment, author, is_owner),
+        };
+        let mut event = payload.clone();
+        if let Ok(value) = serde_json::to_value(view) {
+            event["comment"] = value;
+        }
+        event
     }
 
     /// (total, open)
@@ -1621,7 +1684,7 @@ impl Room {
     /// answers by a bound in the ordinary case and by rehearsing the update on
     /// a scratch copy only when the bound cannot decide, so no number of
     /// concurrent writers can talk their way past the quota between them and
-    /// the common path costs a comparison.
+    /// the ordinary path measures the document but avoids cloning its CRDT.
     pub async fn receive_update(&self, socket: u64, update: &[u8], seq: i64, by: &str) -> Applied {
         if self.read_only() {
             // Another server holds this room's lease. Applying and relaying
@@ -1653,26 +1716,31 @@ impl Room {
                 return Applied::Refuse("too many updates");
             }
         }
-        match session::admit_update(
+        let decoded = match session::decode_update(update) {
+            Ok(decoded) => decoded,
+            Err(_) => return Applied::Ignored,
+        };
+        let decoded = match session::admit_decoded_update(
             &state.session.doc,
+            decoded,
             update,
             self.config.max_document,
             self.config.max_files,
         ) {
-            session::Admission::Malformed => return Applied::Ignored,
-            session::Admission::TooLarge => {
+            session::DecodedAdmission::Malformed => return Applied::Ignored,
+            session::DecodedAdmission::TooLarge => {
                 return Applied::Refuse("this document has reached its size limit")
             }
-            session::Admission::TooMany => {
+            session::DecodedAdmission::TooMany => {
                 return Applied::Refuse("this document has reached its file limit")
             }
-            session::Admission::Fits => {}
-        }
+            session::DecodedAdmission::Fits(decoded) => decoded,
+        };
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
         // with this main file.
         let main_before = session::main_path(&state.session.doc);
-        if session::apply_update(&state.session.doc, update).is_err() {
+        if session::apply_decoded_update(&state.session.doc, decoded).is_err() {
             return Applied::Ignored;
         }
         // Taken after the peer's update rather than before it, so that what is
@@ -1727,57 +1795,74 @@ impl Room {
     /// tells the sockets their updates are durable. Relaying an update is not
     /// an acknowledgment: nothing here says "saved" until storage has said so.
     pub async fn persist(&self) -> Result<bool, String> {
+        if self.write_session(true, true).await?.is_none() {
+            return Ok(false);
+        }
+        let (format, main) = {
+            let state = self.state.lock().await;
+            (
+                state.session.format.clone(),
+                session::main_path(&state.session.doc),
+            )
+        };
+        self.record_size_now(None, &format, &main).await;
+        Ok(true)
+    }
+
+    /// Snapshot under the write gate: checkpoints and timer saves cannot write
+    /// snapshots out of order or use the same ETag. Ordinary edits use only
+    /// state, so they can proceed during storage I/O.
+    async fn write_session(
+        &self,
+        only_dirty: bool,
+        acknowledge: bool,
+    ) -> Result<Option<i64>, String> {
+        let _writer = self.session_write.lock().await;
         if self.read_only() {
-            // Asked before the dirty check on purpose: the direct mutators
-            // are now no-ops on a read-only room (R23), so a room that never
-            // held the lease would otherwise never go dirty and this would
-            // silently answer "nothing to do" for a caller that has every
-            // reason to be told this room cannot be written at all.
             return Err("this room is held by another server".into());
         }
-        let mut state = self.state.lock().await;
-        if !state.session.dirty {
-            return Ok(false);
+        if only_dirty && !self.state.lock().await.session.dirty {
+            return Ok(None);
         }
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
-        let body = session::encode_state(&state.session.doc);
-        let durable: Vec<(u64, i64)> = state
-            .sockets
-            .iter()
-            .map(|(id, peer)| (*id, peer.sent))
-            .collect();
-        let mut version = std::mem::take(&mut state.session_version);
-        let written = self
-            .write_owned(&session_key(&self.slug), body, &mut version)
-            .await;
+        let (body, generation, durable, mut version) = {
+            let mut state = self.state.lock().await;
+            let body = session::encode_state(&state.session.doc);
+            let generation = state.session.generation;
+            state.session.encoded_size = Some((generation, body.len() as i64));
+            let durable: Vec<(u64, i64)> = state
+                .sockets
+                .iter()
+                .map(|(id, peer)| (*id, peer.sent))
+                .collect();
+            (body, generation, durable, state.session_version.clone())
+        };
+        let size = body.len() as i64;
+        self.write_owned(&session_key(&self.slug), body, &mut version)
+            .await?;
+        let mut state = self.state.lock().await;
         state.session_version = version;
-        written?;
-        state.session.dirty = false;
-        for (id, seq) in durable {
-            let Some(peer) = state.sockets.get_mut(&id) else {
-                continue;
-            };
-            if seq <= peer.acked {
-                continue;
-            }
-            peer.acked = seq;
-            let payload = json!({"type": "y-ack", "seq": seq}).to_string();
-            if peer.tx.try_send(Outgoing::Text(payload)).is_err() {
-                state.sockets.remove(&id);
+        if state.session.generation == generation {
+            state.session.dirty = false;
+        }
+        if acknowledge {
+            for (id, seq) in durable {
+                let Some(peer) = state.sockets.get_mut(&id) else {
+                    continue;
+                };
+                if seq <= peer.acked {
+                    continue;
+                }
+                peer.acked = seq;
+                let payload = json!({"type": "y-ack", "seq": seq}).to_string();
+                if peer.tx.try_send(Outgoing::Text(payload)).is_err() {
+                    state.sockets.remove(&id);
+                }
             }
         }
-        let format = state.session.format.clone();
-        let main = session::main_path(&state.session.doc);
-        drop(state);
-        // The full physical inventory -- session, history, assets and
-        // renderings -- the same total `record_size_now` charges an asset or
-        // rendering upload with. A routine text edit must not remove what
-        // those separately stored objects cost from the quota until the next
-        // checkpoint happens to recompute it (R20).
-        self.record_size_now(None, &format, &main).await;
-        Ok(true)
+        Ok(Some(size))
     }
 
     /// Takes a checkpoint, if the text differs from the last one. Returns the
@@ -1793,6 +1878,48 @@ impl Room {
     /// repaired by the next checkpoint, which finds the object present and
     /// names it as `parent` -- `repair` below is that.
     pub async fn checkpoint(&self, why: &str, by: &str) -> Result<Option<String>, String> {
+        self.checkpoint_impl(why, by, true, false, None).await
+    }
+
+    /// Takes a checkpoint immediately, even when the ordinary deliberate-save
+    /// debounce window is still open. Restore uses this before and after its
+    /// change so that the old live state and the restored state are both
+    /// durable before the request answers.
+    #[allow(dead_code)] // restore uses the protected variant below
+    pub async fn checkpoint_now(&self, why: &str, by: &str) -> Result<Option<String>, String> {
+        self.checkpoint_impl(why, by, false, false, None).await
+    }
+
+    /// The same immediate checkpoint while retaining one older checkpoint
+    /// long enough for a restore to read its assets after quota shedding.
+    async fn checkpoint_now_protected(
+        &self,
+        why: &str,
+        by: &str,
+        protected: &str,
+    ) -> Result<Option<String>, String> {
+        self.checkpoint_impl(why, by, false, false, Some(protected))
+            .await
+    }
+
+    /// Takes a checkpoint event even when its tree has the same content as a
+    /// checkpoint already in the manifest. A restore is an event in the
+    /// linear history, and deduplicating it would make restoring to an old
+    /// revision silently disappear from the timeline. The event gets its own
+    /// object key while retaining the same immutable tree bytes.
+    async fn checkpoint_restore(&self, by: &str) -> Result<Option<String>, String> {
+        self.checkpoint_impl("restore", by, false, true, None).await
+    }
+
+    async fn checkpoint_impl(
+        &self,
+        why: &str,
+        by: &str,
+        defer: bool,
+        force_event: bool,
+        protected: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let _checkpoint_writer = self.checkpoint_write.lock().await;
         if self.read_only() {
             // Refused outright rather than left to fall through to the
             // deduplication branch below: on a read-only room whose direct
@@ -1812,7 +1939,7 @@ impl Room {
             // A deliberate write inside the defer window is not refused; it
             // waits, and is taken when the window passes, if the text still
             // differs. A burst of saves is one mark in the timeline.
-            let deferrable = matches!(why, "cli" | "sync" | "restore" | "label");
+            let deferrable = defer && matches!(why, "cli" | "sync" | "restore" | "label");
             if deferrable
                 && state.session.last_checkpoint_at > 0
                 && now - state.session.last_checkpoint_at < CHECKPOINT_DEFER_SECONDS
@@ -1860,36 +1987,59 @@ impl Room {
             return Ok(None);
         }
 
-        let sha = tree.digest();
+        let content_sha = tree.digest();
+        let sha = if force_event {
+            // Include the current parent and a fresh timestamp. The random
+            // tail prevents two same-second restores of the same tree from
+            // ever aliasing one storage object.
+            let mut identity = tree.to_bytes();
+            identity.extend_from_slice(timestamp().as_bytes());
+            identity.extend_from_slice(crate::auth::random_bytes(8).as_slice());
+            hex::encode(sha2::Sha256::digest(identity))
+        } else {
+            content_sha.clone()
+        };
         // Quiet after quiet costs nothing: the same text is the same
         // checkpoint, and a checkpoint already in the manifest is not written
         // again and adds no entry.
         {
             let mut state = self.state.lock().await;
             state.session.asked = None;
-            if state.manifest.has(&sha) {
-                // Reusing immutable content is not a new checkpoint -- the
-                // manifest's chronology and its bytes are left alone, since
-                // `shed` and pruning key on SHAs and a repeated entry would
-                // only confuse them -- but it does become the current
-                // revision again, so the in-memory pointer and the index
-                // head both have to say so, or a reader asking what the
-                // document says now gets an old answer (R17).
-                // `last_checkpoint_at` is deliberately left untouched:
-                // unchanged content is not a new checkpoint, and refreshing
-                // it would push the next deliberate checkpoint that actually
-                // changes something into the defer window (R26).
-                let moved = state.session.last_checkpoint != sha;
-                state.session.last_checkpoint = sha.clone();
-                state.session.last_tree = Some(tree.clone());
-                state.session.checkpoint_generation = tree_generation;
-                let format = state.session.format.clone();
-                let main = tree.main.clone();
-                drop(state);
-                if moved {
-                    self.record_size_now(Some(&sha), &format, &main).await;
+            if !force_event {
+                let existing = state
+                    .manifest
+                    .checkpoints
+                    .iter()
+                    .rev()
+                    .find(|point| {
+                        point.sha == content_sha
+                            || (!point.tree_sha.is_empty() && point.tree_sha == content_sha)
+                    })
+                    .map(|point| point.sha.clone());
+                if let Some(existing) = existing {
+                    // Reusing immutable content is not a new checkpoint -- the
+                    // manifest's chronology and its bytes are left alone, since
+                    // `shed` and pruning key on SHAs and a repeated entry would
+                    // only confuse them -- but it does become the current
+                    // revision again, so the in-memory pointer and the index
+                    // head both have to say so, or a reader asking what the
+                    // document says now gets an old answer (R17).
+                    // `last_checkpoint_at` is deliberately left untouched:
+                    // unchanged content is not a new checkpoint, and refreshing
+                    // it would push the next deliberate checkpoint that actually
+                    // changes something into the defer window (R26).
+                    let moved = state.session.last_checkpoint != existing;
+                    state.session.last_checkpoint = existing.clone();
+                    state.session.last_tree = Some(tree.clone());
+                    state.session.checkpoint_generation = tree_generation;
+                    let format = state.session.format.clone();
+                    let main = tree.main.clone();
+                    drop(state);
+                    if moved {
+                        self.record_size_now(Some(&existing), &format, &main).await;
+                    }
+                    return Ok(Some(existing));
                 }
-                return Ok(Some(sha));
             }
         }
         if !self.hold().await {
@@ -1940,29 +2090,10 @@ impl Room {
         //    server gets to clear `dirty` below, the two disagree and `dirty`
         //    is left set, so that edit is never reported as saved when it is
         //    not yet on disk (R07).
-        let (state_bytes, encoded_generation) = {
-            let state = self.state.lock().await;
-            (
-                session::encode_state(&state.session.doc),
-                state.session.generation,
-            )
-        };
-        let session_size = state_bytes.len() as i64;
-        {
-            let mut state = self.state.lock().await;
-            let mut version = std::mem::take(&mut state.session_version);
-            let written = self
-                .write_owned(&session_key(&self.slug), state_bytes, &mut version)
-                .await;
-            state.session_version = version;
-            written?;
-        }
-        {
-            let mut state = self.state.lock().await;
-            if state.session.generation == encoded_generation {
-                state.session.dirty = false;
-            }
-        }
+        let session_size = self
+            .write_session(false, false)
+            .await?
+            .expect("an unconditional session write returns its size");
 
         // What the parent recorded, so this entry can say which paths moved.
         // Held in memory from one checkpoint to the next; read back only on
@@ -1971,7 +2102,7 @@ impl Room {
         let parent_tree = self.parent_tree().await;
 
         // 4. the index entry, then 5. the manifest -- staged from
-        // `state.manifest` and written under one continuously held lock, so a
+        // `state.manifest` and written under the manifest write gate, so a
         // concurrent `label` can never land between the staging and the write
         // and be discarded by this checkpoint's now-stale idea of the
         // manifest (R09), and a failed write never lands in memory, so a
@@ -1979,9 +2110,11 @@ impl Room {
         // no-op-ing through the deduplication branch above (R08).
         let shed;
         {
-            let mut state = self.state.lock().await;
-            let mut staged = state.manifest.clone();
-            let repair_format = state.session.format.clone();
+            let _manifest_writer = self.manifest_write.lock().await;
+            let (mut staged, repair_format) = {
+                let state = self.state.lock().await;
+                (state.manifest.clone(), state.session.format.clone())
+            };
             self.repair(&mut staged, &repair_format, &last).await;
             let parent = staged
                 .latest()
@@ -1989,6 +2122,7 @@ impl Room {
                 .unwrap_or_default();
             staged.checkpoints.push(Checkpoint {
                 sha: sha.clone(),
+                tree_sha: content_sha.clone(),
                 parent,
                 at: timestamp(),
                 by: by.to_string(),
@@ -2008,7 +2142,7 @@ impl Room {
             // labelled ones after them, until the document fits.
             let ceiling = self.allowance(session_size).await;
             let keep_count = self.config.session.history_max;
-            let shed_now = staged.shed(|manifest| {
+            let shed_now = staged.shed_protected(protected.unwrap_or_default(), |manifest| {
                 (keep_count == 0 || manifest.checkpoints.len() <= keep_count)
                     && (ceiling < 0 || manifest.bytes() <= ceiling)
             });
@@ -2020,8 +2154,13 @@ impl Room {
             // than a third copy. Read straight off the locked state instead
             // of through `assets_bytes`/`renderings_bytes`, which lock it
             // themselves.
-            let assets: i64 = state.session.asset_sizes.values().sum();
-            let renderings: i64 = state.session.rendering_sizes.values().sum();
+            let (assets, renderings): (i64, i64) = {
+                let state = self.state.lock().await;
+                (
+                    state.session.asset_sizes.values().sum(),
+                    state.session.rendering_sizes.values().sum(),
+                )
+            };
             self.record_size(
                 session_size + staged.bytes() + assets + renderings,
                 Some(&sha),
@@ -2030,7 +2169,8 @@ impl Room {
             )
             .await;
 
-            self.write_manifest(&mut state, staged).await?;
+            self.write_manifest(staged).await?;
+            let mut state = self.state.lock().await;
             state.session.last_tree = Some(tree.clone());
             state.session.last_checkpoint = sha.clone();
             state.session.last_checkpoint_at = now;
@@ -2043,6 +2183,9 @@ impl Room {
                 .map(|sha| checkpoint_key(&self.slug, sha))
                 .collect();
             let _ = self.blobs.delete(&keys).await;
+            for key in &keys {
+                self.checkpoint_cache.invalidate(key).await;
+            }
         }
         // The figures nothing refers to any more, once the tree and the
         // manifest that name what is kept are both written. This order is
@@ -2118,6 +2261,7 @@ impl Room {
                 .unwrap_or_default();
             manifest.checkpoints.push(Checkpoint {
                 sha: candidate,
+                tree_sha: String::new(),
                 parent,
                 at: timestamp(),
                 by: String::new(),
@@ -2172,27 +2316,9 @@ impl Room {
                 session::main_id(&state.session.doc),
             )
         };
-        let tree =
-            crate::history::load_tree(self.blobs.as_ref(), &self.slug, point, &path, &id).await?;
-        let mut bodies = HashMap::new();
-        for entry in tree.files.values() {
-            if entry.kind != "text" || bodies.contains_key(&entry.sha) {
-                continue;
-            }
-            let raw = if point.tree {
-                self.blobs
-                    .get(&crate::blob::blob_key(&self.slug, &entry.sha))
-                    .await
-            } else {
-                // A checkpoint from before directories is its own text.
-                self.blobs
-                    .get(&checkpoint_key(&self.slug, point.sha.as_str()))
-                    .await
-            }
-            .map_err(|err| err.to_string())?;
-            bodies.insert(entry.sha.clone(), String::from_utf8_lossy(&raw).to_string());
-        }
-        Ok((tree, bodies))
+        self.checkpoint_cache
+            .load_checkpoint(self.blobs.as_ref(), &self.slug, point, &path, &id)
+            .await
     }
 
     /// Rebuilds a document, in place, from its newest checkpoint's own tree --
@@ -2249,6 +2375,7 @@ impl Room {
     /// `Ok(false)` means the manifest has no such checkpoint, which is a
     /// 404 for the caller rather than a failure here.
     pub async fn label(&self, sha: &str, label: &str) -> Result<bool, String> {
+        let _manifest_writer = self.manifest_write.lock().await;
         {
             let state = self.state.lock().await;
             if !state.manifest.has(sha) {
@@ -2258,71 +2385,193 @@ impl Room {
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
-        let mut state = self.state.lock().await;
-        let mut staged = state.manifest.clone();
+        let mut staged = self.state.lock().await.manifest.clone();
         for point in staged.checkpoints.iter_mut() {
             if point.sha == sha {
                 point.label = label.to_string();
             }
         }
-        self.write_manifest(&mut state, staged).await?;
+        self.write_manifest(staged).await?;
         Ok(true)
     }
 
-    /// Writes a manifest that was staged from `state.manifest` as it stood
-    /// under this same lock, and keeps it only once storage agrees. This is
-    /// the one path through which a manifest may change -- `checkpoint` and
-    /// `label` both go through it -- and the caller holds `state` locked from
-    /// before it stages its change until after this returns, so no other
-    /// manifest mutation can land in between and be overwritten by this one's
-    /// now-stale idea of what the manifest said (R09). A failed write leaves
-    /// `state.manifest` exactly as it was, so a retry recomputes from the
-    /// real, unmutated manifest rather than quietly no-op-ing through the
-    /// deduplication branch above believing this checkpoint already landed
-    /// (R08).
-    async fn write_manifest(&self, state: &mut RoomState, staged: Manifest) -> Result<(), String> {
+    /// The caller holds manifest_write from staging through commit. Keep the
+    /// room state available during storage I/O and expose changes only once
+    /// the conditional write succeeds, so failed writes and labels remain safe.
+    async fn write_manifest(&self, staged: Manifest) -> Result<(), String> {
         let body = serde_json::to_vec(&staged).map_err(|err| err.to_string())?;
-        let mut version = std::mem::take(&mut state.manifest_version);
-        let written = self
-            .write_owned(
-                &crate::blob::history_index_key(&self.slug),
-                body,
-                &mut version,
-            )
-            .await;
+        let mut version = self.state.lock().await.manifest_version.clone();
+        self.write_owned(
+            &crate::blob::history_index_key(&self.slug),
+            body,
+            &mut version,
+        )
+        .await?;
+        let mut state = self.state.lock().await;
         state.manifest_version = version;
-        written?;
         state.manifest = staged;
         Ok(())
     }
 
-    /// Puts the document back to what a checkpoint recorded: every text and
-    /// every asset at once, so a chapter and the file that includes it can
-    /// never come back out of step. Returns the update to relay.
-    #[allow(dead_code)] // the route that offers it to a reader is step 9
-    pub async fn restore(&self, point: &Checkpoint) -> Result<Vec<u8>, String> {
+    /// Restores a checkpoint and records both sides of the operation. The
+    /// pre-restore checkpoint is the merge base for edits that arrive while
+    /// the selected checkpoint is being read; the final checkpoint is a
+    /// forced event even when its tree content is an older, already-known SHA.
+    pub async fn restore_and_checkpoint(
+        &self,
+        point: &Checkpoint,
+        by: &str,
+    ) -> Result<(Vec<u8>, String), String> {
         if self.read_only() {
-            // Another server owns this room; restoring into our copy would
-            // only diverge from the one being persisted (R23).
             return Err("this room is held by another server".into());
         }
-        let (tree, bodies) = self.checkpoint_texts(point).await?;
-        let mut state = self.state.lock().await;
-        let before = session::encode_vector(&state.session.doc);
-        session::restore(&state.session.doc, &tree, &bodies);
-        // The tree just restored names the main file as it was at that
-        // moment; the format that travels with every checkpoint has to
-        // follow it rather than keep whatever the document happened to open
-        // in.
-        let derived = format_from_path(&tree.main);
-        if !derived.is_empty() {
-            state.session.format = derived;
+        let base_sha = {
+            let state = self.state.lock().await;
+            let dirty = state.session.generation != state.session.checkpoint_generation;
+            if dirty {
+                None
+            } else {
+                state.session.last_checkpoint.clone().into()
+            }
+        };
+        let base_sha = match base_sha {
+            Some(sha) if !sha.is_empty() => sha,
+            _ => self
+                .checkpoint_now_protected("quiet", by, &point.sha)
+                .await?
+                .ok_or_else(|| "could not create a restore base checkpoint".to_string())?,
+        };
+        // If edits were dirty, checkpoint_now captured the state that existed
+        // at the start of its call. They remain a valid merge base even when
+        // more edits arrive while storage is being read below.
+        let base_point = {
+            let state = self.state.lock().await;
+            state
+                .manifest
+                .checkpoints
+                .iter()
+                .find(|candidate| candidate.sha == base_sha)
+                .cloned()
+                .ok_or_else(|| "restore base checkpoint was shed".to_string())?
+        };
+        let (base_tree, base_bodies) = self.checkpoint_texts(&base_point).await?;
+        if self.read_only() || !self.hold().await {
+            return Err("this room is held by another server".into());
         }
-        state.session.dirty = true;
-        state.session.generation += 1;
-        state.session.updated_at = now_unix();
-        Ok(session::encode_diff(&state.session.doc, &before)
-            .unwrap_or_else(|_| session::encode_state(&state.session.doc)))
+        // Load the selected tree only after the base snapshot is fixed. Edits
+        // arriving while this read is in flight are then merged against the
+        // checkpoint that existed before the restore began.
+        let (target_tree, target_bodies) = self.checkpoint_texts(point).await?;
+        if self.read_only() || !self.hold().await {
+            return Err("this room is held by another server".into());
+        }
+
+        let update = {
+            let mut state = self.state.lock().await;
+            let (live_tree, live_bodies) = tree_of(&state.session.doc, &state.session.asset_sizes);
+            // Start from the selected checkpoint, then reconcile directory
+            // membership against edits made after the pre-restore base. A
+            // restore must not erase a file another peer added while the
+            // checkpoint was being loaded, and a peer deletion must not be
+            // silently undone by recreating the target file.
+            let mut effective_tree = target_tree.clone();
+            let mut merged = HashMap::new();
+            let paths: std::collections::HashSet<String> = base_tree
+                .files
+                .keys()
+                .chain(live_tree.files.keys())
+                .chain(target_tree.files.keys())
+                .cloned()
+                .collect();
+            for path in paths {
+                let base = base_tree.files.get(&path);
+                let live = live_tree.files.get(&path);
+                let target = target_tree.files.get(&path);
+                match (base, live, target) {
+                    // A path absent from the target is a deletion. Keep a
+                    // live add/change made since the base, while allowing a
+                    // deletion of an unchanged base path to stand.
+                    (Some(base), Some(live), None)
+                        if base.kind != live.kind || base.sha != live.sha =>
+                    {
+                        effective_tree.files.insert(path.clone(), live.clone());
+                        if live.kind == "text" {
+                            if let Some(body) = live_bodies.get(&live.sha) {
+                                merged.insert(path.clone(), body.clone());
+                            }
+                        }
+                    }
+                    (None, Some(live), None) => {
+                        // A file added after the base is independent of the
+                        // selected tree's omission and survives the restore.
+                        effective_tree.files.insert(path.clone(), live.clone());
+                        if live.kind == "text" {
+                            if let Some(body) = live_bodies.get(&live.sha) {
+                                merged.insert(path.clone(), body.clone());
+                            }
+                        }
+                    }
+                    // A live deletion of a file that existed in the base is
+                    // a concurrent edit and wins over restoring that path.
+                    (Some(_), None, Some(_)) => {
+                        effective_tree.files.remove(&path);
+                    }
+                    _ => {}
+                }
+            }
+            for (path, entry) in &target_tree.files {
+                if effective_tree.files.get(path) != Some(entry) {
+                    continue;
+                }
+                if entry.kind != "text" {
+                    continue;
+                }
+                let target = target_bodies.get(&entry.sha).cloned().unwrap_or_default();
+                let body = match (base_tree.files.get(path), live_tree.files.get(path)) {
+                    (Some(base), Some(live)) if base.kind == "text" && live.kind == "text" => {
+                        let base = base_bodies.get(&base.sha).cloned().unwrap_or_default();
+                        let live = live_bodies.get(&live.sha).cloned().unwrap_or_default();
+                        komodoc_text::merge(&base, &live, &target).text
+                    }
+                    _ => target.clone(),
+                };
+                if body != target {
+                    let mut effective = entry.clone();
+                    effective.sha = crate::store::digest_of(&body);
+                    effective.size = body.len() as i64;
+                    effective_tree.files.insert(path.clone(), effective);
+                }
+                merged.insert(path.clone(), body);
+            }
+            let before = session::encode_vector(&state.session.doc);
+            session::restore_by_path(&state.session.doc, &effective_tree, &merged);
+            let derived = format_from_path(&effective_tree.main);
+            if !derived.is_empty() {
+                state.session.format = derived;
+            }
+            state.session.dirty = true;
+            state.session.generation += 1;
+            state.session.updated_at = now_unix();
+            session::encode_diff(&state.session.doc, &before)
+                .unwrap_or_else(|_| session::encode_state(&state.session.doc))
+        };
+        let restored = match self.checkpoint_restore(by).await {
+            Ok(Some(sha)) => sha,
+            Ok(None) => return Err("could not create the restore checkpoint".to_string()),
+            Err(err) => {
+                // The Yrs mutation already happened. Relay it even when a
+                // later manifest write failed, otherwise connected clients
+                // retain a different document from this room and the next
+                // edit appears to resurrect the pre-restore text.
+                self.broadcast(&json!({
+                    "type": "y-update",
+                    "update": encode_update(&update),
+                }))
+                .await;
+                return Err(err);
+            }
+        };
+        Ok((update, restored))
     }
 
     /// The most this document's session and history may occupy before it
@@ -2526,6 +2775,27 @@ impl Room {
             .contains_key(&name)
     }
 
+    /// Resolves a history event SHA to the immutable tree content identity
+    /// used by rendering objects. Restore events have a unique event SHA but
+    /// can reuse the PDF for the tree they restored.
+    pub async fn rendering_sha(&self, sha: &str) -> Option<String> {
+        self.state
+            .lock()
+            .await
+            .manifest
+            .checkpoints
+            .iter()
+            .rev()
+            .find(|point| point.sha == sha)
+            .map(|point| {
+                if point.tree_sha.is_empty() {
+                    point.sha.clone()
+                } else {
+                    point.tree_sha.clone()
+                }
+            })
+    }
+
     /// Stores a rendering the browser compiled, under the SHA of the
     /// checkpoint it was compiled from. The caller has already decided that
     /// SHA names a checkpoint; what is decided here is only that the bytes are
@@ -2650,7 +2920,7 @@ impl Room {
     /// and it is answered here because the manifest and the live tree are both
     /// held here.
     pub async fn newest_rendering(&self) -> Option<(String, String, bool)> {
-        let (sha, at) = {
+        let (sha, at, content_sha) = {
             let state = self.state.lock().await;
             let held = &state.session.rendering_sizes;
             state
@@ -2658,10 +2928,25 @@ impl Room {
                 .checkpoints
                 .iter()
                 .rev()
-                .find(|point| held.contains_key(&point.sha))
-                .map(|point| (point.sha.clone(), point.at.clone()))?
+                .find(|point| {
+                    let content = if point.tree_sha.is_empty() {
+                        &point.sha
+                    } else {
+                        &point.tree_sha
+                    };
+                    held.contains_key(&rendering_name(content, false))
+                        || held.contains_key(&rendering_name(content, true))
+                })
+                .map(|point| {
+                    let content = if point.tree_sha.is_empty() {
+                        point.sha.clone()
+                    } else {
+                        point.tree_sha.clone()
+                    };
+                    (point.sha.clone(), point.at.clone(), content)
+                })?
         };
-        let current = self.tree().await.digest() == sha;
+        let current = self.tree().await.digest() == content_sha;
         Some((sha, at, current))
     }
 
@@ -2688,16 +2973,28 @@ impl Room {
                 .checkpoints
                 .iter()
                 .filter(|point| !point.label.is_empty())
-                .map(|point| point.sha.clone())
+                .map(|point| {
+                    if point.tree_sha.is_empty() {
+                        point.sha.clone()
+                    } else {
+                        point.tree_sha.clone()
+                    }
+                })
                 .collect();
-            if let Some(newest) = state
-                .manifest
-                .checkpoints
-                .iter()
-                .rev()
-                .find(|point| held.contains_key(&point.sha))
-            {
-                kept.insert(newest.sha.clone());
+            if let Some(newest) = state.manifest.checkpoints.iter().rev().find(|point| {
+                let content = if point.tree_sha.is_empty() {
+                    &point.sha
+                } else {
+                    &point.tree_sha
+                };
+                held.contains_key(&rendering_name(content, false))
+                    || held.contains_key(&rendering_name(content, true))
+            }) {
+                kept.insert(if newest.tree_sha.is_empty() {
+                    newest.sha.clone()
+                } else {
+                    newest.tree_sha.clone()
+                });
             }
             (kept, held, state.session.rendering_written_at.clone())
         };
@@ -2945,11 +3242,17 @@ impl Room {
     /// new checkpoint was taken.
     async fn record_size_now(&self, sha: Option<&str>, format: &str, main: &str) {
         let (session_size, history) = {
-            let state = self.state.lock().await;
-            (
-                session::encode_state(&state.session.doc).len() as i64,
-                state.manifest.bytes(),
-            )
+            let mut state = self.state.lock().await;
+            let generation = state.session.generation;
+            let size = match state.session.encoded_size {
+                Some((encoded, size)) if encoded == generation => size,
+                _ => {
+                    let size = session::encode_state(&state.session.doc).len() as i64;
+                    state.session.encoded_size = Some((generation, size));
+                    size
+                }
+            };
+            (size, state.manifest.bytes())
         };
         let assets = self.assets_bytes().await;
         let renderings = self.renderings_bytes().await;

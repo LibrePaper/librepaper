@@ -8,7 +8,8 @@
 // renders rather than one per checkpoint -- which is the whole reason it is a
 // bisection and not a walk.
 
-import { textAt, wentAt } from "../src/lib/passages.js";
+import { replacementAt, sourceTextAt, textAt, wentAt } from "../src/lib/passages.js";
+import { hunks } from "../src/lib/history.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -100,6 +101,25 @@ const sourceComment = (revision) => ({
   },
 });
 
+/* ------------------------------------------------------------ replacements */
+
+{
+  const oldText = "The 🦎 estimator is unbiased under the model.";
+  const newText = "The 🦎 estimator is consistent under the model.";
+  const selector = {
+    exact: "estimator is unbiased",
+    prefix: "The 🦎 ",
+    suffix: " under",
+    position: 7,
+  };
+  const edits = [{ at: 7, delete: 21, insert: "estimator is consistent" }];
+  const replacement = await replacementAt(oldText, newText, selector, async () => edits);
+  check("replacement lookup uses a quoted UTF-16 range", replacement === "estimator is consistent");
+  const displayed = hunks(oldText, newText, edits, 2);
+  check("hunks preserve inserted text and context", displayed[0].current === "estimator is consistent");
+  check("hunks expose the replacement kind", displayed[0].kind === "replace");
+}
+
 // Historical Typst checkpoints already have a stored PDF. Passage lookup
 // must read that artifact directly, just like LaTeX, without trying to warm a
 // browser compiler or falling through to the HTML renderer.
@@ -152,6 +172,82 @@ const sourceComment = (revision) => ({
   const otherDocument = await textAt("other-doc", "same-sha", {}, services);
   check("a missing historical PDF is retried after it appears", missing === null && recovered === "recovered PDF text");
   check("historical PDF cache keys include the document", otherDocument === "recovered PDF text" && fetches === 3);
+}
+
+// Source checkpoint responses are scoped by document and failed requests are
+// retryable. A shared SHA is possible across documents, and a rejected
+// promise must not become a permanent access or availability failure.
+{
+  const oldFetch = globalThis.fetch;
+  const sha = "b".repeat(64);
+  let fetches = 0;
+  globalThis.fetch = async (url) => {
+    fetches += 1;
+    if (fetches === 1) return { ok: false, json: async () => ({}) };
+    return {
+      ok: true,
+      json: async () => ({ texts: { "main.md": String(url).includes("doc-b") ? "B" : "A" } }),
+    };
+  };
+  try {
+    let failed = false;
+    try {
+      await sourceTextAt("doc-a", sha, "main.md");
+    } catch {
+      failed = true;
+    }
+    const a = await sourceTextAt("doc-a", sha, "main.md");
+    const b = await sourceTextAt("doc-b", sha, "main.md");
+    const documentFetches = fetches;
+    const keyed = await sourceTextAt("doc-a", sha, "main.md", { "X-Komodoc-Key": "one" });
+    const keyedAgain = await sourceTextAt("doc-a", sha, "main.md", { "X-Komodoc-Key": "one" });
+    const otherKey = await sourceTextAt("doc-a", sha, "main.md", { "X-Komodoc-Key": "two" });
+    check("failed source checkpoint fetches are retried", failed && a === "A");
+    check("source checkpoint cache keys include the document", b === "B" && documentFetches === 3);
+    check("source checkpoint cache keys include link context", keyed === "A" && keyedAgain === "A" && otherKey === "A" && fetches === 5);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+}
+
+// Successful rendered and source entries are bounded. The first entry falls
+// out after enough distinct documents have been visited and is fetched again.
+{
+  let renderedFetches = 0;
+  const services = {
+    history: {
+      checkpoint: async () => {
+        renderedFetches += 1;
+        return { main: "main.typ", texts: { "main.typ": "#page" }, files: {} };
+      },
+    },
+    renderers: { formatOf: () => "typst", producesPdf: () => true },
+    fetch: async () => ({ ok: true, arrayBuffer: async () => Uint8Array.of(1).buffer }),
+    pdfText: async () => "page",
+  };
+  for (let at = 0; at < 65; at += 1) {
+    await textAt(`bounded-${at}`, "same-sha", {}, services);
+  }
+  await textAt("bounded-0", "same-sha", {}, services);
+  check("rendered checkpoint cache is bounded", renderedFetches === 66);
+}
+
+{
+  const oldFetch = globalThis.fetch;
+  let sourceFetches = 0;
+  globalThis.fetch = async () => {
+    sourceFetches += 1;
+    return { ok: true, json: async () => ({ texts: { "main.md": "source" } }) };
+  };
+  try {
+    for (let at = 0; at < 65; at += 1) {
+      await sourceTextAt(`point-bounded-${at}`, "same-sha", "main.md");
+    }
+    await sourceTextAt("point-bounded-0", "same-sha", "main.md");
+    check("source checkpoint cache is bounded", sourceFetches === 66);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
 }
 
 /* ---------------------------------------------------------- source anchors */
@@ -220,6 +316,10 @@ const sourceComment = (revision) => ({
   check("a history of one has nothing to say", found === null);
   check("an empty history has nothing to say", (await wentAt("slug", comment(""), [], {}, at)) === null);
 }
+
+check("a selected part of a rewritten word has no identifiable replacement",
+  await replacementAt("infrared", "ultraviolet", { exact: "red" },
+    async () => [{ at: 0, delete: 8, insert: "ultraviolet" }]) === null);
 
 if (failures) process.exit(1);
 console.log("passages: the first moment a passage is missing, found in a handful of renders");

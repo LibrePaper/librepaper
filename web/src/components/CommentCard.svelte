@@ -15,6 +15,9 @@
     // when it has been looked up and there was an answer. Null otherwise, and
     // null for every comment whose passage is still in the document.
     went = null,
+    // The inserted side of the word diff when the quoted passage was
+    // replaced. It is supplied by the page, which owns historical fetches.
+    replacement = null,
     onreveal,
     onresolve,
     ondelete,
@@ -164,12 +167,14 @@
 
       <!-- The quotation above is what the passage said when the comment was
            made. This is what became of it: the moment it stopped being in the
-           document, by the name somebody gave that moment or by its digest.
-           What replaced it is the word-level diff, and is not built. -->
+           document, and the inserted side of the shared word-level diff. -->
       {#if went}
         <p class="panel-muted">
           Removed in {went.label || went.sha.slice(0, 7)}, {new Date(went.at).toLocaleDateString()}.
         </p>
+      {/if}
+      {#if replacement !== null}
+        <p class="panel-muted">Now: {replacement ? `“${replacement}”` : "deleted without replacement."}</p>
       {/if}
 
       {#if comment.body}<p>{comment.body}</p>{/if}

@@ -34,7 +34,11 @@ function compile(main, source = texts[main]) {
   return result.bytes;
 }
 
-const PDFs = { paper: compile("paper.typ"), long: compile("long.typ") };
+const PDFs = {
+  paper: compile("paper.typ"),
+  long: compile("long.typ"),
+  intervals: compile("intervals.typ", readFileSync(join(REPO, "examples", "intervals.typ"), "utf8")),
+};
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PORT = 8800 + Math.floor(Math.random() * 200);
 const DEBUG_PORT = 9800 + Math.floor(Math.random() * 200);
@@ -83,9 +87,9 @@ const server = createServer((request, response) => {
     response.end(HARNESS);
     return;
   }
-  if (path === "/pdf/paper" || path === "/pdf/long") {
+  if (path.startsWith("/pdf/") && PDFs[path.slice(5)]) {
     response.writeHead(200, { "content-type": "application/pdf" });
-    response.end(PDFs[path.endsWith("paper") ? "paper" : "long"]);
+    response.end(PDFs[path.slice(5)]);
     return;
   }
   if (path.startsWith("/src/")) return sendFile(response, join(REPO, "web", path.slice(1)));
@@ -235,6 +239,22 @@ async function run() {
     return { marks: window.doc().querySelectorAll('mark[data-komodoc~="typst-ligature"]').length, text: window.text().slice(at.start, at.end) };
   `);
   check("a ligature-safe Typst text anchor paints", ligature?.marks > 0 && ligature.text === "fixture", JSON.stringify(ligature));
+
+  // Empty PDF end-of-line items must leave a separator in the live DOM.
+  // Without it, this highlight becomes "parameteris fixed", fails to anchor,
+  // and sorts after the comments instead of between them in the sidebar.
+  await tab.eval("await window.sendPdf('/pdf/intervals')");
+  await settle(tab);
+  const positions = await tab.eval(`
+    return [
+      'A confidence interval is a statement about a procedure, not about a parameter.',
+      'Sampling error is one source of uncertainty and rarely the largest.',
+      'The parameter is fixed; the interval is what moved.',
+    ].map((exact) => window.anchor({ exact })?.start ?? null);
+  `);
+  check("a highlight across a Typst line break anchors between comments",
+    positions.every(Number.isFinite) && positions[0] < positions[2] && positions[2] < positions[1],
+    JSON.stringify(positions));
 
   await tab.eval("await window.sendPdf('/pdf/long')");
   await settle(tab);

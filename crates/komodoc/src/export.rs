@@ -5,6 +5,7 @@
 //! anchor targets two selectors, the rendered quote and the one into the file
 //! it actually came from.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -184,7 +185,21 @@ pub async fn export_document(
         "markdown" | "md" => render_markdown(&title, &comments, &source, &config),
         "response" => {
             let now = text_as_it_stands(&server, &slug, &who).await;
-            render_response(&title, &comments, &source, &config, &now)
+            let checkpoints = manifest_of(&server, &slug, &who).await;
+            let replacements = match now.as_deref() {
+                Some(now) => {
+                    response_replacements(&server, &slug, &who, &comments, &checkpoints, now).await
+                }
+                None => HashMap::new(),
+            };
+            render_response_with_replacements(
+                &title,
+                &comments,
+                &source,
+                &config,
+                now.as_deref().unwrap_or_default(),
+                &replacements,
+            )
         }
         other => die(format!(
             "unknown format {other:?}; use jsonld, markdown or response"
@@ -347,12 +362,28 @@ pub fn render_markdown(
 /// `now` is the document as it stands, rendered and with the markup taken out;
 /// empty when this machine could not render it, in which case the **Now** line
 /// is left off rather than guessed at.
+#[cfg(test)]
 pub fn render_response(
     title: &str,
     comments: &[Comment],
     source: &str,
     config: &Configuration,
     now: &str,
+) -> String {
+    render_response_with_replacements(title, comments, source, config, now, &HashMap::new())
+}
+
+/// Response export with the inserted side of a replacement for comments whose
+/// quoted passage disappeared. The public `render_response` remains useful to
+/// callers that already have only current text; the command line supplies this
+/// extra map after reading the relevant historical checkpoints.
+pub fn render_response_with_replacements(
+    title: &str,
+    comments: &[Comment],
+    source: &str,
+    config: &Configuration,
+    now: &str,
+    replacements: &HashMap<String, String>,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -419,10 +450,17 @@ pub fn render_response(
                 // What the passage says now. The anchoring a reader uses is a
                 // match on the words themselves, so there are two answers it
                 // can give honestly: the passage is still there, or it is
-                // not. What replaced it is the word-level diff, step 8 of
-                // `docs/specs/history.md`, and is not built -- so it is not
-                // claimed.
-                if !now.is_empty() {
+                // not. When the historical checkpoint is readable, the
+                // response branch supplies the transformed quote from the
+                // same word-level diff used by sync; otherwise it leaves this
+                // honest status line in place.
+                if let Some(replacement) = replacements.get(&item.id) {
+                    if replacement.is_empty() {
+                        let _ = write!(out, "**Now:** deleted without replacement.\n\n");
+                    } else {
+                        let _ = write!(out, "**Now:** “{}”\n\n", one_line(replacement));
+                    }
+                } else if !now.is_empty() {
                     if holds(now, &item.exact) {
                         let _ = write!(out, "**Now:** unchanged.\n\n");
                     } else {
@@ -473,15 +511,26 @@ fn holds(text: &str, exact: &str) -> bool {
 /// the server to ask for: nothing derived is stored, which is the rule this
 /// whole design rests on.
 ///
-/// Empty when this machine cannot render the document -- a LaTeX paper, whose
+/// None when this machine cannot render the document -- a LaTeX paper, whose
 /// compiler is in a browser, or a typst one this fails to write out. The
-/// export then leaves the **Now** line off rather than guessing.
-async fn text_as_it_stands(server: &str, slug: &str, who: &Credentials) -> String {
+/// export then leaves the **Now** line off rather than guessing. A successfully
+/// rendered empty document remains distinguishable from a failed render.
+async fn text_as_it_stands(server: &str, slug: &str, who: &Credentials) -> Option<String> {
     let checkpoints = manifest_of(server, slug, who).await;
-    let Some(newest) = checkpoints.last() else {
-        return String::new();
-    };
+    let newest = checkpoints.last()?;
     let sha = crate::http::text(newest, "sha");
+    text_at_checkpoint(server, slug, who, &sha).await
+}
+
+/// Reads and renders one named checkpoint. Historical response quotations use
+/// the same visible text as passage anchoring, so markup and source line wraps
+/// do not leak into the replacement shown to a reviewer.
+async fn text_at_checkpoint(
+    server: &str,
+    slug: &str,
+    who: &Credentials,
+    sha: &str,
+) -> Option<String> {
     let (status, point) = get_as(
         &format!("{server}/api/documents/{slug}/history/{sha}"),
         who,
@@ -490,7 +539,7 @@ async fn text_as_it_stands(server: &str, slug: &str, who: &Credentials) -> Strin
     .await
     .unwrap_or((0, Value::Null));
     if status != 200 {
-        return String::new();
+        return None;
     }
     let main = crate::http::text(&point, "main");
     let texts = point
@@ -498,9 +547,7 @@ async fn text_as_it_stands(server: &str, slug: &str, who: &Credentials) -> Strin
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let Some(source) = texts.get(&main).and_then(Value::as_str) else {
-        return String::new();
-    };
+    let source = texts.get(&main).and_then(Value::as_str)?;
     let page = if crate::render::is_markdown(&main) {
         crate::render::render_markdown_document(source, "")
     } else if crate::render::is_html(&main) {
@@ -510,15 +557,150 @@ async fn text_as_it_stands(server: &str, slug: &str, who: &Credentials) -> Strin
         // a string. The checkpoint is written into one and taken away again;
         // the alternative is a response that cannot quote a typst paper, which
         // is most of the papers this is for.
-        match typst_from(&main, &texts) {
-            Some(page) => page,
-            None => return String::new(),
-        }
+        typst_from(&main, &texts)?
     } else {
         // LaTeX, whose compiler is in a browser and not here.
-        return String::new();
+        return None;
     };
-    crate::seed::visible_text(&page)
+    Some(crate::seed::visible_text(&page))
+}
+
+/// Computes replacements for the response export from the comment's own
+/// checkpoint to the newest visible text. A missing or unrenderable historical
+/// checkpoint simply leaves the existing "no longer" wording in place.
+async fn response_replacements(
+    server: &str,
+    slug: &str,
+    who: &Credentials,
+    comments: &[Comment],
+    checkpoints: &[Value],
+    now: &str,
+) -> HashMap<String, String> {
+    if checkpoints.is_empty() {
+        return HashMap::new();
+    }
+    let mut out = HashMap::new();
+    let mut historical: HashMap<String, String> = HashMap::new();
+    for item in comments {
+        if item.region.is_some() || item.exact.trim().is_empty() {
+            continue;
+        }
+        if holds(now, &item.exact) {
+            continue;
+        }
+        let sha = checkpoints
+            .iter()
+            .find(|point| crate::http::text(point, "sha") == item.revision)
+            .or_else(|| checkpoints.first())
+            .map(|point| crate::http::text(point, "sha"));
+        let Some(sha) = sha else { continue };
+        let old = if let Some(cached) = historical.get(&sha) {
+            cached.clone()
+        } else {
+            let Some(loaded) = text_at_checkpoint(server, slug, who, &sha).await else {
+                continue;
+            };
+            historical.insert(sha.clone(), loaded.clone());
+            loaded
+        };
+        if let Some(replacement) = replacement_from(&old, now, item) {
+            out.insert(item.id.clone(), replacement);
+        }
+    }
+    out
+}
+
+/// Finds the inserted side of the edits overlapping a quoted passage. The
+/// selector's context chooses among repeated quotations before the diff is
+/// consulted, matching the browser anchor's exact/prefix/suffix rule.
+pub(crate) fn replacement_from(old: &str, new: &str, item: &Comment) -> Option<String> {
+    let needle = one_line(&item.exact);
+    if needle.is_empty() {
+        return None;
+    }
+    let mut candidates = Vec::new();
+    let mut from = 0;
+    while let Some(relative) = old[from..].find(&needle) {
+        let at = from + relative;
+        let before = &old[..at];
+        let after = &old[at + needle.len()..];
+        let score = usize::from(before.ends_with(&one_line(&item.prefix)))
+            + usize::from(after.starts_with(&one_line(&item.suffix)));
+        candidates.push((score, at));
+        from = at + needle.len();
+    }
+    let wanted = item.position;
+    let (_, byte_at) = candidates.into_iter().min_by(|left, right| {
+        let left_distance = wanted
+            .map(|position| (utf16_len(&old[..left.1]) as i64 - position).unsigned_abs())
+            .unwrap_or(u64::MAX);
+        let right_distance = wanted
+            .map(|position| (utf16_len(&old[..right.1]) as i64 - position).unsigned_abs())
+            .unwrap_or(u64::MAX);
+        right
+            .0
+            .cmp(&left.0)
+            .then(left_distance.cmp(&right_distance))
+    })?;
+    let start = old[..byte_at].encode_utf16().count();
+    let end = start + needle.encode_utf16().count();
+    let edits = komodoc_text::diff(old, new);
+    let mut cursor = start;
+    let mut replacement = String::new();
+    for edit in edits {
+        let edit_start = edit.at;
+        let edit_end = edit.at + edit.delete;
+        if edit_end <= start {
+            continue;
+        }
+        if edit_start >= end {
+            break;
+        }
+        if edit_start > cursor {
+            replacement.push_str(&utf16_slice(old, cursor, edit_start.min(end)));
+        }
+        let mut insert = edit.insert;
+        // A token hunk can begin just before the quote or end just after it.
+        // Drop unchanged outside context when the edit gives us a defensible
+        // boundary. If the outside context changed too, this hunk cannot
+        // identify the selected passage's replacement.
+        if edit_start < start {
+            let outside = utf16_slice(old, edit_start, start);
+            if !outside.is_empty() && !insert.is_empty() {
+                if !insert.starts_with(&outside) {
+                    return None;
+                }
+                insert.drain(..outside.len());
+            }
+        }
+        if edit_end > end {
+            let outside = utf16_slice(old, end, edit_end);
+            if !outside.is_empty() && !insert.is_empty() {
+                if !insert.ends_with(&outside) {
+                    return None;
+                }
+                let length = insert.len() - outside.len();
+                insert.truncate(length);
+            }
+        }
+        if !insert.is_empty() && (edit_end > start || (edit_start >= start && edit_start < end)) {
+            replacement.push_str(&insert);
+        }
+        cursor = cursor.max(edit_end.min(end));
+    }
+    if cursor < end {
+        replacement.push_str(&utf16_slice(old, cursor, end));
+    }
+    Some(replacement)
+}
+
+fn utf16_slice(text: &str, start: usize, end: usize) -> String {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    String::from_utf16(&units[start.min(units.len())..end.min(units.len())]).unwrap_or_default()
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
 }
 
 /// Renders a typst checkpoint by writing it out and reading it back the way

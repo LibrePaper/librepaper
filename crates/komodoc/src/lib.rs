@@ -9,6 +9,7 @@
 mod assets;
 mod auth;
 mod blob;
+mod checkpoint_cache;
 mod cli;
 mod clock;
 pub mod config;
@@ -287,6 +288,32 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
+    /// Print the source diff between two checkpoints
+    Diff {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// The older checkpoint, as the digest `history` prints or its prefix
+        from: String,
+        /// The newer checkpoint, as the digest `history` prints or its prefix
+        to: String,
+        /// A share link, or the key from one
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
+    /// Restore a checkpoint into the live document
+    Restore {
+        /// A full slug, or one of the short handles `list` prints
+        id: String,
+        /// The checkpoint, as the digest `history` prints or its prefix
+        sha: String,
+        /// An editor share link, or the key from one
+        #[arg(long, value_name = "LINK")]
+        key: Option<String>,
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
+    },
     /// Name a checkpoint, so it stands out in the timeline
     Label {
         /// A full slug, or one of the short handles `list` prints
@@ -433,6 +460,36 @@ pub async fn main() {
         } => cli::transfer_document(&id, &to, server.unwrap_or_default(), yes).await,
         Command::History { id, key, server } => {
             cli::history_document(&id, server.unwrap_or_default(), key.unwrap_or_default()).await
+        }
+        Command::Diff {
+            id,
+            from,
+            to,
+            key,
+            server,
+        } => {
+            cli::diff_document(
+                &id,
+                &from,
+                &to,
+                server.unwrap_or_default(),
+                key.unwrap_or_default(),
+            )
+            .await
+        }
+        Command::Restore {
+            id,
+            sha,
+            key,
+            server,
+        } => {
+            cli::restore_document(
+                &id,
+                &sha,
+                server.unwrap_or_default(),
+                key.unwrap_or_default(),
+            )
+            .await
         }
         Command::Label {
             id,

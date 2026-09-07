@@ -1747,6 +1747,8 @@ version = "0.1.0"
 dependencies = [
  "comrak",
  "ecow",
+ "komodoc-text",
+ "serde_json",
  "typst",
  "typst-assets",
  "typst-layout",

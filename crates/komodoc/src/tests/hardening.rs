@@ -523,7 +523,7 @@ async fn comment_author_is_persisted_but_never_sent_to_clients() {
         !encoded.contains("\"author\""),
         "snapshot_for leaked author: {encoded}"
     );
-    assert!(view.len() == 1 && view[0].deletable);
+    assert!(view.len() == 1 && view[0].mine && view[0].deletable);
     let strangers = reloaded.snapshot_for("github:someone-else", false).await;
-    assert!(strangers.len() == 1 && !strangers[0].deletable);
+    assert!(strangers.len() == 1 && !strangers[0].mine && !strangers[0].deletable);
 }

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 
 use crate::cli::short_ids;
@@ -354,6 +356,73 @@ fn the_response_leaves_now_out_when_it_cannot_render_the_document() {
     );
     assert!(out.contains("**Then:**"), "{out}");
     assert!(!out.contains("**Now:**"), "{out}");
+}
+
+#[test]
+fn the_response_quotes_the_replacement_and_can_report_a_deletion() {
+    let comments = a_review();
+    let mut replacements = HashMap::new();
+    replacements.insert(
+        comments[0].id.clone(),
+        "The interval covers 95% of repeated samples".into(),
+    );
+    replacements.insert(comments[1].id.clone(), String::new());
+    let out = crate::export::render_response_with_replacements(
+        "My Paper",
+        &comments,
+        "urn:komodoc:test",
+        &Configuration::default(),
+        "",
+        &replacements,
+    );
+    assert!(
+        out.contains("**Now:** “The interval covers 95% of repeated samples”"),
+        "{out}"
+    );
+    assert!(
+        out.contains("**Now:** deleted without replacement."),
+        "{out}"
+    );
+}
+
+#[test]
+fn replacement_keeps_unchanged_words_between_multiple_utf16_hunks() {
+    let item = Comment {
+        exact: "red 🦎 fox at noisy river".into(),
+        prefix: "The ".into(),
+        suffix: ".".into(),
+        ..Comment::default()
+    };
+    let old = "The red 🦎 fox at noisy river.";
+    let new = "The blue 🦎 fox at calm river.";
+    assert_eq!(
+        crate::export::replacement_from(old, new, &item).as_deref(),
+        Some("blue 🦎 fox at calm river")
+    );
+}
+
+#[test]
+fn replacement_does_not_claim_an_entire_rewrite_for_a_selection_inside_one_word() {
+    let item = Comment {
+        exact: "red".into(),
+        ..Comment::default()
+    };
+    assert_eq!(
+        crate::export::replacement_from("infrared", "ultraviolet", &item),
+        None
+    );
+}
+
+#[test]
+fn replacement_reports_a_quote_deleted_with_the_entire_document() {
+    let item = Comment {
+        exact: "The old passage".into(),
+        ..Comment::default()
+    };
+    assert_eq!(
+        crate::export::replacement_from("The old passage", "", &item),
+        Some(String::new())
+    );
 }
 
 /// `--since` is a question about the timeline: which comments were made at or

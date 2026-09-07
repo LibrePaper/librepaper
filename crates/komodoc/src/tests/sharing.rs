@@ -1,7 +1,6 @@
 //! Who may do what to a document, when the document itself says so.
 //!
-//! Every test here is against an acceptance condition in
-//! `docs/specs/sharing.md`: a document is shared with links, not people; the
+//! A document is shared with links, not people; the
 //! bare URL opens for the owner alone and a reader link is the way in for
 //! anyone else; a read link is read-only; a commenter link comments
 //! and cannot edit; an editor link edits wherever the deployment would let an

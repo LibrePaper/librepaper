@@ -3,6 +3,7 @@
 //! implementations have to agree on it.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::blob::{
     clear_storage, document_key, document_prefix, legacy_source_key, room_key, room_lock_key,
@@ -67,6 +68,40 @@ async fn blob_store_contract() {
         found.len() == 1 && found[0].key == document_key("a-paper", "abc"),
         "{found:?}"
     );
+
+    // Prefixes keep their ordinary string semantics, including a partial last
+    // path component. The optimized walk may start below the store root, but
+    // it must not turn `documents/a-paper` into an exact-directory match.
+    blobs
+        .put("documents/a-paper-copy/one", b"copy".to_vec(), "")
+        .await
+        .unwrap();
+    blobs
+        .put("documents/a-pap/one", b"other".to_vec(), "")
+        .await
+        .unwrap();
+    let partial = blobs.list("documents/a-paper").await.unwrap();
+    assert_eq!(
+        partial
+            .iter()
+            .map(|item| item.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["documents/a-paper-copy/one", "documents/a-paper/abc.html",]
+    );
+
+    // A trailing separator scopes the walk to that subtree. Empty and absent
+    // prefixes remain useful for maintenance and are ordinary empty listings.
+    let subtree = blobs.list("documents/a-paper/").await.unwrap();
+    assert_eq!(subtree.len(), 1);
+    assert!(blobs.list("missing/").await.unwrap().is_empty());
+    assert!(blobs.list("/").await.unwrap().is_empty());
+    assert!(blobs.list("../").await.unwrap().is_empty());
+    assert!(blobs.list("").await.unwrap().len() >= 4);
+
+    // A legacy object whose name is also a prefix is a file, not a directory;
+    // probing its slash-qualified descendants is an empty prefix query.
+    blobs.put("legacy", b"old".to_vec(), "").await.unwrap();
+    assert!(blobs.list("legacy/").await.unwrap().is_empty());
 
     // Deleting something that is not there is the outcome asked for, not an
     // error: callers delete a source that may never have existed.
@@ -139,6 +174,31 @@ async fn swap_under_contention() {
         }
     }
     assert_eq!(wins, 1, "{wins} writers thought they won; want exactly one");
+}
+
+// Plain puts are allowed to overlap. Atomic replacement must therefore use a
+// private temporary pathname per operation, or one writer can rename another
+// writer's temporary file and leave the loser with a missing-temp error.
+#[tokio::test]
+async fn puts_under_contention_leave_one_complete_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let mut writers = Vec::new();
+    for n in 0..32 {
+        let blobs = blobs.clone();
+        writers.push(tokio::spawn(async move {
+            let body = vec![b'a' + (n % 2) as u8; 128 * 1024];
+            blobs.put("same/key", body, "").await
+        }));
+    }
+    for writer in writers {
+        writer.await.unwrap().unwrap();
+    }
+    let body = blobs.get("same/key").await.unwrap();
+    assert!(
+        body == vec![b'a'; 128 * 1024] || body == vec![b'b'; 128 * 1024],
+        "a concurrent put left a mixed or partial value"
+    );
 }
 
 // Seeding starts from nothing, and on a bucket somebody else supplied,
@@ -216,6 +276,58 @@ async fn a_key_cannot_escape_the_directory() {
         !outside.exists(),
         "a key wrote outside the storage directory"
     );
+}
+
+// A FIFO gives this test a deterministic filesystem operation that cannot
+// complete until another thread opens it. On a current-thread Tokio runtime,
+// synchronous `std::fs::read` would prevent the ticker from running at all.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn filesystem_reads_do_not_block_tokio() {
+    use std::ffi::CString;
+    use std::os::raw::c_char;
+    use std::thread;
+    use std::time::Instant;
+
+    unsafe extern "C" {
+        fn mkfifo(path: *const c_char, mode: u32) -> i32;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("pending");
+    let fifo_name = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+
+    let blobs = Arc::new(FsStore::new(dir.path()));
+    let reader = tokio::spawn({
+        let blobs = blobs.clone();
+        async move { blobs.get("pending").await }
+    });
+    // Delay the writer so the read is definitely pending while the runtime
+    // gets a chance to schedule the ticker.
+    let writer = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(150));
+        std::fs::write(fifo, b"ready").unwrap();
+    });
+
+    let started = Instant::now();
+    let mut ticker = tokio::time::interval(Duration::from_millis(10));
+    ticker.tick().await;
+    tokio::pin!(reader);
+    tokio::select! {
+        result = &mut reader => {
+            panic!("FIFO read completed before the writer delay: {result:?}");
+        }
+        _ = ticker.tick() => {}
+    }
+    let body = tokio::time::timeout(Duration::from_secs(2), reader)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    writer.join().unwrap();
+    assert_eq!(body, b"ready");
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
 /* ----------------------------------------------------------- room leases */
 

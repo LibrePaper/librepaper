@@ -223,7 +223,7 @@ $(SHELL_OUT): $(WEB) web/dist/README.md
 
 wasm: $(WASM)  ## Build the markdown renderer for the browser
 
-$(WASM): $(shell find crates/engine/src -type f) crates/engine/Cargo.toml crates/engine/document.css
+$(WASM): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
 	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
 		--no-default-features --features markdown
 	@mkdir -p $(dir $@)
@@ -232,7 +232,7 @@ $(WASM): $(shell find crates/engine/src -type f) crates/engine/Cargo.toml crates
 
 typst: $(TYPST)  ## Build the typst renderer for the browser (slow: ~30 MB)
 
-$(TYPST): $(shell find crates/engine/src -type f) crates/engine/Cargo.toml crates/engine/document.css
+$(TYPST): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
 	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
 		--no-default-features --features typst
 	@mkdir -p $(dir $@)

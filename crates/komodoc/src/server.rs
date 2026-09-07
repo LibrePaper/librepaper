@@ -915,6 +915,16 @@ async fn handle(
         }
     }
 
+    // Restoring is an editor write. The room first makes the current state
+    // durable, applies the selected tree as a Yjs update, and records a
+    // second checkpoint before this route answers, so reconnecting editors
+    // and a restarted server see the same result.
+    if let ["api", "documents", slug, "restore"] = parts[..] {
+        if method == Method::POST {
+            return server.handle_restore(request, &arrival, slug).await;
+        }
+    }
+
     // The figures. Putting one takes an editor, because it puts bytes on the
     // server; reading one takes whatever reading the document takes, so a
     // private paper's figures are as private as its text.
@@ -1460,7 +1470,16 @@ impl Server {
                         }
                         continue 'reader;
                     }
-                    room.broadcast(&result).await;
+                    // The room-wide event carries a neutral caller view;
+                    // only the submitting socket receives its own `mine` and
+                    // deletion state. This keeps per-caller controls private
+                    // while preserving the sender's optimistic-row echo.
+                    let shared = room.comment_event_for(&result, "", false).await;
+                    room.broadcast_except(Some(socket_id), &shared).await;
+                    let targeted = room.comment_event_for(&result, &author, is_owner).await;
+                    if tx.send(Outgoing::Text(targeted.to_string())).await.is_err() {
+                        break 'reader;
+                    }
                 }
                 // The writer stops on its own when a send fails -- the
                 // browser hung up, or (see below) this connection was cut.
@@ -1642,8 +1661,10 @@ impl Server {
                     .apply_from(&room, incoming, &address, &who, &author)
                     .await;
                 if ok {
-                    room.broadcast(&result).await;
-                    return write_json(200, &result);
+                    let shared = room.comment_event_for(&result, "", false).await;
+                    room.broadcast(&shared).await;
+                    let targeted = room.comment_event_for(&result, &author, is_owner).await;
+                    return write_json(200, &targeted);
                 }
                 write_json(400, &result)
             }
@@ -2471,14 +2492,16 @@ impl Server {
         }
         let room = self.rooms.get(slug).await;
         let manifest = room.manifest().await;
-        write_json(
+        let mut response = write_json(
             200,
             &json!({
                 "slug": entry.slug,
                 "main": entry.main,
                 "checkpoints": manifest.checkpoints,
             }),
-        )
+        );
+        set(&mut response, "cache-control", "private, no-store");
+        response
     }
 
     /// What the document said at one checkpoint: every file it had, and the
@@ -2543,7 +2566,7 @@ impl Server {
                     .map(|body| (path.as_str(), body.as_str()))
             })
             .collect();
-        write_json(
+        let mut response = write_json(
             200,
             &json!({
                 "sha": point.sha,
@@ -2556,7 +2579,9 @@ impl Server {
                 "files": tree.files,
                 "texts": texts,
             }),
-        )
+        );
+        set(&mut response, "cache-control", "private, no-store");
+        response
     }
 
     /// Names a checkpoint, or takes its name away.
@@ -2610,6 +2635,95 @@ impl Server {
             Ok(false) => plain(404, "not found"),
             Err(err) => write_json(500, &json!({"error": err})),
         }
+    }
+
+    /// Restores one checkpoint into the live room. The caller must be an
+    /// editor, which includes an editor share link; readers can inspect the
+    /// same checkpoint through GET but cannot change the document with it.
+    async fn handle_restore(&self, request: Request<Body>, arrival: &Arrival, slug: &str) -> Reply {
+        let headers = request.headers().clone();
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(&headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let who = self.viewer(&entry, &headers, arrival, None).await;
+        if !who.at_least(Role::Editor) {
+            return plain(404, "not found");
+        }
+        let body = match to_bytes(request.into_body(), 16 * 1024).await {
+            Ok(body) => body,
+            Err(_) => return write_json(413, &json!({"error": "restore request too large"})),
+        };
+        let asked: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        let requested = asked
+            .get("sha")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if requested.is_empty()
+            || requested.len() > 64
+            || !requested
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return write_json(400, &json!({"error": "a checkpoint SHA is required"}));
+        }
+
+        let room = self.rooms.get(slug).await;
+        // The owner may have transferred the document, or a link may have
+        // been revoked, while the request body was being read. Recheck the
+        // role immediately before the room mutation as well as before it.
+        let Some(current_entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let current_who = self.viewer(&current_entry, &headers, arrival, None).await;
+        if !current_who.at_least(Role::Editor) {
+            return plain(404, "not found");
+        }
+        let point = room
+            .manifest()
+            .await
+            .checkpoints
+            .into_iter()
+            .filter(|point| point.sha.starts_with(requested))
+            .collect::<Vec<_>>();
+        let point = match point.as_slice() {
+            [] => return plain(404, "not found"),
+            [point] => point.clone(),
+            _ => return write_json(409, &json!({"error": "checkpoint prefix is ambiguous"})),
+        };
+        let by = if current_who.key.is_empty() {
+            current_who.id.handle.clone()
+        } else {
+            current_who.key.clone()
+        };
+        let (update, sha) = match room.restore_and_checkpoint(&point, &by).await {
+            Ok(result) => result,
+            Err(err) => return write_json(409, &json!({"error": err})),
+        };
+        room.broadcast(&json!({
+            "type": "y-update",
+            "update": encode_update(&update),
+        }))
+        .await;
+        let checkpoint = room
+            .manifest()
+            .await
+            .checkpoints
+            .into_iter()
+            .find(|candidate| candidate.sha == sha);
+        write_json(
+            200,
+            &json!({
+                "sha": sha,
+                "checkpoint": checkpoint,
+            }),
+        )
     }
 
     /* -------------------------------------------------------------- assets */
@@ -2792,6 +2906,12 @@ impl Server {
             seen.1 += 1;
         }
         let room = self.rooms.get(slug).await;
+        // Restore events have a unique history identity but share the
+        // immutable tree identity of the checkpoint they restored.
+        let content_sha = room
+            .rendering_sha(&sha)
+            .await
+            .unwrap_or_else(|| sha.clone());
         // Which moment this is a rendering of. A SHA the manifest already has
         // is that moment; the SHA the live text would take becomes one here,
         // because a rendering of a moment nothing recorded is a rendering of
@@ -2801,7 +2921,7 @@ impl Server {
         let expected_inputs = header_of(request.headers(), "x-komodoc-inputs").unwrap_or_default();
         let current_tree = room.tree().await;
         if current_only
-            && (current_tree.digest() != sha
+            && (current_tree.digest() != content_sha
                 || expected_inputs.is_empty()
                 || current_tree.input_digest() != expected_inputs)
         {
@@ -2810,15 +2930,32 @@ impl Server {
                 &json!({"error": "the source tree changed before its PDF could be stored"}),
             );
         }
-        if !room.manifest().await.has(&sha) {
-            if current_tree.digest() != sha {
+        let has_checkpoint = room
+            .manifest()
+            .await
+            .checkpoints
+            .iter()
+            .any(|point| point.sha == sha || point.tree_sha == content_sha);
+        if !has_checkpoint {
+            if current_tree.digest() != content_sha {
                 return write_json(
                     409,
                     &json!({"error": "that is not a checkpoint of this document, or the text has moved on"}),
                 );
             }
             match room.checkpoint("render", &who.key).await {
-                Ok(Some(taken)) if taken == sha => {}
+                Ok(Some(taken)) => {
+                    let taken_content = room
+                        .rendering_sha(&taken)
+                        .await
+                        .unwrap_or_else(|| taken.clone());
+                    if taken != sha && taken_content != content_sha {
+                        return write_json(
+                            409,
+                            &json!({"error": "the text moved while that was being stored"}),
+                        );
+                    }
+                }
                 Ok(_) => {
                     // The text moved between the digest above and the
                     // checkpoint below, or the checkpoint was deferred. Either
@@ -2841,7 +2978,7 @@ impl Server {
         // figure does. Nothing is charged twice: bytes this document already
         // holds under this name are the same bytes, and `put_rendering`
         // answers with what is held rather than writing again.
-        if !room.has_rendering(&sha, synctex).await {
+        if !room.has_rendering(&content_sha, synctex).await {
             if let Some(room_for) = self.store.room_for(slug).await {
                 if entry.size + size > room_for {
                     return write_json(
@@ -2853,7 +2990,7 @@ impl Server {
         }
         if current_only {
             match room
-                .put_current_rendering(&sha, &expected_inputs, synctex, body.to_vec())
+                .put_current_rendering(&content_sha, &expected_inputs, synctex, body.to_vec())
                 .await
             {
                 Ok(Some(size)) => write_json(200, &json!({"sha": sha, "size": size})),
@@ -2864,7 +3001,10 @@ impl Server {
                 Err(why) => write_json(413, &json!({"error": why})),
             }
         } else {
-            match room.put_rendering(&sha, synctex, body.to_vec()).await {
+            match room
+                .put_rendering(&content_sha, synctex, body.to_vec())
+                .await
+            {
                 Ok(size) => write_json(200, &json!({"sha": sha, "size": size})),
                 Err(why) => write_json(413, &json!({"error": why})),
             }
@@ -2900,7 +3040,11 @@ impl Server {
             return plain(404, "not found");
         }
         let room = self.rooms.get(slug).await;
-        let Some(bytes) = room.read_rendering(&sha, synctex).await else {
+        let content_sha = room
+            .rendering_sha(&sha)
+            .await
+            .unwrap_or_else(|| sha.clone());
+        let Some(bytes) = room.read_rendering(&content_sha, synctex).await else {
             return plain(404, "not found");
         };
         Response::builder()

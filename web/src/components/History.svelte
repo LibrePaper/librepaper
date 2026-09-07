@@ -14,11 +14,26 @@
   import { shortSha, timeline } from "../lib/history.js";
   import IconButton from "./IconButton.svelte";
   import PanelHeader from "./PanelHeader.svelte";
+  import CopyLink from "./CopyLink.svelte";
 
   let {
     checkpoints = [],
     viewing = null,
     canEdit = false,
+    baseline = null,
+    currentLabel = "now",
+    target = null,
+    ontarget,
+    changes = null,
+    changedPaths = [],
+    fileDiff = null,
+    onclosefilediff,
+    onbaseline,
+    onreveal,
+    onfilediff,
+    oncheckpointfile,
+    onrestore,
+    oncopy,
     problem = "",
     onshow,
     onback,
@@ -82,6 +97,18 @@
     naming = "";
     onname?.(sha, given);
   }
+
+  // The caller obtains these from the shared WASM word-diff service. Keeping
+  // the component presentation-only ensures its hunk labels and anchors are
+  // identical to the response export and the sync merge implementation.
+  const visibleChanges = $derived(Array.isArray(changes) ? changes : []);
+  const paths = $derived([...new Set([...(changedPaths || []), ...visibleChanges.map((hunk) => hunk.path).filter(Boolean)])]);
+  const baselineName = $derived(baseline?.label || (baseline ? shortSha(baseline.sha) : ""));
+
+  function showHunk(hunk) {
+    const quote = String(hunk.new || "");
+    if (quote) onreveal?.({ ...hunk, exact: quote });
+  }
 </script>
 
 <!-- One of the column's panels: the column itself, with the tabs that choose
@@ -104,6 +131,102 @@
       </p>
     {/if}
   </PanelHeader>
+
+  {#if checkpoints.length > 0}
+    <section class="history-changes border-surface-200-800 border-b px-3 py-3">
+      <div class="mb-2 flex items-center justify-between gap-2">
+        <h3 class="panel-section-title m-0">What changed since</h3>
+        {#if baseline}
+          <small class="panel-meta">{baselineName} → {currentLabel}</small>
+        {/if}
+      </div>
+      <label class="label mb-2">
+        <span class="label-text text-xs">Compare with</span>
+        <select class="select select-sm" value={baseline?.sha || ""} onchange={(event) => onbaseline?.(event.currentTarget.value)}>
+          <option value="" disabled>Choose a checkpoint</option>
+          {#each checkpoints as point (point.sha)}
+            <option value={point.sha}>{point.label || shortSha(point.sha)} · {clock(point.at)}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="label mb-2">
+        <span class="label-text text-xs">Compare to</span>
+        <select class="select select-sm" value={target?.sha || ""} onchange={(event) => ontarget?.(event.currentTarget.value)}>
+          <option value="">Live document (now)</option>
+          {#each checkpoints as point (point.sha)}
+            {#if point.sha !== baseline?.sha}
+              <option value={point.sha}>{point.label || shortSha(point.sha)} · {clock(point.at)}</option>
+            {/if}
+          {/each}
+        </select>
+      </label>
+      {#if !baseline}
+        <p class="panel-muted text-sm">Choose a checkpoint to see the words that changed.</p>
+      {:else if problem}
+        <p class="panel-muted text-sm">The passage comparison is unavailable.</p>
+      {:else if viewing && !target}
+        <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onback?.()}>Back to now to compare changes</button>
+      {:else if changes === null}
+        <p class="panel-muted text-sm" role="status">Loading changes…</p>
+      {:else if !visibleChanges.length}
+        <p class="panel-muted text-sm">No text changed after this checkpoint.</p>
+      {:else}
+        <ol class="history-hunks flex flex-col gap-2">
+          {#each visibleChanges as hunk, index (`${hunk.path || ""}-${index}`)}
+            <li class="history-hunk card preset-outlined-surface-200-800 p-2">
+              <div class="mb-1 flex items-center justify-between gap-2">
+                <span class="truncate text-xs">{hunk.path || "document"}</span>
+                {#if hunk.old && hunk.new}<span class="badge preset-tonal-tertiary">changed</span>
+                {:else if hunk.new}<span class="badge preset-tonal-secondary">inserted</span>
+                {:else}<span class="badge preset-tonal-warning">deleted</span>{/if}
+              </div>
+              {#if hunk.old}<div class="history-old text-xs">− {hunk.old}</div>{/if}
+              {#if hunk.new}<div class="history-new text-xs">+ {hunk.new}</div>{/if}
+              {#if hunk.before || hunk.after}
+                <div class="panel-muted mt-1 text-xs">… {hunk.contextBefore ?? hunk.before ?? ""} <strong>{hunk.new || hunk.old || ""}</strong> {hunk.contextAfter ?? hunk.after ?? ""} …</div>
+              {/if}
+              {#if hunk.new}
+                <button type="button" class="btn btn-sm preset-tonal-primary mt-2" onclick={() => showHunk(hunk)}>Reveal in document</button>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+      {/if}
+      {#if paths.length}
+        <div class="mt-3 flex flex-col gap-1">
+          <span class="panel-meta">Changed files</span>
+          {#each paths as path (path)}
+            <button type="button" class="btn btn-sm preset-outlined-surface-300-700 justify-start" onclick={() => onfilediff?.(path)}>{path}</button>
+          {/each}
+        </div>
+      {/if}
+      {#if fileDiff}
+        <section class="history-file-diff mt-3" aria-label="File diff">
+          <div class="mb-1 flex items-center justify-between gap-2">
+            <strong class="text-sm truncate">{fileDiff.path}</strong>
+            <button type="button" class="btn btn-sm preset-tonal-surface" onclick={() => onclosefilediff?.()}>Close</button>
+          </div>
+          {#if fileDiff.loading}
+            <p class="panel-muted text-sm" role="status">Loading comparison…</p>
+          {:else if fileDiff.problem}
+            <p class="panel-muted text-sm">{fileDiff.problem}</p>
+          {:else if fileDiff.old == null && fileDiff.new == null}
+            <p class="panel-muted text-sm">{!fileDiff.oldEntry ? "File added." : !fileDiff.newEntry ? "File removed." : "Binary file changed."}</p>
+          {:else if !fileDiff.hunks?.length}
+            <p class="panel-muted text-sm">{fileDiff.old == null ? "Empty file added." : fileDiff.new == null ? "Empty file removed." : "The text is unchanged."}</p>
+          {:else}
+            <div class="history-file-diff-body rounded bg-surface-100-900 p-2 text-xs">
+              {#each fileDiff.hunks as hunk}
+                <div class="mb-3 whitespace-pre-wrap">
+                  <span class="panel-muted">{hunk.before}</span>{#if hunk.old}<del class="history-old">{hunk.old}</del>{/if}{#if hunk.insert}<ins class="history-new">{hunk.insert}</ins>{/if}<span class="panel-muted">{hunk.after}</span>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      {/if}
+    </section>
+  {/if}
 
   {#each days as { day, rows } (day)}
     <h4 class="panel-section-title timeline-day sticky top-0 z-1 py-2">{day}</h4>
@@ -172,7 +295,16 @@
           label={point.label ? "Rename this point" : "Name this point"}
           onclick={() => startNaming(point)}
         />
+        <IconButton icon="history" tone="plain" size="btn-icon-sm" label="Restore this checkpoint" onclick={() => onrestore?.(point.sha)} />
       {/if}
+      <CopyLink href={oncopy?.(point.sha) || undefined} label="Copy the link to this checkpoint" />
     {/if}
   </li>
+  {#if point.parent && point.changed?.length}
+    <li class="flex flex-wrap gap-1 px-3 pb-2">
+      {#each point.changed as path (path)}
+        <button type="button" class="btn btn-sm preset-tonal-surface" onclick={() => oncheckpointfile?.(point, path)} title="Compare this file with the previous checkpoint">{path}</button>
+      {/each}
+    </li>
+  {/if}
 {/snippet}

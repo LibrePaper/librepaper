@@ -25,6 +25,10 @@ self.onmessage = ({ data: { id, url, operation, args } }) => {
       let result;
       if (operation === "render") result = render(wasm, args.tree, args.title);
       else if (operation === "title") result = call(wasm, "title_of", args.source).text;
+      else if (operation === "diff") {
+        const raw = call(wasm, "word_diff", args.old, args.new).text;
+        result = JSON.parse(raw || "[]");
+      }
       else if (operation === "failure") result = wasm.failure_page ? call(wasm, "failure_page", args.title).text : null;
       else if (operation !== "warm") throw new Error(`Unknown renderer operation: ${operation}`);
       const transfer = result?.pdf instanceof ArrayBuffer ? [result.pdf] : [];

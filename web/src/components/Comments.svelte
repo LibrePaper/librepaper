@@ -20,6 +20,9 @@
     // than looked up here: the card is what says it, and the page is what
     // knows it.
     went = {},
+    // Inserted side of a historical word diff, keyed by comment id. The page
+    // owns fetching and anchoring this data; cards only present it.
+    replacements = {},
     ontool,
     onreveal,
     onresolve,
@@ -86,6 +89,7 @@
         {commentingAs}
         {canModerate}
         went={went[comment.id] || null}
+        replacement={replacements[comment.id] ?? null}
         {onreveal}
         {onresolve}
         {ondelete}

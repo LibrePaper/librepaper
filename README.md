@@ -326,10 +326,10 @@ relaying a few dozen bytes per keystroke.
 
 History is kept for you. The server takes a checkpoint of the source when the
 document has been quiet for a while, when the last editor leaves, when someone
-comments, and whenever `komodoc publish` writes to it; the same text is never
-checkpointed twice, and nothing is ever rewritten. Checkpoints are kept from
-the first version of this, and are what a restore, a diff and the timeline in
-the toolbar will be built on; none of those three exists yet.
+comments, and whenever `komodoc publish` writes to it. Unchanged text reuses its
+checkpoint; an explicit restore records a new event. The history panel lets you
+read earlier versions, compare changes, and restore a whole version or bring
+back individual passages in the editor.
 
 Rendering happens on clients. Markdown readers render HTML in the browser;
 Typst editors compile PDFs in a WebAssembly worker, using the same compiler
@@ -556,12 +556,27 @@ komodoc label c9k 4f2a91c            # and to take the name off again
 
 In the reader, the history button opens the same list beside the document.
 Picking a moment shows the document as it was at that moment, with a bar
-saying which one; "Back to now" leaves, and the copy button beside it gives a
-link that puts another editor exactly where you are. A name can be given to
-any row from there too. Nothing on that screen changes the document: viewing
-the past is reading. The button is an editor's, like the files and the
-settings beside it: somebody who opened a read or a comment link sees the
-document and its comments, and nothing about the source it was made from.
+saying which one; "Back to now" returns to the live document. Copying a
+checkpoint's link preserves the share key that gave you access. Editors can
+name checkpoints and restore earlier versions.
+
+"What changed since" compares an earlier checkpoint with the current visible
+text. Click an inserted or replaced passage to find it in the document;
+deleted passages retain surrounding words in the list. Changed file paths
+open source comparisons, and editors can compare two checkpoints and bring
+individual changes into the live source.
+
+The same comparisons and whole-version restore are available in the terminal:
+
+```sh
+komodoc diff c9k 8b03d77 4f2a91c
+komodoc restore c9k 8b03d77
+```
+
+Restore requires editor access. It records the current version before applying
+the earlier directory through the shared editing session, then records the
+restore in history. Both versions remain available, subject to the deployment's
+history quota. Use `--key` with a share link on either command.
 
 ### Export
 
@@ -605,8 +620,8 @@ it, which is a round of review.
 
 **Then** is a quotation rather than a recollection, because every comment
 records the checkpoint it was made on. **Now** says whether the passage is
-still in the document; what replaced it is not claimed, because a word-level
-diff of the two versions is not built yet. The line is left out entirely for a
+still in the document and quotes its replacement when the word diff can
+identify it. The line is left out entirely for a
 document this machine cannot render -- a LaTeX paper, whose compiler is in a
 browser.
 

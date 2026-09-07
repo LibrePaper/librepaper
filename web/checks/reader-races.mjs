@@ -32,6 +32,10 @@ const context = (values) => vm.createContext({
   Promise,
   Uint8Array,
   ArrayBuffer,
+  historyDiffGeneration: 0,
+  historyComparePoint: null,
+  historyChanges: null,
+  write: () => {},
   ...values,
 });
 

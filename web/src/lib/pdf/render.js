@@ -231,7 +231,10 @@ function rewrite(textDivs, items, leadingBreak) {
       continue;
     }
     const div = textDivs[at++];
-    if (!div) continue;
+    // pdf.js includes detached spans for empty end-of-line items. Keep the
+    // last attached run as the insertion point, or the following newline
+    // is inserted beside a detached span and disappears from the text layer.
+    if (!div?.parentNode) continue;
     // The span's own text, folded and with a line-break hyphen taken off.
     // The hyphen goes back as generated content: `content` is drawn but is
     // not a text node, so the reader sees `inter-` at the line end and the
