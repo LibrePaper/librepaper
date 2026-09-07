@@ -1,0 +1,139 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WASM TeX and emulated Biber experiment</title>
+<pre id="status">Preparing the experiment…</pre>
+<script type="module">
+import { WasmTexXetexEngine } from "/source/lib/engine/xetex-engine.js";
+import { runBiber } from "/biber-bridge.js";
+
+const encoder = new TextEncoder();
+const bytes = value => {
+  if (typeof value === "string") return encoder.encode(value);
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (Array.isArray(value)) return Uint8Array.from(value);
+  throw new TypeError("Expected text or bytes");
+};
+const base64 = value => {
+  const data = bytes(value);
+  let text = "";
+  for (let i = 0; i < data.length; i += 8192) text += String.fromCharCode(...data.subarray(i, i + 8192));
+  return btoa(text);
+};
+async function hash(files) {
+  const parts = [];
+  for (const [name, content] of files) {
+    for (const data of [encoder.encode(name), bytes(content)]) {
+      const size = new Uint8Array(4);
+      new DataView(size.buffer).setUint32(0, data.length);
+      parts.push(size, data);
+    }
+  }
+  const joined = new Uint8Array(parts.reduce((total, p) => total + p.length, 0));
+  let offset = 0;
+  for (const part of parts) { joined.set(part, offset); offset += part.length; }
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", joined))]
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+const needsRerun = log =>
+  /Rerun to get|Label\(s\) may have changed|Please (?:\(re\))?run (?:Biber|LaTeX)|undefined (?:citations|references)|Citation .+ undefined/i.test(log);
+const fatal = log => /^!|Emergency stop|Fatal error|^.+:\d+: (?:Undefined control sequence|LaTeX Error)|Missing character:/m.test(log);
+let compiler, identity, active = false, bibliographyKey = null;
+let savedBibliography = null, savedBiberLog = null;
+const read = name => compiler.readFile(name);
+async function auxiliarySignature(stem) {
+  const files = [];
+  for (const ext of ["aux", "out", "toc", "bcf"]) files.push([ext, await read(stem + "." + ext) ?? ""]);
+  return hash(files);
+}
+
+globalThis.hybridRun = async ({ files, mainFile, engine, assetBaseUrl, texliveUrl, phase }) => {
+  if (active) throw new Error("A compile is already active");
+  active = true;
+  const started = performance.now();
+  const timings = { initializationSeconds: 0, stagingSeconds: 0, texPassesSeconds: [] };
+  const invocations = [];
+  let tex = { log: "" }, outputs = {}, converged = false;
+  const stem = mainFile.replace(/\.tex$/, "");
+  try {
+    if (engine !== "xelatex" || !/^[A-Za-z0-9_.-]+\.tex$/.test(mainFile)) {
+      throw new Error("This experiment requires XeLaTeX and a root-level main file");
+    }
+    const requested = JSON.stringify([mainFile, assetBaseUrl, texliveUrl]);
+    if (identity && identity !== requested) throw new Error("Reload to change the compilation environment");
+    if (!compiler) {
+      const t = performance.now();
+      compiler = new WasmTexXetexEngine({ assetBaseUrl, texliveUrl, texliveVersion: "2025", persistentCache: true });
+      await compiler.init();
+      compiler.setMainFile(mainFile);
+      identity = requested;
+      timings.initializationSeconds = (performance.now() - t) / 1000;
+    }
+    const stageStart = performance.now();
+    for (const [name, value] of Object.entries(files)) {
+      if (!/^[A-Za-z0-9_.-]+$/.test(name)) throw new Error("This fixture expects root-level input files");
+      await compiler.writeFile(name, value instanceof Array ? bytes(value) : value);
+    }
+    if (savedBibliography) await compiler.writeFile(stem + ".bbl", savedBibliography);
+    timings.stagingSeconds = (performance.now() - stageStart) / 1000;
+    let previousAux = await auxiliarySignature(stem);
+    for (let pass = 0; pass < 8; pass++) {
+      globalThis.hybridProgress = phase + ": TeX pass " + (pass + 1);
+      // The upstream worker can return an old XDV after a failed engine run.
+      await compiler.writeFile(stem + ".xdv", new Uint8Array());
+      const t = performance.now();
+      tex = await compiler.compile();
+      timings.texPassesSeconds.push((performance.now() - t) / 1000);
+      if (!tex.success || !tex.pdf?.byteLength || fatal(tex.log || "")) throw new Error("TeX pass failed");
+      const bcf = await read(stem + ".bcf");
+      if (!bcf) throw new Error("Expected a Biber control file");
+      const bib = Object.fromEntries(Object.entries(files).filter(([name]) => name.endsWith(".bib")));
+      const config = files["biber.conf"] ?? '<?xml version="1.0" encoding="UTF-8"?><config></config>';
+      const key = await hash([
+        ["runtime", "CheerpX-1.2.8/Biber-2.21"],
+        [stem + ".bcf", bcf],
+        ...Object.keys(bib).sort().map(name => [name, bib[name]]),
+        ["biber.conf", config],
+      ]);
+      let ranBiber = false;
+      if (key !== bibliographyKey) {
+        globalThis.hybridProgress = phase + ": Biber";
+        const result = await runBiber({
+          bcf: { path: stem + ".bcf", bytes: bytes(bcf) },
+          bib: Object.fromEntries(Object.entries(bib).map(([name, value]) => [name, bytes(value)])),
+          config: { path: "biber.conf", bytes: bytes(config) },
+          ext2Url: location.origin + "/assets/rootfs.ext2",
+        });
+        invocations.push({ exitCode: result.exitCode, timings: result.timings, runtime: result.runtime });
+        if (result.blg) { savedBiberLog = result.blg; outputs.blg = base64(result.blg); }
+        if (!result.success || !result.bbl?.length) throw new Error("Biber failed: " + result.exitCode);
+        savedBibliography = result.bbl;
+        bibliographyKey = key;
+        await compiler.writeFile(stem + ".bbl", result.bbl);
+        ranBiber = true;
+      }
+      const currentAux = await auxiliarySignature(stem);
+      if (!ranBiber && !needsRerun(tex.log || "") && currentAux === previousAux) {
+        converged = true;
+        break;
+      }
+      previousAux = currentAux;
+    }
+    if (!converged) throw new Error("References did not converge within eight TeX passes");
+    for (const ext of ["bcf", "bbl", "aux", "log"]) {
+      const value = await read(stem + "." + ext);
+      if (value != null) outputs[ext] = base64(value);
+    }
+    if (savedBiberLog) outputs.blg = base64(savedBiberLog);
+    return { success: true, converged, pdf: base64(tex.pdf), outputs, log: tex.log,
+      timings, elapsedMs: performance.now() - started, phase,
+      biber: invocations.length ? { count: invocations.length, invocations } : null };
+  } catch (error) {
+    return { success: false, pdf: null, error: String(error), log: tex.log || "", outputs,
+      timings, elapsedMs: performance.now() - started, phase,
+      biber: invocations.length ? { count: invocations.length, invocations } : null };
+  } finally { active = false; }
+};
+globalThis.hybridReady = true;
+document.querySelector("#status").textContent = "Ready. Bibliography processing powered by CheerpX by Leaning Technologies.";
+</script>

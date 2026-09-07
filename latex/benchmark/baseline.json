@@ -1,0 +1,1663 @@
+{
+  "date": "2026-09-07T01:27:15.540Z",
+  "browser": "chromium",
+  "manifestSha256": "709b30becccd4a4c6197007914dcf0b2ed8e3ef7ea0257d0252785aec9b7b577",
+  "method": "Fresh browser profile per case/distribution; cold includes app boot and choose; warm is a visible body edit; reload returns to original source with persistent caches. Local uncompressed mirror, no network/CPU throttling. Memory not measured. Text agreement is a word-multiset F1, not visual or bibliography-order equivalence.",
+  "cases": [
+    {
+      "id": "acm-conference",
+      "distribution": "swiftlatex-pdftex",
+      "release": "2dfb2fc534b459b5",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "59b073e2885033a7d6fb520496d1a671a461a4cc6e87cf7b4609941b0aaff946",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 0.7475254739999999,
+          "bytes": 14498862,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 6,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.24162817900000005,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 6,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 0.5355608310000002,
+          "bytes": 10424262,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 6,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "acm-journal",
+      "distribution": "swiftlatex-pdftex",
+      "release": "2dfb2fc534b459b5",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "c2e39e0b050047e283d3ab3d542931ec5aee5dde21b5246328b4bd3b7dcf3211",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 0.8012854029999998,
+          "bytes": 14498862,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 11,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.23374146699999984,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 11,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 0.548340083,
+          "bytes": 10424262,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 11,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "thesis",
+      "distribution": "swiftlatex-pdftex",
+      "release": "2dfb2fc534b459b5",
+      "requestedEngine": "lualatex",
+      "treeSha256": "29b36f30043fa7d8124418238a92e71ef9c767df79b85285a7a9e0578fdce702",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 0.7046217129999995,
+          "bytes": 14493856,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `kvoptions-patch.sty' not found.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": null,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.17164751799999978,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `kvoptions-patch.sty' not found.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": null,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 0.4945091280000006,
+          "bytes": 10419256,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `kvoptions-patch.sty' not found.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": null,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": false,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "biber-related",
+      "distribution": "swiftlatex-pdftex",
+      "release": "2dfb2fc534b459b5",
+      "requestedEngine": "xelatex",
+      "treeSha256": "00b8b263768bd800dc55f0d20a501871f8071592f66c4a2fe6fb1b2f56507b7d",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 0.591888027,
+          "bytes": 14635484,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.15615455099999964,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 0.4813796430000002,
+          "bytes": 10560884,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "biber-sorting",
+      "distribution": "swiftlatex-pdftex",
+      "release": "2dfb2fc534b459b5",
+      "requestedEngine": "xelatex",
+      "treeSha256": "77b2e0d6b284737d5f720cc8053881e13cadcf98e9fa21271533335bb22f4649",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 0.6290896470000007,
+          "bytes": 14635484,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.15546362599999974,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 0.4803190799999993,
+          "bytes": 10560884,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "multifile",
+      "distribution": "swiftlatex-pdftex",
+      "release": "2dfb2fc534b459b5",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "0694779c8014e7e02b6bdf018b9c6f95d46357ea76c0e42bb4b1495f45c61344",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 1.5421709300000002,
+          "bytes": 21230291,
+          "pdf": true,
+          "pages": 4,
+          "synctex": false,
+          "error": null,
+          "errors": [],
+          "warnings": [],
+          "textAgreement": 1,
+          "referencePages": 4,
+          "status": "pdf-produced"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.3176997810000012,
+          "bytes": 0,
+          "pdf": true,
+          "pages": 4,
+          "synctex": false,
+          "error": null,
+          "errors": [],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 4,
+          "status": "pdf-produced"
+        },
+        {
+          "phase": "reload",
+          "seconds": 1.2481933040000004,
+          "bytes": 17155691,
+          "pdf": true,
+          "pages": 4,
+          "synctex": false,
+          "error": null,
+          "errors": [],
+          "warnings": [],
+          "textAgreement": 1,
+          "referencePages": 4,
+          "status": "pdf-produced"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "packages",
+      "distribution": "swiftlatex-pdftex",
+      "release": "2dfb2fc534b459b5",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "63674bb7f3e287052ded3e01fd9b80e0bbb16a11b128e98130cdc321466ace6a",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 0.7469797269999999,
+          "bytes": 14882467,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package siunitx Error: LaTeX kernel too old.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.15247133499999838,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package siunitx Error: LaTeX kernel too old.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 0.47108097300000007,
+          "bytes": 10807867,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package siunitx Error: LaTeX kernel too old.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "unicode-fonts",
+      "distribution": "swiftlatex-pdftex",
+      "release": "2dfb2fc534b459b5",
+      "requestedEngine": "xelatex",
+      "treeSha256": "99a7c56d77a5200cd9c2d1abfd4a95f06cb24eee6920cbd1b21eeb4459a7a91e",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 0.6113948,
+          "bytes": 14635484,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.15439322400000127,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 0.48271384000000034,
+          "bytes": 10560884,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "acm-conference",
+      "distribution": "busytex",
+      "release": "598bde56716502e7",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "59b073e2885033a7d6fb520496d1a671a461a4cc6e87cf7b4609941b0aaff946",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 18.572214624000004,
+          "bytes": 220108450,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 6,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 17.349276357,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 6,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 19.468297573999997,
+          "bytes": 59029,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 6,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "acm-journal",
+      "distribution": "busytex",
+      "release": "598bde56716502e7",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "c2e39e0b050047e283d3ab3d542931ec5aee5dde21b5246328b4bd3b7dcf3211",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 18.56837807400001,
+          "bytes": 220108450,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 11,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 16.008228141,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 11,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 17.200576954999995,
+          "bytes": 59029,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!",
+            "pdfTeX error (font expansion): auto expansion is only possible with scalable fonts.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 11,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "thesis",
+      "distribution": "busytex",
+      "release": "598bde56716502e7",
+      "requestedEngine": "lualatex",
+      "treeSha256": "29b36f30043fa7d8124418238a92e71ef9c767df79b85285a7a9e0578fdce702",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 6.358490432999999,
+          "bytes": 220108450,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package babel Error: Unknown option 'ngerman'. Either you misspelled it"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 59,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 3.8114398669999936,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package babel Error: Unknown option 'ngerman'. Either you misspelled it"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 59,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 5.5015445539999925,
+          "bytes": 59029,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package babel Error: Unknown option 'ngerman'. Either you misspelled it"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 59,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "xelatex"
+    },
+    {
+      "id": "biber-related",
+      "distribution": "busytex",
+      "release": "598bde56716502e7",
+      "requestedEngine": "xelatex",
+      "treeSha256": "00b8b263768bd800dc55f0d20a501871f8071592f66c4a2fe6fb1b2f56507b7d",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 4.6491676539999895,
+          "bytes": 220108450,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 1.6704296960000065,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 3.3523866809999743,
+          "bytes": 59029,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "xelatex"
+    },
+    {
+      "id": "biber-sorting",
+      "distribution": "busytex",
+      "release": "598bde56716502e7",
+      "requestedEngine": "xelatex",
+      "treeSha256": "77b2e0d6b284737d5f720cc8053881e13cadcf98e9fa21271533335bb22f4649",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 4.316553182999982,
+          "bytes": 220108450,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 1.670096996999986,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 5.322126295999973,
+          "bytes": 59029,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "xelatex"
+    },
+    {
+      "id": "multifile",
+      "distribution": "busytex",
+      "release": "598bde56716502e7",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "0694779c8014e7e02b6bdf018b9c6f95d46357ea76c0e42bb4b1495f45c61344",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 9.597949598999985,
+          "bytes": 220108450,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "pdfTeX error: /bin/busytex (file ecti1095): Font ecti1095 at 600 not found"
+          ],
+          "warnings": [
+            "Package natbib Warning: Citation `knuth1984' on page 2 undefined on input line",
+            "Package natbib Warning: Citation `lamport1994' on page 2 undefined on input lin",
+            "Package natbib Warning: There were undefined citations.",
+            "LaTeX Warning: There were undefined references.",
+            "LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right."
+          ],
+          "textAgreement": null,
+          "referencePages": 4,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 1.3665293689999962,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "pdfTeX error: /bin/busytex (file ecti1095): Font ecti1095 at 600 not found"
+          ],
+          "warnings": [
+            "Package natbib Warning: Citation `knuth1984' on page 2 undefined on input line",
+            "Package natbib Warning: Citation `lamport1994' on page 2 undefined on input lin",
+            "Package natbib Warning: There were undefined citations.",
+            "LaTeX Warning: There were undefined references.",
+            "LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right."
+          ],
+          "textAgreement": null,
+          "referencePages": 4,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 3.046513555000012,
+          "bytes": 59029,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "pdfTeX error: /bin/busytex (file ecti1095): Font ecti1095 at 600 not found"
+          ],
+          "warnings": [
+            "Package natbib Warning: Citation `knuth1984' on page 2 undefined on input line",
+            "Package natbib Warning: Citation `lamport1994' on page 2 undefined on input lin",
+            "Package natbib Warning: There were undefined citations.",
+            "LaTeX Warning: There were undefined references.",
+            "LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right."
+          ],
+          "textAgreement": null,
+          "referencePages": 4,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "packages",
+      "distribution": "busytex",
+      "release": "598bde56716502e7",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "63674bb7f3e287052ded3e01fd9b80e0bbb16a11b128e98130cdc321466ace6a",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 5.186494359000004,
+          "bytes": 220108450,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `tikz.sty' not found.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 1.062806969999976,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `tikz.sty' not found.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 5.188623569999996,
+          "bytes": 59029,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `tikz.sty' not found.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "unicode-fonts",
+      "distribution": "busytex",
+      "release": "598bde56716502e7",
+      "requestedEngine": "xelatex",
+      "treeSha256": "99a7c56d77a5200cd9c2d1abfd4a95f06cb24eee6920cbd1b21eeb4459a7a91e",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 3.523142099000019,
+          "bytes": 220108450,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package fontspec Error: The font \"Libertinus Serif\" cannot be found."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 1.5249503130000084,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package fontspec Error: The font \"Libertinus Serif\" cannot be found."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 2.8937672319999836,
+          "bytes": 59029,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package fontspec Error: The font \"Libertinus Serif\" cannot be found."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "xelatex"
+    },
+    {
+      "id": "acm-conference",
+      "distribution": "texlyre-busytex",
+      "release": "00f88f94b211c4d5",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "59b073e2885033a7d6fb520496d1a671a461a4cc6e87cf7b4609941b0aaff946",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 1.9400336269999972,
+          "bytes": 141243261,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 6,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.2403487020000175,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 6,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 0.9897603079999971,
+          "bytes": 64035,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 6,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "acm-journal",
+      "distribution": "texlyre-busytex",
+      "release": "00f88f94b211c4d5",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "c2e39e0b050047e283d3ab3d542931ec5aee5dde21b5246328b4bd3b7dcf3211",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 1.4281832249999862,
+          "bytes": 141243261,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 11,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.2466933919999865,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 11,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 0.9982379549999896,
+          "bytes": 64035,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "I can't find file `xkeyval'.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 11,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "thesis",
+      "distribution": "texlyre-busytex",
+      "release": "00f88f94b211c4d5",
+      "requestedEngine": "lualatex",
+      "treeSha256": "29b36f30043fa7d8124418238a92e71ef9c767df79b85285a7a9e0578fdce702",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 8.197635931999976,
+          "bytes": 684004512,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package babel Error: Unknown option 'ngerman'."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 59,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 3.049795765000017,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package babel Error: Unknown option 'ngerman'."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 59,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 7.034053837999992,
+          "bytes": 86808,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package babel Error: Unknown option 'ngerman'."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 59,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "xelatex"
+    },
+    {
+      "id": "biber-related",
+      "distribution": "texlyre-busytex",
+      "release": "00f88f94b211c4d5",
+      "requestedEngine": "xelatex",
+      "treeSha256": "00b8b263768bd800dc55f0d20a501871f8071592f66c4a2fe6fb1b2f56507b7d",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 10.780315396999999,
+          "bytes": 684096482,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 2.2752603289999827,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 5.332708298999991,
+          "bytes": 150999,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "xelatex"
+    },
+    {
+      "id": "biber-sorting",
+      "distribution": "texlyre-busytex",
+      "release": "00f88f94b211c4d5",
+      "requestedEngine": "xelatex",
+      "treeSha256": "77b2e0d6b284737d5f720cc8053881e13cadcf98e9fa21271533335bb22f4649",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 7.6051082560000065,
+          "bytes": 694718089,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 1.6702148609999858,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 6.230290393000003,
+          "bytes": 150999,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop."
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "xelatex"
+    },
+    {
+      "id": "multifile",
+      "distribution": "texlyre-busytex",
+      "release": "00f88f94b211c4d5",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "0694779c8014e7e02b6bdf018b9c6f95d46357ea76c0e42bb4b1495f45c61344",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 5.864916080999974,
+          "bytes": 684004512,
+          "pdf": true,
+          "pages": 4,
+          "synctex": true,
+          "error": null,
+          "errors": [],
+          "warnings": [],
+          "textAgreement": 1,
+          "referencePages": 4,
+          "status": "pdf-produced"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.9226925359999878,
+          "bytes": 0,
+          "pdf": true,
+          "pages": 4,
+          "synctex": true,
+          "error": null,
+          "errors": [],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 4,
+          "status": "pdf-produced"
+        },
+        {
+          "phase": "reload",
+          "seconds": 3.8216224090000033,
+          "bytes": 59029,
+          "pdf": true,
+          "pages": 4,
+          "synctex": true,
+          "error": null,
+          "errors": [],
+          "warnings": [],
+          "textAgreement": 1,
+          "referencePages": 4,
+          "status": "pdf-produced"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "packages",
+      "distribution": "texlyre-busytex",
+      "release": "00f88f94b211c4d5",
+      "requestedEngine": "pdflatex",
+      "treeSha256": "63674bb7f3e287052ded3e01fd9b80e0bbb16a11b128e98130cdc321466ace6a",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 7.760322330999945,
+          "bytes": 684392980,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 0.30554805300000587,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 3.1982293619999544,
+          "bytes": 447497,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "LaTeX Error: File `biblatex.sty' not found.",
+            "Emergency stop.",
+            "==> Fatal error occurred, no output PDF file produced!"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 2,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "pdflatex"
+    },
+    {
+      "id": "unicode-fonts",
+      "distribution": "texlyre-busytex",
+      "release": "00f88f94b211c4d5",
+      "requestedEngine": "xelatex",
+      "treeSha256": "99a7c56d77a5200cd9c2d1abfd4a95f06cb24eee6920cbd1b21eeb4459a7a91e",
+      "phases": [
+        {
+          "phase": "cold",
+          "seconds": 17.506647920000017,
+          "bytes": 684004512,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package fontspec Error:"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "edit",
+          "seconds": 6.208510072000034,
+          "bytes": 0,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package fontspec Error:"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        },
+        {
+          "phase": "reload",
+          "seconds": 10.329465454999998,
+          "bytes": 59029,
+          "pdf": false,
+          "pages": 0,
+          "synctex": false,
+          "error": null,
+          "errors": [
+            "Package fontspec Error:"
+          ],
+          "warnings": [],
+          "textAgreement": null,
+          "referencePages": 1,
+          "status": "failed"
+        }
+      ],
+      "referenceReady": true,
+      "selectedEngine": "xelatex"
+    }
+  ],
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+  "sources": {
+    "thesis": {
+      "repository": "https://github.com/latextemplates/scientific-thesis-template",
+      "revision": "fd2624a31ef09946e8c0d326a5d3aa8fbea95c4e",
+      "sha256": "7fc7fe74c03df1434e227b6db1c9a9c75a678639943d96f89d0642201dfea008",
+      "license": "Unlicense; retain the archive's notices for included components"
+    },
+    "acmart": {
+      "repository": "https://github.com/borisveytsman/acmart",
+      "revision": "ad98567f427b9cd854a8d0c0d0870c55333f5c99",
+      "sha256": "449dcc30080a31b400b81b899427e84315054b2d005616d2c32a88605a9b0102",
+      "license": "LPPL-1.3c; see LICENSE in the archive"
+    },
+    "biblatex": {
+      "repository": "https://github.com/plk/biblatex",
+      "revision": "7f0435bfcff2da18b820ab1adf39a2950fa2e692",
+      "license": "LPPL-1.3-or-later; see README.md in the archive",
+      "sha256": "9ace84eade5f89b82d21344bd591f58d0a42bedbb67674cc2ac3181ee1d6f7bf"
+    }
+  },
+  "native": [
+    {
+      "id": "acm-conference",
+      "engine": "pdflatex",
+      "treeSha256": "59b073e2885033a7d6fb520496d1a671a461a4cc6e87cf7b4609941b0aaff946",
+      "version": "pdfTeX 3.141592653-2.6-1.40.27 (TeX Live 2025/nixos.org)",
+      "exitCode": 0,
+      "error": null,
+      "seconds": 2.3674462800000002,
+      "pdf": true,
+      "pages": 6,
+      "warnings": [],
+      "synctex": true,
+      "biberRan": false,
+      "status": "reference-ready"
+    },
+    {
+      "id": "acm-journal",
+      "engine": "pdflatex",
+      "treeSha256": "c2e39e0b050047e283d3ab3d542931ec5aee5dde21b5246328b4bd3b7dcf3211",
+      "version": "pdfTeX 3.141592653-2.6-1.40.27 (TeX Live 2025/nixos.org)",
+      "exitCode": 0,
+      "error": null,
+      "seconds": 2.368263337,
+      "pdf": true,
+      "pages": 11,
+      "warnings": [],
+      "synctex": true,
+      "biberRan": false,
+      "status": "reference-ready"
+    },
+    {
+      "id": "thesis",
+      "engine": "lualatex",
+      "treeSha256": "29b36f30043fa7d8124418238a92e71ef9c767df79b85285a7a9e0578fdce702",
+      "version": "This is LuaHBTeX, Version 1.22.0 (TeX Live 2025/nixos.org)",
+      "exitCode": 0,
+      "error": null,
+      "seconds": 62.21279856700001,
+      "pdf": true,
+      "pages": 59,
+      "warnings": [],
+      "synctex": true,
+      "biberRan": true,
+      "status": "reference-ready"
+    },
+    {
+      "id": "biber-related",
+      "engine": "xelatex",
+      "treeSha256": "00b8b263768bd800dc55f0d20a501871f8071592f66c4a2fe6fb1b2f56507b7d",
+      "version": "XeTeX 3.141592653-2.6-0.999997 (TeX Live 2025/nixos.org)",
+      "exitCode": 0,
+      "error": null,
+      "seconds": 5.2910697209999995,
+      "pdf": true,
+      "pages": 2,
+      "warnings": [],
+      "synctex": true,
+      "biberRan": true,
+      "status": "reference-ready"
+    },
+    {
+      "id": "biber-sorting",
+      "engine": "xelatex",
+      "treeSha256": "77b2e0d6b284737d5f720cc8053881e13cadcf98e9fa21271533335bb22f4649",
+      "version": "XeTeX 3.141592653-2.6-0.999997 (TeX Live 2025/nixos.org)",
+      "exitCode": 0,
+      "error": null,
+      "seconds": 3.956142445000001,
+      "pdf": true,
+      "pages": 1,
+      "warnings": [],
+      "synctex": true,
+      "biberRan": true,
+      "status": "reference-ready"
+    },
+    {
+      "id": "multifile",
+      "engine": "pdflatex",
+      "treeSha256": "0694779c8014e7e02b6bdf018b9c6f95d46357ea76c0e42bb4b1495f45c61344",
+      "version": "pdfTeX 3.141592653-2.6-1.40.27 (TeX Live 2025/nixos.org)",
+      "exitCode": 0,
+      "error": null,
+      "seconds": 1.0210386089999992,
+      "pdf": true,
+      "pages": 4,
+      "warnings": [],
+      "synctex": true,
+      "biberRan": false,
+      "status": "reference-ready"
+    },
+    {
+      "id": "packages",
+      "engine": "pdflatex",
+      "treeSha256": "63674bb7f3e287052ded3e01fd9b80e0bbb16a11b128e98130cdc321466ace6a",
+      "version": "pdfTeX 3.141592653-2.6-1.40.27 (TeX Live 2025/nixos.org)",
+      "exitCode": 0,
+      "error": null,
+      "seconds": 2.728145612,
+      "pdf": true,
+      "pages": 2,
+      "warnings": [],
+      "synctex": true,
+      "biberRan": false,
+      "status": "reference-ready"
+    },
+    {
+      "id": "unicode-fonts",
+      "engine": "xelatex",
+      "treeSha256": "99a7c56d77a5200cd9c2d1abfd4a95f06cb24eee6920cbd1b21eeb4459a7a91e",
+      "version": "XeTeX 3.141592653-2.6-0.999997 (TeX Live 2025/nixos.org)",
+      "exitCode": 0,
+      "error": null,
+      "seconds": 1.5327766589999992,
+      "pdf": true,
+      "pages": 1,
+      "warnings": [],
+      "synctex": true,
+      "biberRan": false,
+      "status": "reference-ready"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8"><title>TinyTeX / v86 experiment</title>
+<pre id="status">Preparing the browser worker…</pre>
+<script>
+globalThis.vm = { status: 'starting', serial: '', commands: {}, files: {} };
+const worker = new Worker('/worker.js');
+const encode = bytes => {
+  let s = ''; for (let i = 0; i < bytes.length; i += 16384) s += String.fromCharCode(...bytes.subarray(i, i + 16384));
+  return btoa(s);
+};
+worker.onmessage = ({ data }) => {
+  if (data.type === 'serial') vm.serial = (vm.serial + data.text).slice(-200000);
+  else if (data.type === 'status') Object.assign(vm, data);
+  else if (data.type === 'command') vm.commands[data.id] = data;
+  else if (data.type === 'file') vm.files[data.id] = { ...data, bytes: data.bytes ? encode(data.bytes) : null };
+  document.querySelector('#status').textContent = vm.status + '\n' + vm.serial.slice(-12000);
+};
+worker.onerror = e => { vm.status = 'error'; vm.error = e.message; };
+globalThis.vmSend = data => worker.postMessage(data);
+</script>

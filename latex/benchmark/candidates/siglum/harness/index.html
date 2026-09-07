@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Siglum benchmark harness</title>
+<script type="importmap">
+{
+  "imports": {
+    "@siglum/filesystem": "/node_modules/@siglum/filesystem/dist/index.js",
+    "blake3-wasm/": "/node_modules/blake3-wasm/"
+  }
+}
+</script>
+<script type="module">
+import { SiglumCompiler } from "/src/index.js";
+
+const logs = [];
+const compiler = new SiglumCompiler({
+  bundlesUrl: "/assets/bundles/bundles",
+  wasmUrl: "/assets/busytex.wasm",
+  jsUrl: "/assets/busytex.js",
+  enableCtan: false,
+  maxRetries: 3,
+  verbose: true,
+  onLog: (message) => logs.push(String(message)),
+});
+
+globalThis.siglumReady = false;
+globalThis.siglumLogs = logs;
+globalThis.siglumCompile = async ({ source, files, engine }) => {
+  logs.length = 0;
+  const additionalFiles = {};
+  for (const [name, value] of Object.entries(files || {})) {
+    additionalFiles[name] = Array.isArray(value) ? new Uint8Array(value) : value;
+  }
+  try {
+    const result = await compiler.compile(source, {
+      engine,
+      useCache: false,
+      additionalFiles,
+    });
+    const encode = (bytes) => {
+      if (!bytes) return null;
+      const data = new Uint8Array(bytes);
+      let binary = "";
+      for (let i = 0; i < data.length; i += 8192) binary += String.fromCharCode(...data.subarray(i, i + 8192));
+      return btoa(binary);
+    };
+    return {
+      success: Boolean(result.success),
+      pdf: encode(result.pdf),
+      error: result.error || null,
+      exitCode: result.exitCode ?? null,
+      log: logs.join("\n"),
+      syncTexLength: result.syncTexData ? result.syncTexData.length : 0,
+      syncTexHead: result.syncTexData ? result.syncTexData.slice(0, 80) : "",
+      stats: result.stats || null,
+    };
+  } catch (error) {
+    return { success: false, pdf: null, error: String(error), exitCode: null, log: logs.join("\n"), syncTexLength: 0, syncTexHead: "", stats: null };
+  }
+};
+
+try {
+  await compiler.init();
+  globalThis.siglumReady = true;
+} catch (error) {
+  globalThis.siglumInitError = String(error);
+  globalThis.siglumReady = true;
+}
+</script>

@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WasmTex benchmark harness</title>
+<script type="module">
+  import { WasmTexCompiler } from '../source/lib/headless.js';
+  const encode = (value) => {
+    if (!value) return null;
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 8192) out += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return btoa(out);
+  };
+  globalThis.wasmtexReady = true;
+  globalThis.wasmtexRun = async (payload) => {
+    const files = Object.fromEntries(Object.entries(payload.files || {}).map(([path, value]) => [path, Array.isArray(value) ? new Uint8Array(value) : value]));
+    const compiler = new WasmTexCompiler({ ...(payload.options || {}), files });
+    const started = performance.now();
+    try {
+      await compiler.init();
+      const result = await compiler.compile();
+      return { elapsedMs: performance.now() - started, success: result.success,
+        pdf: encode(result.pdf), synctex: encode(result.synctex), log: result.log || '',
+        errors: result.errors || [], telemetry: result.telemetry || null,
+        phaseTimings: result.phaseTimings || null, inputFilesComplete: result.inputFilesComplete ?? null,
+        preambleSnapshot: result.preambleSnapshot ?? null };
+    } catch (error) {
+      return { elapsedMs: performance.now() - started, error: String(error), success: false, pdf: null, synctex: null, log: '', errors: [] };
+    } finally {
+      compiler.dispose();
+    }
+  };
+</script>

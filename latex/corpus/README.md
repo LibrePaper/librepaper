@@ -1,5 +1,8 @@
 # The LaTeX corpus
 
+For pinned public ACM papers, a thesis, Biber examples, and separate cold/edit/
+reload measurements, see [the browser LaTeX evaluation](../benchmark/README.md).
+
 Four documents, each a directory with a `main.tex`, written for
 `docs/specs/latex.md` step 1. They exist to be compiled by every distribution
 Komodoc drives and by a TeX Live on a desk, and to disagree with none of

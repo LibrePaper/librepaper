@@ -1,0 +1,254 @@
+{
+  "manifestSha256": "709b30becccd4a4c6197007914dcf0b2ed8e3ef7ea0257d0252785aec9b7b577",
+  "release": "00f88f94b211c4d5",
+  "bundles": [
+    {
+      "loader": "texlyre-busytex/00f88f94b211c4d5/texlive-basic.js",
+      "files": 7185,
+      "payloadBytes": 92785062,
+      "virtualBytes": 156869917,
+      "internalCompression": "LZ4",
+      "largestGroups": [
+        [
+          "/texlive",
+          21977156
+        ],
+        [
+          "fonts/afm",
+          20450241
+        ],
+        [
+          "tex/generic",
+          18762921
+        ],
+        [
+          "texmf-var/web2c",
+          15735142
+        ],
+        [
+          "fonts/type1",
+          13686482
+        ],
+        [
+          "tex/luatex",
+          12876563
+        ],
+        [
+          "tex/latex",
+          10277316
+        ],
+        [
+          "fonts/opentype",
+          7522160
+        ],
+        [
+          "fonts/tfm",
+          6905512
+        ],
+        [
+          "texmf-var/fonts",
+          6032084
+        ],
+        [
+          "tex/latex-dev",
+          4606163
+        ],
+        [
+          "tex/lualatex",
+          4511059
+        ]
+      ],
+      "formats": [
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/luahbtex/luahblatex.fmt",
+          "bytes": 5654271
+        },
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt",
+          "bytes": 3369737
+        },
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/tex/tex.fmt",
+          "bytes": 303529
+        },
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/xetex/xelatex.fmt",
+          "bytes": 5949363
+        }
+      ],
+      "generatedLogBytes": 301454
+    },
+    {
+      "loader": "texlyre-busytex/00f88f94b211c4d5/texlive-recommended.js",
+      "files": 13236,
+      "payloadBytes": 201197697,
+      "virtualBytes": 290105349,
+      "internalCompression": "LZ4",
+      "largestGroups": [
+        [
+          "fonts/type1",
+          86338317
+        ],
+        [
+          "fonts/afm",
+          42059632
+        ],
+        [
+          "tex/generic",
+          23625673
+        ],
+        [
+          "tex/latex",
+          22569691
+        ],
+        [
+          "/texlive",
+          21977156
+        ],
+        [
+          "fonts/opentype",
+          15857708
+        ],
+        [
+          "fonts/tfm",
+          15777588
+        ],
+        [
+          "texmf-var/web2c",
+          15774037
+        ],
+        [
+          "tex/luatex",
+          12876563
+        ],
+        [
+          "texmf-var/fonts",
+          7314115
+        ],
+        [
+          "tex/lualatex",
+          4618273
+        ],
+        [
+          "tex/latex-dev",
+          4606163
+        ]
+      ],
+      "formats": [
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/luahbtex/luahblatex.fmt",
+          "bytes": 5653868
+        },
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt",
+          "bytes": 3369736
+        },
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/tex/tex.fmt",
+          "bytes": 303529
+        },
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/xetex/xelatex.fmt",
+          "bytes": 5949363
+        }
+      ],
+      "generatedLogBytes": 340753
+    },
+    {
+      "loader": "texlyre-busytex/00f88f94b211c4d5/texlive-extra.js",
+      "files": 23883,
+      "payloadBytes": 341568560,
+      "virtualBytes": 521791361,
+      "internalCompression": "LZ4",
+      "largestGroups": [
+        [
+          "tex/latex",
+          201446786
+        ],
+        [
+          "fonts/type1",
+          100349807
+        ],
+        [
+          "fonts/afm",
+          42366036
+        ],
+        [
+          "tex/generic",
+          33763274
+        ],
+        [
+          "fonts/opentype",
+          25768860
+        ],
+        [
+          "/texlive",
+          21977156
+        ],
+        [
+          "fonts/tfm",
+          19762232
+        ],
+        [
+          "texmf-var/web2c",
+          15929747
+        ],
+        [
+          "tex/luatex",
+          13737401
+        ],
+        [
+          "texmf-var/fonts",
+          7642215
+        ],
+        [
+          "tex/context",
+          7148712
+        ],
+        [
+          "tex/latex-dev",
+          5950379
+        ]
+      ],
+      "formats": [
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/luahbtex/luahblatex.fmt",
+          "bytes": 5654663
+        },
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/pdftex/pdflatex.fmt",
+          "bytes": 3369737
+        },
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/tex/tex.fmt",
+          "bytes": 303529
+        },
+        {
+          "path": "/texlive/texmf-dist/texmf-var/web2c/xetex/xelatex.fmt",
+          "bytes": 5949362
+        }
+      ],
+      "generatedLogBytes": 495668
+    }
+  ],
+  "uniqueCataloguedPaths": 23883,
+  "pathsInMultipleBundles": 13236,
+  "assetsOver25MiB": [
+    {
+      "url": "texlyre-busytex/00f88f94b211c4d5/busytex.wasm",
+      "bytes": 32507525
+    },
+    {
+      "url": "texlyre-busytex/00f88f94b211c4d5/texlive-basic.data",
+      "bytes": 92785062
+    },
+    {
+      "url": "texlyre-busytex/00f88f94b211c4d5/texlive-recommended.data",
+      "bytes": 201197697
+    },
+    {
+      "url": "texlyre-busytex/00f88f94b211c4d5/texlive-extra.data",
+      "bytes": 341568560
+    }
+  ]
+}

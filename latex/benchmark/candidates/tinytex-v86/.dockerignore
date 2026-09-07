@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!install-tex.sh
+!assets
+assets/**
+!assets/install-tl.tar.gz
+!assets/pkgs-custom.txt

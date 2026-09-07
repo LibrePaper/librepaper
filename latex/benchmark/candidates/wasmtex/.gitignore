@@ -1,0 +1,10 @@
+source/
+downloads/
+profiles/
+results/
+node_modules/
+*.log
+*.pdf
+*.synctex.gz
+.vite/
+node_modules/

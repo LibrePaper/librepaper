@@ -1,5 +1,9 @@
 # SPEC: remaining LaTeX work
 
+The compiler selection, resource distribution, SyncTeX integration and optional
+local compilation plan are superseded by [SPEC-wasmtex.md](../../SPEC-wasmtex.md).
+The notes below describe the earlier implementation and are historical context.
+
 ## SyncTeX
 
 The reader already has a place-mapping between the source and the page for

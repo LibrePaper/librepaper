@@ -1,0 +1,7 @@
+assets/
+results/
+server.log
+*.tmp
+src/node_modules/
+node_modules/
+src/

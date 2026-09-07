@@ -1,0 +1,14 @@
+<script type="module">
+import { runBiber } from './biber-bridge.js';
+const enc = new TextEncoder();
+globalThis.error = null;
+window.addEventListener('error', e => globalThis.error = String(e.error || e.message));
+window.addEventListener('unhandledrejection', e => globalThis.error = String(e.reason));
+globalThis.ready = true;
+globalThis.smoke = async () => {
+  const input = await fetch('/smoke-input.json').then(r=>r.json());
+  const r = await runBiber({ bcf: { path: '91-sorting-schemes.bcf', bytes: Uint8Array.from(input.bcf) }, bib: { 'biblatex-examples.bib': Uint8Array.from(input.bib) } });
+  const digest = r.bbl && [...new Uint8Array(await crypto.subtle.digest('SHA-256', r.bbl))].map(x=>x.toString(16).padStart(2,'0')).join('');
+  return { ok: r.success && r.exitCode === 0 && digest === input.bblSha256 && r.blg?.length > 0, exitCode:r.exitCode, timings:r.timings, bbl:r.bbl?.length, blg:r.blg?.length, bblSha256:digest, serial: r.serial };
+};
+</script>

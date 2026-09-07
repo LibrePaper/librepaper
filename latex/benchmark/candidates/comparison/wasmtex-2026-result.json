@@ -1,0 +1,235 @@
+{
+  "release": "2026-8b7946970153c52e",
+  "phases": [
+    {
+      "stage": "tex1",
+      "success": true,
+      "log": "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex)\nentering extended mode\n(./main.tex\nLaTeX2e <2026-06-01>\nL3 programming layer <2026-08-10>\n(/tex/article.cls\nDocument Class: article 2025/01/22 v1.4n Standard LaTeX document class\n(/tex/size10.clo)) (/tex/siunitx.sty (/tex/translations.sty (/tex/etoolbox.sty)\n (/tex/pdftexcmds.sty (/tex/infwarerr.sty) (/tex/iftex.sty) (/tex/ltxcmds.sty))\n) (/tex/amstext.sty (/tex/amsgen.sty)) (/tex/array.sty)) (/tex/color.sty\n(/tex/color.cfg) (/tex/pdftex.def) (/tex/mathcolor.ltx))\n(/tex/l3backend-pdftex.def)\nNo file main.aux.\n(/tex/translations-basic-dictionary-english.trsl) (./__strace.tex)\n\nLaTeX Warning: Citation `knuth' on page 1 undefined on input line 4.\n\nNo file main.bbl.\n[1{/tex/pdftex.map}] (./main.aux)\n\nLaTeX Warning: There were undefined references.\n\n )</tex/cmbx10.pfb></tex/cmr10.pfb>\nOutput written on main.pdf (1 page, 24535 bytes).\nSyncTeX written on main.synctex.gz.\nTranscript written on main.log.\n"
+    },
+    {
+      "stage": "bibtex",
+      "success": true,
+      "log": "This is BibTeX, Version 0.99e (TeX Live 2026)\nThe top-level auxiliary file: main.aux\nThe style file: plain.bst\nDatabase file #1: refs.bib\n"
+    },
+    {
+      "stage": "tex2",
+      "success": true,
+      "log": "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex)\nentering extended mode\n(./main.tex\nLaTeX2e <2026-06-01>\nL3 programming layer <2026-08-10>\n(/tex/article.cls\nDocument Class: article 2025/01/22 v1.4n Standard LaTeX document class\n(/tex/size10.clo)) (/tex/siunitx.sty (/tex/translations.sty (/tex/etoolbox.sty)\n (/tex/pdftexcmds.sty (/tex/infwarerr.sty) (/tex/iftex.sty) (/tex/ltxcmds.sty))\n) (/tex/amstext.sty (/tex/amsgen.sty)) (/tex/array.sty)) (/tex/color.sty\n(/tex/color.cfg) (/tex/pdftex.def) (/tex/mathcolor.ltx))\n(/tex/l3backend-pdftex.def) (./main.aux)\n(/tex/translations-basic-dictionary-english.trsl) (./__strace.tex)\n\nLaTeX Warning: Citation `knuth' on page 1 undefined on input line 4.\n\n(./main.bbl) [1{/tex/pdftex.map}] (./main.aux)\n\nLaTeX Warning: There were undefined references.\n\n\nLaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.\n\n )</tex/cmbx10.pfb></tex/cmbx12.pfb></tex/cmr10.pfb></tex/cmti10.pfb>\nOutput written on main.pdf (1 page, 46297 bytes).\nSyncTeX written on main.synctex.gz.\nTranscript written on main.log.\n"
+    },
+    {
+      "stage": "tex3",
+      "success": true,
+      "log": "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex)\nentering extended mode\n(./main.tex\nLaTeX2e <2026-06-01>\nL3 programming layer <2026-08-10>\n(/tex/article.cls\nDocument Class: article 2025/01/22 v1.4n Standard LaTeX document class\n(/tex/size10.clo)) (/tex/siunitx.sty (/tex/translations.sty (/tex/etoolbox.sty)\n (/tex/pdftexcmds.sty (/tex/infwarerr.sty) (/tex/iftex.sty) (/tex/ltxcmds.sty))\n) (/tex/amstext.sty (/tex/amsgen.sty)) (/tex/array.sty)) (/tex/color.sty\n(/tex/color.cfg) (/tex/pdftex.def) (/tex/mathcolor.ltx))\n(/tex/l3backend-pdftex.def) (./main.aux)\n(/tex/translations-basic-dictionary-english.trsl) (./__strace.tex) (./main.bbl)\n [1{/tex/pdftex.map}] (./main.aux) )</tex/cmbx12.pfb></tex/cmr10.pfb></tex/cmti\n10.pfb>\nOutput written on main.pdf (1 page, 36638 bytes).\nSyncTeX written on main.synctex.gz.\nTranscript written on main.log.\n"
+    },
+    {
+      "stage": "prose-edit",
+      "success": true,
+      "log": "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex)\nentering extended mode\n(./main.tex\nLaTeX2e <2026-06-01>\nL3 programming layer <2026-08-10>\n(/tex/article.cls\nDocument Class: article 2025/01/22 v1.4n Standard LaTeX document class\n(/tex/size10.clo)) (/tex/siunitx.sty (/tex/translations.sty (/tex/etoolbox.sty)\n (/tex/pdftexcmds.sty (/tex/infwarerr.sty) (/tex/iftex.sty) (/tex/ltxcmds.sty))\n) (/tex/amstext.sty (/tex/amsgen.sty)) (/tex/array.sty)) (/tex/color.sty\n(/tex/color.cfg) (/tex/pdftex.def) (/tex/mathcolor.ltx))\n(/tex/l3backend-pdftex.def) (./main.aux)\n(/tex/translations-basic-dictionary-english.trsl) (./__strace.tex) (./main.bbl)\n [1{/tex/pdftex.map}] (./main.aux) )</tex/cmbx12.pfb></tex/cmr10.pfb></tex/cmti\n10.pfb>\nOutput written on main.pdf (1 page, 36322 bytes).\nSyncTeX written on main.synctex.gz.\nTranscript written on main.log.\n",
+      "elapsedMs": 192.60000002384186
+    }
+  ],
+  "bbl": "\\begin{thebibliography}{1}\n\n\\bibitem{knuth}\nDonald~E. Knuth.\n\\newblock {\\em The TeXbook}.\n\\newblock Addison-Wesley, 1984.\n\n\\end{thebibliography}\n",
+  "pdf": "saved separately",
+  "elapsedMs": 16789.399999976158,
+  "doc": "\\documentclass{article}\n\\usepackage{siunitx}\n\\begin{document}\nEngine comparison: \\qty{12}{\\metre}. Reference \\cite{knuth}.\n\\bibliographystyle{plain}\\bibliography{refs}\n\\end{document}\n",
+  "data": "@book{knuth, author={Donald E. Knuth}, title={The TeXbook}, publisher={Addison-Wesley}, year={1984}}\n",
+  "bytes": 12619800,
+  "requests": 39,
+  "receipts": {
+    "/wasmtex/2026/wasmtex-pdftex.worker.js": {
+      "status": 200,
+      "bytes": 77849,
+      "sha256": "2bde4060a105d0e739c506a89ecfa765f0b5ffab8ec91a2577bf7e967b09c7fe"
+    },
+    "/wasmtex/2026/wasmtex-pdftex-resolver-evidence.js": {
+      "status": 200,
+      "bytes": 589,
+      "sha256": "f42ab09591de3108ac07635f060cc1fca27571f62a852edf5e6307515b83b728"
+    },
+    "/wasmtex/2026/wasmtex-kpse-resolve.js": {
+      "status": 200,
+      "bytes": 3223,
+      "sha256": "0303650d65055961498677e0e109357b061873b86a063cb901800a2a84b4859d"
+    },
+    "/wasmtex/2026/wasmtex-pdftex.js": {
+      "status": 200,
+      "bytes": 105102,
+      "sha256": "80da7fce4ad7238271bd5b5c6a7a790fb4f6a527ea84e8193be2721e6646b3c1"
+    },
+    "/wasmtex/2026/wasmtex-pdftex.wasm": {
+      "status": 200,
+      "bytes": 1672898,
+      "sha256": "bf0b9fd1772fc78b02ad19eff39f7e03a73d7eefc1c1d05b15387768e57d013d"
+    },
+    "/2026/bloom-filter.v2.bin": {
+      "status": 200,
+      "bytes": 386671,
+      "sha256": "548b1a13d1a29f62b703a9e29be1898ac71d3d9edc8197471b2095884b954a90"
+    },
+    "/wasmtex/2026/wasmtex-pdftex.fmt": {
+      "status": 200,
+      "bytes": 3657154,
+      "sha256": "fd1f4c0411b9bceb8562acd847b62da030b3b803b72799bff6c73dc095935bb5"
+    },
+    "/2026/pdftex/11/pdftex.map": {
+      "status": 200,
+      "bytes": 5609407,
+      "sha256": "0382ce7f0404251185a5f9e98e5fc8b9a5c1718efbc2e8ebec460e5e32736a49"
+    },
+    "/2026/pdftex/26/article.cls": {
+      "status": 200,
+      "bytes": 20144,
+      "sha256": "c09f5982893f8a092e69435caa151eef0d3cb4d7495abf23f08b640191cf81f6"
+    },
+    "/2026/pdftex/26/size10.clo": {
+      "status": 200,
+      "bytes": 8448,
+      "sha256": "7a5ab9aa1794b8864e2963db211ca03b48a455c706190c7f85124c6ca9714183"
+    },
+    "/2026/pdftex/26/siunitx.sty": {
+      "status": 200,
+      "bytes": 356049,
+      "sha256": "9347be1a36d5a5130bc6f1adab649ca9c445448c13848577bacf1663d88da449"
+    },
+    "/2026/pdftex/26/translations.sty": {
+      "status": 200,
+      "bytes": 44247,
+      "sha256": "a19cfaa9a53ed715098609223708c9a34f9ed9b8ed726740c907d58c7015d5a0"
+    },
+    "/2026/pdftex/26/etoolbox.sty": {
+      "status": 200,
+      "bytes": 46885,
+      "sha256": "e48026fcea59b4906d1fd47bde658cb5caf0a7928c45a45ea563b18d5b40ebd4"
+    },
+    "/2026/pdftex/26/pdftexcmds.sty": {
+      "status": 200,
+      "bytes": 20089,
+      "sha256": "2df7e0bd148c99d8097352b8ac9948dccf91d61ba360dcf43f82206933b6045b"
+    },
+    "/2026/pdftex/26/infwarerr.sty": {
+      "status": 200,
+      "bytes": 8356,
+      "sha256": "8c3e23b8bb7d940ff26cb0cf96e0151f540acf55020dc3c1aa8bcdb2eb66305c"
+    },
+    "/2026/pdftex/26/iftex.sty": {
+      "status": 200,
+      "bytes": 7984,
+      "sha256": "0dc0cefe2131f82330a3b8e62034c184455329d7d9bb94abe21e740821630381"
+    },
+    "/2026/pdftex/26/ltxcmds.sty": {
+      "status": 200,
+      "bytes": 17865,
+      "sha256": "8fea89995d37ba4c69137186faafc589c470edcc5026d8a31aadbe5cef47dcb4"
+    },
+    "/2026/pdftex/26/amstext.sty": {
+      "status": 200,
+      "bytes": 2444,
+      "sha256": "aa4458f9b4a5e6c1a79172fd670bcefbe717f3af0dfc9c18b95bc34b60afce7b"
+    },
+    "/2026/pdftex/26/amsgen.sty": {
+      "status": 200,
+      "bytes": 4173,
+      "sha256": "f78fa573b1596ea6589570f3c357b68a511fb8050607a3c898b25bc728571a9e"
+    },
+    "/2026/pdftex/26/array.sty": {
+      "status": 200,
+      "bytes": 17611,
+      "sha256": "ed9d9f0235c3db06b50c4ba788f87bbc05229f5909626241c0ee49d9481677bc"
+    },
+    "/2026/pdftex/26/color.sty": {
+      "status": 200,
+      "bytes": 7256,
+      "sha256": "d01f66306b38122993e83c664c6767627d7d11a8f0dab73de3c578ffc34ef0c0"
+    },
+    "/2026/pdftex/26/color.cfg": {
+      "status": 200,
+      "bytes": 1213,
+      "sha256": "a3529ccdadc8248b4c5d7c34ceea53bdc1509b54f18a192ad51b924bd297d8df"
+    },
+    "/2026/pdftex/26/pdftex.def": {
+      "status": 200,
+      "bytes": 19626,
+      "sha256": "38361aed5c3534a46d63cd3cfd5cbb6367645c1d9b095cd2e45fd922ce821853"
+    },
+    "/2026/pdftex/26/mathcolor.ltx": {
+      "status": 200,
+      "bytes": 2885,
+      "sha256": "0804bb6e9e1eeeaeda861f29206d308194ea7cc846e38abaa344cdefa1d408cd"
+    },
+    "/2026/pdftex/26/l3backend-pdftex.def": {
+      "status": 200,
+      "bytes": 31615,
+      "sha256": "f700f4fca20bb229c1545482679bb630dedf1df6d7e6da300ab0012496e87c2b"
+    },
+    "/2026/pdftex/26/translations-basic-dictionary-english.trsl": {
+      "status": 200,
+      "bytes": 5588,
+      "sha256": "26be1ea694482f1090ce60202899ddd0f971ff13e7d29616a6b2f103605d68f4"
+    },
+    "/2026/pdftex/3/cmbx10": {
+      "status": 200,
+      "bytes": 1328,
+      "sha256": "ae296e8e41b2b0f73e9a17fdc42c743b9ddcc58d23c30acaa3411206f7824780"
+    },
+    "/2026/pdftex/32/cmbx10.pfb": {
+      "status": 200,
+      "bytes": 34811,
+      "sha256": "ca41102968b817bf6e8b22fd6de205ca23bf5088218511cce0c8129e1577cb70"
+    },
+    "/2026/pdftex/32/cmr10.pfb": {
+      "status": 200,
+      "bytes": 35752,
+      "sha256": "fdcede8794018df5f2b58f0905fb20a2b418ed8f67b73ee12445855dfbe5b1be"
+    },
+    "/wasmtex/2026/wasmtex-bibtex.worker.js": {
+      "status": 200,
+      "bytes": 7044,
+      "sha256": "50f6ef0b0c16473c3dda2c20bb47cd4f2a9003d221b59c3d756226168c5947a3"
+    },
+    "/wasmtex/2026/wasmtex-bibtex.js": {
+      "status": 200,
+      "bytes": 77802,
+      "sha256": "1355f9aa7a7fa27a514876a448bbe7b17ba07cfb1ec2c1a251a2d4f0ebc9d9b4"
+    },
+    "/wasmtex/2026/wasmtex-bibtex.wasm": {
+      "status": 200,
+      "bytes": 205813,
+      "sha256": "7ee47f5959d9f2a0d4cbde264be97472b6c1b7a1da2ca58b67baea759b03c3d6"
+    },
+    "/2026/pdftex/7/plain": {
+      "status": 404,
+      "bytes": 27150,
+      "sha256": "62c1c0b235e26952857139537b65f8272026cd1c385c1bf6dba20481ee8a6619"
+    },
+    "/2026/pdftex/7/plain.bst": {
+      "status": 200,
+      "bytes": 20613,
+      "sha256": "19f2cf88686b86aaa8e65d5f0313a92499815761e04b42e84ea2c3dc3685ada9"
+    },
+    "/2026/pdftex/3/cmr12": {
+      "status": 200,
+      "bytes": 1288,
+      "sha256": "1ce8af37ed38e93940829d3540e494eaaddc5201758d036b9074467e70a738dc"
+    },
+    "/2026/pdftex/3/cmbx12": {
+      "status": 200,
+      "bytes": 1324,
+      "sha256": "0eb2f13840155007c2d3c59b074322a3aa7358b9643aa314f3146468ae7f0806"
+    },
+    "/2026/pdftex/3/cmti10": {
+      "status": 200,
+      "bytes": 1480,
+      "sha256": "46a66e937f809c4fbe317947b583a14b408aca41ecb835eca3be46391190432a"
+    },
+    "/2026/pdftex/32/cmbx12.pfb": {
+      "status": 200,
+      "bytes": 32080,
+      "sha256": "c838238f31d86a9f198873dfaf501601a4fc966845b9c59e7dc251c4e85d1f1f"
+    },
+    "/2026/pdftex/32/cmti10.pfb": {
+      "status": 200,
+      "bytes": 37944,
+      "sha256": "b6f162e1549a649c7e9b2edfb77306f60e1b0da74547f33cba39ff6ba0bdd473"
+    }
+  }
+}
