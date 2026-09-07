@@ -154,3 +154,25 @@ fn deleting_keeps_slug_reserved_until_finish() {
     catalog.finish_delete("doc").unwrap();
     assert!(catalog.document("doc").unwrap().is_none());
 }
+
+#[test]
+fn deleting_document_cannot_commit_a_prepared_publication() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .prepare_operation("storage-1", "request-1", "publish", "digest", "{}", 1)
+        .unwrap();
+    catalog.begin_delete("doc").unwrap();
+    assert!(catalog
+        .commit_operation("storage-1", "request-1", "{}", "request-1")
+        .is_err());
+    assert_eq!(
+        catalog
+            .operation("storage-1", "request-1")
+            .unwrap()
+            .unwrap()
+            .status,
+        "prepared"
+    );
+}

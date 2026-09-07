@@ -39,7 +39,6 @@ pub struct StorageOptions {
     /// Retained for source compatibility with older callers. New deployments
     /// reject this option: a bucket writer lease is not an authority and the
     /// hosted profile always requires conditional object writes.
-    #[deprecated(note = "single-writer mode was removed; use the hosted profile")]
     pub single_writer: bool,
 }
 
@@ -189,9 +188,9 @@ pub async fn open_storage(mut options: StorageOptions) -> Result<Arc<dyn BlobSto
     if profile == DeploymentProfile::Local {
         let deployment = paths.deployment.as_ref().expect("local deployment path");
         refuse_legacy_deployment(deployment)?;
+        create_private_dir(deployment)?;
         let objects = paths.objects.as_ref().expect("local objects path");
-        std::fs::create_dir_all(objects)
-            .map_err(|err| format!("could not create {}: {err}", objects.display()))?;
+        create_private_dir(objects)?;
         create_private_dir(&paths.state)?;
         create_private_dir(paths.secrets.as_ref().expect("local secrets path"))?;
         return Ok(Arc::new(FsStore::new(objects)));

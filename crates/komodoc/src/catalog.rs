@@ -227,10 +227,10 @@ impl Catalog {
     /// retain the connection or perform object-store I/O from this closure.
     pub fn with_connection<T>(
         &self,
-        operation: impl FnOnce(&Connection) -> CatalogResult<T>,
+        operation: impl FnOnce(&mut Connection) -> CatalogResult<T>,
     ) -> CatalogResult<T> {
-        let connection = self.lock_connection()?;
-        operation(&connection)
+        let mut connection = self.lock_connection()?;
+        operation(&mut connection)
     }
 
     fn lock_connection(&self) -> CatalogResult<MutexGuard<'_, Connection>> {
@@ -752,12 +752,21 @@ impl Catalog {
             let changed = tx
                 .execute(
                     "UPDATE documents SET status = 'deleting', pending_publication = NULL
-                     WHERE slug = ?1 AND status <> 'deleting'",
+                     WHERE slug = ?1 AND status = 'active'",
                     [slug],
                 )
                 .map_err(CatalogError::from)?;
             if changed == 0 {
-                return Err(CatalogError::NotFound);
+                let status: Option<String> = tx
+                    .query_row(
+                        "SELECT status FROM documents WHERE slug = ?1",
+                        [slug],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if status.as_deref() != Some("deleting") {
+                    return Err(CatalogError::NotFound);
+                }
             }
             Self::document_in_tx(tx, slug)
         })
@@ -832,7 +841,7 @@ impl Catalog {
             }
             let slug: String = tx
                 .query_row(
-                    "SELECT slug FROM documents WHERE storage_id = ?1",
+                    "SELECT slug FROM documents WHERE storage_id = ?1 AND status = 'active'",
                     [storage_id],
                     |row| row.get(0),
                 )
@@ -927,12 +936,18 @@ impl Catalog {
                 params![storage_id, request_id, result],
             )
             .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE documents SET pending_publication = NULL, last_publication_id = ?2
-                 WHERE slug = ?1 AND pending_publication = ?3",
-                params![slug, last_publication_id, request_id],
-            )
-            .map_err(CatalogError::from)?;
+            let changed = tx
+                .execute(
+                    "UPDATE documents SET pending_publication = NULL, last_publication_id = ?2
+                 WHERE slug = ?1 AND status = 'active' AND pending_publication = ?3",
+                    params![slug, last_publication_id, request_id],
+                )
+                .map_err(CatalogError::from)?;
+            if changed != 1 {
+                return Err(CatalogError::Conflict(
+                    "document publication slot or lifecycle changed".into(),
+                ));
+            }
             tx.query_row(
                 "SELECT storage_id, request_id, kind, request_digest, status, intent,
                         result, created_at FROM catalog_operations
@@ -1063,7 +1078,9 @@ impl Catalog {
                             OR (?1 IS NOT NULL AND EXISTS
                                (SELECT 1 FROM guests ge WHERE ge.slug = d.slug AND ge.account_id = ?1
                                 AND EXISTS (SELECT 1 FROM links l WHERE l.slug = ge.slug
-                                  AND l.hash = ge.link_hash AND (l.until = '' OR l.until >= strftime('%Y-%m-%dT%H:%M:%fZ','now')))))
+                                  AND l.hash = ge.link_hash
+                                  AND (l.until = '' OR
+                                       (julianday(l.until) IS NOT NULL AND julianday(l.until) > julianday('now'))))))
                        AND (?3 IS NULL OR d.updated_at < ?3 OR (d.updated_at = ?3 AND d.slug < ?4))
                      ORDER BY d.updated_at DESC, d.slug DESC LIMIT ?5",
                 )

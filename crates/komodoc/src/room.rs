@@ -467,6 +467,9 @@ pub const RENEW_AFTER_SECONDS: i64 = LOCK_STALE_SECONDS / 3;
 
 pub struct Room {
     pub slug: String,
+    /// Immutable catalogue identity used for every document-owned object.
+    /// Legacy/isolated rooms fall back to their slug.
+    storage_id: String,
     blobs: Arc<dyn BlobStore>,
     checkpoint_cache: Arc<crate::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
@@ -664,8 +667,18 @@ impl RoomSet {
                 lease.holder, lease.epoch
             );
         }
+        let storage_id = match self.store.get() {
+            Some(store) => store
+                .get(slug)
+                .await
+                .map(|entry| entry.storage_id)
+                .filter(|identity| !identity.is_empty())
+                .unwrap_or_else(|| slug.to_string()),
+            None => slug.to_string(),
+        };
         let room = Arc::new(Room {
             slug: slug.to_string(),
+            storage_id,
             blobs: self.blobs.clone(),
             checkpoint_cache: self.checkpoint_cache.clone(),
             config: self.config.clone(),
@@ -722,8 +735,20 @@ impl RoomSet {
 
     /// Drops a document's comments and disconnects anyone still reading it.
     /// Reached only through the delete route, which checks ownership first.
-    pub async fn purge(&self, slug: &str) {
-        let room = self.get(slug).await;
+    pub async fn purge_with_identity(&self, slug: &str, storage_id: Option<&str>) {
+        let existing = self.rooms.lock().await.get(slug).cloned();
+        if existing.is_none() && storage_id.is_some() {
+            let _ = self
+                .blobs
+                .delete(&[room_key(slug), room_lock_key(slug), session_key(slug)])
+                .await;
+            return;
+        }
+        let room = match existing {
+            Some(room) => room,
+            None => self.get(slug).await,
+        };
+        let object_identity = storage_id.unwrap_or(&room.storage_id);
         // Wait for session/checkpoint writers before deleting their objects.
         // Fencing the retained room also prevents queued writers resurrecting it.
         let _checkpoint_writer = room.checkpoint_write.lock().await;
@@ -747,9 +772,9 @@ impl RoomSet {
         // So do its figures and its renderings: they are the document's, stored
         // under its slug and referred to by nothing else.
         for prefix in [
-            crate::blob::history_prefix(slug),
-            crate::blob::asset_prefix(slug),
-            crate::blob::rendering_prefix(slug),
+            crate::blob::history_prefix(object_identity),
+            crate::blob::asset_prefix(object_identity),
+            crate::blob::rendering_prefix(object_identity),
         ] {
             if let Ok(found) = self.blobs.list(&prefix).await {
                 let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
@@ -759,7 +784,7 @@ impl RoomSet {
             }
         }
         self.checkpoint_cache
-            .invalidate_prefix(&crate::blob::history_prefix(slug))
+            .invalidate_prefix(&crate::blob::history_prefix(object_identity))
             .await;
         self.rooms.lock().await.remove(slug);
     }
@@ -1021,7 +1046,7 @@ impl Room {
     async fn load_rendering_sizes(&self) {
         let Ok(found) = self
             .blobs
-            .list(&crate::blob::rendering_prefix(&self.slug))
+            .list(&crate::blob::rendering_prefix(&self.storage_id))
             .await
         else {
             return;
@@ -1048,7 +1073,7 @@ impl Room {
     async fn load_asset_sizes(&self) {
         let Ok(found) = self
             .blobs
-            .list(&crate::blob::asset_prefix(&self.slug))
+            .list(&crate::blob::asset_prefix(&self.storage_id))
             .await
         else {
             return;
@@ -2253,7 +2278,7 @@ impl Room {
         for (digest, body) in &unwritten {
             self.blobs
                 .put(
-                    &crate::blob::blob_key(&self.slug, digest),
+                    &crate::blob::blob_key(&self.storage_id, digest),
                     body.clone().into_bytes(),
                     "text/plain; charset=utf-8",
                 )
@@ -2270,7 +2295,7 @@ impl Room {
         // 2. the tree, which names them.
         self.blobs
             .put(
-                &checkpoint_key(&self.slug, &sha),
+                &checkpoint_key(&self.storage_id, &sha),
                 tree.to_bytes(),
                 "application/json; charset=utf-8",
             )
@@ -2373,7 +2398,7 @@ impl Room {
         if !shed.is_empty() {
             let keys: Vec<String> = shed
                 .iter()
-                .map(|sha| checkpoint_key(&self.slug, sha))
+                .map(|sha| checkpoint_key(&self.storage_id, sha))
                 .collect();
             let _ = self.blobs.delete(&keys).await;
             for key in &keys {
@@ -2433,7 +2458,7 @@ impl Room {
             }
             let Ok(raw) = self
                 .blobs
-                .get(&checkpoint_key(&self.slug, &candidate))
+                .get(&checkpoint_key(&self.storage_id, &candidate))
                 .await
             else {
                 continue;
@@ -2540,11 +2565,11 @@ impl Room {
             }
             let raw = if point.tree {
                 self.blobs
-                    .get(&crate::blob::blob_key(&self.slug, &entry.sha))
+                    .get(&crate::blob::blob_key(&self.storage_id, &entry.sha))
                     .await
             } else {
                 self.blobs
-                    .get(&checkpoint_key(&self.slug, point.sha.as_str()))
+                    .get(&checkpoint_key(&self.storage_id, point.sha.as_str()))
                     .await
             }
             .map_err(|err| err.to_string())?;
@@ -3154,7 +3179,7 @@ impl Room {
         if let Err(err) = self
             .blobs
             .put(
-                &crate::blob::asset_key(&self.slug, &sha),
+                &crate::blob::asset_key(&self.storage_id, &sha),
                 body,
                 "application/octet-stream",
             )
@@ -3185,7 +3210,7 @@ impl Room {
     /// A figure's bytes, for whoever may read the document.
     pub async fn read_asset(&self, sha: &str) -> Option<Vec<u8>> {
         self.blobs
-            .get(&crate::blob::asset_key(&self.slug, sha))
+            .get(&crate::blob::asset_key(&self.storage_id, sha))
             .await
             .ok()
     }
@@ -3266,12 +3291,12 @@ impl Room {
         }
         let (key, kind) = if synctex {
             (
-                crate::blob::rendering_synctex_key(&self.slug, sha),
+                crate::blob::rendering_synctex_key(&self.storage_id, sha),
                 "application/gzip",
             )
         } else {
             (
-                crate::blob::rendering_key(&self.slug, sha),
+                crate::blob::rendering_key(&self.storage_id, sha),
                 "application/pdf",
             )
         };
@@ -3323,12 +3348,12 @@ impl Room {
             }
             let (key, kind) = if synctex {
                 (
-                    crate::blob::rendering_synctex_key(&self.slug, sha),
+                    crate::blob::rendering_synctex_key(&self.storage_id, sha),
                     "application/gzip",
                 )
             } else {
                 (
-                    crate::blob::rendering_key(&self.slug, sha),
+                    crate::blob::rendering_key(&self.storage_id, sha),
                     "application/pdf",
                 )
             };
@@ -3350,9 +3375,9 @@ impl Room {
     /// A rendering's bytes, for whoever may read the document.
     pub async fn read_rendering(&self, sha: &str, synctex: bool) -> Option<Vec<u8>> {
         let key = if synctex {
-            crate::blob::rendering_synctex_key(&self.slug, sha)
+            crate::blob::rendering_synctex_key(&self.storage_id, sha)
         } else {
-            crate::blob::rendering_key(&self.slug, sha)
+            crate::blob::rendering_key(&self.storage_id, sha)
         };
         self.blobs.get(&key).await.ok()
     }
@@ -3371,7 +3396,7 @@ impl Room {
         }
         self.blobs
             .put(
-                &crate::blob::rendering_provenance_key(&self.slug, sha),
+                &crate::blob::rendering_provenance_key(&self.storage_id, sha),
                 body,
                 "application/json",
             )
@@ -3396,7 +3421,10 @@ impl Room {
     /// thing either way.
     pub async fn read_rendering_provenance(&self, sha: &str) -> Option<Vec<u8>> {
         self.blobs
-            .get(&crate::blob::rendering_provenance_key(&self.slug, sha))
+            .get(&crate::blob::rendering_provenance_key(
+                &self.storage_id,
+                sha,
+            ))
             .await
             .ok()
     }
@@ -3504,7 +3532,7 @@ impl Room {
         }
         let keys: Vec<String> = gone
             .iter()
-            .map(|name| format!("{}{name}", crate::blob::rendering_prefix(&self.slug)))
+            .map(|name| format!("{}{name}", crate::blob::rendering_prefix(&self.storage_id)))
             .collect();
         if self.blobs.delete(&keys).await.is_ok() {
             let mut state = self.state.lock().await;
@@ -3590,7 +3618,7 @@ impl Room {
         }
         let Ok(found) = self
             .blobs
-            .list(&crate::blob::asset_prefix(&self.slug))
+            .list(&crate::blob::asset_prefix(&self.storage_id))
             .await
         else {
             return;

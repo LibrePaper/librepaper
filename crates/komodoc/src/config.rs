@@ -18,16 +18,11 @@ pub enum DeploymentProfile {
 }
 
 /// Where pure catalogue reads are served from in a hosted deployment.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CatalogReads {
+    #[default]
     Replica,
     Primary,
-}
-
-impl Default for CatalogReads {
-    fn default() -> Self {
-        Self::Replica
-    }
 }
 
 impl std::str::FromStr for CatalogReads {

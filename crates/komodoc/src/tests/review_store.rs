@@ -127,6 +127,36 @@ async fn catalog_store_round_trips_documents_without_index_json() {
     assert!(!entry.storage_id.is_empty());
 }
 
+#[tokio::test]
+async fn catalog_account_owner_is_never_owned_by_anonymous_callers() {
+    let dir = tempfile::tempdir().unwrap();
+    let objects = dir.path().join("objects");
+    std::fs::create_dir_all(&objects).unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
+    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let store = store::Store::open_with_catalog(blobs, Arc::new(Configuration::default()), catalog)
+        .await
+        .unwrap();
+    store
+        .put(store::Publication {
+            slug: "private".into(),
+            title: "Private".into(),
+            source: "secret".into(),
+            source_format: "markdown".into(),
+            owner: "alice".into(),
+            owner_id: "github:123".into(),
+            owner_name: "Alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let entry = store.get("private").await.unwrap();
+    assert!(!entry.owned_by("", ""));
+    assert!(!entry.owned_by("visitor:anything", ""));
+    assert!(entry.owned_by("", "github:123"));
+}
+
 /// R02: a `record_history` write that loses the compare-and-swap -- because
 /// another instance moved the index in between -- reloads and retries once
 /// rather than dropping the checkpoint's size and sha on the floor, and the

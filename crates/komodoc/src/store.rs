@@ -233,10 +233,10 @@ impl IndexEntry {
     }
 
     pub fn owned_by(&self, owner_key: &str, caller_id: &str) -> bool {
-        if self.publisher.is_empty() {
-            true
-        } else if !self.publisher_id.is_empty() {
+        if !self.publisher_id.is_empty() {
             !caller_id.is_empty() && caller_id == stored_id(&self.publisher_id)
+        } else if self.publisher.is_empty() {
+            true
         } else {
             self.publisher == owner_key.to_lowercase()
         }
@@ -555,6 +555,16 @@ impl std::fmt::Display for PutError {
 }
 
 impl Store {
+    pub fn begin_delete(&self, slug: &str) -> Result<Option<String>, String> {
+        let Some(catalog) = &self.catalog else {
+            return Ok(None);
+        };
+        catalog
+            .begin_delete(slug)
+            .map(|document| Some(document.storage_id))
+            .map_err(|err| err.to_string())
+    }
+
     pub async fn open(
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,
@@ -603,12 +613,7 @@ impl Store {
     /// not need.
     pub async fn get(&self, slug: &str) -> Option<IndexEntry> {
         if let Some(catalog) = &self.catalog {
-            return catalog
-                .document(slug)
-                .ok()
-                .flatten()
-                .filter(|document| document.status == "active")
-                .map(IndexEntry::from_catalog);
+            return load_catalog_entry(catalog, slug).ok().flatten();
         }
         {
             let mut state = self.state.lock().await;
@@ -661,14 +666,14 @@ impl Store {
                 None => return Err(BlobError::NotFound),
             }
         };
-        let prefix = self
+        let identity = self
             .catalog
             .as_ref()
             .and_then(|catalog| catalog.document(slug).ok().flatten())
             .map(|document| document.storage_id)
-            .filter(|id| !id.is_empty())
+            .filter(|identity| !identity.is_empty())
             .unwrap_or_else(|| slug.to_string());
-        match self.blobs.get(&source_key(&prefix, &digest)).await {
+        match self.blobs.get(&source_key(&identity, &digest)).await {
             Err(BlobError::NotFound) => self.blobs.get(&legacy_source_key(slug)).await,
             other => other,
         }
@@ -680,7 +685,7 @@ impl Store {
             .as_ref()
             .and_then(|catalog| catalog.document(slug).ok().flatten())
             .map(|document| document.storage_id)
-            .filter(|id| !id.is_empty())
+            .filter(|identity| !identity.is_empty())
             .unwrap_or_else(|| slug.to_string());
         self.blobs.get(&document_key(&identity, digest)).await
     }
@@ -732,7 +737,7 @@ impl Store {
                 .get(&v.slug)
                 .map(|existing| existing.storage_id.clone())
                 .filter(|id| !id.is_empty())
-                .unwrap_or_else(|| random_storage_id()),
+                .unwrap_or_else(random_storage_id),
             title: v.title,
             // The digest of the source, which is the checkpoint the room is
             // about to write. From here the index's `sha` names the newest
@@ -884,23 +889,11 @@ impl Store {
     /// not the document. A failure leaves objects behind for a later pass and
     /// is not worth reporting: nothing depends on them any more.
     pub async fn drop_derived(&self, slug: &str) {
-        let identity = self
-            .catalog
-            .as_ref()
-            .and_then(|catalog| catalog.document(slug).ok().flatten())
-            .map(|document| document.storage_id)
-            .filter(|id| !id.is_empty())
-            .unwrap_or_else(|| slug.to_string());
-        for prefix in [document_prefix(&identity), source_prefix(&identity)] {
-            if let Ok(found) = self.blobs.list(&prefix).await {
-                let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
-                if !keys.is_empty() {
-                    let _ = self.blobs.delete(&keys).await;
-                }
-            }
-        }
-        // On its own, for the reason `remove` gives: on a directory store the
-        // versioned sources live under this key's own name.
+        // The content-addressed catalogue layout has no disposable derived
+        // subtree: trees, blobs, assets, and renderings share one identity
+        // prefix and are reclaimed only after a reference scan.  The sole
+        // obsolete object this compatibility hook may remove is the old,
+        // unversioned source object.
         let _ = self.blobs.delete(&[legacy_source_key(slug)]).await;
     }
 
@@ -1214,27 +1207,22 @@ impl Store {
                 .document(slug)
                 .map_err(|err| err.to_string())?
                 .ok_or_else(|| format!("document {slug} was not found"))?;
-            let identity = document.storage_id.clone();
             catalog.begin_delete(slug).map_err(|err| err.to_string())?;
             let mut removed = 0;
-            if let Ok(found) = self.blobs.list(&document_prefix(&identity)).await {
-                let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
-                if !keys.is_empty() && self.blobs.delete(&keys).await.is_ok() {
-                    removed = keys.len();
-                }
-            }
-            if let Ok(found) = self
+            let found = self
                 .blobs
-                .list(&crate::blob::history_prefix(&identity))
+                .list(&document_prefix(&document.storage_id))
                 .await
-            {
-                let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
-                if !keys.is_empty() {
-                    let _ = self.blobs.delete(&keys).await;
-                }
+                .map_err(|err| format!("could not enumerate document objects: {err}"))?;
+            let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
+            if !keys.is_empty() {
+                self.blobs
+                    .delete(&keys)
+                    .await
+                    .map_err(|err| format!("could not reclaim document objects: {err}"))?;
+                removed = keys.len();
             }
-            let _ = self
-                .blobs
+            self.blobs
                 .delete(&[
                     examples_key(slug),
                     room_key(slug),
@@ -1242,8 +1230,10 @@ impl Store {
                     crate::blob::session_key(slug),
                     format!("chat/{slug}.json"),
                 ])
-                .await;
+                .await
+                .map_err(|err| format!("could not reclaim document state: {err}"))?;
             catalog.finish_delete(slug).map_err(|err| err.to_string())?;
+            self.state.lock().await.entries.remove(slug);
             return Ok(removed);
         }
         let mut removed = 0;
@@ -1481,48 +1471,113 @@ impl IndexEntry {
 }
 
 fn catalog_entries(catalog: &Catalog) -> Result<HashMap<String, IndexEntry>, CatalogError> {
-    catalog.with_connection(|connection| {
-        let mut statement = connection.prepare(
-            "SELECT slug, storage_id, title, sha, created_at, updated_at, example,
-                    owner_key, owner_id, size, source_format, main
-             FROM documents WHERE status = 'active'",
-        )?;
-        let mut rows = statement.query([])?;
-        let mut entries = HashMap::new();
-        while let Some(row) = rows.next()? {
-            let document = crate::catalog::Document {
-                slug: row.get(0)?,
-                storage_id: row.get(1)?,
-                title: row.get(2)?,
-                sha: row.get(3)?,
-                created_at: row.get(4)?,
-                published_at: String::new(),
-                updated_at: row.get(5)?,
-                example: row.get::<_, i64>(6)? != 0,
-                owner_key: row.get(7)?,
-                owner_id: row.get(8)?,
-                status: "active".to_string(),
-                size: row.get(9)?,
-                counted_size: row.get(9)?,
-                maintenance_reserved: 0,
-                comment_seq: 0,
-                last_auto_checkpoint_at: 0,
-                pending_publication: None,
-                last_publication_id: String::new(),
-                source_format: row.get(10)?,
-                main: row.get(11)?,
-            };
-            entries.insert(document.slug.clone(), IndexEntry::from_catalog(document));
+    let mut entries = HashMap::new();
+    for document in catalog.documents()? {
+        if document.status != "active" {
+            continue;
         }
-        Ok(entries)
-    })
+        let slug = document.slug.clone();
+        if let Some(entry) = load_catalog_entry(catalog, &slug)? {
+            entries.insert(slug, entry);
+        }
+    }
+    Ok(entries)
+}
+
+fn load_catalog_entry(catalog: &Catalog, slug: &str) -> Result<Option<IndexEntry>, CatalogError> {
+    let Some(document) = catalog.document(slug)? else {
+        return Ok(None);
+    };
+    if document.status != "active" {
+        return Ok(None);
+    }
+    let mut entry = IndexEntry::from_catalog(document);
+    catalog.with_connection(|connection| {
+        if let Some(owner_id) = (!entry.publisher_id.is_empty()).then_some(&entry.publisher_id) {
+            entry.publisher_name = connection
+                .query_row(
+                    "SELECT name FROM accounts WHERE id = ?1",
+                    [owner_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_default();
+        }
+        let mut grants = connection.prepare(
+            "SELECT g.role, g.account_id, a.handle, a.name, g.since
+             FROM grants g JOIN accounts a ON a.id = g.account_id WHERE g.slug = ?1",
+        )?;
+        let rows = grants.query_map([slug], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Grant {
+                    id: row.get(1)?,
+                    login: row.get(2)?,
+                    name: row.get(3)?,
+                    since: row.get(4)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (role, grant) = row?;
+            match role.as_str() {
+                "editor" => entry.editors.push(grant),
+                "commenter" => entry.commenters.push(grant),
+                _ => {}
+            }
+        }
+        let mut links = connection.prepare(
+            "SELECT role, hash, sealed, label, budget, since, until FROM links WHERE slug = ?1",
+        )?;
+        entry.links = links
+            .query_map([slug], |row| {
+                let sealed: Vec<u8> = row.get(2)?;
+                Ok(LinkGrant {
+                    role: row.get(0)?,
+                    hash: row.get(1)?,
+                    key: String::from_utf8(sealed).unwrap_or_default(),
+                    label: row.get(3)?,
+                    budget: row.get(4)?,
+                    since: row.get(5)?,
+                    until: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut guests = connection.prepare(
+            "SELECT ge.account_id, a.name, ge.since, ge.link_hash
+             FROM guests ge JOIN accounts a ON a.id = ge.account_id WHERE ge.slug = ?1",
+        )?;
+        entry.guests = guests
+            .query_map([slug], |row| {
+                Ok(Guest {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    since: row.get(2)?,
+                    link: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(())
+    })?;
+    Ok(Some(entry))
 }
 
 fn update_catalog_document(catalog: &Catalog, entry: &IndexEntry) -> Result<(), CatalogError> {
     catalog.with_connection(|connection| {
-        connection.execute(
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(CatalogError::from)?;
+        let old_counted: i64 = tx
+            .query_row(
+                "SELECT counted_size FROM documents WHERE slug = ?1 AND status = 'active'",
+                [&entry.slug],
+                |row| row.get(0),
+            )
+            .map_err(CatalogError::from)?;
+        let new_counted = old_counted.max(entry.size);
+        let changed = tx.execute(
             "UPDATE documents SET title = ?2, sha = ?3, updated_at = ?4,
-                    size = ?5, source_format = ?6, main = ?7
+                    size = ?5, counted_size = ?6, source_format = ?7, main = ?8,
+                    example = ?9, owner_key = ?10, owner_id = ?11
              WHERE slug = ?1 AND status = 'active'",
             rusqlite::params![
                 entry.slug,
@@ -1530,10 +1585,73 @@ fn update_catalog_document(catalog: &Catalog, entry: &IndexEntry) -> Result<(), 
                 entry.sha,
                 entry.updated_at,
                 entry.size,
+                new_counted,
                 entry.source_format,
                 entry.main,
+                i64::from(entry.example),
+                if entry.publisher_id.is_empty() {
+                    &entry.publisher
+                } else {
+                    ""
+                },
+                if entry.publisher_id.is_empty() {
+                    None
+                } else {
+                    Some(entry.publisher_id.as_str())
+                },
             ],
         )?;
+        if changed != 1 {
+            return Err(CatalogError::NotFound);
+        }
+        if new_counted != old_counted {
+            tx.execute(
+                "UPDATE totals SET bytes = bytes + ?1 WHERE id = 1",
+                [new_counted - old_counted],
+            )?;
+        }
+        tx.execute("DELETE FROM grants WHERE slug = ?1", [&entry.slug])?;
+        for (role, grants) in [("editor", &entry.editors), ("commenter", &entry.commenters)] {
+            for grant in grants {
+                tx.execute(
+                    "INSERT INTO accounts
+                     (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation)
+                     VALUES (?1, CASE WHEN instr(?1, ':') > 0 THEN substr(?1, 1, instr(?1, ':') - 1) ELSE 'github' END,
+                             ?2, ?3, '', ?4, ?4, 'default', 'active', ?5)
+                     ON CONFLICT(id) DO UPDATE SET handle = excluded.handle, name = excluded.name",
+                    rusqlite::params![grant.id, grant.login, grant.shown(), grant.since, random_storage_id()],
+                )?;
+                tx.execute(
+                    "INSERT INTO grants (slug, role, account_id, since) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![entry.slug, role, grant.id, grant.since],
+                )?;
+            }
+        }
+        tx.execute("DELETE FROM guests WHERE slug = ?1", [&entry.slug])?;
+        for guest in &entry.guests {
+            tx.execute(
+                "INSERT INTO accounts
+                 (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation)
+                 VALUES (?1, CASE WHEN instr(?1, ':') > 0 THEN substr(?1, 1, instr(?1, ':') - 1) ELSE 'github' END,
+                         '', ?2, '', ?3, ?3, 'default', 'active', ?4)
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+                rusqlite::params![guest.id, guest.name, guest.since, random_storage_id()],
+            )?;
+            tx.execute(
+                "INSERT INTO guests (slug, account_id, since, link_hash) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![entry.slug, guest.id, guest.since, guest.link],
+            )?;
+        }
+        tx.execute("DELETE FROM links WHERE slug = ?1", [&entry.slug])?;
+        for link in &entry.links {
+            tx.execute(
+                "INSERT INTO links (slug, role, hash, sealed, label, budget, since, until)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![entry.slug, link.role, link.hash, link.key.as_bytes(),
+                                  link.label, link.budget, link.since, link.until],
+            )?;
+        }
+        tx.commit().map_err(CatalogError::from)?;
         Ok(())
     })
 }

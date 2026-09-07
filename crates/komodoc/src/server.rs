@@ -270,6 +270,7 @@ impl Caller {
             id: self.id.clone(),
             handle: self.handle.clone(),
             name: self.name.clone(),
+            session_generation: String::new(),
         }
     }
 }
@@ -345,7 +346,11 @@ impl Server {
     }
 
     pub async fn delete_document(&self, slug: &str) -> Result<usize, String> {
-        self.rooms.purge(slug).await;
+        self.chat.purge(slug).await;
+        let storage_id = self.store.begin_delete(slug)?;
+        self.rooms
+            .purge_with_identity(slug, storage_id.as_deref())
+            .await;
         self.store.remove(slug).await
     }
 
@@ -383,27 +388,51 @@ impl Server {
     /// deployment with no OAuth app configured to verify it is not trusted at
     /// all.
     pub async fn whoami(&self, headers: &HeaderMap, arrival: &Arrival) -> Identity {
-        if let Some(bearer) = header_of(headers, "authorization")
-            .and_then(|h| h.strip_prefix("Bearer ").map(str::to_string))
+        let (identity, generation_required) = if let Some(bearer) =
+            header_of(headers, "authorization")
+                .and_then(|h| h.strip_prefix("Bearer ").map(str::to_string))
         {
             if let Some(session) = bearer.strip_prefix(DEVICE_TOKEN_PREFIX) {
-                return read_session(&self.key, session);
-            }
-            if !self.app.configured() {
-                return Identity::anonymous();
-            }
-            let app = self.app.clone();
-            return self
-                .tokens
-                .verify(
-                    move |token| async move { app.check_token(&token).await },
-                    &bearer,
+                (read_session(&self.key, session), true)
+            } else if !self.app.configured() {
+                (Identity::anonymous(), false)
+            } else {
+                let app = self.app.clone();
+                (
+                    self.tokens
+                        .verify(
+                            move |token| async move { app.check_token(&token).await },
+                            &bearer,
+                        )
+                        .await,
+                    false,
                 )
-                .await;
+            }
+        } else {
+            (
+                match cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE)) {
+                    Some(value) => read_session(&self.key, &value),
+                    None => Identity::anonymous(),
+                },
+                true,
+            )
+        };
+        let Some(catalog) = &self.store.catalog else {
+            return identity;
+        };
+        if !identity.is_signed_in() {
+            return identity;
         }
-        match cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE)) {
-            Some(value) => read_session(&self.key, &value),
-            None => Identity::anonymous(),
+        match catalog.account(&identity.id) {
+            Ok(Some(account))
+                if account.status == "active"
+                    && (!generation_required
+                        || (!identity.session_generation.is_empty()
+                            && account.session_generation == identity.session_generation)) =>
+            {
+                identity
+            }
+            _ => Identity::anonymous(),
         }
     }
 
@@ -4497,6 +4526,34 @@ impl Server {
         next: &str,
     ) -> Reply {
         let https = arrival.is_https();
+        let mut signed_who = who.clone();
+        if let Some(catalog) = &self.store.catalog {
+            let now = crate::clock::timestamp();
+            let profile = crate::catalog::Account {
+                id: who.id.clone(),
+                provider: who.provider.clone(),
+                handle: who.handle.clone(),
+                name: who.name.clone(),
+                email: if who.handle.contains('@') {
+                    who.handle.clone()
+                } else {
+                    String::new()
+                },
+                first_seen: now.clone(),
+                last_seen: now,
+                plan: "default".into(),
+                status: "active".into(),
+                session_generation: random_token(),
+                erasure_cursor: None,
+            };
+            match catalog.upsert_account(&profile) {
+                Ok(account) if account.status == "active" => {
+                    signed_who.session_generation = account.session_generation;
+                }
+                Ok(_) => return plain(403, "this account is not active"),
+                Err(err) => return plain(503, &format!("could not establish account: {err}")),
+            }
+        }
         // What this browser uploaded before it signed in is now this account's:
         // the publisher is rewritten and the quota moves with it. This is the
         // answer to "I cleared my cookies and my documents are gone", which the
@@ -4519,7 +4576,7 @@ impl Server {
         let mut response = redirect(&local_path(next));
         let session = sign_session(
             &self.key,
-            who,
+            &signed_who,
             now_unix() + SESSION_MAX_AGE.as_secs() as i64,
         );
         add_cookie(

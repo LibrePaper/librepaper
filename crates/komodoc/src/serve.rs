@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::assets::load_shell;
-use crate::auth::{session_key, GithubApp, GoogleApp, Policy};
-use crate::config::Configuration;
+use crate::auth::{session_key_file, GithubApp, GoogleApp, Policy};
+use crate::config::{Configuration, DeploymentProfile};
 use crate::origins::DOCS_PREFIX;
 use crate::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::room::RoomSet;
@@ -125,7 +125,10 @@ pub fn sign_in_advice(
 pub async fn serve(options: ServeOptions) {
     let mut storage = options.storage.clone();
     storage.fill_from_environment();
-    let (_, deployment_paths) = storage.profile().unwrap_or_else(|err| die(err));
+    let (profile, deployment_paths) = storage.profile().unwrap_or_else(|err| die(err));
+    if profile == DeploymentProfile::Hosted {
+        die("hosted catalogue support is not available in this build; refusing to fall back to a bucket JSON index");
+    }
     let env = |name: &str| std::env::var(name).unwrap_or_default();
     let retention = parse_retention(&first_of(&[
         &options.expire_after,
@@ -145,6 +148,8 @@ pub async fn serve(options: ServeOptions) {
     ]))
     .unwrap_or_else(|err| die(err));
     let blobs = open_storage(storage).await.unwrap_or_else(|err| die(err));
+    let _writer_lock =
+        acquire_writer_lock(&deployment_paths.writer_lock).unwrap_or_else(|err| die(err));
     // One pass, and nothing to do on a store that never had the old layout.
     let moved = migrate_legacy_source(blobs.as_ref()).await;
     if moved > 0 {
@@ -206,14 +211,12 @@ pub async fn serve(options: ServeOptions) {
 
     let config = Arc::new(options.config);
     let shell = load_shell(&config).unwrap_or_else(|err| die(err));
-    let key = session_key(blobs.as_ref())
-        .await
-        .unwrap_or_else(|err| die(err));
     let store = if let Some(path) = deployment_paths.catalog.as_ref() {
         let catalog = Arc::new(
             crate::catalog::Catalog::open(path)
                 .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
         );
+        crate::config::DeploymentPaths::protect_file(path).unwrap_or_else(|err| die(err));
         Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
             .await
             .unwrap_or_else(|err| die(err))
@@ -222,6 +225,19 @@ pub async fn serve(options: ServeOptions) {
             .await
             .unwrap_or_else(|err| die(err))
     };
+    let catalog_nonempty = match &store.catalog {
+        Some(catalog) => catalog
+            .totals()
+            .map(|(_, documents)| documents != 0)
+            .unwrap_or_else(|err| die(format!("could not inspect catalogue: {err}"))),
+        None => false,
+    };
+    let secrets = deployment_paths
+        .secrets
+        .as_ref()
+        .unwrap_or_else(|| die("local deployment has no secrets directory"));
+    let key = session_key_file(&secrets.join("session.key"), catalog_nonempty)
+        .unwrap_or_else(|err| die(err));
     let rooms = RoomSet::new(blobs.clone(), config.clone());
     let mut instance = Server::new(
         store,
@@ -325,4 +341,30 @@ pub async fn serve(options: ServeOptions) {
     {
         die(err);
     }
+}
+
+pub(crate) fn acquire_writer_lock(path: &std::path::Path) -> Result<std::fs::File, String> {
+    use fs2::FileExt;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(path)
+        .map_err(|err| format!("could not open writer lock {}: {err}", path.display()))?;
+    file.try_lock_exclusive().map_err(|err| {
+        format!(
+            "another server or maintenance command holds {}: {err}",
+            path.display()
+        )
+    })?;
+    Ok(file)
 }

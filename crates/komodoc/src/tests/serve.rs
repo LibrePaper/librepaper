@@ -39,6 +39,16 @@ async fn upload_needs_a_signed_in_publisher() {
     assert_eq!(status, 401, "forged cookie got {status}");
 }
 
+#[test]
+fn deployment_writer_lock_is_exclusive() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state/writer.lock");
+    let first = crate::serve::acquire_writer_lock(&path).unwrap();
+    assert!(crate::serve::acquire_writer_lock(&path).is_err());
+    drop(first);
+    assert!(crate::serve::acquire_writer_lock(&path).is_ok());
+}
+
 #[tokio::test]
 async fn publish_then_serve_document() {
     let server = new_test_server().await;

@@ -242,7 +242,11 @@ impl BlobStore for FsStore {
         self.blocking(move || {
             for name in paths {
                 match std::fs::remove_file(&name) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if let Some(parent) = name.parent() {
+                            std::fs::File::open(parent)?.sync_all()?;
+                        }
+                    }
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                     Err(err) => return Err(err.into()),
                 }
@@ -250,15 +254,19 @@ impl BlobStore for FsStore {
                 // its own: an empty one left behind would show up in a listing as
                 // a document that is not there.
                 if let Some(parent) = name.parent() {
-                    let _ = std::fs::remove_dir(parent);
-                    // Directory-entry removal must be durable before the
-                    // catalogue releases the corresponding capacity.
-                    if let Some(container) = parent.parent() {
-                        if let Ok(directory) = std::fs::File::open(container) {
-                            let _ = directory.sync_all();
+                    match std::fs::remove_dir(parent) {
+                        Ok(()) => {
+                            if let Some(container) = parent.parent() {
+                                std::fs::File::open(container)?.sync_all()?;
+                            }
                         }
-                    } else if let Ok(directory) = std::fs::File::open(parent) {
-                        let _ = directory.sync_all();
+                        Err(err)
+                            if matches!(
+                                err.kind(),
+                                std::io::ErrorKind::DirectoryNotEmpty
+                                    | std::io::ErrorKind::NotFound
+                            ) => {}
+                        Err(err) => return Err(err.into()),
                     }
                 }
             }
@@ -371,7 +379,7 @@ fn walk(root: &Path, dir: &Path, prefix: &str, found: &mut Vec<BlobInfo>) -> Blo
 /// parses.
 pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = name.parent() {
-        std::fs::create_dir_all(parent)?;
+        durable_create_dir_all(parent)?;
     }
     // A deterministic sibling such as `index.json.tmp` is unsafe when two
     // unconditional puts of one object overlap: one writer can rename or
@@ -404,12 +412,32 @@ pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
     result
 }
 
+fn durable_create_dir_all(path: &Path) -> std::io::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        durable_create_dir_all(parent)?;
+    }
+    match std::fs::create_dir(path) {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                std::fs::File::open(parent)?.sync_all()?;
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 /* ----------------------------------------------------------------- keys */
 
 /// The key layout, in one place, so a change to it is one change.
 pub const INDEX_KEY: &str = "index.json";
 /// What cookies are signed with. Kept with everything else so a server that
 /// holds no local state does not sign every reader out when it restarts.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const SESSION_KEY_KEY: &str = "session.key";
 
 /// Prefix for all immutable objects owned by one document identity. The
@@ -536,15 +564,19 @@ pub fn rendering_prefix(slug: &str) -> String {
 
 /// Shared edit-journal objects have their own ownership and retirement
 /// metadata. They must never be swept by a document's content prefix.
+#[allow(dead_code)]
 pub fn journal_prefix(deployment_id: &str) -> String {
     format!("journal/{deployment_id}/")
 }
+#[allow(dead_code)]
 pub fn journal_segment_key(deployment_id: &str, segment_id: &str) -> String {
     format!("journal/{deployment_id}/segments/{segment_id}")
 }
+#[allow(dead_code)]
 pub fn journal_manifest_key(deployment_id: &str, revision: &str) -> String {
     format!("journal/{deployment_id}/manifests/{revision}")
 }
+#[allow(dead_code)]
 pub fn journal_base_key(deployment_id: &str, storage_id: &str, revision: &str) -> String {
     format!("journal/{deployment_id}/bases/{storage_id}/{revision}")
 }

@@ -60,6 +60,9 @@ pub struct Identity {
     pub id: String,
     pub handle: String,
     pub name: String,
+    /// Random catalogue generation bound into signed credentials. Changing
+    /// it revokes every cookie and device token for the account.
+    pub session_generation: String,
 }
 
 impl Identity {
@@ -83,6 +86,7 @@ impl Identity {
             id: qualified(PROVIDER_GITHUB, id),
             name: login.clone(),
             handle: login,
+            session_generation: String::new(),
         }
     }
 
@@ -103,6 +107,7 @@ impl Identity {
             id: qualified(PROVIDER_GOOGLE, sub),
             handle: email,
             name: shown,
+            session_generation: String::new(),
         }
     }
 }
@@ -288,8 +293,8 @@ pub fn verifies(key: &[u8], payload: &str, signature: &str) -> bool {
 pub fn sign_session(key: &[u8], id: &Identity, expiry_unix: i64) -> String {
     let payload = base64url(
         format!(
-            "{}|{}|{}|{}|{}",
-            id.provider, id.handle, id.id, id.name, expiry_unix
+            "{}|{}|{}|{}|{}|{}",
+            id.provider, id.handle, id.id, id.session_generation, id.name, expiry_unix
         )
         .as_bytes(),
     );
@@ -330,13 +335,24 @@ pub fn read_session(key: &[u8], cookie: &str) -> Identity {
     if now_unix() > expiry {
         return Identity::anonymous();
     }
-    let fields: Vec<&str> = front.splitn(4, '|').collect();
+    let fields: Vec<&str> = front.splitn(5, '|').collect();
     let who = match fields[..] {
+        [provider, handle, id, generation, name] => Identity {
+            provider: provider.to_string(),
+            id: id.to_string(),
+            handle: handle.to_string(),
+            name: name.to_string(),
+            session_generation: generation.to_string(),
+        },
+        // Legacy signed sessions remain parseable for JSON-backed test and
+        // migration tooling. Catalogue-backed request validation rejects the
+        // missing generation.
         [provider, handle, id, name] => Identity {
             provider: provider.to_string(),
             id: id.to_string(),
             handle: handle.to_string(),
             name: name.to_string(),
+            session_generation: String::new(),
         },
         [login, id] => Identity::github(login, id),
         _ => return Identity::anonymous(),
@@ -380,6 +396,7 @@ pub fn read_visitor(key: &[u8], cookie: &str) -> String {
 /// nothing locally, and a key that did not survive a restart would sign every
 /// reader out on every deploy. It is a secret in the operator's own storage,
 /// which is the same trust the documents are already under.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn session_key(blobs: &dyn BlobStore) -> Result<Vec<u8>, String> {
     match blobs.get(SESSION_KEY_KEY).await {
         // A key is already there: use it, or refuse to run over it. Either
@@ -437,6 +454,61 @@ pub async fn session_key(blobs: &dyn BlobStore) -> Result<Vec<u8>, String> {
             blobs.describe()
         )),
     }
+}
+
+/// Load or durably create the local deployment signing key. Catalogue
+/// deployments keep secrets outside the object namespace so a bucket listing
+/// or object-store credential cannot disclose the cookie-signing material.
+pub fn session_key_file(path: &std::path::Path, catalog_nonempty: bool) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+
+    match std::fs::read(path) {
+        Ok(raw) => {
+            return decode_session_key(&raw)
+                .ok_or_else(|| format!("the session key at {} is not readable", path.display()));
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound && !catalog_nonempty => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "the nonempty catalogue is missing its session key at {}",
+                path.display()
+            ));
+        }
+        Err(err) => return Err(format!("could not read {}: {err}", path.display())),
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+    let key = random_bytes(32);
+    let temporary = path.with_extension(format!("tmp-{}", hex::encode(random_bytes(8))));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|err| format!("could not create {}: {err}", temporary.display()))?;
+    let result = (|| {
+        file.write_all(hex::encode(&key).as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)?;
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok::<(), std::io::Error>(())
+    })();
+    if let Err(err) = result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!(
+            "could not durably create {}: {err}",
+            path.display()
+        ));
+    }
+    Ok(key)
 }
 
 /// Parses the hex-encoded 32-byte key `session_key` stores, or `None` for
