@@ -295,10 +295,6 @@ pub struct Message {
     pub resolved: bool,
     #[serde(default)]
     pub temp_id: String,
-    /// Names an `accept` or a `reject` for its answer, so a retry that never
-    /// saw the first answer is told the outcome rather than acted on twice.
-    #[serde(default)]
-    pub request_id: String,
     /// A Yjs update, base64-encoded.
     #[serde(default)]
     pub update: String,
@@ -323,6 +319,11 @@ pub struct Message {
     /// these four arrive from outside; the rest the server decides for itself.
     #[serde(default)]
     pub why: String,
+    /// A caller-supplied correlation id for automation requests. It is
+    /// echoed by every result, including errors and no-ops, so a reconnecting
+    /// client never has to infer which request a frame belongs to.
+    #[serde(default)]
+    pub request_id: String,
 }
 
 /// What a room sends a connected socket: a text frame, or the order to close.
@@ -1239,6 +1240,37 @@ impl Room {
             .collect()
     }
 
+    /// Captures source and annotations while holding the same room lock. A
+    /// REST snapshot therefore cannot report text from one generation with
+    /// comments from another generation.
+    pub async fn snapshot_bundle(
+        &self,
+        author: &str,
+        is_owner: bool,
+    ) -> (
+        String,
+        String,
+        crate::history::Tree,
+        std::collections::BTreeMap<String, String>,
+        Vec<CommentView>,
+    ) {
+        let state = self.state.lock().await;
+        let source = session::text_of(&state.session.doc);
+        let format = state.session.format.clone();
+        let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
+        let texts = session::texts_of(&state.session.doc);
+        let comments = state
+            .comments
+            .iter()
+            .map(|item| CommentView {
+                comment: item.clone(),
+                mine: !author.is_empty() && item.author == author,
+                deletable: deletable(item, author, is_owner),
+            })
+            .collect();
+        (source, format, tree, texts, comments)
+    }
+
     /// Adds the same caller-specific controls to a newly-created comment
     /// event that a hello or REST snapshot carries. The shared broadcast can
     /// use an empty author (so every other caller sees `mine: false`), while
@@ -1373,8 +1405,8 @@ impl Room {
         let config = self.config.clone();
 
         let fail = |text: &str| -> (Value, bool) {
-            let mut payload =
-                json!({"type": "error", "message": text, "temp_id": incoming.temp_id});
+            let mut payload = json!({"type": "error", "message": text, "temp_id": incoming.temp_id,
+                    "request_id": incoming.request_id});
             // Named so the reader knows which optimistic row to roll back.
             if !incoming.comment_id.is_empty() {
                 payload["comment_id"] = json!(incoming.comment_id);
@@ -1392,10 +1424,12 @@ impl Room {
                     if item.id == id {
                         if incoming.kind == "comment" && !author.is_empty() && item.author == author
                         {
-                            return (
-                                json!({"type": "comment", "comment": item, "temp_id": id}),
-                                true,
-                            );
+                            let mut result = json!({"type": "comment", "comment": item, "temp_id": id,
+                                    "request_id": incoming.request_id});
+                            if !incoming.request_id.is_empty() {
+                                result["noop"] = json!(true);
+                            }
+                            return (result, true);
                         }
                         return fail("that submission ID is already in use");
                     }
@@ -1405,11 +1439,13 @@ impl Room {
                             && !author.is_empty()
                             && reply.author == author
                         {
-                            return (
-                                json!({"type": "reply", "comment_id": item.id,
-                                "reply": reply, "temp_id": id}),
-                                true,
-                            );
+                            let mut result = json!({"type": "reply", "comment_id": item.id,
+                                "reply": reply, "temp_id": id,
+                                "request_id": incoming.request_id});
+                            if !incoming.request_id.is_empty() {
+                                result["noop"] = json!(true);
+                            }
+                            return (result, true);
                         }
                         return fail("that submission ID is already in use");
                     }
@@ -1474,6 +1510,18 @@ impl Room {
                 state.comments[index].resolved_in.clone(),
                 state.comments[index].outcome.clone(),
             );
+            if was_resolved == incoming.resolved {
+                let target = &state.comments[index];
+                let mut result = json!({
+                    "type": "resolve", "comment_id": target.id,
+                    "resolved": target.resolved, "resolved_at": target.resolved_at,
+                    "resolved_in": target.resolved_in, "request_id": incoming.request_id,
+                });
+                if !incoming.request_id.is_empty() {
+                    result["noop"] = json!(true);
+                }
+                return (result, true);
+            }
             state.comments[index].resolved = incoming.resolved;
             state.comments[index].resolved_at = incoming.resolved.then(timestamp);
             // Which text it was resolved against. Cleared when a comment is
@@ -1503,6 +1551,7 @@ impl Room {
                     "type": "resolve", "comment_id": target.id,
                     "resolved": target.resolved, "resolved_at": target.resolved_at,
                     "resolved_in": target.resolved_in,
+                    "request_id": incoming.request_id,
                 }),
                 true,
             );
@@ -1525,7 +1574,8 @@ impl Room {
                 return fail(UNSAVED);
             }
             return (
-                json!({"type": "delete", "comment_id": incoming.comment_id}),
+                json!({"type": "delete", "comment_id": incoming.comment_id,
+                    "request_id": incoming.request_id}),
                 true,
             );
         }
@@ -1565,6 +1615,7 @@ impl Room {
                 json!({
                     "type": "anchor", "comment_id": state.comments[index].id,
                     "source": anchor,
+                    "request_id": incoming.request_id,
                 }),
                 true,
             );
@@ -1618,6 +1669,7 @@ impl Room {
                     json!({
                         "type": "reply", "comment_id": state.comments[index].id,
                         "reply": added, "temp_id": incoming.temp_id,
+                        "request_id": incoming.request_id,
                     }),
                     true,
                 )
@@ -1686,7 +1738,8 @@ impl Room {
                     return fail(UNSAVED);
                 }
                 (
-                    json!({"type": "comment", "comment": added, "temp_id": incoming.temp_id}),
+                    json!({"type": "comment", "comment": added, "temp_id": incoming.temp_id,
+                        "request_id": incoming.request_id}),
                     true,
                 )
             }

@@ -6,8 +6,10 @@ mod harness;
 pub use harness::*;
 
 mod admission;
+mod agent_cli;
 mod assets;
 mod auth;
+mod automation;
 mod blob;
 mod device;
 mod directories;

@@ -581,5 +581,18 @@ function nextProject() {
   assert.notEqual(worker(), w0, "a fresh worker was created lazily rather than reusing the dead one");
 }
 
+// A legacy mirror is an operator error, not a request for release "undefined".
+{
+  latex.at("/legacy-mirror/");
+  latex._testing.inject({ worker: FakeWorker, fetch: async () => new Response(JSON.stringify({ version: 1, distributions: {} })), local: noLocal, vm: noVm });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex", release: null } });
+  const result = await latex.compile(tree("main.tex", "source"));
+  assert.equal(result.ok, false);
+  assert.equal(result.failure.kind, "resources");
+  assert.match(result.failure.message, /no default WasmTex release/);
+  assert.match(result.failure.message, /make latex-mirror/);
+  assert.doesNotMatch(result.failure.message, /undefined/);
+}
+
 latex._testing.reset();
 console.log("latex controller: queue, bibliography reuse, routing and lifecycle checks passed");

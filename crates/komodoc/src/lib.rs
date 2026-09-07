@@ -9,6 +9,7 @@
 mod assets;
 mod auth;
 mod blob;
+mod chat;
 mod checkpoint_cache;
 mod cli;
 mod clock;
@@ -20,6 +21,7 @@ mod latex;
 mod local;
 mod origins;
 pub mod paths;
+pub mod peer;
 mod pseudonym;
 mod render;
 mod retention;
@@ -399,12 +401,22 @@ enum Command {
         /// Deployment URL to wipe and fill instead of local storage
         #[arg(long, value_name = "URL")]
         server: Option<String>,
+        /// The account that owns the local examples, as a GitHub login or a
+        /// Google address; without one they belong to nobody, and every
+        /// visitor holds the owner's controls on them
+        #[arg(long, value_name = "ACCOUNT")]
+        owner: Option<String>,
     },
     /// The local compilation service: run native TeX on this machine for
     /// the browser editor when its own compiler cannot
     Local {
         #[command(subcommand)]
         command: LocalCommand,
+    },
+    /// Run a provider-neutral automation operation against a document link.
+    Agent {
+        #[command(subcommand)]
+        command: peer::AgentCommand,
     },
     /// Delete one document and its comments
     Destroy {
@@ -658,14 +670,23 @@ pub async fn main() {
             )
             .await
         }
-        Command::Seed { storage, server } => {
+        Command::Seed {
+            storage,
+            server,
+            owner,
+        } => {
             let documents = seed_examples::seed_documents();
             match server {
                 Some(server) if !server.is_empty() => seed::seed_remote(server, &documents).await,
-                _ => seed::seed(storage.options(), &documents).await,
+                _ => seed::seed(storage.options(), &owner.unwrap_or_default(), &documents).await,
             }
         }
         Command::Local { command } => local::cli::run(LocalArgs { command }).await,
+        Command::Agent { command } => {
+            if let Err(err) = peer::run_cli(command).await {
+                die(err);
+            }
+        }
         Command::Destroy {
             document,
             server,

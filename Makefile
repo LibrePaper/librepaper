@@ -117,6 +117,17 @@ PORT       ?= 8081
 DATA       ?= komodoc-data
 PUBLISHERS ?= any
 COMMENTERS ?= anyone
+# Who owns the seeded examples. Empty means nobody, and a document nobody owns
+# is everybody's: each visitor holds the owner's controls on it. That is fine
+# where nobody signs in and wrong where somebody does, since the point of a
+# sign-in is that everybody else meets the examples as a reader or a
+# commenter. Defaults to the one account `--publishers` names, when it names
+# exactly one; `any`, `anyone` and a list name nobody in particular.
+comma := ,
+OWNER      ?= $(if $(filter any anyone,$(PUBLISHERS)),,$(if $(findstring $(comma),$(PUBLISHERS)),,$(PUBLISHERS)))
+# Whether .env has supplied a way to sign people in. `deploy` reads this to
+# decide between a server that asks for a sign-in and one that never does.
+SIGN_IN    := $(strip $(KOMODOC_GITHUB_CLIENT_ID)$(KOMODOC_GOOGLE_CLIENT_ID))
 # Where LaTeX distributions come from: a mirror directory or an https bucket.
 # Empty means no `--latex`, so `.tex` documents are stored and shown but not
 # compiled. `deploy` below passes the bare flag, which is the project's own
@@ -146,19 +157,41 @@ examples/%.html: examples/%.qmd
 
 # Not in the help: it is a step of `deploy`, not a thing to run on its own.
 seed: $(BIN) $(EXAMPLES)
-	@$(BIN) seed --data $(DATA)
+	@$(BIN) seed --data $(DATA) $(if $(OWNER),--owner $(OWNER))
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
 	@pkill -f '[d]ist/komodoc serve' && echo "stopped" || echo "nothing to stop"
 
-.PHONY: deploy
+.PHONY: deploy latex-check latex-mirror latex-smoke
 
-# No sign-in at all: publishing and commenting are both open, so this needs
-# no GitHub OAuth app and no `komodoc login`. LaTeX is on, from the project's
-# mirror unless LATEX= names another, so the seeded .tex example compiles.
-deploy: seed  ## Seed the examples and serve them on this machine, no sign-in, LaTeX on (LATEX=)
-	@$(MAKE) serve PUBLISHERS=anyone COMMENTERS=anyone LATEX_FLAG="--latex $(LATEX)"
+latex-mirror:  ## Build the pinned WasmTex release and its TeX package set (requires network)
+	@node latex/tools/wasmtex.mjs
+	@node latex/tools/wasmtex.mjs --scheme
+	@node latex/tools/check-mirror.mjs latex/mirror
+
+latex-check:
+	@node latex/tools/check-mirror.mjs $(LATEX)
+
+latex-smoke: $(BIN)  ## Compile and display the seeded LaTeX example in Chromium against MIRROR=
+	@node latex/tools/check-mirror.test.mjs
+	@node latex/tools/check-mirror.mjs $(MIRROR)
+	@node web/tools/latex-e2e.mjs $(BIN) browser examples/standard-errors.tex 120 $(MIRROR)
+
+# The whole app on this machine. With a GitHub app in .env (see .env.example)
+# it asks people to sign in exactly as a deployment does, and the examples
+# belong to OWNER: sign in as them to hold every right, and open a link they
+# minted in a private window to see what a reader or a commenter gets.
+# Without one, publishing and commenting are both open, so a trial needs no
+# OAuth app and no `komodoc login`. LaTeX is on either way, from the
+# project's mirror unless LATEX= names another, so the seeded .tex example
+# compiles.
+deploy: latex-check $(BIN) $(EXAMPLES)  ## Seed the examples and serve them here; sign-in when .env has an OAuth app, LaTeX on (LATEX=)
+ifneq ($(SIGN_IN),)
+	@$(MAKE) seed serve LATEX_FLAG="--latex $(LATEX)"
+else
+	@$(MAKE) seed serve OWNER= PUBLISHERS=anyone COMMENTERS=anyone LATEX_FLAG="--latex $(LATEX)"
+endif
 
 # The deployment keys -- the Cloudflare token, the endpoints, the GitHub app
 # -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the
@@ -191,14 +224,14 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 # Deploys upload only files whose content changed, so updating is cheap.
 MIRROR ?= latex/mirror
 
-latex-push:  ## Push the LaTeX mirror to Cloudflare as a static-assets worker (run inside make secrets)
-	@test -f $(MIRROR)/manifest.json || { echo "no mirror at $(MIRROR); run node latex/tools/mirror.mjs"; exit 1; }
+latex-push: latex-smoke  ## Verify and push the LaTeX mirror to Cloudflare (run inside make secrets)
+	@node latex/tools/check-mirror.mjs $(MIRROR)
 	@test -n "$$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN is not set; run this inside make secrets"; exit 1; }
 	@# The three distributions the card does not show, and the download cache
 	@# mirror.mjs keeps beside them, which holds the release archives whole.
 	@printf '.cache/\nbusytex/\ntexlyre-busytex/\nswiftlatex-xetex/\nswiftlatex-pdftex/\npackages/\n' > $(MIRROR)/.assetsignore
 	@printf '/*\n  Cache-Control: public, max-age=31536000, immutable\n/manifest.json\n  Cache-Control: no-store\n' > $(MIRROR)/_headers
-	@cd deploy/latex && bunx wrangler deploy
+	@cd deploy/latex && bunx wrangler deploy --assets "$(abspath $(MIRROR))"
 	@echo "serve with: komodoc serve --latex https://komodoc-latex.<account>.workers.dev/"
 
 # --- the web app -----------------------------------------------------------

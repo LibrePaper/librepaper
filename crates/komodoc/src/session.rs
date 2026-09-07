@@ -862,6 +862,31 @@ pub fn apply_path_edits(doc: &Doc, path: &str, edits: &[komodoc_text::Edit]) -> 
     encode_diff(doc, &before).ok()
 }
 
+/// Applies edits to the text identified by its current directory path. The
+/// path is only used to find the Y.Text; the text's CRDT identity remains
+/// unchanged, so a concurrent rename or edit still applies to the same file.
+pub fn apply_edits_at(doc: &Doc, path: &str, edits: &[komodoc_text::Edit]) -> bool {
+    let (files, path_map, _, _) = maps(doc);
+    let id = {
+        let txn = doc.transact();
+        path_map.iter(&txn).find_map(|(id, value)| {
+            let Out::Any(value) = value else {
+                return None;
+            };
+            (value.to_string().trim_matches('"') == path).then(|| id.to_string())
+        })
+    };
+    let Some(id) = id else {
+        return false;
+    };
+    let mut txn = doc.transact_mut();
+    let Some(text) = text_at(&files, &txn, &id) else {
+        return false;
+    };
+    apply_text_edits(&mut txn, &text, edits);
+    true
+}
+
 fn apply_text_edits(txn: &mut TransactionMut, text: &TextRef, edits: &[komodoc_text::Edit]) {
     for edit in edits.iter().rev() {
         if edit.delete > 0 {

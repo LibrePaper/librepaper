@@ -110,19 +110,31 @@ pub fn latex_prose(source: &str) -> String {
     space.replace_all(&text, " ").to_string()
 }
 
-pub async fn seed(options: StorageOptions, documents: &[SeedDocument]) {
+pub async fn seed(options: StorageOptions, owner: &str, documents: &[SeedDocument]) {
     let blobs = open_storage(options).await.unwrap_or_else(|err| die(err));
     let config = Arc::new(Configuration::default());
-    seed_into(blobs, config, documents).await;
+    seed_into(blobs, config, owner, documents).await;
 }
 
 /// Seeds a store, whatever holds it. Starts from nothing: seeding is for
 /// looking at the result, not for adding to whatever was there. Only
 /// komodoc's own keys go -- on a bucket the operator supplied, nothing else in
 /// it is ours to remove.
+///
+/// `owner` is the GitHub login the examples belong to, or "" for nobody. A
+/// document with no owner is everybody's -- each visitor holds the owner's
+/// controls on it -- which is right on a server that asks nobody to sign in
+/// and wrong on one that does: there the examples should be one account's,
+/// so that everybody else meets them as a commenter, which is also the only
+/// way to see the reader's and the commenter's side of the app on a laptop.
+/// A remote seed never needs this, since it publishes as the account that ran
+/// it. The login is recorded as the owner key a signed-in caller is named by
+/// (see `Server::owner`) rather than a numeric id, so nothing is looked up
+/// over the network.
 pub async fn seed_into(
     blobs: Arc<dyn crate::blob::BlobStore>,
     config: Arc<Configuration>,
+    owner: &str,
     documents: &[SeedDocument],
 ) {
     clear_storage(blobs.as_ref()).await;
@@ -147,6 +159,8 @@ pub async fn seed_into(
                 title: document.title.to_string(),
                 source: source.clone(),
                 source_format: format.clone(),
+                owner: owner.trim().to_lowercase(),
+                owner_name: owner.trim().to_string(),
                 ..Publication::default()
             })
             .await
