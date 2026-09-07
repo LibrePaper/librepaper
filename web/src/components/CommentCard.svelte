@@ -2,6 +2,8 @@
   import { tick } from "svelte";
   import IconButton from "./IconButton.svelte";
   import Row from "./layout/Row.svelte";
+  import * as history from "../lib/history.js";
+  import { runsFor } from "../lib/suggestions.js";
 
   // One annotation, and everything said about it.
   let {
@@ -22,7 +24,35 @@
     onresolve,
     ondelete,
     onreply,
+    // A suggestion's own two verbs. Hidden entirely for any other comment.
+    onaccept,
+    onreject,
   } = $props();
+
+  // A suggestion is a comment whose motivation is `editing` (the W3C term);
+  // see `docs/specs/track-changes.md`, "Vocabulary".
+  const isSuggestion = $derived(comment.motivation === "editing");
+
+  // The word-level diff between the quoted passage and its proposal, kept in
+  // a rune rather than computed inline: `history.wordDiff` is async (it runs
+  // the shared WASM renderer worker), so it is asked for in an effect and
+  // turned into displayable runs by the pure half of this, `runsFor`, which
+  // is what `web/checks/suggestions.mjs` actually exercises.
+  let diffRuns = $state([]);
+  let diffRequest = 0;
+  $effect(() => {
+    if (!isSuggestion) {
+      diffRuns = [];
+      return;
+    }
+    const oldText = comment.source?.exact ?? comment.exact ?? "";
+    const proposedText = comment.proposed ?? "";
+    const request = ++diffRequest;
+    history.wordDiff(oldText, proposedText).then((edits) => {
+      if (request !== diffRequest) return; // superseded by a newer comment or proposal
+      diffRuns = runsFor(oldText, edits);
+    });
+  });
 
   // A passage can be a paragraph long, which would bury the comment made about
   // it. The card shows the opening words and expands on request.
@@ -165,6 +195,50 @@
         <div class="text-surface-500 text-xs">{comment.source.path}</div>
       {/if}
 
+      {#if isSuggestion}
+        <!-- The word-level diff of the quotation against the proposal:
+             deletion struck through, insertion underlined. Deletion in full
+             when the proposal is empty falls out of the diff itself. -->
+        <p class="suggestion-diff border-primary-500 border-l-2 pl-3 text-sm">
+          {#each diffRuns as run, i (i)}
+            {#if run.kind === "del"}<del>{run.text}</del>
+            {:else if run.kind === "ins"}<ins>{run.text}</ins>
+            {:else}{run.text}{/if}
+          {/each}
+        </p>
+        {#if !comment.source}
+          <p class="panel-muted text-xs">
+            No source anchor: an editor will have to apply this by hand.
+          </p>
+        {/if}
+        {#if comment.outcome === "accepted"}
+          <p class="panel-muted">Accepted in {history.shortSha(comment.resolved_in)}.</p>
+        {:else if comment.outcome === "rejected"}
+          <p class="panel-muted">Rejected.</p>
+        {:else if canModerate}
+          <Row gap={2}>
+            <button
+              type="button"
+              class="btn btn-sm preset-filled-primary-500"
+              disabled={Boolean(comment.deciding)}
+              onclick={(e) => {
+                e.stopPropagation();
+                onaccept?.(comment);
+              }}
+            >{comment.deciding === "accept" ? "Accepting…" : "Accept"}</button>
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-surface-300-700"
+              disabled={Boolean(comment.deciding)}
+              onclick={(e) => {
+                e.stopPropagation();
+                onreject?.(comment);
+              }}
+            >{comment.deciding === "reject" ? "Rejecting…" : "Reject"}</button>
+          </Row>
+        {/if}
+      {/if}
+
       <!-- The quotation above is what the passage said when the comment was
            made. This is what became of it: the moment it stopped being in the
            document, and the inserted side of the shared word-level diff. -->
@@ -195,16 +269,20 @@
   {/if}
 
   <Row gap={1} justify="end">
-    <IconButton
-      icon="check"
-      label={comment.resolved ? "Reopen" : "Resolve"}
-      pressed={Boolean(comment.resolved)}
-      onclick={(e) => {
-        e.stopPropagation();
-        expanded = false;
-        onresolve?.(comment);
-      }}
-    />
+    {#if !isSuggestion}
+      <!-- Reject is the resolve, for a suggestion -- see the diff and
+           decision block above. -->
+      <IconButton
+        icon="check"
+        label={comment.resolved ? "Reopen" : "Resolve"}
+        pressed={Boolean(comment.resolved)}
+        onclick={(e) => {
+          e.stopPropagation();
+          expanded = false;
+          onresolve?.(comment);
+        }}
+      />
+    {/if}
     <IconButton
       icon="reply"
       label="Reply"

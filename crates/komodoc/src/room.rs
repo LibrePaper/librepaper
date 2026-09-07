@@ -135,6 +135,17 @@ pub struct Comment {
     /// against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceAnchor>,
+    /// The text a suggestion (a comment whose motivation is `editing`) wants
+    /// in place of the passage `source.exact` names. `Some("")` proposes
+    /// deleting it outright. Absent on every other motivation: a suggestion
+    /// is the one kind of comment that is inert until an editor acts on it,
+    /// rather than a remark in its own right.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed: Option<String>,
+    /// `accepted` or `rejected` once an editor has decided a suggestion;
+    /// empty while pending and on every comment that is not one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub outcome: String,
     #[serde(default)]
     pub body: String,
     #[serde(default)]
@@ -172,6 +183,14 @@ pub struct Comment {
     /// arrived. Kept off every client-bound shape, as `author` is.
     #[serde(default, skip_serializing)]
     pub via: String,
+    /// The `request_id` an `accept` last actually applied, so a retry with
+    /// the same id is recognized as the same request rather than accepted a
+    /// second time -- an accept has a side effect on the live document, and
+    /// the ordinary re-submit-with-the-same-id retry that a plain comment
+    /// answers for free would otherwise reapply the edit. Kept off every
+    /// client-bound shape, as `author` and `via` are.
+    #[serde(default, skip_serializing)]
+    pub accept_request: String,
 }
 
 /// What lands on disk, one object per document. Author is excluded from a
@@ -196,6 +215,9 @@ fn to_stored(items: &[Comment]) -> Value {
                 }
                 if !item.via.is_empty() {
                     stored["via"] = json!(item.via);
+                }
+                if !item.accept_request.is_empty() {
+                    stored["accept_request"] = json!(item.accept_request);
                 }
                 stored["replies"] = Value::Array(
                     item.replies
@@ -262,12 +284,21 @@ pub struct Message {
     /// message backfills onto one that has none yet.
     #[serde(default)]
     pub source: Option<SourceAnchor>,
+    /// The replacement a suggestion (a `comment` whose motivation is
+    /// `editing`) proposes for the passage its source anchor names.
+    /// `Some("")` proposes deleting it.
+    #[serde(default)]
+    pub proposed: Option<String>,
     #[serde(default)]
     pub comment_id: String,
     #[serde(default)]
     pub resolved: bool,
     #[serde(default)]
     pub temp_id: String,
+    /// Names an `accept` or a `reject` for its answer, so a retry that never
+    /// saw the first answer is told the outcome rather than acted on twice.
+    #[serde(default)]
+    pub request_id: String,
     /// A Yjs update, base64-encoded.
     #[serde(default)]
     pub update: String,
@@ -479,6 +510,33 @@ pub enum Applied {
     /// Close the socket, with this reason. Either it wrote past the document's
     /// size ceiling or it wrote faster than a person can.
     Refuse(&'static str),
+}
+
+/// What accepting a suggestion did.
+pub enum Accepted {
+    /// The edit landed: `update` is the Yjs update every socket is sent,
+    /// `sha` the checkpoint it was recorded in.
+    Applied {
+        update: Vec<u8>,
+        sha: String,
+        resolved_at: String,
+    },
+    /// A retry of a request already applied. Nothing changed this time;
+    /// the caller answers with what happened the first time.
+    Noop { sha: String, resolved_at: String },
+}
+
+/// Why `accept_suggestion` refused, so the dispatch sites -- the socket loop
+/// and the REST comments route -- can shape the exact JSON the spec promises
+/// for each.
+pub enum AcceptError {
+    /// The exact refusal text a client is shown.
+    Refused(String),
+    /// The passage could not be placed, even against the checkpoint the
+    /// suggestion was made on. The browser opens the merge editor on this.
+    Stale,
+    /// Storage, or the room itself, failed.
+    Failed(String),
 }
 
 /// A slug's own loading slot: `None` while its load is in flight, `Some` once
@@ -1386,10 +1444,35 @@ impl Room {
             else {
                 return fail("unknown comment");
             };
-            let (was_resolved, was_resolved_at, was_resolved_in) = (
+            // A suggestion's resolve doubles as its plain-language reject and
+            // reopen, with one refusal an ordinary comment never needs: an
+            // accepted suggestion already changed the document, and reopening
+            // it here would say it is merely unresolved rather than say what
+            // actually happened to the text.
+            let is_suggestion = state.comments[index].motivation == "editing";
+            if is_suggestion && !incoming.resolved && state.comments[index].outcome == "accepted" {
+                return fail(
+                    "an accepted suggestion cannot be reopened; restore the checkpoint instead",
+                );
+            }
+            if is_suggestion && incoming.resolved && state.comments[index].outcome == "accepted" {
+                // Already settled by acceptance; resolving it again is a
+                // no-op rather than a second decision.
+                let target = &state.comments[index];
+                return (
+                    json!({
+                        "type": "resolve", "comment_id": target.id,
+                        "resolved": target.resolved, "resolved_at": target.resolved_at,
+                        "resolved_in": target.resolved_in,
+                    }),
+                    true,
+                );
+            }
+            let (was_resolved, was_resolved_at, was_resolved_in, was_outcome) = (
                 state.comments[index].resolved,
                 state.comments[index].resolved_at.clone(),
                 state.comments[index].resolved_in.clone(),
+                state.comments[index].outcome.clone(),
             );
             state.comments[index].resolved = incoming.resolved;
             state.comments[index].resolved_at = incoming.resolved.then(timestamp);
@@ -1400,10 +1483,18 @@ impl Room {
             } else {
                 String::new()
             };
+            if is_suggestion {
+                state.comments[index].outcome = if incoming.resolved {
+                    "rejected".to_string()
+                } else {
+                    String::new()
+                };
+            }
             if self.save(&mut state).await.is_err() {
                 state.comments[index].resolved = was_resolved;
                 state.comments[index].resolved_at = was_resolved_at;
                 state.comments[index].resolved_in = was_resolved_in;
+                state.comments[index].outcome = was_outcome;
                 return fail(UNSAVED);
             }
             let target = &state.comments[index];
@@ -1482,9 +1573,14 @@ impl Room {
         let body = clean(&incoming.body, config.caps.body).trim().to_string();
         let motivation = config.allowed_motivation(&incoming.motivation);
         // A highlight is the passage itself: marking something as worth
-        // returning to needs no words. Everything else is a remark, and a
-        // remark with no words is nothing.
-        if body.is_empty() && !(incoming.kind == "comment" && motivation == "highlighting") {
+        // returning to needs no words. A suggestion is its proposal: the
+        // words are the replacement, and `body` beside it is an optional
+        // note. Everything else is a remark, and a remark with no words is
+        // nothing.
+        if body.is_empty()
+            && !(incoming.kind == "comment"
+                && matches!(motivation.as_str(), "highlighting" | "editing"))
+        {
             return fail("comment body is required");
         }
         let mut creator = clean(&incoming.creator, config.caps.creator)
@@ -1537,6 +1633,19 @@ impl Room {
                 if exact.is_empty() && spot.is_none() {
                     return fail("select some text or part of a figure to comment on");
                 }
+                // A suggestion is its proposal; without one it is an
+                // annotation with nothing to act on. `proposed` on any other
+                // motivation is not something a client meant to send, so it
+                // is dropped rather than stored.
+                if motivation == "editing" && incoming.proposed.is_none() {
+                    return fail("a suggestion needs a proposal");
+                }
+                let proposed = (motivation == "editing").then(|| {
+                    clean(
+                        incoming.proposed.as_deref().unwrap_or_default(),
+                        config.caps.exact,
+                    )
+                });
                 state.seq += 1;
                 // The selector is the durable anchor. Offsets are recomputed in
                 // the reader against whatever version of the document is on
@@ -1556,6 +1665,8 @@ impl Room {
                         .then(|| valid_source(&config, incoming.source.as_ref()))
                         .flatten(),
                     region: spot,
+                    proposed,
+                    outcome: String::new(),
                     body,
                     creator,
                     created: timestamp(),
@@ -1566,6 +1677,7 @@ impl Room {
                     replies: Vec::new(),
                     author: author.to_string(),
                     via: via.to_string(),
+                    accept_request: String::new(),
                 };
                 state.comments.push(added.clone());
                 if self.save(&mut state).await.is_err() {
@@ -1888,10 +2000,8 @@ impl Room {
     }
 
     /// Takes a checkpoint immediately, even when the ordinary deliberate-save
-    /// debounce window is still open. Restore uses this before and after its
-    /// change so that the old live state and the restored state are both
-    /// durable before the request answers.
-    #[allow(dead_code)] // restore uses the protected variant below
+    /// debounce window is still open. An accept uses this: the edit it just
+    /// made is a deliberate act by the editor, not a keystroke to wait out.
     pub async fn checkpoint_now(&self, why: &str, by: &str) -> Result<Option<String>, String> {
         self.checkpoint_impl(why, by, false, false, None).await
     }
@@ -2583,6 +2693,251 @@ impl Room {
             }
         };
         Ok((update, restored))
+    }
+
+    /* -------------------------------------------------------- suggestions */
+
+    /// Accepts a suggestion: applies its proposal to the live source through
+    /// the session, exactly as `restore_and_checkpoint` applies a restore,
+    /// and records a checkpoint. Held under `restore_write`, the same lock a
+    /// restore takes, so the two can never interleave -- an accept mutates
+    /// the document and takes a checkpoint just as a restore does, and a
+    /// restore reading the tree mid-accept would see half of one.
+    ///
+    /// `request_id` is the caller's idempotency token: retrying the request
+    /// that already accepted this comment answers with what happened the
+    /// first time rather than reapplying the edit.
+    pub async fn accept_suggestion(
+        &self,
+        comment_id: &str,
+        request_id: &str,
+        by: &str,
+    ) -> Result<Accepted, AcceptError> {
+        let _restore_writer = self.restore_write.lock().await;
+        if self.read_only() {
+            return Err(AcceptError::Failed(
+                "this room is held by another server".into(),
+            ));
+        }
+
+        let comment = {
+            let state = self.state.lock().await;
+            state
+                .comments
+                .iter()
+                .find(|item| item.id == comment_id)
+                .cloned()
+        };
+        let Some(comment) = comment else {
+            return Err(AcceptError::Refused("unknown comment".into()));
+        };
+        if comment.motivation != "editing" {
+            return Err(AcceptError::Refused(
+                "this comment is not a suggestion".into(),
+            ));
+        }
+        if comment.outcome == "accepted" {
+            // Reversing a rejection is allowed; repeating an acceptance
+            // itself is a retry, told apart from a second, unrelated accept
+            // by the request id the first one recorded.
+            if !request_id.is_empty() && comment.accept_request == request_id {
+                return Ok(Accepted::Noop {
+                    sha: comment.resolved_in.clone(),
+                    resolved_at: comment.resolved_at.clone().unwrap_or_default(),
+                });
+            }
+            return Err(AcceptError::Refused(
+                "this suggestion is already accepted".into(),
+            ));
+        }
+        let Some(source) = comment.source.clone() else {
+            return Err(AcceptError::Refused(
+                "this suggestion has no source anchor; apply it by hand".into(),
+            ));
+        };
+        let proposed = comment.proposed.clone().unwrap_or_default();
+
+        // Step 2 of the spec: the passage as the live text has it now. A
+        // first look, without the lock held across the storage read below:
+        // it decides whether the checkpoint the suggestion was made on is
+        // needed at all. The edit itself is computed again under the lock
+        // that applies it, because `restore_write` keeps restores out but
+        // not keystrokes, and an offset measured before an `await` is an
+        // offset into a text that may since have moved.
+        let live_text_at_first = {
+            let state = self.state.lock().await;
+            session::texts_of(&state.session.doc)
+                .get(&source.path)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let base_text = if locate_anchor(&live_text_at_first, &source).is_some() {
+            None
+        } else {
+            // Step 3: the passage is not where it was. Merge against the
+            // checkpoint the suggestion was made on, the same three-way merge
+            // `komodoc sync` uses for a stale file.
+            let base_point = {
+                let state = self.state.lock().await;
+                state
+                    .manifest
+                    .checkpoints
+                    .iter()
+                    .find(|point| point.sha == comment.revision)
+                    .cloned()
+            };
+            let Some(base_point) = base_point else {
+                return Err(AcceptError::Stale);
+            };
+            let (base_tree, base_bodies) = self
+                .checkpoint_texts(&base_point)
+                .await
+                .map_err(AcceptError::Failed)?;
+            let Some(base_text) = base_tree
+                .files
+                .get(&source.path)
+                .and_then(|entry| base_bodies.get(&entry.sha))
+                .cloned()
+            else {
+                return Err(AcceptError::Stale);
+            };
+            Some(base_text)
+        };
+
+        let update = {
+            let mut state = self.state.lock().await;
+            let live_text = session::texts_of(&state.session.doc)
+                .get(&source.path)
+                .cloned()
+                .unwrap_or_default();
+            let edits = if let Some(at) = locate_anchor(&live_text, &source) {
+                vec![komodoc_text::Edit {
+                    at,
+                    delete: len16(&source.exact),
+                    insert: proposed.clone(),
+                }]
+            } else {
+                // Found a moment ago and gone now is a keystroke that landed
+                // in between; the base was not fetched for it, and refusing
+                // is honest -- the editor's retry takes the merge path.
+                let Some(base_text) = base_text.as_deref() else {
+                    return Err(AcceptError::Stale);
+                };
+                let Some(base_at) = locate_anchor(base_text, &source) else {
+                    return Err(AcceptError::Stale);
+                };
+                let remote = apply_edit_str(
+                    base_text,
+                    &komodoc_text::Edit {
+                        at: base_at,
+                        delete: len16(&source.exact),
+                        insert: proposed.clone(),
+                    },
+                );
+                let merged = komodoc_text::merge(base_text, &live_text, &remote);
+                if !merged.conflicts.is_empty() {
+                    return Err(AcceptError::Stale);
+                }
+                komodoc_text::diff(&live_text, &merged.text)
+            };
+            let Some(update) = session::apply_path_edits(&state.session.doc, &source.path, &edits)
+            else {
+                // The path the anchor named is no longer part of the
+                // document at all -- its file was renamed or removed since
+                // the suggestion was made. Nothing here is a passage anymore.
+                return Err(AcceptError::Stale);
+            };
+            state.session.dirty = true;
+            state.session.generation += 1;
+            state.session.updated_at = now_unix();
+            state.session.by = by.to_string();
+            update
+        };
+
+        let sha = match self.checkpoint_now("accept", by).await {
+            Ok(Some(sha)) => sha,
+            Ok(None) => {
+                return Err(AcceptError::Failed(
+                    "could not create the accept checkpoint".to_string(),
+                ))
+            }
+            Err(err) => return Err(AcceptError::Failed(err)),
+        };
+
+        let resolved_at = timestamp();
+        {
+            let mut state = self.state.lock().await;
+            if let Some(index) = state.comments.iter().position(|item| item.id == comment_id) {
+                state.comments[index].resolved = true;
+                state.comments[index].resolved_at = Some(resolved_at.clone());
+                state.comments[index].resolved_in = sha.clone();
+                state.comments[index].outcome = "accepted".to_string();
+                state.comments[index].accept_request = request_id.to_string();
+                // The edit and its checkpoint are already durable; a failure
+                // here is the comment record falling behind them rather than
+                // the accept itself failing, so it is logged and not refused.
+                if self.save(&mut state).await.is_err() {
+                    eprintln!(
+                        "warning: could not save {} after accepting {comment_id}",
+                        self.slug
+                    );
+                }
+            }
+        }
+
+        Ok(Accepted::Applied {
+            update,
+            sha,
+            resolved_at,
+        })
+    }
+
+    /// Rejects a suggestion: resolves it without touching the document. Like
+    /// `resolve`, which this shares its shape with -- the two differ only in
+    /// that a reject also records the outcome and always resolves (rather
+    /// than toggling), and that an accepted suggestion refuses it, because
+    /// the text it proposed is already in the document.
+    pub async fn reject_suggestion(&self, comment_id: &str) -> Result<Value, String> {
+        let mut state = self.state.lock().await;
+        let Some(index) = state.comments.iter().position(|item| item.id == comment_id) else {
+            return Err("unknown comment".into());
+        };
+        if state.comments[index].motivation != "editing" {
+            return Err("this comment is not a suggestion".into());
+        }
+        if state.comments[index].outcome == "accepted" {
+            return Err(
+                "an accepted suggestion cannot be rejected; restore the checkpoint instead".into(),
+            );
+        }
+        let current = state
+            .manifest
+            .latest()
+            .map(|point| point.sha.clone())
+            .unwrap_or_default();
+        let (was_resolved, was_resolved_at, was_resolved_in, was_outcome) = (
+            state.comments[index].resolved,
+            state.comments[index].resolved_at.clone(),
+            state.comments[index].resolved_in.clone(),
+            state.comments[index].outcome.clone(),
+        );
+        state.comments[index].resolved = true;
+        state.comments[index].resolved_at = Some(timestamp());
+        state.comments[index].resolved_in = current;
+        state.comments[index].outcome = "rejected".to_string();
+        if self.save(&mut state).await.is_err() {
+            state.comments[index].resolved = was_resolved;
+            state.comments[index].resolved_at = was_resolved_at;
+            state.comments[index].resolved_in = was_resolved_in;
+            state.comments[index].outcome = was_outcome;
+            return Err("could not save that comment; try again".into());
+        }
+        let target = &state.comments[index];
+        Ok(json!({
+            "type": "reject", "comment_id": target.id,
+            "resolved": target.resolved, "resolved_at": target.resolved_at,
+            "resolved_in": target.resolved_in,
+        }))
     }
 
     /// The most this document's session and history may occupy before it
@@ -3605,6 +3960,83 @@ pub fn valid_region(spot: Option<&Region>) -> Option<Region> {
         width: spot.width,
         height: spot.height,
     })
+}
+
+/// The length of a string in UTF-16 code units, which is the alphabet
+/// `komodoc_text::Edit` and the document itself count offsets in.
+fn len16(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+/// The UTF-16 offset of a byte offset into `text`. What turns a
+/// `str::match_indices` position -- a byte index -- into the units an `Edit`
+/// is stated in.
+fn byte_to_utf16(text: &str, byte_at: usize) -> usize {
+    len16(&text[..byte_at])
+}
+
+/// Applies one `komodoc_text::Edit` to a plain string, for the merge base a
+/// suggestion's proposal is rehearsed against -- everywhere else an edit
+/// lands on a `Y.Text`, but the base of a three-way merge is never one.
+fn apply_edit_str(text: &str, edit: &komodoc_text::Edit) -> String {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let at = edit.at.min(units.len());
+    let end = (edit.at + edit.delete).min(units.len());
+    let mut out: Vec<u16> = units[..at].to_vec();
+    out.extend(edit.insert.encode_utf16());
+    out.extend_from_slice(&units[end..]);
+    String::from_utf16(&out).unwrap_or_default()
+}
+
+/// Finds where a suggestion's anchor sits in `text`: the one place
+/// `source.exact` occurs, or, when it occurs more than once, the occurrence
+/// whose surrounding words best match `source.prefix` and `source.suffix` --
+/// the longest common suffix of the prefix and longest common prefix of the
+/// suffix -- ties broken by distance from `source.position`. `None` when the
+/// passage does not occur at all, which is the caller's cue to fall back to a
+/// three-way merge.
+fn locate_anchor(text: &str, anchor: &SourceAnchor) -> Option<usize> {
+    if anchor.exact.is_empty() {
+        return None;
+    }
+    let candidates: Vec<usize> = text
+        .match_indices(anchor.exact.as_str())
+        .map(|(at, _)| at)
+        .collect();
+    let (&first, rest) = candidates.split_first()?;
+    if rest.is_empty() {
+        return Some(byte_to_utf16(text, first));
+    }
+    fn common_suffix_len(a: &str, b: &str) -> usize {
+        a.chars()
+            .rev()
+            .zip(b.chars().rev())
+            .take_while(|(x, y)| x == y)
+            .count()
+    }
+    fn common_prefix_len(a: &str, b: &str) -> usize {
+        a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
+    }
+    let mut best = first;
+    let mut best_score = -1i64;
+    let mut best_distance = i64::MAX;
+    for byte in candidates {
+        let before = &text[..byte];
+        let after = &text[byte + anchor.exact.len()..];
+        let score = (common_suffix_len(&anchor.prefix, before)
+            + common_prefix_len(&anchor.suffix, after)) as i64;
+        let at16 = byte_to_utf16(text, byte) as i64;
+        let distance = anchor
+            .position
+            .map(|position| (at16 - position).abs())
+            .unwrap_or(0);
+        if score > best_score || (score == best_score && distance < best_distance) {
+            best_score = score;
+            best_distance = distance;
+            best = byte;
+        }
+    }
+    Some(byte_to_utf16(text, best))
 }
 
 /// Keeps a source anchor only if it names a real place: a passage worth

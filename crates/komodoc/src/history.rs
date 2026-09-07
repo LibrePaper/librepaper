@@ -41,8 +41,9 @@ pub struct Checkpoint {
     #[serde(default)]
     pub by: String,
     /// One of `quiet`, `left`, `comment`, `cli`, `sync`, `restore`, `label`,
-    /// `render` for the moment a browser stored a rendering of, and
-    /// `recovered` for one the manifest lost and a later checkpoint found.
+    /// `render` for the moment a browser stored a rendering of, `accept` for
+    /// an editor taking a suggestion, and `recovered` for one the manifest
+    /// lost and a later checkpoint found.
     pub why: String,
     #[serde(default)]
     pub source_format: String,

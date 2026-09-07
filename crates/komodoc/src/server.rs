@@ -37,7 +37,8 @@ use crate::origins::{
 use crate::pseudonym::pseudonym_for;
 use crate::render::{title_from_html, title_from_markdown};
 use crate::room::{
-    decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet, Sender,
+    decode_update, encode_update, AcceptError, Accepted, Applied, Message as RoomMessage, Outgoing,
+    Room, RoomSet, Sender,
 };
 use crate::store::{
     random_suffix, slugify, Ceiling, Grant, Guest, IndexEntry, LinkGrant, ModifyError, Publication,
@@ -671,6 +672,90 @@ impl Server {
             is_owner,
         )
         .await
+    }
+
+    /// Decides a suggestion -- an `accept` or a `reject` -- the way
+    /// `apply_from` decides everything else a room takes: it returns what to
+    /// answer the requester with, and whether it is also worth broadcasting.
+    /// Called from both places a room accepts a message, the socket loop and
+    /// the REST comments route, so the two speak identical JSON.
+    ///
+    /// Unlike `apply_from`, an accept can itself change the live document, so
+    /// its Yjs update is relayed here, the way `handle_restore` relays a
+    /// restore's -- to every socket, sender included, since nobody's own copy
+    /// already has an edit the server made on their behalf.
+    async fn decide_suggestion(
+        &self,
+        room: &Room,
+        incoming: &RoomMessage,
+        is_owner: bool,
+        by: &str,
+    ) -> (Value, bool) {
+        let fail = |text: &str| -> (Value, bool) {
+            (
+                json!({
+                    "type": "error", "message": text,
+                    "comment_id": incoming.comment_id, "request_id": incoming.request_id,
+                }),
+                false,
+            )
+        };
+        if !is_owner {
+            return fail("only an editor may decide a suggestion");
+        }
+        if incoming.kind == "accept" {
+            return match room
+                .accept_suggestion(&incoming.comment_id, &incoming.request_id, by)
+                .await
+            {
+                Ok(Accepted::Applied {
+                    update,
+                    sha,
+                    resolved_at,
+                }) => {
+                    room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
+                        .await;
+                    (
+                        json!({
+                            "type": "accept", "comment_id": incoming.comment_id,
+                            "resolved_in": sha, "resolved_at": resolved_at,
+                            "request_id": incoming.request_id,
+                        }),
+                        true,
+                    )
+                }
+                Ok(Accepted::Noop { sha, resolved_at }) => (
+                    // Still a success -- `ok` is what the caller's status
+                    // code and the room-wide broadcast key off of, and a
+                    // retry answering with what already happened is exactly
+                    // that, not a refusal.
+                    json!({
+                        "type": "accept", "comment_id": incoming.comment_id,
+                        "resolved_in": sha, "resolved_at": resolved_at,
+                        "request_id": incoming.request_id, "noop": true,
+                    }),
+                    true,
+                ),
+                Err(AcceptError::Refused(text)) => fail(&text),
+                Err(AcceptError::Stale) => (
+                    json!({
+                        "type": "error", "stale": true, "comment_id": incoming.comment_id,
+                        "message": "the passage has changed since this was suggested",
+                        "request_id": incoming.request_id,
+                    }),
+                    false,
+                ),
+                Err(AcceptError::Failed(text)) => fail(&text),
+            };
+        }
+        // "reject"
+        match room.reject_suggestion(&incoming.comment_id).await {
+            Ok(mut result) => {
+                result["request_id"] = json!(incoming.request_id);
+                (result, true)
+            }
+            Err(text) => fail(&text),
+        }
     }
 }
 
@@ -1467,9 +1552,18 @@ impl Server {
                         continue 'reader;
                     }
 
-                    let (result, ok) = self
-                        .apply_from(&room, incoming, &address, &who, &author)
-                        .await;
+                    let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
+                        let by = if who.key.is_empty() {
+                            who.id.handle.clone()
+                        } else {
+                            who.key.clone()
+                        };
+                        self.decide_suggestion(&room, &incoming, is_owner, &by)
+                            .await
+                    } else {
+                        self.apply_from(&room, incoming, &address, &who, &author)
+                            .await
+                    };
                     if !ok {
                         if tx.send(Outgoing::Text(result.to_string())).await.is_err() {
                             break 'reader;
@@ -1663,9 +1757,18 @@ impl Server {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
                 let address = client_address(peer, &headers);
-                let (result, ok) = self
-                    .apply_from(&room, incoming, &address, &who, &author)
-                    .await;
+                let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
+                    let by = if who.key.is_empty() {
+                        who.id.handle.clone()
+                    } else {
+                        who.key.clone()
+                    };
+                    self.decide_suggestion(&room, &incoming, is_owner, &by)
+                        .await
+                } else {
+                    self.apply_from(&room, incoming, &address, &who, &author)
+                        .await
+                };
                 if ok {
                     let shared = room.comment_event_for(&result, "", false).await;
                     room.broadcast(&shared).await;

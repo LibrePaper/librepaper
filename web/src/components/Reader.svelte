@@ -9,6 +9,7 @@
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
   import * as passages from "../lib/passages.js";
+  import * as suggestions from "../lib/suggestions.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
@@ -173,6 +174,12 @@
           end: comment.end,
           motivation: comment.motivation,
           resolved: Boolean(comment.resolved),
+          // Only meaningful for a suggestion, but sent for every comment: the
+          // frame paints them only where `motivation` is `editing`, and a
+          // constant shape here keeps the JSON comparison above from firing
+          // on fields that never change.
+          proposed: comment.proposed ?? "",
+          outcome: comment.outcome || "",
         })),
     );
     if (highlight !== lastHighlight) {
@@ -394,8 +401,18 @@
   let commenting = $state(false);
   let identifying = $state(false);
   let deleting = $state(false);
-  let draft = $state({ body: "" });
+  let draft = $state({ body: "", proposed: "" });
   let pendingDelete = null;
+
+  // Opening the dialog. The suggest variant starts its proposal textarea
+  // with the source slice when the passage was placed, the rendered words
+  // otherwise (`suggestions.prefillFor`, which a check exercises directly).
+  // Set here, once, rather than in an effect: an effect that read `draft` to
+  // write it would run again on every keystroke and clobber what was typed.
+  function openDialog() {
+    if (tool === "editing") draft = { ...draft, proposed: suggestions.prefillFor(pending) };
+    commenting = true;
+  }
 
   function barClicked() {
     if (!pending) return;
@@ -409,16 +426,20 @@
       identifying = true;
       return;
     }
-    commenting = true;
+    openDialog();
   }
 
-  function submitAnnotation({ motivation, body }) {
+  function submitAnnotation({ motivation, body, proposed }) {
     if (!pending) return;
     // The name shown here is only a guess until the broadcast comes back: the
     // server decides the real creator (the account name, or the per-document
     // pseudonym), and never trusts anything this browser sends.
     const creator = identity || doc.commenting_as || "Anonymous";
     const temp_id = crypto.randomUUID();
+    // `proposed` only ever travels alongside `editing`: the server drops it
+    // on any other motivation, and sending it only here keeps the optimistic
+    // row and the wire message in agreement about what a suggestion is.
+    const editingFields = motivation === "editing" ? { proposed: proposed ?? "" } : {};
     const optimistic = {
       id: temp_id,
       temp_id,
@@ -426,6 +447,7 @@
       ...pending,
       motivation,
       body,
+      ...editingFields,
       creator,
       created: new Date().toISOString(),
       resolved: false,
@@ -437,18 +459,65 @@
     anchorComments([optimistic]);
     comments = [...comments, optimistic];
     applyHighlights();
-    sendAnnotation({ type: "comment", ...pending, motivation, body, temp_id });
+    sendAnnotation({ type: "comment", ...pending, motivation, body, ...editingFields, temp_id });
     pending = null;
   }
 
   function submitDialog(event) {
     event.preventDefault();
+    const motivation = tool === "region" ? "commenting" : tool;
     submitAnnotation({
-      motivation: tool === "region" ? "commenting" : tool,
+      motivation,
       body: draft.body,
+      proposed: motivation === "editing" ? draft.proposed : undefined,
     });
-    draft = { ...draft, body: "" };
+    draft = { body: "", proposed: "" };
     commenting = false;
+  }
+
+  // An editor's decision on a suggestion: optimistically busy, not resolved,
+  // until the `accept` or `reject` broadcast settles it (or an `error`
+  // clears the busy state back off). `request_id` is what makes a retried
+  // decision a no-op on the server rather than a second one; nothing here
+  // retries automatically, so a fresh one per click is enough.
+  function decideSuggestion(comment, action) {
+    suggestions.beginDeciding(comment, action);
+    comments = comments;
+    room?.send({ type: action, comment_id: comment.id, request_id: crypto.randomUUID() });
+  }
+
+  // A suggestion the server refused to apply because the passage it named no
+  // longer matches (`{"type":"error","stale":true,...}`): open the merge
+  // editor on the proposal applied to the checkpoint it was made against,
+  // beside the live text, so an editor can take what still applies by hand.
+  async function openStaleSuggestion(comment) {
+    if (!comment.source || !comment.revision || !session) {
+      toastProblem("the passage has changed since this was suggested");
+      return;
+    }
+    const path = comment.source.path;
+    try {
+      const point = await history.checkpoint(SLUG, comment.revision, keyHeaders(KEY));
+      const baseText = point.texts?.[path] ?? "";
+      const oldText = suggestions.applyProposal(baseText, comment.source, comment.proposed ?? "");
+      const tree = treeNow();
+      const id = session.idOf(path);
+      const component = (await import("./MergeEditor.svelte")).default;
+      MergeEditor = component;
+      fileDiff = null;
+      mergeTarget = {
+        path,
+        oldText,
+        newText: tree.texts?.[path] ?? "",
+        liveText: id ? session.textOf(id) : null,
+        awareness: session.awareness,
+        editable: mayEdit && editing && Boolean(id),
+        targetLabel: "Live document",
+        note: "this suggestion no longer applies cleanly",
+      };
+    } catch (error) {
+      toastProblem(error.message || "the passage has changed since this was suggested");
+    }
   }
 
   function resolve(comment) {
@@ -511,6 +580,20 @@
       // backfill won the race, or the comment is gone -- is dropped quietly
       // rather than rolled back or reported.
       if (event.comment_id && pendingBackfill.delete(event.comment_id)) return;
+      // A decision (accept or reject) that did not go through: the card was
+      // marked busy, never resolved, and this clears that back off.
+      const deciding = event.comment_id && comments.find((item) => item.id === event.comment_id);
+      if (deciding?.deciding) {
+        suggestions.clearDeciding(deciding);
+        comments = comments;
+        // Stale is not a refusal to show as an error toast: the merge editor
+        // it opens says what happened, and the suggestion stays pending
+        // rather than being rolled back to nothing.
+        if (event.stale) {
+          void openStaleSuggestion(deciding);
+          return;
+        }
+      }
       outbox.failed(event.temp_id, event.message);
       // Roll the optimistic row back.
       if (event.temp_id) {
@@ -633,6 +716,17 @@
       if (!comment) return;
       comment.resolved = event.resolved;
       comment.resolved_at = event.resolved_at;
+      // The only way a suggestion's `resolved` goes back to false is
+      // reopening a rejected one, which clears its outcome too.
+      if (!event.resolved) comment.outcome = "";
+      comments = comments;
+      applyHighlights();
+      return;
+    }
+    if (event.type === "accept" || event.type === "reject") {
+      const comment = comments.find((item) => item.id === event.comment_id);
+      if (!comment) return;
+      suggestions.applyDecision(comment, event, event.type === "accept" ? "accepted" : "rejected");
       comments = comments;
       applyHighlights();
     }
@@ -2752,7 +2846,9 @@
                       }
                     }
                   }}
-                  onresolve={resolve} ondelete={askDelete} onreply={reply} />
+                  onresolve={resolve} ondelete={askDelete} onreply={reply}
+                  onaccept={(comment) => decideSuggestion(comment, "accept")}
+                  onreject={(comment) => decideSuggestion(comment, "reject")} />
       {/if}
       </div>
       {/if}
@@ -2775,6 +2871,7 @@
                      liveText={mergeTarget.liveText} awareness={mergeTarget.awareness}
                      editable={mergeTarget.editable !== false && mayEdit && editing}
                      targetLabel={mergeTarget.targetLabel}
+                     note={mergeTarget.note || ""}
                      onlive={historyComparePoint ? async () => { const path = mergeTarget.path; await chooseHistoryTarget(""); await openFileDiff(path); } : null}
                      onclose={() => (mergeTarget = null)} />
       {:else if shownFigure}
@@ -2869,7 +2966,7 @@
 
 <!-- What a selection becomes, once the reader has said what to call it and
      what they think of it. -->
-<Modal bind:open={commenting} title="Add comment">
+<Modal bind:open={commenting} title={tool === "editing" ? "Suggest a change" : "Add comment"}>
   {#snippet children()}
     <form id="commentForm" class="flex flex-col gap-3" onsubmit={submitDialog}>
       <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3 text-sm">
@@ -2877,25 +2974,52 @@
       </blockquote>
       {#if identity}
         <p class="text-surface-600-400 text-sm">
-          commenting as {me.provider === "github" ? `@${identity}` : identity}
+          {tool === "editing" ? "suggesting" : "commenting"} as {me.provider === "github" ? `@${identity}` : identity}
         </p>
       {:else if me.comments_need_login}
         <p class="text-sm">
-          <a class="anchor" href={signInHref()}>Sign in</a> to comment on this document.
+          <a class="anchor" href={signInHref()}>Sign in</a> to {tool === "editing" ? "suggest a change to" : "comment on"} this document.
         </p>
       {:else}
         <!-- No name to type: the server hands out a per-document pseudonym for
              an anonymous commenter, so this is only ever a statement. -->
         <p class="text-surface-600-400 text-sm">
-          commenting as {doc.commenting_as || "Anonymous"}
+          {tool === "editing" ? "suggesting" : "commenting"} as {doc.commenting_as || "Anonymous"}
         </p>
       {/if}
-      <label class="label">
-        <span class="label-text">Comment</span>
-        <!-- svelte-ignore a11y_autofocus -->
-        <textarea class="textarea" rows="5" maxlength="5000" required autofocus bind:value={draft.body}
-        ></textarea>
-      </label>
+      {#if tool === "editing"}
+        {#if !pending?.source}
+          <!-- No anchor of record: the server stores and shows the
+               suggestion anyway, but an editor has to apply it by hand
+               rather than clicking Accept -- see `docs/specs/track-changes.md`. -->
+          <p class="text-warning-600-400 text-sm">
+            Komodoc could not place this passage in the source. An editor will have to apply the suggestion by hand.
+          </p>
+        {/if}
+        <label class="label">
+          <span class="label-text">Suggested replacement</span>
+          <!-- svelte-ignore a11y_autofocus -->
+          <textarea
+            class="textarea"
+            rows="5"
+            maxlength="5000"
+            autofocus
+            bind:value={draft.proposed}
+            placeholder="Leave empty to suggest deleting the passage"
+          ></textarea>
+        </label>
+        <label class="label">
+          <span class="label-text">Note (optional)</span>
+          <textarea class="textarea" rows="2" maxlength="5000" bind:value={draft.body}></textarea>
+        </label>
+      {:else}
+        <label class="label">
+          <span class="label-text">Comment</span>
+          <!-- svelte-ignore a11y_autofocus -->
+          <textarea class="textarea" rows="5" maxlength="5000" required autofocus bind:value={draft.body}
+          ></textarea>
+        </label>
+      {/if}
     </form>
   {/snippet}
   {#snippet footer()}
@@ -2944,7 +3068,7 @@
     <button
       type="button"
       class="btn preset-filled-primary-500"
-      onclick={() => { identifying = false; commenting = true; }}
+      onclick={() => { identifying = false; openDialog(); }}
     >
       Continue as {doc.commenting_as || "Anonymous"}
     </button>

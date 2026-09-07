@@ -66,6 +66,24 @@
   const previewStyle = document.createElement("style");
   previewStyle.dataset.komodocPreview = "canvas";
   previewStyle.textContent = previewCanvasStyle;
+
+  // A pending suggestion's proposal is drawn after its passage by
+  // `::after`, which adds no text node -- the offset tables this file keeps
+  // stay true to what the document actually contains. Installed once, up
+  // front: unlike the document's own styles, nothing here ever needs to
+  // change, and it survives every body replacement `adoptStyles` does for a
+  // live preview.
+  const proposedStyle = document.createElement("style");
+  proposedStyle.dataset.komodocProposed = "1";
+  proposedStyle.textContent = `
+    mark[data-proposed]::after {
+      content: attr(data-proposed);
+      text-decoration: underline;
+      color: var(--komodoc-proposed-color, inherit);
+      margin-inline-start: 0.2em;
+    }
+  `;
+  document.head.appendChild(proposedStyle);
   function adoptStyles(parsed) {
     document.documentElement.classList.add("komodoc-preview");
     document.documentElement.classList.toggle("komodoc-flow", !parsed.body.querySelector(":scope > svg.typst-doc"));
@@ -91,6 +109,9 @@
   const TINTS = {
     commenting: [42, 55],
     highlighting: [145, 28],
+    // A suggestion: low saturation, hue near red, so a proposed replacement
+    // reads as provisional beside an ordinary comment's warmer tint.
+    editing: [0, 20],
   };
   const NEUTRAL = [220, 12]; // resolved: the colour has served its purpose
   const tintOf = (motivation) => TINTS[motivation] || TINTS.commenting;
@@ -233,11 +254,11 @@
       for (const item of active) if (item.end <= start) active.delete(item);
       if (!active.size) continue;
       const covering = [...active];
-      for (const piece of piecesFor(start, end)) plan.push({ piece, covering });
+      for (const piece of piecesFor(start, end)) plan.push({ piece, covering, end });
     }
 
     quietly(() => {
-      for (const { piece, covering } of plan.reverse()) {
+      for (const { piece, covering, end } of plan.reverse()) {
         const range = document.createRange();
         range.setStart(piece.node, piece.from);
         range.setEnd(piece.node, piece.to);
@@ -256,6 +277,19 @@
           ? wash(tintOf(inner.motivation), live.length, 0.42)
           : wash(NEUTRAL, 1, 0.24);
         mark.style.cssText = `background:${shade};color:inherit;cursor:pointer`;
+        // A pending suggestion is struck through along its whole extent, and
+        // its proposal is drawn once, after the last segment it covers -- the
+        // segment whose own end lands on the suggestion's end offset. A
+        // decided suggestion falls out of `resolved` and is painted like any
+        // other resolved comment, above.
+        const suggestion = live.find((item) => item.motivation === "editing");
+        if (suggestion) {
+          mark.style.textDecoration = "line-through";
+          if (end === suggestion.end) {
+            mark.dataset.proposed = suggestion.proposed || "";
+            mark.style.setProperty("--komodoc-proposed-color", edge(tintOf("editing")));
+          }
+        }
         range.surroundContents(mark);
         // The same innermost annotation the colour came from is the one a click
         // on this stretch means.

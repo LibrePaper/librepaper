@@ -17,6 +17,10 @@
     awareness = null,
     editable = false,
     targetLabel = "Live document",
+    // A stale suggestion opens this editor with an explanation of why: the
+    // passage it named no longer matches, so the header carries that reason
+    // instead of leaving the reader to guess why the merge editor appeared.
+    note = "",
     onlive,
     onclose,
   } = $props();
@@ -68,7 +72,10 @@
 
 <section class="merge-editor flex h-full flex-col" aria-label="Compare checkpoint with live document">
   <header class="merge-toolbar flex items-center justify-between gap-2 border-surface-200-800 border-b p-2">
-    <div class="truncate text-sm"><strong>{path || "document"}</strong><span class="panel-muted"> · checkpoint on the left, {targetLabel} on the right</span></div>
+    <div class="truncate text-sm">
+      <strong>{path || "document"}</strong><span class="panel-muted"> · checkpoint on the left, {targetLabel} on the right</span>
+      {#if note}<span class="panel-muted"> — {note}</span>{/if}
+    </div>
     {#if onlive}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onlive()}>Compare with live to restore passages</button>{/if}
     <IconButton icon="x" label="Close diff" tone="plain" onclick={() => onclose?.()} />
   </header>

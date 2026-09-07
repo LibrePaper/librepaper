@@ -19,8 +19,24 @@ use crate::util::die;
 pub const ANNOTATION_CONTEXT: &str = "http://www.w3.org/ns/anno.jsonld";
 
 /// The body of an annotation. A highlight has nothing to say, and the spec
-/// allows a body-less annotation.
+/// allows a body-less annotation. A suggestion's body is its proposal, with
+/// its optional note beside it -- an array of the two when there is a note,
+/// the proposal alone otherwise, both `TextualBody`s so a reader that does
+/// not know `purpose: editing` still sees words.
 fn bodies_for(item: &Comment) -> Option<Value> {
+    if let Some(proposed) = item
+        .proposed
+        .as_ref()
+        .filter(|_| item.motivation == "editing")
+    {
+        let note = (!item.body.is_empty())
+            .then(|| json!({"type": "TextualBody", "value": item.body, "format": "text/plain"}));
+        let suggestion = json!({"type": "TextualBody", "purpose": "editing", "value": proposed});
+        return Some(match note {
+            Some(note) => Value::Array(vec![note, suggestion]),
+            None => Value::Array(vec![suggestion]),
+        });
+    }
     (!item.body.is_empty())
         .then(|| json!({"type": "TextualBody", "value": item.body, "format": "text/plain"}))
 }
@@ -262,6 +278,11 @@ pub fn render_jsonld(
         if !item.resolved_in.is_empty() {
             annotation.insert("komodoc:resolved_in".into(), json!(item.resolved_in));
         }
+        // What an editor decided about a suggestion, beside the ordinary
+        // resolved bookkeeping every comment carries.
+        if !item.outcome.is_empty() {
+            annotation.insert("komodoc:outcome".into(), json!(item.outcome));
+        }
         items.push(Value::Object(annotation));
         // A reply is an annotation whose target is the annotation it answers.
         for answer in &item.replies {
@@ -328,6 +349,18 @@ pub fn render_markdown(
             );
         } else {
             let _ = write!(out, "> {}\n\n", item.exact.replace('\n', "\n> "));
+        }
+        if let Some(proposed) = item
+            .proposed
+            .as_ref()
+            .filter(|_| item.motivation == "editing")
+        {
+            let shown = if proposed.is_empty() {
+                "(delete)".to_string()
+            } else {
+                proposed.replace('\n', "\n> ")
+            };
+            let _ = write!(out, "**Suggested:** “{shown}”\n\n");
         }
         if !item.body.is_empty() {
             let _ = write!(out, "{}\n\n", item.body);
@@ -424,11 +457,21 @@ pub fn render_response_with_replacements(
             };
             // What settled it, by the checkpoint it was settled in: "resolved"
             // on its own says somebody clicked something, and this says which
-            // version of the paper answered it.
-            let settled = match (item.resolved, item.resolved_in.as_str()) {
-                (true, "") => ", resolved".to_string(),
-                (true, sha) => format!(", resolved in {}", short(sha)),
-                (false, _) => String::new(),
+            // version of the paper answered it. A suggestion's own decision
+            // -- accepted or rejected -- says more than "resolved" would, so
+            // it is shown instead.
+            let settled = if !item.outcome.is_empty() {
+                match (item.outcome.as_str(), item.resolved_in.as_str()) {
+                    ("accepted", "") => ", accepted".to_string(),
+                    ("accepted", sha) => format!(", accepted in {}", short(sha)),
+                    (other, _) => format!(", {other}"),
+                }
+            } else {
+                match (item.resolved, item.resolved_in.as_str()) {
+                    (true, "") => ", resolved".to_string(),
+                    (true, sha) => format!(", resolved in {}", short(sha)),
+                    (false, _) => String::new(),
+                }
             };
             let _ = write!(out, "\n### {}. {motivation}{settled}\n\n", n + 1);
 
@@ -447,6 +490,18 @@ pub fn render_response_with_replacements(
                 );
             } else {
                 let _ = write!(out, "**Then:** “{}”\n\n", one_line(&item.exact));
+                if let Some(proposed) = item
+                    .proposed
+                    .as_ref()
+                    .filter(|_| item.motivation == "editing")
+                {
+                    let shown = if proposed.is_empty() {
+                        "(delete)".to_string()
+                    } else {
+                        one_line(proposed)
+                    };
+                    let _ = write!(out, "**Suggested:** “{shown}”\n\n");
+                }
                 // What the passage says now. The anchoring a reader uses is a
                 // match on the words themselves, so there are two answers it
                 // can give honestly: the passage is still there, or it is

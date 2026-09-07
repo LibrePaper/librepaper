@@ -835,6 +835,33 @@ pub fn apply_edits(doc: &Doc, edits: &[komodoc_text::Edit]) {
     apply_text_edits(&mut txn, &text, edits);
 }
 
+/// Applies word-level edits to the `Y.Text` at `path`, in one transaction,
+/// and returns the update they produced -- the shape accepting a suggestion
+/// needs, since it edits a named file rather than the main one and has to
+/// hand what it did to every other socket, the way `set_main_file` does for
+/// the main file. `None` when `path` names no text in the document, which is
+/// the caller's cue that the anchor no longer applies to anything.
+pub fn apply_path_edits(doc: &Doc, path: &str, edits: &[komodoc_text::Edit]) -> Option<Vec<u8>> {
+    let (files, path_map, _, _) = maps(doc);
+    let id = {
+        let txn = doc.transact();
+        path_map
+            .iter(&txn)
+            .find(|(_, value)| match value {
+                Out::Any(any) => any.to_string().trim_matches('"') == path,
+                _ => false,
+            })
+            .map(|(id, _)| id.to_string())
+    }?;
+    let before = encode_vector(doc);
+    {
+        let mut txn = doc.transact_mut();
+        let text = text_at(&files, &txn, &id)?;
+        apply_text_edits(&mut txn, &text, edits);
+    }
+    encode_diff(doc, &before).ok()
+}
+
 fn apply_text_edits(txn: &mut TransactionMut, text: &TextRef, edits: &[komodoc_text::Edit]) {
     for edit in edits.iter().rev() {
         if edit.delete > 0 {

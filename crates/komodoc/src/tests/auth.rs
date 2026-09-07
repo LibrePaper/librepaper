@@ -766,7 +766,7 @@ async fn annotation_kinds() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "comment", "exact": "hello", "motivation": "editing", "body": "a remark"}),
+        json!({"type": "comment", "exact": "hello", "motivation": "musing", "body": "a remark"}),
     )
     .await;
     assert_eq!(status, 200);

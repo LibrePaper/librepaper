@@ -68,10 +68,11 @@ pub struct Configuration {
     /// standard vocabulary rather than an invented one means an exported
     /// annotation says the same thing to any tool that reads the spec.
     ///
-    /// Two of them: a remark about a passage, and a passage marked as worth
-    /// returning to. The shades of saying something -- a question, a
-    /// judgement, a proposed rewording -- are the comment's own words, not a
-    /// taxonomy to pick from before writing one.
+    /// Three of them: a remark about a passage, a passage marked as worth
+    /// returning to, and a suggestion -- a proposed rewording, inert until an
+    /// editor decides it. The shades of saying something -- a question, a
+    /// judgement -- are otherwise the comment's own words, not a taxonomy to
+    /// pick from before writing one.
     pub motivations: Vec<String>,
     pub default_motivation: String,
 
@@ -235,7 +236,9 @@ impl Default for Configuration {
                 exact: 1000,
                 context: 64,
             },
-            motivations: ["commenting", "highlighting"].map(String::from).to_vec(),
+            motivations: ["commenting", "highlighting", "editing"]
+                .map(String::from)
+                .to_vec(),
             default_motivation: "commenting".to_string(),
             max_title: 200,
             max_replies: 100,

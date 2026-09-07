@@ -81,6 +81,7 @@
     restore: "restored",
     label: "named",
     recovered: "recovered",
+    accept: "accepted a suggestion",
   };
   const reason = (why) => WHY[why] || why;
 
