@@ -768,6 +768,50 @@ impl AutomationPeer {
             .await
     }
 
+    fn chat_socket_request(
+        &self,
+        conversation: &str,
+    ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, String> {
+        let base = self.link.server().trim_end_matches('/');
+        let base = base
+            .strip_prefix("https://")
+            .map(|rest| format!("wss://{rest}"))
+            .or_else(|| {
+                base.strip_prefix("http://")
+                    .map(|rest| format!("ws://{rest}"))
+            })
+            .unwrap_or_else(|| format!("ws://{base}"));
+        let url = format!(
+            "{base}/api/documents/{}/chat/{conversation}/socket",
+            self.link.slug()
+        );
+        let mut request = url.into_client_request().map_err(|err| err.to_string())?;
+        if !self.token.is_empty() {
+            request.headers_mut().insert(
+                "authorization",
+                format!("Bearer {}", self.token)
+                    .parse()
+                    .map_err(|_| "invalid credential header")?,
+            );
+        }
+        if !self.link.key.is_empty() {
+            request.headers_mut().insert(
+                KEY_HEADER,
+                self.link
+                    .key
+                    .parse()
+                    .map_err(|_| "invalid credential header")?,
+            );
+        }
+        request
+            .headers_mut()
+            .insert("x-komodoc-automation", "1".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("x-komodoc-client", "1".parse().unwrap());
+        Ok(request)
+    }
+
     pub async fn chat_post(
         &self,
         conversation: &str,
@@ -775,70 +819,90 @@ impl AutomationPeer {
         text: &str,
         request_id: &str,
     ) -> Result<Value, String> {
+        use futures_util::{SinkExt, StreamExt};
         validate_conversation(conversation, token)?;
-        self.chat_request(
-            reqwest::Method::POST,
-            &format!("/{conversation}"),
-            token,
-            Some(json!({"id":request_id,"role":"agent","text":text})),
-        )
-        .await
+        let operation = async {
+            let (mut socket, _) =
+                tokio_tungstenite::connect_async(self.chat_socket_request(conversation)?)
+                    .await
+                    .map_err(|err| format!("could not join chat: {err}"))?;
+            socket
+                .send(Message::Text(
+                    json!({"type":"join","token":token,"role":"agent","receive":false})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .map_err(|err| err.to_string())?;
+            loop {
+                let Some(frame) = socket.next().await else {
+                    return Err("chat closed before it accepted the agent".into());
+                };
+                let Message::Text(raw) = frame.map_err(|err| err.to_string())? else {
+                    continue;
+                };
+                let event: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+                if event["type"] == "error" {
+                    return Err(event["message"].as_str().unwrap_or("chat rejected").into());
+                }
+                if event["type"] == "ready" {
+                    break;
+                }
+            }
+            let result = self
+                .chat_request(
+                    reqwest::Method::POST,
+                    &format!("/{conversation}"),
+                    token,
+                    Some(json!({"id":request_id,"role":"agent","text":text})),
+                )
+                .await;
+            let _ = socket.close(None).await;
+            result
+        };
+        tokio::time::timeout(REQUEST_TIMEOUT, operation)
+            .await
+            .map_err(|_| "timed out posting chat reply".to_string())?
     }
 
     pub async fn chat_watch(
         &self,
         conversation: &str,
         token: &str,
-        mut after: u64,
         timeout: Duration,
     ) -> Result<Value, String> {
+        use futures_util::{SinkExt, StreamExt};
         validate_conversation(conversation, token)?;
-        let deadline = Instant::now() + timeout;
-        let mut heartbeat = Instant::now();
         let operation = async {
-            loop {
-                if Instant::now() >= heartbeat {
-                    self.chat_request(
-                        reqwest::Method::POST,
-                        &format!("/{conversation}/listen"),
-                        token,
-                        Some(json!({})),
-                    )
-                    .await?;
-                    heartbeat = Instant::now() + Duration::from_secs(10);
+            let (mut socket, _) =
+                tokio_tungstenite::connect_async(self.chat_socket_request(conversation)?)
+                    .await
+                    .map_err(|err| format!("could not join chat: {err}"))?;
+            socket
+                .send(Message::Text(
+                    json!({"type":"join","token":token,"role":"agent"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .map_err(|err| err.to_string())?;
+            while let Some(frame) = socket.next().await {
+                let Message::Text(raw) = frame.map_err(|err| err.to_string())? else {
+                    continue;
+                };
+                let event: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+                if event["type"] == "error" {
+                    return Err(event["message"].as_str().unwrap_or("chat rejected").into());
                 }
-                let mut result = self
-                    .chat_request(
-                        reqwest::Method::GET,
-                        &format!("/{conversation}?after={after}"),
-                        token,
-                        None,
-                    )
-                    .await?;
-                let messages = result
-                    .get_mut("messages")
-                    .and_then(Value::as_array_mut)
-                    .ok_or("invalid chat messages response")?;
-                messages.retain(|message| message["role"] == "user");
-                let has_messages = !messages.is_empty();
-                after = result["next_cursor"]
-                    .as_u64()
-                    .ok_or("invalid chat cursor response")?;
-                if has_messages || Instant::now() >= deadline {
-                    return Ok(result);
+                if event["type"] == "message" && event["message"]["role"] == "user" {
+                    return Ok(json!({"messages":[event["message"].clone()],"timed_out":false}));
                 }
-                tokio::time::sleep(
-                    Duration::from_millis(700)
-                        .min(deadline.saturating_duration_since(Instant::now())),
-                )
-                .await;
             }
+            Err("chat closed while waiting for a message".into())
         };
         match tokio::time::timeout(timeout.max(Duration::from_secs(1)), operation).await {
             Ok(result) => result,
-            Err(_) => {
-                Ok(json!({"messages":[],"next_cursor":after,"listening":false,"timed_out":true}))
-            }
+            Err(_) => Ok(json!({"messages":[],"timed_out":true})),
         }
     }
 
@@ -1047,7 +1111,7 @@ pub enum AgentCommand {
 pub enum ChatCommand {
     /// Create a private conversation; keep its returned token private.
     Create { link: String },
-    /// Wait for user messages and return a cursor for the next call.
+    /// Stay connected until the next live user message arrives.
     Watch {
         link: String,
         #[arg(long)]
@@ -1055,8 +1119,6 @@ pub enum ChatCommand {
         /// Conversation credential; defaults to KOMODOC_CHAT_TOKEN.
         #[arg(long)]
         token: Option<String>,
-        #[arg(long, default_value_t = 0)]
-        after: u64,
         #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=300))]
         timeout: u64,
     },
@@ -1126,14 +1188,12 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
                 ChatCommand::Watch {
                     conversation,
                     token,
-                    after,
                     timeout,
                     ..
                 } => {
                     peer.chat_watch(
                         &conversation,
                         &chat_token(token)?,
-                        after,
                         Duration::from_secs(timeout),
                     )
                     .await?

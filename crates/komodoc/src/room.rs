@@ -357,6 +357,10 @@ pub struct Peer {
     /// that is.
     pub minute: i64,
     pub updates: i64,
+    /// Ephemeral chat frames sent in this minute. Separate from durable edit
+    /// accounting so chat cannot consume an editor's update allowance.
+    pub chat_minute: i64,
+    pub chat_messages: i64,
 }
 
 /// The live document, as the server holds it. This is the document, not a
@@ -1322,6 +1326,8 @@ impl Room {
                 acked: 0,
                 minute: 0,
                 updates: 0,
+                chat_minute: 0,
+                chat_messages: 0,
             },
         );
     }
@@ -1346,6 +1352,24 @@ impl Room {
 
     pub async fn broadcast(&self, payload: &Value) {
         self.broadcast_except(None, payload).await;
+    }
+
+    /// A deliberately small per-socket ceiling for live, non-durable chat.
+    pub async fn chat_allowed(&self, socket: u64) -> bool {
+        let minute = now_unix() / 60;
+        let mut state = self.state.lock().await;
+        let Some(peer) = state.sockets.get_mut(&socket) else {
+            return false;
+        };
+        if peer.chat_minute != minute {
+            peer.chat_minute = minute;
+            peer.chat_messages = 0;
+        }
+        if peer.chat_messages >= 30 {
+            return false;
+        }
+        peer.chat_messages += 1;
+        true
     }
 
     /// Sends to everyone but one socket: an editing update is relayed to the

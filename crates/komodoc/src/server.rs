@@ -142,6 +142,8 @@ pub struct Server {
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.
     pub pending: PendingCodes,
+    /// Private agent channels are live coordination and never durable data.
+    pub chat: crate::chat::Hub,
     /// Where the LaTeX distributions come from, or nothing. A deployment
     /// without one still stores and shows `.tex` documents; what it does not
     /// do is offer a browser anywhere to fetch a compiler from, which is why
@@ -180,6 +182,8 @@ struct Connection {
     arrival: Arrival,
     query: Option<String>,
     is_owner: bool,
+    can_comment: bool,
+    chat: Option<String>,
     link: String,
     comment_budget: Option<i64>,
     tx: Sender,
@@ -307,6 +311,7 @@ impl Server {
             accounts: Arc::new(GithubAccounts),
             listing: true,
             pending: PendingCodes::new(),
+            chat: crate::chat::Hub::default(),
             latex: None,
             sockets: AtomicU64::new(1),
             asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
@@ -1472,6 +1477,8 @@ impl Server {
                 arrival,
                 query,
                 is_owner,
+                can_comment: who.at_least(Role::Commenter),
+                chat: None,
                 link: who.link.clone(),
                 comment_budget: who.comment_budget,
                 tx: tx.clone(),
@@ -1520,6 +1527,9 @@ impl Server {
         // stay connected but detached, with its updates silently ignored by
         // `receive_update`. `housekeeping` is what notices instead.
         let mut assembly = UpdateAssembly::default();
+        // Retry metadata contains no chat bodies. IDs are scoped to this socket.
+        let mut chat_requests: std::collections::VecDeque<(String, String)> =
+            std::collections::VecDeque::new();
         // CRDT history can exceed visible source, but peer memory stays bounded.
         let update_ceiling = self
             .config
@@ -1541,6 +1551,54 @@ impl Server {
                     let Ok(mut incoming) = serde_json::from_str::<RoomMessage>(&raw) else {
                         continue 'reader;
                     };
+
+                    // Chat is live room traffic, never document state. It is
+                    // deliberately absent from hello/reconnect and storage.
+                    if incoming.kind == "chat" {
+                        self.reauthorize(&room.slug).await;
+                        if !room.state.lock().await.sockets.contains_key(&socket_id) { break 'reader; }
+                        if !who.at_least(Role::Commenter) {
+                            let _ = tx.send(Outgoing::Text(json!({"type":"error","message":"comment access is required to chat","temp_id":incoming.temp_id}).to_string())).await;
+                            continue 'reader;
+                        }
+                        let text = incoming.body.trim();
+                        if text.is_empty() || text.len() > 4096 || incoming.temp_id.is_empty() || incoming.temp_id.len() > 128 {
+                            let _ = tx.send(Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id}).to_string())).await;
+                            continue 'reader;
+                        }
+                        let digest = crate::store::digest_of(text);
+                        if let Some((_, previous)) = chat_requests.iter().find(|(id,_)| id == &incoming.temp_id) {
+                            let reply = if previous == &digest {
+                                json!({"type":"chat-ack","temp_id":incoming.temp_id})
+                            } else {
+                                json!({"type":"error","message":"message id already used for different content","temp_id":incoming.temp_id})
+                            };
+                            let _ = tx.send(Outgoing::Text(reply.to_string())).await;
+                            continue 'reader;
+                        }
+                        if !room.chat_allowed(socket_id).await {
+                            let _ = tx.send(Outgoing::Text(json!({"type":"error","message":"too many chat messages; try again shortly","temp_id":incoming.temp_id}).to_string())).await;
+                            continue 'reader;
+                        }
+                        let creator = if who.id.is_signed_in() {
+                            who.id.name.clone()
+                        } else if author.is_empty() {
+                            "Anonymous".to_string()
+                        } else {
+                            pseudonym_for(&author, &room.slug)
+                        };
+                        let mut message = json!({
+                            "type":"chat", "id":random_token(),
+                            "text":text, "creator":creator,
+                            "created":crate::clock::timestamp(),
+                        });
+                        room.broadcast_except(Some(socket_id),&message).await;
+                        message["temp_id"] = Value::String(incoming.temp_id.clone());
+                        if tx.send(Outgoing::Text(message.to_string())).await.is_err() { break 'reader; }
+                        chat_requests.push_back((incoming.temp_id,digest));
+                        if chat_requests.len() > 256 { chat_requests.pop_front(); }
+                        continue 'reader;
+                    }
 
                     if matches!(
                         incoming.kind.as_str(),
@@ -1869,6 +1927,7 @@ impl Server {
                         .await;
                     self.may_read(entry, &who)
                         && who.at_least(Role::Editor) == connection.is_owner
+                        && who.at_least(Role::Commenter) == connection.can_comment
                         && who.link == connection.link
                         && who.comment_budget == connection.comment_budget
                 }
@@ -1878,19 +1937,23 @@ impl Server {
             if allowed {
                 continue;
             }
+            if let Some(id) = &connection.chat {
+                self.chat.detach(id, socket_id).await;
+                let _ = connection
+                    .tx
+                    .try_send(Outgoing::Close("access changed; reconnect"));
+                continue;
+            }
             // Never waited on: a socket too far behind to take the close frame
             // must not hold up the sharing change that revoked it. It is
             // dropped from the room instead, which stops every broadcast to
             // it at once, and `run_socket`'s housekeeping cuts the transport
             // within the second.
-            if connection
+            let _ = connection
                 .tx
-                .try_send(Outgoing::Close("access changed; reconnect"))
-                .is_err()
-            {
-                let room = self.rooms.get(slug).await;
-                room.state.lock().await.sockets.remove(&socket_id);
-            }
+                .try_send(Outgoing::Close("access changed; reconnect"));
+            let room = self.rooms.get(slug).await;
+            room.state.lock().await.sockets.remove(&socket_id);
         }
     }
 
@@ -3698,13 +3761,161 @@ impl Server {
         )
     }
 
+    async fn handle_chat_socket(
+        self: Arc<Self>,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+        id: &str,
+    ) -> Reply {
+        if ws_origin_refused(request.headers(), arrival) {
+            return plain(403, "cross-site request refused");
+        }
+        let Some(entry) = self.store.get(slug).await else {
+            return plain(404, "not found");
+        };
+        let headers = request.headers().clone();
+        let query = request.uri().query().map(str::to_string);
+        let who = self
+            .viewer(&entry, &headers, arrival, query.as_deref())
+            .await;
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let connection = Connection {
+            slug: slug.into(),
+            headers,
+            arrival: arrival.clone(),
+            query,
+            is_owner: who.at_least(Role::Editor),
+            can_comment: who.at_least(Role::Commenter),
+            link: who.link,
+            comment_budget: who.comment_budget,
+            chat: Some(id.into()),
+            tx: mpsc::channel(1).0,
+        };
+        let (mut parts, _) = request.into_parts();
+        let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
+            Ok(upgrade) => upgrade,
+            Err(_) => return plain(400, "expected a websocket upgrade"),
+        };
+        upgrade
+            .max_message_size(64 * 1024)
+            .on_upgrade(move |socket| async move {
+                self.run_chat_socket(socket, connection).await;
+            })
+            .into_response()
+    }
+
+    async fn run_chat_socket(&self, mut socket: WebSocket, mut connection: Connection) {
+        // The secret travels inside the encrypted stream, never in a URL.
+        let first = tokio::time::timeout(Duration::from_secs(10), socket.recv()).await;
+        let Ok(Some(Ok(WsMessage::Text(first)))) = first else {
+            return;
+        };
+        let Ok(join) = serde_json::from_str::<Value>(&first) else {
+            return;
+        };
+        if join["type"] != "join" {
+            return;
+        }
+        let token = join["token"].as_str().unwrap_or("").to_string();
+        let role = join["role"].as_str().unwrap_or("").to_string();
+        let receives = role == "user" || join["receive"].as_bool().unwrap_or(true);
+        let id = connection.chat.clone().unwrap_or_default();
+        let slug = connection.slug.clone();
+        let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
+        let (tx, mut rx) = mpsc::channel(32);
+        connection.tx = tx.clone();
+        // Register before advertising presence so a concurrent delivery can
+        // always recheck this participant's document authorization.
+        self.connections.lock().await.insert(socket_id, connection);
+        let ready = match self
+            .chat
+            .attach(&slug, &id, &token, &role, receives, socket_id, tx.clone())
+            .await
+        {
+            Ok(ready) => ready,
+            Err((status, message)) => {
+                self.connections.lock().await.remove(&socket_id);
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    socket.send(WsMessage::Text(
+                        json!({"type":"error","status":status,"message":message})
+                            .to_string()
+                            .into(),
+                    )),
+                )
+                .await;
+                return;
+            }
+        };
+        // Sharing can change while the handshake is in flight.
+        self.reauthorize(&slug).await;
+        if self.chat.attached(&id, socket_id).await {
+            let _ = tx.try_send(Outgoing::Text(ready.to_string()));
+        }
+        let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
+        let mut last_frame = tokio::time::Instant::now();
+        let mut last_ping = tokio::time::Instant::now();
+        loop {
+            tokio::select! {
+                frame = socket.recv() => {
+                    last_frame = tokio::time::Instant::now();
+                    let raw = match frame {
+                        Some(Ok(WsMessage::Text(text))) => text,
+                        Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
+                        _ => continue,
+                    };
+                    let Ok(mut value) = serde_json::from_str::<Value>(&raw) else { continue; };
+                    if value["type"] != "message" { continue; }
+                    let request_id = value["id"].as_str().unwrap_or("").to_string();
+                    value["role"] = Value::String(role.clone());
+                    // Recheck both peers before every delivery, including expiry.
+                    self.reauthorize(&slug).await;
+                    if !self.chat.attached(&id,socket_id).await { break; }
+                    let result = match serde_json::from_value::<crate::chat::Post>(value) {
+                        Ok(post) => self.chat.post(&slug,&id,&token,Some(socket_id),post).await,
+                        Err(_) => Err((400,"invalid message")),
+                    };
+                    let reply = match result {
+                        Ok(reply) => reply,
+                        Err((status,message)) => json!({"type":"error","id":request_id,"status":status,"message":message}),
+                    };
+                    if tx.try_send(Outgoing::Text(reply.to_string())).is_err() { break; }
+                }
+                outgoing = rx.recv() => {
+                    if !self.chat.attached(&id,socket_id).await { break; }
+                    let (frame,close) = match outgoing {
+                        Some(Outgoing::Text(text)) => (WsMessage::Text(text.into()),false),
+                        Some(Outgoing::Close(reason)) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame{code:1000,reason:reason.into()})),true),
+                        None => break,
+                    };
+                    if !matches!(tokio::time::timeout(Duration::from_secs(5),socket.send(frame)).await,Ok(Ok(()))) || close { break; }
+                }
+                _ = housekeeping.tick() => {
+                    if !self.chat.attached(&id,socket_id).await || last_frame.elapsed() > Duration::from_secs(30) { break; }
+                    if last_ping.elapsed() >= Duration::from_secs(10) {
+                        if !matches!(tokio::time::timeout(Duration::from_secs(5),socket.send(WsMessage::Ping(Vec::new().into()))).await,Ok(Ok(()))) { break; }
+                        last_ping = tokio::time::Instant::now();
+                    }
+                }
+            }
+        }
+        self.connections.lock().await.remove(&socket_id);
+        self.chat.detach(&id, socket_id).await;
+    }
+
     async fn handle_chat(
-        &self,
+        self: Arc<Self>,
         request: Request<Body>,
         arrival: &Arrival,
         slug: &str,
         tail: &[&str],
     ) -> Reply {
+        if let [id, "socket"] = tail {
+            return self.handle_chat_socket(request, arrival, slug, id).await;
+        }
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error":"bad slug"}));
         }
@@ -3727,38 +3938,33 @@ impl Server {
             .unwrap_or("")
             .to_string();
         let id = tail.first().copied().unwrap_or("");
-        let action = match (request.method().as_str(), tail) {
-            ("POST", []) => crate::chat::Action::Create,
-            ("GET", [_]) => {
-                let after =
-                    url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
-                        .find(|(key, _)| key == "after")
-                        .map(|(_, value)| value.parse::<u64>())
-                        .transpose();
-                match after {
-                    Ok(after) => crate::chat::Action::Read(after.unwrap_or(0)),
-                    Err(_) => return write_json(400, &json!({"error":"invalid cursor"})),
-                }
-            }
+        let result = match (request.method().as_str(), tail) {
+            ("POST", []) => self.chat.create(slug).await,
             ("POST", [_]) => {
                 let bytes = match to_bytes(request.into_body(), 64 * 1024).await {
                     Ok(bytes) => bytes,
                     Err(_) => return write_json(413, &json!({"error":"message too large"})),
                 };
-                match serde_json::from_slice(&bytes) {
-                    Ok(post) => crate::chat::Action::Post(post),
-                    Err(_) => return write_json(400, &json!({"error":"invalid message"})),
-                }
+                let Ok(mut post) = serde_json::from_slice::<crate::chat::Post>(&bytes) else {
+                    return write_json(400, &json!({"error":"invalid message"}));
+                };
+                // This convenience route sends replies for a connected CLI.
+                // Browser messages must come through their paired socket.
+                post.role = "agent".into();
+                self.reauthorize(slug).await;
+                self.chat.post(slug, id, &token, None, post).await
             }
-            ("POST", [_, "listen"]) => crate::chat::Action::Listen,
-            ("DELETE", [_]) => crate::chat::Action::Delete,
-            _ => return write_json(405, &json!({"error":"unsupported mailbox operation"})),
+            ("DELETE", [_]) => self.chat.delete(slug, id, &token).await,
+            ("GET", [_]) | ("POST", [_, "listen"]) => Err((
+                410,
+                "chat requires a live WebSocket; polling and replay are unavailable",
+            )),
+            _ => return write_json(405, &json!({"error":"unsupported chat operation"})),
         };
-        let mut response =
-            match crate::chat::request(&self.store.blobs, slug, id, &token, action).await {
-                Ok(result) => write_json(200, &result),
-                Err((status, error)) => write_json(status, &json!({"error":error})),
-            };
+        let mut response = match result {
+            Ok(result) => write_json(200, &result),
+            Err((status, error)) => write_json(status, &json!({"error":error})),
+        };
         set(&mut response, "cache-control", "no-store");
         response
     }

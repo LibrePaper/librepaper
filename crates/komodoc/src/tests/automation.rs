@@ -283,8 +283,57 @@ async fn automation_never_elevates_an_unowned_or_example_document() {
     assert_eq!(snapshot["capabilities"]["edit"], false);
 }
 
+type ChatSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn chat_socket(endpoint: &str, key: &str, token: &str, role: &str) -> ChatSocket {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+    let mut request = format!("{}/socket", endpoint.replacen("http:", "ws:", 1))
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("x-komodoc-key", key.parse().unwrap());
+    request
+        .headers_mut()
+        .insert("x-komodoc-automation", "1".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    socket
+        .send(Message::Text(
+            json!({"type":"join","token":token,"role":role})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    socket
+}
+
+async fn chat_frame(socket: &mut ChatSocket, kind: &str) -> Value {
+    use futures_util::StreamExt;
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == kind {
+                        return value;
+                    }
+                    assert_ne!(value["type"], "error", "unexpected frame: {value}");
+                }
+                frame => panic!("socket ended waiting for {kind}: {frame:?}"),
+            }
+        }
+    })
+    .await
+    .expect("chat frame timeout")
+}
+
 #[tokio::test]
-async fn mailbox_requires_both_current_document_access_and_chat_token() {
+async fn live_agent_channel_requires_access_token_and_presence() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
     let server = new_test_server().await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
@@ -293,8 +342,7 @@ async fn mailbox_requires_both_current_document_access_and_chat_token() {
     let create = client()
         .post(&endpoint)
         .header("x-komodoc-client", "1")
-        .header(crate::server::AUTOMATION_HEADER, "1")
-        .header(crate::server::LINK_HEADER, &key)
+        .header("x-komodoc-key", &key)
         .send()
         .await
         .unwrap();
@@ -302,33 +350,86 @@ async fn mailbox_requires_both_current_document_access_and_chat_token() {
     let created: Value = create.json().await.unwrap();
     let endpoint = format!("{endpoint}/{}", text(&created, "id"));
     let token = text(&created, "token");
-    for (read_key, chat_key, status) in [
-        (&key, &token, 200),
-        (&key, &String::new(), 404),
-        (&String::new(), &token, 404),
-    ] {
-        let response = client()
-            .get(&endpoint)
-            .header("x-komodoc-client", "1")
-            .header(crate::server::AUTOMATION_HEADER, "1")
-            .header(crate::server::LINK_HEADER, read_key)
-            .header("x-komodoc-chat-token", chat_key)
-            .send()
+
+    // Document access is required before the WebSocket is upgraded.
+    let request = format!("{}/socket", endpoint.replacen("http:", "ws:", 1))
+        .into_client_request()
+        .unwrap();
+    assert!(tokio_tungstenite::connect_async(request).await.is_err());
+    let mut stranger = chat_socket(&endpoint, &key, "wrong", "agent").await;
+    assert_eq!(chat_frame(&mut stranger, "error").await["status"], 404);
+
+    let mut browser = chat_socket(&endpoint, &key, &token, "user").await;
+    assert_eq!(chat_frame(&mut browser, "ready").await["listening"], false);
+    browser
+        .send(Message::Text(
+            json!({"type":"message","id":"early","text":"hi"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(chat_frame(&mut browser, "error").await["status"], 409);
+
+    let mut agent = chat_socket(&endpoint, &key, &token, "agent").await;
+    chat_frame(&mut agent, "ready").await;
+    assert_eq!(
+        chat_frame(&mut browser, "presence").await["listening"],
+        true
+    );
+    browser
+        .send(Message::Text(
+            json!({"type":"message","id":"one","role":"agent","text":"Hello"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let delivered = chat_frame(&mut agent, "message").await;
+    assert_eq!(
+        delivered["message"]["role"], "user",
+        "sender role is derived from the joined socket"
+    );
+    assert_eq!(
+        chat_frame(&mut browser, "message").await["message"]["text"],
+        "Hello"
+    );
+    chat_frame(&mut browser, "ack").await;
+    agent.close(None).await.unwrap();
+    assert_eq!(
+        chat_frame(&mut browser, "presence").await["listening"],
+        false
+    );
+
+    // No retained transcript is available to a later agent socket.
+    let mut agent = chat_socket(&endpoint, &key, &token, "agent").await;
+    chat_frame(&mut agent, "ready").await;
+    chat_frame(&mut browser, "presence").await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), agent.next())
             .await
-            .unwrap();
-        assert_eq!(response.status(), status);
-    }
+            .is_err()
+    );
+
     let response = client()
         .post(&endpoint)
         .header("x-komodoc-client", "1")
-        .header(crate::server::AUTOMATION_HEADER, "1")
-        .header(crate::server::LINK_HEADER, &key)
+        .header("x-komodoc-key", &key)
         .header("x-komodoc-chat-token", &token)
-        .json(&json!({"id":"one","role":"user","text":"Hello"}))
+        .json(&json!({"id":"reply","text":"Done"}))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
+    assert_eq!(
+        chat_frame(&mut browser, "message").await["message"]["role"],
+        "agent"
+    );
+    assert_eq!(
+        chat_frame(&mut agent, "message").await["message"]["text"],
+        "Done"
+    );
+
     let (status, _) = post_as(
         &session_as(TEST_PUBLISHER),
         &server.url,
@@ -337,15 +438,62 @@ async fn mailbox_requires_both_current_document_access_and_chat_token() {
     )
     .await;
     assert_eq!(status, 200);
-    // Document access is reevaluated even for a previously accepted chat token.
+    let next = tokio::time::timeout(std::time::Duration::from_secs(3), browser.next())
+        .await
+        .unwrap();
+    assert!(
+        !matches!(next, Some(Ok(Message::Text(_)))),
+        "revocation closes the channel"
+    );
     let response = client()
-        .get(&endpoint)
+        .post(&endpoint)
         .header("x-komodoc-client", "1")
-        .header(crate::server::AUTOMATION_HEADER, "1")
-        .header(crate::server::LINK_HEADER, &key)
+        .header("x-komodoc-key", &key)
         .header("x-komodoc-chat-token", &token)
+        .json(&json!({"id":"late","text":"Too late"}))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn human_chat_is_live_permissioned_and_uses_server_message_ids() {
+    let server = new_test_server().await;
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
+    let reader_key = read_key_of(&document);
+    let commenter_key = mint_role(&server.url, &slug, "commenter").await;
+    let mut reader = dial_websocket_keyed(&server.url, &slug, &reader_key).await;
+    let mut commenter = dial_websocket_keyed(&server.url, &slug, &commenter_key).await;
+    reader.read().await;
+    commenter.read().await;
+    reader
+        .write(json!({"type":"chat","temp_id":"forbidden","body":"no"}))
+        .await;
+    assert_eq!(reader.read().await["type"], "error");
+    commenter
+        .write(json!({"type":"chat","temp_id":"local","body":"hello"}))
+        .await;
+    let message = reader.read().await;
+    assert_eq!(message["type"], "chat");
+    assert_eq!(message["text"], "hello");
+    assert_ne!(message["id"], "local");
+    assert!(
+        message.get("temp_id").is_none(),
+        "private retry ids are not broadcast"
+    );
+    let echo = commenter.read().await;
+    assert_eq!(echo["temp_id"], "local");
+    commenter
+        .write(json!({"type":"chat","temp_id":"local","body":"hello"}))
+        .await;
+    assert_eq!(commenter.read().await["type"], "chat-ack");
+    let mut late = dial_websocket_keyed(&server.url, &slug, &reader_key).await;
+    let hello = late.read().await;
+    assert_eq!(hello["type"], "hello");
+    assert!(
+        hello["comments"].as_array().unwrap().is_empty(),
+        "chat must not appear in hello state"
+    );
 }

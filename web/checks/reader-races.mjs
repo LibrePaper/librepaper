@@ -391,6 +391,7 @@ for (const outcome of ["same", "recreated", "disconnected"]) {
   const active = { joined: true, disconnected() { this.joined = false; }, open: () => ({ type: "y-open" }) };
   const ctx = context({
     rejoinRequest: 0, connected: true, session: active,
+    pendingChat: new Map(), settleChat: () => {},
     doc: { created_at: "first" }, SLUG: "example", KEY: "", keyHeaders: () => ({}),
     fetch: () => metadata.promise, location: { reload: () => reloads++ },
     room: { send: (message) => sent.push(message) }, outbox: { disconnected: () => {} },

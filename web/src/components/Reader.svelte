@@ -56,6 +56,7 @@
   import Grip from "./Grip.svelte";
   import Comments from "./Comments.svelte";
   import Agent from "./Agent.svelte";
+  import Chat from "./Chat.svelte";
   import History from "./History.svelte";
   import Diagnostics from "./Diagnostics.svelte";
   import Settings from "./Settings.svelte";
@@ -94,6 +95,9 @@
   let identity = $derived(me.name || "");
   let canModerate = $derived(Boolean(doc.can_moderate));
   let connected = $state(true);
+  let liveChat = $state([]);
+  const pendingChat = new Map();
+  let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
   // named on the document. A reader who arrived by link is offered neither,
   // which is most of the point of a blind review.
@@ -593,6 +597,15 @@
 
   function receive(event) {
     outbox.acknowledge(event);
+    if (event.type === "chat") {
+      if (!liveChat.some((message) => message.id === event.id)) liveChat = [...liveChat, event].slice(-200);
+      if (event.temp_id) settleChat(event.temp_id, true);
+      return;
+    }
+    if (event.type === "chat-ack") {
+      settleChat(event.temp_id, true);
+      return;
+    }
     if (event.type === "hello") {
       outbox.reconcile(event.comments);
       comments = event.comments;
@@ -606,6 +619,11 @@
       return;
     }
     if (event.type === "error") {
+      if (event.temp_id && pendingChat.has(event.temp_id)) {
+        settleChat(event.temp_id, false);
+        toastProblem(event.message || "Chat message was rejected.");
+        return;
+      }
       // A backfill this browser sent is not a submission and never touched
       // the screen while it waited, so its failure -- somebody else's
       // backfill won the race, or the comment is gone -- is dropped quietly
@@ -2033,6 +2051,7 @@
   const TABS = [
     { id: "files", says: "Files", editorOnly: true },
     { id: "comments", says: "Comments" },
+    { id: "chat", says: "Chat" },
     { id: "agent", says: "Agent" },
     // History is readable by link-holders too: reviewers need the “since”
     // view even when they cannot edit or restore the live source.
@@ -2630,10 +2649,29 @@
   // server hands the document out on `y-open` and nothing else, so without
   // this the changes made on either side of the gap never reach the other.
   let rejoinRequest = 0;
+  function settleChat(id, accepted) {
+    const pending = pendingChat.get(id);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingChat.delete(id);
+    pending.resolve(accepted);
+  }
+
+  function sendLiveChat(text) {
+    if (!room || !connected || !mayChat) return Promise.resolve(false);
+    const temp_id = crypto.randomUUID();
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => settleChat(temp_id, false), 5000);
+      pendingChat.set(temp_id, { resolve, timeout });
+      if (room.sendLive({ type: "chat", body: text, temp_id })?.ok !== true) settleChat(temp_id, false);
+    });
+  }
+
   async function reconnected(up) {
     const request = ++rejoinRequest;
     connected = up;
     if (!up) {
+      for (const id of [...pendingChat.keys()]) settleChat(id, false);
       outbox.disconnected();
       session?.disconnected();
       return;
@@ -2881,7 +2919,7 @@
               </div>
             {:else}
               <IconButton
-                icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
+                icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "chat" ? "message-square" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
                 label={tab.says} pressed={panel === tab.id}
                 onclick={() => selectPanel(tab.id)} />
             {/if}
@@ -2905,6 +2943,9 @@
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
       {:else if tab.id === "agent"}
         <Agent slug={SLUG} link={linkFor(SLUG)} path={session?.paths?.get(openFile) || ""} selection={pending} />
+      {:else if tab.id === "chat"}
+        <Chat messages={liveChat} {connected} canPost={mayChat}
+              onsend={sendLiveChat} />
       {:else if tab.id === "share" && canSeeSharing}
         <Share open={panel === "share" && shown.comments} inline slug={SLUG} onclose={() => showPanel("")} />
       {:else if tab.id === "settings" && mayEdit}
@@ -3075,7 +3116,7 @@
     {/if}
     {#each compact ? tabs : [] as tab (tab.id)}
       <IconButton
-        icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
+        icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "chat" ? "message-square" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
         label={tab.says} pressed={shown.comments && panel === tab.id}
         onclick={() => selectPanel(tab.id)} />
     {/each}

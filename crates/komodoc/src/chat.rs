@@ -1,51 +1,48 @@
-//! Private document mailboxes. A chat capability never grants document access.
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
+//! Live private channels. Only socket handles and bounded request digests are
+//! retained: message bodies are never stored or replayed.
+use crate::room::Outgoing;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::{HashMap, VecDeque};
+use tokio::sync::{mpsc, Mutex};
 
-use crate::blob::{BlobError, BlobStore};
+const CHANNEL_SECONDS: i64 = 60 * 60;
 
-const MAX_BYTES: usize = 4 * 1024 * 1024;
-#[derive(Default, Serialize, Deserialize)]
-struct Mailboxes {
-    conversations: BTreeMap<String, Conversation>,
+#[derive(Default)]
+pub struct Hub {
+    channels: Mutex<HashMap<String, Channel>>,
 }
-#[derive(Serialize, Deserialize)]
-struct Conversation {
+
+struct Channel {
+    slug: String,
     token_hash: String,
-    expires_at: i64,
-    messages: Vec<Message>,
-    #[serde(default)]
-    listening_until: i64,
+    touched_at: i64,
+    browser: Option<Peer>,
+    agent: Option<Peer>,
+    requests: VecDeque<(String, String)>,
+    minute: i64,
+    sent: u32,
 }
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub id: String,
-    pub cursor: u64,
-    pub role: String,
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub context: Value,
+
+struct Peer {
+    socket: u64,
+    tx: mpsc::Sender<Outgoing>,
+    receives: bool,
 }
+
 #[derive(Deserialize)]
 pub struct Post {
     pub id: String,
+    #[serde(default)]
     pub role: String,
     pub text: String,
     #[serde(default)]
     pub context: Value,
 }
-pub enum Action {
-    Create,
-    Read(u64),
-    Post(Post),
-    Listen,
-    Delete,
-}
+
 pub type Error = (u16, &'static str);
+
 fn random() -> String {
     let mut bytes = [0; 32];
     rand::rng().fill_bytes(&mut bytes);
@@ -54,7 +51,6 @@ fn random() -> String {
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
-
 fn token_matches(stored: &str, token: &str) -> bool {
     let hash = crate::store::digest_of(token);
     let difference = stored
@@ -64,16 +60,165 @@ fn token_matches(stored: &str, token: &str) -> bool {
     !token.is_empty() && stored.len() == hash.len() && difference == 0
 }
 
-/// CAS keeps simultaneous sidebar and agent writes from losing messages.
-/// Bounds also prevent holders of a reader link from consuming unlimited storage.
-pub async fn request(
-    blobs: &Arc<dyn BlobStore>,
-    slug: &str,
-    id: &str,
-    token: &str,
-    action: Action,
-) -> Result<Value, Error> {
-    if let Action::Post(post) = &action {
+impl Channel {
+    fn listening(&self) -> bool {
+        self.agent.as_ref().is_some_and(|peer| peer.receives)
+    }
+
+    fn presence(&self) -> Value {
+        json!({"type":"presence", "listening":self.listening(), "browser":self.browser.is_some()})
+    }
+
+    fn announce(&self) {
+        let text = self.presence().to_string();
+        for peer in [&self.browser, &self.agent].into_iter().flatten() {
+            let _ = peer.tx.try_send(Outgoing::Text(text.clone()));
+        }
+    }
+}
+
+impl Hub {
+    pub async fn create(&self, slug: &str) -> Result<Value, Error> {
+        let current = now();
+        let mut channels = self.channels.lock().await;
+        channels.retain(|_, channel| {
+            channel.browser.is_some()
+                || channel.agent.is_some()
+                || current - channel.touched_at < CHANNEL_SECONDS
+        });
+        if channels
+            .values()
+            .filter(|channel| channel.slug == slug)
+            .count()
+            >= 16
+            || channels.len() >= 10_000
+        {
+            return Err((409, "live channel limit reached"));
+        }
+        let id = random();
+        let token = random();
+        channels.insert(
+            id.clone(),
+            Channel {
+                slug: slug.into(),
+                token_hash: crate::store::digest_of(&token),
+                touched_at: current,
+                browser: None,
+                agent: None,
+                requests: VecDeque::new(),
+                minute: 0,
+                sent: 0,
+            },
+        );
+        Ok(json!({"id":id,"token":token,"ephemeral":true}))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn attach(
+        &self,
+        slug: &str,
+        id: &str,
+        token: &str,
+        role: &str,
+        receives: bool,
+        socket: u64,
+        tx: mpsc::Sender<Outgoing>,
+    ) -> Result<Value, Error> {
+        let mut channels = self.channels.lock().await;
+        let channel = channels
+            .get_mut(id)
+            .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
+            .ok_or((404, "channel not found"))?;
+        let participant = match role {
+            "user" => &mut channel.browser,
+            "agent" => &mut channel.agent,
+            _ => return Err((400, "invalid participant role")),
+        };
+        if participant.is_some() {
+            return Err((409, "participant is already connected"));
+        }
+        *participant = Some(Peer {
+            socket,
+            tx,
+            receives,
+        });
+        channel.touched_at = now();
+        let ready = json!({"type":"ready", "listening":channel.listening(), "browser":channel.browser.is_some()});
+        channel.announce();
+        Ok(ready)
+    }
+
+    pub async fn attached(&self, id: &str, socket: u64) -> bool {
+        self.channels.lock().await.get(id).is_some_and(|channel| {
+            [&channel.browser, &channel.agent]
+                .iter()
+                .any(|peer| peer.as_ref().is_some_and(|peer| peer.socket == socket))
+        })
+    }
+
+    pub async fn detach(&self, id: &str, socket: u64) {
+        let mut channels = self.channels.lock().await;
+        let Some(channel) = channels.get_mut(id) else {
+            return;
+        };
+        // The originating tab owns the channel's lifetime. Closing it revokes
+        // the capability, including outstanding agent connections.
+        if channel
+            .browser
+            .as_ref()
+            .is_some_and(|peer| peer.socket == socket)
+        {
+            if let Some(peer) = &channel.agent {
+                let _ = peer.tx.try_send(Outgoing::Close("browser disconnected"));
+            }
+            channels.remove(id);
+        } else if channel
+            .agent
+            .as_ref()
+            .is_some_and(|peer| peer.socket == socket)
+        {
+            channel.agent = None;
+            channel.touched_at = now();
+            channel.announce();
+        }
+    }
+
+    pub async fn delete(&self, slug: &str, id: &str, token: &str) -> Result<Value, Error> {
+        let mut channels = self.channels.lock().await;
+        let channel = channels
+            .get(id)
+            .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
+            .ok_or((404, "channel not found"))?;
+        for peer in [&channel.browser, &channel.agent].into_iter().flatten() {
+            let _ = peer.tx.try_send(Outgoing::Close("channel closed"));
+        }
+        channels.remove(id);
+        Ok(json!({"deleted":true}))
+    }
+
+    pub async fn purge(&self, slug: &str) {
+        let mut channels = self.channels.lock().await;
+        channels.retain(|_, channel| {
+            if channel.slug != slug {
+                return true;
+            }
+            for peer in [&channel.browser, &channel.agent].into_iter().flatten() {
+                let _ = peer.tx.try_send(Outgoing::Close("document removed"));
+            }
+            false
+        });
+    }
+
+    /// The socket id binds live writes to the participant established by join.
+    /// HTTP replies use the same capability, and require a live agent socket.
+    pub async fn post(
+        &self,
+        slug: &str,
+        id: &str,
+        token: &str,
+        socket: Option<u64>,
+        post: Post,
+    ) -> Result<Value, Error> {
         if post.id.is_empty()
             || post.id.len() > 128
             || !matches!(post.role.as_str(), "user" | "agent")
@@ -84,267 +229,178 @@ pub async fn request(
                 .len()
                 > 16 * 1024
         {
-            return Err((
-                400,
-                "invalid message: bounded id, user/agent role, and nonempty text required",
-            ));
+            return Err((400, "invalid bounded message"));
         }
-    }
-    let key = format!("chat/{slug}.json");
-    for _ in 0..12 {
-        let (mut data, version) = match blobs.get_versioned(&key).await {
-            Ok((bytes, version)) => (
-                serde_json::from_slice::<Mailboxes>(&bytes)
-                    .map_err(|_| (500, "could not read conversation"))?,
-                version,
-            ),
-            Err(BlobError::NotFound) => (Mailboxes::default(), String::new()),
-            Err(_) => return Err((500, "could not read conversation")),
-        };
-        data.conversations
-            .retain(|_, conversation| conversation.expires_at > now());
-        let result = if matches!(action, Action::Create) {
-            if data.conversations.len() >= 16 {
-                return Err((
-                    409,
-                    "document conversation limit reached; delete an old conversation",
-                ));
-            }
-            let id = random();
-            let token = random();
-            data.conversations.insert(
-                id.clone(),
-                Conversation {
-                    token_hash: crate::store::digest_of(&token),
-                    expires_at: now() + 30 * 24 * 60 * 60,
-                    messages: Vec::new(),
-                    listening_until: 0,
-                },
-            );
-            json!({"id":id,"token":token})
+        let mut channels = self.channels.lock().await;
+        let channel = channels
+            .get_mut(id)
+            .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
+            .ok_or((404, "channel not found"))?;
+        let (sender, recipient) = if post.role == "user" {
+            (&channel.browser, &channel.agent)
         } else {
-            let conversation = data
-                .conversations
-                .get_mut(id)
-                .filter(|c| token_matches(&c.token_hash, token))
-                .ok_or((404, "conversation not found"))?;
-            match &action {
-                Action::Read(after) => {
-                    return Ok(json!({
-                        "messages":conversation.messages.iter().filter(|m|m.cursor > *after).collect::<Vec<_>>(),
-                        "next_cursor":conversation.messages.last().map(|m|m.cursor).unwrap_or(0),
-                        "listening":conversation.listening_until > now(),
-                    }))
-                }
-                Action::Post(post) => {
-                    if let Some(existing) = conversation.messages.iter().find(|m| m.id == post.id) {
-                        if existing.role != post.role
-                            || existing.text != post.text
-                            || existing.context != post.context
-                        {
-                            return Err((409, "message id already used for different content"));
-                        }
-                        return Ok(json!({"message":existing,"next_cursor":existing.cursor}));
-                    }
-                    if conversation.messages.len() >= 256 {
-                        return Err((409, "conversation is full; start a new conversation"));
-                    }
-                    let message = Message {
-                        id: post.id.clone(),
-                        cursor: conversation
-                            .messages
-                            .last()
-                            .map(|m| m.cursor + 1)
-                            .unwrap_or(1),
-                        role: post.role.clone(),
-                        text: post.text.clone(),
-                        context: post.context.clone(),
-                    };
-                    conversation.messages.push(message.clone());
-                    if serde_json::to_vec(conversation)
-                        .map_err(|_| (500, "could not save conversation"))?
-                        .len()
-                        > 1024 * 1024
-                    {
-                        return Err((409, "conversation is full; start a new conversation"));
-                    }
-                    json!({"message":message,"next_cursor":message.cursor})
-                }
-                Action::Listen => {
-                    // Avoid a storage write on every poll; a 30-second lease
-                    // is refreshed once half of it has elapsed.
-                    if conversation.listening_until > now() + 15 {
-                        return Ok(json!({"listening":true}));
-                    }
-                    conversation.listening_until = now() + 30;
-                    json!({"listening":true})
-                }
-                Action::Delete => {
-                    data.conversations.remove(id);
-                    json!({"deleted":true})
-                }
-                Action::Create => unreachable!(),
-            }
+            (&channel.agent, &channel.browser)
         };
-        let bytes = serde_json::to_vec(&data).map_err(|_| (500, "could not save conversation"))?;
-        if bytes.len() > MAX_BYTES {
-            return Err((409, "document conversation storage is full"));
+        let sender = sender.as_ref().ok_or((409, "sender is not connected"))?;
+        if socket.is_some_and(|socket| socket != sender.socket) {
+            return Err((403, "wrong participant"));
         }
-        match blobs.swap(&key, bytes, &version).await {
-            Ok(_) => return Ok(result),
-            Err(BlobError::Conflict) => continue,
-            Err(_) => return Err((500, "could not save conversation")),
+        let recipient = recipient.as_ref().ok_or((
+            409,
+            if post.role == "user" {
+                "agent is not connected"
+            } else {
+                "browser is not connected"
+            },
+        ))?;
+        if !recipient.receives {
+            return Err((409, "recipient is not listening"));
         }
+        let payload = json!({"type":"message","message":{"id":post.id,"role":post.role,"text":post.text,"context":post.context}});
+        let digest = crate::store::digest_of(&payload.to_string());
+        let request = format!("{}:{}", post.role, post.id);
+        if let Some((_, previous)) = channel.requests.iter().find(|(key, _)| key == &request) {
+            return if previous == &digest {
+                Ok(json!({"type":"ack","id":post.id}))
+            } else {
+                Err((409, "message id already used for different content"))
+            };
+        }
+        let minute = now() / 60;
+        if channel.minute != minute {
+            channel.minute = minute;
+            channel.sent = 0;
+        }
+        if channel.sent >= 60 {
+            return Err((429, "too many chat messages; try again shortly"));
+        }
+        // Reserve both queues first: a slow participant causes a clear refusal,
+        // never an offline queue or a half-delivered successful message.
+        let recipient_slot = recipient
+            .tx
+            .try_reserve()
+            .map_err(|_| (409, "recipient cannot receive messages"))?;
+        let sender_slot = sender
+            .tx
+            .try_reserve()
+            .map_err(|_| (409, "sender cannot receive messages"))?;
+        let text = payload.to_string();
+        recipient_slot.send(Outgoing::Text(text.clone()));
+        sender_slot.send(Outgoing::Text(text));
+        channel.requests.push_back((request, digest));
+        if channel.requests.len() > 256 {
+            channel.requests.pop_front();
+        }
+        channel.sent += 1;
+        channel.touched_at = now();
+        Ok(json!({"type":"ack","id":post.id}))
     }
-    Err((409, "conversation changed; retry the request"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blob::FsStore;
-
-    fn post(id: &str, text: &str) -> Action {
-        Action::Post(Post {
-            id: id.into(),
+    fn post() -> Post {
+        Post {
+            id: "one".into(),
             role: "user".into(),
-            text: text.into(),
+            text: "hi".into(),
             context: Value::Null,
-        })
+        }
     }
-
     #[tokio::test]
-    async fn mailbox_persists_and_keeps_capabilities_separate() {
-        let dir = tempfile::tempdir().unwrap();
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path().to_path_buf()));
-        let created = request(&blobs, "paper", "", "", Action::Create)
-            .await
-            .unwrap();
+    async fn reply_only_connection_does_not_accept_browser_instructions() {
+        let hub = Hub::default();
+        let created = hub.create("paper").await.unwrap();
         let id = created["id"].as_str().unwrap();
         let token = created["token"].as_str().unwrap();
-        for (slug, secret) in [("other", token), ("paper", ""), ("paper", "wrong")] {
-            assert_eq!(
-                request(&blobs, slug, id, secret, Action::Read(0))
-                    .await
-                    .unwrap_err()
-                    .0,
-                404
-            );
-        }
-        request(&blobs, "paper", id, token, post("one", "Question"))
+        let (browser, _browser_rx) = mpsc::channel(16);
+        let (agent, _agent_rx) = mpsc::channel(16);
+        hub.attach("paper", id, token, "user", true, 1, browser)
             .await
             .unwrap();
-        let retry = request(&blobs, "paper", id, token, post("one", "Question"))
+        let ready = hub
+            .attach("paper", id, token, "agent", false, 2, agent)
             .await
             .unwrap();
-        assert_eq!(retry["next_cursor"], 1);
+        assert_eq!(ready["listening"], false);
         assert_eq!(
-            request(&blobs, "paper", id, token, post("one", "Changed"))
+            hub.post("paper", id, token, Some(1), post())
                 .await
                 .unwrap_err()
                 .0,
             409
         );
-        let reopened: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path().to_path_buf()));
-        let read = request(&reopened, "paper", id, token, Action::Read(0))
-            .await
-            .unwrap();
-        assert_eq!(read["messages"].as_array().unwrap().len(), 1);
-        assert_eq!(read["listening"], false);
-        request(&reopened, "paper", id, token, Action::Listen)
-            .await
-            .unwrap();
+        let mut reply = post();
+        reply.role = "agent".into();
+        assert!(hub.post("paper", id, token, Some(2), reply).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn only_live_sockets_receive_no_replay_and_browser_close_revokes() {
+        let hub = Hub::default();
+        let channel = hub.create("paper").await.unwrap();
+        let id = channel["id"].as_str().unwrap();
+        let token = channel["token"].as_str().unwrap();
+        let (browser, mut browser_rx) = mpsc::channel(16);
+        let (agent, mut agent_rx) = mpsc::channel(16);
         assert_eq!(
-            request(&reopened, "paper", id, token, Action::Read(1))
-                .await
-                .unwrap()["listening"],
-            true
-        );
-        let stored = blobs.get("chat/paper.json").await.unwrap();
-        assert!(!String::from_utf8(stored).unwrap().contains(token));
-        request(&reopened, "paper", id, token, Action::Delete)
-            .await
-            .unwrap();
-        assert_eq!(
-            request(&blobs, "paper", id, token, Action::Read(0))
+            hub.attach("paper", id, "wrong", "user", true, 1, browser.clone())
                 .await
                 .unwrap_err()
                 .0,
             404
         );
-    }
-
-    #[tokio::test]
-    async fn simultaneous_posts_do_not_lose_messages() {
-        let dir = tempfile::tempdir().unwrap();
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path().to_path_buf()));
-        let created = request(&blobs, "paper", "", "", Action::Create)
+        hub.attach("paper", id, token, "user", true, 1, browser)
             .await
             .unwrap();
-        let id = created["id"].as_str().unwrap();
-        let token = created["token"].as_str().unwrap();
-        let (a, b) = tokio::join!(
-            request(&blobs, "paper", id, token, post("a", "A")),
-            request(&blobs, "paper", id, token, post("b", "B"))
-        );
-        a.unwrap();
-        b.unwrap();
-        let read = request(&blobs, "paper", id, token, Action::Read(0))
-            .await
-            .unwrap();
-        assert_eq!(read["messages"].as_array().unwrap().len(), 2);
-        assert_eq!(read["next_cursor"], 2);
         assert_eq!(
-            request(
-                &blobs,
-                "paper",
-                id,
-                token,
-                post("large", &"x".repeat(32769))
-            )
-            .await
-            .unwrap_err()
-            .0,
-            400
+            hub.post("paper", id, token, Some(1), post())
+                .await
+                .unwrap_err()
+                .0,
+            409
         );
-    }
-
-    #[tokio::test]
-    async fn expired_conversations_release_capacity_and_refuse_old_handles() {
-        let dir = tempfile::tempdir().unwrap();
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path().to_path_buf()));
-        let mut data = Mailboxes::default();
-        for index in 0..16 {
-            data.conversations.insert(
-                index.to_string(),
-                Conversation {
-                    token_hash: crate::store::digest_of("secret"),
-                    expires_at: now() - 1,
-                    messages: Vec::new(),
-                    listening_until: 0,
-                },
-            );
+        hub.attach("paper", id, token, "agent", true, 2, agent)
+            .await
+            .unwrap();
+        hub.post("paper", id, token, Some(1), post()).await.unwrap();
+        hub.post("paper", id, token, Some(1), post()).await.unwrap();
+        let mut messages = 0;
+        while let Ok(frame) = agent_rx.try_recv() {
+            if let Outgoing::Text(text) = frame {
+                if text.contains("\"type\":\"message\"") {
+                    messages += 1;
+                }
+            }
         }
-        blobs
-            .put(
-                "chat/paper.json",
-                serde_json::to_vec(&data).unwrap(),
-                "application/json",
-            )
+        assert_eq!(messages, 1, "retries do not duplicate delivery");
+        hub.detach(id, 2).await;
+        assert_eq!(
+            hub.post("paper", id, token, Some(1), post())
+                .await
+                .unwrap_err()
+                .0,
+            409
+        );
+        let (agent, mut agent_rx) = mpsc::channel(16);
+        hub.attach("paper", id, token, "agent", true, 3, agent)
             .await
             .unwrap();
+        assert!(matches!(agent_rx.try_recv(), Ok(Outgoing::Text(_))));
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "reconnecting never replays messages"
+        );
+        hub.detach(id, 1).await;
+        assert!(!hub.attached(id, 3).await);
         assert_eq!(
-            request(&blobs, "paper", "0", "secret", Action::Read(0))
+            hub.post("paper", id, token, None, post())
                 .await
                 .unwrap_err()
                 .0,
             404
         );
-        request(&blobs, "paper", "", "", Action::Create)
-            .await
-            .unwrap();
-        let saved: Mailboxes =
-            serde_json::from_slice(&blobs.get("chat/paper.json").await.unwrap()).unwrap();
-        assert_eq!(saved.conversations.len(), 1);
+        browser_rx.close();
     }
 }

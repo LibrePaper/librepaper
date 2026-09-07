@@ -104,7 +104,7 @@ tests cover committed WAL recovery as well as the in-memory SQL contract.
 
 ## Schema
 
-The catalogue starts with thirteen domain tables and a document-operation
+The catalogue starts with eleven domain tables and a document-operation
 ledger. Journal records follow the durable record contract in
 [persistence.md](persistence.md) and use the same migration sequence.
 
@@ -256,29 +256,6 @@ CREATE TABLE replies (
         REFERENCES comments (slug, id) ON DELETE CASCADE
 );
 
-CREATE TABLE conversations (
-    slug TEXT NOT NULL REFERENCES documents (slug) ON DELETE CASCADE,
-    id TEXT NOT NULL,
-    token_hash TEXT NOT NULL,
-    expires_at INTEGER NOT NULL,
-    PRIMARY KEY (slug, id)
-) WITHOUT ROWID;
-CREATE INDEX conversations_expiry ON conversations (expires_at);
-
-CREATE TABLE messages (
-    slug TEXT NOT NULL,
-    conversation_id TEXT NOT NULL,
-    cursor INTEGER NOT NULL,
-    id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    text TEXT NOT NULL,
-    context TEXT,
-    PRIMARY KEY (slug, conversation_id, cursor),
-    FOREIGN KEY (slug, conversation_id)
-        REFERENCES conversations (slug, id) ON DELETE CASCADE
-);
-CREATE UNIQUE INDEX messages_request ON messages (slug, conversation_id, id);
-
 CREATE TABLE renderings (
     slug TEXT NOT NULL REFERENCES documents (slug) ON DELETE CASCADE,
     tree_sha TEXT NOT NULL,
@@ -318,8 +295,8 @@ CREATE INDEX catalog_operations_pending ON catalog_operations (storage_id, reque
     WHERE status = 'prepared';
 ```
 
-Use `WITHOUT ROWID` only for narrow tables. Comments, replies and messages
-remain rowid tables because their bodies can be large. Verify indexes with
+Use `WITHOUT ROWID` only for narrow tables. Comments and replies remain rowid
+tables because their bodies can be large. Verify indexes with
 query plans and measure their write and replication cost.
 
 ## Record rules
@@ -361,9 +338,9 @@ query plans and measure their write and replication cost.
   `max_replies = 100` per comment, existing request/body limits, and
   `max_annotations = 256 KiB` for serialized seed annotations. SQL storage
   does not remove these limits; room loading also enforces its memory budget.
-- Chat limits and expiry remain those in [the chat protocol](../protocol/chat.md).
-  Message id retries return the original message when content matches and a
-  conflict otherwise. Listening presence remains in memory.
+- Human and agent chat are ephemeral as defined by
+  [the chat protocol](../protocol/chat.md). Neither belongs in this schema,
+  storage accounting, backup, recovery, or account erasure.
 - A rendering row is visible only after its PDF exists and is keyed by
   `(slug, tree_sha)`. A later SyncTeX upload sets availability only after its
   own object is durable. Retirement withdraws availability and queues the
@@ -397,7 +374,6 @@ have these postconditions; a family may have several methods:
 | Pin guest, rotate/drop link, change grant | Revalidate at the primary and invalidate affected pins, cached permissions and sockets. |
 | Checkpoint, label, prune, rendering publication/retirement | Commit heads, availability and deletion work consistently with durable objects. |
 | Comment/reply creation, resolution, acceptance, deletion | Commit before acknowledgement/broadcast; return affected ids for room reconciliation. |
-| Conversation creation, post/read/delete, expiry | Check document access and the independent conversation token; enforce byte/count limits and idempotent posts. |
 | Begin/finish deletion, erasure batches, expiry candidates, cleanup | Use durable lifecycle state and bounded cursors; release capacity only after reclamation. |
 
 User-initiated mutations recheck account status, generation, document lifecycle
@@ -434,7 +410,7 @@ the separate bounded reconciliation records in [persistence.md](persistence.md).
 
 Every driver returns known success, known abort or unknown outcome. On an
 unknown outcome, query the primary by operation id before allocating another
-comment sequence/message cursor, repeating side effects, releasing capacity or
+comment sequence, repeating side effects, releasing capacity or
 reporting failure. `last_publication_id` is only a fast path; the ledger proves
 earlier outcomes after the head advances. Suspend dependent work and serving
 of uncertain room state until reconciled; unrelated documents may continue.
@@ -570,7 +546,7 @@ SUM(user reservation for owner) <= storage.per_owner
 SUM(maintenance_reserved) <= maintenance_reserve_bytes
 ```
 
-Retained payload includes text, assets, renderings, annotation/chat content,
+Retained payload includes text, assets, renderings, annotation content,
 and attributable journal bases/frames, including prepared and retired copies
 until reclaimed. Shared framing, SQL/index/receipt overhead and independent
 backups have separate measured budgets. Provider or local physical capacity
@@ -760,7 +736,7 @@ cases include:
   DDL/version updates, migration rollback, WAL recovery and complete restore.
 - Competing reservations, exact totals in every lifecycle state, bounded spare
   capacity, maintenance borrowing and full-user-quota deletion/compaction.
-- Known aborts and unknown commits for publications, comments, message cursors,
+- Known aborts and unknown commits for publications and comments,
   acceptance and account lifecycle changes; equal/conflicting retries and
   receipts surviving later mutations.
 - Live replacement and suggestion acceptance interrupted between journal and
@@ -769,7 +745,7 @@ cases include:
   refusal before initial sync, prolonged sync failure and idle socket expiry.
 - Concurrent rotation and guest insertion, multiple live pins for one account,
   expiry-filtered listings and bounded sharing/history/comment queries.
-- Byte limits before count limits, annotation/chat caps and hourly history for
+- Byte limits before count limits, annotation caps and hourly history for
   continuous editing, abandoned rooms, eviction, restart and budget exhaustion.
 - Cleanup racing object reuse, long preparations, unreadable trees, unknown
   orphans, bounded expiry/deletion, shared-segment retirement and slug reuse.

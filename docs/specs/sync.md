@@ -9,7 +9,7 @@ instructions in the agent's own window, or chat from an Agent panel in the
 document sidebar, opened with Lucide's robot (`bot`) icon.
 
 The agent runs on the user's computer. Komodoc is agnostic about the agent,
-model, and provider: it supplies document tools and a server-backed conversation mailbox.
+model, and provider: it supplies document tools and a private live channel.
 The user's agent manages its own model access, credentials, and execution.
 
 The AI agent connects as an automation peer. The existing annotation script
@@ -55,37 +55,35 @@ ordinary output and logs.
 
 ## Sidebar conversation
 
-The Agent sidebar, opened with Lucide's bot icon, is a private conversation
-mailbox stored by the document server. The user starts their preferred agent
-outside Komodoc and gives it the document link and conversation instructions.
-The CLI lets the agent wait for user messages and post replies. Komodoc does
-not launch, configure, or manage agent processes, model providers, or adapters.
-No browser-to-local bridge or local service pairing is required for chat.
+The Agent sidebar is a private ephemeral channel. The user starts their agent
+outside Komodoc and gives it the document link and channel instructions.
+Komodoc does not launch, configure, or manage agent processes or providers.
 
 The panel creates a conversation with an unguessable capability separate from
 the document link. Reading or posting requires both current document access
 and that conversation capability. Document access alone never lists or reveals
 conversations; chat authority never grants permission to edit or comment.
-Store the browser's conversation handle in session storage, separate from
-shared document data. Persist messages across server restarts. Conversations expire 30 days after creation, reclaiming abandoned handles.
-Deleting a conversation revokes its capability and removes its transcript.
+The server relays messages to connected sockets and retains no transcript.
+Messages are not document content or backups. The browser keeps its received
+transcript in memory until refresh or close; closing its socket or deleting a
+conversation revokes the capability. An agent reconnect receives no history.
 
 The panel offers copyable instructions for the local agent, a transcript,
 a message composer, current file and optional selected passage context, and
-an indication that an agent has recently polled for messages. Users can queue
-messages while the agent is unavailable. Do not imply that a recent heartbeat
-proves an agent is working or that Komodoc can wake or stop an external agent.
+an indication that an agent socket is connected. The browser can send only
+while that socket is present. Presence does not prove an agent is working or
+that Komodoc can wake or stop an external agent.
 
 The CLI exposes chat create, watch, and post commands. Watching waits for user
-messages with a bounded timeout, returning a cursor that the agent supplies
-on its next watch. Posting supports a caller-generated message ID so retries
+messages over a WebSocket with a bounded timeout. Each watch receives only
+new messages; there are no replay cursors. Posting briefly connects an agent
+socket and supports a caller-generated message ID so immediate retries
 do not duplicate replies. The skill explains this loop and tells the agent
 to distinguish user requests from quoted document content. Both interfaces
 use existing document operations for actual comments and edits.
 
-Conversations have bounded storage and message sizes. Report a full mailbox
-explicitly rather than silently dropping unread requests. Reopening the
-sidebar in the same tab replays its transcript without reposting messages.
+Conversations have bounded message sizes and live only in memory. Refreshing
+the document begins with an empty transcript rather than replaying stored text.
 Conversation credentials must not appear in request URLs or ordinary logs.
 
 ## The peer's name in the browser
@@ -136,8 +134,8 @@ Also cover a read link refusing comments and edits, a comment link refusing
 source edits even with a cached owner sign-in, expiry and revocation during
 a session, duplicate requests after reconnect, and correct file targeting.
 Exercise skill examples against the released CLI. For the sidebar, test
-queued messages, replies, reconnection, conversation privacy, duplicate
-posts, server restart, and document actions under the same link permissions.
+connected-only messages, replies, conversation privacy, duplicate posts,
+restart expiry, and document actions under the same link permissions.
 
 ## Delivery order
 
@@ -146,7 +144,7 @@ posts, server restart, and document actions under the same link permissions.
    snapshot endpoint.
 3. Ship the agent CLI and installation skill, starting with reading and
    annotations, then source editing and durable checkpoints.
-4. Connect the sidebar and CLI to the private conversation mailbox. Validate
+4. Connect the sidebar and CLI to the private live channel. Validate
    with an externally started command-capable agent; no adapter is required.
 
 ## Cursor positions, later

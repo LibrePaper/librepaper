@@ -62,6 +62,15 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
   connect();
 
   return {
+    // Ephemeral events have no HTTP fallback: if nobody has a live room
+    // socket, there is deliberately nowhere to leave them.
+    sendLive(message) {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(message));
+        return { ok: true, via: "socket" };
+      }
+      return { ok: false, error: new Error("room is disconnected") };
+    },
     /// Sends over the socket, or over the REST route when it is down, so a
     /// write is never lost to a reconnect.
     send(message) {

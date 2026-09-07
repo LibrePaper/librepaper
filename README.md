@@ -548,23 +548,21 @@ project. A stale SHA refuses the edit so the agent can read again and account
 for other people's changes. Edits synchronize through the same collaborative
 session as the browser and wait for durable acknowledgement.
 
-The robot icon opens a private conversation mailbox. Start your preferred
+The robot icon opens a private live channel. Start your preferred
 agent yourself, then give it the connection instructions from that panel.
 The agent uses `komodoc agent chat watch` to receive messages and
 `komodoc agent chat post` to reply. It uses the same document commands above
 for comments and edits. No local service, pairing, provider adapter, or
 agent launcher is needed.
 
-The panel can queue messages while the agent is away. Its listening indicator
-means an agent has recently checked the mailbox; Komodoc cannot wake or stop
-an external agent. Messages are stored on the Komodoc server separately from
-shared document comments. Both document access and a separate conversation
-credential are required to read or post. The panel remembers that credential
-for the current browser tab, and deleting the conversation removes its
-history and revokes access. An agent may send content to its chosen model
-provider according to its own configuration.
+The agent must be connected before either side can send. Messages are held only
+in the live clients and server memory: they are not saved, backed up, or replayed
+after refresh or restart. Both document access and a separate conversation
+credential are required. Komodoc cannot wake or stop an external agent, and an
+agent may send content to its chosen model provider according to its own
+configuration.
 
-See the [sidebar mailbox interface](docs/protocol/chat.md) and the
+See the [live chat interface](docs/protocol/chat.md) and the
 [existing room operations](docs/protocol/room-v1.md) for client integration.
 
 ### Storage
