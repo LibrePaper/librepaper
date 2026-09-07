@@ -98,7 +98,7 @@ with XeTeX, and a small inline fontspec document with LuaTeX -- TeX -> BibTeX
 (`article`'s is written by `\begin{filecontents*}` mid-compile and read back
 out of the engine's own filesystem; `paper`'s is an ordinary `.bib` file).
 `packages` uses biblatex/Biber, which WasmTex has no full backend for
-(SPEC-wasmtex.md), so it is compiled for its package requests only --
+(docs/specs/wasmtex.md), so it is compiled for its package requests only --
 undefined citations in its log are expected, not a recording failure.
 
 The wider corpus this tool was asked to cover --
@@ -163,7 +163,7 @@ passes; `ok`/`FAIL` from the engine's own `success` flag):
 | `article` | pdfTeX | `tex1=ok bibtex=ok tex2=ok tex3=ok` -- full BibTeX round trip, including the `\begin{filecontents*}`-written `article.bib` read back out of the engine's own filesystem for BibTeX. |
 | `paper` | pdfTeX | `tex1` fails: `pdfTeX error: pdflatex (file ./fig/one.png): reading image file failed`. Package/font resolution up to that point succeeded (fontenc, inputenc, amsmath, graphicx, natbib, komodoc.sty, the chapter file); the failure is pdfTeX's PNG decoder on that specific fixture, not a missing mirror file. |
 | `packages` | pdfTeX | `tex1` fails: `LaTeX Error: File 'pgfcorequick.code.tex' not found` after successfully resolving siunitx, booktabs and a large first slice of TikZ/pgf. Some part of the pgf core (or its upstream availability under this snapshot) was not reached before the fatal stop; biber-backed citations were never going to resolve here regardless (WasmTex has no full Biber backend), so this case's value is entirely in the package set it touches before failing. |
-| `xetex`, `unicode-fonts` | XeTeX | Both fail at `internal error; cannot read font names`, preceded by `[icu] data unavailable (font-by-name will fail)`. XeTeX needs ICU data (SPEC-wasmtex.md's "Required support data such as ICU") that this run never fetched or mirrored -- **not attempted**, not a resolver bug. |
+| `xetex`, `unicode-fonts` | XeTeX | Both fail at `internal error; cannot read font names`, preceded by `[icu] data unavailable (font-by-name will fail)`. XeTeX needs ICU data (docs/specs/wasmtex.md's "Required support data such as ICU") that this run never fetched or mirrored -- **not attempted**, not a resolver bug. |
 | `luatex-mini` (inline fontspec doc, no thesis fixture was available) | LuaTeX | Timed out (180 s) without finishing; not diagnosed further. |
 
 The mirror was still populated by every document, including the ones that
@@ -177,7 +177,7 @@ their fatal error would have surfaced more requests.
 ## What is left undone
 
 - ICU data for XeTeX was never identified, fetched or mirrored; both XeTeX
-  cases fail on it. This is required support data per SPEC-wasmtex.md and
+  cases fail on it. This is required support data per docs/specs/wasmtex.md and
   belongs in the mirror layout (probably its own top-level entry, parallel
   to `wasmtex/` and `texlive/`) -- not designed here.
 - `packages`' pgf/TikZ failure and `paper`'s PNG decode failure are

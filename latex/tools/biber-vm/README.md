@@ -1,7 +1,7 @@
 # Biber VM: browser bibliography fallback image
 
 Builds the minimal 32-bit guest that runs real Biber inside a v86 emulator
-worker, for [SPEC-wasmtex.md](../../../SPEC-wasmtex.md)'s "Browser Biber VM:
+worker, for [docs/specs/wasmtex.md](../../../docs/specs/wasmtex.md)'s "Browser Biber VM:
 final bibliography fallback" and
 [docs/specs/wasmtex-interfaces.md](../../../docs/specs/wasmtex-interfaces.md)
 section 6. This is package F. It never runs on the ordinary browser
@@ -45,7 +45,7 @@ cross-check evidence (see its bcf-compatibility section) — but it is *not*
 proof the browser release itself is bcf-compatible, since that would require
 driving the actual WasmTex pdflatex; see Limits below.
 
-Three Biber sourcing options were evaluated, in the order SPEC-wasmtex.md
+Three Biber sourcing options were evaluated, in the order docs/specs/wasmtex.md
 requests, with the full evaluation and evidence in
 [sources.json](sources.json):
 
@@ -133,7 +133,7 @@ only Biber and no TeX distribution keeps this guest roughly 6x smaller.
 See [RESULTS.md](RESULTS.md) for the measured boot time, cold/warm Biber
 time, and bytes transferred from the most recent `vm-smoke.mjs` run. As with
 `tinytex-v86`'s REPORT.md, these are v86-CPU-bound numbers from one desktop
-Chromium session, not a promised product latency; SPEC-wasmtex.md explicitly
+Chromium session, not a promised product latency; docs/specs/wasmtex.md explicitly
 expects this route to be slower than native execution and asks that it be
 measured, not assumed fast.
 
@@ -163,7 +163,7 @@ device and makes no runtime network access.
   tests the image and registers it in the manifest. The browser VM client
   (`web/src/lib/latex/vm.js` / `vm-worker.js`, package B3), cancellation,
   idle teardown, persistent caching, and the routing/eligibility rules in
-  SPEC-wasmtex.md are separate work packages and are not implemented here.
+  docs/specs/wasmtex.md are separate work packages and are not implemented here.
 - **No reproducibility guarantee for the Debian package set.** Like
   `tinytex-v86`, the base image digest is pinned but Debian's package
   archive is not frozen to a dated snapshot; here that barely matters since

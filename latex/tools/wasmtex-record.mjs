@@ -99,7 +99,7 @@ function documents() {
     { id: "article", engine: "pdftex", bib: true, tree: treeOf(join(REPO, "latex", "corpus", "article"), "main.tex") },
     { id: "paper", engine: "pdftex", bib: true, tree: treeOf(join(REPO, "latex", "corpus", "paper"), "main.tex") },
     // biblatex/biber, not plain BibTeX: WasmTex has no full Biber backend
-    // (SPEC-wasmtex.md), so this is compiled for its package requests only --
+    // (docs/specs/wasmtex.md), so this is compiled for its package requests only --
     // undefined citations in the log are expected, not a recording failure.
     { id: "packages", engine: "pdftex", bib: false, tree: treeOf(join(REPO, "latex", "corpus", "packages"), "main.tex") },
     { id: "xetex", engine: "xetex", bib: false, tree: treeOf(join(REPO, "latex", "corpus", "xetex"), "main.tex") },
@@ -213,7 +213,7 @@ async function main() {
   if (!existsSync(LIB)) {
     throw new Error(
       `wasmtex-record: no source checkout lib/ at ${LIB}. See wasmtex.mjs's SOURCE_CHECKOUT and\n` +
-        "  SPEC-wasmtex.md \"Starting point\" for the revision to check out.",
+        "  docs/specs/wasmtex.md \"Starting point\" for the revision to check out.",
     );
   }
 

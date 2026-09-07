@@ -1,5 +1,5 @@
 //! `komodoc local <command>`: the command line front end for the loopback
-//! service. See `SPEC-wasmtex.md`, "App integration", and
+//! service. See `docs/specs/wasmtex.md`, "App integration", and
 //! `docs/specs/wasmtex-interfaces.md` section 7.
 //!
 //! This first version runs `start` in the foreground always: `--foreground`

@@ -1,6 +1,6 @@
 # WasmTex implementation: module boundaries and interfaces
 
-Status: implementation contract for [SPEC-wasmtex.md](../../SPEC-wasmtex.md).
+Status: implementation contract for [wasmtex.md](wasmtex.md).
 Every module below is owned by one work package. The shapes here are the
 agreement between packages; a package may add fields but must not rename or
 remove what is listed, and must not edit another package's files.

@@ -116,7 +116,7 @@ function inspectPdfBytes(bytesArray, scratch) {
 
 // Defines globalThis.__komodoc: a hand-rolled controller for the section 2.4
 // protocol (id in, id echoed back; unsolicited progress/downloading have no
-// id). `compileTree` runs the ordinary sequence from SPEC-wasmtex.md
+// id). `compileTree` runs the ordinary sequence from docs/specs/wasmtex.md
 // ("Browser compilation controller"): stage, tex, inspect outputs for
 // bibliography/index work, run the helper, write its output back, rerun
 // until the log stops asking for it or 8 passes are used.
@@ -195,7 +195,7 @@ async function __komodocCompile(engineName, tree) {
     // the aux; biblatex with backend=bibtex does too, but is only certain to
     // need a (re)run of BibTeX once the log says so explicitly ("Please
     // (re)run BibTeX on the file(s): ..."), which is also the authoritative
-    // signal SPEC-wasmtex.md's controller sequence names.
+    // signal docs/specs/wasmtex.md's controller sequence names.
     const asksForBibtex = /Please \\(re\\)run BibTeX/i.test(last.log);
     const looksBibtexy = /\\\\bibdata|\\\\citation/.test(auxText);
     const needsBibtex = !ranBibtex && (asksForBibtex ||

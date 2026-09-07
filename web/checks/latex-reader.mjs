@@ -3,7 +3,7 @@
 // section 2.1) to what a reader sees, kept in
 // web/src/lib/latex/status-text.js so it can be checked without a Svelte
 // runtime and without `latex.js` itself, which is mid-rewrite by another
-// package (see SPEC-wasmtex.md and section 3 of the interfaces doc).
+// package (see docs/specs/wasmtex.md and section 3 of the interfaces doc).
 import assert from "node:assert/strict";
 import {
   actionsFor,

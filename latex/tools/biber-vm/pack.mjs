@@ -7,7 +7,7 @@
 // Objects are stored as raw bytes, matching tinytex-v86/pack.mjs exactly:
 // v86 reads each object's bytes directly as file content through its 9p
 // filesystem, so the stored bytes must be the guest file's exact bytes.
-// "Gzip-compressed delivery" (SPEC-wasmtex.md) happens at the HTTP layer
+// "Gzip-compressed delivery" (docs/specs/wasmtex.md) happens at the HTTP layer
 // (Content-Encoding: gzip, as latex/benchmark/candidates/tinytex-v86/server.mjs
 // and the production static mirror both do), which the browser's fetch
 // transparently decompresses before v86 ever sees the bytes -- storing

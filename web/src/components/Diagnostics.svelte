@@ -10,7 +10,7 @@
     // The two LaTeX-only additions: what actually produced the current
     // preview, and every backend that was tried to get there. Both come
     // straight off the compile result Reader.svelte kept as
-    // `lastLatexResult`; empty for every other format. SPEC-wasmtex.md:
+    // `lastLatexResult`; empty for every other format. docs/specs/wasmtex.md:
     // "Compiler errors remain in Diagnostics with source locations where
     // available. Preserve both attempts' logs when a browser failure led to
     // a local attempt."

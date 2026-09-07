@@ -8,7 +8,7 @@
 // directly (see checks/latex-reader.mjs) -- the same reason `latex/status.js`
 // keeps the store apart from `latex.js`.
 //
-// Every wording below either quotes SPEC-wasmtex.md's "Failure presentation"
+// Every wording below either quotes docs/specs/wasmtex.md's "Failure presentation"
 // list verbatim (the `status.message` strings, which this file never
 // invents) or fills in the one line SPEC asks for beside them: why a
 // fallback happened, and what a given failure kind needs from the reader.

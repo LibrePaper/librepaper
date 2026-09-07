@@ -126,7 +126,7 @@ interfaces in this spec are the contract.
 ### Starting point
 
 Start from the WasmTex source revision and 2026 release evaluated in
-[the comparison](latex/benchmark/candidates/comparison/README.md):
+[the comparison](../../latex/benchmark/candidates/comparison/README.md):
 
 - Wrapper/source revision: 44c5861fcdf729838205b00b96ac9509bc7fb677.
 - Engine release: 2026-8b7946970153c52e.
@@ -807,9 +807,9 @@ delay writing or accepting this plan.
 
 ## References
 
-- [Measured comparison and reproduction](latex/benchmark/candidates/comparison/README.md)
-- [Existing WasmTex/Biber VM experiment](latex/benchmark/candidates/hybrid/REPORT.md)
+- [Measured comparison and reproduction](../../latex/benchmark/candidates/comparison/README.md)
+- [Existing WasmTex/Biber VM experiment](../../latex/benchmark/candidates/hybrid/REPORT.md)
 - [WasmTex source](https://github.com/corca-ai/wasmtex)
-- [Existing rendering implementation](crates/komodoc/src/server.rs)
+- [Existing rendering implementation](../../crates/komodoc/src/server.rs)
 - [Browser local-network permissions](https://developer.chrome.com/blog/local-network-access)
 - [TeX Live security/configuration changes](https://www.tug.org/texlive/bugs.html)

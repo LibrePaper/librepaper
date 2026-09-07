@@ -1,5 +1,5 @@
 <script>
-  // The compile status line: SPEC-wasmtex.md's "An unobtrusive compile
+  // The compile status line: docs/specs/wasmtex.md's "An unobtrusive compile
   // status distinguishes browser and local output and identifies VM-backed
   // bibliography work when used." This is the only place that status is
   // drawn -- there is no chooser and no card any more, so what a person sees

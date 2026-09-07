@@ -1374,7 +1374,7 @@
 
   // The most recent LaTeX compile result -- success or failure -- kept whole
   // for Diagnostics' "Compiled with" block and "Earlier attempts" list
-  // (SPEC-wasmtex.md: "Preserve both attempts' logs when a browser failure
+  // (docs/specs/wasmtex.md: "Preserve both attempts' logs when a browser failure
   // led to a local attempt."). Null for every other format.
   let lastLatexResult = $state(null);
 

@@ -1,6 +1,6 @@
 //! The local Komodoc app: a loopback service that runs native TeX tools on
 //! the author's machine when the browser compiler cannot. See
-//! `SPEC-wasmtex.md` and `docs/specs/wasmtex-interfaces.md`.
+//! `docs/specs/wasmtex.md` and `docs/specs/wasmtex-interfaces.md`.
 //!
 //! `protocol` is the wire contract; `service` and `pairing` are the HTTP
 //! surface and its authorization (package R1a); `discovery`, `native` and

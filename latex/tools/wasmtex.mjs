@@ -64,7 +64,7 @@ const REPO = dirname(dirname(HERE));
 
 /* --------------------------------------------------------------- pinning */
 
-// The first release inputs, per SPEC-wasmtex.md "Starting point". Not moving
+// The first release inputs, per docs/specs/wasmtex.md "Starting point". Not moving
 // dependencies: a new upstream id is a new release, mirrored beside this one,
 // never an overwrite of it.
 export const ENGINE_RELEASE = "2026-8b7946970153c52e";
@@ -89,7 +89,7 @@ const PINNED_MANIFEST = join(
 );
 
 // Where the licence notices are copied from. This is the upstream source
-// checkout named in SPEC-wasmtex.md ("Own the WasmTex release"), a build-time
+// checkout named in docs/specs/wasmtex.md ("Own the WasmTex release"), a build-time
 // input this script reads but never writes -- and, being untracked, it is not
 // guaranteed to exist in every checkout. A missing checkout fails loudly with
 // the revision to fetch, rather than silently skipping notices a release must
@@ -275,7 +275,7 @@ async function mirrorRelease() {
     throw new Error(
       `wasmtex: no source checkout at ${SOURCE_CHECKOUT}.\n` +
         `  Notices cannot be copied without it. Check out WasmTex revision\n` +
-        `  ${WRAPPER_REVISION} there (see SPEC-wasmtex.md "Starting point").`,
+        `  ${WRAPPER_REVISION} there (see docs/specs/wasmtex.md "Starting point").`,
     );
   }
   mkdirSync(join(OUT, releaseDir, "NOTICES"), { recursive: true });

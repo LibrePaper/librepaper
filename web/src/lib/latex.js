@@ -1,6 +1,6 @@
 // LaTeX, compiled in this browser, with local and Biber-VM fallbacks.
 //
-// This module is the controller SPEC-wasmtex.md describes: it owns exactly
+// This module is the controller docs/specs/wasmtex.md describes: it owns exactly
 // one module worker running WasmTex, speaks the section 2.4 protocol to it,
 // and decides -- through `latex/route.js`'s pure state machine -- when a
 // Biber request or a browser failure should instead go to the author's local

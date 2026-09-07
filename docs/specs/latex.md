@@ -1,7 +1,7 @@
 # SPEC: LaTeX in Komodoc
 
 The compiler, its resources, the local fallback and the browser Biber VM are
-specified in [SPEC-wasmtex.md](../../SPEC-wasmtex.md); the module boundaries
+specified in [wasmtex.md](wasmtex.md); the module boundaries
 that implement it are in [wasmtex-interfaces.md](wasmtex-interfaces.md). This
 page is the short account of what a person sees, and of what remains.
 
