@@ -3019,7 +3019,7 @@
     style="display: block; left: {bar.left}px; top: {bar.top}px"
     onclick={barClicked}
   >
-    {tool === "highlighting" ? "Highlight" : tool === "region" ? "Box" : "Comment"}
+    {tool === "highlighting" ? "Highlight" : tool === "region" ? "Box" : tool === "editing" ? "Suggest" : "Comment"}
   </button>
 {/if}
 

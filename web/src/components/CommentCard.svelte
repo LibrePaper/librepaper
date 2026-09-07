@@ -87,9 +87,11 @@
   const stamp = (value) => (value || "").replace("T", " ").slice(0, 16) + " UTC";
 
   // The one line a resolved card shows: what it was about, then what was said
-  // about it.
+  // about it. A decided suggestion leads with the decision, since that is
+  // what "resolved" means for it.
   const summary = $derived(
     [
+      comment.outcome === "accepted" ? "Accepted" : comment.outcome === "rejected" ? "Rejected" : "",
       comment.region ? `Figure ${comment.region.image_index + 1}` : (comment.exact || "").trim(),
       (comment.body || "").trim(),
     ]
