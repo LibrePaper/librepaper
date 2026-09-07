@@ -169,7 +169,13 @@ class WasmTexEngine {
     const filename = FMT_FILENAME[this.kind];
     if (!filename) return; // dvipdfm/bibtex/bibtex8/makeindex have no format
     // XeTeX and LuaTeX take theirs by file, written before the first pass --
-    // there is no "loadformat" command in either controller.
+    // there is no "loadformat" command in either controller. Unlike
+    // pdfTeX's `self._fmtData`, this file lives in `/work`, which
+    // `flushcache` (the only way to clear a stale snapshot -- see
+    // `flushCache` below) wipes entirely; the bytes are kept here so every
+    // `flushCache()` can rewrite the file straight back.
+    this._fmtFilename = filename;
+    this._fmtBytes = bytes;
     await this.writeFile(filename, bytes);
   }
 
@@ -309,10 +315,17 @@ class WasmTexEngine {
   /// state worth clearing between the one-shot runs they're used for), so
   /// this is a no-op for those two -- `worker.js` always writes their inputs
   /// fresh before every run anyway.
-  flushCache() {
+  async flushCache() {
     if (this.kind === "bibtex" || this.kind === "bibtex8" || this.kind === "makeindex") return;
     this._tell({ cmd: "flushcache" });
     this.madeDirs.clear();
+    // pdfTeX's format survives `flushcache` (it is a JS variable, never on
+    // `/work`); XeTeX's and LuaTeX's do not, since `_loadFormat` wrote
+    // theirs as an ordinary file -- rewrite it now so the engine is not left
+    // formatless for the compile `stage` is about to run.
+    if (this._fmtFilename && this._fmtBytes) {
+      await this.writeFile(this._fmtFilename, this._fmtBytes);
+    }
   }
 
   terminate() {

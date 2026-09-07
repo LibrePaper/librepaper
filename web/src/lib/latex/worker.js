@@ -226,7 +226,7 @@ class Worker2 {
     const engines = [];
     for (const kind of kinds) {
       const engine = await this.ensureEngine(kind);
-      engine.flushCache();
+      await engine.flushCache();
       engines.push(engine);
     }
     // Fresh /work for every engine, then the whole tree, one directory at a
@@ -295,6 +295,16 @@ class Worker2 {
     }
     if (!pdf) ok = false;
 
+    // XeTeX's controller reply never carries a `synctex` field at all
+    // (unlike pdfTeX's and LuaTeX's -- see wasmtex.js's header note), but
+    // XeTeX still writes the file to /work when run with synctex enabled;
+    // read it back directly rather than relying on the reply shape.
+    if (!synctexRaw && ok) {
+      synctexRaw =
+        (await primary.readFile(`${stem}.synctex`, true)) ||
+        (await primary.readFile(`${stem}.synctex.gz`, true)) ||
+        null;
+    }
     const synctex = ok ? await ensureGzip(synctexRaw) : null;
     const outputs = await collectOutputs(primary, stem, pass.inputs);
 
