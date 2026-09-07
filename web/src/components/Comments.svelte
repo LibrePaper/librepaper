@@ -54,7 +54,7 @@
 
 <!-- One of the column's panels: the column itself, with the tabs that choose
      between them, is the reader's. -->
-<div class="panel">
+<div class="panel comments-panel">
   <PanelHeader
     title="Comments"
     meta={comments.length ? `${open} open · ${comments.length} total` : undefined}
@@ -103,3 +103,9 @@
     {/each}
   </div>
 </div>
+
+<style>
+  .comments-panel { display: flex; flex-direction: column; overflow: hidden; }
+  .comments-panel > :global(*) { flex-shrink: 0; }
+  #comments { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+</style>

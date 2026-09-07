@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from "svelte";
   // The document, on its own origin, in a frame.
   //
   // Nothing here can touch it: the agent injected into it does the DOM work
@@ -10,6 +11,18 @@
   let { src, docsOrigin, onmessage, grabbing = false, away = false } = $props();
 
   let frame = $state(null);
+  let viewport = $state(null);
+  let heldWidth = $state(0);
+  let heldHeight = $state(0);
+  onMount(() => {
+    const observer = new ResizeObserver(() => {
+      if (away || !viewport) return;
+      heldWidth = viewport.clientWidth;
+      heldHeight = viewport.clientHeight;
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  });
 
   /// `transfer` is for the one message that carries megabytes: a LaTeX
   /// document's pages arrive as PDF bytes, and handing the buffer over rather
@@ -31,7 +44,8 @@
 
 <svelte:window onmessage={receive} />
 
-<section class="viewport" class:away>
+<section class="viewport" class:away bind:this={viewport} inert={away}
+         style:--held-width="{heldWidth}px" style:--held-height="{heldHeight}px">
   <!-- allow-same-origin refers to the document's own origin, not this one, so
        the agent can read the document while the document can read nothing
        here. While a separator is being dragged the frame is deafened: it

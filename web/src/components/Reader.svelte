@@ -38,7 +38,7 @@
     takeKeyFromFragment,
     write,
   } from "../lib/storage.js";
-  import { ACTIVITY_WIDTH, LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
+  import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
 
   import { tick } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
@@ -2043,6 +2043,34 @@
   ];
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
   let panel = $state(PANELS.includes(read(PANEL, null)) ? read(PANEL, null) : "files");
+  // Mount panels on their first visit and retain them across view changes.
+  // This preserves scroll positions, expanded folders and unsent chat drafts.
+  let visitedPanels = $state([]);
+  $effect(() => {
+    if (settled && shown.comments && panel && !visitedPanels.includes(panel)) visitedPanels = [...visitedPanels, panel];
+  });
+  // Narrow screens show one workspace view at a time. This is independent of
+  // the desktop split, so widening the window restores the reader's layout.
+  const MOBILE_VIEW = "komodoc-mobile-view";
+  let mobileView = $state(["document", "source", "sidebar"].includes(read(MOBILE_VIEW, "document"))
+    ? read(MOBILE_VIEW, "document") : "document");
+  let preferredPane = $state(read(LAYOUT, "split") === "source" ? "source" : "document");
+  function showMobileView(view) {
+    if (view === "source" && !editing) view = "document";
+    mobileView = view;
+    if (view !== "sidebar") preferredPane = view;
+    if (!compact && view !== "sidebar" && layout !== "split") {
+      layout = view;
+      write(LAYOUT, layout);
+    }
+    write(MOBILE_VIEW, view);
+    if (view === "sidebar" && !panel) showPanel(home);
+  }
+  function selectPanel(name) {
+    const next = panel === name && (!compact || activeMobileView === "sidebar") ? "" : name;
+    showPanel(next);
+    if (width <= 760) showMobileView(next ? "sidebar" : "document");
+  }
   // The tabs this browser is offered. `editorOnly` waits on the role the
   // document answers with; `editOnly` on the source pane being open.
   const tabs = $derived(
@@ -2069,6 +2097,7 @@
       if (!hadCheckpoint) navigationGeneration += 1;
     }
     panel = name;
+    if (compact) mobileView = name ? "sidebar" : "document";
     if (remembered) write(PANEL, name);
     // Leaving the history panel clears whatever redlines were painted; the
     // history panel itself is what `applyRedlines` reads to decide that.
@@ -2091,20 +2120,32 @@
   // and a measurement taken once is a layout that is right until the window
   // moves.
   let width = $state(innerWidth);
+  const compact = $derived(width <= 760);
+  const activeMobileView = $derived(mobileView === "source" && !editing ? "document"
+    : mobileView === "sidebar" && !panel ? "document" : mobileView);
+  const splitTight = $derived(width < PANES.editor.min + DOCUMENT_MIN + GRIP
+    + (panel ? PANES.sidebar.min + GRIP : ACTIVITY_WIDTH));
+  const effectiveLayout = $derived(compact
+    ? (activeMobileView === "source" ? "source" : "document")
+    : layout === "split" && splitTight ? preferredPane : layout);
 
   // What every measurement below is made against.
   // The column holds one of three things -- the files, the comments or the
   // timeline -- so what the layout needs to know is whether it is there, not
   // which of them is in it.
   const panes = $derived({
-    layout,
+    layout: effectiveLayout,
     comments: Boolean(panel),
     editing,
     sourceSide,
     sizes,
     width,
   });
-  const shown = $derived(showing(panes));
+  const shown = $derived(compact ? {
+    source: editing && activeMobileView === "source",
+    document: activeMobileView === "document",
+    comments: activeMobileView === "sidebar",
+  } : showing(panes));
 
   // What the reader asked for is kept; what fits is worked out again every
   // time it is needed. Writing the fitted size back would make a narrow window
@@ -2300,10 +2341,11 @@
     shownFigure = file.kind === "asset" ? file : null;
     // Choosing a file is asking to see it, so an arrangement with no source
     // pane makes room for one. Remembered like any other choice of layout.
-    if (mayEdit && layout === "document") {
+    if (mayEdit && !compact && layout === "document") {
       layout = "split";
       write(LAYOUT, layout);
     }
+    if (mayEdit) showMobileView("source");
   }
 
   // The figure being looked at, when the chosen file is one. Held rather than
@@ -2811,6 +2853,8 @@
 
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
+      class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
+      class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact || (splitTight && layout === "split")}
       style="--komodoc-activity: {ACTIVITY_WIDTH}px; --komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- The column, first: the files, the comments or the history, chosen by
        the activity bar. A file dropped anywhere on it joins the project. -->
@@ -2827,7 +2871,7 @@
                 <IconButton icon="triangle-alert"
                   label={diagnosticBadge ? `${tab.says}: ${diagnosticBadge}` : tab.says}
                   pressed={panel === tab.id}
-                  onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
+                  onclick={() => selectPanel(tab.id)} />
                 {#if diagnostics.length}
                   <span class="activity-counts" aria-hidden="true">
                     {#if errorCount}<span class="activity-count errors">{errorCount}</span>{/if}
@@ -2839,7 +2883,7 @@
               <IconButton
                 icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
                 label={tab.says} pressed={panel === tab.id}
-                onclick={() => showPanel(panel === tab.id ? "" : tab.id)} />
+                onclick={() => selectPanel(tab.id)} />
             {/if}
           {/each}
         </div>
@@ -2848,30 +2892,32 @@
           <IconButton icon="help" label="Documentation" href="/documentation" />
         </div>
       </div>
-      {#if shown.comments && settled}
+      {#if settled}
       <div class="sidebar-content">
-      {#if panel === "files" && mayEdit}
+      {#each tabs.filter((tab) => visitedPanels.includes(tab.id)) as tab (tab.id)}
+      <div class="panel-slot" hidden={panel !== tab.id || !shown.comments}>
+      {#if tab.id === "files" && mayEdit}
         <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
                {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
                onmkdir={(path) => session.addFolder(path, rules)} onrelocate={relocateFiles}
                ondelete={deleteFiles} onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
-      {:else if panel === "agent"}
+      {:else if tab.id === "agent"}
         <Agent slug={SLUG} link={linkFor(SLUG)} path={session?.paths?.get(openFile) || ""} selection={pending} />
-      {:else if panel === "share" && canSeeSharing}
-        <Share open inline slug={SLUG} onclose={() => showPanel("")} />
-      {:else if panel === "settings" && mayEdit}
+      {:else if tab.id === "share" && canSeeSharing}
+        <Share open={panel === "share" && shown.comments} inline slug={SLUG} onclose={() => showPanel("")} />
+      {:else if tab.id === "settings" && mayEdit}
         <Settings {keys} {linked} {sourceSide} ratio={sizes[PANES.editor.key]}
                   {sourceFormat} {mayEdit} latexSettings={latexSettingsState}
                   onkeys={setKeys} onlinked={setLinked} onside={putSourceOn}
                   onratio={(share) => setSize(PANES.editor, share)}
                   onlatexsettings={(next) => session?.setLatexSettings(next)} />
-      {:else if panel === "diagnostics"}
+      {:else if tab.id === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
                      provenance={lastLatexResult?.provenance || null} attempts={lastLatexResult?.attempts || []} />
-      {:else if panel === "history"}
+      {:else if tab.id === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
                  problem={historyProblem}
                  baseline={historyBaseline} changes={historyChanges}
@@ -2883,7 +2929,7 @@
                  target={historyComparePoint}
                  onbaseline={chooseHistoryBaseline}
                  ontarget={chooseHistoryTarget}
-                 onshow={showCheckpoint} onback={backToNow} onname={nameCheckpoint}
+                 onshow={(sha) => { showMobileView("document"); return showCheckpoint(sha); }} onback={backToNow} onname={nameCheckpoint}
                  onrestore={restoreCheckpoint} oncopy={checkpointLink}
                  onreveal={revealHistoryHunk}
                  oncheckpointfile={openCheckpointFile}
@@ -2892,14 +2938,21 @@
         <Comments {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
                   hasFigures={figureAt.length > 0}
                   ontool={chooseTool}
-                  onreveal={(comment) => {
+                  onreveal={async (comment) => {
                     // The rendered anchor, when there is one, reveals on the
                     // page as it always did. A comment found only in the
                     // source has nothing there to reveal, and goes to the
                     // source instead -- the same jump a click in the document
                     // makes in `followDocumentClick`.
-                    if (comment.start != null) tell({ type: "reveal", id: comment.id });
-                    if (comment.sourceStart != null && editing && editor) {
+                    if (comment.start != null || comment.region) {
+                      showMobileView("document");
+                      await tick();
+                      tell({ type: "reveal", id: comment.id });
+                    } else if (comment.sourceStart != null && editing) {
+                      showMobileView("source");
+                      await tick();
+                    }
+                    if (shown.source && comment.sourceStart != null && editing && editor) {
                       const id = session.idOf(comment.sourcePath);
                       if (id) {
                         openFile = id;
@@ -2914,18 +2967,21 @@
                   onreject={(comment) => decideSuggestion(comment, "reject")} />
       {/if}
       </div>
+      {/each}
+      </div>
       {/if}
     </aside>
-  {#if shown.comments}
+  {#if shown.comments && !compact}
     <Grip pane={PANES.sidebar} label="Resize the left-hand column" panes={panes}
           onsize={(size) => setSize(PANES.sidebar, size)}
           onguide={(where) => (guide = where)}
           ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }} />
   {/if}
 
-  {#if shown.source}
+  {#if editing}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <section class="editorpane" ondragover={(event) => event.preventDefault()} ondrop={dropped}>
+    <section class="editorpane" class:away={!shown.source}
+             ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
@@ -3009,6 +3065,21 @@
        would reload the document and lose the reader's place in it. -->
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
            away={!shown.document || unrendered || failedBeforeRender} />
+
+  <nav class="mobile-pane-nav" aria-label="Workspace view">
+    <IconButton icon="book" label="Document" pressed={shown.document}
+                onclick={() => showMobileView("document")} />
+    {#if editing}
+      <IconButton icon="file-text" label="Source" pressed={shown.source}
+                  onclick={() => showMobileView("source")} />
+    {/if}
+    {#each compact ? tabs : [] as tab (tab.id)}
+      <IconButton
+        icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
+        label={tab.says} pressed={shown.comments && panel === tab.id}
+        onclick={() => selectPanel(tab.id)} />
+    {/each}
+  </nav>
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
@@ -3194,12 +3265,14 @@
     min-height: 0;
     overflow: hidden;
   }
+  .panel-slot { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
+  .panel-slot[hidden] { display: none; }
   @media (max-width: 760px) {
-    .sidebar, .sidebar.collapsed { flex: none; flex-direction: column; }
-    .sidebar-activity { flex-direction: row; width: auto; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); }
+    .sidebar, .sidebar.collapsed { flex-direction: column; }
+    .sidebar-activity { display: none; }
     .activity-sections { flex-direction: row; }
     .activity-utilities { display: none; }
     .mobile-workspace-tools { display: flex; }
-    .sidebar-content { overflow: visible; }
+    .sidebar-content { overflow: hidden; }
   }
 </style>

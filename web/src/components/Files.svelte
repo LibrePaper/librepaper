@@ -234,6 +234,7 @@
     {/if}
   </PanelHeader>
 
+  <div class="explorer-scroll">
   <TreeView {collection} selectionMode="multiple" selectedValue={selected} expandedValue={expanded}
     onExpandedChange={(event) => { expanded = event.expandedValue; }}
     onFocusChange={(event) => { focused = event.focusedValue; }}
@@ -249,6 +250,7 @@
       {#each root.children as node, index (node.id)}{@render branch(node, [index])}{/each}
     </TreeView.Tree>
   </TreeView>
+  </div>
 </div>
 
 {#snippet row(node)}
@@ -353,6 +355,9 @@
 </Modal>
 
 <style>
+  .filelist { display: flex; flex-direction: column; overflow: hidden; }
+  .filelist > :global(*) { flex-shrink: 0; }
+  .explorer-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .explorer-actions {
     display: flex;
     align-items: center;

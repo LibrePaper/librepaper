@@ -96,6 +96,7 @@ export async function browser(name, directory, port) {
     const frames = new Map();
     return {
       close, evaluate,
+      resize: (width, height) => command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }),
       navigate: (url) => command("Page.navigate", { url }),
       text: async () => {
         const slug = await evaluate('location.pathname.split("/").pop()');

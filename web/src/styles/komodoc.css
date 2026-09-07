@@ -251,6 +251,17 @@ main.reader.no-preview:not(.editing) .sidebar {
   flex: 1 1 auto;
 }
 .viewport.away {
+  /* Keep the frame's viewport intact while it is out of the layout. Giving
+     an iframe zero dimensions can reset its document scroll position. */
+  position: fixed;
+  visibility: hidden;
+  pointer-events: none;
+  top: 0;
+  left: 0;
+  width: var(--held-width);
+  height: var(--held-height);
+}
+.editorpane.away {
   display: none;
 }
 
@@ -601,40 +612,82 @@ main.reader.source-right .editorpane {
 
 /* ------------------------------------------------------------- the phone */
 
+main.reader.adapted {
+  position: relative;
+  padding-bottom: calc(var(--spacing) * 14 + env(safe-area-inset-bottom));
+}
+.mobile-pane-nav { display: none; }
+main.reader.adapted .mobile-pane-nav {
+  position: absolute;
+  z-index: 8;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing);
+  overflow-x: auto;
+  overscroll-behavior: contain;
+  height: calc(var(--spacing) * 14 + env(safe-area-inset-bottom));
+  padding: var(--spacing) calc(var(--spacing) * 2) max(var(--spacing), env(safe-area-inset-bottom));
+  border-top: 1px solid var(--color-divider);
+  background: var(--color-shell);
+}
+.mobile-pane-nav > * { flex-shrink: 0; }
+main.reader .sidebar, main.reader .editorpane, main.reader .viewport, main.reader .latexpane {
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
+
 @media (max-width: 760px) {
-  /* One column, so there is nothing to drag. The panel goes under the
-     document rather than above it: a list of files at the top would read
-     fine, but a page of comments would push the document off the screen. */
+  /* Keep the workspace inside the viewport. The bottom navigation chooses
+     which full-height pane is active; the page itself never becomes a stack
+     of independently scrolling documents. */
   main.reader {
+    position: relative;
+    height: calc(100dvh - var(--komodoc-bar));
+    overflow: hidden;
+  }
+  main.reader .sidebar,
+  main.reader .editorpane,
+  main.reader .viewport,
+  main.reader .latexpane {
+    min-height: 0;
+  }
+  main.reader .sidebar { display: none; }
+  main.reader.mobile-sidebar .sidebar {
     display: flex;
-    flex-direction: column;
-    height: auto;
-    overflow: visible;
-  }
-  .viewport {
-    height: 62dvh;
-  }
-  .editorpane {
-    flex: none;
-  }
-  .sidebar {
-    order: 10;
-    flex: none;
-    overflow: visible;
+    flex: 1 1 100%;
+    order: 0;
     border-right: 0;
-    border-top: 1px solid var(--color-surface-200-800);
   }
-  .panel {
-    overflow: visible;
+  main.reader.mobile-sidebar .grip,
+  main.reader.mobile-sidebar .editorpane,
+  main.reader.mobile-sidebar .latexpane { display: none; }
+  main.reader.mobile-document .sidebar,
+  main.reader.mobile-document .editorpane,
+  main.reader.mobile-document .grip { display: none; }
+  main.reader.mobile-document .viewport:not(.away),
+  main.reader.mobile-document .latexpane {
+    display: flex;
+    flex: 1 1 100%;
+    order: 0;
   }
-  .grip {
-    display: none;
+  main.reader.mobile-source .sidebar,
+  main.reader.mobile-source .latexpane,
+  main.reader.mobile-source .grip { display: none; }
+  main.reader.mobile-source .editorpane {
+    display: grid;
+    flex: 1 1 100%;
+    order: 0;
+    border: 0;
   }
   #selectionbar {
     left: 50% !important;
     right: auto;
     top: auto !important;
-    bottom: max(18px, env(safe-area-inset-bottom));
+    bottom: calc(var(--spacing) * 16 + env(safe-area-inset-bottom));
     transform: translateX(-50%);
   }
 }
