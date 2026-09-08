@@ -3,6 +3,17 @@
 
 use super::*;
 
+/// Bound both queue and transport writes so a slow peer cannot pin the reader
+/// or prevent housekeeping from tearing the connection down.
+const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn send_outgoing(tx: &Sender, outgoing: Outgoing) -> Result<(), ()> {
+    tokio::time::timeout(SOCKET_WRITE_TIMEOUT, tx.send(outgoing))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
+}
+
 /// How much room a multipart upload gets beyond the document itself for part
 /// headers, the title, and the slug.
 pub(super) const MULTIPART_SLACK: usize = 1 << 20;
@@ -210,14 +221,22 @@ impl Server {
         let mut writer = tokio::spawn(async move {
             while let Some(outgoing) = rx.recv().await {
                 let result = match outgoing {
-                    Outgoing::Text(text) => sink.send(WsMessage::Text(text.into())).await,
+                    Outgoing::Text(text) => tokio::time::timeout(
+                        SOCKET_WRITE_TIMEOUT,
+                        sink.send(WsMessage::Text(text.into())),
+                    )
+                    .await
+                    .map_err(|_| ())
+                    .and_then(|result| result.map_err(|_| ())),
                     Outgoing::Close(reason) => {
-                        let _ = sink
-                            .send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        let _ = tokio::time::timeout(
+                            SOCKET_WRITE_TIMEOUT,
+                            sink.send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
                                 code: 1000,
                                 reason: reason.into(),
-                            })))
-                            .await;
+                            }))),
+                        )
+                        .await;
                         break;
                     }
                 };
@@ -229,7 +248,7 @@ impl Server {
 
         let hello =
             json!({"type": "hello", "comments": room.snapshot_for(&author, is_owner).await});
-        let _ = tx.send(Outgoing::Text(hello.to_string())).await;
+        let _ = send_outgoing(&tx, Outgoing::Text(hello.to_string())).await;
 
         // Whether this socket has any reason left to keep watching the room:
         // whether it may still read the document at all, and whether the
@@ -276,7 +295,9 @@ impl Server {
                     // catalogue/session generation. A revoked account, an
                     // expired link, or changed document rights closes the
                     // socket before its cached handshake identity can write.
-                    self.reauthorize(&room.slug).await;
+                    if !self.reauthorize_connection(&room.slug, socket_id).await {
+                        break 'reader;
+                    }
                     if !room.state.lock().await.sockets.contains_key(&socket_id) {
                         break 'reader;
                     }
@@ -285,12 +306,12 @@ impl Server {
                     // deliberately absent from hello/reconnect and storage.
                     if incoming.kind == "chat" {
                         if !who.at_least(Role::Commenter) {
-                            let _ = tx.send(Outgoing::Text(json!({"type":"error","message":"comment access is required to chat","temp_id":incoming.temp_id}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"comment access is required to chat","temp_id":incoming.temp_id}).to_string())).await;
                             continue 'reader;
                         }
                         let text = incoming.body.trim();
                         if text.is_empty() || text.len() > 4096 || incoming.temp_id.is_empty() || incoming.temp_id.len() > 128 {
-                            let _ = tx.send(Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id}).to_string())).await;
                             continue 'reader;
                         }
                         let digest = crate::document::store::digest_of(text);
@@ -300,11 +321,11 @@ impl Server {
                             } else {
                                 json!({"type":"error","message":"message id already used for different content","temp_id":incoming.temp_id})
                             };
-                            let _ = tx.send(Outgoing::Text(reply.to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(reply.to_string())).await;
                             continue 'reader;
                         }
                         if !room.chat_allowed(socket_id).await {
-                            let _ = tx.send(Outgoing::Text(json!({"type":"error","message":"too many chat messages; try again shortly","temp_id":incoming.temp_id}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"too many chat messages; try again shortly","temp_id":incoming.temp_id}).to_string())).await;
                             continue 'reader;
                         }
                         let creator = if who.id.is_signed_in() {
@@ -321,7 +342,7 @@ impl Server {
                         });
                         room.broadcast_except(Some(socket_id),&message).await;
                         message["temp_id"] = Value::String(incoming.temp_id.clone());
-                        if tx.send(Outgoing::Text(message.to_string())).await.is_err() { break 'reader; }
+                        if send_outgoing(&tx, Outgoing::Text(message.to_string())).await.is_err() { break 'reader; }
                         chat_requests.push_back((incoming.temp_id,digest));
                         if chat_requests.len() > 256 { chat_requests.pop_front(); }
                         continue 'reader;
@@ -353,7 +374,7 @@ impl Server {
                                 incoming.update = encode_update(&update);
                             }
                             Err(reason) => {
-                                let _ = tx.send(Outgoing::Close(reason)).await;
+                                let _ = send_outgoing(&tx, Outgoing::Close(reason)).await;
                                 break 'reader;
                             }
                         }
@@ -394,7 +415,7 @@ impl Server {
                                         "count": count,
                                     })
                                 };
-                                if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
+                                if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
                                     break 'reader;
                                 }
                                 room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
@@ -416,8 +437,7 @@ impl Server {
                             }
                             "y-update" => {
                                 if !is_owner {
-                                    let _ = tx
-                                        .send(Outgoing::Text(
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
                                             json!({
                                                 "type": "error",
                                                 "message": "editing is not permitted",
@@ -426,8 +446,7 @@ impl Server {
                                                 "protocol": "komodoc.room.v1",
                                             })
                                             .to_string(),
-                                        ))
-                                        .await;
+                                        )).await;
                                     continue 'reader;
                                 }
                                 if incoming.update.is_empty() {
@@ -435,7 +454,7 @@ impl Server {
                                 }
                                 let Some(update) = decode_update(&incoming.update) else {
                                     if who.automation {
-                                        let _ = tx.send(Outgoing::Text(json!({
+                                        let _ = send_outgoing(&tx, Outgoing::Text(json!({
                                             "type": "error", "message": "invalid encoded update",
                                             "request_id": incoming.request_id, "seq": incoming.seq,
                                             "version": 1, "protocol": "komodoc.room.v1",
@@ -449,7 +468,7 @@ impl Server {
                                 {
                                     Applied::Ignored => {
                                         if who.automation {
-                                            let _ = tx.send(Outgoing::Text(json!({
+                                            let _ = send_outgoing(&tx, Outgoing::Text(json!({
                                                 "type": "error", "message": "update was rejected",
                                                 "request_id": incoming.request_id, "seq": incoming.seq,
                                                 "version": 1, "protocol": "komodoc.room.v1",
@@ -458,7 +477,7 @@ impl Server {
                                         continue 'reader;
                                     }
                                     Applied::Refuse(reason) => {
-                                        let _ = tx.send(Outgoing::Close(reason)).await;
+                                            let _ = send_outgoing(&tx, Outgoing::Close(reason)).await;
                                         break 'reader;
                                     }
                                     Applied::Relay => {}
@@ -484,7 +503,7 @@ impl Server {
                                         "version": 1,
                                         "protocol": "komodoc.room.v1",
                                     });
-                                    if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
+                                    if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
                                         break 'reader;
                                     }
                                     continue 'reader;
@@ -522,7 +541,7 @@ impl Server {
                                         "protocol": "komodoc.room.v1",
                                     }),
                                 };
-                                if tx.send(Outgoing::Text(payload.to_string())).await.is_err() {
+                                if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
                                     break 'reader;
                                 }
                             }
@@ -544,7 +563,7 @@ impl Server {
                             .await
                     };
                     if !ok {
-                        if tx.send(Outgoing::Text(result.to_string())).await.is_err() {
+                        if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {
                             break 'reader;
                         }
                         continue 'reader;
@@ -556,7 +575,7 @@ impl Server {
                     let shared = room.comment_event_for(&result, "", false).await;
                     room.broadcast_except(Some(socket_id), &shared).await;
                     let targeted = room.comment_event_for(&result, &author, is_owner).await;
-                    if tx.send(Outgoing::Text(targeted.to_string())).await.is_err() {
+                    if send_outgoing(&tx, Outgoing::Text(targeted.to_string())).await.is_err() {
                         break 'reader;
                     }
                 }
@@ -600,7 +619,7 @@ impl Server {
         room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
             .await;
         if !writer_done {
-            let _ = tx.send(Outgoing::Close("")).await;
+            let _ = send_outgoing(&tx, Outgoing::Close("")).await;
             let _ = writer.await;
         }
     }
@@ -616,6 +635,76 @@ impl Server {
             &format!("state:{slug}:{until}"),
         );
         format!("/api/documents/{slug}/state?until={until}&token={token}")
+    }
+
+    /// Rechecks one live socket against the current catalogue entry.  Inbound
+    /// frames use this sender-specific path so an expensive catalogue lookup
+    /// cannot make every other socket pay the same SQLite cost.
+    pub async fn reauthorize_connection(&self, slug: &str, socket_id: u64) -> bool {
+        let entry = match self.store.get_result(slug).await {
+            Ok(entry) => entry,
+            Err(error) => {
+                // An unresolved catalogue cannot authorize a protected frame.
+                // Disconnect only this sender; the periodic/all-socket path
+                // will independently revisit the other connections.
+                eprintln!("could not reauthorize {slug}: {error}");
+                self.disconnect_connection(slug, socket_id).await;
+                return false;
+            }
+        };
+        let connection = {
+            let connections = self.connections.lock().await;
+            connections.get(&socket_id).cloned()
+        };
+        let Some(connection) = connection else {
+            return false;
+        };
+        let allowed = match &entry {
+            Some(entry) => {
+                let who = self
+                    .viewer(
+                        entry,
+                        &connection.headers,
+                        &connection.arrival,
+                        connection.query.as_deref(),
+                    )
+                    .await;
+                !who.auth_failed
+                    && self.may_read(entry, &who)
+                    && who.at_least(Role::Editor) == connection.is_owner
+                    && who.at_least(Role::Commenter) == connection.can_comment
+                    && who.link == connection.link
+                    && who.comment_budget == connection.comment_budget
+            }
+            None => false,
+        };
+        if !allowed {
+            self.disconnect_connection(slug, socket_id).await;
+        }
+        allowed
+    }
+
+    async fn disconnect_connection(&self, slug: &str, socket_id: u64) {
+        let connection = {
+            let connections = self.connections.lock().await;
+            connections.get(&socket_id).cloned()
+        };
+        let Some(connection) = connection else {
+            return;
+        };
+        if let Some(id) = &connection.chat {
+            self.chat.detach(id, socket_id).await;
+            let _ = connection
+                .tx
+                .try_send(Outgoing::Close("access changed; reconnect"));
+            return;
+        }
+        let _ = connection
+            .tx
+            .try_send(Outgoing::Close("access changed; reconnect"));
+        if let Ok(room) = self.rooms.try_get(slug).await {
+            room.state.lock().await.sockets.remove(&socket_id);
+        }
     }
 
     /// Reruns every live socket on `slug`'s authorization against the current

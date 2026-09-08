@@ -30,6 +30,9 @@ impl Server {
         let who = self
             .viewer(&entry, &headers, arrival, query.as_deref())
             .await;
+        if who.auth_failed {
+            return plain(401, "authentication expired or was revoked");
+        }
         if !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
@@ -103,7 +106,7 @@ impl Server {
             }
         };
         // Sharing can change while the handshake is in flight.
-        self.reauthorize(&slug).await;
+        self.reauthorize_connection(&slug, socket_id).await;
         if self.chat.attached(&id, socket_id).await {
             let _ = tx.try_send(Outgoing::Text(ready.to_string()));
             let _ = self.chat.drain_pending(&id, &token, socket_id, after).await;
@@ -125,7 +128,7 @@ impl Server {
                     let request_id = value["id"].as_str().unwrap_or("").to_string();
                     value["role"] = Value::String(role.clone());
                     // Recheck both peers before every delivery, including expiry.
-                    self.reauthorize(&slug).await;
+                    if !self.reauthorize_connection(&slug, socket_id).await { break; }
                     if !self.chat.attached(&id,socket_id).await { break; }
                     let result = match serde_json::from_value::<chat::Post>(value) {
                         Ok(post) => self.chat.post(&slug,&id,&token,Some(socket_id),post).await,
@@ -176,14 +179,22 @@ impl Server {
         if cross_site_refused(request.headers(), arrival) {
             return write_json(403, &cross_site_refusal());
         }
+        let headers = request.headers().clone();
+        let query = request.uri().query().map(str::to_string);
         let entry = match self.checked_entry(slug).await {
             Ok(Some(entry)) => entry,
             Ok(None) => return write_json(404, &json!({"error":"not found"})),
             Err(response) => return response,
         };
         let who = self
-            .viewer(&entry, request.headers(), arrival, request.uri().query())
+            .viewer(&entry, &headers, arrival, query.as_deref())
             .await;
+        if who.auth_failed {
+            return write_json(
+                401,
+                &json!({"error":"authentication expired or was revoked"}),
+            );
+        }
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error":"not found"}));
         }
@@ -211,10 +222,23 @@ impl Server {
                 if post.role != "user" {
                     post.role = "agent".into();
                 }
-                self.reauthorize(slug).await;
+                if let Err(response) = self
+                    .recheck_chat_caller(slug, &headers, arrival, query.as_deref())
+                    .await
+                {
+                    return response;
+                }
                 self.chat.post(slug, id, &token, None, post).await
             }
-            ("DELETE", [_]) => self.chat.delete(slug, id, &token).await,
+            ("DELETE", [_]) => {
+                if let Err(response) = self
+                    .recheck_chat_caller(slug, &headers, arrival, query.as_deref())
+                    .await
+                {
+                    return response;
+                }
+                self.chat.delete(slug, id, &token).await
+            }
             ("GET", [_]) | ("POST", [_, "listen"]) => Err((
                 410,
                 "chat requires a live WebSocket; polling and replay are unavailable",
@@ -227,6 +251,33 @@ impl Server {
         };
         set(&mut response, "cache-control", "no-store");
         response
+    }
+
+    /// Re-resolve the HTTP caller immediately before a body-dependent chat
+    /// mutation.  Reading the request body can await long enough for a session
+    /// or link to be revoked, so the handshake-time viewer is insufficient.
+    async fn recheck_chat_caller(
+        &self,
+        slug: &str,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+    ) -> Result<(), Reply> {
+        let entry = self
+            .checked_entry(slug)
+            .await?
+            .ok_or_else(|| write_json(404, &json!({"error":"not found"})))?;
+        let who = self.viewer(&entry, headers, arrival, query).await;
+        if who.auth_failed {
+            return Err(write_json(
+                401,
+                &json!({"error":"authentication expired or was revoked"}),
+            ));
+        }
+        if !self.may_read(&entry, &who) {
+            return Err(write_json(404, &json!({"error":"not found"})));
+        }
+        Ok(())
     }
 }
 
