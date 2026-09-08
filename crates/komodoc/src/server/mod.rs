@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
-use crate::assets::{renderers, ShellFile};
+use crate::auth::pseudonym::pseudonym_for;
 use crate::auth::{
     cookie_name, normalized, now_unix, pkce_verifier, random_token, read_session, read_visitor,
     sign_session, sign_visitor, stored_id, Accounts, DeviceOutcome, GithubAccounts, GithubApp,
@@ -31,29 +31,33 @@ use crate::auth::{
     SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use crate::config::Configuration;
-use crate::history::{Tree, TreeEntry};
-use crate::origins::{
-    cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
+use crate::document::history::{Tree, TreeEntry};
+use crate::document::render::{title_from_html, title_from_markdown};
+use crate::document::store::{
+    random_suffix, slugify, Ceiling, Grant, Guest, IndexEntry, LinkGrant, ModifyError, Publication,
+    PutError, Role, Store,
 };
-use crate::pseudonym::pseudonym_for;
-use crate::render::{title_from_html, title_from_markdown};
 use crate::room::{
     decode_update, encode_update, AcceptError, Accepted, Applied, Message as RoomMessage, Outgoing,
     Room, RoomSet, Sender,
 };
-use crate::store::{
-    random_suffix, slugify, Ceiling, Grant, Guest, IndexEntry, LinkGrant, ModifyError, Publication,
-    PutError, Role, Store,
+use crate::server::origins::{
+    cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
+use crate::server::shell::{renderers, ShellFile};
 use crate::util::clean;
 
 mod chat;
 mod documents;
 mod figures;
 mod history;
+pub mod latex;
+pub mod origins;
 mod reply;
 mod routes;
+pub mod serve;
 mod sharing;
+pub mod shell;
 mod signin;
 mod socket;
 
@@ -94,7 +98,7 @@ pub struct Server {
     /// without one still stores and shows `.tex` documents; what it does not
     /// do is offer a browser anywhere to fetch a compiler from, which is why
     /// `/api/config` reports whether it is set and `renderers` counts it.
-    pub latex: Option<crate::latex::Mirror>,
+    pub latex: Option<crate::server::latex::Mirror>,
     sockets: AtomicU64,
     /// How many figures each owner has uploaded this hour, and which hour that
     /// is. Uploading a figure is an upload and counts against
@@ -311,8 +315,8 @@ impl Server {
         if matches!(catalog.account(&identity.id), Ok(None))
             && (!generation_required || identity.session_generation == "test-session-generation")
         {
-            let now = crate::clock::timestamp();
-            let _ = catalog.upsert_account(&crate::catalog::Account {
+            let now = crate::util::timestamp();
+            let _ = catalog.upsert_account(&crate::storage::catalog::Account {
                 id: identity.id.clone(),
                 provider: identity.provider.clone(),
                 handle: identity.handle.clone(),
@@ -454,7 +458,7 @@ impl Server {
             self.owner(headers, arrival, &id)
         };
         let presented_link = self.link_hash(headers, query);
-        let now = crate::clock::now_unix();
+        let now = crate::util::now_unix();
         let role = if automation {
             // In automation mode only the supplied live link contributes a
             // role. Do not call role_of with empty owner/caller fields: an
@@ -498,10 +502,10 @@ impl Server {
             return entry.example
                 || (!who.link.is_empty()
                     && entry
-                        .link_role(&who.link, crate::clock::now_unix())
+                        .link_role(&who.link, crate::util::now_unix())
                         .is_some());
         }
-        entry.readable_by(&who.key, &who.id.id, &who.link, crate::clock::now_unix())
+        entry.readable_by(&who.key, &who.id.id, &who.link, crate::util::now_unix())
     }
 
     /// Answers the request itself when the caller may not publish, and
@@ -566,8 +570,8 @@ impl Server {
                 if matches!(catalog.account(&identity.id), Ok(None))
                     && identity.session_generation == "test-session-generation"
                 {
-                    let now = crate::clock::timestamp();
-                    let _ = catalog.upsert_account(&crate::catalog::Account {
+                    let now = crate::util::timestamp();
+                    let _ = catalog.upsert_account(&crate::storage::catalog::Account {
                         id: identity.id.clone(),
                         provider: identity.provider.clone(),
                         handle: identity.handle.clone(),
@@ -627,7 +631,7 @@ impl Server {
     /// a listing that carried link digests would put them in every reader's
     /// browser.
     fn listing_row(&self, entry: &IndexEntry, who: &Caller) -> Value {
-        let now = crate::clock::now_unix();
+        let now = crate::util::now_unix();
         // A guest holds no key and no link in this request -- the listing
         // asks for every document at once, not through the one link that got
         // them onto any single one of them -- so their role is read back off

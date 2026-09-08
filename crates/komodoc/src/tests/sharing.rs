@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use super::*;
 use crate::auth::Policy;
 use crate::config::Configuration;
-use crate::store::{Grant, Role};
+use crate::document::store::{Grant, Role};
 
 /// The shape most of these need: any signed-in account may publish, so a
 /// legacy grant can still be recorded and honoured, and anyone may comment,
@@ -103,7 +103,7 @@ async fn grant_legacy(server: &TestServer, slug: &str, login: &str, role: Role) 
             let grant = Grant {
                 id: format!("github:{login}"),
                 login: login.to_string(),
-                since: crate::clock::timestamp(),
+                since: crate::util::timestamp(),
                 name: login.to_string(),
             };
             match role {
@@ -233,7 +233,7 @@ async fn a_legacy_grant_stops_answering_when_the_switch_narrows() {
         .instance
         .ceiling_for(&crate::auth::Identity::github("anne", "anne"));
     assert_eq!(
-        entry.role_of("anne", "github:anne", "", ceiling, crate::clock::now_unix()),
+        entry.role_of("anne", "github:anne", "", ceiling, crate::util::now_unix()),
         Role::Commenter,
         "a grant the switch forbids was still honoured"
     );
@@ -574,7 +574,7 @@ async fn an_expired_link_reads_as_no_link() {
         .instance
         .store
         .modify(&slug, |entry| {
-            entry.links[0].until = crate::clock::format_unix(crate::clock::now_unix() - 3600);
+            entry.links[0].until = crate::util::format_unix(crate::util::now_unix() - 3600);
             Ok(())
         })
         .await
@@ -589,7 +589,7 @@ async fn an_expired_link_reads_as_no_link() {
         .instance
         .store
         .modify(&slug, |entry| {
-            entry.links[0].until = crate::clock::format_unix(crate::clock::now_unix() + 3600);
+            entry.links[0].until = crate::util::format_unix(crate::util::now_unix() + 3600);
             Ok(())
         })
         .await
@@ -1043,7 +1043,7 @@ async fn a_link_budget_is_shared_between_addresses_and_resets_each_hour() {
 
     // Put the full counter in the preceding hour. The next action must remove
     // it and begin a fresh bucket for the current hour.
-    let hour = crate::clock::now_unix() / 3600;
+    let hour = crate::util::now_unix() / 3600;
     {
         let mut state = room.state.lock().await;
         state.rate.clear();

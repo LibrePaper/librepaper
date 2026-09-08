@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::auth::{TokenCache, TOKEN_CACHE_CAP};
-use crate::blob::{self, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion, FsStore};
+use crate::storage::blob::{
+    self, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion, FsStore,
+};
 
 /// R04: a store whose `get` fails must never be treated as "there is no key
 /// yet". `session_key` must fail rather than mint and persist a replacement,

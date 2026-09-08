@@ -1,9 +1,9 @@
 //! What the shell is made of, checked before a browser has to find out.
 
-use crate::assets::{load_shell, module_url, renderers, typst_module};
 use crate::config::Configuration;
+use crate::server::shell::{load_shell, module_url, renderers, typst_module};
 
-fn shell() -> std::collections::HashMap<String, crate::assets::ShellFile> {
+fn shell() -> std::collections::HashMap<String, crate::server::shell::ShellFile> {
     load_shell(&Configuration::default()).expect("the shell loads")
 }
 

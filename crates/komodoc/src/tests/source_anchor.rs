@@ -4,8 +4,8 @@
 use serde_json::json;
 
 use super::*;
+use crate::cli::export::render_jsonld;
 use crate::config::Configuration;
-use crate::export::render_jsonld;
 use crate::room::{Comment, SourceAnchor};
 
 fn valid_anchor() -> serde_json::Value {

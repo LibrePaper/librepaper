@@ -112,7 +112,7 @@ async fn a_figure_goes_up_and_comes_back() {
     let sha = text(&answer, "sha");
     assert_eq!(
         sha,
-        crate::store::digest_of_bytes(&bytes),
+        crate::document::store::digest_of_bytes(&bytes),
         "named by digest"
     );
     assert_eq!(answer["size"], bytes.len());
@@ -160,7 +160,7 @@ async fn the_same_figure_twice_is_stored_once() {
         .instance
         .store
         .blobs
-        .list(&crate::blob::asset_prefix(
+        .list(&crate::storage::blob::asset_prefix(
             &server
                 .instance
                 .store
@@ -192,7 +192,7 @@ async fn only_an_editor_may_put_a_figure() {
         .instance
         .store
         .blobs
-        .list(&crate::blob::asset_prefix(&slug))
+        .list(&crate::storage::blob::asset_prefix(&slug))
         .await
         .unwrap();
     assert!(stored.is_empty(), "a refused upload stored something");
@@ -362,7 +362,7 @@ async fn a_figure_nothing_refers_to_is_pruned_once_its_grace_has_passed() {
     let room = server.instance.rooms.get(&slug).await;
     {
         let state = room.state.lock().await;
-        crate::session::put_asset(&state.session.doc, "fig/one.png", &kept);
+        crate::document::session::put_asset(&state.session.doc, "fig/one.png", &kept);
     }
     // `quiet` rather than `cli`: a checkpoint asked for from outside inside
     // the defer window waits, and a checkpoint that has not happened has
@@ -427,7 +427,7 @@ async fn a_figure_a_kept_checkpoint_names_survives_being_removed_from_the_docume
     let room = server.instance.rooms.get(&slug).await;
     {
         let state = room.state.lock().await;
-        crate::session::put_asset(&state.session.doc, "fig/one.png", &sha);
+        crate::document::session::put_asset(&state.session.doc, "fig/one.png", &sha);
     }
     room.checkpoint("quiet", TEST_PUBLISHER)
         .await
@@ -437,7 +437,8 @@ async fn a_figure_a_kept_checkpoint_names_survives_being_removed_from_the_docume
     // Taken out of the live document, and a second checkpoint recorded.
     {
         let state = room.state.lock().await;
-        let assets = yrs::Doc::get_or_insert_map(&state.session.doc, crate::session::ASSETS);
+        let assets =
+            yrs::Doc::get_or_insert_map(&state.session.doc, crate::document::session::ASSETS);
         let mut txn = yrs::Transact::transact_mut(&state.session.doc);
         yrs::Map::remove(&assets, &mut txn, "fig/one.png");
     }
@@ -474,7 +475,7 @@ async fn destroying_a_document_takes_its_figures() {
         .instance
         .store
         .blobs
-        .list(&crate::blob::asset_prefix(&slug))
+        .list(&crate::storage::blob::asset_prefix(&slug))
         .await
         .unwrap();
     assert!(left.is_empty(), "destroy left {left:?}");
@@ -542,14 +543,17 @@ async fn a_whole_directory_arrives_as_one_document() {
     // and the figure is named beside its digest rather than being in it.
     let room = server.instance.rooms.get(&slug).await;
     let state = room.state.lock().await;
-    let texts = crate::session::texts_of(&state.session.doc);
+    let texts = crate::document::session::texts_of(&state.session.doc);
     assert_eq!(
         texts.keys().collect::<Vec<_>>(),
         vec!["chapters/03.typ", "lib.typ", "paper.typ", "refs.bib"]
     );
     assert_eq!(texts["lib.typ"], "#let word = \"sibling\"\n");
-    assert_eq!(crate::session::main_path(&state.session.doc), "paper.typ");
-    let figures = crate::session::assets_of(&state.session.doc);
+    assert_eq!(
+        crate::document::session::main_path(&state.session.doc),
+        "paper.typ"
+    );
+    let figures = crate::document::session::assets_of(&state.session.doc);
     assert_eq!(figures.len(), 1);
     let sha = figures["fig/one.png"].clone();
     drop(state);
@@ -628,7 +632,10 @@ async fn a_one_file_publish_is_still_a_directory_of_one_file() {
     assert_eq!(entry.main, "main.html");
     let room = server.instance.rooms.get(&slug).await;
     let state = room.state.lock().await;
-    assert_eq!(crate::session::texts_of(&state.session.doc).len(), 1);
+    assert_eq!(
+        crate::document::session::texts_of(&state.session.doc).len(),
+        1
+    );
 }
 
 /* ------------------------------------------------------------- the timeline */

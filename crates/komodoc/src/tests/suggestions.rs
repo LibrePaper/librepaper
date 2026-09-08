@@ -4,9 +4,9 @@
 use serde_json::json;
 
 use super::*;
+use crate::cli::export::{render_jsonld, render_markdown, render_response};
 use crate::config::Configuration;
-use crate::export::{render_jsonld, render_markdown, render_response};
-use crate::render::render_markdown_document;
+use crate::document::render::render_markdown_document;
 use crate::room::Comment;
 use crate::tests::edit::publish_with_source;
 

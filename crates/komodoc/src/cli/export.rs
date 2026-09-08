@@ -603,11 +603,11 @@ async fn text_at_checkpoint(
         .cloned()
         .unwrap_or_default();
     let source = texts.get(&main).and_then(Value::as_str)?;
-    let page = if crate::render::is_markdown(&main) {
-        crate::render::render_markdown_document(source, "")
-    } else if crate::render::is_html(&main) {
+    let page = if crate::document::render::is_markdown(&main) {
+        crate::document::render::render_markdown_document(source, "")
+    } else if crate::document::render::is_html(&main) {
         source.to_string()
-    } else if crate::render::is_typst(&main) {
+    } else if crate::document::render::is_typst(&main) {
         // Typst reads what sits beside it, so it needs a directory rather than
         // a string. The checkpoint is written into one and taken away again;
         // the alternative is a response that cannot quote a typst paper, which
@@ -777,9 +777,10 @@ fn typst_from(main: &str, texts: &serde_json::Map<String, Value>) -> Option<Stri
         std::fs::write(&at, body.as_str().unwrap_or_default()).ok()?;
     }
     let file = root.join(main);
-    let compiled = crate::render::render_typst_document(&file, texts[main].as_str()?, "");
+    let compiled = crate::document::render::render_typst_document(&file, texts[main].as_str()?, "");
     let _ = std::fs::remove_dir_all(&root);
-    crate::render::pdf_of(&compiled).map(|_| texts[main].as_str().unwrap_or_default().to_string())
+    crate::document::render::pdf_of(&compiled)
+        .map(|_| texts[main].as_str().unwrap_or_default().to_string())
 }
 
 /// The manifest, oldest first, or an empty list when there is none to read.

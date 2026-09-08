@@ -1,7 +1,7 @@
 use super::*;
-use crate::clock::format_unix;
-use crate::retention::{parse_expire_from, parse_retention};
-use crate::store::Publication;
+use crate::document::retention::{parse_expire_from, parse_retention};
+use crate::document::store::Publication;
+use crate::util::format_unix;
 
 #[test]
 fn parse_retention_takes_durations_and_days() {
@@ -32,7 +32,7 @@ fn parse_retention_takes_durations_and_days() {
 #[tokio::test]
 async fn delete_expired_removes_only_what_is_old() {
     let server = new_test_server().await;
-    let now = crate::clock::now_unix();
+    let now = crate::util::now_unix();
     for (slug, age_days) in [("old", 10), ("new", 1)] {
         server
             .instance

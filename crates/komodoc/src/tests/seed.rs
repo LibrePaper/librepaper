@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use crate::blob::FsStore;
 use crate::config::Configuration;
+use crate::document::store::Store;
 use crate::room::Region;
+use crate::seed::examples::seed_documents;
 use crate::seed::{latex_prose, seed_into, visible_text, SeedAnnotation, SeedDocument};
-use crate::seed_examples::seed_documents;
-use crate::store::Store;
+use crate::storage::blob::FsStore;
 
 /// The curated examples are build outputs, so a checkout that has not run
 /// `make examples` has nothing to check.
@@ -200,17 +200,18 @@ async fn seeded_annotations_anchor() {
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue; // not built
         };
-        let rendered = if crate::render::is_markdown(&document.file) {
-            crate::render::render_markdown_document(&source, document.title)
-        } else if crate::render::is_typst(&document.file) {
-            let compiled = crate::render::render_typst_document(&path, &source, document.title);
+        let rendered = if crate::document::render::is_markdown(&document.file) {
+            crate::document::render::render_markdown_document(&source, document.title)
+        } else if crate::document::render::is_typst(&document.file) {
+            let compiled =
+                crate::document::render::render_typst_document(&path, &source, document.title);
             if compiled.output.is_none() {
                 panic!("{}: {}", document.file, compiled.message());
             }
             // Typst annotations are anchored by source quotation and are
             // re-anchored into the stored PDF by the reader.
             source.clone()
-        } else if crate::render::is_latex(&document.file) {
+        } else if crate::document::render::is_latex(&document.file) {
             latex_prose(&source)
         } else {
             source
@@ -287,7 +288,7 @@ async fn seeding_leaves_no_room_locks_behind() {
     let config = Arc::new(Configuration::default());
     seed_into(blobs.clone(), config.clone(), "", &documents).await;
 
-    let left = crate::blob::BlobStore::list(blobs.as_ref(), "rooms/")
+    let left = crate::storage::blob::BlobStore::list(blobs.as_ref(), "rooms/")
         .await
         .unwrap()
         .into_iter()
@@ -322,7 +323,7 @@ fn the_editable_examples_are_not_hard_wrapped() {
     const WRAPPED_AT_MOST: usize = 140;
     let mut checked = 0;
     for document in seed_documents() {
-        if crate::render::is_html(&document.file) {
+        if crate::document::render::is_html(&document.file) {
             continue;
         }
         let Ok(source) = std::fs::read_to_string(example_path(&document.file)) else {

@@ -112,7 +112,7 @@ Implementation primarily touches:
   loading, preview, local fallback and removal of distribution selection.
 - latex/tools/: release building, resources, manifests and static mirroring,
   including the separately loaded Biber VM runtime/image.
-- crates/komodoc/src/lib.rs and new local compilation modules: commands,
+- crates/komodoc/src/cli/mod.rs and new local compilation modules: commands,
   discovery, authenticated local service and native execution.
 - Existing history/rendering structures where compiler settings and
   provenance need to be represented.
@@ -810,6 +810,6 @@ delay writing or accepting this plan.
 - [Measured comparison and reproduction](../../latex/benchmark/candidates/comparison/README.md)
 - [Existing WasmTex/Biber VM experiment](../../latex/benchmark/candidates/hybrid/REPORT.md)
 - [WasmTex source](https://github.com/corca-ai/wasmtex)
-- [Existing rendering implementation](../../crates/komodoc/src/server.rs)
+- [Existing rendering implementation](../../crates/komodoc/src/server/figures.rs)
 - [Browser local-network permissions](https://developer.chrome.com/blog/local-network-access)
 - [TeX Live security/configuration changes](https://www.tug.org/texlive/bugs.html)

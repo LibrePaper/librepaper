@@ -3,8 +3,8 @@
 use super::*;
 use std::collections::{BTreeMap, HashMap};
 
-use crate::history::{Tree, TreeEntry};
-use crate::session;
+use crate::document::history::{Tree, TreeEntry};
+use crate::document::session;
 use yrs::{Map, Transact};
 
 /// Restoring a target after a peer update must leave a disjoint peer word in
@@ -27,7 +27,7 @@ fn review_restore_keeps_a_disjoint_peer_word() {
     let target = "alpha TARGET gamma";
     let merged = komodoc_text::merge(base, &session::text_of(&doc), target).text;
     assert_eq!(merged, "alpha TARGET PEER gamma");
-    let sha = crate::store::digest_of(target);
+    let sha = crate::document::store::digest_of(target);
     let mut files = BTreeMap::new();
     files.insert(
         "main.md".to_string(),

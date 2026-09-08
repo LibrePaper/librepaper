@@ -459,7 +459,7 @@ async fn the_export_carries_the_checkpoint_a_comment_was_made_on() {
     .await;
 
     let held = room.snapshot().await;
-    let exported = crate::export::render_jsonld(
+    let exported = crate::cli::export::render_jsonld(
         "My Paper",
         &held,
         "urn:komodoc:test",
@@ -478,7 +478,7 @@ async fn the_export_carries_the_checkpoint_a_comment_was_made_on() {
         body: "From before.".into(),
         ..Default::default()
     }];
-    let exported = crate::export::render_jsonld(
+    let exported = crate::cli::export::render_jsonld(
         "My Paper",
         &older,
         "urn:komodoc:test",

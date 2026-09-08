@@ -25,7 +25,7 @@ is deliberately out of scope.
 
 ## Data model
 
-`Comment` (in `crates/komodoc/src/room.rs`) gains two fields, both
+`Comment` (in `crates/komodoc/src/room/comments.rs`) gains two fields, both
 serialized and both sent to clients:
 
 ```rust

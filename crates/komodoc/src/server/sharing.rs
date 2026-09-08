@@ -72,15 +72,13 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
     let seconds = if asked.is_empty() {
         LINK_DEFAULT_SECONDS
     } else {
-        crate::retention::parse_retention(asked)
+        crate::document::retention::parse_retention(asked)
             .map_err(|_| "an expiry is a duration such as 180d or 24h, or 'never'".to_string())?
     };
     if seconds <= 0 {
         return Err("an expiry is a duration such as 180d or 24h, or 'never'".to_string());
     }
-    Ok(crate::clock::format_unix(
-        crate::clock::now_unix() + seconds,
-    ))
+    Ok(crate::util::format_unix(crate::util::now_unix() + seconds))
 }
 
 /// Removes one grant, by the login it names or by the first characters of a
@@ -162,7 +160,7 @@ impl Server {
             hash: hash_link_key(&key),
             role: Role::Reader.as_str().to_string(),
             key: key.clone(),
-            since: crate::clock::timestamp(),
+            since: crate::util::timestamp(),
             ..Default::default()
         };
         self.store
@@ -178,7 +176,7 @@ impl Server {
     /// its key was kept; what a revision hands back so the command line can
     /// print something worth sending without minting anything.
     pub(super) fn read_link_of(entry: &IndexEntry) -> Value {
-        let now = crate::clock::now_unix();
+        let now = crate::util::now_unix();
         match entry.link_for(Role::Reader) {
             Some(link) if link.live_at(now) && !link.key.is_empty() => {
                 Value::String(format!("/docs/{}#k={}", entry.slug, link.key))
@@ -283,7 +281,7 @@ impl Server {
                     hash: hash_link_key(&key),
                     role: role.as_str().to_string(),
                     key: key.clone(),
-                    since: crate::clock::timestamp(),
+                    since: crate::util::timestamp(),
                     until,
                     label: label.unwrap_or_default(),
                     budget: wanted.budget,
@@ -292,8 +290,8 @@ impl Server {
         }
 
         let revoke = asked.revoke.clone().unwrap_or_default();
-        let now = crate::clock::now_unix();
-        let mutation_actor = crate::store::MutationActor {
+        let now = crate::util::now_unix();
+        let mutation_actor = crate::document::store::MutationActor {
             account_id: current_who.id.id.clone(),
             owner_key: current_who.key.clone(),
             session_generation: current_who.id.session_generation.clone(),
@@ -370,7 +368,7 @@ impl Server {
     /// deployment's switches will let the owner offer. Only the owner ever
     /// asks for this now, so nothing here is held back from the caller.
     pub(super) fn sharing_json(&self, entry: &IndexEntry) -> Value {
-        let now = crate::clock::now_unix();
+        let now = crate::util::now_unix();
         let people = |grants: &Vec<Grant>| -> Vec<Value> {
             grants
                 .iter()
@@ -520,8 +518,8 @@ impl Server {
         // lock before changing anything; transfers and revocations racing
         // this request therefore have a single winner.
         if let Some(catalog) = &self.store.catalog {
-            let now = crate::clock::timestamp();
-            if let Err(error) = catalog.upsert_account(&crate::catalog::Account {
+            let now = crate::util::timestamp();
+            if let Err(error) = catalog.upsert_account(&crate::storage::catalog::Account {
                 id: account.id.clone(),
                 provider: account.provider.clone(),
                 handle: account.handle.clone(),
@@ -550,10 +548,10 @@ impl Server {
                 self.config.storage.per_owner,
             ) {
                 return match error {
-                    crate::catalog::CatalogError::NotFound => {
+                    crate::storage::catalog::CatalogError::NotFound => {
                         write_json(404, &json!({"error": "not found"}))
                     }
-                    crate::catalog::CatalogError::Conflict(message) => {
+                    crate::storage::catalog::CatalogError::Conflict(message) => {
                         write_json(409, &json!({"error": message}))
                     }
                     error => {

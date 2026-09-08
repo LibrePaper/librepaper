@@ -293,7 +293,7 @@ impl Server {
                             let _ = tx.send(Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id}).to_string())).await;
                             continue 'reader;
                         }
-                        let digest = crate::store::digest_of(text);
+                        let digest = crate::document::store::digest_of(text);
                         if let Some((_, previous)) = chat_requests.iter().find(|(id,_)| id == &incoming.temp_id) {
                             let reply = if previous == &digest {
                                 json!({"type":"chat-ack","temp_id":incoming.temp_id})
@@ -317,7 +317,7 @@ impl Server {
                         let mut message = json!({
                             "type":"chat", "id":random_token(),
                             "text":text, "creator":creator,
-                            "created":crate::clock::timestamp(),
+                            "created":crate::util::timestamp(),
                         });
                         room.broadcast_except(Some(socket_id),&message).await;
                         message["temp_id"] = Value::String(incoming.temp_id.clone());
@@ -609,7 +609,7 @@ impl Server {
     /// signed so it cannot be handed to somebody who may not read the
     /// document, and short-lived so it cannot be kept.
     pub(super) fn state_reference(&self, slug: &str) -> String {
-        let until = crate::clock::now_unix() + 120;
+        let until = crate::util::now_unix() + 120;
         let token = crate::auth::sign(&self.key, &format!("state:{slug}:{until}"));
         format!("/api/documents/{slug}/state?until={until}&token={token}")
     }
@@ -695,7 +695,7 @@ impl Server {
 
     /// The same, for every document with a live socket. Nothing else notices
     /// a link expiring on its own -- there is no request to hang the check
-    /// off of -- so this is run on a timer instead. See `crate::serve`.
+    /// off of -- so this is run on a timer instead. See `crate::server::serve`.
     pub async fn reauthorize_all(&self) {
         let slugs: std::collections::HashSet<String> = {
             let connections = self.connections.lock().await;

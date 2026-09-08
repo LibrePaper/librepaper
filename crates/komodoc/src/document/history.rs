@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::blob::{history_index_key, BlobError, BlobStore, BlobVersion};
+use crate::storage::blob::{history_index_key, BlobError, BlobStore, BlobVersion};
 
 /// One entry in the manifest. The field names are the ones
 /// `docs/specs/history.md` writes, because the manifest is served to the browser
@@ -233,7 +233,9 @@ impl Manifest {
     /// before they become a manifest; callers may therefore pass a bounded
     /// page or the complete result without relying on database row order.
     #[allow(dead_code)]
-    pub fn from_catalog_rows(mut rows: Vec<crate::catalog::Checkpoint>) -> Result<Self, String> {
+    pub fn from_catalog_rows(
+        mut rows: Vec<crate::storage::catalog::Checkpoint>,
+    ) -> Result<Self, String> {
         rows.sort_by_key(|row| row.seq);
         let mut checkpoints = Vec::with_capacity(rows.len());
         for row in rows {
@@ -249,7 +251,10 @@ impl Manifest {
     }
 
     #[allow(dead_code)]
-    fn from_catalog_row(row: crate::catalog::Checkpoint, changed: Vec<String>) -> Checkpoint {
+    fn from_catalog_row(
+        row: crate::storage::catalog::Checkpoint,
+        changed: Vec<String>,
+    ) -> Checkpoint {
         Checkpoint {
             sha: row.sha,
             tree_sha: row.tree_sha,
@@ -276,7 +281,7 @@ impl Manifest {
         point: &Checkpoint,
         seq: i64,
         durable_seq: i64,
-    ) -> Result<crate::catalog::Checkpoint, String> {
+    ) -> Result<crate::storage::catalog::Checkpoint, String> {
         // `-1` asks the catalogue transaction to allocate the next sequence;
         // persisted rows themselves are always non-negative.
         if seq < -1 || durable_seq < 0 {
@@ -290,7 +295,7 @@ impl Manifest {
                     .map_err(|err| format!("could not encode changed metadata: {err}"))?,
             )
         };
-        Ok(crate::catalog::Checkpoint {
+        Ok(crate::storage::catalog::Checkpoint {
             slug: slug.to_string(),
             sha: point.sha.clone(),
             seq,
@@ -404,7 +409,7 @@ pub async fn load_tree(
     id: &str,
 ) -> Result<Tree, String> {
     let raw = blobs
-        .get(&crate::blob::checkpoint_key(slug, &point.sha))
+        .get(&crate::storage::blob::checkpoint_key(slug, &point.sha))
         .await
         .map_err(|err| err.to_string())?;
     if !point.tree {

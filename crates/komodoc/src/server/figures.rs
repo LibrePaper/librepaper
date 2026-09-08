@@ -54,7 +54,7 @@ impl Server {
         // Counted before the bytes are read, so a refusal costs the body
         // rather than the storage. The ceiling is per hour and per owner.
         {
-            let hour = crate::clock::now_unix() / 3600;
+            let hour = crate::util::now_unix() / 3600;
             let mut counts = self.asset_uploads.lock().await;
             let seen = counts.entry(who.key.clone()).or_insert((hour, 0));
             if seen.0 != hour {
@@ -97,7 +97,7 @@ impl Server {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
         };
-        let mutation_actor = crate::store::MutationActor {
+        let mutation_actor = crate::document::store::MutationActor {
             account_id: who.id.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.id.session_generation.clone(),
@@ -171,7 +171,7 @@ impl Server {
         };
         Response::builder()
             .status(200)
-            .header("content-type", crate::assets::content_type(sha))
+            .header("content-type", crate::server::shell::content_type(sha))
             .header("cache-control", "public, max-age=31536000, immutable")
             .header("x-content-type-options", "nosniff")
             .body(Body::from(bytes))
@@ -233,7 +233,7 @@ impl Server {
         // spends: what this bounds is what one publisher may put on the disk
         // in an hour, whatever they are calling it.
         {
-            let hour = crate::clock::now_unix() / 3600;
+            let hour = crate::util::now_unix() / 3600;
             let mut counts = self.asset_uploads.lock().await;
             let seen = counts.entry(who.key.clone()).or_insert((hour, 0));
             if seen.0 != hour {
@@ -594,7 +594,7 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let until = crate::clock::now_unix() + FRAME_TOKEN_SECONDS;
+        let until = crate::util::now_unix() + FRAME_TOKEN_SECONDS;
         let token = crate::auth::sign(&self.key, &frame_claim(slug, until));
         write_json(200, &json!({"until": until, "token": token}))
     }
@@ -616,7 +616,7 @@ impl Server {
         let Some(token) = fields.get("token") else {
             return false;
         };
-        until >= crate::clock::now_unix()
+        until >= crate::util::now_unix()
             && crate::auth::verifies(&self.key, &frame_claim(slug, until), token)
     }
 }

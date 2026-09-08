@@ -22,7 +22,7 @@ The current configuration waits for two seconds of quiet before saving and
 five minutes of quiet before making a checkpoint. The proposed fifteen-second
 floor and maximum dirty age are spec work, not existing configuration knobs.
 See `crates/komodoc/src/config.rs` and `Room::tick` in
-`crates/komodoc/src/room.rs`. Five minutes of quiet does not establish twelve
+`crates/komodoc/src/room/mod.rs`. Five minutes of quiet does not establish twelve
 checkpoints per editing hour or a five-minute host-loss recovery bound.
 
 An ordinary persist writes a full Yjs state and can also update the current

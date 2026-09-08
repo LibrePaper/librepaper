@@ -25,11 +25,11 @@ pub fn rendering_provenance_name(sha: &str) -> String {
 
 pub(super) fn rendering_object_key(storage_id: &str, name: &str) -> String {
     if let Some(sha) = name.strip_suffix(".synctex") {
-        crate::blob::rendering_synctex_key(storage_id, sha)
+        crate::storage::blob::rendering_synctex_key(storage_id, sha)
     } else if let Some(sha) = name.strip_suffix(".provenance.json") {
-        crate::blob::rendering_provenance_key(storage_id, sha)
+        crate::storage::blob::rendering_provenance_key(storage_id, sha)
     } else {
-        crate::blob::rendering_key(storage_id, name)
+        crate::storage::blob::rendering_key(storage_id, name)
     }
 }
 
@@ -79,7 +79,7 @@ impl Room {
                 max_asset >> 20
             ));
         }
-        let sha = crate::store::digest_of_bytes(&body);
+        let sha = crate::document::store::digest_of_bytes(&body);
         {
             let mut state = self.state.lock().await;
             if let Some(known) = state.session.asset_sizes.get(&sha) {
@@ -110,7 +110,7 @@ impl Room {
         if let Err(err) = self
             .blobs
             .put(
-                &crate::blob::asset_key(&self.storage_id, &sha),
+                &crate::storage::blob::asset_key(&self.storage_id, &sha),
                 body,
                 "application/octet-stream",
             )
@@ -141,7 +141,7 @@ impl Room {
     /// A figure's bytes, for whoever may read the document.
     pub async fn read_asset(&self, sha: &str) -> Option<Vec<u8>> {
         self.blobs
-            .get(&crate::blob::asset_key(&self.storage_id, sha))
+            .get(&crate::storage::blob::asset_key(&self.storage_id, sha))
             .await
             .ok()
     }
@@ -175,9 +175,9 @@ impl Room {
                 return false;
             }
             let key = if synctex {
-                crate::blob::rendering_synctex_key(&self.storage_id, sha)
+                crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
             } else {
-                crate::blob::rendering_key(&self.storage_id, sha)
+                crate::storage::blob::rendering_key(&self.storage_id, sha)
             };
             return self.blobs.get(&key).await.is_ok();
         }
@@ -247,9 +247,9 @@ impl Room {
             return Err("this room is held by another server".into());
         }
         let key = if synctex {
-            crate::blob::rendering_synctex_key(&self.storage_id, sha)
+            crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
         } else {
-            crate::blob::rendering_key(&self.storage_id, sha)
+            crate::storage::blob::rendering_key(&self.storage_id, sha)
         };
         // Admission and object-ledger accounting must precede the blob write;
         // otherwise the subsequent measured-history reconciliation can reject
@@ -314,9 +314,9 @@ impl Room {
                 return Ok(Some(*known));
             }
             let key = if synctex {
-                crate::blob::rendering_synctex_key(&self.storage_id, sha)
+                crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
             } else {
-                crate::blob::rendering_key(&self.storage_id, sha)
+                crate::storage::blob::rendering_key(&self.storage_id, sha)
             };
             self.put_accounted(&key, body, "rendering").await?;
             state.session.rendering_sizes.insert(name.clone(), size);
@@ -339,9 +339,9 @@ impl Room {
             return None;
         }
         let key = if synctex {
-            crate::blob::rendering_synctex_key(&self.storage_id, sha)
+            crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
         } else {
-            crate::blob::rendering_key(&self.storage_id, sha)
+            crate::storage::blob::rendering_key(&self.storage_id, sha)
         };
         self.blobs.get(&key).await.ok()
     }
@@ -359,7 +359,7 @@ impl Room {
             return Err("this room is held by another server".into());
         }
         self.put_accounted(
-            &crate::blob::rendering_provenance_key(&self.storage_id, sha),
+            &crate::storage::blob::rendering_provenance_key(&self.storage_id, sha),
             body,
             "rendering-provenance",
         )
@@ -392,7 +392,7 @@ impl Room {
             }
         }
         self.blobs
-            .get(&crate::blob::rendering_provenance_key(
+            .get(&crate::storage::blob::rendering_provenance_key(
                 &self.storage_id,
                 sha,
             ))
@@ -629,7 +629,7 @@ impl Room {
             if !point.tree {
                 continue; // a checkpoint from before directories names none
             }
-            match crate::history::load_tree(
+            match crate::document::history::load_tree(
                 self.blobs.as_ref(),
                 &self.storage_id,
                 point,
@@ -657,7 +657,7 @@ impl Room {
         }
         let Ok(found) = self
             .blobs
-            .list(&crate::blob::asset_prefix(&self.storage_id))
+            .list(&crate::storage::blob::asset_prefix(&self.storage_id))
             .await
         else {
             return;

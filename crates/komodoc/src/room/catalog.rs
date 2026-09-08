@@ -8,9 +8,9 @@ use super::*;
 /// consults it, so a restart has one authoritative source for comments and
 /// replies.
 pub(super) fn load_catalog_comments(
-    catalog: &crate::catalog::Catalog,
+    catalog: &crate::storage::catalog::Catalog,
     slug: &str,
-) -> crate::catalog::CatalogResult<(i64, Vec<Comment>)> {
+) -> crate::storage::catalog::CatalogResult<(i64, Vec<Comment>)> {
     let rows = catalog.comments(slug, None, 500)?;
     let mut comments = Vec::with_capacity(rows.len());
     let mut seq = 0;
@@ -20,7 +20,7 @@ pub(super) fn load_catalog_comments(
             .region
             .map(|raw| {
                 serde_json::from_str::<Region>(&raw).map_err(|err| {
-                    crate::catalog::CatalogError::Invalid(format!(
+                    crate::storage::catalog::CatalogError::Invalid(format!(
                         "comment region is invalid: {err}"
                     ))
                 })
@@ -74,7 +74,7 @@ pub(super) fn load_catalog_comments(
 pub(super) fn catalog_comment_row(
     slug: &str,
     item: &Comment,
-) -> Result<crate::catalog::Comment, String> {
+) -> Result<crate::storage::catalog::Comment, String> {
     let region = item
         .region
         .as_ref()
@@ -92,7 +92,7 @@ pub(super) fn catalog_comment_row(
             ),
             None => (None, None, None, None, None),
         };
-    Ok(crate::catalog::Comment {
+    Ok(crate::storage::catalog::Comment {
         slug: slug.to_string(),
         id: item.id.clone(),
         seq: item.seq,
@@ -163,7 +163,7 @@ pub(super) fn request_digest(value: &Value) -> String {
 }
 
 pub(super) fn save_catalog_comments(
-    catalog: &crate::catalog::Catalog,
+    catalog: &crate::storage::catalog::Catalog,
     slug: &str,
     seq: &mut i64,
     comments: &mut [Comment],
@@ -192,7 +192,7 @@ pub(super) fn save_catalog_comments(
         let desired_reply_ids: std::collections::HashSet<String> =
             item.replies.iter().map(|reply| reply.id.clone()).collect();
         for reply in &item.replies {
-            let row = crate::catalog::Reply {
+            let row = crate::storage::catalog::Reply {
                 slug: slug.to_string(),
                 comment_id: item.id.clone(),
                 id: reply.id.clone(),
@@ -231,27 +231,27 @@ pub(super) fn save_catalog_comments(
 pub(super) const RESIDENT_CATALOG_HISTORY: u32 = 64;
 
 pub(super) fn load_catalog_manifest(
-    catalog: &crate::catalog::Catalog,
+    catalog: &crate::storage::catalog::Catalog,
     slug: &str,
-) -> crate::catalog::CatalogResult<Manifest> {
+) -> crate::storage::catalog::CatalogResult<Manifest> {
     let rows = catalog.checkpoints_tail(slug, RESIDENT_CATALOG_HISTORY)?;
-    Manifest::from_catalog_rows(rows).map_err(crate::catalog::CatalogError::Invalid)
+    Manifest::from_catalog_rows(rows).map_err(crate::storage::catalog::CatalogError::Invalid)
 }
 
 pub(super) fn load_catalog_history(
-    catalog: &crate::catalog::Catalog,
+    catalog: &crate::storage::catalog::Catalog,
     slug: &str,
-) -> crate::catalog::CatalogResult<Vec<Checkpoint>> {
+) -> crate::storage::catalog::CatalogResult<Vec<Checkpoint>> {
     let rows = load_catalog_checkpoint_rows(catalog, slug)?;
     Manifest::from_catalog_rows(rows)
         .map(|manifest| manifest.checkpoints)
-        .map_err(crate::catalog::CatalogError::Invalid)
+        .map_err(crate::storage::catalog::CatalogError::Invalid)
 }
 
 pub(super) fn load_catalog_checkpoint_rows(
-    catalog: &crate::catalog::Catalog,
+    catalog: &crate::storage::catalog::Catalog,
     slug: &str,
-) -> crate::catalog::CatalogResult<Vec<crate::catalog::Checkpoint>> {
+) -> crate::storage::catalog::CatalogResult<Vec<crate::storage::catalog::Checkpoint>> {
     // Catalog reads are deliberately bounded.  Never load only the first
     // page and then let a later metadata write treat that prefix as the whole
     // history: doing so would silently discard every newer checkpoint.
@@ -273,7 +273,7 @@ pub(super) fn load_catalog_checkpoint_rows(
 }
 
 pub(super) fn save_catalog_manifest(
-    catalog: &crate::catalog::Catalog,
+    catalog: &crate::storage::catalog::Catalog,
     slug: &str,
     previous: &Manifest,
     manifest: &Manifest,
@@ -325,7 +325,7 @@ pub(super) fn save_catalog_manifest(
 }
 
 pub(super) fn save_catalog_rendering(
-    catalog: &crate::catalog::Catalog,
+    catalog: &crate::storage::catalog::Catalog,
     slug: &str,
     tree_sha: &str,
     synctex: bool,
@@ -335,7 +335,7 @@ pub(super) fn save_catalog_rendering(
     let previous = catalog
         .rendering(slug, tree_sha)
         .map_err(|err| err.to_string())?;
-    let rendering = crate::catalog::Rendering {
+    let rendering = crate::storage::catalog::Rendering {
         slug: slug.to_string(),
         tree_sha: tree_sha.to_string(),
         at: timestamp(),

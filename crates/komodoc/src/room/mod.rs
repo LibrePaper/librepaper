@@ -20,15 +20,15 @@ use serde_json::{json, Value};
 use sha2::Digest;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::blob::{
+use crate::config::{Configuration, CHECKPOINT_DEFER_SECONDS};
+use crate::document::history::{self, Checkpoint, Manifest};
+use crate::document::session;
+use crate::storage::blob::{
     checkpoint_key, room_key, session_key, take_room_lease, BlobError, BlobStore, BlobVersion,
     Lease, LOCK_STALE_SECONDS,
 };
-use crate::clock::{now_unix, parse_timestamp, timestamp};
-use crate::config::{Configuration, CHECKPOINT_DEFER_SECONDS};
-use crate::history::{self, Checkpoint, Manifest};
-use crate::session;
 use crate::util::{clean, new_id};
+use crate::util::{now_unix, parse_timestamp, timestamp};
 
 mod catalog;
 mod checkpoint;
@@ -190,7 +190,7 @@ pub struct Session {
     /// The tree the last checkpoint recorded, so the next one can say which
     /// paths moved without reading it back. Empty on a cold room, and filled
     /// from storage by the first checkpoint that needs it.
-    pub last_tree: Option<crate::history::Tree>,
+    pub last_tree: Option<crate::document::history::Tree>,
     /// The text digests this server has already written under
     /// `history/<slug>/blobs/`. A chapter untouched between twenty
     /// checkpoints is written once, and a room that was evicted and brought
@@ -272,7 +272,7 @@ pub struct Room {
     /// Legacy/isolated rooms fall back to their slug.
     storage_id: String,
     blobs: Arc<dyn BlobStore>,
-    checkpoint_cache: Arc<crate::checkpoint_cache::CheckpointCache>,
+    checkpoint_cache: Arc<crate::document::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     /// True when another server holds this room's lock: it can be read and
     /// served, but nothing here may write over what that server is doing. Set
@@ -295,13 +295,13 @@ pub struct Room {
     /// document's history counts against its owner's quota, and the digest of
     /// the newest checkpoint. Set once, after the store exists, because the
     /// store and the rooms are made in that order.
-    store: Arc<std::sync::OnceLock<Arc<crate::store::Store>>>,
+    store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
     /// The authoritative local catalogue.  Legacy test fixtures may omit it;
     /// production rooms are always attached to the catalogue by `Store`.
-    catalog: Arc<std::sync::OnceLock<Arc<crate::catalog::Catalog>>>,
+    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
     /// The local durable edit journal. Legacy fixtures leave this unset;
     /// production catalog-backed rooms receive it from `serve`.
-    journal: Arc<std::sync::OnceLock<Arc<crate::journal::JournalRuntime>>>,
+    journal: Arc<std::sync::OnceLock<Arc<crate::storage::journal::JournalRuntime>>>,
     /// Serializes session snapshots and conditional writes without blocking edits.
     session_write: Mutex<()>,
     /// Keep checkpoint snapshots and their commits in the same order.
@@ -384,7 +384,7 @@ pub struct RoomSet {
     /// Comments live wherever the documents do. On a bucket that makes the
     /// server genuinely stateless.
     pub blobs: Arc<dyn BlobStore>,
-    checkpoint_cache: Arc<crate::checkpoint_cache::CheckpointCache>,
+    checkpoint_cache: Arc<crate::document::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
     /// One slot per slug currently being loaded, so a cold room's lease
@@ -393,9 +393,9 @@ pub struct RoomSet {
     /// concurrent callers of the same slug (R35). Removed once the load it
     /// was made for finishes, successfully or not.
     loading: Mutex<HashMap<String, LoadingSlot>>,
-    store: Arc<std::sync::OnceLock<Arc<crate::store::Store>>>,
-    catalog: Arc<std::sync::OnceLock<Arc<crate::catalog::Catalog>>>,
-    journal: Arc<std::sync::OnceLock<Arc<crate::journal::JournalRuntime>>>,
+    store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
+    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
+    journal: Arc<std::sync::OnceLock<Arc<crate::storage::journal::JournalRuntime>>>,
     /// A local deployment has one writer, held for the lifetime of the
     /// process.  Remote stores use the per-room fenced lease below instead;
     /// keeping this separate prevents a local cold-open from manufacturing a
@@ -463,7 +463,9 @@ impl RoomSet {
         RoomSet {
             holder: this_server(),
             blobs,
-            checkpoint_cache: Arc::new(crate::checkpoint_cache::CheckpointCache::default()),
+            checkpoint_cache: Arc::new(
+                crate::document::checkpoint_cache::CheckpointCache::default(),
+            ),
             config,
             rooms: Mutex::new(HashMap::new()),
             loading: Mutex::new(HashMap::new()),
@@ -492,7 +494,7 @@ impl RoomSet {
     /// Hands the rooms the index. Called once, by `Server::new`, because a
     /// checkpoint has to record its own size against the document's quota and
     /// the store is what holds that.
-    pub fn attach_store(&self, store: Arc<crate::store::Store>) {
+    pub fn attach_store(&self, store: Arc<crate::document::store::Store>) {
         let _ = self.store.set(store);
         if let Some(store) = self.store.get() {
             if let Some(catalog) = &store.catalog {
@@ -504,7 +506,7 @@ impl RoomSet {
     /// Attach the one deployment-wide journal before any room is loaded.
     /// Existing rooms are never created before Server::new finishes, so a
     /// once-lock keeps this setup race-free without changing RoomSet's API.
-    pub fn attach_journal(&self, journal: Arc<crate::journal::JournalRuntime>) {
+    pub fn attach_journal(&self, journal: Arc<crate::storage::journal::JournalRuntime>) {
         let _ = self.journal.set(journal);
     }
 
@@ -630,7 +632,7 @@ impl RoomSet {
         // indistinguishable from a live remote lease after a restart.
         let lease = if self.blobs.is_local() {
             if let Some(lock) = self.deployment_lock.get() {
-                crate::blob::Lease {
+                crate::storage::blob::Lease {
                     held: lock.is_some(),
                     verified: true,
                     ..Default::default()
@@ -810,7 +812,7 @@ impl RoomSet {
         // while an old room/session/checkpoint is still reachable.
         let object_identity = storage_id.unwrap_or(&room.storage_id);
         self.checkpoint_cache
-            .invalidate_prefix(&crate::blob::history_prefix(object_identity))
+            .invalidate_prefix(&crate::storage::blob::history_prefix(object_identity))
             .await;
         self.rooms.lock().await.remove(slug);
     }
@@ -1208,7 +1210,7 @@ impl Room {
     async fn load_rendering_sizes(&self) {
         let Ok(found) = self
             .blobs
-            .list(&crate::blob::rendering_prefix(&self.storage_id))
+            .list(&crate::storage::blob::rendering_prefix(&self.storage_id))
             .await
         else {
             return;
@@ -1217,7 +1219,7 @@ impl Room {
         for object in found {
             let relative = object
                 .key
-                .strip_prefix(&crate::blob::rendering_prefix(&self.storage_id))
+                .strip_prefix(&crate::storage::blob::rendering_prefix(&self.storage_id))
                 .unwrap_or_default();
             let mut parts = relative.split('/');
             let Some(sha) = parts.next().filter(|sha| !sha.is_empty()) else {
@@ -1252,7 +1254,7 @@ impl Room {
     async fn load_asset_sizes(&self) {
         let Ok(found) = self
             .blobs
-            .list(&crate::blob::asset_prefix(&self.storage_id))
+            .list(&crate::storage::blob::asset_prefix(&self.storage_id))
             .await
         else {
             return;
@@ -1279,7 +1281,7 @@ impl Room {
     /// migrated document would come back rendered twice.
     async fn published_source(
         &self,
-        entry: Option<&crate::store::IndexEntry>,
+        entry: Option<&crate::document::store::IndexEntry>,
     ) -> Option<(String, String)> {
         let store = self.store.get()?;
         let entry = entry?;
@@ -1421,7 +1423,7 @@ impl Room {
         let operation_id = crate::util::new_id();
         if let Some(catalog) = self.catalog.get() {
             catalog
-                .reserve_object_change(crate::catalog::ObjectReservationRequest {
+                .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
                     slug: &self.slug,
                     operation_id: &operation_id,
                     object_key: key,
@@ -1474,7 +1476,7 @@ impl Room {
         let operation_id = crate::util::new_id();
         if let Some(catalog) = self.catalog.get() {
             catalog
-                .reserve_object_change(crate::catalog::ObjectReservationRequest {
+                .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
                     slug: &self.slug,
                     operation_id: &operation_id,
                     object_key: key,
@@ -1555,7 +1557,7 @@ impl Room {
     ) -> (
         String,
         String,
-        crate::history::Tree,
+        crate::document::history::Tree,
         std::collections::BTreeMap<String, String>,
         Vec<CommentView>,
     ) {
@@ -2178,8 +2180,8 @@ impl Room {
 pub fn tree_of(
     doc: &yrs::Doc,
     asset_sizes: &HashMap<String, i64>,
-) -> (crate::history::Tree, HashMap<String, String>) {
-    use crate::history::{Tree, TreeEntry};
+) -> (crate::document::history::Tree, HashMap<String, String>) {
+    use crate::document::history::{Tree, TreeEntry};
     let ids = session::paths_of(doc);
     let mut by_path: HashMap<String, String> = HashMap::new();
     for (id, path) in &ids {
@@ -2188,7 +2190,7 @@ pub fn tree_of(
     let mut files = std::collections::BTreeMap::new();
     let mut bodies = HashMap::new();
     for (path, body) in session::texts_of(doc) {
-        let sha = crate::store::digest_of(&body);
+        let sha = crate::document::store::digest_of(&body);
         files.insert(
             path.clone(),
             TreeEntry {
@@ -2217,7 +2219,7 @@ pub fn tree_of(
     let settings = if engine.is_empty() && release.is_empty() {
         None
     } else {
-        Some(crate::history::CompileSettings { engine, release })
+        Some(crate::document::history::CompileSettings { engine, release })
     };
     (
         Tree {
@@ -2258,13 +2260,13 @@ pub fn main_path_for(named: &str, format: &str) -> String {
 /// extension none of the four formats claim, which the caller reads as "keep
 /// what was there".
 pub fn format_from_path(path: &str) -> String {
-    if crate::render::is_markdown(path) {
+    if crate::document::render::is_markdown(path) {
         "markdown".to_string()
-    } else if crate::render::is_typst(path) {
+    } else if crate::document::render::is_typst(path) {
         "typst".to_string()
-    } else if crate::render::is_latex(path) {
+    } else if crate::document::render::is_latex(path) {
         "latex".to_string()
-    } else if crate::render::is_html(path) {
+    } else if crate::document::render::is_html(path) {
         "html".to_string()
     } else {
         String::new()

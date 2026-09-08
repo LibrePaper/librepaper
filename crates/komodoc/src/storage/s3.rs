@@ -14,10 +14,10 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use reqwest::{Method, Response};
 use sha2::{Digest, Sha256};
 
-use crate::blob::{version_of, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion};
-use crate::clock::{amz_stamps, now_unix};
 use crate::http::{client, truncate};
+use crate::storage::blob::{version_of, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion};
 use crate::storage::StorageOptions;
+use crate::util::{amz_stamps, now_unix};
 
 pub struct S3Store {
     endpoint: String, // https://host, without the bucket

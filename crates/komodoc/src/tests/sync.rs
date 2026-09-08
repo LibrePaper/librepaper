@@ -21,7 +21,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::*;
-use crate::sync::{parse_interval, Client};
+use crate::cli::sync::{parse_interval, Client};
 use crate::tests::edit::publish_with_source;
 
 /// A client with nowhere to send: every method that matters writes to the
@@ -39,17 +39,17 @@ fn client(at: &std::path::Path) -> Client {
 /// The `y-state` the server sends on `y-open`, made here from a document with
 /// one file at `path`.
 fn state_of(path: &str, body: &str) -> String {
-    let doc = crate::session::new_doc();
-    crate::session::put_text(&doc, path, body);
-    let id = crate::session::paths_of(&doc)
+    let doc = crate::document::session::new_doc();
+    crate::document::session::put_text(&doc, path, body);
+    let id = crate::document::session::paths_of(&doc)
         .into_iter()
         .find(|(_, at)| at == path)
         .map(|(id, _)| id)
         .expect("the file has an id");
-    crate::session::set_main(&doc, &id);
+    crate::document::session::set_main(&doc, &id);
     json!({
         "type": "y-state",
-        "update": crate::room::encode_update(&crate::session::encode_state(&doc)),
+        "update": crate::room::encode_update(&crate::document::session::encode_state(&doc)),
         "count": 1,
     })
     .to_string()
@@ -87,25 +87,25 @@ async fn a_yrs_peer_writes_the_document_the_server_holds() {
     // Applied into a Yrs document of this client's own -- nothing here is a
     // browser, which is the point: the encoding the two sides share is
     // checked rather than assumed.
-    let mine = crate::session::new_doc();
+    let mine = crate::document::session::new_doc();
     let update = crate::room::decode_update(&text(&state, "update")).expect("base64");
-    crate::session::apply_update(&mine, &update).expect("the server's state applies");
+    crate::document::session::apply_update(&mine, &update).expect("the server's state applies");
     assert_eq!(
-        crate::session::text_of(&mine),
+        crate::document::session::text_of(&mine),
         room.source().await,
         "a Yrs client did not read what the server holds"
     );
 
     // And what it writes, sent as the socket carries it, is the document.
-    let before = crate::session::encode_vector(&mine);
-    crate::session::apply_edits(
+    let before = crate::document::session::encode_vector(&mine);
+    crate::document::session::apply_edits(
         &mine,
         &komodoc_text::diff(
-            &crate::session::text_of(&mine),
+            &crate::document::session::text_of(&mine),
             "# My Paper\n\nTyped by a client that is not a browser.\n",
         ),
     );
-    let written = crate::session::encode_diff(&mine, &before).expect("a diff");
+    let written = crate::document::session::encode_diff(&mine, &before).expect("a diff");
     socket
         .write(json!({
             "type": "y-update",
@@ -154,18 +154,18 @@ async fn a_peer_joins_on_a_link_key_and_writes_as_the_link_allows() {
     socket.write(json!({"type": "y-open", "vector": ""})).await;
     let state = socket.read().await;
     assert_eq!(state["type"], "y-state");
-    let mine = crate::session::new_doc();
+    let mine = crate::document::session::new_doc();
     let update = crate::room::decode_update(&text(&state, "update")).expect("base64");
-    crate::session::apply_update(&mine, &update).expect("the server's state applies");
-    let before = crate::session::encode_vector(&mine);
-    crate::session::apply_edits(
+    crate::document::session::apply_update(&mine, &update).expect("the server's state applies");
+    let before = crate::document::session::encode_vector(&mine);
+    crate::document::session::apply_edits(
         &mine,
         &komodoc_text::diff(
-            &crate::session::text_of(&mine),
+            &crate::document::session::text_of(&mine),
             "# My Paper\n\nTyped through an edit link.\n",
         ),
     );
-    let written = crate::session::encode_diff(&mine, &before).expect("a diff");
+    let written = crate::document::session::encode_diff(&mine, &before).expect("a diff");
     socket
         .write(json!({
             "type": "y-update",
@@ -214,15 +214,15 @@ async fn rejoining_asks_for_the_rest_and_not_the_whole() {
     let room = server.instance.rooms.get(&slug).await;
 
     let (state, _) = room.open_state(None).await;
-    let mine = crate::session::new_doc();
-    crate::session::apply_update(&mine, &state).expect("the state applies");
+    let mine = crate::document::session::new_doc();
+    crate::document::session::apply_update(&mine, &state).expect("the state applies");
 
     // The document moves on while this client is away.
     room.set_source("# My Paper\n\nWhile the socket was down.\n", "markdown")
         .await;
 
     let (rest, _) = room
-        .open_state(Some(&crate::session::encode_vector(&mine)))
+        .open_state(Some(&crate::document::session::encode_vector(&mine)))
         .await;
     assert!(
         rest.len() < state.len(),
@@ -230,9 +230,9 @@ async fn rejoining_asks_for_the_rest_and_not_the_whole() {
         rest.len(),
         state.len()
     );
-    crate::session::apply_update(&mine, &rest).expect("the rest applies");
+    crate::document::session::apply_update(&mine, &rest).expect("the rest applies");
     assert_eq!(
-        crate::session::text_of(&mine),
+        crate::document::session::text_of(&mine),
         "# My Paper\n\nWhile the socket was down.\n",
         "a reconnecting client did not catch up"
     );
@@ -274,12 +274,15 @@ async fn the_session_changing_writes_the_file() {
         .expect("the state applies");
 
     // An update from somebody else's browser.
-    let theirs = crate::session::new_doc();
-    crate::session::apply_update(&theirs, &crate::session::encode_state(client.document()))
-        .expect("the state applies");
-    let before = crate::session::encode_vector(&theirs);
-    crate::session::replace_text(&theirs, "# Paper\n\nAs they typed it.\n", "paper.md");
-    let update = crate::session::encode_diff(&theirs, &before).expect("a diff");
+    let theirs = crate::document::session::new_doc();
+    crate::document::session::apply_update(
+        &theirs,
+        &crate::document::session::encode_state(client.document()),
+    )
+    .expect("the state applies");
+    let before = crate::document::session::encode_vector(&theirs);
+    crate::document::session::replace_text(&theirs, "# Paper\n\nAs they typed it.\n", "paper.md");
+    let update = crate::document::session::encode_diff(&theirs, &before).expect("a diff");
     client
         .receive(
             &json!({"type": "y-update", "update": crate::room::encode_update(&update)}).to_string(),
@@ -322,7 +325,7 @@ async fn the_file_changing_edits_the_session() {
     client.read_now().expect("the file is read");
 
     assert_eq!(
-        crate::session::text_of(client.document()),
+        crate::document::session::text_of(client.document()),
         "# Paper\n\nOne sentence. Another one. A third.\n"
     );
     // What went out is an update and a request for a checkpoint: writing the
@@ -381,7 +384,7 @@ async fn a_file_saved_over_a_still_session_is_taken_whole() {
     std::fs::write(&at, saved).expect("a save");
     client.read_now().expect("the file is read");
 
-    assert_eq!(crate::session::text_of(client.document()), saved);
+    assert_eq!(crate::document::session::text_of(client.document()), saved);
     assert_eq!(
         std::fs::read_to_string(&at).expect("the file"),
         saved,
@@ -405,16 +408,19 @@ async fn edits_to_different_paragraphs_both_survive() {
         .expect("the state applies");
 
     // A browser types in the second paragraph.
-    let theirs = crate::session::new_doc();
-    crate::session::apply_update(&theirs, &crate::session::encode_state(client.document()))
-        .expect("the state applies");
-    let before = crate::session::encode_vector(&theirs);
-    crate::session::replace_text(
+    let theirs = crate::document::session::new_doc();
+    crate::document::session::apply_update(
+        &theirs,
+        &crate::document::session::encode_state(client.document()),
+    )
+    .expect("the state applies");
+    let before = crate::document::session::encode_vector(&theirs);
+    crate::document::session::replace_text(
         &theirs,
         "# Paper\n\nThe first paragraph.\n\nThe second paragraph, rewritten.\n",
         "paper.md",
     );
-    let update = crate::session::encode_diff(&theirs, &before).expect("a diff");
+    let update = crate::document::session::encode_diff(&theirs, &before).expect("a diff");
     client
         .receive(
             &json!({"type": "y-update", "update": crate::room::encode_update(&update)}).to_string(),
@@ -431,7 +437,7 @@ async fn edits_to_different_paragraphs_both_survive() {
     .expect("a save");
     client.read_now().expect("the file is read");
 
-    let merged = crate::session::text_of(client.document());
+    let merged = crate::document::session::text_of(client.document());
     assert!(
         merged.contains("The first paragraph, revised."),
         "the author's words were lost: {merged:?}"
@@ -460,16 +466,19 @@ async fn the_session_wins_the_same_words_and_the_file_is_brought_forward() {
         .await
         .expect("the state applies");
 
-    let theirs = crate::session::new_doc();
-    crate::session::apply_update(&theirs, &crate::session::encode_state(client.document()))
-        .expect("the state applies");
-    let before = crate::session::encode_vector(&theirs);
-    crate::session::replace_text(
+    let theirs = crate::document::session::new_doc();
+    crate::document::session::apply_update(
+        &theirs,
+        &crate::document::session::encode_state(client.document()),
+    )
+    .expect("the state applies");
+    let before = crate::document::session::encode_vector(&theirs);
+    crate::document::session::replace_text(
         &theirs,
         "# Paper\n\nThe estimator is consistent.\n",
         "paper.md",
     );
-    let update = crate::session::encode_diff(&theirs, &before).expect("a diff");
+    let update = crate::document::session::encode_diff(&theirs, &before).expect("a diff");
     client
         .receive(
             &json!({"type": "y-update", "update": crate::room::encode_update(&update)}).to_string(),
@@ -481,7 +490,7 @@ async fn the_session_wins_the_same_words_and_the_file_is_brought_forward() {
     client.read_now().expect("the file is read");
 
     assert_eq!(
-        crate::session::text_of(client.document()),
+        crate::document::session::text_of(client.document()),
         "# Paper\n\nThe estimator is consistent.\n",
         "the file overwrote the session"
     );
@@ -510,7 +519,7 @@ async fn a_file_that_is_not_utf8_is_left_alone() {
     client.read_now().expect("the read does not fail");
 
     assert_eq!(
-        crate::session::text_of(client.document()),
+        crate::document::session::text_of(client.document()),
         "# Paper\n\nWords.\n",
         "a file that is not text reached the document"
     );
@@ -550,8 +559,8 @@ fn the_interval_is_a_duration_with_a_floor_and_a_ceiling() {
 fn a_second_client_on_one_file_is_refused() {
     let dir = tempfile::tempdir().expect("a directory");
     let at = dir.path().join("paper.md");
-    let held = crate::sync::Lock::take(&at).expect("the first takes it");
-    let refused = crate::sync::Lock::take(&at).expect_err("the second is refused");
+    let held = crate::cli::sync::Lock::take(&at).expect("the first takes it");
+    let refused = crate::cli::sync::Lock::take(&at).expect_err("the second is refused");
     assert!(
         refused.contains(&std::process::id().to_string()),
         "the refusal does not say who holds it: {refused}"
@@ -559,7 +568,7 @@ fn a_second_client_on_one_file_is_refused() {
     drop(held);
     // And what is released can be taken again, so a client that exits cleanly
     // does not leave the file locked against its own next run.
-    crate::sync::Lock::take(&at).expect("the lock came off");
+    crate::cli::sync::Lock::take(&at).expect("the lock came off");
 }
 
 /// The socket URL follows the deployment's scheme, because a `wss` deployment
@@ -567,11 +576,11 @@ fn a_second_client_on_one_file_is_refused() {
 #[test]
 fn the_socket_follows_the_deployments_scheme() {
     assert_eq!(
-        crate::sync::socket_url("https://komodoc.example.org", "c9k"),
+        crate::cli::sync::socket_url("https://komodoc.example.org", "c9k"),
         "wss://komodoc.example.org/ws/c9k"
     );
     assert_eq!(
-        crate::sync::socket_url("http://localhost:8080/", "c9k"),
+        crate::cli::sync::socket_url("http://localhost:8080/", "c9k"),
         "ws://localhost:8080/ws/c9k"
     );
 }
@@ -581,7 +590,7 @@ fn the_socket_follows_the_deployments_scheme() {
 fn the_lock_is_beside_the_file() {
     let path: PathBuf = ["papers", "paper.md"].iter().collect();
     assert_eq!(
-        crate::sync::lock_path(&path),
+        crate::cli::sync::lock_path(&path),
         ["papers", "paper.md.komodoc-lock"]
             .iter()
             .collect::<PathBuf>()
@@ -617,14 +626,14 @@ async fn browser_multipart_update_exceeding_one_megabyte_reaches_the_room() {
     .unwrap();
     assert_eq!(socket.read().await["type"], "hello");
     let (state, _) = room.open_state(None).await;
-    let mine = crate::session::new_doc();
-    crate::session::apply_update(&mine, &state).unwrap();
+    let mine = crate::document::session::new_doc();
+    crate::document::session::apply_update(&mine, &state).unwrap();
     let source = "x".repeat(800_000);
-    crate::session::apply_edits(
+    crate::document::session::apply_edits(
         &mine,
-        &komodoc_text::diff(&crate::session::text_of(&mine), &source),
+        &komodoc_text::diff(&crate::document::session::text_of(&mine), &source),
     );
-    let update = crate::session::encode_state(&mine);
+    let update = crate::document::session::encode_state(&mine);
     assert!(crate::room::encode_update(&update).len() > 1 << 20);
     let chunks: Vec<_> = update.chunks(256 * 1024).collect();
     socket

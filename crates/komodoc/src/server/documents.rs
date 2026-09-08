@@ -290,7 +290,7 @@ impl Server {
         // the eleventh file was the one that broke a rule the first ten
         // happened to keep.
         if let Err(response) =
-            self.preflight_directory(&parsed, &main, &crate::history::Tree::default())
+            self.preflight_directory(&parsed, &main, &crate::document::history::Tree::default())
         {
             return response;
         }
@@ -483,7 +483,7 @@ impl Server {
 
         let request_digest = upload_digest(parsed);
         if self.store.catalog.is_some() {
-            let actor = crate::store::MutationActor {
+            let actor = crate::document::store::MutationActor {
                 account_id: who.id.clone(),
                 owner_key: who.key.clone(),
                 session_generation: who.session_generation.clone(),
@@ -512,9 +512,11 @@ impl Server {
         // storage fault the preflight above could not have caught, and it
         // leaves an unreferenced blob rather than a half-written document,
         // because nothing has named it yet.
-        let mut new_assets: HashMap<String, crate::history::TreeEntry> = HashMap::new();
+        let mut new_assets: HashMap<String, crate::document::history::TreeEntry> = HashMap::new();
         for (path, raw) in &parsed.files {
-            if let Ok(crate::paths::Kind::Asset) = crate::paths::check(&self.config.paths(), path) {
+            if let Ok(crate::document::paths::Kind::Asset) =
+                crate::document::paths::check(&self.config.paths(), path)
+            {
                 let (sha, size) = match room
                     .put_asset(raw.clone(), (self.config.max_asset, self.config.max_assets))
                     .await
@@ -540,7 +542,7 @@ impl Server {
                 };
                 new_assets.insert(
                     path.clone(),
-                    crate::history::TreeEntry {
+                    crate::document::history::TreeEntry {
                         kind: "asset".to_string(),
                         id: String::new(),
                         sha,
@@ -565,10 +567,10 @@ impl Server {
                 .get(&main_path)
                 .map(|entry| entry.id.clone())
                 .unwrap_or_default();
-            let main_sha = crate::store::digest_of(&parsed.source);
+            let main_sha = crate::document::store::digest_of(&parsed.source);
             tree.files.insert(
                 main_path.clone(),
-                crate::history::TreeEntry {
+                crate::document::history::TreeEntry {
                     kind: "text".to_string(),
                     id: main_id,
                     sha: main_sha.clone(),
@@ -577,8 +579,8 @@ impl Server {
             );
             bodies.insert(main_sha, parsed.source.clone());
             for (path, raw) in &parsed.files {
-                match crate::paths::check(&self.config.paths(), path) {
-                    Ok(crate::paths::Kind::Text) => {
+                match crate::document::paths::check(&self.config.paths(), path) {
+                    Ok(crate::document::paths::Kind::Text) => {
                         // `preflight_directory` already required this to decode.
                         let Ok(body) = std::str::from_utf8(raw) else {
                             return Err(write_json(
@@ -586,7 +588,7 @@ impl Server {
                                 &json!({"error": format!("{path} is not valid UTF-8")}),
                             ));
                         };
-                        let sha = crate::store::digest_of(body);
+                        let sha = crate::document::store::digest_of(body);
                         let id = tree
                             .files
                             .get(path)
@@ -594,7 +596,7 @@ impl Server {
                             .unwrap_or_default();
                         tree.files.insert(
                             path.clone(),
-                            crate::history::TreeEntry {
+                            crate::document::history::TreeEntry {
                                 kind: "text".to_string(),
                                 id,
                                 sha: sha.clone(),
@@ -603,7 +605,7 @@ impl Server {
                         );
                         bodies.insert(sha, body.to_string());
                     }
-                    Ok(crate::paths::Kind::Asset) => {
+                    Ok(crate::document::paths::Kind::Asset) => {
                         if let Some(entry) = new_assets.get(path) {
                             tree.files.insert(path.clone(), entry.clone());
                         }
@@ -625,8 +627,8 @@ impl Server {
             }
             tree.main = main_path.clone();
 
-            let before = crate::session::encode_vector(&state.session.doc);
-            crate::session::restore(&state.session.doc, &tree, &bodies);
+            let before = crate::document::session::encode_vector(&state.session.doc);
+            crate::document::session::restore(&state.session.doc, &tree, &bodies);
             if !parsed.source_format.is_empty() {
                 state.session.format = parsed.source_format.clone();
             }
@@ -636,8 +638,8 @@ impl Server {
             // snapshot from one it covered.
             state.session.generation += 1;
             state.session.updated_at = now_unix();
-            crate::session::encode_diff(&state.session.doc, &before)
-                .unwrap_or_else(|_| crate::session::encode_state(&state.session.doc))
+            crate::document::session::encode_diff(&state.session.doc, &before)
+                .unwrap_or_else(|_| crate::document::session::encode_state(&state.session.doc))
         };
         // A title given on the command line renames the document; an empty one
         // leaves it as it is.
@@ -803,14 +805,14 @@ impl Server {
             // arrived. Typst and LaTeX reach here from `publish <directory>`
             // rather than from the upload form, which takes what a browser can
             // drop; a paper is the ordinary case either way.
-            if let Some(format) = crate::render::document_format(&filename) {
+            if let Some(format) = crate::document::render::document_format(&filename) {
                 if title.trim().is_empty() {
                     title = match format {
-                        "typst" => crate::render::title_from_typst(&html),
+                        "typst" => crate::document::render::title_from_typst(&html),
                         "markdown" => title_from_markdown(&html),
                         // There is no TeX here to ask, so the `\title` is
                         // scanned for; see `render::title_from_latex`.
-                        "latex" => crate::render::title_from_latex(&html),
+                        "latex" => crate::document::render::title_from_latex(&html),
                         // An HTML document's source is its own bytes, through
                         // the identity renderer, so it opens in the editor like
                         // the others.
@@ -900,9 +902,9 @@ impl Server {
         let mut kept = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         if !main.is_empty() {
-            match crate::paths::check(&self.config.paths(), &main) {
-                Ok(crate::paths::Kind::Text) => {}
-                Ok(crate::paths::Kind::Asset) => {
+            match crate::document::paths::check(&self.config.paths(), &main) {
+                Ok(crate::document::paths::Kind::Text) => {}
+                Ok(crate::document::paths::Kind::Asset) => {
                     return Err(write_json(
                         400,
                         &json!({"error": format!("{main} cannot be the main file; it is a figure")}),
@@ -910,20 +912,20 @@ impl Server {
                 }
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             }
-            seen.insert(crate::paths::collision_key(&main));
+            seen.insert(crate::document::paths::collision_key(&main));
         }
         for (path, bytes) in sent {
-            let kind = match crate::paths::check(&self.config.paths(), &path) {
+            let kind = match crate::document::paths::check(&self.config.paths(), &path) {
                 Ok(kind) => kind,
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             };
-            if !seen.insert(crate::paths::collision_key(&path)) {
+            if !seen.insert(crate::document::paths::collision_key(&path)) {
                 return Err(write_json(
                     400,
                     &json!({"error": format!("{path}: two files cannot share one name")}),
                 ));
             }
-            kept.push((crate::paths::normalise(&path), kind, bytes));
+            kept.push((crate::document::paths::normalise(&path), kind, bytes));
         }
         if seen.len() > self.config.max_files {
             return Err(write_json(
@@ -936,7 +938,7 @@ impl Server {
         // exactly what a paper in one file is allowed.
         let texts: usize = kept
             .iter()
-            .filter(|(_, kind, _)| *kind == crate::paths::Kind::Text)
+            .filter(|(_, kind, _)| *kind == crate::document::paths::Kind::Text)
             .map(|(_, _, bytes)| bytes.len())
             .sum();
         if source.len() + texts > max_document {
@@ -944,7 +946,7 @@ impl Server {
         }
         let figures: i64 = kept
             .iter()
-            .filter(|(_, kind, _)| *kind == crate::paths::Kind::Asset)
+            .filter(|(_, kind, _)| *kind == crate::document::paths::Kind::Asset)
             .map(|(_, _, bytes)| bytes.len() as i64)
             .sum();
         if figures > self.config.max_assets {
@@ -986,11 +988,11 @@ impl Server {
         &self,
         parsed: &Upload,
         main_path: &str,
-        current: &crate::history::Tree,
+        current: &crate::document::history::Tree,
     ) -> Result<(), Reply> {
         for (path, bytes) in &parsed.files {
-            match crate::paths::check(&self.config.paths(), path) {
-                Ok(crate::paths::Kind::Text) => {
+            match crate::document::paths::check(&self.config.paths(), path) {
+                Ok(crate::document::paths::Kind::Text) => {
                     if std::str::from_utf8(bytes).is_err() {
                         return Err(write_json(
                             400,
@@ -998,7 +1000,7 @@ impl Server {
                         ));
                     }
                 }
-                Ok(crate::paths::Kind::Asset) => {
+                Ok(crate::document::paths::Kind::Asset) => {
                     if bytes.len() as i64 > self.config.max_asset {
                         return Err(write_json(
                             413,
@@ -1025,8 +1027,13 @@ impl Server {
             }
         }
         for (path, bytes) in &parsed.files {
-            if let Ok(crate::paths::Kind::Asset) = crate::paths::check(&self.config.paths(), path) {
-                by_sha.insert(crate::store::digest_of_bytes(bytes), bytes.len() as i64);
+            if let Ok(crate::document::paths::Kind::Asset) =
+                crate::document::paths::check(&self.config.paths(), path)
+            {
+                by_sha.insert(
+                    crate::document::store::digest_of_bytes(bytes),
+                    bytes.len() as i64,
+                );
             }
         }
         let assets_total: i64 = by_sha.values().sum();
@@ -1046,7 +1053,9 @@ impl Server {
             }
         }
         for (path, bytes) in &parsed.files {
-            if let Ok(crate::paths::Kind::Text) = crate::paths::check(&self.config.paths(), path) {
+            if let Ok(crate::document::paths::Kind::Text) =
+                crate::document::paths::check(&self.config.paths(), path)
+            {
                 text_total += bytes.len();
             }
         }
@@ -1067,7 +1076,7 @@ impl Server {
             ..Tree::default()
         };
         let mut bodies = HashMap::new();
-        let main_sha = crate::store::digest_of(&parsed.source);
+        let main_sha = crate::document::store::digest_of(&parsed.source);
         bodies.insert(main_sha.clone(), parsed.source.clone());
         tree.files.insert(
             main_path.to_string(),
@@ -1079,10 +1088,10 @@ impl Server {
             },
         );
         for (path, raw) in &parsed.files {
-            match crate::paths::check(&self.config.paths(), path) {
-                Ok(crate::paths::Kind::Text) => {
+            match crate::document::paths::check(&self.config.paths(), path) {
+                Ok(crate::document::paths::Kind::Text) => {
                     if let Ok(body) = std::str::from_utf8(raw) {
-                        let sha = crate::store::digest_of(body);
+                        let sha = crate::document::store::digest_of(body);
                         bodies
                             .entry(sha.clone())
                             .or_insert_with(|| body.to_string());
@@ -1097,8 +1106,8 @@ impl Server {
                         );
                     }
                 }
-                Ok(crate::paths::Kind::Asset) => {
-                    let sha = crate::store::digest_of_bytes(raw);
+                Ok(crate::document::paths::Kind::Asset) => {
+                    let sha = crate::document::store::digest_of_bytes(raw);
                     tree.files.insert(
                         path.clone(),
                         TreeEntry {
@@ -1112,17 +1121,21 @@ impl Server {
                 Err(_) => {}
             }
         }
-        let doc = crate::session::new_doc();
-        crate::session::replace_text(&doc, &parsed.source, main_path);
+        let doc = crate::document::session::new_doc();
+        crate::document::session::replace_text(&doc, &parsed.source, main_path);
         for (path, raw) in &parsed.files {
-            match crate::paths::check(&self.config.paths(), path) {
-                Ok(crate::paths::Kind::Text) => {
+            match crate::document::paths::check(&self.config.paths(), path) {
+                Ok(crate::document::paths::Kind::Text) => {
                     if let Ok(body) = std::str::from_utf8(raw) {
-                        crate::session::put_text(&doc, path, body);
+                        crate::document::session::put_text(&doc, path, body);
                     }
                 }
-                Ok(crate::paths::Kind::Asset) => {
-                    crate::session::put_asset(&doc, path, &crate::store::digest_of_bytes(raw));
+                Ok(crate::document::paths::Kind::Asset) => {
+                    crate::document::session::put_asset(
+                        &doc,
+                        path,
+                        &crate::document::store::digest_of_bytes(raw),
+                    );
                 }
                 Err(_) => {}
             }
@@ -1133,14 +1146,14 @@ impl Server {
             assets.entry(entry.sha.clone()).or_insert(entry.size);
         }
         let asset_bytes: i64 = assets.values().sum();
-        let session_bytes = crate::session::encode_state(&doc);
+        let session_bytes = crate::document::session::encode_state(&doc);
         // Production local catalogues attach the journal.  Its first segment
         // identity has a fixed 32-hex storage id; the actual id has the same
         // length, so this is exact before Store::put allocates it.
         let journal_attached = self.rooms.journal_attached();
         let journal_bytes = if journal_attached {
-            crate::journal::initial_segment_bytes(&"0".repeat(32), &session_bytes).unwrap_or(0)
-                as i64
+            crate::storage::journal::initial_segment_bytes(&"0".repeat(32), &session_bytes)
+                .unwrap_or(0) as i64
         } else {
             0
         };
@@ -1177,13 +1190,13 @@ impl Server {
     /// whether that leaves an inconsistent document worth undoing.
     pub(super) async fn fill_directory(&self, room: &Room, parsed: &Upload) -> Result<(), String> {
         for (path, bytes) in &parsed.files {
-            match crate::paths::check(&self.config.paths(), path) {
-                Ok(crate::paths::Kind::Text) => {
+            match crate::document::paths::check(&self.config.paths(), path) {
+                Ok(crate::document::paths::Kind::Text) => {
                     let body = std::str::from_utf8(bytes)
                         .map_err(|_| format!("{path} is not valid UTF-8"))?;
                     room.add_text(path, body).await;
                 }
-                Ok(crate::paths::Kind::Asset) => {
+                Ok(crate::document::paths::Kind::Asset) => {
                     let (sha, _) = room
                         .put_asset(
                             bytes.clone(),
@@ -1232,7 +1245,7 @@ impl Server {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(0);
         let token = fields.get("token").cloned().unwrap_or_default();
-        if until < crate::clock::now_unix()
+        if until < crate::util::now_unix()
             || !crate::auth::verifies(&self.key, &format!("state:{slug}:{until}"), &token)
         {
             return plain(403, "that link has expired");
@@ -1364,7 +1377,7 @@ impl Server {
                 "files": files,
                 "texts": texts,
                 "source": source,
-                "source_sha": crate::store::digest_of(&source),
+                "source_sha": crate::document::store::digest_of(&source),
                 "comments": comments,
                 "role": who.role.as_str(),
                 "capabilities": {

@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use yrs::{Map, Text, Transact};
 
-use crate::session::{self, Admission, DecodedAdmission};
+use crate::document::session::{self, Admission, DecodedAdmission};
 
 fn insertion_update(doc: &yrs::Doc, value: &str) -> Vec<u8> {
     let scratch = session::new_doc();

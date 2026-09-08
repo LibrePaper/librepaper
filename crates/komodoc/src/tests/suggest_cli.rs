@@ -190,7 +190,7 @@ async fn accept_after_the_passage_changed_is_stale_and_would_exit_3() {
     let (status, document) = post(
         &server.url,
         "/api/documents",
-        json!({"title": "Paper", "html": crate::render::render_markdown_document(source, "Paper"), "source": source, "source_format": "markdown"}),
+        json!({"title": "Paper", "html": crate::document::render::render_markdown_document(source, "Paper"), "source": source, "source_format": "markdown"}),
     )
     .await;
     assert_eq!(status, 201, "{document}");

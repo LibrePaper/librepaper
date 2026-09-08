@@ -31,16 +31,16 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::auth::stored_id;
-use crate::blob::{
+use crate::config::Configuration;
+use crate::storage::blob::{
     document_key, document_prefix, examples_key, legacy_source_key, room_key, room_lock_key,
     source_key, source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
 };
-use crate::catalog::{
+use crate::storage::catalog::{
     Account, Catalog, CatalogError, NewDocument, OperationActor, OperationRequest,
 };
-use crate::clock::{now_unix, parse_timestamp, timestamp};
-use crate::config::Configuration;
 use crate::util::new_id;
+use crate::util::{now_unix, parse_timestamp, timestamp};
 
 const MAX_GRANTS_PER_RESULT: i64 = 256;
 const MAX_LINKS_PER_RESULT: i64 = 16;
@@ -629,7 +629,7 @@ impl Store {
         catalog
             .admit_document_upload(slug, self.config.storage.uploads_per_hour)
             .map_err(|error| match error {
-                crate::catalog::CatalogError::Conflict(message)
+                crate::storage::catalog::CatalogError::Conflict(message)
                     if message.contains("upload rate") =>
                 {
                     PutError::Quota {
@@ -707,7 +707,10 @@ impl Store {
             });
             let staged = if let Some(sha) = staged_sha.as_deref().filter(|sha| !sha.is_empty()) {
                 blobs
-                    .get(&crate::blob::checkpoint_key(&pending.storage_id, sha))
+                    .get(&crate::storage::blob::checkpoint_key(
+                        &pending.storage_id,
+                        sha,
+                    ))
                     .await
                     .is_ok()
             } else {
@@ -1324,7 +1327,7 @@ impl Store {
             .peak_bytes
             .unwrap_or(v.source.len() as i64)
             .max(v.source.len() as i64);
-        let document = crate::catalog::NewDocument {
+        let document = crate::storage::catalog::NewDocument {
             slug: v.slug.clone(),
             storage_id,
             title,
@@ -1372,7 +1375,7 @@ impl Store {
             )
         };
         let document = result.map_err(|err| match err {
-            crate::catalog::CatalogError::Conflict(message)
+            crate::storage::catalog::CatalogError::Conflict(message)
                 if message.contains("quota exceeded") || message.contains("upload rate") =>
             {
                 PutError::Quota {
@@ -1887,8 +1890,8 @@ impl Store {
                     examples_key(slug),
                     room_key(slug),
                     room_lock_key(slug),
-                    crate::blob::session_key(slug),
-                    crate::blob::history_index_key(slug),
+                    crate::storage::blob::session_key(slug),
+                    crate::storage::blob::history_index_key(slug),
                     format!("chat/{slug}.json"),
                     legacy_source_key(slug),
                     format!("documents/{slug}"),
@@ -1903,7 +1906,7 @@ impl Store {
             // queue is sufficient for the next maintenance pass to resume.
             for (key, bytes) in &keys {
                 catalog
-                    .queue_delete(&crate::catalog::PendingDelete {
+                    .queue_delete(&crate::storage::catalog::PendingDelete {
                         slug: slug.to_string(),
                         object_key: key.clone(),
                         bytes: *bytes,
@@ -1923,10 +1926,10 @@ impl Store {
                     .map_err(|err| err.to_string())?;
                 removed += 1;
             }
-            crate::journal::JournalStore::new(catalog.clone())
+            crate::storage::journal::JournalStore::new(catalog.clone())
                 .retire_storage(&document.storage_id, now_unix())
                 .map_err(|err| format!("could not retire journal objects: {err}"))?;
-            let retirement_worker = crate::maintenance::JournalRetirementWorker::new(
+            let retirement_worker = crate::storage::maintenance::JournalRetirementWorker::new(
                 catalog.clone(),
                 self.blobs.clone(),
                 1_000,
@@ -1962,7 +1965,11 @@ impl Store {
         // The history and the live document go with the document, which is
         // what destroy has promised in the README since before there was a
         // history to delete.
-        if let Ok(found) = self.blobs.list(&crate::blob::history_prefix(slug)).await {
+        if let Ok(found) = self
+            .blobs
+            .list(&crate::storage::blob::history_prefix(slug))
+            .await
+        {
             let keys: Vec<String> = found.into_iter().map(|o| o.key).collect();
             if !keys.is_empty() {
                 let _ = self.blobs.delete(&keys).await;
@@ -1974,8 +1981,8 @@ impl Store {
                 examples_key(slug),
                 room_key(slug),
                 room_lock_key(slug),
-                crate::blob::session_key(slug),
-                crate::blob::history_index_key(slug),
+                crate::storage::blob::session_key(slug),
+                crate::storage::blob::history_index_key(slug),
                 format!("chat/{slug}.json"),
             ])
             .await;
@@ -2152,7 +2159,7 @@ fn random_storage_id() -> String {
 }
 
 impl IndexEntry {
-    fn from_catalog(document: crate::catalog::Document) -> Self {
+    fn from_catalog(document: crate::storage::catalog::Document) -> Self {
         let unowned = document.owner_id.is_none() && document.owner_key.starts_with("example:");
         let publisher = if unowned {
             String::new()
@@ -2466,7 +2473,7 @@ fn update_catalog_entry_access(
             .unwrap_or_else(|| {
                 catalog.seal_link_key(&entry.storage_id, &link.role, &link.hash, &link.key)
             })?;
-        links.push(crate::catalog::Link {
+        links.push(crate::storage::catalog::Link {
             slug: entry.slug.clone(),
             role: link.role.clone(),
             hash: link.hash.clone(),
@@ -2502,7 +2509,7 @@ fn update_catalog_entry_access(
                 },
                 erasure_cursor: None,
             })?;
-            grants.push(crate::catalog::Grant {
+            grants.push(crate::storage::catalog::Grant {
                 slug: entry.slug.clone(),
                 role: role.to_string(),
                 account_id: grant.id.clone(),
@@ -2513,7 +2520,7 @@ fn update_catalog_entry_access(
     let guests = entry
         .guests
         .iter()
-        .map(|guest| crate::catalog::Guest {
+        .map(|guest| crate::storage::catalog::Guest {
             slug: entry.slug.clone(),
             account_id: guest.id.clone(),
             since: guest.since.clone(),

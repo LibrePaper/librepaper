@@ -233,7 +233,7 @@ fn decode(value: &Value) -> Vec<u8> {
 /// The document as the server holds it. Everything below goes through
 /// `session`, so what is tested is the code the room runs and not a second
 /// arrangement of yrs that happens to agree.
-use crate::session;
+use crate::document::session;
 
 fn server_doc() -> Doc {
     session::new_doc()

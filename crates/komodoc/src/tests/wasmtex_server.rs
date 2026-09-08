@@ -15,8 +15,8 @@ use yrs::{Map, Transact};
 use super::*;
 use crate::auth::Policy;
 use crate::config::Configuration;
+use crate::document::session;
 use crate::room::Room;
-use crate::session;
 
 async fn server_with(config: Configuration) -> TestServer {
     test_server_with(
@@ -323,7 +323,7 @@ async fn engine_setting_changes_the_checkpoint_tree_and_its_sha() {
     let with_engine = room.tree().await;
     assert_eq!(
         with_engine.settings,
-        Some(crate::history::CompileSettings {
+        Some(crate::document::history::CompileSettings {
             engine: "xelatex".to_string(),
             release: String::new(),
         })

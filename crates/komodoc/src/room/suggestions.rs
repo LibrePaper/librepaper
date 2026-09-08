@@ -129,7 +129,7 @@ impl Room {
                     base_point = catalog
                         .checkpoint(&self.slug, &comment.revision)
                         .map_err(|error| AcceptError::Failed(error.to_string()))?
-                        .map(|point| crate::history::Checkpoint {
+                        .map(|point| crate::document::history::Checkpoint {
                             sha: point.sha,
                             tree_sha: point.tree_sha,
                             parent: point.parent,

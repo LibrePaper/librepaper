@@ -5,11 +5,11 @@ use serde_json::json;
 
 use super::*;
 use crate::auth::{Policy, HOST_COOKIE_PREFIX};
-use crate::blob::{room_key, BlobError, FsStore};
 use crate::config::Configuration;
+use crate::document::store::load_index;
 use crate::room::{rate_key, Message, RoomSet};
 use crate::server::{client_address, local_path};
-use crate::store::load_index;
+use crate::storage::blob::{room_key, BlobError, FsStore};
 
 // A room belongs to a document, so an invented slug gets nothing: no room, no
 // comments file, and no rate-limit counter of its own to reset.

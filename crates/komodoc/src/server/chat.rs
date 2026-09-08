@@ -280,7 +280,7 @@ fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
 fn token_matches(stored: &str, token: &str) -> bool {
-    let hash = crate::store::digest_of(token);
+    let hash = crate::document::store::digest_of(token);
     let difference = stored
         .bytes()
         .zip(hash.bytes())
@@ -329,7 +329,7 @@ impl Hub {
             id.clone(),
             Channel {
                 slug: slug.into(),
-                token_hash: crate::store::digest_of(&token),
+                token_hash: crate::document::store::digest_of(&token),
                 touched_at: current,
                 browser: None,
                 agent: None,
@@ -518,7 +518,7 @@ impl Hub {
             (&channel.agent, &channel.browser)
         };
         let payload = json!({"type":"message","message":{"id":post.id,"role":post.role,"text":post.text,"context":post.context}});
-        let digest = crate::store::digest_of(&payload.to_string());
+        let digest = crate::document::store::digest_of(&payload.to_string());
         let request = format!("{}:{}", post.role, post.id);
         let duplicate = channel
             .requests

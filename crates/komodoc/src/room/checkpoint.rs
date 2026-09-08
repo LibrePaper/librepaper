@@ -115,7 +115,7 @@ impl Room {
             {
                 state.session.asked = Some((why.to_string(), by.to_string()));
                 (
-                    crate::history::Tree::default(),
+                    crate::document::history::Tree::default(),
                     HashMap::new(),
                     String::new(),
                     String::new(),
@@ -299,7 +299,7 @@ impl Room {
         for (digest, body) in &unwritten {
             if let Err(err) = self
                 .put_accounted(
-                    &crate::blob::blob_key(&self.storage_id, digest),
+                    &crate::storage::blob::blob_key(&self.storage_id, digest),
                     body.clone().into_bytes(),
                     "text",
                 )
@@ -587,7 +587,8 @@ impl Room {
             // before there were directories sit under the same key. Reading
             // it as a tree is the test: a source that happens to parse as
             // this exact JSON shape is not a source anybody wrote.
-            let recovered: Option<crate::history::Tree> = serde_json::from_slice(&raw).ok();
+            let recovered: Option<crate::document::history::Tree> =
+                serde_json::from_slice(&raw).ok();
             let size = match &recovered {
                 Some(tree) => tree.size(),
                 None => raw.len() as i64,
@@ -618,7 +619,7 @@ impl Room {
     /// list on the next one. Kept in memory between checkpoints; read back
     /// only after a cold start, and read as a one-file tree when the entry is
     /// from before a document was a directory.
-    pub(super) async fn parent_tree(&self) -> Option<crate::history::Tree> {
+    pub(super) async fn parent_tree(&self) -> Option<crate::document::history::Tree> {
         let (held, point, path, id) = {
             let state = self.state.lock().await;
             (
@@ -632,9 +633,15 @@ impl Room {
             return held;
         }
         let point = point?;
-        crate::history::load_tree(self.blobs.as_ref(), &self.storage_id, &point, &path, &id)
-            .await
-            .ok()
+        crate::document::history::load_tree(
+            self.blobs.as_ref(),
+            &self.storage_id,
+            &point,
+            &path,
+            &id,
+        )
+        .await
+        .ok()
     }
 
     /// What one checkpoint said: its tree, and the text of every file in it by
@@ -645,7 +652,7 @@ impl Room {
     pub async fn checkpoint_texts(
         &self,
         point: &Checkpoint,
-    ) -> Result<(crate::history::Tree, HashMap<String, String>), String> {
+    ) -> Result<(crate::document::history::Tree, HashMap<String, String>), String> {
         let (path, id) = {
             let state = self.state.lock().await;
             (
@@ -751,9 +758,14 @@ impl Room {
         // The document has nothing in it yet at this point, so the path/id a
         // one-file checkpoint would fall back to come from the index entry
         // rather than the (empty) document.
-        let tree =
-            crate::history::load_tree(self.blobs.as_ref(), &self.storage_id, &point, named, "")
-                .await?;
+        let tree = crate::document::history::load_tree(
+            self.blobs.as_ref(),
+            &self.storage_id,
+            &point,
+            named,
+            "",
+        )
+        .await?;
         let mut bodies = HashMap::new();
         for entry in tree.files.values() {
             if entry.kind != "text" || bodies.contains_key(&entry.sha) {
@@ -761,7 +773,10 @@ impl Room {
             }
             let raw = if point.tree {
                 self.blobs
-                    .get(&crate::blob::blob_key(&self.storage_id, &entry.sha))
+                    .get(&crate::storage::blob::blob_key(
+                        &self.storage_id,
+                        &entry.sha,
+                    ))
                     .await
             } else {
                 self.blobs
@@ -877,7 +892,7 @@ impl Room {
         let body = serde_json::to_vec(&staged).map_err(|err| err.to_string())?;
         let mut version = self.state.lock().await.manifest_version.clone();
         self.write_owned(
-            &crate::blob::history_index_key(&self.slug),
+            &crate::storage::blob::history_index_key(&self.slug),
             body,
             &mut version,
         )
@@ -1013,7 +1028,7 @@ impl Room {
                 };
                 if body != target {
                     let mut effective = entry.clone();
-                    effective.sha = crate::store::digest_of(&body);
+                    effective.sha = crate::document::store::digest_of(&body);
                     effective.size = body.len() as i64;
                     effective_tree.files.insert(path.clone(), effective);
                 }
@@ -1108,7 +1123,7 @@ impl Room {
     /// timeline reads, what the document endpoint lists the paths of, and what
     /// a test asks when it wants to know the name the next checkpoint will
     /// have.
-    pub async fn tree(&self) -> crate::history::Tree {
+    pub async fn tree(&self) -> crate::document::history::Tree {
         let state = self.state.lock().await;
         tree_of(&state.session.doc, &state.session.asset_sizes).0
     }
@@ -1119,7 +1134,7 @@ impl Room {
     /// publication.
     pub async fn rollback_publication(
         &self,
-        tree: &crate::history::Tree,
+        tree: &crate::document::history::Tree,
         bodies: &HashMap<String, String>,
         format: &str,
     ) -> Result<(), String> {
@@ -1195,7 +1210,7 @@ impl Room {
     /// unreferenced -- only that this attempt could not tell -- so nothing at
     /// all is deleted on a pass where that happens, the same rule
     /// `prune_assets` follows for the same reason (R15).
-    pub(super) async fn prune_blobs(&self, written: &crate::history::Tree) {
+    pub(super) async fn prune_blobs(&self, written: &crate::document::history::Tree) {
         let catalog_history = if let Some(catalog) = self.catalog.get() {
             match load_catalog_history(catalog, &self.slug) {
                 Ok(rows) => Some(rows),
@@ -1214,7 +1229,7 @@ impl Room {
             let state = self.state.lock().await;
             let live: std::collections::HashSet<String> = session::texts_of(&state.session.doc)
                 .into_values()
-                .map(|body| crate::store::digest_of(&body))
+                .map(|body| crate::document::store::digest_of(&body))
                 .collect();
             (
                 live,
@@ -1233,7 +1248,7 @@ impl Room {
             if !point.tree {
                 continue; // a checkpoint from before directories names none
             }
-            match crate::history::load_tree(
+            match crate::document::history::load_tree(
                 self.blobs.as_ref(),
                 &self.storage_id,
                 point,
@@ -1261,7 +1276,7 @@ impl Room {
         }
         let Ok(found) = self
             .blobs
-            .list(&crate::blob::blob_prefix(&self.storage_id))
+            .list(&crate::storage::blob::blob_prefix(&self.storage_id))
             .await
         else {
             return;

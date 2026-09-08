@@ -53,7 +53,7 @@ use yrs::{
     Text, TextRef, Transact, TransactionMut, Update,
 };
 
-use crate::paths::{self, Rules};
+use crate::document::paths::{self, Rules};
 
 /// The name of the text every document held before it held a directory. It is
 /// read in two places and written in none: the migration, which moves it into
@@ -948,7 +948,7 @@ pub fn put_asset(doc: &Doc, path: &str, sha: &str) {
 /// words change under their caret instead of their file disappearing and a new
 /// one arriving in its place.
 #[allow(dead_code)] // retained for directory/history unit tests
-pub fn restore(doc: &Doc, tree: &crate::history::Tree, bodies: &HashMap<String, String>) {
+pub fn restore(doc: &Doc, tree: &crate::document::history::Tree, bodies: &HashMap<String, String>) {
     restore_with(doc, tree, |_, entry| {
         bodies.get(&entry.sha).cloned().unwrap_or_default()
     });
@@ -957,7 +957,11 @@ pub fn restore(doc: &Doc, tree: &crate::history::Tree, bodies: &HashMap<String, 
 /// Restores a tree while supplying text by path.  A digest-keyed map is the
 /// historic API above, but a merge can produce different text for two files
 /// which happened to have the same old digest, so the room uses this form.
-pub fn restore_by_path(doc: &Doc, tree: &crate::history::Tree, bodies: &HashMap<String, String>) {
+pub fn restore_by_path(
+    doc: &Doc,
+    tree: &crate::document::history::Tree,
+    bodies: &HashMap<String, String>,
+) {
     restore_with(doc, tree, |path, _| {
         bodies.get(path).cloned().unwrap_or_default()
     });
@@ -965,8 +969,8 @@ pub fn restore_by_path(doc: &Doc, tree: &crate::history::Tree, bodies: &HashMap<
 
 fn restore_with(
     doc: &Doc,
-    tree: &crate::history::Tree,
-    mut body_for: impl FnMut(&str, &crate::history::TreeEntry) -> String,
+    tree: &crate::document::history::Tree,
+    mut body_for: impl FnMut(&str, &crate::document::history::TreeEntry) -> String,
 ) {
     let (files, path_map, assets, meta) = maps(doc);
     let here = paths_of(doc);

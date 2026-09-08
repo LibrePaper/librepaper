@@ -1,9 +1,9 @@
 use serde_json::{json, Value};
 
 use super::*;
-use crate::blob::BlobError;
 use crate::config::{Configuration, SessionLimit};
-use crate::render::render_markdown_document;
+use crate::document::render::render_markdown_document;
+use crate::storage::blob::BlobError;
 
 pub const TEST_MARKDOWN: &str = "# My Paper\n\nHello *world*.\n";
 
@@ -124,8 +124,8 @@ async fn a_document_is_charged_for_its_source_and_its_history() {
     );
     // Nothing derived is stored: no page, and no second copy of the source.
     for prefix in [
-        crate::blob::document_prefix(&slug),
-        crate::blob::source_prefix(&slug),
+        crate::storage::blob::document_prefix(&slug),
+        crate::storage::blob::source_prefix(&slug),
     ] {
         let found = server.instance.store.blobs.list(&prefix).await.unwrap();
         assert!(found.is_empty(), "{prefix} still holds {found:?}");
@@ -320,17 +320,20 @@ async fn an_html_document_is_stored_once() {
         .instance
         .store
         .blobs
-        .get(&crate::blob::checkpoint_key(&entry.storage_id, &entry.sha))
+        .get(&crate::storage::blob::checkpoint_key(
+            &entry.storage_id,
+            &entry.sha,
+        ))
         .await
         .expect("stored as a checkpoint");
     // The checkpoint is the directory; the page is the one file in it.
-    let tree: crate::history::Tree =
+    let tree: crate::document::history::Tree =
         serde_json::from_slice(&checkpoint).expect("the checkpoint is a tree");
     let stored = server
         .instance
         .store
         .blobs
-        .get(&crate::blob::blob_key(
+        .get(&crate::storage::blob::blob_key(
             &entry.storage_id,
             &tree.files[&tree.main].sha,
         ))
@@ -341,7 +344,7 @@ async fn an_html_document_is_stored_once() {
         .instance
         .store
         .blobs
-        .list(&crate::blob::document_prefix(&slug))
+        .list(&crate::storage::blob::document_prefix(&slug))
         .await
         .unwrap();
     assert!(found.is_empty(), "a rendered page was stored: {found:?}");
@@ -406,10 +409,10 @@ async fn a_state_too_large_to_send_inline_is_fetched_with_the_headers_the_shell_
         .expect("a response");
     assert_eq!(response.status().as_u16(), 200);
     let raw = response.bytes().await.expect("the state").to_vec();
-    let mine = crate::session::new_doc();
-    crate::session::apply_update(&mine, &raw).expect("the state applies");
+    let mine = crate::document::session::new_doc();
+    crate::document::session::apply_update(&mine, &raw).expect("the state applies");
     assert_eq!(
-        crate::session::text_of(&mine),
+        crate::document::session::text_of(&mine),
         server.instance.rooms.get(&slug).await.source().await,
         "the fetched state is not the document"
     );

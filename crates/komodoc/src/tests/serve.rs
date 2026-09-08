@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::*;
 use crate::config::Configuration;
-use crate::store::Publication;
+use crate::document::store::Publication;
 
 #[tokio::test]
 async fn upload_needs_a_signed_in_publisher() {
@@ -43,10 +43,10 @@ async fn upload_needs_a_signed_in_publisher() {
 fn deployment_writer_lock_is_exclusive() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state/writer.lock");
-    let first = crate::serve::acquire_writer_lock(&path).unwrap();
-    assert!(crate::serve::acquire_writer_lock(&path).is_err());
+    let first = crate::server::serve::acquire_writer_lock(&path).unwrap();
+    assert!(crate::server::serve::acquire_writer_lock(&path).is_err());
     drop(first);
-    assert!(crate::serve::acquire_writer_lock(&path).is_ok());
+    assert!(crate::server::serve::acquire_writer_lock(&path).is_ok());
 }
 
 #[tokio::test]
@@ -342,7 +342,7 @@ async fn shell_routes() {
         .unwrap();
     // The pages, and the bundle the reader loads: the bundler decides that
     // file's name, so this reads it out of the page rather than knowing it.
-    let shell = crate::assets::load_shell(&Configuration::default()).unwrap();
+    let shell = crate::server::shell::load_shell(&Configuration::default()).unwrap();
     let bundle = regex::Regex::new(r#"src="(/assets/[^"]+\.js)""#)
         .unwrap()
         .captures(&shell["/reader.html"].text())
@@ -491,7 +491,7 @@ async fn the_renderer_is_served_as_wasm() {
         .get(format!(
             "{}{}",
             server.url,
-            crate::assets::module_url("markdown").expect("a markdown module")
+            crate::server::shell::module_url("markdown").expect("a markdown module")
         ))
         .send()
         .await

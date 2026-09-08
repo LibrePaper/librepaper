@@ -258,14 +258,14 @@ pub fn read_and_note_from_files(
 ) -> (Compiled, Vec<String>) {
     let captured: std::collections::HashMap<String, Vec<u8>> = files
         .iter()
-        .map(|(path, bytes)| (crate::paths::normalise(path), bytes.clone()))
+        .map(|(path, bytes)| (crate::document::paths::normalise(path), bytes.clone()))
         .collect();
     let asked: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let compiled = {
         let reader = |path: &Path| -> Option<Vec<u8>> {
-            let key = crate::paths::normalise(&path.to_string_lossy());
+            let key = crate::document::paths::normalise(&path.to_string_lossy());
             let found = captured.get(&key).cloned();
-            if found.is_some() && key != crate::paths::normalise(name) {
+            if found.is_some() && key != crate::document::paths::normalise(name) {
                 let mut seen = asked.lock().unwrap_or_else(|held| held.into_inner());
                 if !seen.contains(&key) {
                     seen.push(key);

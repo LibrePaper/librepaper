@@ -409,8 +409,12 @@ impl Room {
         let requested_id = submission_id(&incoming.temp_id)
             .map(str::to_owned)
             .or_else(|| {
-                (!incoming.request_id.is_empty())
-                    .then(|| format!("request:{}", crate::store::digest_of(&incoming.request_id)))
+                (!incoming.request_id.is_empty()).then(|| {
+                    format!(
+                        "request:{}",
+                        crate::document::store::digest_of(&incoming.request_id)
+                    )
+                })
             });
         if let Some(id) = requested_id.as_deref() {
             if incoming.kind == "comment" || incoming.kind == "reply" {
@@ -664,7 +668,7 @@ impl Room {
                 };
                 state.comments[index].replies.push(added.clone());
                 let persisted = if let Some(catalog) = self.catalog.get() {
-                    let row = crate::catalog::Reply {
+                    let row = crate::storage::catalog::Reply {
                         slug: self.slug.clone(),
                         comment_id: state.comments[index].id.clone(),
                         id: added.id.clone(),

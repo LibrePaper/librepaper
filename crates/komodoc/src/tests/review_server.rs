@@ -8,10 +8,10 @@ use std::time::Duration;
 use futures_util::FutureExt;
 use serde_json::json;
 
-use crate::blob::{BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion, FsStore};
 use crate::config::Configuration;
+use crate::document::session;
 use crate::room;
-use crate::session;
+use crate::storage::blob::{BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion, FsStore};
 
 /// Reads the next frame, but treats the server closing the socket as an
 /// answer rather than a test failure: `Socket::read` panics on a close frame,
@@ -367,10 +367,10 @@ async fn review_revoked_socket_is_closed_and_stops_writing() {
         .instance
         .store
         .modify(&slug, |entry| {
-            entry.editors.push(crate::store::Grant {
+            entry.editors.push(crate::document::store::Grant {
                 id: "github:bob".into(),
                 login: "bob".into(),
-                since: crate::clock::timestamp(),
+                since: crate::util::timestamp(),
                 name: "bob".into(),
             });
             Ok(())
@@ -505,10 +505,10 @@ async fn revoking_a_link_closes_a_named_commenters_keyed_socket() {
         .instance
         .store
         .modify(&slug, |entry| {
-            entry.commenters.push(crate::store::Grant {
+            entry.commenters.push(crate::document::store::Grant {
                 id: "github:bob".into(),
                 login: "bob".into(),
-                since: crate::clock::timestamp(),
+                since: crate::util::timestamp(),
                 name: "Bob".into(),
             });
             Ok(())

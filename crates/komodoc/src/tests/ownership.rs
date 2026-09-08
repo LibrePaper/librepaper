@@ -7,7 +7,7 @@ use serde_json::json;
 use super::*;
 use crate::auth::Policy;
 use crate::config::Configuration;
-use crate::store::{self, Publication};
+use crate::document::store::{self, Publication};
 
 /// The sandbox shape: any signed-in GitHub account may publish, so several
 /// publishers share one deployment.

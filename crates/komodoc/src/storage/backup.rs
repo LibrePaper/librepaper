@@ -16,8 +16,8 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::blob::{BlobError, BlobStore};
 use crate::config::DeploymentPaths;
+use crate::storage::blob::{BlobError, BlobStore};
 
 pub const BACKUP_FORMAT: u16 = 1;
 pub const MAX_BACKUP_OBJECTS: usize = 1_000_000;
@@ -701,17 +701,19 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
         };
         verify_object(
             objects_path,
-            &crate::blob::checkpoint_key(&storage_id, content_sha),
+            &crate::storage::blob::checkpoint_key(&storage_id, content_sha),
             None,
             None,
         )?;
         if !tree_sha.is_empty() {
-            let tree_path =
-                objects_path.join(crate::blob::checkpoint_key(&storage_id, content_sha));
+            let tree_path = objects_path.join(crate::storage::blob::checkpoint_key(
+                &storage_id,
+                content_sha,
+            ));
             let tree_body = fs::read(&tree_path).map_err(|error| {
                 BackupError::Corrupt(format!("{}: {error}", tree_path.display()))
             })?;
-            let tree: crate::history::Tree =
+            let tree: crate::document::history::Tree =
                 serde_json::from_slice(&tree_body).map_err(|error| {
                     BackupError::Corrupt(format!("invalid checkpoint tree {content_sha}: {error}"))
                 })?;
@@ -727,8 +729,8 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
                     ));
                 }
                 let key = match entry.kind.as_str() {
-                    "text" => crate::blob::blob_key(&storage_id, &entry.sha),
-                    "asset" => crate::blob::asset_key(&storage_id, &entry.sha),
+                    "text" => crate::storage::blob::blob_key(&storage_id, &entry.sha),
+                    "asset" => crate::storage::blob::asset_key(&storage_id, &entry.sha),
                     other => {
                         return Err(BackupError::Corrupt(format!(
                             "checkpoint contains unknown file kind {other}"
@@ -790,14 +792,14 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
             .map_err(|error| BackupError::Storage(error.to_string()))?;
         verify_object(
             objects_path,
-            &crate::blob::rendering_key(&storage_id, &tree_sha),
+            &crate::storage::blob::rendering_key(&storage_id, &tree_sha),
             None,
             None,
         )?;
         if synctex != 0 {
             verify_object(
                 objects_path,
-                &crate::blob::rendering_synctex_key(&storage_id, &tree_sha),
+                &crate::storage::blob::rendering_synctex_key(&storage_id, &tree_sha),
                 None,
                 None,
             )?;
@@ -1208,9 +1210,9 @@ pub async fn restore_cli(backup: String, destination: String) {
 mod tests {
     use super::*;
     use crate::auth::{link_sealing_key_file, session_key_file};
-    use crate::blob::FsStore;
-    use crate::catalog::{Account, Catalog};
     use crate::config::DeploymentPaths;
+    use crate::storage::blob::FsStore;
+    use crate::storage::catalog::{Account, Catalog};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -1372,7 +1374,7 @@ mod tests {
                          VALUES ('seed-test','active',1,1,1)",
                         [],
                     )
-                    .map_err(crate::catalog::CatalogError::from)
+                    .map_err(crate::storage::catalog::CatalogError::from)
             })
             .expect("insert transition");
         let result = create_local_backup(&paths, backup_root.path(), "point-1", 10);

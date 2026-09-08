@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use crate::cli::export::{render_jsonld, render_markdown, ANNOTATION_CONTEXT};
 use crate::cli::short_ids;
 use crate::config::Configuration;
-use crate::export::{render_jsonld, render_markdown, ANNOTATION_CONTEXT};
 use crate::room::{Comment, Region, Reply};
 
 fn sample_comments() -> Vec<Comment> {
@@ -299,7 +299,7 @@ fn the_response_is_grouped_by_reviewer_and_says_what_became_of_the_passage() {
     // was rewritten.
     let now = "The interval covers the true value in 95% of repeated samples. \
                Under the stated assumptions the estimator is unbiased.";
-    let out = crate::export::render_response(
+    let out = crate::cli::export::render_response(
         "My Paper",
         &comments,
         "https://komodoc.example.org/docs/c9k",
@@ -347,7 +347,7 @@ fn the_response_is_grouped_by_reviewer_and_says_what_became_of_the_passage() {
 /// its compiler is in a browser and not in this binary.
 #[test]
 fn the_response_leaves_now_out_when_it_cannot_render_the_document() {
-    let out = crate::export::render_response(
+    let out = crate::cli::export::render_response(
         "My Paper",
         &a_review(),
         "urn:komodoc:test",
@@ -367,7 +367,7 @@ fn the_response_quotes_the_replacement_and_can_report_a_deletion() {
         "The interval covers 95% of repeated samples".into(),
     );
     replacements.insert(comments[1].id.clone(), String::new());
-    let out = crate::export::render_response_with_replacements(
+    let out = crate::cli::export::render_response_with_replacements(
         "My Paper",
         &comments,
         "urn:komodoc:test",
@@ -396,7 +396,7 @@ fn replacement_keeps_unchanged_words_between_multiple_utf16_hunks() {
     let old = "The red 🦎 fox at noisy river.";
     let new = "The blue 🦎 fox at calm river.";
     assert_eq!(
-        crate::export::replacement_from(old, new, &item).as_deref(),
+        crate::cli::export::replacement_from(old, new, &item).as_deref(),
         Some("blue 🦎 fox at calm river")
     );
 }
@@ -408,7 +408,7 @@ fn replacement_does_not_claim_an_entire_rewrite_for_a_selection_inside_one_word(
         ..Comment::default()
     };
     assert_eq!(
-        crate::export::replacement_from("infrared", "ultraviolet", &item),
+        crate::cli::export::replacement_from("infrared", "ultraviolet", &item),
         None
     );
 }
@@ -420,7 +420,7 @@ fn replacement_reports_a_quote_deleted_with_the_entire_document() {
         ..Comment::default()
     };
     assert_eq!(
-        crate::export::replacement_from("The old passage", "", &item),
+        crate::cli::export::replacement_from("The old passage", "", &item),
         Some(String::new())
     );
 }
@@ -436,7 +436,7 @@ fn since_keeps_the_comments_made_at_or_after_a_checkpoint() {
         .collect();
     let second = crate::http::text(&checkpoints[1], "sha");
 
-    let kept = crate::export::since(a_review(), &checkpoints, &second);
+    let kept = crate::cli::export::since(a_review(), &checkpoints, &second);
     assert_eq!(kept.len(), 1, "kept {kept:?}");
     assert_eq!(kept[0].id, "c");
 
@@ -445,12 +445,15 @@ fn since_keeps_the_comments_made_at_or_after_a_checkpoint() {
     let mut older = a_review();
     older[0].revision = String::new();
     let first = crate::http::text(&checkpoints[0], "sha");
-    assert_eq!(crate::export::since(older, &checkpoints, &first).len(), 3);
+    assert_eq!(
+        crate::cli::export::since(older, &checkpoints, &first).len(),
+        3
+    );
 
     // A checkpoint the manifest does not have filters nothing away, rather
     // than silently emptying the document somebody asked for.
     assert_eq!(
-        crate::export::since(a_review(), &checkpoints, "nowhere").len(),
+        crate::cli::export::since(a_review(), &checkpoints, "nowhere").len(),
         3
     );
 }

@@ -32,9 +32,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::cli::{link_key, require_token_for, resolve_identifier, server_from, stored_token_for};
+use crate::document::session;
 use crate::http::{detail_of, get_as, text, Credentials, KEY_HEADER};
 use crate::room::{decode_update, encode_update};
-use crate::session;
 use crate::util::die;
 
 /// How long the file has to stay quiet before it is read, and the session
@@ -300,8 +300,8 @@ impl Client {
         // position to publish, and presence never changes its authority.
         self.say(json!({
             "type": "y-awareness",
-            "update": encode_update(&crate::peer::awareness_update(
-                crate::peer::awareness_client_id(&self.doc),
+            "update": encode_update(&crate::cli::peer::awareness_update(
+                crate::cli::peer::awareness_client_id(&self.doc),
                 self.presence_clock,
                 &format!("{} (sync)", self.presence_name),
                 "#4f46e5",
@@ -345,8 +345,8 @@ impl Client {
                         self.last_presence = Instant::now();
                         self.say(json!({
                             "type": "y-awareness",
-                            "update": encode_update(&crate::peer::awareness_update(
-                                crate::peer::awareness_client_id(&self.doc),
+                            "update": encode_update(&crate::cli::peer::awareness_update(
+                                crate::cli::peer::awareness_client_id(&self.doc),
                                 self.presence_clock,
                                 &format!("{} (sync)", self.presence_name),
                                 "#4f46e5",
@@ -835,7 +835,7 @@ fn normalise(raw: &[u8]) -> Result<String, String> {
 }
 
 fn digest(body: &str) -> String {
-    crate::store::digest_of_bytes(body.as_bytes())
+    crate::document::store::digest_of_bytes(body.as_bytes())
 }
 
 /// A conflicting region, short enough for one line of a terminal.

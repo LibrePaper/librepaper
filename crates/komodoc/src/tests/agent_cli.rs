@@ -7,10 +7,11 @@ use serde_json::{json, Value};
 
 use super::*;
 
-async fn peer(server: &TestServer, slug: &str, key: &str) -> crate::peer::AutomationPeer {
-    let link = crate::peer::DocumentLink::parse(&format!("{}/docs/{slug}#k={key}", server.url), "")
-        .expect("a document link");
-    crate::peer::AutomationPeer::open(link)
+async fn peer(server: &TestServer, slug: &str, key: &str) -> crate::cli::peer::AutomationPeer {
+    let link =
+        crate::cli::peer::DocumentLink::parse(&format!("{}/docs/{slug}#k={key}", server.url), "")
+            .expect("a document link");
+    crate::cli::peer::AutomationPeer::open(link)
         .await
         .expect("the automation peer opens")
 }
@@ -75,7 +76,7 @@ async fn unicode_concurrent_peer_edits_survive_headless_restart() {
     );
 
     let source_text = headless.source().await.expect("initial source");
-    let sha = crate::peer::source_sha(&source_text);
+    let sha = crate::cli::peer::source_sha(&source_text);
     let agent_target = "LEFT 😀 intro\nmiddle survives\nend\n";
     let browser_target = "😀 intro\nmiddle survives\nRIGHT end\n";
 
@@ -95,19 +96,22 @@ async fn unicode_concurrent_peer_edits_survive_headless_restart() {
             break frame;
         }
     };
-    let browser_doc = crate::session::new_doc();
-    crate::session::apply_update(
+    let browser_doc = crate::document::session::new_doc();
+    crate::document::session::apply_update(
         &browser_doc,
         &crate::room::decode_update(initial["update"].as_str().expect("inline state")).unwrap(),
     )
     .unwrap();
-    let browser_before = crate::session::encode_vector(&browser_doc);
-    crate::session::apply_edits(
+    let browser_before = crate::document::session::encode_vector(&browser_doc);
+    crate::document::session::apply_edits(
         &browser_doc,
-        &komodoc_text::diff(&crate::session::text_of(&browser_doc), browser_target),
+        &komodoc_text::diff(
+            &crate::document::session::text_of(&browser_doc),
+            browser_target,
+        ),
     );
     let browser_update =
-        crate::session::encode_diff(&browser_doc, &browser_before).expect("browser diff");
+        crate::document::session::encode_diff(&browser_doc, &browser_before).expect("browser diff");
 
     // The browser update was authored from the original state. Let the
     // headless peer commit its independently authored update first, then
@@ -154,7 +158,7 @@ async fn unicode_concurrent_peer_edits_survive_headless_restart() {
         .instance
         .store
         .blobs
-        .delete(&[crate::blob::room_lock_key(&slug)])
+        .delete(&[crate::storage::blob::room_lock_key(&slug)])
         .await
         .expect("the test server releases its room lease");
     let catalog = server
@@ -169,11 +173,11 @@ async fn unicode_concurrent_peer_edits_survive_headless_restart() {
     );
     recovered_rooms.attach_store(server.instance.store.clone());
     recovered_rooms.attach_journal(
-        crate::journal::JournalRuntime::new(
+        crate::storage::journal::JournalRuntime::new(
             catalog.clone(),
             server.instance.store.blobs.clone(),
             "test-deployment",
-            crate::journal::CoordinatorLimits::default(),
+            crate::storage::journal::CoordinatorLimits::default(),
         )
         .expect("the restarted journal runtime opens"),
     );

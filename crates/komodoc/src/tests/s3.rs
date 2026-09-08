@@ -13,10 +13,10 @@ use axum::Router;
 use serde_json::json;
 
 use super::*;
-use crate::blob::{
+use crate::storage::blob::{
     document_key, document_prefix, source_key, version_of, BlobError, BlobStore, INDEX_KEY,
 };
-use crate::s3::{canonical_query, escape_path, signing_key_for, S3Store};
+use crate::storage::s3::{canonical_query, escape_path, signing_key_for, S3Store};
 use crate::storage::StorageOptions;
 
 type Objects = Arc<Mutex<HashMap<String, Vec<u8>>>>;
@@ -326,12 +326,12 @@ fn canonical_encoding() {
 // land, and this is the test that says the paths do not care.
 #[tokio::test]
 async fn a_server_backed_by_a_bucket() {
-    use crate::assets::load_shell;
     use crate::auth::{GithubApp, Policy};
     use crate::config::Configuration;
+    use crate::document::store::Store;
     use crate::room::RoomSet;
+    use crate::server::shell::load_shell;
     use crate::server::Server;
-    use crate::store::Store;
 
     let (endpoint, objects) = fake_bucket().await;
     let blobs: Arc<dyn BlobStore> = Arc::new(S3Store::new(&bucket_options(&endpoint)));
@@ -356,7 +356,7 @@ async fn a_server_backed_by_a_bucket() {
 
     // Publish, the ordinary way.
     let markdown = crate::tests::edit::TEST_MARKDOWN;
-    let html = crate::render::render_markdown_document(markdown, "My Paper");
+    let html = crate::document::render::render_markdown_document(markdown, "My Paper");
     let (status, document) = post(
         &server.url,
         "/api/documents",
@@ -448,7 +448,7 @@ async fn a_server_backed_by_a_bucket() {
 #[tokio::test]
 async fn a_second_writer_cannot_clobber_the_index() {
     use crate::config::Configuration;
-    use crate::store::{Publication, Store};
+    use crate::document::store::{Publication, Store};
 
     let (endpoint, _) = fake_bucket().await;
     let options = bucket_options(&endpoint);

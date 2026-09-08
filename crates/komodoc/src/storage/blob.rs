@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
-use crate::clock::{parse_timestamp, timestamp};
+use crate::util::{parse_timestamp, timestamp};
 
 /// An object's ETag, or "" for one that is not there.
 pub type BlobVersion = String;
@@ -866,7 +866,7 @@ pub async fn take_room_lease(
     expect_epoch: Option<u64>,
 ) -> Lease {
     let key = room_lock_key(slug);
-    let now = crate::clock::now_unix();
+    let now = crate::util::now_unix();
     let (at, epoch) = match blobs.get_versioned(&key).await {
         Ok((raw, at)) => {
             let held: RoomLock = serde_json::from_slice(&raw).unwrap_or_default();

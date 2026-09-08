@@ -179,7 +179,7 @@ pub(super) async fn handle(
     // consulted, nothing here belongs to a document, and a distribution is
     // public bytes whoever asks. It is on the reader's origin because that is
     // where the compile runs -- the worker is the reader's, not the frame's.
-    // See `crate::latex` for why this is a proxy rather than a redirect.
+    // See `crate::server::latex` for why this is a proxy rather than a redirect.
     if let Some(rest) = path.strip_prefix("/latex/") {
         if method != Method::GET && method != Method::HEAD {
             return plain(405, "method not allowed");
@@ -227,7 +227,7 @@ pub(super) async fn handle(
         server.reauthorize_all().await;
         server.rooms.erase_author_from_caches(&identity.id).await;
         if let Err(error) =
-            crate::maintenance::run_erasure_pass(catalog, crate::clock::now_unix(), 25, 250)
+            crate::storage::maintenance::run_erasure_pass(catalog, crate::util::now_unix(), 25, 250)
         {
             eprintln!("warning: account erasure pass failed: {error}");
         }
@@ -500,7 +500,7 @@ pub(super) async fn handle(
             // the role the link they came in on actually carries. Checked
             // against the copy already in hand first, so an open that is not
             // this caller's first never asks the store to write anything.
-            let now = crate::clock::now_unix();
+            let now = crate::util::now_unix();
             if who.id.is_signed_in()
                 && !entry.owned_by(&who.key, &who.id.id)
                 && entry.link_role(&who.link, now).is_some()
@@ -512,7 +512,7 @@ pub(super) async fn handle(
                 let guest = Guest {
                     id: who.id.id.clone(),
                     name: who.id.name.clone(),
-                    since: crate::clock::timestamp(),
+                    since: crate::util::timestamp(),
                     link: who.link.clone(),
                 };
                 // Not a reason to refuse the document: the pin is bookkeeping

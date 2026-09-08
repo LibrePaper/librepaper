@@ -111,8 +111,8 @@ impl Server {
         let https = arrival.is_https();
         let mut signed_who = who.clone();
         if let Some(catalog) = &self.store.catalog {
-            let now = crate::clock::timestamp();
-            let profile = crate::catalog::Account {
+            let now = crate::util::timestamp();
+            let profile = crate::storage::catalog::Account {
                 id: who.id.clone(),
                 provider: who.provider.clone(),
                 handle: who.handle.clone(),

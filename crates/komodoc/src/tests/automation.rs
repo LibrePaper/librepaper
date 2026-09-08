@@ -99,7 +99,7 @@ async fn automation_snapshot_is_link_scoped_and_consistent() {
     assert_eq!(snapshot["capabilities"]["edit"], false);
     assert_eq!(
         snapshot["source_sha"],
-        crate::store::digest_of(snapshot["source"].as_str().unwrap())
+        crate::document::store::digest_of(snapshot["source"].as_str().unwrap())
     );
     assert_eq!(snapshot["main"], snapshot["tree"]["main"]);
     assert_eq!(
@@ -124,7 +124,7 @@ async fn automation_snapshot_is_link_scoped_and_consistent() {
         .store
         .modify(&slug, |entry| {
             if let Some(link) = entry.links.iter_mut().find(|link| link.key == key) {
-                link.until = crate::clock::format_unix(crate::clock::now_unix() - 1);
+                link.until = crate::util::format_unix(crate::util::now_unix() - 1);
             }
             Ok(())
         })

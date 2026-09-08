@@ -220,7 +220,7 @@ async fn replacing_keeps_one_document_and_nothing_derived() {
         .instance
         .store
         .blobs
-        .list(&crate::blob::rendering_prefix(&slug))
+        .list(&crate::storage::blob::rendering_prefix(&slug))
         .await
         .unwrap();
     assert!(found.is_empty(), "a rendered version was kept: {found:?}");
@@ -346,7 +346,7 @@ async fn small_publication_accounting_covers_every_materialized_object() {
                     [&document.storage_id],
                     |row| row.get(0),
                 )
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     assert!(

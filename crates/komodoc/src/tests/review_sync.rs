@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::session;
-use crate::sync::Client;
+use crate::cli::sync::Client;
+use crate::document::session;
 
 /// The `y-state` a reconnect delivers, from a document holding `main.md`.
 fn state_of(doc: &yrs::Doc) -> String {

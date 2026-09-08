@@ -6,7 +6,7 @@ use axum::http::HeaderMap;
 
 use super::*;
 use crate::auth::{read_visitor, sign_visitor, Identity, VISITOR_COOKIE};
-use crate::origins::Arrival;
+use crate::server::origins::Arrival;
 use crate::server::VISITOR_PREFIX;
 
 fn arrival() -> Arrival {

@@ -19,9 +19,9 @@ async fn main_http_harness_uses_file_catalog_and_initialized_journal() {
     assert!(!state.writer_generation.is_empty());
 }
 
-use crate::blob::{self, BlobStore};
 use crate::config::Configuration;
-use crate::store;
+use crate::document::store;
+use crate::storage::blob::{self, BlobStore};
 use std::sync::Arc;
 
 /// A blob store and a `Configuration`, shared by two `Store`s the way two
@@ -118,7 +118,8 @@ async fn catalog_store_round_trips_documents_without_index_json() {
     let dir = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
     std::fs::create_dir_all(dir.path().join("objects")).unwrap();
-    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());
     let first = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
         .await
@@ -150,7 +151,8 @@ async fn catalog_account_owner_is_never_owned_by_anonymous_callers() {
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
-    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let store = store::Store::open_with_catalog(blobs, Arc::new(Configuration::default()), catalog)
         .await
         .unwrap();
@@ -208,11 +210,12 @@ async fn review_record_history_conflict_retries_and_lands() {
 
 fn local_catalog_store(
     dir: &tempfile::TempDir,
-) -> (Arc<dyn BlobStore>, Arc<crate::catalog::Catalog>) {
+) -> (Arc<dyn BlobStore>, Arc<crate::storage::catalog::Catalog>) {
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
-    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     (blobs, catalog)
 }
 
@@ -235,7 +238,7 @@ async fn stage_room_publication(
     let objects = std::path::PathBuf::from(rooms.blobs.describe());
     if objects.file_name().is_some_and(|name| name == "objects") {
         if let Some(root) = objects.parent() {
-            let lock = crate::serve::acquire_writer_lock(&root.join("state/writer.lock"))
+            let lock = crate::server::serve::acquire_writer_lock(&root.join("state/writer.lock"))
                 .expect("local publication phase owns the deployment writer lock");
             rooms.attach_deployment_lock(lock);
         }
@@ -293,7 +296,7 @@ async fn catalog_publication_receipt_retries_and_commits_after_reopen() {
     drop(catalog);
 
     let reopened_catalog =
-        Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let reopened = Arc::new(
         store::Store::open_with_catalog(blobs, config, reopened_catalog.clone())
             .await
@@ -389,7 +392,7 @@ async fn catalog_concurrent_admission_is_atomic() {
     let config = Arc::new(limits);
     let (blobs, catalog) = local_catalog_store(&dir);
     let first_catalog =
-        Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let first = Arc::new(
         store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
             .await
@@ -415,8 +418,8 @@ async fn catalog_concurrent_admission_is_atomic() {
     let (left, right) = tokio::join!(left, right);
     assert_eq!(left.is_ok(), right.is_err());
     assert!(
-        matches!(right, Err(crate::store::PutError::Quota { .. }))
-            || matches!(left, Err(crate::store::PutError::Quota { .. }))
+        matches!(right, Err(crate::document::store::PutError::Quota { .. }))
+            || matches!(left, Err(crate::document::store::PutError::Quota { .. }))
     );
 }
 
@@ -460,7 +463,10 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
             ..Default::default()
         })
         .await;
-    assert!(matches!(refused, Err(crate::store::PutError::Quota { .. })));
+    assert!(matches!(
+        refused,
+        Err(crate::document::store::PutError::Quota { .. })
+    ));
     let document = catalog.document("replace").unwrap().unwrap();
     assert_eq!(document.size, 8);
     assert_eq!(document.counted_size, 8);
@@ -486,7 +492,7 @@ async fn catalog_removal_queue_resumes_after_reopen() {
         })
         .await
         .unwrap();
-    let key = crate::blob::document_key(&entry.storage_id, "tree");
+    let key = crate::storage::blob::document_key(&entry.storage_id, "tree");
     store
         .blobs
         .put(&key, b"tree".to_vec(), "application/octet-stream")
@@ -494,19 +500,20 @@ async fn catalog_removal_queue_resumes_after_reopen() {
         .unwrap();
     catalog.begin_delete("remove-me").unwrap();
     catalog
-        .queue_delete(&crate::catalog::PendingDelete {
+        .queue_delete(&crate::storage::catalog::PendingDelete {
             slug: "remove-me".into(),
             object_key: key.clone(),
             bytes: 4,
-            queued_at: crate::clock::now_unix(),
-            delete_after: crate::clock::now_unix(),
+            queued_at: crate::util::now_unix(),
+            delete_after: crate::util::now_unix(),
         })
         .unwrap();
     drop(store);
     drop(catalog);
 
-    let reopened = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
-    let due = reopened.due_deletes(crate::clock::now_unix(), 100).unwrap();
+    let reopened =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let due = reopened.due_deletes(crate::util::now_unix(), 100).unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].object_key, key);
     let reopened_blobs: Arc<dyn BlobStore> =

@@ -15,11 +15,11 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::*;
-use crate::blob::{
+use crate::config::{Configuration, SessionLimit};
+use crate::storage::blob::{
     checkpoint_key, history_index_key, session_key, BlobError, BlobInfo, BlobResult, BlobStore,
     BlobVersion, FsStore,
 };
-use crate::config::{Configuration, SessionLimit};
 use crate::tests::edit::{publish_with_source, TEST_MARKDOWN};
 use crate::tests::yjs::{browser_available, Browser};
 
@@ -491,7 +491,7 @@ async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
     let blobs = Failing::over(Arc::new(FsStore::new(dir.path())));
     let (base, instance) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let slug = text(&publish_with_source(&base).await, "slug");
-    let before = crate::history::load(blobs.as_ref(), &slug)
+    let before = crate::document::history::load(blobs.as_ref(), &slug)
         .await
         .expect("a manifest");
     assert_eq!(before.checkpoints.len(), 1);
@@ -511,7 +511,7 @@ async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
         "a failed write changed the document"
     );
     assert_eq!(
-        crate::history::load(blobs.as_ref(), &slug)
+        crate::document::history::load(blobs.as_ref(), &slug)
             .await
             .expect("a manifest")
             .checkpoints,
@@ -528,7 +528,7 @@ async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
         "a checkpoint with no manifest reported success"
     );
     assert_eq!(
-        crate::history::load(blobs.as_ref(), &slug)
+        crate::document::history::load(blobs.as_ref(), &slug)
             .await
             .expect("a manifest")
             .checkpoints,
@@ -567,16 +567,16 @@ async fn a_manifest_missing_its_newest_entry_is_repaired() {
     );
     assert!(
         blobs
-            .get(&crate::blob::blob_key(
+            .get(&crate::storage::blob::blob_key(
                 &slug,
-                &crate::store::digest_of(lost)
+                &crate::document::store::digest_of(lost)
             ))
             .await
             .is_ok(),
         "the text the checkpoint names was never written"
     );
     assert!(
-        !crate::history::load(blobs.as_ref(), &slug)
+        !crate::document::history::load(blobs.as_ref(), &slug)
             .await
             .unwrap()
             .has(&lost_sha),
@@ -592,7 +592,9 @@ async fn a_manifest_missing_its_newest_entry_is_repaired() {
         .await
         .expect("the checkpoint succeeds")
         .expect("a checkpoint, not a deferral");
-    let manifest = crate::history::load(blobs.as_ref(), &slug).await.unwrap();
+    let manifest = crate::document::history::load(blobs.as_ref(), &slug)
+        .await
+        .unwrap();
     assert!(
         manifest.has(&lost_sha),
         "the missing checkpoint was not recovered: {manifest:?}"
@@ -873,11 +875,11 @@ async fn a_large_document_is_fetched_rather_than_framed() {
 async fn write_the_old_layout(dir: &std::path::Path, slug: &str) {
     let html = "<!doctype html><html><head><title>My Paper</title></head>\
                 <body><h1>My Paper</h1><p>Hello <em>world</em>.</p></body></html>";
-    let digest = crate::store::digest_of(html);
+    let digest = crate::document::store::digest_of(html);
     let blobs = FsStore::new(dir);
     blobs
         .put(
-            &crate::blob::document_key(slug, &digest),
+            &crate::storage::blob::document_key(slug, &digest),
             html.as_bytes().to_vec(),
             "text/html",
         )
@@ -885,7 +887,7 @@ async fn write_the_old_layout(dir: &std::path::Path, slug: &str) {
         .unwrap();
     blobs
         .put(
-            &crate::blob::source_key(slug, &digest),
+            &crate::storage::blob::source_key(slug, &digest),
             TEST_MARKDOWN.as_bytes().to_vec(),
             "text/plain",
         )
@@ -904,7 +906,7 @@ async fn write_the_old_layout(dir: &std::path::Path, slug: &str) {
     );
     blobs
         .put(
-            crate::blob::INDEX_KEY,
+            crate::storage::blob::INDEX_KEY,
             serde_json::to_vec(&entries).unwrap(),
             "application/json",
         )
@@ -912,7 +914,7 @@ async fn write_the_old_layout(dir: &std::path::Path, slug: &str) {
         .unwrap();
     blobs
         .put(
-            &crate::blob::room_key(slug),
+            &crate::storage::blob::room_key(slug),
             serde_json::to_vec(&json!({
                 "seq": 1,
                 "comments": [{
@@ -941,7 +943,7 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
     let slug = "my-paper-abcdefghij";
     write_the_old_layout(dir.path(), slug).await;
 
-    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
     let (base, instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
     // This entry names a publisher on record, so the bare URL opens it only
     // for them -- exactly the account the old layout recorded here.
@@ -972,7 +974,7 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
         instance
             .store
             .blobs
-            .get(&crate::blob::source_key(slug, &entry.sha))
+            .get(&crate::storage::blob::source_key(slug, &entry.sha))
             .await
             .is_ok(),
         "the old source was removed before its replacement existed"
@@ -987,7 +989,7 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
     // The checkpoint is the tree, and the words are in the blob it names. A
     // migrated document is a directory of one file, so what a reader of the
     // history gets back is exactly what was published, one indirection along.
-    let tree: crate::history::Tree = serde_json::from_slice(
+    let tree: crate::document::history::Tree = serde_json::from_slice(
         &instance
             .store
             .blobs
@@ -1001,7 +1003,10 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
         instance
             .store
             .blobs
-            .get(&crate::blob::blob_key(slug, &tree.files[&tree.main].sha))
+            .get(&crate::storage::blob::blob_key(
+                slug,
+                &tree.files[&tree.main].sha
+            ))
             .await
             .map(|raw| String::from_utf8_lossy(&raw).to_string())
             .unwrap(),
@@ -1018,7 +1023,10 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
     assert!(instance
         .store
         .blobs
-        .get(&crate::blob::blob_key(slug, &tree.files[&tree.main].sha))
+        .get(&crate::storage::blob::blob_key(
+            slug,
+            &tree.files[&tree.main].sha
+        ))
         .await
         .is_ok());
 }
@@ -1034,11 +1042,11 @@ async fn a_document_with_an_unversioned_source_keeps_its_own_format() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let slug = "old-paper-abcdefghij";
     let html = "<!doctype html><html><body><h1>Old Paper</h1></body></html>";
-    let digest = crate::store::digest_of(html);
+    let digest = crate::document::store::digest_of(html);
     let blobs = FsStore::new(dir.path());
     blobs
         .put(
-            &crate::blob::document_key(slug, &digest),
+            &crate::storage::blob::document_key(slug, &digest),
             html.as_bytes().to_vec(),
             "text/html",
         )
@@ -1047,7 +1055,7 @@ async fn a_document_with_an_unversioned_source_keeps_its_own_format() {
     // The unversioned key, as `seed` wrote it before sources were versioned.
     blobs
         .put(
-            &crate::blob::legacy_source_key(slug),
+            &crate::storage::blob::legacy_source_key(slug),
             TEST_MARKDOWN.as_bytes().to_vec(),
             "text/plain",
         )
@@ -1062,14 +1070,14 @@ async fn a_document_with_an_unversioned_source_keeps_its_own_format() {
     );
     blobs
         .put(
-            crate::blob::INDEX_KEY,
+            crate::storage::blob::INDEX_KEY,
             serde_json::to_vec(&entries).unwrap(),
             "application/json",
         )
         .await
         .unwrap();
 
-    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
     let (base, _instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
     let (status, payload) = get_json(&base, &format!("/api/documents/{slug}/source")).await;
     assert_eq!(status, 200, "{payload}");
@@ -1089,11 +1097,11 @@ async fn an_old_html_document_is_seeded_from_its_page() {
     let slug = "a-page-abcdefghij";
     let page =
         "<!doctype html><html><head><title>A Page</title></head><body><p>prose</p></body></html>";
-    let digest = crate::store::digest_of(page);
+    let digest = crate::document::store::digest_of(page);
     let blobs = FsStore::new(dir.path());
     blobs
         .put(
-            &crate::blob::document_key(slug, &digest),
+            &crate::storage::blob::document_key(slug, &digest),
             page.as_bytes().to_vec(),
             "text/html",
         )
@@ -1109,14 +1117,14 @@ async fn an_old_html_document_is_seeded_from_its_page() {
     );
     blobs
         .put(
-            crate::blob::INDEX_KEY,
+            crate::storage::blob::INDEX_KEY,
             serde_json::to_vec(&entries).unwrap(),
             "application/json",
         )
         .await
         .unwrap();
 
-    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
     let (base, _instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
     // This entry names a publisher on record, so it opens only for them.
     let (status, payload) = get_json_as(
@@ -1497,33 +1505,37 @@ async fn a_refused_update_is_still_refused_after_a_reconnect_and_a_restart() {
 #[test]
 fn admission_measures_a_large_document_without_rehearsing_small_updates() {
     let ceiling = 4 * 1024 * 1024;
-    let doc = crate::session::new_doc();
+    let doc = crate::document::session::new_doc();
     // A realistic large source: a megabyte of prose, inserted the way an
     // import would arrive rather than character by character.
     let prose = "The quick brown fox jumps over the lazy dog. ".repeat(24_000);
-    crate::session::replace_text(&doc, &prose, "main.md");
-    let held = crate::session::text_of(&doc).len();
+    crate::document::session::replace_text(&doc, &prose, "main.md");
+    let held = crate::document::session::text_of(&doc).len();
     assert!(held > 1_000_000, "the fixture is only {held} bytes");
 
     // One keystroke, as a browser sends it.
     let keystroke = {
-        let scratch = crate::session::new_doc();
-        crate::session::apply_update(&scratch, &crate::session::encode_state(&doc)).unwrap();
-        let before = crate::session::encode_vector(&scratch);
+        let scratch = crate::document::session::new_doc();
+        crate::document::session::apply_update(
+            &scratch,
+            &crate::document::session::encode_state(&doc),
+        )
+        .unwrap();
+        let before = crate::document::session::encode_vector(&scratch);
         {
             use yrs::{Text, Transact};
-            let text = scratch.get_or_insert_text(crate::session::SOURCE);
+            let text = scratch.get_or_insert_text(crate::document::session::SOURCE);
             let mut txn = scratch.transact_mut();
             text.insert(&mut txn, 0, "x");
         }
-        crate::session::encode_diff(&scratch, &before).unwrap()
+        crate::document::session::encode_diff(&scratch, &before).unwrap()
     };
 
     let started = std::time::Instant::now();
     for _ in 0..100 {
         assert_eq!(
-            crate::session::admit_update(&doc, &keystroke, ceiling, usize::MAX),
-            crate::session::Admission::Fits
+            crate::document::session::admit_update(&doc, &keystroke, ceiling, usize::MAX),
+            crate::document::session::Admission::Fits
         );
     }
     let ordinary = started.elapsed() / 100;
@@ -1531,21 +1543,25 @@ fn admission_measures_a_large_document_without_rehearsing_small_updates() {
     // And the path that has to rehearse: an update that alone exceeds what is
     // left, on the same document.
     let overreach = {
-        let scratch = crate::session::new_doc();
-        crate::session::apply_update(&scratch, &crate::session::encode_state(&doc)).unwrap();
-        let before = crate::session::encode_vector(&scratch);
+        let scratch = crate::document::session::new_doc();
+        crate::document::session::apply_update(
+            &scratch,
+            &crate::document::session::encode_state(&doc),
+        )
+        .unwrap();
+        let before = crate::document::session::encode_vector(&scratch);
         {
             use yrs::{Text, Transact};
-            let text = scratch.get_or_insert_text(crate::session::SOURCE);
+            let text = scratch.get_or_insert_text(crate::document::session::SOURCE);
             let mut txn = scratch.transact_mut();
             text.insert(&mut txn, 0, &"z".repeat(4 * 1024 * 1024));
         }
-        crate::session::encode_diff(&scratch, &before).unwrap()
+        crate::document::session::encode_diff(&scratch, &before).unwrap()
     };
     let started = std::time::Instant::now();
     assert_eq!(
-        crate::session::admit_update(&doc, &overreach, ceiling, usize::MAX),
-        crate::session::Admission::TooLarge
+        crate::document::session::admit_update(&doc, &overreach, ceiling, usize::MAX),
+        crate::document::session::Admission::TooLarge
     );
     let rehearsed = started.elapsed();
 
@@ -1632,10 +1648,10 @@ async fn a_former_owner_cannot_write_after_being_taken_over() {
     // because the alternative is a test that waits five minutes.
     blobs
         .put(
-            &crate::blob::room_lock_key(&slug),
-            serde_json::to_vec(&crate::blob::RoomLock {
+            &crate::storage::blob::room_lock_key(&slug),
+            serde_json::to_vec(&crate::storage::blob::RoomLock {
                 holder: "server-that-took-over".into(),
-                taken: crate::clock::format_unix(crate::clock::now_unix()),
+                taken: crate::util::format_unix(crate::util::now_unix()),
                 epoch: 99,
             })
             .unwrap(),
@@ -1702,14 +1718,14 @@ async fn deployment_quota_admission_is_serialised_across_documents() {
         },
         ..Configuration::default()
     });
-    let first = crate::store::Store::open(blobs.clone(), config.clone())
+    let first = crate::document::store::Store::open(blobs.clone(), config.clone())
         .await
         .unwrap();
-    let second = crate::store::Store::open(blobs.clone(), config.clone())
+    let second = crate::document::store::Store::open(blobs.clone(), config.clone())
         .await
         .unwrap();
     // Both read the same empty index, so both believe the whole quota is free.
-    let publication = |slug: &str| crate::store::Publication {
+    let publication = |slug: &str| crate::document::store::Publication {
         slug: slug.to_string(),
         title: slug.to_string(),
         source: "x".repeat(30),
@@ -1723,13 +1739,15 @@ async fn deployment_quota_admission_is_serialised_across_documents() {
     );
     let refused = second.put(publication("second")).await;
     assert!(
-        matches!(refused, Err(crate::store::PutError::Quota { .. })),
+        matches!(refused, Err(crate::document::store::PutError::Quota { .. })),
         "two stores over one bucket both spent the last of the quota: {:?}",
         refused.map(|entry| entry.slug)
     );
 
     // And the index says one document, not two.
-    let (entries, _) = crate::store::load_index(blobs.as_ref()).await.unwrap();
+    let (entries, _) = crate::document::store::load_index(blobs.as_ref())
+        .await
+        .unwrap();
     assert_eq!(
         entries.len(),
         1,
@@ -1740,7 +1758,7 @@ async fn deployment_quota_admission_is_serialised_across_documents() {
 
 #[test]
 fn browser_rendering_digest_matches_rust_tree_bytes() {
-    use crate::history::{Tree, TreeEntry};
+    use crate::document::history::{Tree, TreeEntry};
     use sha2::{Digest, Sha256};
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -1821,7 +1839,7 @@ fn browser_rendering_digest_matches_rust_tree_bytes() {
 /// field into the "no settings" case would still be caught.
 #[test]
 fn tree_without_settings_serializes_as_before() {
-    use crate::history::{CompileSettings, Tree, TreeEntry};
+    use crate::document::history::{CompileSettings, Tree, TreeEntry};
     use sha2::{Digest, Sha256};
 
     let mut files = std::collections::BTreeMap::new();
@@ -1873,7 +1891,7 @@ fn tree_without_settings_serializes_as_before() {
 /// change must not silently reuse an artifact identified only by source.
 #[test]
 fn compile_settings_change_the_tree_digest() {
-    use crate::history::{CompileSettings, Tree, TreeEntry};
+    use crate::document::history::{CompileSettings, Tree, TreeEntry};
 
     let mut files = std::collections::BTreeMap::new();
     files.insert(

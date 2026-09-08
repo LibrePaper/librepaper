@@ -8,8 +8,8 @@
 use serde_json::{json, Value};
 
 use super::*;
-use crate::latex::Mirror;
-use crate::render::{document_format, is_latex, title_from_latex};
+use crate::document::render::{document_format, is_latex, title_from_latex};
+use crate::server::latex::Mirror;
 
 /// A mirror on disk, in the shape `latex/tools/mirror.mjs` writes: the manifest at
 /// the top and everything else under a directory named by a digest.

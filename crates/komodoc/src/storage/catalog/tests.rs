@@ -325,7 +325,7 @@ fn deleting_document_keeps_capacity_until_journal_retirement_finishes() {
                      VALUES ('journal/deploy/segments/s1','segment',1,1,1)",
                     [],
                 )
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     assert!(catalog.finish_delete("doc").is_err());
@@ -337,7 +337,7 @@ fn deleting_document_keeps_capacity_until_journal_retirement_finishes() {
                      WHERE object_key='journal/deploy/segments/s1'",
                     [],
                 )
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     catalog.finish_delete("doc").unwrap();
@@ -351,7 +351,7 @@ fn object_accounting_reserves_replaces_and_aborts_exact_deltas() {
 
     assert_eq!(
         catalog
-            .reserve_object_change(crate::catalog::ObjectReservationRequest {
+            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
                 slug: "doc",
                 operation_id: "session-1",
                 object_key: "sessions/doc",
@@ -373,7 +373,7 @@ fn object_accounting_reserves_replaces_and_aborts_exact_deltas() {
     // Shrinking an existing object releases only the replacement delta.
     assert_eq!(
         catalog
-            .reserve_object_change(crate::catalog::ObjectReservationRequest {
+            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
                 slug: "doc",
                 operation_id: "session-2",
                 object_key: "sessions/doc",
@@ -393,7 +393,7 @@ fn object_accounting_reserves_replaces_and_aborts_exact_deltas() {
     // A failed growth restores both the reservation and deployment total.
     assert_eq!(
         catalog
-            .reserve_object_change(crate::catalog::ObjectReservationRequest {
+            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
                 slug: "doc",
                 operation_id: "session-3",
                 object_key: "sessions/doc",
@@ -613,7 +613,7 @@ fn link_key_rotation_resumes_after_a_bounded_batch() {
                         [&first.id],
                         |row| row.get(0),
                     )
-                    .map_err(crate::catalog::CatalogError::from)
+                    .map_err(crate::storage::catalog::CatalogError::from)
             })
             .unwrap();
         assert_eq!(running, "running");
@@ -639,7 +639,7 @@ fn link_key_rotation_resumes_after_a_bounded_batch() {
                     [link_key_id_for_test(&new)],
                     |row| row.get(0),
                 )
-                .map_err(crate::catalog::CatalogError::from)?;
+                .map_err(crate::storage::catalog::CatalogError::from)?;
             assert_eq!(old_rows, 0);
             Ok(())
         })
@@ -727,9 +727,9 @@ async fn checked_production_lookup_propagates_corrupt_authorization_rows() {
         })
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs: std::sync::Arc<dyn crate::blob::BlobStore> =
-        std::sync::Arc::new(crate::blob::FsStore::new(dir.path()));
-    let store = crate::store::Store::open_with_catalog(
+    let blobs: std::sync::Arc<dyn crate::storage::blob::BlobStore> =
+        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path()));
+    let store = crate::document::store::Store::open_with_catalog(
         blobs,
         std::sync::Arc::new(crate::config::Configuration::default()),
         catalog,
@@ -748,9 +748,9 @@ async fn bounded_listing_propagates_catalog_failure() {
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs: std::sync::Arc<dyn crate::blob::BlobStore> =
-        std::sync::Arc::new(crate::blob::FsStore::new(dir.path()));
-    let store = crate::store::Store::open_with_catalog(
+    let blobs: std::sync::Arc<dyn crate::storage::blob::BlobStore> =
+        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path()));
+    let store = crate::document::store::Store::open_with_catalog(
         blobs,
         std::sync::Arc::new(crate::config::Configuration::default()),
         catalog.clone(),
@@ -762,7 +762,7 @@ async fn bounded_listing_propagates_catalog_failure() {
             connection
                 .execute("DROP TABLE guests", [])
                 .map(|_| ())
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     assert!(
@@ -779,7 +779,7 @@ fn measured_reconciliation_preserves_inflight_object_reservation() {
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
     catalog
-        .reserve_object_change(crate::catalog::ObjectReservationRequest {
+        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
             slug: "doc",
             operation_id: "pending",
             object_key: "sessions/doc",
@@ -791,7 +791,7 @@ fn measured_reconciliation_preserves_inflight_object_reservation() {
         .unwrap();
     assert_eq!(
         catalog
-            .reserve_object_change(crate::catalog::ObjectReservationRequest {
+            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
                 slug: "doc",
                 operation_id: "pending",
                 object_key: "sessions/doc",
@@ -824,7 +824,7 @@ fn checkpoint_budget_cleanup_is_bounded_and_keeps_recent_hours() {
                          VALUES('owner',?1,'acct-1',1)",
                         [bucket],
                     )
-                    .map_err(crate::catalog::CatalogError::from)?;
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
             }
             Ok(())
         })
@@ -838,7 +838,7 @@ fn checkpoint_budget_cleanup_is_bounded_and_keeps_recent_hours() {
                     [],
                     |row| row.get(0),
                 )
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     assert_eq!(remaining, 3);
@@ -889,7 +889,7 @@ fn account_erasure_uses_a_stable_primary_key_cursor() {
                     [],
                     |row| row.get(0),
                 )
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     assert_eq!(remaining, 0);

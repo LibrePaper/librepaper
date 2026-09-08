@@ -680,7 +680,7 @@ async fn destroying_a_document_takes_its_renderings() {
             .instance
             .store
             .blobs
-            .list(&crate::blob::rendering_prefix(&slug))
+            .list(&crate::storage::blob::rendering_prefix(&slug))
             .await
             .unwrap_or_default()
             .is_empty(),

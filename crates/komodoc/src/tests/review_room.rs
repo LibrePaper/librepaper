@@ -5,12 +5,12 @@
 #![allow(unused_imports)]
 use super::*;
 
-use crate::blob::{self, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion};
 use crate::config::Configuration;
-use crate::history;
+use crate::document::history;
+use crate::document::session;
+use crate::document::store;
 use crate::room;
-use crate::session;
-use crate::store;
+use crate::storage::blob::{self, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use yrs::{Map, Transact};
@@ -52,7 +52,8 @@ async fn fixture(config: Configuration) -> (tempfile::TempDir, Arc<store::Store>
 async fn catalog_history_pagination_preserves_newer_checkpoints() {
     let dir = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
-    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let mut config = Configuration::default();
     config.session.history_max = 512;
     let config = Arc::new(config);
@@ -774,7 +775,7 @@ async fn review_shed_history_keeps_blob_shared_by_retained_checkpoints() {
     // history_max=2 has shed down to the two newest checkpoints by now; both
     // still name shared.txt.
     assert_eq!(room.manifest().await.checkpoints.len(), 2);
-    let shared_sha = crate::store::digest_of("SHARED");
+    let shared_sha = crate::document::store::digest_of("SHARED");
     assert!(
         store
             .blobs
@@ -886,7 +887,8 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects));
-    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());
     let store = Arc::new(
         store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -904,14 +906,14 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
         .await
         .unwrap();
     let deployment_id = "review-deployment";
-    crate::journal::JournalStore::new(catalog.clone())
+    crate::storage::journal::JournalStore::new(catalog.clone())
         .initialize_local(deployment_id)
         .unwrap();
-    let runtime = crate::journal::JournalRuntime::new(
+    let runtime = crate::storage::journal::JournalRuntime::new(
         catalog.clone(),
         blobs.clone(),
         deployment_id,
-        crate::journal::CoordinatorLimits::default(),
+        crate::storage::journal::CoordinatorLimits::default(),
     )
     .unwrap();
     let rooms = room::RoomSet::new(blobs.clone(), config.clone());
@@ -927,7 +929,7 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
                 .query_row("SELECT COUNT(*) FROM journal_segments", [], |row| {
                     row.get(0)
                 })
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     assert!(
@@ -943,11 +945,11 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
         .delete(&[blob::room_lock_key("journal-room")])
         .await
         .unwrap();
-    let recovered_runtime = crate::journal::JournalRuntime::new(
+    let recovered_runtime = crate::storage::journal::JournalRuntime::new(
         catalog.clone(),
         blobs.clone(),
         deployment_id,
-        crate::journal::CoordinatorLimits::default(),
+        crate::storage::journal::CoordinatorLimits::default(),
     )
     .unwrap();
     let recovered_rooms = room::RoomSet::new(blobs, config);
@@ -963,7 +965,8 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects));
-    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());
     let store = Arc::new(
         store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -1059,7 +1062,7 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
                     [],
                     |row| row.get(0),
                 )
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     assert_eq!(operations, 3); // publication, comment, reply
@@ -1083,8 +1086,8 @@ async fn automatic_checkpoint_uses_hourly_interval_without_quiet_time() {
     room.set_source("B", "markdown").await;
     {
         let mut state = room.state.lock().await;
-        state.session.last_checkpoint_at = crate::clock::now_unix() - 2;
-        state.session.updated_at = crate::clock::now_unix();
+        state.session.last_checkpoint_at = crate::util::now_unix() - 2;
+        state.session.updated_at = crate::util::now_unix();
     }
     assert!(!room.tick().await);
     assert_eq!(room.manifest().await.checkpoints.len(), 2);
@@ -1097,7 +1100,7 @@ async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
     std::fs::create_dir_all(&objects).unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
     let catalog_path = dir.path().join("catalog.db");
-    let catalog = Arc::new(crate::catalog::Catalog::open(&catalog_path).unwrap());
+    let catalog = Arc::new(crate::storage::catalog::Catalog::open(&catalog_path).unwrap());
     let config = Arc::new(Configuration::default());
     let store = Arc::new(
         store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -1144,7 +1147,7 @@ async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
         .admit_checkpoint("budgeted", 7 * 3600, false)
         .is_err());
     drop(catalog);
-    let reopened = crate::catalog::Catalog::open(catalog_path).unwrap();
+    let reopened = crate::storage::catalog::Catalog::open(catalog_path).unwrap();
     assert!(!reopened
         .admit_checkpoint("budgeted", 7 * 3600, true)
         .unwrap());
@@ -1154,10 +1157,11 @@ async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
 async fn room_opens_read_only_when_catalogue_authorization_read_fails() {
     let dir = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
-    let catalog =
-        Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.sqlite")).unwrap());
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(dir.path().join("catalog.sqlite")).unwrap(),
+    );
     catalog
-        .create_document(&crate::catalog::NewDocument {
+        .create_document(&crate::storage::catalog::NewDocument {
             slug: "catalog-fault".into(),
             storage_id: "storage-catalog-fault".into(),
             title: "Fault".into(),
@@ -1182,7 +1186,7 @@ async fn room_opens_read_only_when_catalogue_authorization_read_fails() {
             connection
                 .execute("DROP TABLE guests", [])
                 .map(|_| ())
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     let store = Arc::new(

@@ -5,20 +5,18 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 
-use crate::assets::load_shell;
 use crate::auth::{link_sealing_keyring_file, session_key_file, GithubApp, GoogleApp, Policy};
 use crate::config::{Configuration, DeploymentProfile};
-use crate::origins::DOCS_PREFIX;
-use crate::retention::{describe_seconds, parse_expire_from, parse_retention};
+use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
+use crate::document::store::Store;
 use crate::room::RoomSet;
+use crate::server::origins::DOCS_PREFIX;
+use crate::server::shell::load_shell;
 use crate::server::Server;
+use crate::storage::journal::JournalStore;
+use crate::storage::maintenance::{DeletionLimits, DeletionWorker, JournalRetirementWorker};
 use crate::storage::{migrate_legacy_source, open_storage, StorageOptions};
-use crate::store::Store;
 use crate::util::{die, first_of};
-use crate::{
-    journal::JournalStore,
-    maintenance::{DeletionLimits, DeletionWorker, JournalRetirementWorker},
-};
 
 /// With no --port, serve takes the first free port in this range, so a second
 /// deployment on the same machine, or a port something else has already
@@ -38,7 +36,7 @@ pub struct ServeOptions {
     pub expire_from: String,
     /// Where this deployment reads LaTeX distributions from: an https bucket,
     /// a directory on this machine, or empty for a deployment that serves no
-    /// LaTeX at all. See `crate::latex`.
+    /// LaTeX at all. See `crate::server::latex`.
     pub latex: String,
     pub config: Configuration,
 }
@@ -144,7 +142,7 @@ pub async fn serve(options: ServeOptions) {
     // plain HTTP one would fail invisibly in every browser rather than here.
     let latex = match first_of(&[&options.latex, &env("KOMODOC_LATEX")]).trim() {
         "" => None,
-        flag => Some(crate::latex::Mirror::open(flag).unwrap_or_else(|err| die(err))),
+        flag => Some(crate::server::latex::Mirror::open(flag).unwrap_or_else(|err| die(err))),
     };
     let expire_from = parse_expire_from(&first_of(&[
         &options.expire_from,
@@ -227,7 +225,7 @@ pub async fn serve(options: ServeOptions) {
         .as_ref()
         .unwrap_or_else(|| die("local deployment has no catalogue path"));
     let catalog = Arc::new(
-        crate::catalog::Catalog::open(catalog_path)
+        crate::storage::catalog::Catalog::open(catalog_path)
             .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
     );
     crate::config::DeploymentPaths::protect_file(catalog_path).unwrap_or_else(|err| die(err));
@@ -283,7 +281,7 @@ pub async fn serve(options: ServeOptions) {
                 .unwrap_or_else(|err| die(format!("could not initialize deletion worker: {err}"))),
         );
         worker
-            .run_once(crate::clock::now_unix())
+            .run_once(crate::util::now_unix())
             .await
             .unwrap_or_else(|err| die(format!("local deletion recovery failed: {err}")));
         let journal_worker = Arc::new(
@@ -291,7 +289,7 @@ pub async fn serve(options: ServeOptions) {
                 .unwrap_or_else(|err| die(format!("could not initialize journal cleanup: {err}"))),
         );
         journal_worker
-            .run_once(crate::clock::now_unix())
+            .run_once(crate::util::now_unix())
             .await
             .unwrap_or_else(|err| die(format!("local journal cleanup failed: {err}")));
         (Some(worker), Some(journal_worker))
@@ -311,11 +309,11 @@ pub async fn serve(options: ServeOptions) {
         commenters.clone(),
     );
     if let Some(catalog) = instance.store.catalog.clone() {
-        let journal = crate::journal::JournalRuntime::new_with_limits(
+        let journal = crate::storage::journal::JournalRuntime::new_with_limits(
             catalog,
             blobs.clone(),
             deployment_id.clone(),
-            crate::journal::CoordinatorLimits::default(),
+            crate::storage::journal::CoordinatorLimits::default(),
             config.storage.per_owner,
             config.storage.total,
         )
@@ -350,7 +348,7 @@ pub async fn serve(options: ServeOptions) {
             describe_seconds(retention)
         );
         instance
-            .delete_expired(crate::clock::now_unix(), retention, &expire_from)
+            .delete_expired(crate::util::now_unix(), retention, &expire_from)
             .await;
         let janitor = instance.clone();
         let from = expire_from.clone();
@@ -360,7 +358,7 @@ pub async fn serve(options: ServeOptions) {
             loop {
                 ticker.tick().await;
                 janitor
-                    .delete_expired(crate::clock::now_unix(), retention, &from)
+                    .delete_expired(crate::util::now_unix(), retention, &from)
                     .await;
             }
         });
@@ -403,19 +401,19 @@ pub async fn serve(options: ServeOptions) {
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                if let Err(error) = worker.run_once(crate::clock::now_unix()).await {
+                if let Err(error) = worker.run_once(crate::util::now_unix()).await {
                     eprintln!("warning: local deletion maintenance failed: {error}");
                 }
                 if let Some(journal_worker) = &journal_worker {
-                    if let Err(error) = journal_worker.run_once(crate::clock::now_unix()).await {
+                    if let Err(error) = journal_worker.run_once(crate::util::now_unix()).await {
                         eprintln!("warning: local journal cleanup failed: {error}");
                     }
                 }
                 if let Some(catalog) = &erasure_catalog {
-                    let _ = catalog.prune_checkpoint_budgets(crate::clock::now_unix(), 1_000);
-                    if let Err(error) = crate::maintenance::run_erasure_pass(
+                    let _ = catalog.prune_checkpoint_budgets(crate::util::now_unix(), 1_000);
+                    if let Err(error) = crate::storage::maintenance::run_erasure_pass(
                         catalog,
-                        crate::clock::now_unix(),
+                        crate::util::now_unix(),
                         25,
                         250,
                     ) {
@@ -437,12 +435,12 @@ pub async fn serve(options: ServeOptions) {
         let _ = tokio::signal::ctrl_c().await;
         closing.rooms.flush().await;
         if let Some(worker) = closing_deletion_worker {
-            if let Err(error) = worker.run_once(crate::clock::now_unix()).await {
+            if let Err(error) = worker.run_once(crate::util::now_unix()).await {
                 eprintln!("warning: final local deletion maintenance failed: {error}");
             }
         }
         if let Some(worker) = closing_journal_worker {
-            if let Err(error) = worker.run_once(crate::clock::now_unix()).await {
+            if let Err(error) = worker.run_once(crate::util::now_unix()).await {
                 eprintln!("warning: final local journal cleanup failed: {error}");
             }
         }

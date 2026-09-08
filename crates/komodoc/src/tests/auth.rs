@@ -89,7 +89,7 @@ fn policies_match_the_handle_not_the_name() {
 // decimal string is a different person.
 #[test]
 fn stored_ids_are_qualified_as_github() {
-    use crate::store::IndexEntry;
+    use crate::document::store::IndexEntry;
     let mut entry = IndexEntry {
         publisher: "vincent".into(),
         publisher_id: "583231".into(),
@@ -426,7 +426,7 @@ async fn a_google_account_owns_what_it_published() {
 // asks for against what the deployment actually configured.
 #[test]
 fn startup_checks_the_providers_against_the_policies() {
-    use crate::serve::sign_in_advice;
+    use crate::server::serve::sign_in_advice;
     let advice = |github, google, publishers, commenters| {
         sign_in_advice(
             github,
@@ -899,10 +899,10 @@ async fn a_google_owner_is_shown_by_name_and_never_by_email() {
         .instance
         .store
         .modify(&slug, |entry| {
-            entry.editors.push(crate::store::Grant {
+            entry.editors.push(crate::document::store::Grant {
                 id: "github:vincent".into(),
                 login: "vincent".into(),
-                since: crate::clock::timestamp(),
+                since: crate::util::timestamp(),
                 name: "vincent".into(),
             });
             Ok(())
@@ -944,7 +944,7 @@ async fn a_google_owner_is_shown_by_name_and_never_by_email() {
         .await
         .expect("the document");
     assert_eq!(entry.publisher_name, "Anne Grandchamp");
-    let legacy = crate::store::IndexEntry {
+    let legacy = crate::document::store::IndexEntry {
         publisher: "alice".into(),
         ..Default::default()
     };

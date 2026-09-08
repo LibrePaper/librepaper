@@ -2,7 +2,7 @@
 
 #![allow(unused_imports)]
 use super::*;
-use crate::pseudonym::pseudonym_for;
+use crate::auth::pseudonym::pseudonym_for;
 
 /// The same author on the same document always gets the same name: that is
 /// the whole point of a pseudonym rather than a fresh name every comment.
@@ -30,11 +30,11 @@ fn different_slug_gives_a_different_name_for_at_least_one_input() {
 /// the word lists, never a name made of pieces the lists do not contain.
 #[test]
 fn every_pseudonym_is_an_adjective_and_a_lizard_from_the_lists() {
-    let adjectives: Vec<&str> = include_str!("../pseudonym/adjectives.txt")
+    let adjectives: Vec<&str> = include_str!("../auth/words/adjectives.txt")
         .lines()
         .filter(|line| !line.is_empty())
         .collect();
-    let lizards: Vec<&str> = include_str!("../pseudonym/lizards.txt")
+    let lizards: Vec<&str> = include_str!("../auth/words/lizards.txt")
         .lines()
         .filter(|line| !line.is_empty())
         .collect();
@@ -56,8 +56,8 @@ fn every_pseudonym_is_an_adjective_and_a_lizard_from_the_lists() {
 #[test]
 fn word_lists_are_single_capitalised_ascii_words() {
     for list in [
-        include_str!("../pseudonym/adjectives.txt"),
-        include_str!("../pseudonym/lizards.txt"),
+        include_str!("../auth/words/adjectives.txt"),
+        include_str!("../auth/words/lizards.txt"),
     ] {
         for line in list.lines() {
             assert!(!line.is_empty(), "blank line in word list");

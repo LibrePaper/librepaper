@@ -94,7 +94,7 @@ Rust and expose presence without implying that the file client has a caret.
 
 ## Automation clients as peers
 
-Extract a reusable peer module from `crates/komodoc/src/sync.rs` and use it
+Extract a reusable peer module from `crates/komodoc/src/cli/sync.rs` and use it
 to back the commands and library for a headless automation client. Its
 credential is the supplied read, comment, or edit link, presented internally
 the way `--key` presents one, with the access boundary described above.

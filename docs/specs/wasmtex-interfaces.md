@@ -103,7 +103,7 @@ and LuaTeX workers also use the `pdftex/` prefix, see their controllers).
 ### Serving (package A, Rust and dev server)
 
 The browser fetches everything from `<base>/latex/` on its own origin. Both
-`crates/komodoc/src/latex.rs` and `latex/tools/serve.mjs` must answer:
+`crates/komodoc/src/server/latex.rs` and `latex/tools/serve.mjs` must answer:
 
 | Request | Answer |
 | --- | --- |
@@ -428,7 +428,7 @@ Komodoc`, `Retry connection`, `Try browser compilation`, `Open Komodoc`).
 
 ## 4. Server side (package R2)
 
-- `crates/komodoc/src/history.rs`: `Tree` gains
+- `crates/komodoc/src/document/history.rs`: `Tree` gains
   `#[serde(default, skip_serializing_if = "Option::is_none")] pub settings:
   Option<CompileSettings>` with `CompileSettings { engine: String, release:
   String }` (both `#[serde(default, skip_serializing_if = "String::is_empty")]`).

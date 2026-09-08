@@ -10,12 +10,12 @@ use std::sync::Arc;
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 
-use crate::blob::{
+use crate::storage::blob::{
     content_prefix, examples_key, history_index_key, legacy_source_key, room_key, room_lock_key,
     session_key, source_prefix, BlobStore,
 };
-use crate::catalog::{Catalog, CatalogError};
-use crate::journal::{finalize_manifest_shard, ManifestShard, Segment};
+use crate::storage::catalog::{Catalog, CatalogError};
+use crate::storage::journal::{finalize_manifest_shard, ManifestShard, Segment};
 
 #[derive(Clone, Debug)]
 pub struct DeletionLimits {
@@ -478,7 +478,7 @@ impl DeletionWorker {
                     .document(&slug)
                     .map_err(MaintenanceError::from)?
                 {
-                    crate::journal::JournalStore::new(self.catalog.clone())
+                    crate::storage::journal::JournalStore::new(self.catalog.clone())
                         .retire_storage(&document.storage_id, now)
                         .map_err(|error| MaintenanceError::Invalid(error.to_string()))?;
                 }
@@ -764,7 +764,7 @@ impl JournalRetirementWorker {
         }
         let mut reserved_keys = Vec::new();
         self.catalog
-            .reserve_object_change(crate::catalog::ObjectReservationRequest {
+            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
                 slug: &slug,
                 operation_id: &operation_id,
                 object_key: &rewritten_key,
@@ -777,7 +777,7 @@ impl JournalRetirementWorker {
         reserved_keys.push((remaining_storage.clone(), rewritten_key.clone()));
         for (_, shard, body) in &manifest_rewrites {
             self.catalog
-                .reserve_object_change(crate::catalog::ObjectReservationRequest {
+                .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
                     slug: &slug,
                     operation_id: &operation_id,
                     object_key: &shard.object_key,
@@ -1049,8 +1049,8 @@ impl JournalRetirementWorker {
                         .get(&manifest_key)
                         .await
                         .map_err(|error| MaintenanceError::Storage(error.to_string()))?;
-                    let shard: crate::journal::ManifestShard = serde_json::from_slice(&body)
-                        .map_err(|error| {
+                    let shard: crate::storage::journal::ManifestShard =
+                        serde_json::from_slice(&body).map_err(|error| {
                             MaintenanceError::Invalid(format!(
                                 "invalid manifest shard {manifest_key}: {error}"
                             ))
@@ -1066,7 +1066,9 @@ impl JournalRetirementWorker {
             }
             if !referenced {
                 for raw in prepared_plans {
-                    if let Ok(plan) = serde_json::from_str::<crate::journal::JournalPlan>(&raw) {
+                    if let Ok(plan) =
+                        serde_json::from_str::<crate::storage::journal::JournalPlan>(&raw)
+                    {
                         if plan.output_keys.iter().any(|candidate| candidate == &key)
                             || plan
                                 .protected_input_keys
@@ -1109,8 +1111,8 @@ impl JournalRetirementWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blob::{BlobStore, FsStore};
-    use crate::catalog::{Catalog, NewDocument};
+    use crate::storage::blob::{BlobStore, FsStore};
+    use crate::storage::catalog::{Catalog, NewDocument};
     use std::sync::Arc;
 
     #[test]
@@ -1231,7 +1233,7 @@ mod tests {
             .await
             .expect("segment");
         catalog
-            .reserve_object_change(crate::catalog::ObjectReservationRequest {
+            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
                 slug: "reader",
                 operation_id: "reader-object",
                 object_key: key,
@@ -1260,7 +1262,7 @@ mod tests {
                          VALUES (?1,?2,'segment',?3,?4,?4,?4)",
                         rusqlite::params![key, "storage-reader", body.len() as i64, 1],
                     )
-                    .map_err(crate::catalog::CatalogError::from)?;
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
                 Ok(())
             })
             .expect("retirement");
@@ -1277,7 +1279,7 @@ mod tests {
         assert_eq!(worker.run_once(3).await.expect("reclaim pass"), 1);
         assert!(matches!(
             blobs.get(key).await,
-            Err(crate::blob::BlobError::NotFound)
+            Err(crate::storage::blob::BlobError::NotFound)
         ));
     }
 }

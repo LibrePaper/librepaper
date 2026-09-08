@@ -141,7 +141,7 @@ pub fn git_ignores(root: &Path) -> Box<dyn Fn(&Path) -> bool> {
 /// between, because guessing wrong here publishes the wrong document.
 pub fn main_file(files: &[String], asked: &str) -> Result<String, String> {
     if !asked.is_empty() {
-        let wanted = crate::paths::normalise(asked);
+        let wanted = crate::document::paths::normalise(asked);
         if !files.contains(&wanted) {
             return Err(format!("--main {asked} is not a file in that directory"));
         }
@@ -150,7 +150,7 @@ pub fn main_file(files: &[String], asked: &str) -> Result<String, String> {
     let top: Vec<&String> = files
         .iter()
         .filter(|path| !path.contains('/'))
-        .filter(|path| crate::render::document_format(path).is_some())
+        .filter(|path| crate::document::render::document_format(path).is_some())
         .collect();
     if top.len() == 1 {
         return Ok(top[0].clone());
@@ -216,7 +216,7 @@ pub(super) async fn publish_directory(
     let mut figures = 0i64;
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     for at in &paths {
-        let kind = match crate::paths::check(&rules, at) {
+        let kind = match crate::document::paths::check(&rules, at) {
             Ok(kind) => kind,
             // A file the rules refuse is said and skipped rather than fatal: a
             // directory usually has something in it that is not part of the
@@ -230,14 +230,14 @@ pub(super) async fn publish_directory(
         let bytes = std::fs::read(root.join(at))
             .unwrap_or_else(|err| die(format!("could not read {at}: {err}")));
         match kind {
-            crate::paths::Kind::Text => {
+            crate::document::paths::Kind::Text => {
                 if std::str::from_utf8(&bytes).is_err() {
                     eprintln!("skipping {at}: it is not valid UTF-8 text");
                     continue;
                 }
                 texts += bytes.len();
             }
-            crate::paths::Kind::Asset => {
+            crate::document::paths::Kind::Asset => {
                 if bytes.len() as i64 > config.max_asset {
                     die(format!(
                         "{at} is larger than the {} MB one figure may be",
@@ -305,10 +305,10 @@ pub(super) async fn publish_directory(
         // A format with no heading scan of its own is named by its file, which
         // is what `title_or` below does anyway. Better that than running an
         // HTML title scan over something that is not HTML.
-        title = match crate::render::document_format(&main) {
+        title = match crate::document::render::document_format(&main) {
             Some("markdown") => title_from_markdown(&source),
             Some("html") => title_from_html(&source),
-            Some("latex") => crate::render::title_from_latex(&source),
+            Some("latex") => crate::document::render::title_from_latex(&source),
             _ => String::new(),
         };
     }
@@ -331,7 +331,7 @@ pub(super) async fn publish_directory(
     let server = server_from(&server_flag);
     let uploaded_paths: std::collections::HashSet<String> = files
         .iter()
-        .map(|(path, _)| crate::paths::normalise(path))
+        .map(|(path, _)| crate::document::paths::normalise(path))
         .collect();
     let (status, document) = post_directory(
         &format!("{server}/api/documents"),
@@ -354,7 +354,7 @@ pub(super) async fn publish_directory(
     if let Some(pdf) = typst_pdf {
         let missing: Vec<String> = typst_dependencies
             .iter()
-            .filter(|path| !uploaded_paths.contains(&crate::paths::normalise(path)))
+            .filter(|path| !uploaded_paths.contains(&crate::document::paths::normalise(path)))
             .cloned()
             .collect();
         if missing.is_empty() {
@@ -412,7 +412,10 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if extension != "html" && extension != "htm" && crate::render::document_format(file).is_none() {
+    if extension != "html"
+        && extension != "htm"
+        && crate::document::render::document_format(file).is_none()
+    {
         die(format!(
             "{base_name} is not a document Komodoc can serve.\n\n  \
              It takes HTML, markdown, typst or LaTeX.\n  \
@@ -530,7 +533,7 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
         eprintln!("read {base_name} ({} KiB of markdown)", raw.len() / 1024);
         source = html;
         source_format = "markdown".to_string();
-    } else if crate::render::is_latex(file) {
+    } else if crate::document::render::is_latex(file) {
         // Nothing is rendered here, and nothing can be: Komodoc carries no TeX
         // and no build embeds one. So this is the one format `publish` uploads
         // without having compiled it first, and the check that a document
@@ -539,7 +542,7 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
         // because an author used to `publish` refusing a broken paper should
         // not have to infer that this one is different.
         if title.is_empty() {
-            title = crate::render::title_from_latex(&html);
+            title = crate::document::render::title_from_latex(&html);
         }
         eprintln!(
             "read {base_name} ({} KiB of LaTeX; not compiled here -- \
@@ -689,28 +692,28 @@ pub(super) async fn upload_typst_pdf(
 pub(super) fn input_digest_for_typst(
     main: &str,
     files: &[(String, Vec<u8>)],
-    rules: &crate::paths::Rules<'_>,
+    rules: &crate::document::paths::Rules<'_>,
 ) -> String {
-    let mut tree = crate::history::Tree {
+    let mut tree = crate::document::history::Tree {
         main: main.to_string(),
         files: std::collections::BTreeMap::new(),
         settings: None,
     };
     for (path, bytes) in files {
-        let kind = match crate::paths::check(rules, path) {
+        let kind = match crate::document::paths::check(rules, path) {
             Ok(kind) => kind,
             Err(_) => continue,
         };
         let kind = match kind {
-            crate::paths::Kind::Text => "text",
-            crate::paths::Kind::Asset => "asset",
+            crate::document::paths::Kind::Text => "text",
+            crate::document::paths::Kind::Asset => "asset",
         };
         tree.files.insert(
-            crate::paths::normalise(path),
-            crate::history::TreeEntry {
+            crate::document::paths::normalise(path),
+            crate::document::history::TreeEntry {
                 kind: kind.to_string(),
                 id: String::new(),
-                sha: crate::store::digest_of_bytes(bytes),
+                sha: crate::document::store::digest_of_bytes(bytes),
                 size: bytes.len() as i64,
             },
         );

@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use yrs::{GetString, Map, Out, Text, Transact};
 
 use crate::config::Configuration;
-use crate::history::{Checkpoint, Tree, TreeEntry};
-use crate::paths;
-use crate::session::{self, Admission};
+use crate::document::history::{Checkpoint, Tree, TreeEntry};
+use crate::document::paths;
+use crate::document::session::{self, Admission};
 
 /// A document with one file in it, the way a publish leaves one.
 fn one_file(path: &str, body: &str) -> yrs::Doc {
@@ -826,7 +826,7 @@ fn a_compile_says_which_siblings_it_read() {
     ]);
     let main = dir.path().join("main.typ");
     let source = std::fs::read_to_string(&main).unwrap();
-    let (compiled, read) = crate::render::read_and_note(&main, &source, "T");
+    let (compiled, read) = crate::document::render::read_and_note(&main, &source, "T");
     assert!(compiled.output.is_some(), "the fixture does not compile");
     assert_eq!(read, vec!["lib.typ".to_string()]);
 
@@ -834,8 +834,11 @@ fn a_compile_says_which_siblings_it_read() {
     // appearing on every ordinary publish.
     let alone = scratch(&[("main.typ", b"= T\n\nJust prose.\n")]);
     let path = alone.path().join("main.typ");
-    let (_, none) =
-        crate::render::read_and_note(&path, &std::fs::read_to_string(&path).unwrap(), "T");
+    let (_, none) = crate::document::render::read_and_note(
+        &path,
+        &std::fs::read_to_string(&path).unwrap(),
+        "T",
+    );
     assert!(none.is_empty(), "{none:?}");
 }
 
@@ -852,7 +855,7 @@ fn a_document_named_without_a_directory_compiles() {
     ]);
     let here = std::env::current_dir().expect("cwd");
     std::env::set_current_dir(dir.path()).expect("cd");
-    let (compiled, read) = crate::render::read_and_note(
+    let (compiled, read) = crate::document::render::read_and_note(
         std::path::Path::new("main.typ"),
         "#import \"lib.typ\": word\n= T\n#word\n",
         "T",
@@ -877,7 +880,7 @@ fn a_nested_main_compiles_against_the_captured_project_tree() {
         ),
     ];
     let (compiled, read) =
-        crate::render::read_and_note_from_files("chapters/main.typ", source, "T", &files);
+        crate::document::render::read_and_note_from_files("chapters/main.typ", source, "T", &files);
     assert!(
         compiled.output.is_some(),
         "nested main did not compile: {compiled:?}"
@@ -902,7 +905,11 @@ fn one_place_decides_what_a_filename_says_a_document_is() {
         ("refs.bib", None),
         ("fig/one.png", None),
     ] {
-        assert_eq!(crate::render::document_format(name), format, "{name}");
+        assert_eq!(
+            crate::document::render::document_format(name),
+            format,
+            "{name}"
+        );
     }
 
     // And the choice of main file follows it rather than a list of its own.

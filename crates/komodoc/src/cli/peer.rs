@@ -15,9 +15,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::cli::{link_key, stored_token_for};
+use crate::document::session;
 use crate::http::{detail_of, KEY_HEADER};
 use crate::room::encode_update;
-use crate::session;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRIES: usize = 3;
@@ -640,7 +640,7 @@ impl AutomationPeer {
     }
 
     fn socket_request(&self) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, String> {
-        let mut request = crate::sync::socket_url(self.link.server(), self.link.slug())
+        let mut request = crate::cli::sync::socket_url(self.link.server(), self.link.slug())
             .into_client_request()
             .map_err(|err| err.to_string())?;
         if !self.token.is_empty() {

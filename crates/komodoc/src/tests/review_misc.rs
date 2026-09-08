@@ -8,7 +8,7 @@ use crate::room;
 // mirror outside the configured base, while ordinary and singly-encoded
 // mirror paths keep working.
 mod r28_latex_mirror_containment {
-    use crate::latex::Mirror;
+    use crate::server::latex::Mirror;
 
     #[tokio::test]
     async fn doubly_encoded_parent_is_refused_and_never_reaches_upstream() {
@@ -106,7 +106,7 @@ fn response_export_includes_figure_reply_exactly_once() {
         ..Default::default()
     };
     let report =
-        crate::export::render_response("title", &[item], "", &Configuration::default(), "");
+        crate::cli::export::render_response("title", &[item], "", &Configuration::default(), "");
     assert!(report.contains("figure question"));
     let occurrences = report.matches("THE AUTHOR ANSWER").count();
     assert_eq!(
@@ -122,7 +122,7 @@ fn response_export_includes_figure_reply_exactly_once() {
 // request).
 #[test]
 fn s3_canonical_path_matches_the_transmitted_path_for_a_prefix_with_a_space() {
-    use crate::s3::{canonical_path, S3Store};
+    use crate::storage::s3::{canonical_path, S3Store};
     use crate::storage::StorageOptions;
 
     let options = StorageOptions {

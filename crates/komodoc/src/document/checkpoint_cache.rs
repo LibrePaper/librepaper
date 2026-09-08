@@ -12,8 +12,8 @@ use std::sync::Arc;
 use futures_util::future::join_all;
 use tokio::sync::{watch, Semaphore};
 
-use crate::blob::{blob_key, checkpoint_key, BlobError, BlobResult, BlobStore};
-use crate::history::{Checkpoint, Tree};
+use crate::document::history::{Checkpoint, Tree};
+use crate::storage::blob::{blob_key, checkpoint_key, BlobError, BlobResult, BlobStore};
 
 /// A bounded cache for immutable checkpoint objects.
 ///
@@ -359,7 +359,7 @@ impl Default for CheckpointCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blob::{BlobInfo, BlobVersion, FsStore};
+    use crate::storage::blob::{BlobInfo, BlobVersion, FsStore};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::tempdir;
@@ -664,7 +664,7 @@ mod tests {
             ..Tree::default()
         };
         for (path, body) in [("a.md", "shared"), ("b.md", "shared"), ("c.md", "other")] {
-            let sha = crate::store::digest_of(body);
+            let sha = crate::document::store::digest_of(body);
             store
                 .put(
                     &blob_key("doc", &sha),
@@ -675,7 +675,7 @@ mod tests {
                 .unwrap();
             tree.files.insert(
                 path.into(),
-                crate::history::TreeEntry {
+                crate::document::history::TreeEntry {
                     kind: "text".into(),
                     sha,
                     size: body.len() as i64,

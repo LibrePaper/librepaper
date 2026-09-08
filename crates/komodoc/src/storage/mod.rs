@@ -6,13 +6,20 @@
 //! supply. A directory remains the default, because that is what running it on
 //! your own machine should mean.
 
+pub mod backup;
+pub mod blob;
+pub mod catalog;
+pub mod journal;
+pub mod maintenance;
+pub mod s3;
+
 use std::sync::Arc;
 
 use clap::Args;
 
-use crate::blob::{BlobStore, FsStore};
 use crate::config::{CatalogReads, DeploymentPaths, DeploymentProfile};
-use crate::s3::S3Store;
+use crate::storage::blob::{BlobStore, FsStore};
+use crate::storage::s3::S3Store;
 use crate::util::first_of;
 
 #[derive(Clone)]
@@ -373,7 +380,7 @@ pub async fn migrate_legacy_source(blobs: &dyn BlobStore) -> usize {
             else {
                 continue;
             };
-            let target = crate::blob::legacy_source_key(slug);
+            let target = crate::storage::blob::legacy_source_key(slug);
             let body = match blobs.get(&object.key).await {
                 Ok(body) => body,
                 Err(_) => continue,
@@ -382,7 +389,7 @@ pub async fn migrate_legacy_source(blobs: &dyn BlobStore) -> usize {
             // the old duplicate still makes retries converge to one object.
             match blobs.get(&target).await {
                 Ok(_) => {}
-                Err(crate::blob::BlobError::NotFound) => {
+                Err(crate::storage::blob::BlobError::NotFound) => {
                     if blobs.put(&target, body, "text/plain").await.is_err() {
                         continue;
                     }

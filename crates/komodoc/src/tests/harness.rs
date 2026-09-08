@@ -4,15 +4,15 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::assets::load_shell;
 use crate::auth::{
     now_unix, sign_session, Accounts, GithubApp, GoogleApp, Identity, Policy, SESSION_COOKIE,
 };
-use crate::blob::FsStore;
 use crate::config::Configuration;
+use crate::document::store::Store;
 use crate::room::RoomSet;
+use crate::server::shell::load_shell;
 use crate::server::Server;
-use crate::store::Store;
+use crate::storage::blob::FsStore;
 
 /// The tests sign in as this GitHub login by forging a session cookie, which
 /// is what the real sign-in produces at the end of the OAuth dance.
@@ -182,7 +182,7 @@ pub async fn test_server_tuned(
 /// A deployment started with `--latex`, which is the whole difference between
 /// a server that offers a LaTeX editor and one that stores `.tex` files and
 /// leaves them unrendered.
-pub async fn test_server_latex(mirror: crate::latex::Mirror) -> TestServer {
+pub async fn test_server_latex(mirror: crate::server::latex::Mirror) -> TestServer {
     let TestServerParts { mut instance, dir } = build_test_server(
         Configuration::default(),
         Policy::parse(TEST_PUBLISHER),
@@ -205,15 +205,15 @@ async fn build_test_server(
     let dir = tempfile::tempdir().expect("a temporary directory");
     let config = Arc::new(config);
     let objects = dir.path().join("objects");
-    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(&objects));
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(&objects));
     let catalog = Arc::new(
-        crate::catalog::Catalog::open(dir.path().join("catalog.sqlite"))
+        crate::storage::catalog::Catalog::open(dir.path().join("catalog.sqlite"))
             .expect("the file-backed test catalogue opens"),
     );
     catalog
         .set_link_sealing_key(TEST_KEY)
         .expect("test link sealing is configured");
-    let journal_store = crate::journal::JournalStore::new(catalog.clone());
+    let journal_store = crate::storage::journal::JournalStore::new(catalog.clone());
     journal_store
         .initialize_local("test-deployment")
         .expect("the test journal initializes");
@@ -242,11 +242,11 @@ async fn build_test_server(
     );
     server.accounts = Arc::new(TestAccounts);
     server.listing = listing;
-    let journal = crate::journal::JournalRuntime::new(
+    let journal = crate::storage::journal::JournalRuntime::new(
         catalog,
         blobs,
         "test-deployment",
-        crate::journal::CoordinatorLimits::default(),
+        crate::storage::journal::CoordinatorLimits::default(),
     )
     .expect("the test journal runtime opens");
     server.rooms.attach_journal(journal);
@@ -282,16 +282,17 @@ pub async fn serve_instance(instance: Arc<Server>, dir: tempfile::TempDir) -> Te
 /// directory belongs to whoever made it, so this borrows it rather than
 /// holding it.
 pub async fn server_over(path: &std::path::Path, config: Configuration) -> (String, Arc<Server>) {
-    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(path.join("objects")));
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+        Arc::new(FsStore::new(path.join("objects")));
     let config = Arc::new(config);
     let catalog = Arc::new(
-        crate::catalog::Catalog::open(path.join("catalog.sqlite"))
+        crate::storage::catalog::Catalog::open(path.join("catalog.sqlite"))
             .expect("the file-backed catalogue reopens"),
     );
     catalog
         .set_link_sealing_key(TEST_KEY)
         .expect("test link sealing is configured");
-    crate::journal::JournalStore::new(catalog.clone())
+    crate::storage::journal::JournalStore::new(catalog.clone())
         .initialize_local("test-deployment")
         .expect("the journal reopens");
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -302,7 +303,7 @@ pub async fn server_over(path: &std::path::Path, config: Configuration) -> (Stri
     // process-wide writer lock in the RoomSet so a second instance becomes a
     // reader, while a normal embedded/legacy fixture can still use room
     // leases when it has no deployment command around it.
-    match crate::serve::acquire_writer_lock(&path.join("state/writer.lock")) {
+    match crate::server::serve::acquire_writer_lock(&path.join("state/writer.lock")) {
         Ok(lock) => rooms.attach_deployment_lock(lock),
         Err(_) => rooms.attach_deployment_lock_unavailable(),
     }
@@ -322,11 +323,11 @@ pub async fn server_over(path: &std::path::Path, config: Configuration) -> (Stri
     );
     instance.accounts = Arc::new(TestAccounts);
     instance.rooms.attach_journal(
-        crate::journal::JournalRuntime::new(
+        crate::storage::journal::JournalRuntime::new(
             catalog,
             blobs,
             "test-deployment",
-            crate::journal::CoordinatorLimits::default(),
+            crate::storage::journal::CoordinatorLimits::default(),
         )
         .expect("journal runtime"),
     );
@@ -350,7 +351,7 @@ pub async fn server_over(path: &std::path::Path, config: Configuration) -> (Stri
 /// The same, over whatever store is given -- a failing one, in the tests that
 /// inject storage failures.
 pub async fn server_over_blobs_legacy(
-    blobs: Arc<dyn crate::blob::BlobStore>,
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
     config: Configuration,
 ) -> (String, Arc<Server>) {
     let config = Arc::new(config);
@@ -821,20 +822,20 @@ pub async fn test_server_checking(
 /// makes, so a test that asks "what did this checkpoint say" gets an answer
 /// across the change rather than one shape of it.
 pub async fn checkpoint_text(
-    blobs: &dyn crate::blob::BlobStore,
+    blobs: &dyn crate::storage::blob::BlobStore,
     storage_id: &str,
     sha: &str,
 ) -> String {
     let raw = blobs
-        .get(&crate::blob::checkpoint_key(storage_id, sha))
+        .get(&crate::storage::blob::checkpoint_key(storage_id, sha))
         .await
         .expect("the checkpoint object");
-    let Ok(tree) = serde_json::from_slice::<crate::history::Tree>(&raw) else {
+    let Ok(tree) = serde_json::from_slice::<crate::document::history::Tree>(&raw) else {
         return String::from_utf8_lossy(&raw).to_string();
     };
     let entry = tree.files.get(&tree.main).expect("the main file");
     let body = blobs
-        .get(&crate::blob::blob_key(storage_id, &entry.sha))
+        .get(&crate::storage::blob::blob_key(storage_id, &entry.sha))
         .await
         .expect("the text the tree names");
     String::from_utf8_lossy(&body).to_string()

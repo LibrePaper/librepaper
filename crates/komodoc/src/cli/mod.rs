@@ -10,21 +10,24 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use crate::config::Configuration;
+use crate::document::render::{
+    counted, is_html, is_markdown, is_typst, pdf_of, read_and_note, read_and_note_from_files,
+    report, title_from_html, title_from_markdown, title_from_typst,
+};
 use crate::http::{
     detail_of, get_as, get_json, get_with_token, post_directory, post_json, post_json_as,
     put_current_bytes, text, Credentials,
-};
-use crate::render::{
-    counted, is_html, is_markdown, is_typst, pdf_of, read_and_note, read_and_note_from_files,
-    report, title_from_html, title_from_markdown, title_from_typst,
 };
 use crate::storage::StorageFlags;
 use crate::util::{die, is_terminal_stdin, is_terminal_stdout, new_id, read_line};
 
 mod documents;
+pub mod export;
 mod history;
+pub mod peer;
 mod publish;
 mod suggest;
+pub mod sync;
 mod tokens;
 
 pub use documents::*;
@@ -105,7 +108,7 @@ pub(crate) struct ServiceFlags {
         long,
         value_name = "URL-OR-DIR",
         num_args = 0..=1,
-        default_missing_value = crate::latex::DEFAULT_MIRROR
+        default_missing_value = crate::server::latex::DEFAULT_MIRROR
     )]
     latex: Option<String>,
 }
@@ -425,7 +428,7 @@ pub(crate) enum Command {
     /// Run a provider-neutral automation operation against a document link.
     Agent {
         #[command(subcommand)]
-        command: crate::peer::AgentCommand,
+        command: crate::cli::peer::AgentCommand,
     },
     /// Delete one document and its comments
     Destroy {
@@ -502,7 +505,7 @@ pub async fn main() {
             storage,
         } => {
             let config = service.configuration();
-            crate::serve::serve(crate::serve::ServeOptions {
+            crate::server::serve::serve(crate::server::serve::ServeOptions {
                 port,
                 storage: storage.options(),
                 client_id: service.client_id.unwrap_or_default(),
@@ -519,9 +522,10 @@ pub async fn main() {
         }
         Command::RotateLinkKey { dir } => {
             let root = std::path::PathBuf::from(dir);
-            let _writer_lock = crate::serve::acquire_writer_lock(&root.join("state/writer.lock"))
-                .unwrap_or_else(|error| die(error));
-            let catalog = crate::catalog::Catalog::open(root.join("catalog.db"))
+            let _writer_lock =
+                crate::server::serve::acquire_writer_lock(&root.join("state/writer.lock"))
+                    .unwrap_or_else(|error| die(error));
+            let catalog = crate::storage::catalog::Catalog::open(root.join("catalog.db"))
                 .unwrap_or_else(|error| die(format!("could not open catalogue: {error}")));
             let key_path = root.join("secrets/links.key");
             let keys = crate::auth::link_sealing_keyring_file(&key_path, true)
@@ -585,7 +589,7 @@ pub async fn main() {
             key,
             server,
         } => {
-            crate::sync::sync_document(
+            crate::cli::sync::sync_document(
                 &id,
                 &file,
                 server.unwrap_or_default(),
@@ -723,7 +727,7 @@ pub async fn main() {
             key,
             server,
         } => {
-            crate::export::export_document(
+            crate::cli::export::export_document(
                 &id,
                 server.unwrap_or_default(),
                 &format,
@@ -739,7 +743,7 @@ pub async fn main() {
             owner,
             backup,
         } => {
-            let documents = crate::seed_examples::seed_documents();
+            let documents = crate::seed::examples::seed_documents();
             match server {
                 Some(server) if !server.is_empty() => {
                     crate::seed::seed_remote(server, &documents).await
@@ -765,13 +769,16 @@ pub async fn main() {
             storage,
             output,
             id,
-        } => crate::backup::backup_cli(storage.options(), output, id.unwrap_or_default()).await,
+        } => {
+            crate::storage::backup::backup_cli(storage.options(), output, id.unwrap_or_default())
+                .await
+        }
         Command::RestoreBackup { backup, directory } => {
-            crate::backup::restore_cli(backup, directory).await
+            crate::storage::backup::restore_cli(backup, directory).await
         }
         Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
         Command::Agent { command } => {
-            if let Err(err) = crate::peer::run_cli(command).await {
+            if let Err(err) = crate::cli::peer::run_cli(command).await {
                 die(err);
             }
         }

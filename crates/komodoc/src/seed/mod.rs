@@ -7,6 +7,8 @@
 //! through the API would mean holding a GitHub token to talk to your own
 //! laptop.
 
+pub mod examples;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,20 +17,20 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::auth::{link_sealing_key_file, session_key_file};
-use crate::backup::verify_local_backup;
-use crate::blob::{clear_storage_checked, release_room_locks};
 use crate::cli::{server_from, stored_token_for};
-use crate::clock::timestamp;
 use crate::config::Configuration;
 use crate::config::DeploymentProfile;
-use crate::http::{detail_of, get_json, get_with_token, post_json, put_current_bytes, text};
-use crate::journal::JournalStore;
-use crate::render::{
+use crate::document::render::{
     is_latex, is_markdown, is_typst, render_markdown_document, render_typst_document,
 };
+use crate::document::store::{example_suffix, slugify, Publication, Store};
+use crate::http::{detail_of, get_json, get_with_token, post_json, put_current_bytes, text};
 use crate::room::{main_path_for, Comment, Message, Region, Reply, Room, RoomSet, SourceAnchor};
+use crate::storage::backup::verify_local_backup;
+use crate::storage::blob::{clear_storage_checked, release_room_locks};
+use crate::storage::journal::JournalStore;
 use crate::storage::{open_storage, StorageOptions};
-use crate::store::{example_suffix, slugify, Publication, Store};
+use crate::util::timestamp;
 use crate::util::{die, new_id};
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -80,7 +82,7 @@ pub fn read_seed_document(document: &SeedDocument) -> (String, String, String, O
         // a new pinned typst is a thing to hear about here rather than to find
         // in the browser.
         let compiled = render_typst_document(Path::new(&document.file), &raw, document.title);
-        crate::render::report(&compiled.diagnostics, &document.file);
+        crate::document::render::report(&compiled.diagnostics, &document.file);
         if compiled.output.is_none() {
             die(format!("could not render {}", document.file));
         }
@@ -91,7 +93,7 @@ pub fn read_seed_document(document: &SeedDocument) -> (String, String, String, O
             raw.clone(),
             raw,
             "typst".into(),
-            crate::render::pdf_of(&compiled),
+            crate::document::render::pdf_of(&compiled),
         );
     }
     if is_latex(&document.file) {
@@ -132,14 +134,14 @@ pub async fn seed_with_backup(
         .unwrap_or_else(|err| die(err));
     let config = Arc::new(Configuration::default());
     if profile == DeploymentProfile::Local {
-        let lock =
-            crate::serve::acquire_writer_lock(&paths.writer_lock).unwrap_or_else(|err| die(err));
+        let lock = crate::server::serve::acquire_writer_lock(&paths.writer_lock)
+            .unwrap_or_else(|err| die(err));
         let catalog_path = paths
             .catalog
             .as_ref()
             .unwrap_or_else(|| die("local deployment has no catalogue path"));
         let catalog = Arc::new(
-            crate::catalog::Catalog::open(catalog_path)
+            crate::storage::catalog::Catalog::open(catalog_path)
                 .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
         );
         let catalog_nonempty = catalog
@@ -162,7 +164,7 @@ pub async fn seed_with_backup(
                 .with_connection(|connection| {
                     connection
                         .query_row("PRAGMA user_version", [], |row| row.get(0))
-                        .map_err(crate::catalog::CatalogError::from)
+                        .map_err(crate::storage::catalog::CatalogError::from)
                 })
                 .unwrap_or_else(|err| die(format!("could not read catalogue schema: {err}")));
             let current_revision = catalog
@@ -174,8 +176,10 @@ pub async fn seed_with_backup(
             {
                 die("seed backup is not an exact verified point for this deployment");
             }
-            let current_catalog_digest = crate::backup::catalog_snapshot_digest(catalog_path)
-                .unwrap_or_else(|err| die(format!("could not verify current catalogue: {err}")));
+            let current_catalog_digest = crate::storage::backup::catalog_snapshot_digest(
+                catalog_path,
+            )
+            .unwrap_or_else(|err| die(format!("could not verify current catalogue: {err}")));
             if manifest.catalog.digest != current_catalog_digest {
                 die("seed backup is not fresh for the current catalogue state");
             }
@@ -215,7 +219,7 @@ pub async fn seed_with_backup(
     }
 }
 
-fn reset_catalog(catalog: &crate::catalog::Catalog) -> Result<(), String> {
+fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), String> {
     catalog
         .with_connection(|connection| {
             // Foreign-key-safe order.  The seed command is explicitly a
@@ -254,7 +258,7 @@ fn reset_catalog(catalog: &crate::catalog::Catalog) -> Result<(), String> {
                      UPDATE totals SET bytes = 0, documents = 0 WHERE id = 1;
                      COMMIT;",
                 )
-                .map_err(crate::catalog::CatalogError::from)
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .map_err(|err| format!("could not reset catalogue before seeding: {err}"))
 }
@@ -275,7 +279,7 @@ fn reset_catalog(catalog: &crate::catalog::Catalog) -> Result<(), String> {
 /// (see `Server::owner`) rather than a numeric id, so nothing is looked up
 /// over the network.
 pub async fn seed_into(
-    blobs: Arc<dyn crate::blob::BlobStore>,
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
     config: Arc<Configuration>,
     owner: &str,
     documents: &[SeedDocument],
@@ -291,11 +295,11 @@ pub async fn seed_into(
 }
 
 async fn seed_into_catalog(
-    blobs: Arc<dyn crate::blob::BlobStore>,
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
     config: Arc<Configuration>,
     owner: &str,
     documents: &[SeedDocument],
-    catalog: Arc<crate::catalog::Catalog>,
+    catalog: Arc<crate::storage::catalog::Catalog>,
     marker: &Path,
 ) {
     update_seed_marker(marker, "clearing-objects")
@@ -337,11 +341,11 @@ fn update_seed_marker(path: &Path, stage: &str) -> Result<(), String> {
 }
 
 async fn seed_with_store(
-    blobs: Arc<dyn crate::blob::BlobStore>,
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
     config: Arc<Configuration>,
     owner: &str,
     documents: &[SeedDocument],
-    catalog: Option<Arc<crate::catalog::Catalog>>,
+    catalog: Option<Arc<crate::storage::catalog::Catalog>>,
 ) {
     let store = match catalog {
         Some(catalog) => Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
@@ -360,11 +364,11 @@ async fn seed_with_store(
             .unwrap_or_else(|err| die(format!("could not read local journal state: {err}")))
             .deployment_id;
         if !deployment_id.is_empty() {
-            let journal = crate::journal::JournalRuntime::new_with_limits(
+            let journal = crate::storage::journal::JournalRuntime::new_with_limits(
                 catalog.clone(),
                 blobs.clone(),
                 deployment_id,
-                crate::journal::CoordinatorLimits::default(),
+                crate::storage::journal::CoordinatorLimits::default(),
                 config.storage.per_owner,
                 config.storage.total,
             )
@@ -591,17 +595,17 @@ async fn seed_remote_pdf(server: &str, slug: &str, token: &str, pdf: Vec<u8>, so
 }
 
 fn one_input_digest(main: &str, source: &str) -> String {
-    let mut tree = crate::history::Tree {
+    let mut tree = crate::document::history::Tree {
         main: main.to_string(),
         files: std::collections::BTreeMap::new(),
         settings: None,
     };
     tree.files.insert(
         main.to_string(),
-        crate::history::TreeEntry {
+        crate::document::history::TreeEntry {
             kind: "text".to_string(),
             id: String::new(),
-            sha: crate::store::digest_of(source),
+            sha: crate::document::store::digest_of(source),
             size: source.len() as i64,
         },
     );

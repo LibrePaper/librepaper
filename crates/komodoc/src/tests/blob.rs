@@ -5,13 +5,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::blob::{
+use crate::storage::blob::{
     clear_storage, document_key, document_prefix, legacy_source_key, room_key, room_lock_key,
     source_key, take_room_lease, version_of, BlobError, BlobStore, FsStore, RoomLock, INDEX_KEY,
     LEASE_GUARD_SECONDS, LOCK_STALE_SECONDS,
 };
-use crate::clock::{format_unix, now_unix};
 use crate::storage::migrate_legacy_source;
+use crate::util::{format_unix, now_unix};
 
 #[tokio::test]
 async fn blob_store_contract() {
@@ -404,7 +404,7 @@ async fn a_stale_lease_is_taken_over_and_raises_the_epoch() {
 // anybody else could start.
 #[test]
 fn a_lease_stops_being_safe_before_it_can_be_taken() {
-    let lease = crate::blob::Lease {
+    let lease = crate::storage::blob::Lease {
         held: true,
         holder: "server-one".into(),
         epoch: 1,

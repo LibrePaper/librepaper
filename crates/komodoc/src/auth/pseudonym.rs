@@ -7,8 +7,8 @@
 use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
 
-const ADJECTIVES_TXT: &str = include_str!("pseudonym/adjectives.txt");
-const LIZARDS_TXT: &str = include_str!("pseudonym/lizards.txt");
+const ADJECTIVES_TXT: &str = include_str!("words/adjectives.txt");
+const LIZARDS_TXT: &str = include_str!("words/lizards.txt");
 
 static ADJECTIVES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     ADJECTIVES_TXT
