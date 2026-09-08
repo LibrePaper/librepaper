@@ -1990,6 +1990,17 @@ impl Room {
         only_dirty: bool,
         acknowledge: bool,
     ) -> Result<Option<(i64, i64)>, String> {
+        let _publication_checkpoint = self.publication_checkpoint.read().await;
+        self.write_session_inner(only_dirty, acknowledge).await
+    }
+
+    /// Session writer for checkpoint and rollback callers that already hold
+    /// the publication checkpoint read/write barrier.
+    pub(crate) async fn write_session_inner(
+        &self,
+        only_dirty: bool,
+        acknowledge: bool,
+    ) -> Result<Option<(i64, i64)>, String> {
         let _writer = self.session_write.lock().await;
         if self.read_only() {
             return Err("this room is held by another server".into());

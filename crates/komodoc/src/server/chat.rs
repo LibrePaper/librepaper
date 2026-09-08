@@ -41,7 +41,7 @@ impl Server {
             headers,
             arrival: arrival.clone(),
             query,
-            is_owner: who.at_least(Role::Editor),
+            may_edit: who.at_least(Role::Editor),
             can_comment: who.at_least(Role::Commenter),
             link: who.link,
             comment_budget: who.comment_budget,
@@ -738,6 +738,63 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn delayed_http_body_rechecks_revoked_link() {
+        use crate::tests::{
+            new_test_server, post_as, publish_test_document, read_key_of, session_as, text,
+            TEST_PUBLISHER,
+        };
+        let server = new_test_server().await;
+        let document = publish_test_document(&server.url).await;
+        let slug = text(&document, "slug");
+        let key = read_key_of(&document);
+        let channel = server.instance.chat.create(&slug).await.unwrap();
+        let id = text(&channel, "id");
+        let (reading, started) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        let body = Body::from_stream(futures_util::stream::once(async move {
+            // This body is polled by the server after its initial viewer check.
+            reading.send(()).unwrap();
+            resume.await.unwrap();
+            Ok::<_, std::convert::Infallible>(
+                json!({"id":"late","text":"must not arrive"}).to_string(),
+            )
+        }));
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/documents/{slug}/chat/{id}"))
+            .header("host", "localhost")
+            .header("x-komodoc-client", "1")
+            .header(LINK_HEADER, key)
+            .header(AUTOMATION_HEADER, "1")
+            .header("x-komodoc-chat-token", text(&channel, "token"))
+            .body(body)
+            .unwrap();
+        let arrival = Arrival::from_headers(request.headers());
+        let instance = server.instance.clone();
+        let requested_slug = slug.clone();
+        let pending = tokio::spawn(async move {
+            instance
+                .handle_chat(request, &arrival, &requested_slug, &[&id])
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), started)
+            .await
+            .unwrap()
+            .unwrap();
+        let (status, _) = post_as(
+            &session_as(TEST_PUBLISHER),
+            &server.url,
+            &format!("/api/documents/{slug}/share"),
+            json!({"revoke":"reader"}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        release.send(()).unwrap();
+        assert_eq!(pending.await.unwrap().status(), 404);
+    }
+
     fn post() -> Post {
         Post {
             id: "one".into(),

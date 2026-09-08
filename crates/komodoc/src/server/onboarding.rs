@@ -56,7 +56,9 @@ impl Server {
             .pending_account_examples(&who.id)
             .map_err(|e| e.to_string())?
         {
-            let starter = &STARTERS[position];
+            let starter = STARTERS
+                .get(position)
+                .ok_or_else(|| format!("invalid starter position: {position}"))?;
             if let Some(entry) = self
                 .store
                 .get_result(&slug)

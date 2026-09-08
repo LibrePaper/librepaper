@@ -163,7 +163,7 @@ impl Catalog {
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM documents
                        WHERE slug=?1 AND status='active' AND pending_publication IS NULL
-                         AND owner_id IS NULL AND owner_key=?2)",
+                         AND owner_id IS NULL AND owner_key<>'' AND owner_key=?2)",
                     params![slug, actor.owner_key],
                     |row| row.get::<_, bool>(0),
                 )

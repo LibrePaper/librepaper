@@ -354,17 +354,12 @@ impl Server {
             // authoritative row, so cached provider identity cannot bypass
             // account erasure or session revocation.
             let now = crate::util::timestamp();
-            let email = if identity.handle.contains('@') {
-                identity.handle.clone()
-            } else {
-                String::new()
-            };
             let profile = crate::storage::catalog::Account {
                 id: identity.id.clone(),
                 provider: identity.provider.clone(),
                 handle: identity.handle.clone(),
                 name: identity.name.clone(),
-                email,
+                email: String::new(),
                 first_seen: now.clone(),
                 last_seen: now,
                 plan: "default".into(),
@@ -616,7 +611,7 @@ impl Server {
             return Err(write_json(
                 403,
                 &json!({
-                    "error": "automation is link-scoped and cannot publish or enumerate documents"
+                    "error": "automation mode cannot publish, delete, or list documents"
                 }),
             ));
         }
@@ -818,7 +813,7 @@ impl Server {
         // The rung, not the switch: a document may name a commenter on a
         // deployment whose switch names nobody, and may be closed to a caller
         // the switch would have allowed.
-        let is_owner = who.at_least(Role::Editor);
+        let may_edit = who.at_least(Role::Editor);
         if !who.at_least(Role::Commenter) {
             let reason = if id.is_signed_in() {
                 format!(
@@ -877,7 +872,7 @@ impl Server {
                 author,
                 &who.link,
                 who.comment_budget,
-                is_owner,
+                may_edit,
             )
             .await;
         if !request_id.is_empty() {
@@ -902,7 +897,7 @@ impl Server {
         &self,
         room: &Room,
         incoming: &RoomMessage,
-        is_owner: bool,
+        may_edit: bool,
         by: &str,
     ) -> (Value, bool) {
         let fail = |text: &str| -> (Value, bool) {
@@ -915,7 +910,7 @@ impl Server {
                 false,
             )
         };
-        if !is_owner {
+        if !may_edit {
             return fail("only an editor may decide a suggestion");
         }
         if incoming.kind == "accept" {

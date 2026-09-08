@@ -93,7 +93,7 @@ pub(super) struct Connection {
     pub(super) headers: HeaderMap,
     pub(super) arrival: Arrival,
     pub(super) query: Option<String>,
-    pub(super) is_owner: bool,
+    pub(super) may_edit: bool,
     pub(super) can_comment: bool,
     pub(super) chat: Option<String>,
     pub(super) link: String,
@@ -160,7 +160,7 @@ impl Server {
         };
         // What this caller may do here, asked once: the `y-*` gate and the
         // moderation of anyone else's comment are both the editor rung.
-        let is_owner = who.at_least(Role::Editor);
+        let may_edit = who.at_least(Role::Editor);
         let address = client_address(peer, &headers);
 
         let (mut parts, _body) = request.into_parts();
@@ -179,7 +179,7 @@ impl Server {
             .on_upgrade(move |socket| async move {
                 server
                     .run_socket(
-                        socket, room, address, who, author, is_owner, headers, arrival, query,
+                        socket, room, address, who, author, may_edit, headers, arrival, query,
                     )
                     .await;
             })
@@ -194,7 +194,7 @@ impl Server {
         address: String,
         who: Viewer,
         author: String,
-        is_owner: bool,
+        may_edit: bool,
         headers: HeaderMap,
         arrival: Arrival,
         query: Option<String>,
@@ -206,7 +206,7 @@ impl Server {
         // reconnects and asks for what it missed by state vector.
         let (tx, mut rx) = mpsc::channel::<Outgoing>(self.config.session.peer_queue);
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
-        room.attach(socket_id, address.clone(), tx.clone(), is_owner)
+        room.attach(socket_id, address.clone(), tx.clone(), may_edit)
             .await;
         self.connections.lock().await.insert(
             socket_id,
@@ -215,7 +215,7 @@ impl Server {
                 headers: headers.clone(),
                 arrival,
                 query,
-                is_owner,
+                may_edit,
                 can_comment: who.at_least(Role::Commenter),
                 chat: None,
                 link: who.link.clone(),
@@ -255,7 +255,7 @@ impl Server {
         });
 
         let hello =
-            json!({"type": "hello", "comments": room.snapshot_for(&author, is_owner).await});
+            json!({"type": "hello", "comments": room.snapshot_for(&author, may_edit).await});
         if send_outgoing(&tx, Outgoing::Text(hello.to_string()))
             .await
             .is_err()
@@ -371,7 +371,7 @@ impl Server {
                         incoming.kind.as_str(),
                         "y-update-start" | "y-update-chunk" | "y-update-end"
                     ) {
-                        if !is_owner {
+                        if !may_edit {
                             let _ = tx
                                 .send(Outgoing::Text(
                                     json!({
@@ -445,7 +445,7 @@ impl Server {
                             // now, so it is worth nothing to whoever arrives next, and
                             // a session that kept it would be keeping a list of ghosts.
                             "y-awareness" => {
-                                if !is_owner || incoming.update.is_empty() {
+                                if !may_edit || incoming.update.is_empty() {
                                     continue 'reader;
                                 }
                                 room.broadcast_except(
@@ -455,7 +455,7 @@ impl Server {
                                 .await;
                             }
                             "y-update" => {
-                                if !is_owner {
+                                if !may_edit {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
                                             json!({
                                                 "type": "error",
@@ -514,7 +514,7 @@ impl Server {
                             // timeline. The requester is told which checkpoint it
                             // became, which is how `komodoc sync` knows what to print.
                             "y-checkpoint" => {
-                                if !is_owner {
+                                if !may_edit {
                                     let payload = json!({
                                         "type": "error",
                                         "message": "editing is not permitted",
@@ -575,7 +575,7 @@ impl Server {
                         } else {
                             who.key.clone()
                         };
-                        self.decide_suggestion(&room, &incoming, is_owner, &by)
+                        self.decide_suggestion(&room, &incoming, may_edit, &by)
                             .await
                     } else {
                         self.apply_from(&room, incoming, &address, &who, &author)
@@ -593,7 +593,7 @@ impl Server {
                     // while preserving the sender's optimistic-row echo.
                     let shared = room.comment_event_for(&result, "", false).await;
                     room.broadcast_except(Some(socket_id), &shared).await;
-                    let targeted = room.comment_event_for(&result, &author, is_owner).await;
+                    let targeted = room.comment_event_for(&result, &author, may_edit).await;
                     if send_outgoing(&tx, Outgoing::Text(targeted.to_string())).await.is_err() {
                         break 'reader;
                     }
@@ -626,7 +626,7 @@ impl Server {
         // The last editor leaving is the rule that replaces `end_editing`'s
         // forgetting: what they wrote is written out and marked, rather than
         // dropped when the last tab closes.
-        if is_owner && room.editors_connected().await == 0 {
+        if may_edit && room.editors_connected().await == 0 {
             if let Err(err) = room.persist().await {
                 eprintln!(
                     "warning: could not write the session for {}: {err}",
@@ -705,7 +705,7 @@ impl Server {
                     .await;
                 !who.auth_failed
                     && self.may_read(entry, &who)
-                    && who.at_least(Role::Editor) == connection.is_owner
+                    && who.at_least(Role::Editor) == connection.may_edit
                     && who.at_least(Role::Commenter) == connection.can_comment
                     && who.link == connection.link
                     && who.comment_budget == connection.comment_budget
@@ -746,7 +746,7 @@ impl Server {
     /// or whose editor rung no longer matches what it was handed at the
     /// handshake. This is what makes revoking or rotating a link, or
     /// transferring the document away, actually take effect on a connection
-    /// that is already open: without it, `who`/`author`/`is_owner` are
+    /// that is already open: without it, `who`/`author`/`may_edit` are
     /// resolved once and never again, so the room keeps relaying the text
     /// and accepting writes from someone the index no longer names.
     ///
@@ -787,7 +787,7 @@ impl Server {
                         .await;
                     !who.auth_failed
                         && self.may_read(entry, &who)
-                        && who.at_least(Role::Editor) == connection.is_owner
+                        && who.at_least(Role::Editor) == connection.may_edit
                         && who.at_least(Role::Commenter) == connection.can_comment
                         && who.link == connection.link
                         && who.comment_budget == connection.comment_budget

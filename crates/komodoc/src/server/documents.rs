@@ -32,9 +32,8 @@ pub(super) fn upload_digest(upload: &Upload) -> String {
 impl Server {
     pub async fn delete_document(&self, slug: &str) -> Result<usize, String> {
         let storage_id = self.store.begin_delete(slug)?;
-        // Chat is part of the document's durable lifecycle.  Purging before
-        // admission would erase comments when begin_delete rejects a missing,
-        // already-retired, or otherwise ineligible row.
+        // Tear down the document's live chat channels only after deletion is
+        // admitted; a refused delete must leave those conversations running.
         self.chat.purge(slug).await;
         self.rooms
             .purge_with_identity(slug, storage_id.as_deref())
@@ -100,12 +99,12 @@ impl Server {
             return write_json(404, &json!({"error": "not found"}));
         }
         let author = self.comment_author(&headers, arrival, &who.id);
-        let is_owner = who.at_least(Role::Editor);
+        let may_edit = who.at_least(Role::Editor);
 
         match *request.method() {
             Method::GET => write_json(
                 200,
-                &json!({"comments": room.snapshot_for(&author, is_owner).await}),
+                &json!({"comments": room.snapshot_for(&author, may_edit).await}),
             ),
             Method::POST => {
                 if cross_site_refused(&headers, arrival) {
@@ -163,7 +162,7 @@ impl Server {
                 if ok {
                     let shared = room.comment_event_for(&result, "", false).await;
                     room.broadcast(&shared).await;
-                    let targeted = room.comment_event_for(&result, &author, is_owner).await;
+                    let targeted = room.comment_event_for(&result, &author, may_edit).await;
                     return write_json(200, &targeted);
                 }
                 write_json(400, &result)
@@ -673,21 +672,17 @@ impl Server {
         } else {
             parsed.title.clone()
         };
-        let staged_assets: Vec<String> =
-            new_assets.values().map(|entry| entry.sha.clone()).collect();
-        let sha = match room.checkpoint_publication_now("cli", &who.key).await {
+        let sha = match room
+            .checkpoint_publication_now_locked("cli", &who.key)
+            .await
+        {
             Ok(Some(sha)) => sha,
             // Deferred: the text is in the session and durable at the next
             // write, and the checkpoint follows when the window passes.
             Ok(None) => existing.sha.clone(),
             Err(_) => {
                 if let Err(error) = room
-                    .rollback_publication_inner(
-                        &current,
-                        &rollback_bodies,
-                        &rollback_format,
-                        &staged_assets,
-                    )
+                    .rollback_publication_inner(&current, &rollback_bodies, &rollback_format)
                     .await
                 {
                     eprintln!("warning: could not roll back {}: {error}", existing.slug);
@@ -705,12 +700,7 @@ impl Server {
         if self.store.catalog.is_some() {
             if let Err(error) = self.store.commit_publication(&existing.slug, &sha).await {
                 if let Err(rollback) = room
-                    .rollback_publication_inner(
-                        &current,
-                        &rollback_bodies,
-                        &rollback_format,
-                        &staged_assets,
-                    )
+                    .rollback_publication_inner(&current, &rollback_bodies, &rollback_format)
                     .await
                 {
                     eprintln!("warning: could not roll back {}: {rollback}", existing.slug);
@@ -1406,13 +1396,13 @@ impl Server {
             return write_json(403, &cross_site_refusal());
         }
         let author = self.comment_author(headers, arrival, &who.id);
-        let is_owner = who.at_least(Role::Editor);
+        let may_edit = who.at_least(Role::Editor);
         let room = match self.rooms.try_get(slug).await {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
         };
         let (source, held_format, tree, texts, comments) =
-            room.snapshot_bundle(&author, is_owner).await;
+            room.snapshot_bundle(&author, may_edit).await;
         let format = if held_format.is_empty() {
             if entry.source_format.is_empty() {
                 "html".to_string()

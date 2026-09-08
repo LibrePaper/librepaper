@@ -53,8 +53,19 @@ impl Room {
         why: &str,
         by: &str,
     ) -> Result<Option<String>, String> {
-        // The caller holds `publication_write` across the CRDT mutation and
-        // this checkpoint. A second lock here would deadlock the publication.
+        let _restore_writer = self.restore_write.lock().await;
+        let _publication_writer = self.publication_write.lock().await;
+        let _publication_checkpoint = self.publication_checkpoint.write().await;
+        self.checkpoint_publication_now_locked(why, by).await
+    }
+
+    /// Publication checkpoint for a caller that already owns the publication
+    /// and checkpoint barriers across its CRDT mutation.
+    pub(crate) async fn checkpoint_publication_now_locked(
+        &self,
+        why: &str,
+        by: &str,
+    ) -> Result<Option<String>, String> {
         self.checkpoint_impl_locked(why, by, false, false, None, true)
             .await
     }
@@ -347,7 +358,7 @@ impl Room {
         //    server gets to clear `dirty` below, the two disagree and `dirty`
         //    is left set, so that edit is never reported as saved when it is
         //    not yet on disk (R07).
-        let (session_size, durable_sequence) = match self.write_session(false, false).await {
+        let (session_size, durable_sequence) = match self.write_session_inner(false, false).await {
             Ok(Some(result)) => result,
             Ok(None) => unreachable!("an unconditional session write returns its size"),
             Err(err) => {
@@ -1169,19 +1180,16 @@ impl Room {
         tree: &crate::document::history::Tree,
         bodies: &HashMap<String, String>,
         format: &str,
-        staged_assets: &[String],
     ) -> Result<(), String> {
         {
             let mut state = self.state.lock().await;
             session::restore(&state.session.doc, tree, bodies);
             // Asset uploads are deliberately allowed to overlap the storage
             // portion of a publication so an independent upload cannot block
-            // on a paused object write.  Remove only this publication's
-            // staged digests; preserve any asset another request committed in
-            // the meantime.
-            for sha in staged_assets {
-                state.session.asset_sizes.remove(sha);
-            }
+            // on a paused object write. Keep every digest currently held in
+            // memory: the bytes remain durable even when this publication is
+            // rolled back, and the normal pruning pass can reclaim anything
+            // left unreferenced after the rollback.
             for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
                 state
                     .session
@@ -1193,7 +1201,7 @@ impl Room {
             state.session.mark_dirty(now_unix());
             state.session.updated_at = now_unix();
         }
-        self.write_session(false, false).await.map(|_| ())
+        self.write_session_inner(false, false).await.map(|_| ())
     }
 
     /// Puts a text at a path in the document, beside whatever is already

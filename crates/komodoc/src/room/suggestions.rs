@@ -4,6 +4,20 @@
 use super::*;
 
 impl Room {
+    /// Roll back an acceptance while holding the restore lock. The publication
+    /// path calls `rollback_publication_inner` directly because it already
+    /// owns the publication write barrier; suggestions acquire the matching
+    /// checkpoint read barrier before using that inner helper.
+    async fn rollback_suggestion_inner(
+        &self,
+        tree: &crate::document::history::Tree,
+        bodies: &HashMap<String, String>,
+        format: &str,
+    ) -> Result<(), String> {
+        let _publication_checkpoint = self.publication_checkpoint.read().await;
+        self.rollback_publication_inner(tree, bodies, format).await
+    }
+
     /// Accepts a suggestion: applies its proposal to the live source through
     /// the session, exactly as `restore_and_checkpoint` applies a restore,
     /// and records a checkpoint. Held under `restore_write`, the same lock a
@@ -226,12 +240,7 @@ impl Room {
             Ok(Some(sha)) => sha,
             Ok(None) => {
                 let _ = self
-                    .rollback_publication_inner(
-                        &rollback_tree,
-                        &rollback_bodies,
-                        &rollback_format,
-                        &[],
-                    )
+                    .rollback_suggestion_inner(&rollback_tree, &rollback_bodies, &rollback_format)
                     .await;
                 return Err(AcceptError::Failed(
                     "could not create the accept checkpoint".to_string(),
@@ -239,12 +248,7 @@ impl Room {
             }
             Err(err) => {
                 let _ = self
-                    .rollback_publication_inner(
-                        &rollback_tree,
-                        &rollback_bodies,
-                        &rollback_format,
-                        &[],
-                    )
+                    .rollback_suggestion_inner(&rollback_tree, &rollback_bodies, &rollback_format)
                     .await;
                 return Err(AcceptError::Failed(err));
             }
