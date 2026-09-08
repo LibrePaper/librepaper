@@ -642,6 +642,18 @@ async fn the_google_callback_signs_in() {
     assert_eq!(who.id, "google:10769");
     assert_eq!(who.handle, "anne@example.org");
     assert_eq!(who.name, "Anne Grandchamp");
+    let entries = server.instance.store.list().await;
+    assert_eq!(
+        entries.len(),
+        4,
+        "first OAuth sign-in provisions four examples"
+    );
+    assert!(entries
+        .iter()
+        .all(|entry| entry.publisher_id == who.id && !entry.example));
+    let again = google_callback(&server.url, "st", "the-verifier", "").await;
+    assert_eq!(again.status().as_u16(), 302);
+    assert_eq!(server.instance.store.list().await.len(), 4);
 
     // No name from Google: the address's local part stands in.
     let user = json!({"sub": "2", "email": "jean@example.org", "email_verified": true});

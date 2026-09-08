@@ -20,6 +20,30 @@ fn account() -> Account {
     }
 }
 
+#[test]
+fn new_account_examples_resume_without_reenrolling_on_profile_refresh() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    let pending = catalog.pending_account_examples("acct-1").unwrap();
+    assert_eq!(pending.len(), 4);
+    catalog.complete_account_example("acct-1", 0).unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    assert_eq!(
+        catalog.pending_account_examples("acct-1").unwrap(),
+        pending[1..]
+    );
+    for position in 1..4 {
+        catalog
+            .complete_account_example("acct-1", position)
+            .unwrap();
+    }
+    catalog.upsert_account(&account()).unwrap();
+    assert!(catalog
+        .pending_account_examples("acct-1")
+        .unwrap()
+        .is_empty());
+}
+
 fn document() -> NewDocument {
     NewDocument {
         slug: "doc".into(),
@@ -45,7 +69,7 @@ fn document() -> NewDocument {
 #[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 11);
+    assert_eq!(catalog.schema_version().unwrap(), 12);
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection

@@ -712,6 +712,11 @@ async fn a_read_link_is_read_only_under_an_open_comment_switch() {
         "commenter",
         "an example is not open to comments under --commenters anyone"
     );
+    assert_eq!(
+        role_of(&server.url, "", &key, &slug).await,
+        "reader",
+        "an explicit Read link must remain read-only even on an example"
+    );
 }
 
 // What `publish` hands back is the thing to send: a read link minted with the

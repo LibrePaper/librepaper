@@ -26,9 +26,10 @@ mod documents;
 mod journal;
 mod operations;
 
-const LATEST_SCHEMA: i64 = 11;
+const LATEST_SCHEMA: i64 = 12;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
 const MIGRATIONS: &[(i64, &str)] = &[
+    // Versions are applied in order; append new migrations at the end.
     (1, include_str!("../../../migrations/0001_catalog.sql")),
     (2, include_str!("../../../migrations/0002_journal.sql")),
     (
@@ -66,6 +67,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         11,
         include_str!("../../../migrations/0011_journal_readers.sql"),
+    ),
+    (
+        12,
+        include_str!("../../../migrations/0012_account_examples.sql"),
     ),
 ];
 

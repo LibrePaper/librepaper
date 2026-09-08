@@ -21,6 +21,7 @@ mod hardening;
 mod history;
 mod latex;
 mod local;
+mod onboarding;
 mod ownership;
 mod pseudonym;
 mod publish_cli;

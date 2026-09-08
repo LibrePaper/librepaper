@@ -62,6 +62,17 @@ impl Catalog {
                 ],
             )
             .map_err(CatalogError::from)?;
+            for position in 0..4 {
+                tx.execute(
+                    "INSERT INTO account_examples (account_id, position, slug) VALUES (?1, ?2, ?3)",
+                    params![
+                        profile.id,
+                        position,
+                        format!("starter-{}", crate::util::new_id())
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+            }
             self.account_in_tx(tx, &profile.id, None)
         })
     }
@@ -69,6 +80,27 @@ impl Catalog {
     pub fn account(&self, id: &str) -> CatalogResult<Option<Account>> {
         self.with_connection(|connection| {
             Self::account_on(connection, id).map_err(CatalogError::from)
+        })
+    }
+
+    /// The durable remaining work for this account's first sign-in.
+    pub fn pending_account_examples(&self, id: &str) -> CatalogResult<Vec<(usize, String)>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT position, slug FROM account_examples WHERE account_id = ?1 AND completed = 0 ORDER BY position",
+            )?;
+            let rows = statement.query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(CatalogError::from)
+        })
+    }
+
+    pub fn complete_account_example(&self, id: &str, position: usize) -> CatalogResult<()> {
+        self.with_connection(|connection| {
+            connection.execute(
+                "UPDATE account_examples SET completed = 1 WHERE account_id = ?1 AND position = ?2",
+                params![id, position],
+            )?;
+            Ok(())
         })
     }
 

@@ -65,6 +65,7 @@ pub use reply::*;
 pub use routes::*;
 pub use sharing::*;
 pub use signin::*;
+mod onboarding;
 use socket::*;
 
 pub struct Server {
@@ -92,6 +93,8 @@ pub struct Server {
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.
     pub pending: PendingCodes,
+    /// Serialize first-sign-in provisioning; its progress is durable in SQLite.
+    onboarding: tokio::sync::Mutex<()>,
     /// Private agent channels are live coordination and never durable data.
     pub chat: chat::Hub,
     /// Where the LaTeX distributions come from, or nothing. A deployment
@@ -243,6 +246,7 @@ impl Server {
             accounts: Arc::new(GithubAccounts),
             listing: true,
             pending: PendingCodes::new(),
+            onboarding: tokio::sync::Mutex::new(()),
             chat: chat::Hub::default(),
             latex: None,
             sockets: AtomicU64::new(1),
@@ -723,8 +727,10 @@ impl Server {
                     id.handle,
                     self.commenters.describe()
                 )
-            } else {
+            } else if !self.commenters.public {
                 "sign in to comment".to_string()
+            } else {
+                "Read-only access. Ask the owner for a Comment or Edit link.".to_string()
             };
             return (
                 json!({"type": "error", "message": reason, "temp_id": incoming.temp_id,

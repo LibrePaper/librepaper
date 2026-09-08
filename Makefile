@@ -30,7 +30,7 @@ MODULE  := target/wasm32-unknown-unknown/wasm/komodoc_engine.wasm
 SHELL_OUT := web/dist/index.html
 WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
-SOURCES := $(shell find crates -type f -not -path '*/target/*') Cargo.toml README.md
+SOURCES := $(shell find crates -type f -not -path '*/target/*') Cargo.toml README.md $(wildcard examples/*.md examples/*.typ examples/*.tex)
 
 .DEFAULT_GOAL := help
 .PHONY: help build test smoke serve seed examples kill clean snapshot wasm typst fmt web fuzz
@@ -96,6 +96,8 @@ FUZZ_SECONDS ?= 60
 # inside yrs (the ignored test in crates/komodoc/src/tests/directories.rs
 # reproduces it), so CI runs the other three until that is settled.
 FUZZ_TARGETS ?= $(shell cd fuzz && cargo fuzz list)
+# The global export would evaluate this for every recipe, even outside fuzz.
+unexport FUZZ_TARGETS
 fuzz: $(WASM) $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SECONDS (default 60) each
 	@command -v cargo-fuzz >/dev/null || { echo "cargo-fuzz is not installed: cargo install cargo-fuzz"; exit 1; }
 	@cd fuzz && for target in $(FUZZ_TARGETS); do \
@@ -115,19 +117,12 @@ clean:  ## Remove build output
 # The port is fixed because the GitHub OAuth app's callback URL names it.
 PORT       ?= 8081
 DATA       ?= komodoc-data
-PUBLISHERS ?= any
+PUBLISHERS ?= anyone
 COMMENTERS ?= anyone
-# Who owns the seeded examples. Empty means nobody, and a document nobody owns
-# is everybody's: each visitor holds the owner's controls on it. That is fine
-# where nobody signs in and wrong where somebody does, since the point of a
-# sign-in is that everybody else meets the examples as a reader or a
-# commenter. Defaults to the one account `--publishers` names, when it names
-# exactly one; `any`, `anyone` and a list name nobody in particular.
+# Ownership for the manual seed command. Account onboarding creates private
+# copies for each signed-in account automatically.
 comma := ,
 OWNER      ?= $(if $(filter any anyone,$(PUBLISHERS)),,$(if $(findstring $(comma),$(PUBLISHERS)),,$(PUBLISHERS)))
-# Whether .env has supplied a way to sign people in. `deploy` reads this to
-# decide between a server that asks for a sign-in and one that never does.
-SIGN_IN    := $(strip $(KOMODOC_GITHUB_CLIENT_ID)$(KOMODOC_GOOGLE_CLIENT_ID))
 # Where LaTeX distributions come from: a mirror directory or an https bucket.
 # Empty means no `--latex`, so `.tex` documents are stored and shown but not
 # compiled. `deploy` below passes the bare flag, which is the project's own
@@ -185,20 +180,10 @@ latex-smoke: $(BIN)  ## Compile and display the seeded LaTeX example in Chromium
 	@node latex/tools/check-mirror.mjs $(MIRROR)
 	@node web/tools/latex-e2e.mjs $(BIN) browser examples/standard-errors.tex 120 $(MIRROR)
 
-# The whole app on this machine. With a GitHub app in .env (see .env.example)
-# it asks people to sign in exactly as a deployment does, and the examples
-# belong to OWNER: sign in as them to hold every right, and open a link they
-# minted in a private window to see what a reader or a commenter gets.
-# Without one, publishing and commenting are both open, so a trial needs no
-# OAuth app and no `komodoc login`. LaTeX is on either way, from the
-# project's mirror unless LATEX= names another, so the seeded .tex example
-# compiles.
-deploy: latex-check $(BIN) $(EXAMPLES)  ## Seed the examples and serve them here; sign-in when .env has an OAuth app, LaTeX on (LATEX=)
-ifneq ($(SIGN_IN),)
-	@$(MAKE) seed serve LATEX_FLAG="--latex $(LATEX)"
-else
-	@$(MAKE) seed serve OWNER= PUBLISHERS=anyone COMMENTERS=anyone LATEX_FLAG="--latex $(LATEX)"
-endif
+# Use the ordinary sign-in flow: each new account receives four private
+# examples and owns its copies. Guest roles come from links created in Share.
+deploy: latex-check $(BIN)  ## Serve locally; sign in for your four examples and share links to test roles
+	@$(MAKE) serve LATEX_FLAG="--latex $(LATEX)"
 
 # The deployment keys -- the Cloudflare token, the endpoints, the GitHub app
 # -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the

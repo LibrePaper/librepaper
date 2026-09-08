@@ -137,6 +137,13 @@ impl Server {
                 Err(err) => return plain(503, &format!("could not establish account: {err}")),
             }
         }
+        if let Err(error) = self.initialize_account_examples(&signed_who).await {
+            eprintln!("could not prepare account examples: {error}");
+            return plain(
+                503,
+                "Could not prepare your example documents. Please try signing in again.",
+            );
+        }
         // What this browser uploaded before it signed in is now this account's:
         // the publisher is rewritten and the quota moves with it. This is the
         // answer to "I cleared my cookies and my documents are gone", which the

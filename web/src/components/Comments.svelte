@@ -14,6 +14,7 @@
     identity = "",
     commentingAs = "Anonymous",
     canModerate = false,
+    canComment = true,
     tool = "commenting",
     hasFigures = false,
     // Where each orphaned passage went, by comment id. Passed through rather
@@ -30,6 +31,7 @@
     onreply,
     onaccept,
     onreject,
+    pending,
   } = $props();
 
   function place(comment) {
@@ -68,8 +70,8 @@
           label={item.label}
           tool={item.id}
           pressed={tool === item.id}
-          disabled={item.id === "region" && !hasFigures}
-          title={item.id === "region" && !hasFigures
+          disabled={!canComment || (item.id === "region" && !hasFigures)}
+          title={!canComment ? "Read-only access" : item.id === "region" && !hasFigures
             ? "This document has no figures to draw on"
             : item.title}
           onclick={() => ontool?.(item.id)}
@@ -77,7 +79,9 @@
       {/each}
       </div>
     {/snippet}
-    {#if comments.length === 0}
+    {#if !canComment}
+      <p class="panel-muted">Read-only access. Ask the owner for a Comment or Edit link to participate.</p>
+    {:else if comments.length === 0}
       <p class="panel-muted">
         Highlight text in the document, then choose “Comment”.
       </p>
@@ -85,8 +89,10 @@
   </PanelHeader>
 
   <div id="comments" class="flex flex-col gap-3">
+    {@render pending?.()}
     {#each shown as comment (comment)}
       <CommentCard
+        {canComment}
         {comment}
         {identity}
         {commentingAs}

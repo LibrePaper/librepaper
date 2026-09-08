@@ -14,6 +14,7 @@
     // account name when there is one, otherwise the per-document pseudonym.
     commentingAs = "Anonymous",
     canModerate = false,
+    canComment = true,
     // The manifest entry at which this comment's passage stopped being found,
     // when it has been looked up and there was an answer. Null otherwise, and
     // null for every comment whose passage is still in the document.
@@ -272,7 +273,7 @@
   {/if}
 
   <Row gap={1} justify="end">
-    {#if !isSuggestion}
+    {#if !isSuggestion && canComment}
       <!-- Reject is the resolve, for a suggestion -- see the diff and
            decision block above. -->
       <IconButton
@@ -289,6 +290,7 @@
     <IconButton
       icon="reply"
       label="Reply"
+      disabled={!canComment}
       onclick={async (e) => {
         e.stopPropagation();
         replying = true;
@@ -309,7 +311,7 @@
     {/if}
   </Row>
 
-  {#if replying}
+  {#if replying && canComment}
     <form class="mt-3 flex flex-col gap-2" onsubmit={submitReply}>
       {#if !identity}
         <p class="panel-meta">replying as {commentingAs}</p>

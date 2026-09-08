@@ -391,8 +391,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "URL")]
         server: Option<String>,
         /// The account that owns the local examples, as a GitHub login or a
-        /// Google address; without one they belong to nobody, and every
-        /// visitor holds the owner's controls on them
+        /// Google address; without one nobody can edit or manage their sharing
         #[arg(long, value_name = "ACCOUNT")]
         owner: Option<String>,
         /// Verified local backup required before replacing a nonempty catalog.

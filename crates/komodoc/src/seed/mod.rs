@@ -268,12 +268,10 @@ fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), Strin
 /// komodoc's own keys go -- on a bucket the operator supplied, nothing else in
 /// it is ours to remove.
 ///
-/// `owner` is the GitHub login the examples belong to, or "" for nobody. A
-/// document with no owner is everybody's -- each visitor holds the owner's
-/// controls on it -- which is right on a server that asks nobody to sign in
-/// and wrong on one that does: there the examples should be one account's,
-/// so that everybody else meets them as a commenter, which is also the only
-/// way to see the reader's and the commenter's side of the app on a laptop.
+/// `owner` is the account handle or visitor key the examples belong to, or
+/// "" for nobody. Ownerless examples can be read and commented on, but nobody
+/// can edit or share them. Account onboarding creates separately owned copies
+/// through the ordinary sign-in flow.
 /// A remote seed never needs this, since it publishes as the account that ran
 /// it. The login is recorded as the owner key a signed-in caller is named by
 /// (see `Server::owner`) rather than a numeric id, so nothing is looked up

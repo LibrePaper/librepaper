@@ -221,8 +221,8 @@ pub struct Ceiling {
 impl IndexEntry {
     /// Whether a caller -- named by their owner key (see `Server::owner`) and,
     /// when signed in, their GitHub numeric id -- may replace or delete this
-    /// document. An entry with no publisher belongs to no one in particular
-    /// and stays shared. An entry carrying a publisher id compares against the
+    /// document. An entry with no publisher grants ownership to nobody.
+    /// An entry carrying a publisher id compares against the
     /// id instead of the key, since the id survives an account being renamed
     /// and the key would not; a legacy entry, or one owned by a visitor: key,
     /// has no publisher id and falls back to comparing the key.
@@ -305,9 +305,9 @@ impl IndexEntry {
         }
         // A read link is read-only: the switch is a ceiling on what a link may
         // carry, not a grant to whoever reaches the document. The examples are
-        // the one exception, since nobody holds a link to an example and they
-        // exist to be commented on.
-        if ceiling.comment && self.example {
+        // the one exception when opened without a link, since they exist to
+        // be commented on. An explicit Read link still means read-only.
+        if ceiling.comment && self.example && link_hash.is_empty() {
             role = role.max(Role::Commenter);
         }
         role

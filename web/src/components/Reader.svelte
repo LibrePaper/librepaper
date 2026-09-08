@@ -427,6 +427,7 @@
   }
 
   function chooseTool(which) {
+    if (!mayChat) return;
     tool = which;
     tell({ type: "tool", tool: which });
   }
@@ -450,7 +451,7 @@
   }
 
   function barClicked() {
-    if (!pending) return;
+    if (!pending || !mayChat) return;
     bar = { ...bar, shown: false };
     if (tool === "highlighting") {
       // No dialog: the passage is the whole annotation.
@@ -465,7 +466,7 @@
   }
 
   function submitAnnotation({ motivation, body, proposed }) {
-    if (!pending) return;
+    if (!pending || !mayChat) return;
     // The name shown here is only a guess until the broadcast comes back: the
     // server decides the real creator (the account name, or the per-document
     // pseudonym), and never trusts anything this browser sends.
@@ -580,6 +581,7 @@
   }
 
   function reply(comment, body, name) {
+    if (!mayChat) return;
     const temp_id = crypto.randomUUID();
     comment.replies = [
       ...comment.replies,
@@ -2885,10 +2887,6 @@
   {/snippet}
 </Nav>
 
-<PendingAnnotations items={unconfirmed}
-  onretry={(id) => outbox.retry(id, (message) => room?.send(message))}
-  ondiscard={discardAnnotation} />
-
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
@@ -2932,7 +2930,7 @@
       </div>
       {#if settled}
       <div class="sidebar-content">
-      {#each tabs.filter((tab) => visitedPanels.includes(tab.id)) as tab (tab.id)}
+      {#each tabs.filter((tab) => visitedPanels.includes(tab.id) || (tab.id === "comments" && unconfirmed.length)) as tab (tab.id)}
       <div class="panel-slot" hidden={panel !== tab.id || !shown.comments}>
       {#if tab.id === "files" && mayEdit}
         <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
@@ -2977,6 +2975,7 @@
                  onfilediff={openFileDiff} onclosefilediff={() => { fileDiffGeneration += 1; fileDiff = null; }} />
       {:else}
         <Comments {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
+                  canComment={mayChat}
                   hasFigures={figureAt.length > 0}
                   ontool={chooseTool}
                   onreveal={async (comment) => {
@@ -3005,7 +3004,13 @@
                   }}
                   onresolve={resolve} ondelete={askDelete} onreply={reply}
                   onaccept={(comment) => decideSuggestion(comment, "accept")}
-                  onreject={(comment) => decideSuggestion(comment, "reject")} />
+                  onreject={(comment) => decideSuggestion(comment, "reject")}>
+          {#snippet pending()}
+            <PendingAnnotations items={unconfirmed}
+              onretry={(id) => outbox.retry(id, (message) => room?.send(message))}
+              ondiscard={discardAnnotation} />
+          {/snippet}
+        </Comments>
       {/if}
       </div>
       {/each}
@@ -3128,7 +3133,7 @@
   {#if guide.shown}<div class="grip-guide" class:held={guide.held} style="left: {guide.left}px"></div>{/if}
 </main>
 
-{#if bar.shown}
+{#if bar.shown && mayChat}
   <button
     id="selectionbar"
     class="btn btn-sm preset-filled-primary-500 shadow-lg"
