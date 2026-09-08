@@ -1389,8 +1389,60 @@
   // map they live in is not itself reactive: Settings.svelte needs to redraw
   // when a settings change arrives from another collaborator, not only when
   // this browser writes one. Kept current by the `meta.observe` handler set
-  // up beside `latex.configure` in `prepare`.
+  // up by `configureLatex` when this project enters LaTeX mode.
   let latexSettingsState = $state({ engine: "auto", release: null });
+  let latexObservedSession = null;
+  let latexSettingsObserver = null;
+  let latexConfiguration = 0;
+
+  function stopLatex() {
+    latexConfiguration += 1;
+    if (latexObservedSession) {
+      latexObservedSession.meta.unobserve(latexSettingsObserver);
+      latex.cancel();
+    }
+    latexObservedSession = null;
+    latexSettingsObserver = null;
+  }
+
+  function configureLatex(format) {
+    if (format !== "latex" || !session) {
+      stopLatex();
+      return;
+    }
+    if (latexObservedSession === session) return;
+    stopLatex();
+    const active = session;
+    const configuration = latexConfiguration;
+    latexSettingsState = active.latexSettings();
+    latex.configure({
+      project: SLUG,
+      settings: latexSettingsState,
+      mayCompile: mayEdit && renderers.available("latex"),
+    });
+    latexObservedSession = active;
+    latexSettingsObserver = (event) => {
+      if (configuration !== latexConfiguration || session !== active) return;
+      const changed = [...event.changes.keys.keys()];
+      if (!changed.includes("latex.engine") && !changed.includes("latex.release")) return;
+      latexSettingsState = active.latexSettings();
+      latex.setSettings(latexSettingsState);
+      void paintPreview();
+    };
+    active.meta.observe(latexSettingsObserver);
+    // Only an editor pins the mirror's default into the shared project.
+    // A response from an earlier format or session must not change this one.
+    if (mayEdit && !latexSettingsState.release) {
+      latex.releases().then((info) => {
+        if (configuration === latexConfiguration && session === active && mayEdit
+            && info?.default && !active.latexSettings().release) {
+          active.setLatexSettings({ release: info.default });
+        }
+      }).catch(() => {
+        // A compile reports an unavailable mirror through its normal status.
+      });
+    }
+  }
 
   // The most recent LaTeX compile result -- success or failure -- kept whole
   // for Diagnostics' "Compiled with" block and "Earlier attempts" list
@@ -1614,7 +1666,19 @@
     // paint over what is already on the screen with; a version nobody
     // rendered is said in the note instead.
     if (!bytes) {
-      if (viewing && request === renderingRequest) rendering = { ...rendering, missing: true };
+      if (viewing && request === renderingRequest) {
+        const hadPages = Boolean(latestPreview || renderedSha || everPaintedShown);
+        rendering = { ...rendering, current: false, missing: true };
+        latestPreview = null;
+        renderedSha = null;
+        frameShowsCheckpoint = false;
+        everPainted = false;
+        everPaintedShown = false;
+        // The PDF viewer has no "clear" message. Reloading its empty shell
+        // removes the previous checkpoint's pages before the warning says
+        // why this one cannot be shown.
+        if (hadPages) navigateFrame(true);
+      }
       return;
     }
     if (request !== renderingRequest) return;
@@ -2317,6 +2381,7 @@
     const format = renderers.formatOf(session.mainPath());
     if (format && format !== sourceFormat) {
       sourceFormat = format;
+      configureLatex(format);
       if (mayEdit) renderers.warm(format);
       // A main-file rename can keep the same output kind (Typst -> LaTeX is
       // still PDF), so framePath alone is not enough to invalidate the old
@@ -2586,48 +2651,7 @@
     // actually starts loading WasmTex. `session.latexSettings()` needs the
     // session that `joinSession` just built, which is why this comes after
     // it rather than beside the old restore-a-distribution code above.
-    if (format === "latex") {
-      latexSettingsState = session.latexSettings();
-      latex.configure({
-        project: SLUG,
-        settings: latexSettingsState,
-        mayCompile: mayEdit && renderers.available("latex"),
-      });
-      if (mayEdit) {
-        // A settings change is a project change, not a local preference: it
-        // can arrive from another collaborator's Settings panel as easily as
-        // this browser's own, and either way the controller and the running
-        // preview both need to hear about it (SPEC "A settings change
-        // re-runs the compile").
-        session.meta.observe((event) => {
-          const changed = [...event.changes.keys.keys()];
-          if (!changed.includes("latex.engine") && !changed.includes("latex.release")) return;
-          latexSettingsState = session.latexSettings();
-          latex.setSettings(latexSettingsState);
-          void paintPreview();
-        });
-        // A project nobody has compiled yet has no browser release pinned.
-        // The first editor whose browser is about to compile it pins the
-        // validated default -- never a reader, who never reaches this
-        // branch at all (SPEC "Project configuration and identity" /
-        // "Migration": "Existing projects without a browser release pin
-        // receive one through the normal editable project configuration
-        // path; readers do not mutate projects merely by opening them.").
-        if (!session.latexSettings().release) {
-          latex
-            .releases()
-            .then((info) => {
-              if (info?.default && !session.latexSettings().release) {
-                session.setLatexSettings({ release: info.default });
-              }
-            })
-            .catch(() => {
-              // No mirror, or it is unreachable: nothing to pin yet, and the
-              // ordinary compile failure path explains that to the editor.
-            });
-        }
-      }
-    }
+    configureLatex(sourceFormat);
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
     if (mayEdit) startEditing();
@@ -2698,6 +2722,21 @@
         location.reload();
         return;
       }
+      // The CRDT session was created with the old capabilities. Rejoining it
+      // after a role change would either keep a downgraded editor writing
+      // updates the server discards, or leave a promoted reader without the
+      // editor session and LaTeX setup it now needs.
+      const capability = (document_) => JSON.stringify([
+        document_.role ?? null,
+        document_.can_edit ?? null,
+        document_.can_moderate ?? null,
+        document_.can_see_sharing ?? null,
+      ]);
+      if (capability(latest) !== capability(doc)) {
+        passages.clearPassageCache();
+        location.reload();
+        return;
+      }
       room.send(active.open());
     } catch {
       // A temporary metadata failure must not send unchecked CRDT updates.
@@ -2748,6 +2787,7 @@
       // disconnects, which the socket closing does on its own; this is only
       // this browser letting go of its half.
       passages.clearPassageCache();
+      stopLatex();
       session?.leave();
       room?.close();
     };

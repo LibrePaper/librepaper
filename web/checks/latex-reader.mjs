@@ -136,6 +136,7 @@ assert.equal(
 assert.equal(renderedNoteText(null), "");
 assert.equal(renderedNoteText({ current: true }), "");
 assert.equal(renderedNoteText({ current: false, missing: true }), "this version was never rendered");
+assert.equal(renderedNoteText({ current: true, missing: true }), "this version was never rendered");
 assert.equal(
   renderedNoteText({ current: false, at: "2026-09-07T12:00:00Z" }),
   "rendered from an earlier version, 2026-09-07",

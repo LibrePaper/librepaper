@@ -4,6 +4,7 @@
   // reconfigures the live editor without dropping the caret, the scroll
   // position or the undo history -- and without tearing down `yCollab`.
   import { Compartment } from "@codemirror/state";
+  import { yUndoManagerKeymap as vimUndoKeymap } from "y-codemirror.next";
 
   const vimCompartment = new Compartment();
 
@@ -50,6 +51,12 @@
       save(cm);
       quit(cm);
     });
+    // Vim's built-in `u` and Ctrl-R use CodeMirror's native history. Route
+    // them through the Yjs manager so they remain local to this collaborator.
+    Vim.defineAction("yUndo", (cm) => vimUndoKeymap[0].run(cm.cm6));
+    Vim.defineAction("yRedo", (cm) => vimUndoKeymap[1].run(cm.cm6));
+    Vim.mapCommand("u", "action", "yUndo", {}, {});
+    Vim.mapCommand("<C-r>", "action", "yRedo", {}, {});
   }
 </script>
 
@@ -63,7 +70,7 @@
   // their name.
   import { EditorState, Transaction } from "@codemirror/state";
   import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
-  import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+  import { defaultKeymap, indentWithTab } from "@codemirror/commands";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
   import { syntaxHighlighting, HighlightStyle, defaultHighlightStyle, StreamLanguage } from "@codemirror/language";
   import { markdown } from "@codemirror/lang-markdown";
@@ -74,7 +81,7 @@
     setDiagnostics as setLintDiagnostics,
     openLintPanel,
   } from "@codemirror/lint";
-  import { yCollab } from "y-codemirror.next";
+  import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 
   import { typstLanguage } from "../lib/typst-mode.js";
   import { untrack } from "svelte";
@@ -274,7 +281,6 @@
         // default keymap does, or `j` inserts a letter instead of moving.
         vimCompartment.of(untrack(() => keys) === "vim" && resolvedVim ? resolvedVim : []),
         lineNumbers(),
-        history(),
         drawSelection(),
         highlightActiveLine(),
         highlightSelectionMatches(),
@@ -289,7 +295,7 @@
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
           indentWithTab,
           ...defaultKeymap,
-          ...historyKeymap,
+          ...yUndoManagerKeymap,
           ...searchKeymap,
           // Ctrl-Shift-M opens the list of what the compiler said.
           ...lintKeymap,
