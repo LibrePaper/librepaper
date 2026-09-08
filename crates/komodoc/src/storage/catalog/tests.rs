@@ -320,7 +320,7 @@ fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
 #[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 12);
+    assert_eq!(catalog.schema_version().unwrap(), 13);
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection
@@ -1263,4 +1263,429 @@ fn account_erasure_uses_a_stable_primary_key_cursor() {
         })
         .unwrap();
     assert_eq!(remaining, 0);
+}
+
+/* ------------------------------------------------ stable checkpoint identity */
+
+fn contributor(id: &str, handle: &str) -> Account {
+    Account {
+        id: id.into(),
+        provider: "github".into(),
+        handle: handle.into(),
+        name: handle.into(),
+        email: format!("{handle}@example.test"),
+        first_seen: "2026-01-01T00:00:00.000Z".into(),
+        last_seen: "2026-01-01T00:00:00.000Z".into(),
+        plan: "free".into(),
+        status: "active".into(),
+        session_generation: "generation-1".into(),
+        erasure_cursor: None,
+    }
+}
+
+/// A checkpoint row with explicit attribution. `sha` doubles as the
+/// content identity, so the assertions below can show that erasure moved the
+/// attribution and nothing else.
+fn attributed(sha: &str, by: &str, by_account: Option<&str>) -> Checkpoint {
+    Checkpoint {
+        slug: "doc".into(),
+        sha: sha.into(),
+        seq: -1,
+        durable_seq: 0,
+        tree_sha: format!("tree-{sha}"),
+        parent: String::new(),
+        at: "2026-02-02T00:00:00.000Z".into(),
+        by: by.into(),
+        by_account: by_account.map(str::to_string),
+        why: "cli".into(),
+        source_format: "markdown".into(),
+        size: 7,
+        label: String::new(),
+        git_commit: String::new(),
+        dirty: false,
+        changed: Some("[]".into()),
+    }
+}
+
+fn drain_erasure(catalog: &Catalog, id: &str, limit: u32) {
+    let stages = [
+        "grants",
+        "guests",
+        "comments",
+        "replies",
+        "checkpoints",
+        "checkpoints_legacy",
+    ];
+    for stage in stages {
+        let mut cursor: Option<String> = None;
+        loop {
+            let touched = catalog
+                .erase_account_batch(id, stage, cursor.as_deref(), 0, limit)
+                .unwrap();
+            if touched == 0 {
+                break;
+            }
+            cursor = catalog
+                .erasure_progress(id)
+                .unwrap()
+                .and_then(|(_, cursor)| cursor);
+        }
+    }
+}
+
+fn attribution_of(catalog: &Catalog, sha: &str) -> (String, Option<String>) {
+    let row = catalog.checkpoint("doc", sha).unwrap().unwrap();
+    (row.by, row.by_account)
+}
+
+/// A handle is not an identity. Renaming one account and giving its old
+/// handle to another must not move either account's historical checkpoints,
+/// and two accounts that show the same display name stay distinct.
+#[test]
+fn erasure_follows_the_account_not_the_handle() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .upsert_account(&contributor("acct-writer", "alice"))
+        .unwrap();
+    catalog
+        .upsert_account(&contributor("acct-other", "alice"))
+        .unwrap();
+    catalog
+        .insert_checkpoint(&attributed("mine", "alice", Some("acct-writer")))
+        .unwrap();
+    catalog
+        .insert_checkpoint(&attributed("theirs", "alice", Some("acct-other")))
+        .unwrap();
+    // The handle moves on: the writer is renamed and its old name is taken
+    // by the other account. Neither rename may reach a checkpoint.
+    let mut renamed = contributor("acct-writer", "carol");
+    renamed.last_seen = "2026-03-01T00:00:00.000Z".into();
+    catalog.upsert_account(&renamed).unwrap();
+
+    catalog
+        .begin_erasure("acct-writer", "generation-2")
+        .unwrap();
+    drain_erasure(&catalog, "acct-writer", 1000);
+
+    assert_eq!(
+        attribution_of(&catalog, "mine"),
+        ("Deleted user".to_string(), None),
+        "the renamed account's own checkpoint loses its attribution"
+    );
+    assert_eq!(
+        attribution_of(&catalog, "theirs"),
+        ("alice".to_string(), Some("acct-other".to_string())),
+        "an equal display name on another account is untouched"
+    );
+    let kept = catalog.checkpoint("doc", "mine").unwrap().unwrap();
+    assert_eq!(kept.tree_sha, "tree-mine");
+    assert_eq!(kept.at, "2026-02-02T00:00:00.000Z");
+    assert_eq!(kept.size, 7);
+    assert_eq!(kept.why, "cli");
+    catalog.finish_erasure("acct-writer").unwrap();
+    assert!(catalog.account("acct-writer").unwrap().is_none());
+    assert!(catalog.account("acct-other").unwrap().is_some());
+}
+
+/// Anonymous, imported and system checkpoints have no account to erase, and a
+/// legacy row whose `by` literally holds an account id is still reachable.
+#[test]
+fn erasure_covers_legacy_rows_and_leaves_unattributed_ones_alone() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .upsert_account(&contributor("acct-writer", "alice"))
+        .unwrap();
+    catalog
+        .insert_checkpoint(&attributed("stable", "alice", Some("acct-writer")))
+        .unwrap();
+    // Written before this column existed, when the erasure query matched the
+    // account id in `by`.
+    catalog
+        .insert_checkpoint(&attributed("legacy", "acct-writer", None))
+        .unwrap();
+    catalog
+        .insert_checkpoint(&attributed("anonymous", "Reviewer two", None))
+        .unwrap();
+    catalog
+        .insert_checkpoint(&attributed("imported", "", None))
+        .unwrap();
+
+    catalog
+        .begin_erasure("acct-writer", "generation-2")
+        .unwrap();
+    drain_erasure(&catalog, "acct-writer", 1000);
+
+    assert_eq!(
+        attribution_of(&catalog, "stable"),
+        ("Deleted user".to_string(), None)
+    );
+    assert_eq!(
+        attribution_of(&catalog, "legacy"),
+        ("Deleted user".to_string(), None)
+    );
+    assert_eq!(
+        attribution_of(&catalog, "anonymous"),
+        ("Reviewer two".to_string(), None),
+        "an unattributed checkpoint is nobody's to erase"
+    );
+    assert_eq!(attribution_of(&catalog, "imported"), (String::new(), None));
+    catalog.finish_erasure("acct-writer").unwrap();
+}
+
+/// The worker may crash between batches and resume from the stored cursor, or
+/// lose the cursor entirely and repeat from the start. Neither may skip a row.
+#[test]
+fn erasure_batches_restart_without_skipping_checkpoints() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .upsert_account(&contributor("acct-writer", "alice"))
+        .unwrap();
+    for index in 0..25 {
+        catalog
+            .insert_checkpoint(&attributed(
+                &format!("point-{index:03}"),
+                "alice",
+                Some("acct-writer"),
+            ))
+            .unwrap();
+    }
+    catalog
+        .begin_erasure("acct-writer", "generation-2")
+        .unwrap();
+    // One row per batch, and every third batch forgets its cursor the way a
+    // restart that lost the in-memory position would.
+    let mut cursor: Option<String> = None;
+    let mut batches = 0;
+    loop {
+        let touched = catalog
+            .erase_account_batch("acct-writer", "checkpoints", cursor.as_deref(), 0, 1)
+            .unwrap();
+        if touched == 0 {
+            break;
+        }
+        batches += 1;
+        cursor = if batches % 3 == 0 {
+            None
+        } else {
+            catalog
+                .erasure_progress("acct-writer")
+                .unwrap()
+                .and_then(|(_, cursor)| cursor)
+        };
+    }
+    for index in 0..25 {
+        assert_eq!(
+            attribution_of(&catalog, &format!("point-{index:03}")),
+            ("Deleted user".to_string(), None),
+            "a restarted batch must not skip a record"
+        );
+    }
+}
+
+/// A checkpoint is admitted, its objects written, and only then inserted. An
+/// erasure that starts inside that window must win: the insert commits the
+/// content and drops the identity.
+#[test]
+fn a_queued_checkpoint_cannot_reintroduce_erased_attribution() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .upsert_account(&contributor("acct-writer", "alice"))
+        .unwrap();
+    // The row the caller prepared before the erasure began.
+    let queued = attributed("queued", "alice", Some("acct-writer"));
+    catalog
+        .begin_erasure("acct-writer", "generation-2")
+        .unwrap();
+    drain_erasure(&catalog, "acct-writer", 1000);
+    catalog.insert_checkpoint(&queued).unwrap();
+    let stored = catalog.checkpoint("doc", "queued").unwrap().unwrap();
+    assert_eq!(stored.by_account, None);
+    assert_eq!(stored.by, "Deleted user");
+    assert_eq!(stored.tree_sha, "tree-queued", "the content is retained");
+    // The batched insert path and the erasure gate agree.
+    let mut second = attributed("staged", "alice", Some("acct-writer"));
+    second.seq = -1;
+    catalog.insert_checkpoints_atomic(&[second]).unwrap();
+    assert_eq!(
+        attribution_of(&catalog, "staged"),
+        ("Deleted user".to_string(), None)
+    );
+    catalog.finish_erasure("acct-writer").unwrap();
+}
+
+/// An account with checkpoint attribution left is not finished being erased.
+#[test]
+fn finish_erasure_waits_for_checkpoint_attribution() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .upsert_account(&contributor("acct-writer", "alice"))
+        .unwrap();
+    catalog
+        .insert_checkpoint(&attributed("stable", "alice", Some("acct-writer")))
+        .unwrap();
+    catalog
+        .insert_checkpoint(&attributed("legacy", "acct-writer", None))
+        .unwrap();
+    catalog
+        .begin_erasure("acct-writer", "generation-2")
+        .unwrap();
+    assert!(matches!(
+        catalog.finish_erasure("acct-writer"),
+        Err(crate::storage::catalog::CatalogError::Conflict(_))
+    ));
+    catalog
+        .erase_account_batch("acct-writer", "checkpoints", None, 0, 1000)
+        .unwrap();
+    assert!(
+        matches!(
+            catalog.finish_erasure("acct-writer"),
+            Err(crate::storage::catalog::CatalogError::Conflict(_))
+        ),
+        "the legacy row still names the account"
+    );
+    catalog
+        .erase_account_batch("acct-writer", "checkpoints_legacy", None, 0, 1000)
+        .unwrap();
+    catalog.finish_erasure("acct-writer").unwrap();
+}
+
+/// Migration 13 is applied in one transaction: a catalogue that crashed
+/// during it comes back at its old version with its rows intact, and the
+/// retry adds the column without inventing attribution for existing rows.
+#[test]
+fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog.db");
+    {
+        // A catalogue one version behind, with a checkpoint written the old
+        // way: a display handle and nothing else.
+        let mut connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        for &(version, sql) in super::MIGRATIONS {
+            if version > 12 {
+                break;
+            }
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute_batch(&format!("PRAGMA user_version = {version}"))
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO accounts (id, provider, handle, name, email, first_seen,
+                 last_seen, plan, status, session_generation, erasure_cursor)
+                 VALUES ('acct-1','github','alice','Alice','a@example.test',
+                 '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z','free','active','g1',NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO documents (slug, storage_id, title, sha, created_at, published_at,
+                 updated_at, example, owner_key, owner_id, status, size, counted_size,
+                 maintenance_reserved, comment_seq, last_auto_checkpoint_at,
+                 pending_publication, last_publication_id, source_format, main)
+                 VALUES ('doc','storage-1','Document','sha','2026-01-01T00:00:00.000Z',
+                 '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0,'',NULL,'active',
+                 10,20,0,0,0,NULL,'','markdown','README.md')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO checkpoints
+                 (slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,
+                  size,label,git_commit,dirty,changed)
+                 VALUES('doc','old',0,0,'tree-old','','2026-01-01T00:00:00.000Z',
+                 'alice','cli','markdown',7,'','',0,'[]')",
+                [],
+            )
+            .unwrap();
+        // The interrupted attempt: migration 13's statements run and are
+        // rolled back, exactly as a crash before the commit leaves them.
+        let attempt = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        attempt.execute_batch(super::MIGRATIONS[12].1).unwrap();
+        attempt.rollback().unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 12, "an interrupted migration does not advance");
+    }
+    let catalog = Catalog::open(&path).unwrap();
+    assert_eq!(catalog.schema_version().unwrap(), 13);
+    let row = catalog.checkpoint("doc", "old").unwrap().unwrap();
+    assert_eq!(row.by, "alice");
+    assert_eq!(
+        row.by_account, None,
+        "no authoritative record associates a legacy row with an account"
+    );
+    // Reopening an already-migrated catalogue is a no-op.
+    drop(catalog);
+    let reopened = Catalog::open(&path).unwrap();
+    assert_eq!(reopened.schema_version().unwrap(), 13);
+}
+
+/// A local backup is a `VACUUM INTO` image, so the identity distinction has to
+/// survive it: attributed, unattributed and already-erased rows all come back
+/// as they were, and an erasure done after the backup was taken is not undone
+/// in the live catalogue by restoring one elsewhere.
+#[test]
+fn vacuum_backup_preserves_the_identity_distinction() {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(dir.path().join("catalog.db")).unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .upsert_account(&contributor("acct-writer", "alice"))
+        .unwrap();
+    catalog
+        .upsert_account(&contributor("acct-gone", "bob"))
+        .unwrap();
+    catalog
+        .insert_checkpoint(&attributed("stable", "alice", Some("acct-writer")))
+        .unwrap();
+    catalog
+        .insert_checkpoint(&attributed("anonymous", "Reviewer two", None))
+        .unwrap();
+    catalog.begin_erasure("acct-gone", "generation-2").unwrap();
+    catalog
+        .insert_checkpoint(&attributed("erased", "bob", Some("acct-gone")))
+        .unwrap();
+    let snapshot = dir.path().join("backup.db");
+    catalog
+        .with_connection(|connection| {
+            connection
+                .execute("VACUUM INTO ?1", [&snapshot.to_string_lossy().to_string()])
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    let restored = Catalog::open(&snapshot).unwrap();
+    assert_eq!(restored.schema_version().unwrap(), 13);
+    assert_eq!(
+        attribution_of(&restored, "stable"),
+        ("alice".to_string(), Some("acct-writer".to_string()))
+    );
+    assert_eq!(
+        attribution_of(&restored, "anonymous"),
+        ("Reviewer two".to_string(), None)
+    );
+    assert_eq!(
+        attribution_of(&restored, "erased"),
+        ("Deleted user".to_string(), None),
+        "attribution refused at the write boundary is refused in the image too"
+    );
 }
