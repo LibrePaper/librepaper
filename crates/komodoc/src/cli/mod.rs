@@ -170,6 +170,9 @@ pub(crate) enum Command {
     },
     /// Run the service on this machine
     Serve {
+        /// Interface address; use 127.0.0.1 to accept only local connections
+        #[arg(long, value_name = "ADDRESS", default_value = "0.0.0.0")]
+        bind: std::net::IpAddr,
         /// Port to listen on; default is the first free one from 8080 to 8099
         #[arg(long, value_name = "PORT", default_value_t = 0)]
         port: u16,
@@ -499,12 +502,14 @@ pub async fn main() {
             .await
         }
         Command::Serve {
+            bind,
             port,
             service,
             storage,
         } => {
             let config = service.configuration();
             crate::server::serve::serve(crate::server::serve::ServeOptions {
+                bind,
                 port,
                 storage: storage.options(),
                 client_id: service.client_id.unwrap_or_default(),

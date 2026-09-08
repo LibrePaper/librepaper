@@ -25,6 +25,7 @@ const PORT_FIRST: u16 = 8080;
 const PORT_LAST: u16 = 8099;
 
 pub struct ServeOptions {
+    pub bind: std::net::IpAddr,
     pub port: u16,
     pub storage: StorageOptions,
     pub client_id: String,
@@ -43,9 +44,9 @@ pub struct ServeOptions {
 
 /// Claims a port: the one asked for, or the first free one in the default
 /// range when port is zero.
-async fn listen(port: u16) -> TcpListener {
+async fn listen(bind: std::net::IpAddr, port: u16) -> TcpListener {
     if port != 0 {
-        return match TcpListener::bind(("0.0.0.0", port)).await {
+        return match TcpListener::bind((bind, port)).await {
             Ok(listener) => listener,
             Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => die(format!(
                 "port {port} is already in use. Pick another with --port."
@@ -54,7 +55,7 @@ async fn listen(port: u16) -> TcpListener {
         };
     }
     for candidate in PORT_FIRST..=PORT_LAST {
-        match TcpListener::bind(("0.0.0.0", candidate)).await {
+        match TcpListener::bind((bind, candidate)).await {
             Ok(listener) => return listener,
             Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
             Err(err) => die(format!("could not listen on port {candidate}: {err}")),
@@ -167,7 +168,7 @@ pub async fn serve(options: ServeOptions) {
 
     // Claim the port first, so a port already in use costs nothing and the
     // advice below can name the callback URL this run would actually use.
-    let listener = listen(options.port).await;
+    let listener = listen(options.bind, options.port).await;
     let port = listener
         .local_addr()
         .map(|a| a.port())
@@ -432,7 +433,7 @@ pub async fn serve(options: ServeOptions) {
     let closing_deletion_worker = deletion_worker;
     let closing_journal_worker = journal_retirement_worker;
     let shutdown = async move {
-        let _ = tokio::signal::ctrl_c().await;
+        shutdown_signal().await;
         closing.rooms.flush().await;
         if let Some(worker) = closing_deletion_worker {
             if let Err(error) = worker.run_once(crate::util::now_unix()).await {
@@ -482,4 +483,64 @@ pub(crate) fn acquire_writer_lock(path: &std::path::Path) -> Result<std::fs::Fil
         )
     })?;
     Ok(file)
+}
+
+/// Supervisors normally stop Unix services with SIGTERM, while interactive
+/// sessions use Ctrl-C. Both enter the same flush and maintenance path.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    #[test]
+    fn sigterm_enters_graceful_shutdown() {
+        const CHILD: &str = "KOMODOC_TEST_SHUTDOWN_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async {
+                let shutdown = super::shutdown_signal();
+                tokio::pin!(shutdown);
+                // Poll the handler before sending SIGTERM, without installing
+                // a process-wide handler in the parent test runner.
+                tokio::select! {
+                    biased;
+                    _ = &mut shutdown => panic!("shutdown before signal"),
+                    _ = async {} => {},
+                }
+                assert!(std::process::Command::new("kill")
+                    .args(["-TERM", &std::process::id().to_string()])
+                    .status()
+                    .unwrap()
+                    .success());
+                tokio::time::timeout(std::time::Duration::from_secs(5), shutdown)
+                    .await
+                    .unwrap();
+            });
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "server::serve::tests::sigterm_enters_graceful_shutdown",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "child failed: {:?}", output);
+    }
 }

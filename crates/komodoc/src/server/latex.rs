@@ -22,10 +22,51 @@
 //! `latex/tools/mirror.mjs` -- so it is immutable for a year and a new release is a
 //! new path rather than a cache to invalidate.
 
+use axum::body::{to_bytes, Body};
+use axum::http::Response;
+use http_body_util::Limited;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
+
+// A request holds one transfer slot, but only one network/file chunk in RAM.
+const MAX_FILE_BYTES: usize = 128 << 20;
+const MAX_MANIFEST_BYTES: usize = 32 << 20;
+fn transfers() -> &'static Arc<tokio::sync::Semaphore> {
+    static TRANSFERS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    TRANSFERS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(64)))
+}
+
+fn reply(status: u16, body: Body, kind: &str, cache: &str) -> Response<Body> {
+    let mut response = Response::new(body);
+    *response.status_mut() =
+        axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+    super::set(&mut response, "content-type", kind);
+    super::set(&mut response, "cache-control", cache);
+    super::set(&mut response, "x-content-type-options", "nosniff");
+    response
+}
+
+impl Served {
+    fn response(self, head: bool) -> Response<Body> {
+        let mut response = reply(
+            self.status,
+            if head {
+                Body::empty()
+            } else {
+                Body::from(self.bytes)
+            },
+            self.content_type,
+            self.cache_control,
+        );
+        if let Some(id) = self.file_id {
+            super::set(&mut response, "fileid", &id);
+        }
+        response
+    }
+}
 
 /// Where the project keeps the mirror it builds: a Cloudflare worker of static
 /// files that `make latex-push` deploys from deploy/latex/wrangler.toml. A
@@ -166,56 +207,65 @@ impl Mirror {
     /// and a name the manifest does not have is a 301, not a 404 -- the engine
     /// reads a 301 as "this file does not exist" and moves on, and a 404 as a
     /// network failure to retry, which is a compile that never ends.
+    #[cfg(test)]
     pub async fn get(&self, path: &str) -> Served {
-        let Some(path) = safe_path(path) else {
-            return missing();
-        };
+        match self.locate(path).await {
+            Ok((path, named)) => {
+                let mut served = self.fetch(&path).await;
+                if named {
+                    served.file_id = file_id(&path);
+                    if served.status == 200 {
+                        served.cache_control = "no-cache";
+                    }
+                }
+                served
+            }
+            Err(error) => error,
+        }
+    }
+
+    /// Resolve only the public name. Fetching the resulting file is separate,
+    /// so a HEAD never downloads that file and GET can stream its bytes.
+    async fn locate(&self, raw: &str) -> Result<(String, bool), Served> {
+        let path = safe_path(raw).ok_or_else(missing)?;
         if let Some(key) = package_key(&path) {
             return match self.resolve(&key).await {
-                Resolved::File(url) => match safe_path(&url) {
-                    Some(url) if package_key(&url).is_none() => {
-                        let mut served = self.fetch(&url).await;
-                        served.file_id = file_id(&url);
-                        // This URL names a package, not its bytes. The manifest
-                        // may change which file it resolves to, and old cached
-                        // responses can even lack the fileid header the engine
-                        // needs to keep packages separate in its filesystem.
-                        if served.status == 200 {
-                            served.cache_control = "no-cache";
-                        }
-                        served
-                    }
-                    _ => absent(),
-                },
-                Resolved::NotThere => absent(),
-                Resolved::Unreachable => unreachable(),
+                Resolved::File(url) => safe_path(&url)
+                    .filter(|url| package_key(url).is_none())
+                    .map(|url| (url, true))
+                    .ok_or_else(absent),
+                Resolved::NotThere => Err(absent()),
+                Resolved::Unreachable => Err(unreachable()),
             };
         }
-        // The WasmTex half of the mirror (`docs/specs/wasmtex-interfaces.md`
-        // section 1): a name asked for as `texlive/<snapshot>/<engine>/
-        // <format>/<name>`, resolved through `manifest.texlive[<snapshot>]
-        // .files`. Unlike the SwiftLaTeX route above, an absent name is a
-        // **404**: the WasmTex workers read any status >= 400 as "does not
-        // exist" (see `tryFetch` in `wasm-build/pdftex-worker.js`), so there
-        // is no 301-shaped special case to preserve here.
         if let Some((snapshot, key)) = texlive_key(&path) {
             return match self.resolve_texlive(&snapshot, &key).await {
-                Resolved::File(url) => match safe_path(&url) {
-                    Some(url) if texlive_key(&url).is_none() => {
-                        let mut served = self.fetch(&url).await;
-                        served.file_id = file_id(&url);
-                        if served.status == 200 {
-                            served.cache_control = "no-cache";
-                        }
-                        served
-                    }
-                    _ => not_found(),
-                },
-                Resolved::NotThere => not_found(),
-                Resolved::Unreachable => unreachable(),
+                Resolved::File(url) => safe_path(&url)
+                    .filter(|url| texlive_key(url).is_none())
+                    .map(|url| (url, true))
+                    .ok_or_else(not_found),
+                Resolved::NotThere => Err(not_found()),
+                Resolved::Unreachable => Err(unreachable()),
             };
         }
-        self.fetch(&path).await
+        Ok((path, false))
+    }
+
+    pub async fn response(&self, path: &str, head: bool) -> Response<Body> {
+        let (path, named) = match self.locate(path).await {
+            Ok(found) => found,
+            Err(error) => return error.response(head),
+        };
+        let mut response = self.fetch_response(&path, head).await;
+        if named {
+            if let Some(id) = file_id(&path) {
+                super::set(&mut response, "fileid", &id);
+            }
+            if response.status().is_success() {
+                super::set(&mut response, "cache-control", "no-cache");
+            }
+        }
+        response
     }
 
     /// Which digested file a name is, from the manifest's package index. The
@@ -259,7 +309,11 @@ impl Mirror {
             // The manifest could not be read now. What was known before still
             // stands, and a name it did not have is still not there; with
             // nothing known at all, the mirror is what is unreachable.
-            None if cached.is_some() => Resolved::NotThere,
+            None if cached.is_some() => cached
+                .as_ref()
+                .and_then(|index| index.packages.get(key))
+                .map(|url| Resolved::File(url.clone()))
+                .unwrap_or(Resolved::NotThere),
             None => Resolved::Unreachable,
         }
     }
@@ -297,7 +351,12 @@ impl Mirror {
                     None => Resolved::NotThere,
                 }
             }
-            None if cached.is_some() => Resolved::NotThere,
+            None if cached.is_some() => cached
+                .as_ref()
+                .and_then(|index| index.texlive.get(snapshot))
+                .and_then(|files| files.get(key))
+                .map(|url| Resolved::File(url.clone()))
+                .unwrap_or(Resolved::NotThere),
             None => Resolved::Unreachable,
         }
     }
@@ -350,66 +409,145 @@ impl Mirror {
         })
     }
 
-    /// One file, by the path the mirror keeps it under.
+    /// Materialization is reserved for the bounded manifest and unit tests.
+    /// Incomplete bodies are gateway failures, never empty successful files.
     async fn fetch(&self, path: &str) -> Served {
-        let path = path.to_string();
-        if let Mirror::Upstream { base, .. } = self {
-            if !request_stays_under_base(base, &path) {
-                return missing();
-            }
-        }
-        let cache_control = if path == MANIFEST {
-            // The only file whose URL carries no digest, and so the only one an
-            // updated mirror changes in place.
+        let response = self.fetch_response(path, false).await;
+        let status = response.status().as_u16();
+        let kind = if (200..300).contains(&status) {
+            content_type(path)
+        } else {
+            "text/plain; charset=utf-8"
+        };
+        let cache = if !(200..300).contains(&status) {
+            "no-store"
+        } else if path == MANIFEST {
             "no-cache"
         } else {
             "public, max-age=31536000, immutable"
         };
-        let content_type = content_type(&path);
-        match self {
-            Mirror::Directory(root) => match tokio::fs::read(root.join(&path)).await {
-                Ok(bytes) => Served {
-                    status: 200,
-                    bytes,
-                    content_type,
-                    cache_control,
-                    file_id: None,
-                },
-                Err(_) => missing(),
+        let limit = if path == MANIFEST {
+            MAX_MANIFEST_BYTES
+        } else {
+            MAX_FILE_BYTES
+        };
+        match to_bytes(response.into_body(), limit).await {
+            Ok(bytes) => Served {
+                status,
+                bytes: bytes.to_vec(),
+                content_type: kind,
+                cache_control: cache,
+                file_id: None,
             },
-            Mirror::Upstream { base, client } => {
-                let Ok(response) = client.get(format!("{base}{path}")).send().await else {
-                    // The mirror is the browser's only source, so a mirror that
-                    // is down is a gateway that is down, and saying so is more
-                    // use to whoever is looking than a 404 would be.
-                    return Served {
-                        status: 502,
-                        bytes: b"the LaTeX mirror is unreachable".to_vec(),
-                        content_type: "text/plain; charset=utf-8",
-                        cache_control: "no-store",
-                        file_id: None,
-                    };
+            Err(_) => unreachable(),
+        }
+    }
+
+    async fn fetch_response(&self, path: &str, head: bool) -> Response<Body> {
+        if let Mirror::Upstream { base, .. } = self {
+            if !request_stays_under_base(base, path) {
+                return missing().response(head);
+            }
+        }
+        let limit = if path == MANIFEST {
+            MAX_MANIFEST_BYTES
+        } else {
+            MAX_FILE_BYTES
+        };
+        let cache = if path == MANIFEST {
+            "no-cache"
+        } else {
+            "public, max-age=31536000, immutable"
+        };
+        let kind = content_type(path);
+        // Refuse excess concurrent transfers instead of accumulating waiters.
+        let Ok(permit) = transfers().clone().try_acquire_owned() else {
+            return reply(503, Body::empty(), "text/plain; charset=utf-8", "no-store");
+        };
+        match self {
+            Mirror::Directory(root) => {
+                let file = match tokio::fs::File::open(root.join(path)).await {
+                    Ok(file) => file,
+                    Err(_) => return missing().response(head),
                 };
-                // The upstream's own answer, passed through: a 403 on a bucket
-                // whose policy is wrong should not read as a missing file.
-                let status = response.status().as_u16();
-                let bytes = response.bytes().await.unwrap_or_default().to_vec();
-                if !(200..300).contains(&status) {
-                    return Served {
-                        status,
-                        bytes,
-                        content_type: "text/plain; charset=utf-8",
-                        cache_control: "no-store",
-                        file_id: None,
-                    };
+                let meta = match file.metadata().await {
+                    Ok(meta) if meta.is_file() => meta,
+                    _ => return missing().response(head),
+                };
+                if meta.len() > limit as u64 {
+                    return unreachable().response(head);
                 }
-                Served {
+                let body = if head {
+                    Body::empty()
+                } else {
+                    let chunks = futures_util::stream::try_unfold(
+                        (file, permit),
+                        |(mut file, permit)| async move {
+                            let mut bytes = vec![0; 64 * 1024];
+                            let count = file.read(&mut bytes).await?;
+                            if count == 0 {
+                                return Ok::<_, std::io::Error>(None);
+                            }
+                            bytes.truncate(count);
+                            Ok(Some((bytes, (file, permit))))
+                        },
+                    );
+                    Body::new(Limited::new(Body::from_stream(chunks), limit))
+                };
+                let mut response = reply(200, body, kind, cache);
+                super::set(&mut response, "content-length", &meta.len().to_string());
+                response
+            }
+            Mirror::Upstream { base, client } => {
+                let request = if head {
+                    client.head(format!("{base}{path}"))
+                } else {
+                    client.get(format!("{base}{path}"))
+                };
+                let upstream = match request.send().await {
+                    Ok(response) => response,
+                    Err(_) => return unreachable().response(head),
+                };
+                let status = upstream.status().as_u16();
+                let length = upstream
+                    .headers()
+                    .get("content-length")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok());
+                if length.is_some_and(|length| length > limit as u64) {
+                    return unreachable().response(head);
+                }
+                let body = if head {
+                    Body::empty()
+                } else {
+                    let chunks = futures_util::stream::try_unfold(
+                        (upstream, permit),
+                        |(mut response, permit)| async move {
+                            match response.chunk().await? {
+                                Some(bytes) => {
+                                    Ok::<_, reqwest::Error>(Some((bytes, (response, permit))))
+                                }
+                                None => Ok(None),
+                            }
+                        },
+                    );
+                    Body::new(Limited::new(Body::from_stream(chunks), limit))
+                };
+                let success = (200..300).contains(&status);
+                let mut response = reply(
                     status,
-                    bytes,
-                    content_type,
-                    cache_control,
-                    file_id: None,
+                    body,
+                    if success {
+                        kind
+                    } else {
+                        "text/plain; charset=utf-8"
+                    },
+                    if success { cache } else { "no-store" },
+                );
+                if let Some(length) = length {
+                    super::set(&mut response, "content-length", &length.to_string());
                 }
+                response
             }
         }
     }
@@ -649,6 +787,46 @@ fn content_type(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn oversized_files_are_refused_before_streaming() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("large.wasm")).unwrap();
+        file.set_len(MAX_FILE_BYTES as u64 + 1).unwrap();
+        let mirror = Mirror::Directory(dir.path().to_path_buf());
+        for head in [false, true] {
+            let response = mirror.response("large.wasm", head).await;
+            assert_eq!(response.status(), 502);
+            assert_eq!(response.headers()["cache-control"], "no-store");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stale_manifest_still_resolves_known_files_during_an_outage() {
+        let dir = tempfile::tempdir().unwrap();
+        let mirror = Mirror::Directory(dir.path().to_path_buf());
+        let key = "pdftex/26/known.sty";
+        let path = "packages/pdftex/ab/abcdef0123456789-known.sty";
+        indexes().lock().unwrap().insert(
+            mirror.describe(),
+            Arc::new(Index {
+                packages: HashMap::from([(key.into(), path.into())]),
+                texlive: HashMap::from([(
+                    "snapshot".into(),
+                    HashMap::from([(key.into(), path.into())]),
+                )]),
+                loaded: Instant::now() - INDEX_REFRESH,
+            }),
+        );
+        assert!(matches!(mirror.resolve(key).await, Resolved::File(url) if url == path));
+        assert!(
+            matches!(mirror.resolve_texlive("snapshot", key).await, Resolved::File(url) if url == path)
+        );
+        assert!(matches!(
+            mirror.resolve("missing").await,
+            Resolved::NotThere
+        ));
+    }
 
     // The engine asks for a TeX Live file by name, and the manifest says
     // which digested file that is. A name the manifest has is that file,

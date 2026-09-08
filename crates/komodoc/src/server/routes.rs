@@ -55,7 +55,7 @@ pub(super) async fn handle(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request<Body>,
 ) -> Reply {
-    let arrival = Arrival::from_headers(request.headers());
+    let arrival = Arrival::from_peer(request.headers(), peer.ip());
     let path = request.uri().path().to_string();
     let method = request.method().clone();
     let parts = segments(&path);
@@ -174,11 +174,10 @@ pub(super) async fn handle(
     // Stable, shareable URL: the document's own shell, on the origin that
     // serves documents. There is one version, so there is no digest in it.
     if let ["raw", slug] = parts[..] {
-        return match server.checked_entry(slug).await {
-            Ok(Some(entry)) => redirect(&format!("{}/raw/{}/", arrival.docs_origin(), entry.slug)),
-            Ok(None) => plain(404, "not found"),
-            Err(response) => response,
-        };
+        if !server.valid_slug(slug) {
+            return plain(404, "not found");
+        }
+        return redirect(&format!("{}/raw/{slug}/", arrival.docs_origin()));
     }
 
     // --- the LaTeX mirror --------------------------------------------------
@@ -196,18 +195,7 @@ pub(super) async fn handle(
             // no LaTeX, which `/api/config` has already told the reader.
             return plain(404, "not found");
         };
-        let served = mirror.get(rest).await;
-        let mut response = Response::new(Body::from(served.bytes));
-        *response.status_mut() =
-            StatusCode::from_u16(served.status).unwrap_or(StatusCode::BAD_GATEWAY);
-        set(&mut response, "content-type", served.content_type);
-        set(&mut response, "cache-control", served.cache_control);
-        set(&mut response, "x-content-type-options", "nosniff");
-        // The name the engine keeps a TeX Live file under; see `Served`.
-        if let Some(id) = &served.file_id {
-            set(&mut response, "fileid", id);
-        }
-        return response;
+        return mirror.response(rest, method == Method::HEAD).await;
     }
 
     // --- api ---------------------------------------------------------------
@@ -215,15 +203,11 @@ pub(super) async fn handle(
         if cross_site_refused(request.headers(), &arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        if let Some((status, message)) = server
-            .authentication_failure(request.headers(), &arrival)
-            .await
-        {
-            let mut response = write_json(status, &json!({"error": message}));
-            if status == 401 {
-                server.clear_dead_session(&mut response, request.headers(), &arrival);
-            }
-            return response;
+        if Server::is_automation(request.headers()) {
+            return write_json(
+                403,
+                &json!({"error": "account erasure is unavailable in automation mode"}),
+            );
         }
         let identity = server.whoami(request.headers(), &arrival).await;
         if !identity.is_signed_in() {
@@ -291,7 +275,19 @@ pub(super) async fn handle(
                 }
             }
         } else {
-            server.visible(server.store.list().await, &who)
+            let mut entries = server.visible(server.store.list().await, &who);
+            entries.sort_by(|a, b| {
+                b.updated_at
+                    .cmp(&a.updated_at)
+                    .then_with(|| b.slug.cmp(&a.slug))
+            });
+            if let Some((updated, slug)) = listing_cursor {
+                entries.retain(|entry| {
+                    (entry.updated_at.as_str(), entry.slug.as_str()) < (updated, slug)
+                });
+            }
+            entries.truncate(listing_limit as usize);
+            entries
         };
         let documents: Vec<Value> = entries
             .iter()
@@ -625,14 +621,10 @@ pub(super) async fn handle(
     let mut page = path.clone();
     if !server.shell.contains_key(&page) {
         if let ["docs", slug] = parts[..] {
-            match server.checked_entry(slug).await {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    // Serving the reader here would answer a dead link with 200
-                    // and an empty page, which reads as the reader being broken.
-                    return server.not_found(request.headers());
-                }
-                Err(response) => return response,
+            // A fragment-carried link cannot be checked on this navigation.
+            // Serve the same shell for every valid slug; the API resolves access.
+            if !server.valid_slug(slug) {
+                return server.not_found(request.headers());
             }
             page = "/reader.html".to_string();
         } else if path == "/" {
@@ -736,11 +728,6 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(404, "not found");
         }
-        match self.checked_entry(slug).await {
-            Ok(Some(_)) => {}
-            Ok(None) => return plain(404, "not found"),
-            Err(response) => return response,
-        }
         let reader = arrival.reader_origin();
         // A document whose format is `html` is sent as it is. It has to be:
         // its renderer is the identity, and a notebook or a Quarto page
@@ -759,17 +746,28 @@ impl Server {
         // this slug, good for two minutes, and presented on the frame's own
         // URL. Without one the empty shell is what arrives, whatever the
         // format, and nothing of the document goes with it.
-        let room = match self.rooms.try_get(slug).await {
-            Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
-        };
-        let format = room.format().await;
-        let admitted = self.frame_token_verifies(slug, query);
-        let page = if admitted && (format.is_empty() || format == "html") {
-            room.source().await.into_bytes()
-        } else {
+        let empty =
             b"<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
-                .to_vec()
+                .to_vec();
+        let page = if self.frame_token_verifies(slug, query) {
+            match self.checked_entry(slug).await {
+                Ok(Some(_)) => {
+                    let room = match self.rooms.try_get(slug).await {
+                        Ok(room) => room,
+                        Err(error) => return plain(503, &error.to_string()),
+                    };
+                    let format = room.format().await;
+                    if format.is_empty() || format == "html" {
+                        room.source().await.into_bytes()
+                    } else {
+                        empty
+                    }
+                }
+                Ok(None) => empty,
+                Err(response) => return response,
+            }
+        } else {
+            empty
         };
         let mut response = Response::new(Body::from(with_agent(&page, &reader)));
         set(&mut response, "content-type", "text/html; charset=utf-8");
@@ -808,11 +806,6 @@ impl Server {
     pub(super) async fn serve_viewer(&self, arrival: &Arrival, slug: &str) -> Reply {
         if !self.valid_slug(slug) {
             return plain(404, "not found");
-        }
-        match self.checked_entry(slug).await {
-            Ok(Some(_)) => {}
-            Ok(None) => return plain(404, "not found"),
-            Err(response) => return response,
         }
         let Some(asset) = self.shell.get("/viewer.html") else {
             return plain(404, "not found");

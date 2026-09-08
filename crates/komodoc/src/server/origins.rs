@@ -26,6 +26,15 @@ pub struct Arrival {
 }
 
 impl Arrival {
+    /// Forwarded TLS metadata is trusted only from a local proxy peer.
+    pub fn from_peer(headers: &HeaderMap, peer: std::net::IpAddr) -> Arrival {
+        let mut arrival = Self::from_headers(headers);
+        if !super::local_peer(peer) {
+            arrival.scheme = "http";
+        }
+        arrival
+    }
+
     pub fn from_headers(headers: &HeaderMap) -> Arrival {
         let host = header(headers, "host").unwrap_or_default();
         let scheme = if header(headers, "x-forwarded-proto").as_deref() == Some("https") {
@@ -127,4 +136,17 @@ pub fn ws_origin_refused(headers: &HeaderMap, arrival: &Arrival) -> bool {
 /// The JSON body every refusal under rule A answers with.
 pub fn cross_site_refusal() -> serde_json::Value {
     serde_json::json!({"error": "cross-site request refused"})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn forwarded_scheme_requires_a_trusted_peer() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "reader.example".parse().unwrap());
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        assert!(!Arrival::from_peer(&headers, "203.0.113.1".parse().unwrap()).is_https());
+        assert!(Arrival::from_peer(&headers, "127.0.0.1".parse().unwrap()).is_https());
+    }
 }

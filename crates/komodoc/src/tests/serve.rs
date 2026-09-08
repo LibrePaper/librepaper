@@ -324,9 +324,56 @@ async fn listing_and_delete() {
 }
 
 #[tokio::test]
+async fn legacy_listing_pages_without_repeating_documents() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, instance) = server_over_blobs_legacy(
+        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path())),
+        Configuration::default(),
+    )
+    .await;
+    assert!(instance.store.catalog.is_none());
+    for title in ["First", "Second", "Third"] {
+        let (status, _) = post(
+            &url,
+            "/api/documents",
+            json!({"title":title,"html":"<p>page</p>"}),
+        )
+        .await;
+        assert_eq!(status, 201);
+    }
+    let mut path = "/api/list?limit=2".to_string();
+    let mut seen = std::collections::HashSet::new();
+    for expected in [2, 1] {
+        let (status, page) = post(&url, &path, json!({})).await;
+        assert_eq!(status, 200);
+        let documents = page["documents"].as_array().unwrap();
+        assert_eq!(documents.len(), expected);
+        for document in documents {
+            assert!(seen.insert(document["slug"].as_str().unwrap().to_string()));
+        }
+        if expected == 2 {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("limit", "2")
+                .append_pair(
+                    "after_updated",
+                    page["next_cursor"]["after_updated"].as_str().unwrap(),
+                )
+                .append_pair(
+                    "after_slug",
+                    page["next_cursor"]["after_slug"].as_str().unwrap(),
+                )
+                .finish();
+            path = format!("/api/list?{query}");
+        } else {
+            assert!(page.get("next_cursor").is_none());
+        }
+    }
+}
+
+#[tokio::test]
 async fn shell_routes() {
     let server = new_test_server().await;
-    // The reader is only served for a document that exists.
+    // The reader shell loads the document through the authenticated API.
     let slug = "a-paper-abcdefghij";
     server
         .instance
@@ -368,13 +415,12 @@ async fn shell_routes() {
     }
 }
 
-// A link nobody can follow used to answer 200 with the reader shell, which
-// left the reader looking broken rather than the link. It gets the 404 page,
-// with the status to match.
+// Unknown routes still return a 404; document-shaped paths deliberately
+// use a generic shell and resolve private access through the API.
 #[tokio::test]
 async fn unknown_paths_get_the_not_found_page() {
     let server = new_test_server().await;
-    for path in ["/docs/no-such-document", "/nothing-here"] {
+    for path in ["/nothing-here", "/unknown/page"] {
         let response = client()
             .get(format!("{}{path}", server.url))
             .header("accept", "text/html")
@@ -388,6 +434,41 @@ async fn unknown_paths_get_the_not_found_page() {
             "{path} did not serve the 404 page: {:.80}",
             body
         );
+    }
+}
+
+#[tokio::test]
+async fn public_shell_routes_do_not_reveal_private_document_existence() {
+    let server = new_test_server().await;
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
+    for (prefix, host) in [
+        ("docs", "localhost"),
+        ("raw", "docs.localhost"),
+        ("pdf", "docs.localhost"),
+    ] {
+        let mut replies = Vec::new();
+        for candidate in [slug.as_str(), "no-such-document"] {
+            let response = client()
+                .get(format!("{}/{prefix}/{candidate}", server.url))
+                .header("host", host)
+                .send()
+                .await
+                .unwrap();
+            replies.push((response.status(), response.text().await.unwrap()));
+        }
+        assert_eq!(
+            replies[0], replies[1],
+            "{host}/{prefix} disclosed existence"
+        );
+    }
+    for candidate in [slug.as_str(), "no-such-document"] {
+        let response = client()
+            .get(format!("{}/raw/{candidate}", server.url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 302);
     }
 }
 

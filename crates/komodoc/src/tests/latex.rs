@@ -11,6 +11,119 @@ use super::*;
 use crate::document::render::{document_format, is_latex, title_from_latex};
 use crate::server::latex::Mirror;
 
+#[tokio::test]
+async fn mirror_head_does_not_download_the_upstream_file() {
+    use axum::{http::Method, routing::any};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let gets = Arc::new(AtomicUsize::new(0));
+    let observed = gets.clone();
+    let app = axum::Router::new().route(
+        "/engine.wasm",
+        any(move |method: Method| {
+            let observed = observed.clone();
+            async move {
+                if method == Method::GET {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                }
+                axum::http::Response::builder()
+                    .header("content-length", "100")
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let server = test_server_latex(Mirror::Upstream {
+        base,
+        client: client(),
+    })
+    .await;
+    let response = client()
+        .head(format!("{}/latex/engine.wasm", server.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-length"], "100");
+    assert!(response.bytes().await.unwrap().is_empty());
+    assert_eq!(gets.load(Ordering::SeqCst), 0);
+    task.abort();
+}
+
+#[tokio::test]
+async fn mirror_streams_before_upstream_finishes_and_rejects_truncation() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let (release, wait) = tokio::sync::oneshot::channel::<()>();
+    let upstream = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        socket.read(&mut request).await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nfirst")
+            .await
+            .unwrap();
+        let _ = wait.await;
+    });
+    let server = test_server_latex(Mirror::Upstream {
+        base,
+        client: client(),
+    })
+    .await;
+    let mut response = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        client()
+            .get(format!("{}/latex/engine.wasm", server.url))
+            .send(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), response.chunk())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(&chunk[..], b"first");
+    release.send(()).unwrap();
+    assert!(
+        response.bytes().await.is_err(),
+        "a truncated transfer must not complete as a cacheable file"
+    );
+    upstream.await.unwrap();
+}
+
+#[tokio::test]
+async fn buffered_mirror_read_reports_truncation_as_gateway_failure() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        socket.read(&mut request).await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort")
+            .await
+            .unwrap();
+    });
+    let result = Mirror::Upstream {
+        base,
+        client: client(),
+    }
+    .get("engine.wasm")
+    .await;
+    assert_eq!(result.status, 502);
+    assert_eq!(result.cache_control, "no-store");
+    task.await.unwrap();
+}
+
 /// A mirror on disk, in the shape `latex/tools/mirror.mjs` writes: the manifest at
 /// the top and everything else under a directory named by a digest.
 fn mirror_directory() -> tempfile::TempDir {
