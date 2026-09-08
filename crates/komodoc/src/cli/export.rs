@@ -13,6 +13,7 @@ use serde_json::{json, Map, Value};
 use crate::cli::{resolve_identifier, server_from};
 use crate::config::Configuration;
 use crate::http::{get_as, send, Credentials};
+use crate::room::text::{len16 as utf16_len, utf16_slice};
 use crate::room::Comment;
 use crate::util::die;
 
@@ -790,15 +791,6 @@ fn replacement_for_selector(
         replacement.push_str(&utf16_slice(old, cursor, end));
     }
     Some(replacement)
-}
-
-fn utf16_slice(text: &str, start: usize, end: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    String::from_utf16(&units[start.min(units.len())..end.min(units.len())]).unwrap_or_default()
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
 }
 
 /// The comments made at or after one checkpoint.

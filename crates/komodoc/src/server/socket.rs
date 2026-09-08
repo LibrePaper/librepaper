@@ -206,8 +206,7 @@ impl Server {
         // reconnects and asks for what it missed by state vector.
         let (tx, mut rx) = mpsc::channel::<Outgoing>(self.config.session.peer_queue);
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
-        room.attach(socket_id, address.clone(), tx.clone(), may_edit)
-            .await;
+        room.attach(socket_id, tx.clone(), may_edit).await;
         self.connections.lock().await.insert(
             socket_id,
             Connection {

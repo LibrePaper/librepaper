@@ -850,7 +850,7 @@ async fn read_only_room_relays_edits() {
     let room = other.get("probe").await;
     assert!(room.read_only());
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    room.attach(1, "test".into(), tx, true).await;
+    room.attach(1, tx, true).await;
     let doc = session::new_doc();
     session::apply_update(&doc, &room.open_state(None).await.0).unwrap();
     let before = session::encode_vector(&doc);
@@ -1328,7 +1328,7 @@ async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
     reopened.attach_store(store.clone());
     let room = reopened.get("probe").await;
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    room.attach(123, "test".into(), tx, true).await;
+    room.attach(123, tx, true).await;
     room.set_source("B", "markdown").await;
     room.state.lock().await.sockets.get_mut(&123).unwrap().sent = 1;
     *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
@@ -1516,4 +1516,67 @@ async fn concurrent_checkpoints_commit_in_snapshot_order() {
     )
     .unwrap();
     assert_eq!(session::text_of(&saved), "C");
+}
+
+/// `CommentView::for_viewer` is the single place that turns (author,
+/// is_owner) into `mine`/`deletable`. The hello/REST snapshot path
+/// (`snapshot_for`) and the broadcast event path (`comment_event_for`) must
+/// derive identical flags for the same viewer, or one surface could show a
+/// delete control the other would reject (or vice versa).
+#[tokio::test]
+async fn comment_view_agrees_across_snapshot_and_event_for_every_viewer() {
+    let (_dir, _store, rooms) = fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
+    let comment = room::Message {
+        kind: "comment".into(),
+        body: "look here".into(),
+        exact: "A".into(),
+        temp_id: "223e4567-e89b-12d3-a456-426614174000".into(),
+        request_id: "view-agreement-request".into(),
+        ..Default::default()
+    };
+    let (response, ok) = room
+        .apply(comment, "127.0.0.1", "github:author", "", None, false)
+        .await;
+    assert!(ok, "{response}");
+
+    // (author, is_owner, expected mine, expected deletable) for three
+    // distinct viewers of the same comment: the comment's own author, the
+    // document's owner (a different account, who may delete anything on it
+    // per Rule H), and an unrelated third party who may delete nothing.
+    let viewers = [
+        ("github:author", false, true, true),
+        ("github:owner-account", true, false, true),
+        ("github:stranger", false, false, false),
+    ];
+
+    for (author, is_owner, expect_mine, expect_deletable) in viewers {
+        let event = room.comment_event_for(&response, author, is_owner).await;
+        let event_mine = event["comment"]["mine"].as_bool().unwrap();
+        let event_deletable = event["comment"]["deletable"].as_bool().unwrap();
+
+        let snapshot = room.snapshot_for(author, is_owner).await;
+        assert_eq!(snapshot.len(), 1);
+        let view = &snapshot[0];
+
+        assert_eq!(
+            event_mine, view.mine,
+            "event/snapshot disagree on mine for {author} (is_owner={is_owner})"
+        );
+        assert_eq!(
+            event_deletable, view.deletable,
+            "event/snapshot disagree on deletable for {author} (is_owner={is_owner})"
+        );
+        assert_eq!(event_mine, expect_mine, "unexpected mine for {author}");
+        assert_eq!(
+            event_deletable, expect_deletable,
+            "unexpected deletable for {author}"
+        );
+    }
+
+    // A shared broadcast (author "", not the owner) never claims a comment
+    // as the recipient's own and only the document's owner path can delete.
+    let shared = room.comment_event_for(&response, "", false).await;
+    assert_eq!(shared["comment"]["mine"].as_bool(), Some(false));
+    assert_eq!(shared["comment"]["deletable"].as_bool(), Some(false));
 }

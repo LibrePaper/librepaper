@@ -27,7 +27,7 @@ async fn checkpoint_acknowledges_captured_update() {
     let (_dir, _store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    room.attach(1, "test".into(), tx, true).await;
+    room.attach(1, tx, true).await;
 
     let doc = session::new_doc();
     session::apply_update(&doc, &room.open_state(None).await.0).unwrap();

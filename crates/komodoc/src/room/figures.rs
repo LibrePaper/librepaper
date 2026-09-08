@@ -23,6 +23,16 @@ pub fn rendering_provenance_name(sha: &str) -> String {
     format!("{sha}.provenance.json")
 }
 
+/// Marks a rendering (or its provenance sibling) as held, under the name it
+/// is tracked by in memory. Every registration path calls this once its
+/// bytes are durable and, for a checkpoint-identified rendering, its
+/// catalogue row is saved -- so the quota total and the pruning pass always
+/// agree on which names exist.
+fn note_rendering(state: &mut RoomState, name: String, size: i64) {
+    state.session.rendering_sizes.insert(name.clone(), size);
+    state.session.rendering_written_at.insert(name, now_unix());
+}
+
 pub(super) fn rendering_object_key(storage_id: &str, name: &str) -> String {
     if let Some(sha) = name.strip_suffix(".synctex") {
         crate::storage::blob::rendering_synctex_key(storage_id, sha)
@@ -83,17 +93,24 @@ impl Room {
         if size <= 0 {
             return None;
         }
-        let key = if synctex {
-            crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
-        } else {
-            crate::storage::blob::rendering_key(&self.storage_id, sha)
-        };
+        let key = rendering_object_key(&self.storage_id, &rendering_name(sha, synctex));
         self.blobs
             .exists(&key)
             .await
             .ok()
             .filter(|exists| *exists)
             .map(|_| size)
+    }
+
+    /// Undoes an accounted rendering upload that a later check decided must
+    /// not be published: the object-ledger charge is released and the room's
+    /// tracked size is recomputed without it. Shared by every rendering
+    /// registration path so an aborted upload always leaves both sides -- the
+    /// blob's accounting and the room's own size total -- in the same state
+    /// they were in before the upload began.
+    async fn abandon_rendering(&self, key: &str, format: &str, main: &str) {
+        let _ = self.delete_accounted_blob(key).await;
+        self.record_size_now(None, format, main).await;
     }
 
     /// Removes a blob whose catalogue object reservation was already
@@ -390,11 +407,7 @@ impl Room {
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
-        let key = if synctex {
-            crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
-        } else {
-            crate::storage::blob::rendering_key(&self.storage_id, sha)
-        };
+        let key = rendering_object_key(&self.storage_id, &name);
         // Admission and object-ledger accounting must precede the blob write;
         // otherwise the subsequent measured-history reconciliation can reject
         // a rendering that has already become durable.
@@ -411,15 +424,13 @@ impl Room {
             if let Err(error) = save_catalog_rendering_with_authority(
                 catalog, &self.slug, sha, synctex, size, actor,
             ) {
-                let _ = self.delete_accounted_blob(&key).await;
-                self.record_size_now(None, &format, &main).await;
+                self.abandon_rendering(&key, &format, &main).await;
                 return Err(error);
             }
         }
         {
             let mut state = self.state.lock().await;
-            state.session.rendering_sizes.insert(name.clone(), size);
-            state.session.rendering_written_at.insert(name, now_unix());
+            note_rendering(&mut state, name, size);
         }
         self.record_size_now(None, &format, &main).await;
         Ok(size)
@@ -498,11 +509,7 @@ impl Room {
         if let Some(known) = self.catalog_rendering_size(sha, synctex).await {
             return Ok(Some(known));
         }
-        let key = if synctex {
-            crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
-        } else {
-            crate::storage::blob::rendering_key(&self.storage_id, sha)
-        };
+        let key = rendering_object_key(&self.storage_id, &name);
         // Do not hold the document state mutex across the PDF upload. The
         // final identity check and publication below close the race after the
         // object lands; a source edit during the upload discards this object.
@@ -526,8 +533,7 @@ impl Room {
                 });
                 match metadata {
                     Ok(()) => {
-                        state.session.rendering_sizes.insert(name.clone(), size);
-                        state.session.rendering_written_at.insert(name, now_unix());
+                        note_rendering(&mut state, name, size);
                         (Ok(true), format, main)
                     }
                     Err(error) => (Err(error), format, main),
@@ -536,13 +542,11 @@ impl Room {
         };
         match outcome {
             Err(error) => {
-                let _ = self.delete_accounted_blob(&key).await;
-                self.record_size_now(None, &format, &main).await;
+                self.abandon_rendering(&key, &format, &main).await;
                 Err(error)
             }
             Ok(false) => {
-                let _ = self.delete_accounted_blob(&key).await;
-                self.record_size_now(None, &format, &main).await;
+                self.abandon_rendering(&key, &format, &main).await;
                 Ok(None)
             }
             Ok(true) => {
@@ -573,11 +577,7 @@ impl Room {
         {
             return None;
         }
-        let key = if synctex {
-            crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
-        } else {
-            crate::storage::blob::rendering_key(&self.storage_id, sha)
-        };
+        let key = rendering_object_key(&self.storage_id, &rendering_name(sha, synctex));
         self.blobs.get(&key).await.ok()
     }
 
@@ -617,8 +617,7 @@ impl Room {
         .await?;
         let (format, main) = {
             let mut state = self.state.lock().await;
-            state.session.rendering_sizes.insert(name.clone(), size);
-            state.session.rendering_written_at.insert(name, now_unix());
+            note_rendering(&mut state, name, size);
             (
                 state.session.format.clone(),
                 session::main_path(&state.session.doc),

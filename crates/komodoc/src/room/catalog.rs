@@ -159,9 +159,27 @@ pub(super) fn request_digest(value: &Value) -> String {
     }
     let mut bytes = String::new();
     canonical(value, &mut bytes);
-    hex::encode(sha2::Sha256::digest(bytes.as_bytes()))
+    // The hashing step -- not the canonicalization above it -- is shared with
+    // every other content digest in this codebase, so a stored receipt and a
+    // stored document digest are hex(sha256(...)) by the same one function
+    // rather than by two copies that could drift.
+    crate::document::store::digest_of_bytes(bytes.as_bytes())
 }
 
+/// Reconciles the *entire* in-memory comment list against the catalogue, one
+/// row (and one reply listing) at a time -- an upsert per comment plus a
+/// bounded reply read, for every comment the room currently holds, on every
+/// call. Every request-serving mutation (add/delete/resolve/reply/anchor/
+/// accept/reject in `room/comments.rs` and `room/suggestions.rs`) instead
+/// writes only the one row it changed and never reaches this function; the
+/// only production caller is `seed::seed_annotations`, which uses it to
+/// write a handful of demo annotations once per document when `komodoc seed`
+/// populates an empty deployment. That caller's input is small and bounded
+/// by the fixed example set, so the O(comments²) catalogue traffic (this
+/// runs once per comment added, each time reconciling every comment added so
+/// far) costs nothing worth batching. Do not add a new caller on a request
+/// path: update the one row that changed instead, the way every handler
+/// above already does.
 pub(super) fn save_catalog_comments(
     catalog: &crate::storage::catalog::Catalog,
     slug: &str,
@@ -419,5 +437,69 @@ pub(super) fn save_catalog_rendering_with_authority(
             .publish_rendering(&rendering)
             .map(|_| ())
             .map_err(|err| err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod request_digest_tests {
+    use super::request_digest;
+    use serde_json::json;
+
+    /// `request_digest` is what makes a stored comment/suggestion receipt
+    /// idempotent: the same canonical bytes must hash the same way forever,
+    /// or a retried request could be charged or applied twice after a
+    /// canonicalization change nobody meant to make. These fix the digest of
+    /// a handful of representative values so any future edit to `canonical`
+    /// (key order, string escaping, or number formatting) that is not
+    /// byte-for-byte compatible fails loudly here rather than silently
+    /// breaking retry matching against already-stored receipts.
+    #[test]
+    fn nested_object_keys_are_sorted_before_hashing() {
+        // Two JSON objects with the same keys inserted in a different order
+        // must canonicalize (and therefore hash) identically.
+        let forward = json!({"a": 1, "b": 2, "z": 3});
+        let reversed = json!({"z": 3, "b": 2, "a": 1});
+        assert_eq!(request_digest(&forward), request_digest(&reversed));
+        assert_eq!(
+            request_digest(&forward),
+            "329d4b5a274b8081ef038bb735813dc3082cf6d95855f8029c9cd8432168c112"
+        );
+    }
+
+    #[test]
+    fn string_escapes_are_included_in_the_canonical_bytes() {
+        let value = json!({"body": "quote \" and backslash \\ and newline \n"});
+        assert_eq!(
+            request_digest(&value),
+            "dde0899efbe2c590bf2985f9ff257a896714a5907f558f811d0006ee7e998ee5"
+        );
+    }
+
+    /// Distinguishes an integer from an equal-valued float: `1` and `1.0`
+    /// must not collide, because a stored receipt's request payload keeps
+    /// whatever numeric shape the client sent.
+    #[test]
+    fn integer_and_float_of_equal_value_hash_differently() {
+        let integer = json!({"position": 1});
+        let float = json!({"position": 1.0});
+        assert_ne!(request_digest(&integer), request_digest(&float));
+    }
+
+    #[test]
+    fn nested_arrays_and_objects_canonicalize_deterministically() {
+        let value = json!({
+            "outer": {"z": [1, 2, {"inner": "value"}], "a": null},
+            "flag": true,
+        });
+        // Recomputing twice from equivalent but differently-ordered input
+        // must agree; this is the property the receipt matching relies on.
+        let same_value_reordered = json!({
+            "flag": true,
+            "outer": {"a": null, "z": [1, 2, {"inner": "value"}]},
+        });
+        assert_eq!(
+            request_digest(&value),
+            request_digest(&same_value_reordered)
+        );
     }
 }

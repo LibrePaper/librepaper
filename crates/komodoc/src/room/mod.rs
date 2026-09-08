@@ -37,7 +37,7 @@ mod comments;
 mod figures;
 mod retention;
 mod suggestions;
-mod text;
+pub(crate) mod text;
 
 use catalog::*;
 pub use checkpoint::Attribution;
@@ -128,12 +128,13 @@ pub enum Outgoing {
 /// nothing is lost by hanging up on it.
 pub type Sender = mpsc::Sender<Outgoing>;
 
-/// One connected reader: where they are, which the rate limiter counts
-/// against, the channel their frames go out on, and -- for an editor -- how
-/// far their updates have got towards being durable.
+/// One connected reader: the channel their frames go out on, and -- for an
+/// editor -- how far their updates have got towards being durable. The
+/// caller's address is used for rate limiting where the socket attaches
+/// (`server::socket`) and is not kept here: nothing in this module reads a
+/// peer's address back, and carrying it would just be a second, staler copy
+/// of what the rate limiter already has.
 pub struct Peer {
-    #[allow(dead_code)]
-    pub address: String,
     pub tx: Sender,
     /// Whether this socket may write the document. A reader receives updates
     /// and sends none.
@@ -545,6 +546,16 @@ impl RoomSet {
     /// Mark this deployment as a local reader when another process already
     /// owns its writer lock.  This is useful to callers that acquire the lock
     /// before building a `RoomSet` and want to retain the failed claim.
+    /// `serve` itself never calls this -- it exits rather than start a second
+    /// writer over the same directory -- but the test harness's `server_over`
+    /// does, to model exactly the second-process-over-one-bucket
+    /// configuration `a_second_process_over_the_same_storage_does_not_write`
+    /// (tests/history.rs) exercises: every room this deployment opens comes
+    /// up read-only, per the `deployment_lock.get()` check below, instead of
+    /// each taking its own per-room fenced lease. Its only caller is
+    /// `#[cfg(test)]` code, so a non-test build of the library sees it as
+    /// unused; the allow below is for that build, not because it is
+    /// unreachable within this crate.
     #[allow(dead_code)]
     pub fn attach_deployment_lock_unavailable(&self) {
         let _ = self.deployment_lock.set(None);
@@ -1647,8 +1658,13 @@ impl Room {
         }
     }
 
-    /// Persist a complete comment snapshot for legacy storage and fixture callers.
-    /// Catalogue operations normally persist just the changed row.
+    /// Persists every comment the room holds: the whole JSON blob for a room
+    /// with no catalogue (there is nothing narrower to write), or, for a
+    /// catalogue-backed room, a full row-by-row reconciliation via
+    /// `save_catalog_comments` -- see that function's documentation for why
+    /// its only production caller is the seeding command and why every
+    /// ordinary comment mutation instead updates its one changed row
+    /// directly and never calls this.
     pub async fn save(&self, state: &mut RoomState) -> Result<(), String> {
         if !self.hold().await {
             return Err("this room is held by another server".into());
@@ -1680,11 +1696,7 @@ impl Room {
         state
             .comments
             .iter()
-            .map(|item| CommentView {
-                comment: item.clone(),
-                mine: !author.is_empty() && item.author == author,
-                deletable: deletable(item, author, is_owner),
-            })
+            .map(|item| CommentView::for_viewer(item, author, is_owner))
             .collect()
     }
 
@@ -1711,11 +1723,7 @@ impl Room {
         let comments = state
             .comments
             .iter()
-            .map(|item| CommentView {
-                comment: item.clone(),
-                mine: !author.is_empty() && item.author == author,
-                deletable: deletable(item, author, is_owner),
-            })
+            .map(|item| CommentView::for_viewer(item, author, is_owner))
             .collect();
         (source, format, tree, texts, comments)
     }
@@ -1727,13 +1735,12 @@ impl Room {
         (state.comments.len(), open)
     }
 
-    pub async fn attach(&self, id: u64, address: String, tx: Sender, may_edit: bool) {
+    pub async fn attach(&self, id: u64, tx: Sender, may_edit: bool) {
         let mut state = self.state.lock().await;
         state.touched = now_unix();
         state.sockets.insert(
             id,
             Peer {
-                address,
                 tx,
                 may_edit,
                 sent: 0,
@@ -2393,24 +2400,13 @@ pub fn tree_of(
 }
 
 /// What to call the one file a migrated document turns out to have. The index
-/// entry's own `main` if it has one; otherwise the name its format implies,
-/// which is what every document published before directories was called on
-/// the laptop it came from.
+/// entry's own `main` if it has one; otherwise the name its format implies.
+/// The format-to-default-path policy lives beside the shared format detector
+/// in `document::render`, which already owns the inverse (`document_format`,
+/// wrapped here as `format_from_path`); keeping both directions of that
+/// mapping in one place is what stops them from drifting apart.
 pub fn main_path_for(named: &str, format: &str) -> String {
-    if !named.is_empty() {
-        return named.to_string();
-    }
-    match format {
-        "typst" => "main.typ",
-        "markdown" => "main.md",
-        "html" => "main.html",
-        // A single-file LaTeX source is still LaTeX; calling it `main.txt`
-        // is what made a document open advertising a format its own main
-        // file's extension already contradicted (R27).
-        "latex" => "main.tex",
-        _ => "main.txt",
-    }
-    .to_string()
+    crate::document::render::main_path_for(named, format)
 }
 
 /// The format a main file's own extension implies, the inverse of
