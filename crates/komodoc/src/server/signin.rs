@@ -134,6 +134,9 @@ impl Server {
                     signed_who.session_generation = account.session_generation;
                 }
                 Ok(_) => return plain(403, "this account is not active"),
+                Err(crate::storage::catalog::CatalogError::Conflict(_)) => {
+                    return plain(403, "this account is not active")
+                }
                 Err(err) => return plain(503, &format!("could not establish account: {err}")),
             }
         }
@@ -324,8 +327,11 @@ impl Server {
                     Ok(who) => who,
                     // The one refusal a person can act on: every other failure
                     // here is the deployment's or Google's, and says so.
-                    Err(err) if err == crate::auth::UNVERIFIED_EMAIL => {
-                        return Some(plain(403, crate::auth::UNVERIFIED_EMAIL))
+                    Err(err)
+                        if err == crate::auth::UNVERIFIED_EMAIL
+                            || err == crate::auth::UNVERIFIED_WORKSPACE_DOMAIN =>
+                    {
+                        return Some(plain(403, &err))
                     }
                     Err(_) => return Some(plain(502, "google would not say who you are")),
                 };
@@ -357,7 +363,13 @@ impl Server {
             // a terminal can open.
             "/auth/device" => {
                 let code = normalized(&query.get("code").cloned().unwrap_or_default());
-                let who = self.whoami(headers, arrival).await;
+                let who = match self.authenticated_identity(headers, arrival).await {
+                    Ok(who) => who,
+                    Err(AuthenticationFailure::Unavailable) => {
+                        return Some(plain(503, "authentication service temporarily unavailable"));
+                    }
+                    Err(AuthenticationFailure::Invalid) => Identity::anonymous(),
+                };
                 if !who.is_signed_in() {
                     // The code rides through the sign-in in `next`, so the
                     // person lands back on the approval rather than on the
@@ -370,7 +382,33 @@ impl Server {
                 Some(self.device_page(headers, &code))
             }
             "/api/me" => {
-                let id = self.whoami(headers, arrival).await;
+                let id = match self.authenticated_identity(headers, arrival).await {
+                    Ok(id) => id,
+                    Err(AuthenticationFailure::Unavailable) => {
+                        return Some(write_json(
+                            503,
+                            &json!({"error": "authentication service temporarily unavailable"}),
+                        ));
+                    }
+                    Err(AuthenticationFailure::Invalid) => {
+                        let mut response = write_json(
+                            200,
+                            &json!({
+                                "provider": "",
+                                "handle": "",
+                                "name": "",
+                                "can_publish": self.publishers.allows(""),
+                                "can_comment": self.commenters.allows(""),
+                                "comments_need_login": !self.commenters.public,
+                                "providers": self.providers(),
+                                "publishers": self.publishers.public_description(),
+                                "commenters": self.commenters.public_description(),
+                            }),
+                        );
+                        self.clear_dead_session(&mut response, headers, arrival);
+                        return Some(response);
+                    }
+                };
                 let mut response = write_json(
                     200,
                     &json!({
@@ -387,8 +425,8 @@ impl Server {
                         // so there is nothing to sign in to and the page hides
                         // the button.
                         "providers": self.providers(),
-                        "publishers": self.publishers.describe(),
-                        "commenters": self.commenters.describe(),
+                        "publishers": self.publishers.public_description(),
+                        "commenters": self.commenters.public_description(),
                     }),
                 );
                 if !id.is_signed_in() {
@@ -468,6 +506,7 @@ impl Server {
         headers: &HeaderMap,
         arrival: &Arrival,
         body: &[u8],
+        source: &str,
     ) -> Reply {
         let payload: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let field = |name: &str| {
@@ -481,7 +520,7 @@ impl Server {
             // No account is needed to ask: the terminal has none yet, which is
             // the whole reason it is asking.
             "/api/auth/device" => {
-                let Some((device, user)) = self.pending.start() else {
+                let Some((device, user)) = self.pending.start_for(source) else {
                     return write_json(
                         429,
                         &json!({"error": "too many sign-ins are pending; try again in a few minutes"}),
@@ -509,7 +548,16 @@ impl Server {
                 if cross_site_refused(headers, arrival) {
                     return write_json(403, &cross_site_refusal());
                 }
-                let who = self.whoami(headers, arrival).await;
+                let who = match self.authenticated_identity(headers, arrival).await {
+                    Ok(who) => who,
+                    Err(AuthenticationFailure::Unavailable) => {
+                        return write_json(
+                            503,
+                            &json!({"error": "authentication service temporarily unavailable"}),
+                        );
+                    }
+                    Err(AuthenticationFailure::Invalid) => Identity::anonymous(),
+                };
                 if !who.is_signed_in() {
                     return write_json(401, &json!({"error": "sign in to approve"}));
                 }
@@ -528,13 +576,10 @@ impl Server {
                 DeviceOutcome::Expired => write_json(400, &json!({"error": "expired_token"})),
                 DeviceOutcome::Approved(who) => {
                     let seconds = DEVICE_TOKEN_MAX_AGE.as_secs() as i64;
-                    // The same payload the session cookie carries, so nothing
-                    // is stored server-side and `whoami` reads it with the one
-                    // function that already knows the shape.
-                    let token = format!(
-                        "{DEVICE_TOKEN_PREFIX}{}",
-                        sign_session(&self.key, &who, now_unix() + seconds)
-                    );
+                    // Device credentials have their own purpose and versioned
+                    // envelope. Browser session cookies remain a separate
+                    // credential even though both carry the same identity.
+                    let token = sign_device(&self.key, &who, now_unix() + seconds);
                     write_json(200, &json!({"token": token, "expires_in": seconds}))
                 }
             },
@@ -559,7 +604,25 @@ impl Server {
         // An unsigned cookie -- from before this server signed them, or forged
         // -- verifies as absent, so it is simply replaced with a signed one.
         if let Some(value) = cookie(headers, &cookie_name(https, VISITOR_COOKIE)) {
-            if !read_visitor(&self.key, &value).is_empty() {
+            let token = read_visitor(&self.key, &value);
+            if !token.is_empty() {
+                // Keep an old visitor's ownership while upgrading its
+                // unversioned credential to the strict visitor envelope.
+                // Invalid and unrelated values are replaced below.
+                if value.starts_with("v1.") {
+                    return;
+                }
+                let value = sign_visitor(&self.key, &token);
+                add_cookie(
+                    response,
+                    &set_cookie(
+                        &cookie_name(https, VISITOR_COOKIE),
+                        &value,
+                        365 * 24 * 3600,
+                        https,
+                    ),
+                );
+                set(response, "cache-control", "private, no-store");
                 return;
             }
         }

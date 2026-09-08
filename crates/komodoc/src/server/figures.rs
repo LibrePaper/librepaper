@@ -595,7 +595,7 @@ impl Server {
             return write_json(403, &cross_site_refusal());
         }
         let until = crate::util::now_unix() + FRAME_TOKEN_SECONDS;
-        let token = crate::auth::sign(&self.key, &frame_claim(slug, until));
+        let token = crate::auth::sign(&self.key, "figure-frame-v1", &frame_claim(slug, until));
         write_json(200, &json!({"until": until, "token": token}))
     }
 
@@ -617,6 +617,11 @@ impl Server {
             return false;
         };
         until >= crate::util::now_unix()
-            && crate::auth::verifies(&self.key, &frame_claim(slug, until), token)
+            && crate::auth::verifies(
+                &self.key,
+                "figure-frame-v1",
+                &frame_claim(slug, until),
+                token,
+            )
     }
 }

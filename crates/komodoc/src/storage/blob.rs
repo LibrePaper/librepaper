@@ -559,10 +559,6 @@ fn durable_create_dir_all(path: &Path) -> std::io::Result<()> {
 
 /// The key layout, in one place, so a change to it is one change.
 pub const INDEX_KEY: &str = "index.json";
-/// What cookies are signed with. Kept with everything else so a server that
-/// holds no local state does not sign every reader out when it restarts.
-#[cfg_attr(not(test), allow(dead_code))]
-pub const SESSION_KEY_KEY: &str = "session.key";
 
 /// Prefix for all immutable objects owned by one document identity. The
 /// identity, not the mutable public slug, is the deletion and object-reuse

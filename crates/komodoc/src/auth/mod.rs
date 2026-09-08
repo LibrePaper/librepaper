@@ -5,17 +5,11 @@
 //! bearer. All of them end up as a handle, which the policies below either
 //! allow or not, and an id, which everything else keys on.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
-
-use crate::http::{client, USER_AGENT};
-use crate::storage::blob::{BlobError, BlobStore, SESSION_KEY_KEY};
 
 mod device;
 mod github;
@@ -25,6 +19,9 @@ pub mod pseudonym;
 pub use device::*;
 pub use github::*;
 pub use google::*;
+
+#[cfg(test)]
+mod core_tests;
 
 /// The two providers, spelled as the id prefix and the session cookie write
 /// them. Nothing outside this module composes these strings by hand.
@@ -153,6 +150,8 @@ pub struct Policy {
     /// wants one provider only leaves the other unconfigured, which is a
     /// property of the deployment rather than of every policy on it.
     pub any: bool,
+    /// Legacy `anygithub` retains its provider restriction.
+    pub github_only: bool,
     /// The allowlist, lowercased and as written, when neither of the above is
     /// set. Each entry is a GitHub login, an email address, or `@domain`; the
     /// shape of the entry is what decides which, so the list stays one list.
@@ -179,7 +178,13 @@ impl Policy {
                     ..Policy::default()
                 }
             }
-            "any" | "*" | "anygithub" => {
+            "anygithub" => {
+                return Policy {
+                    github_only: true,
+                    ..Policy::default()
+                };
+            }
+            "any" | "*" => {
                 return Policy {
                     any: true,
                     ..Policy::default()
@@ -212,23 +217,26 @@ impl Policy {
         if self.any {
             return true;
         }
+        if self.github_only {
+            return !handle.contains('@');
+        }
         self.entries.iter().any(|entry| entry_admits(entry, handle))
     }
 
     /// Whether anyone at all is allowed: an unconfigured policy is none of
     /// public, any, or a list.
     pub fn is_configured(&self) -> bool {
-        self.public || self.any || !self.entries.is_empty()
+        self.public || self.any || self.github_only || !self.entries.is_empty()
     }
 
-    /// What the page shows when someone is refused. The entries are shown as
-    /// they were written, since an email and a domain already carry the `@`
-    /// that tells them apart from a login.
+    /// The operator's startup summary, including configured allowlist entries.
     pub fn describe(&self) -> String {
         if self.public {
             "anyone".to_string()
         } else if self.any {
             "any signed-in account".to_string()
+        } else if self.github_only {
+            "any GitHub account".to_string()
         } else if self.entries.is_empty() {
             "nobody (unconfigured)".to_string()
         } else {
@@ -236,11 +244,28 @@ impl Policy {
         }
     }
 
+    /// Safe to show to ordinary callers, including accounts refused access.
+    pub fn public_description(&self) -> String {
+        if self.entries.is_empty() {
+            self.describe()
+        } else {
+            format!(
+                "an allowlist of {} {}",
+                self.entries.len(),
+                if self.entries.len() == 1 {
+                    "entry"
+                } else {
+                    "entries"
+                }
+            )
+        }
+    }
+
     /// Whether this policy names anybody who could only sign in with GitHub,
     /// or only with Google. Startup uses these to warn about a list that names
     /// people no configured provider can ever produce.
     pub fn names_a_login(&self) -> bool {
-        self.entries.iter().any(|entry| !entry.contains('@'))
+        self.github_only || self.entries.iter().any(|entry| !entry.contains('@'))
     }
 
     pub fn names_an_email_or_domain(&self) -> bool {
@@ -267,28 +292,43 @@ fn base64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-pub fn sign(key: &[u8], payload: &str) -> String {
+/// Sign one explicit purpose. The separator prevents an ambiguous boundary
+/// between a purpose and its payload. Purposes are fixed by the caller.
+pub fn sign(key: &[u8], purpose: &str, payload: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC takes any key length");
+    mac.update(purpose.as_bytes());
+    mac.update(b"\0");
     mac.update(payload.as_bytes());
     base64url(&mac.finalize().into_bytes())
 }
 
-/// Constant-time check of a signature against what the key says it should be.
-pub fn verifies(key: &[u8], payload: &str, signature: &str) -> bool {
+/// Constant-time verification within the same credential purpose.
+pub fn verifies(key: &[u8], purpose: &str, payload: &str, signature: &str) -> bool {
     let Ok(given) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(signature) else {
         return false;
     };
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC takes any key length");
+    mac.update(purpose.as_bytes());
+    mac.update(b"\0");
     mac.update(payload.as_bytes());
     mac.verify_slice(&given).is_ok()
 }
 
-/// Returns "<payload>.<signature>", where the payload is the provider, the
-/// handle, the qualified id, the displayed name, and an expiry. Nothing is
-/// stored server-side: the signature is what makes it trustworthy. The name
-/// rides along so that rendering the nav never needs a round trip to the
-/// provider to find out what to label it with.
+/// Browser and terminal credentials have separate MAC domains. Version one
+/// deliberately rejects credentials from before purpose separation: accepting
+/// those as a fallback would preserve their cross-use vulnerability.
 pub fn sign_session(key: &[u8], id: &Identity, expiry_unix: i64) -> String {
+    sign_identity(key, "session-v1", id, expiry_unix)
+}
+
+pub fn sign_device(key: &[u8], id: &Identity, expiry_unix: i64) -> String {
+    format!(
+        "{DEVICE_TOKEN_PREFIX}{}",
+        sign_identity(key, "device-v1", id, expiry_unix)
+    )
+}
+
+fn sign_identity(key: &[u8], purpose: &str, id: &Identity, expiry_unix: i64) -> String {
     let payload = base64url(
         format!(
             "{}|{}|{}|{}|{}|{}",
@@ -296,24 +336,28 @@ pub fn sign_session(key: &[u8], id: &Identity, expiry_unix: i64) -> String {
         )
         .as_bytes(),
     );
-    let signature = sign(key, &payload);
-    format!("{payload}.{signature}")
+    format!("v1.{payload}.{}", sign(key, purpose, &payload))
 }
 
-/// The identity a cookie carries, or the anonymous identity if it is forged,
-/// damaged, expired, or in the old two-field shape.
-///
-/// Three shapes reach here. The five-field one is what this server writes. The
-/// three-field one -- `login|id|expiry` -- is a session an earlier server
-/// wrote, which was necessarily GitHub, and is read as one until it expires:
-/// nothing is missing from it, only implied. The two-field one, from before
-/// the id existed at all, is still refused rather than half-trusted, because
-/// it carries no id to check ownership or comment authorship against.
 pub fn read_session(key: &[u8], cookie: &str) -> Identity {
-    let Some((payload, signature)) = cookie.split_once('.') else {
+    read_identity(key, "session-v1", cookie)
+}
+
+pub fn read_device(key: &[u8], token: &str) -> Identity {
+    token
+        .strip_prefix(DEVICE_TOKEN_PREFIX)
+        .map(|token| read_identity(key, "device-v1", token))
+        .unwrap_or_default()
+}
+
+fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
+    let Some(versioned) = credential.strip_prefix("v1.") else {
         return Identity::anonymous();
     };
-    if !verifies(key, payload, signature) {
+    let Some((payload, signature)) = versioned.split_once('.') else {
+        return Identity::anonymous();
+    };
+    if !verifies(key, purpose, payload, signature) {
         return Identity::anonymous();
     }
     let Ok(raw) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
@@ -322,43 +366,35 @@ pub fn read_session(key: &[u8], cookie: &str) -> Identity {
     let Ok(text) = String::from_utf8(raw) else {
         return Identity::anonymous();
     };
-    // A profile name may itself contain a bar, so the expiry is taken off the
-    // end and the rest split from the front; the name is whatever is left.
+    // A profile name may contain bars, so only the last bar separates expiry.
     let Some((front, expiry)) = text.rsplit_once('|') else {
         return Identity::anonymous();
     };
     let Ok(expiry) = expiry.parse::<i64>() else {
         return Identity::anonymous();
     };
-    if now_unix() > expiry {
+    if now_unix() >= expiry {
         return Identity::anonymous();
     }
     let fields: Vec<&str> = front.splitn(5, '|').collect();
-    let who = match fields[..] {
-        [provider, handle, id, generation, name] => Identity {
-            provider: provider.to_string(),
-            id: id.to_string(),
-            handle: handle.to_string(),
-            name: name.to_string(),
-            session_generation: generation.to_string(),
-        },
-        // Legacy signed sessions remain parseable for JSON-backed test and
-        // migration tooling. Catalogue-backed request validation rejects the
-        // missing generation.
-        [provider, handle, id, name] => Identity {
-            provider: provider.to_string(),
-            id: id.to_string(),
-            handle: handle.to_string(),
-            name: name.to_string(),
-            session_generation: String::new(),
-        },
-        [login, id] => Identity::github(login, id),
-        _ => return Identity::anonymous(),
+    let [provider, handle, id, generation, name] = fields[..] else {
+        return Identity::anonymous();
     };
-    if !who.is_signed_in() {
+    if !matches!(provider, PROVIDER_GITHUB | PROVIDER_GOOGLE)
+        || handle.is_empty()
+        || id
+            .strip_prefix(&format!("{provider}:"))
+            .is_none_or(str::is_empty)
+    {
         return Identity::anonymous();
     }
-    who
+    Identity {
+        provider: provider.into(),
+        handle: handle.into(),
+        id: id.into(),
+        session_generation: generation.into(),
+        name: name.into(),
+    }
 }
 
 pub fn now_unix() -> i64 {
@@ -371,7 +407,7 @@ pub fn now_unix() -> i64 {
 /// "<token>.<signature>" for a freshly minted visitor token, so a browser
 /// cannot simply pick its own owner key.
 pub fn sign_visitor(key: &[u8], token: &str) -> String {
-    format!("{token}.{}", sign(key, token))
+    format!("v1.{token}.{}", sign(key, "visitor-v1", token))
 }
 
 /// The token a visitor cookie carries, or "" when the cookie is forged,
@@ -380,78 +416,38 @@ pub fn sign_visitor(key: &[u8], token: &str) -> String {
 /// simply reissued a signed cookie, rather than kept on a value nothing here
 /// can verify.
 pub fn read_visitor(key: &[u8], cookie: &str) -> String {
-    let Some((token, signature)) = cookie.split_once('.') else {
+    // Preserve ownership for anonymous browsers issued before v1. That format
+    // only ever carried a 128-bit lowercase hex token. Enforcing its shape
+    // excludes legacy sessions and frame capabilities from this migration.
+    let Some(versioned) = cookie.strip_prefix("v1.") else {
+        let Some((token, signature)) = cookie.split_once('.') else {
+            return String::new();
+        };
+        if token.len() != 32
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return String::new();
+        }
+        let Ok(given) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(signature) else {
+            return String::new();
+        };
+        let mut mac = HmacSha256::new_from_slice(key).expect("HMAC takes any key length");
+        mac.update(token.as_bytes());
+        return if mac.verify_slice(&given).is_ok() {
+            token.to_string()
+        } else {
+            String::new()
+        };
+    };
+    let Some((token, signature)) = versioned.split_once('.') else {
         return String::new();
     };
-    if token.is_empty() || !verifies(key, token, signature) {
+    if token.is_empty() || !verifies(key, "visitor-v1", token, signature) {
         return String::new();
     }
     token.to_string()
-}
-
-/// What session and visitor cookies are signed with. It lives with the
-/// documents rather than beside them: a server whose storage is a bucket keeps
-/// nothing locally, and a key that did not survive a restart would sign every
-/// reader out on every deploy. It is a secret in the operator's own storage,
-/// which is the same trust the documents are already under.
-#[cfg_attr(not(test), allow(dead_code))]
-pub async fn session_key(blobs: &dyn BlobStore) -> Result<Vec<u8>, String> {
-    match blobs.get(SESSION_KEY_KEY).await {
-        // A key is already there: use it, or refuse to run over it. Either
-        // way this is not the "nothing has ever been written" case that
-        // justifies minting a replacement -- a byte flipped in storage, or a
-        // read that came back short, must not look like an empty deployment.
-        Ok(raw) => {
-            return decode_session_key(&raw).ok_or_else(|| {
-                format!(
-                    "the session key stored at {} is not readable; refusing to replace it",
-                    blobs.describe()
-                )
-            });
-        }
-        // The one case that means "nobody has ever put a key here".
-        Err(BlobError::NotFound) => {}
-        // Anything else -- a timeout, a permissions error, a bucket that is
-        // momentarily unreachable -- must not be treated as "there is no
-        // key yet". Doing so is exactly how a transient GET failure used to
-        // rotate the deployment's signing key and sign everyone out; failing
-        // startup here is the safe answer instead.
-        Err(err) => {
-            return Err(format!(
-                "could not read the session key from {}: {err}",
-                blobs.describe()
-            ));
-        }
-    }
-    let key = random_bytes(32);
-    // Created with a compare-and-set against absence (the empty `expect`),
-    // not an unconditional `put`, so two servers starting at once cannot each
-    // write their own key and disagree forever: the loser re-reads and uses
-    // whichever key actually won.
-    match blobs
-        .swap(SESSION_KEY_KEY, hex::encode(&key).into_bytes(), "")
-        .await
-    {
-        Ok(_) => Ok(key),
-        Err(BlobError::Conflict) => {
-            let raw = blobs.get(SESSION_KEY_KEY).await.map_err(|err| {
-                format!(
-                    "could not read the session key from {} after losing its creation: {err}",
-                    blobs.describe()
-                )
-            })?;
-            decode_session_key(&raw).ok_or_else(|| {
-                format!(
-                    "the session key stored at {} is not readable; refusing to replace it",
-                    blobs.describe()
-                )
-            })
-        }
-        Err(err) => Err(format!(
-            "could not write the session key to {}: {err}",
-            blobs.describe()
-        )),
-    }
 }
 
 /// Load or durably create the local deployment signing key. Catalogue
@@ -515,14 +511,36 @@ pub fn link_sealing_keyring_file(
 }
 
 pub fn write_link_sealing_keyring(path: &std::path::Path, keys: &[Vec<u8>]) -> Result<(), String> {
-    use std::io::Write;
     if keys.is_empty() || keys.iter().any(|key| key.len() != 32) {
         return Err("link keyring needs 32-byte keys".into());
     }
-    let body=serde_json::to_vec(&serde_json::json!({"version":1,"keys":keys.iter().map(|key|serde_json::json!({"id":hex::encode(sha2::Sha256::digest(key))[..16].to_string(),"key":hex::encode(key)})).collect::<Vec<_>>() })).map_err(|e|e.to_string())?;
+    let rows: Vec<_> = keys
+        .iter()
+        .map(|key| {
+            serde_json::json!({
+                "id": hex::encode(Sha256::digest(key))[..16],
+                "key": hex::encode(key),
+            })
+        })
+        .collect();
+    let body = serde_json::to_vec(&serde_json::json!({"version": 1, "keys": rows}))
+        .map_err(|error| error.to_string())?;
+    write_secret_atomically(path, &body, true).map(|_| ())
+}
+
+/// Publish fully written, private bytes, with optional replacement. Creating a
+/// key uses a hard link so a concurrent creator cannot overwrite the winner.
+/// Keyring replacement remains serialized by the deployment writer lock.
+fn write_secret_atomically(
+    path: &std::path::Path,
+    body: &[u8],
+    replace: bool,
+) -> Result<bool, String> {
+    use std::io::Write;
     let parent = path
         .parent()
         .ok_or_else(|| format!("{} has no parent", path.display()))?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let temporary = path.with_extension(format!("tmp-{}", hex::encode(random_bytes(8))));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -531,22 +549,32 @@ pub fn write_link_sealing_keyring(path: &std::path::Path, keys: &[Vec<u8>]) -> R
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
+    let mut file = options
+        .open(&temporary)
+        .map_err(|error| error.to_string())?;
     let result = (|| {
-        file.write_all(&body)?;
+        file.write_all(body)?;
         file.sync_all()?;
-        std::fs::rename(&temporary, path)?;
+        drop(file);
+        let installed = if replace {
+            std::fs::rename(&temporary, path)?;
+            true
+        } else {
+            let installed = match std::fs::hard_link(&temporary, path) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(error) => return Err(error),
+            };
+            std::fs::remove_file(&temporary)?;
+            installed
+        };
         std::fs::File::open(parent)?.sync_all()?;
-        Ok::<_, std::io::Error>(())
+        Ok::<bool, std::io::Error>(installed)
     })();
-    if let Err(error) = result {
+    if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
-        return Err(format!(
-            "could not durably update {}: {error}",
-            path.display()
-        ));
     }
-    Ok(())
+    result.map_err(|error| format!("could not durably write {}: {error}", path.display()))
 }
 
 fn deployment_secret_key(
@@ -554,8 +582,6 @@ fn deployment_secret_key(
     catalog_nonempty: bool,
     purpose: &str,
 ) -> Result<Vec<u8>, String> {
-    use std::io::Write;
-
     match std::fs::read(path) {
         Ok(raw) => {
             return decode_session_key(&raw)
@@ -571,41 +597,17 @@ fn deployment_secret_key(
         Err(err) => return Err(format!("could not read {}: {err}", path.display())),
     }
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
     let key = random_bytes(32);
-    let temporary = path.with_extension(format!("tmp-{}", hex::encode(random_bytes(8))));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    if write_secret_atomically(path, hex::encode(&key).as_bytes(), false)? {
+        return Ok(key);
     }
-    let mut file = options
-        .open(&temporary)
-        .map_err(|err| format!("could not create {}: {err}", temporary.display()))?;
-    let result = (|| {
-        file.write_all(hex::encode(&key).as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, path)?;
-        std::fs::File::open(parent)?.sync_all()?;
-        Ok::<(), std::io::Error>(())
-    })();
-    if let Err(err) = result {
-        let _ = std::fs::remove_file(&temporary);
-        return Err(format!(
-            "could not durably create {}: {err}",
-            path.display()
-        ));
-    }
-    Ok(key)
+    let raw = std::fs::read(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    decode_session_key(&raw)
+        .ok_or_else(|| format!("the {purpose} key at {} is not readable", path.display()))
 }
 
-/// Parses the hex-encoded 32-byte key `session_key` stores, or `None` for
+/// Parses a hex-encoded 32-byte deployment key, or `None` for
 /// anything else -- truncated, non-hex, the wrong length. A malformed value
 /// is never "as good as absent": that equivalence is what let a transient
 /// read failure look identical to an empty deployment.

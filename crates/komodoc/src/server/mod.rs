@@ -24,11 +24,11 @@ use tokio::sync::mpsc;
 
 use crate::auth::pseudonym::pseudonym_for;
 use crate::auth::{
-    cookie_name, normalized, now_unix, pkce_verifier, random_token, read_session, read_visitor,
-    sign_session, sign_visitor, stored_id, Accounts, DeviceOutcome, GithubAccounts, GithubApp,
-    GoogleApp, Identity, PendingCodes, Policy, TokenCache, DEVICE_POLL_INTERVAL,
-    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE,
-    SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
+    cookie_name, normalized, now_unix, pkce_verifier, random_token, read_device, read_session,
+    read_visitor, sign_device, sign_session, sign_visitor, stored_id, Accounts, DeviceOutcome,
+    GithubAccounts, GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache,
+    DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB,
+    PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use crate::config::Configuration;
 use crate::document::history::{Tree, TreeEntry};
@@ -198,6 +198,12 @@ impl Caller {
 
 type Reply = Response<Body>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthenticationFailure {
+    Invalid,
+    Unavailable,
+}
+
 impl Server {
     /// Read a document through the authoritative catalogue when one is
     /// configured.  A catalogue failure is never treated as a missing
@@ -232,6 +238,7 @@ impl Server {
         // index is what holds that.
         let store = Arc::new(store);
         rooms.attach_store(store.clone());
+        let accounts = Arc::new(GithubAccounts::new(&app));
         Server {
             store,
             rooms,
@@ -243,7 +250,7 @@ impl Server {
             config,
             publishers,
             commenters,
-            accounts: Arc::new(GithubAccounts),
+            accounts,
             listing: true,
             pending: PendingCodes::new(),
             onboarding: tokio::sync::Mutex::new(()),
@@ -280,44 +287,132 @@ impl Server {
     /// deployment with no OAuth app configured to verify it is not trusted at
     /// all.
     pub async fn whoami(&self, headers: &HeaderMap, arrival: &Arrival) -> Identity {
-        let (identity, generation_required) = if let Some(bearer) =
-            header_of(headers, "authorization")
-                .and_then(|h| h.strip_prefix("Bearer ").map(str::to_string))
-        {
-            if let Some(session) = bearer.strip_prefix(DEVICE_TOKEN_PREFIX) {
-                (read_session(&self.key, session), true)
+        self.authenticated_identity(headers, arrival)
+            .await
+            .unwrap_or_default()
+    }
+
+    /// A credential-bearing request must distinguish an invalid credential
+    /// from a service that is temporarily unable to validate it. `whoami`
+    /// deliberately keeps its old anonymous wrapper for callers that only
+    /// render a page; every authorization gate uses this fallible path.
+    async fn authenticated_identity(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+    ) -> Result<Identity, AuthenticationFailure> {
+        let authorization = header_of(headers, "authorization");
+        let bearer = authorization
+            .as_deref()
+            .and_then(|value| value.strip_prefix("Bearer ").map(str::to_owned));
+        let bearer_supplied = authorization.is_some();
+        let (mut identity, needs_generation, github_bearer) = if bearer_supplied {
+            let Some(token) = bearer else {
+                return Err(AuthenticationFailure::Invalid);
+            };
+            if token.starts_with(DEVICE_TOKEN_PREFIX) {
+                (read_device(&self.key, &token), true, false)
             } else if !self.app.configured() {
-                (Identity::anonymous(), false)
+                return Err(AuthenticationFailure::Invalid);
             } else {
                 let app = self.app.clone();
-                (
-                    self.tokens
-                        .verify(
-                            move |token| async move { app.check_token(&token).await },
-                            &bearer,
-                        )
-                        .await,
-                    false,
-                )
+                let identity = self
+                    .tokens
+                    .verify(
+                        move |token| async move { app.check_token(&token).await },
+                        &token,
+                    )
+                    .await
+                    // `Ok(None)` is the provider's confirmed invalid-token
+                    // answer. Any ProviderError means the verifier itself
+                    // could not establish that fact and must remain retryable.
+                    .map_err(|_error| AuthenticationFailure::Unavailable)?;
+                (identity, false, true)
             }
         } else {
-            (
-                match cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE)) {
-                    Some(value) => read_session(&self.key, &value),
-                    None => Identity::anonymous(),
-                },
-                true,
-            )
-        };
-        let Some(catalog) = &self.store.catalog else {
-            return identity;
+            let identity = match cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE)) {
+                Some(value) => read_session(&self.key, &value),
+                None => Identity::anonymous(),
+            };
+            (identity, true, false)
         };
         if !identity.is_signed_in() {
-            return identity;
+            return if bearer_supplied || self.auth_credential_supplied(headers, arrival) {
+                Err(AuthenticationFailure::Invalid)
+            } else {
+                Ok(identity)
+            };
         }
+
+        let Some(catalog) = &self.store.catalog else {
+            return Ok(identity);
+        };
+
+        if github_bearer {
+            // A real GitHub bearer is an admission path of its own. Establish
+            // the account on first use and always take the generation from the
+            // authoritative row, so cached provider identity cannot bypass
+            // account erasure or session revocation.
+            let now = crate::util::timestamp();
+            let email = if identity.handle.contains('@') {
+                identity.handle.clone()
+            } else {
+                String::new()
+            };
+            let profile = crate::storage::catalog::Account {
+                id: identity.id.clone(),
+                provider: identity.provider.clone(),
+                handle: identity.handle.clone(),
+                name: identity.name.clone(),
+                email,
+                first_seen: now.clone(),
+                last_seen: now,
+                plan: "default".into(),
+                status: "active".into(),
+                session_generation: random_token(),
+                erasure_cursor: None,
+            };
+            let account = match catalog.account(&identity.id) {
+                Err(_) => return Err(AuthenticationFailure::Unavailable),
+                Ok(Some(account)) if account.status != "active" => {
+                    return Err(AuthenticationFailure::Invalid)
+                }
+                Ok(Some(account)) => {
+                    // A cached bearer still observes lifecycle state above,
+                    // while profile changes are refreshed only when there is
+                    // something to write. This keeps ordinary bearer traffic
+                    // read-only and avoids a catalogue transaction per call.
+                    if account.provider != profile.provider
+                        || account.handle != profile.handle
+                        || account.name != profile.name
+                        || account.email != profile.email
+                    {
+                        catalog.upsert_account(&profile).map_err(|error| {
+                            if matches!(error, crate::storage::catalog::CatalogError::Conflict(_)) {
+                                AuthenticationFailure::Invalid
+                            } else {
+                                AuthenticationFailure::Unavailable
+                            }
+                        })?
+                    } else {
+                        account
+                    }
+                }
+                Ok(None) => catalog.upsert_account(&profile).map_err(|error| {
+                    if matches!(error, crate::storage::catalog::CatalogError::Conflict(_)) {
+                        AuthenticationFailure::Invalid
+                    } else {
+                        AuthenticationFailure::Unavailable
+                    }
+                })?,
+            };
+            identity.session_generation = account.session_generation;
+            return Ok(identity);
+        }
+
         #[cfg(test)]
         if matches!(catalog.account(&identity.id), Ok(None))
-            && (!generation_required || identity.session_generation == "test-session-generation")
+            && identity.session_generation == "test-session-generation"
         {
             let now = crate::util::timestamp();
             let _ = catalog.upsert_account(&crate::storage::catalog::Account {
@@ -330,24 +425,22 @@ impl Server {
                 last_seen: now,
                 plan: "test".into(),
                 status: "active".into(),
-                session_generation: if identity.session_generation.is_empty() {
-                    "test-session-generation".into()
-                } else {
-                    identity.session_generation.clone()
-                },
+                session_generation: identity.session_generation.clone(),
                 erasure_cursor: None,
             });
         }
         match catalog.account(&identity.id) {
             Ok(Some(account))
                 if account.status == "active"
-                    && (!generation_required
-                        || (!identity.session_generation.is_empty()
-                            && account.session_generation == identity.session_generation)) =>
+                    && needs_generation
+                    && !identity.session_generation.is_empty()
+                    && account.session_generation == identity.session_generation =>
             {
-                identity
+                Ok(identity)
             }
-            _ => Identity::anonymous(),
+            Ok(Some(_)) => Err(AuthenticationFailure::Invalid),
+            Ok(None) => Err(AuthenticationFailure::Invalid),
+            Err(_) => Err(AuthenticationFailure::Unavailable),
         }
     }
 
@@ -519,7 +612,25 @@ impl Server {
     // authorized request to save one on the rare refusal.
     #[allow(clippy::result_large_err)]
     async fn publisher(&self, headers: &HeaderMap, arrival: &Arrival) -> Result<Caller, Reply> {
-        let id = self.whoami(headers, arrival).await;
+        let id = match self.authenticated_identity(headers, arrival).await {
+            Ok(id) => id,
+            Err(AuthenticationFailure::Invalid) => {
+                let mut response = write_json(
+                    401,
+                    &json!({
+                        "error": "authentication expired or was revoked"
+                    }),
+                );
+                self.clear_dead_session(&mut response, headers, arrival);
+                return Err(response);
+            }
+            Err(AuthenticationFailure::Unavailable) => {
+                return Err(write_json(
+                    503,
+                    &json!({"error": "authentication service temporarily unavailable"}),
+                ));
+            }
+        };
         if self.publishers.allows(&id.handle) {
             return Ok(Caller {
                 key: self.owner(headers, arrival, &id),
@@ -542,7 +653,7 @@ impl Server {
         }
         Err(write_json(
             403,
-            &json!({"error": format!("{} may not publish here; this deployment allows {}", id.handle, self.publishers.describe())}),
+            &json!({"error": format!("{} may not publish here; this deployment allows {}", id.handle, self.publishers.public_description())}),
         ))
     }
 
@@ -568,10 +679,29 @@ impl Server {
         let Some(value) = cookie(headers, &name) else {
             return;
         };
-        if read_session(&self.key, &value).is_signed_in() {
+        let identity = read_session(&self.key, &value);
+        if !identity.is_signed_in() {
+            add_cookie(response, &clear_cookie(&name, https));
             return;
         }
-        add_cookie(response, &clear_cookie(&name, https));
+        // A validly signed cookie can still be dead because its catalogue
+        // generation was revoked. This helper is called only after the
+        // fallible authentication gate has confirmed a 401, so an unavailable
+        // catalogue never causes a live credential to be cleared.
+        let revoked = self.store.catalog.as_ref().is_some_and(|catalog| {
+            match catalog.account(&identity.id) {
+                Ok(Some(account)) => {
+                    account.status != "active"
+                        || identity.session_generation.is_empty()
+                        || account.session_generation != identity.session_generation
+                }
+                Ok(None) => true,
+                Err(_) => false,
+            }
+        });
+        if revoked {
+            add_cookie(response, &clear_cookie(&name, https));
+        }
     }
 
     fn auth_credential_supplied(&self, headers: &HeaderMap, arrival: &Arrival) -> bool {
@@ -587,54 +717,15 @@ impl Server {
         if !self.auth_credential_supplied(headers, arrival) {
             return None;
         }
-        let local = header_of(headers, "authorization")
-            .and_then(|value| value.strip_prefix("Bearer ").map(str::to_owned))
-            .and_then(|value| value.strip_prefix(DEVICE_TOKEN_PREFIX).map(str::to_owned))
-            .map(|value| read_session(&self.key, &value))
-            .or_else(|| {
-                cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE))
-                    .map(|value| read_session(&self.key, &value))
-            });
-        if let Some(identity) = local {
-            if !identity.is_signed_in() {
-                return Some((401, "authentication expired or was revoked"));
+        match self.authenticated_identity(headers, arrival).await {
+            Ok(identity) if identity.is_signed_in() => None,
+            Ok(_) | Err(AuthenticationFailure::Invalid) => {
+                Some((401, "authentication expired or was revoked"))
             }
-            if let Some(catalog) = &self.store.catalog {
-                #[cfg(test)]
-                if matches!(catalog.account(&identity.id), Ok(None))
-                    && identity.session_generation == "test-session-generation"
-                {
-                    let now = crate::util::timestamp();
-                    let _ = catalog.upsert_account(&crate::storage::catalog::Account {
-                        id: identity.id.clone(),
-                        provider: identity.provider.clone(),
-                        handle: identity.handle.clone(),
-                        name: identity.name.clone(),
-                        email: String::new(),
-                        first_seen: now.clone(),
-                        last_seen: now,
-                        plan: "test".into(),
-                        status: "active".into(),
-                        session_generation: identity.session_generation.clone(),
-                        erasure_cursor: None,
-                    });
-                }
-                return match catalog.account(&identity.id) {
-                    Err(_) => Some((503, "authentication service temporarily unavailable")),
-                    Ok(Some(account))
-                        if account.status == "active"
-                            && !identity.session_generation.is_empty()
-                            && account.session_generation == identity.session_generation =>
-                    {
-                        None
-                    }
-                    _ => Some((401, "authentication expired or was revoked")),
-                };
+            Err(AuthenticationFailure::Unavailable) => {
+                Some((503, "authentication service temporarily unavailable"))
             }
-            return None;
         }
-        (!self.whoami(headers, arrival).await.is_signed_in())
-            .then_some((401, "authentication expired or was revoked"))
     }
 
     /// Narrows a listing to what one caller should see: the reserved examples
@@ -725,7 +816,7 @@ impl Server {
                 format!(
                     "{} may not comment here; this deployment allows {}",
                     id.handle,
-                    self.commenters.describe()
+                    self.commenters.public_description()
                 )
             } else if !self.commenters.public {
                 "sign in to comment".to_string()

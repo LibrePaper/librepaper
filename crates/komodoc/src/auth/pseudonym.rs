@@ -1,6 +1,6 @@
 //! Stable pseudonyms for anonymous commenters. A comment never carries a
 //! name typed by its author, because the server does not trust that field;
-//! instead every anonymous commenter is given the same two-word name every
+//! instead every anonymous commenter is given the same readable name every
 //! time they return to a document, so a reader can tell one visitor from
 //! another across a thread without either of them having signed anything.
 
@@ -29,12 +29,14 @@ static LIZARDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 /// name on a different document rather than being recognisable across all of
 /// them. The name is deterministic and needs no storage: hash the two
 /// together, and let the first four bytes of the digest pick the adjective
-/// and the next four pick the lizard.
+/// and the next four pick the lizard. A short suffix from independent digest
+/// bytes reduces word-list collisions. The display name is still only a cue;
+/// authorization always uses the full author key.
 pub fn pseudonym_for(author_key: &str, slug: &str) -> String {
     let digest = Sha256::digest(format!("{author_key}\n{slug}").as_bytes());
     let adjective_index = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
     let lizard_index = u32::from_be_bytes([digest[4], digest[5], digest[6], digest[7]]);
     let adjective = ADJECTIVES[adjective_index as usize % ADJECTIVES.len()];
     let lizard = LIZARDS[lizard_index as usize % LIZARDS.len()];
-    format!("{adjective}{lizard}")
+    format!("{adjective}{lizard}-{}", hex::encode(&digest[8..10]))
 }

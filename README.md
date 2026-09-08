@@ -232,7 +232,7 @@ account wherever `--publishers` does, so on a server that names its publishers
 the holder of an edit link must sign in as one of them before the link edits,
 and until then it only comments. Under `--publishers anyone` it edits as it
 is. Anonymous commenters still need telling apart, so each gets a stable
-per-document pseudonym such as `AmberAgama`, shown next to their comments
+per-document pseudonym such as `AmberAgama-a3f2`, shown next to their comments
 instead of a name they typed.
 
 A stranger -- anyone with the URL and no live link -- is answered exactly as
@@ -888,6 +888,25 @@ Nothing a document says can widen `--publishers` or `--commenters`.
 being listed to people who hold nothing on them, and nothing else was ever
 listed to strangers.
 
+Authentication hardening updates browser and terminal credentials to separate,
+versioned signatures. After upgrading from unversioned credentials, sign in
+again in the browser and run `komodoc login` for each terminal. Existing
+anonymous visitor cookies retain their ownership and upgrade on the next page
+visit. Logout removes the browser cookie; account session revocation is what
+invalidates copies of issued credentials.
+
+Google sign-in accepts verified Gmail addresses and Google Workspace accounts
+whose hosted domain matches the email domain. Third-party addresses registered
+with a personal Google account are refused because Google cannot establish
+current ownership of those addresses. Use a supported Google account or GitHub.
+The legacy `anygithub` policy remains restricted to GitHub; use `any` to admit
+accounts from either provider. Allowlist contents appear in operator startup
+logs; ordinary API responses show only a summary.
+
+Device sign-in is served by the single local deployment process. Pending codes
+do not survive a restart. Multiple server replicas are not supported by this
+build; the deployment writer lock prevents simultaneous local servers.
+
 ### GitHub OAuth
 
 A server that asks anyone to sign in needs at least one OAuth client of its
@@ -913,9 +932,9 @@ export KOMODOC_GITHUB_CLIENT_SECRET="..."
 
 Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `KOMODOC_GOOGLE_CLIENT_ID` and `KOMODOC_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review â but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
 
-Signing in cannot be undone one account at a time. `komodoc logout` deletes a
-terminal's token, and rotating the server's session key signs every browser and
-every terminal out at once.
+`komodoc logout` deletes the terminal's local token. It does not revoke a
+copy held elsewhere. Rotating the server's session key invalidates issued
+browser and terminal credentials across the deployment.
 
 ## Environment variables
 
@@ -924,7 +943,7 @@ GitHub API only to obtain your public login name; it does not collect your email
 repositories, or other profile data.
 
 [^google-data]: Komodoc reads the verified email address on a Google account,
-the account identifier, and the profile name. The address is what
+the hosted domain, the account identifier, and the profile name. The address is what
 `--publishers`, `--commenters` and a grant by name are matched against, and
 where a retention notice is sent; it is shown to no other reader anywhere.
 Other readers see the profile name.

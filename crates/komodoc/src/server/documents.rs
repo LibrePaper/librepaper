@@ -1246,7 +1246,12 @@ impl Server {
             .unwrap_or(0);
         let token = fields.get("token").cloned().unwrap_or_default();
         if until < crate::util::now_unix()
-            || !crate::auth::verifies(&self.key, &format!("state:{slug}:{until}"), &token)
+            || !crate::auth::verifies(
+                &self.key,
+                "socket-state-v1",
+                &format!("state:{slug}:{until}"),
+                &token,
+            )
         {
             return plain(403, "that link has expired");
         }

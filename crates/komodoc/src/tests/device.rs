@@ -271,7 +271,7 @@ async fn approval_never_happens_from_a_link_or_from_elsewhere() {
 /// like the cookie it is made of.
 #[tokio::test]
 async fn a_forged_or_stale_device_token_is_nobody() {
-    use crate::auth::{sign_session, Identity};
+    use crate::auth::{sign_device, Identity};
     use crate::tests::harness::TEST_KEY;
 
     let github = github_stand_in(TEST_PUBLISHER).await;
@@ -283,15 +283,12 @@ async fn a_forged_or_stale_device_token_is_nobody() {
     .await;
     let who = Identity::github(TEST_PUBLISHER, TEST_PUBLISHER);
 
-    let good = sign_session(TEST_KEY, &who, crate::auth::now_unix() + 3600);
-    let forged = format!("{DEVICE_TOKEN_PREFIX}{}tamper", &good[..good.len() - 3]);
+    let good = sign_device(TEST_KEY, &who, crate::auth::now_unix() + 3600);
+    let forged = format!("{}tamper", &good[..good.len() - 3]);
     let (_, me) = bearer_get(&server, &forged, "/api/me").await;
     assert_eq!(me["handle"], "", "a forged signature was trusted: {me}");
 
-    let stale = format!(
-        "{DEVICE_TOKEN_PREFIX}{}",
-        sign_session(TEST_KEY, &who, crate::auth::now_unix() - 1)
-    );
+    let stale = sign_device(TEST_KEY, &who, crate::auth::now_unix() - 1);
     let (_, me) = bearer_get(&server, &stale, "/api/me").await;
     assert_eq!(me["handle"], "", "an expired token was trusted: {me}");
 

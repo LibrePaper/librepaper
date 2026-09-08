@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
@@ -9,9 +8,6 @@ use crate::auth::{
     now_unix, read_session, sign, sign_session, Identity, Policy, TokenCache, TOKEN_CACHE_CAP,
 };
 use crate::config::Configuration;
-use crate::storage::blob::{
-    self, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion, FsStore,
-};
 use crate::util::first_of;
 
 #[test]
@@ -152,7 +148,7 @@ fn session_cookies() {
         "a cookie signed with another key was accepted"
     );
     // Flipping a character of the payload must invalidate the signature.
-    let tampered = format!("X{}", &valid[1..]);
+    let tampered = format!("v1.X{}", &valid[4..]);
     assert!(
         !read_session(key, &tampered).is_signed_in(),
         "a tampered cookie was accepted"
@@ -161,23 +157,21 @@ fn session_cookies() {
     // accepted as though the missing id were merely empty.
     let old_payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(format!("vincent|{}", now_unix() + 3600));
-    let old_cookie = format!("{old_payload}.{}", sign(key, &old_payload));
+    let old_cookie = format!("{old_payload}.{}", sign(key, "session-v1", &old_payload));
     assert!(
         !read_session(key, &old_cookie).is_signed_in(),
         "an old two-field cookie was accepted"
     );
 
-    // The three-field shape is a session an earlier server wrote, which was
-    // necessarily GitHub. Nothing is missing from it, only implied, so it is
-    // read as a GitHub session until it expires.
+    // Unversioned sessions from before purpose separation are no longer accepted.
     let three = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(format!("vincent|42|{}", now_unix() + 3600));
-    let three_cookie = format!("{three}.{}", sign(key, &three));
+    let three_cookie = format!("{three}.{}", sign(key, "session-v1", &three));
     let who = read_session(key, &three_cookie);
-    assert_eq!(who, Identity::github("vincent", "42"));
-    assert_eq!(who.provider, "github");
-    assert_eq!(who.id, "github:42", "a legacy id was not qualified");
-    assert_eq!(who.name, "vincent", "a legacy session lost its name");
+    assert!(
+        !who.is_signed_in(),
+        "unversioned sessions require a fresh sign-in"
+    );
 }
 
 #[tokio::test]
@@ -223,20 +217,22 @@ async fn token_cache_caches_positive_and_negative_answers() {
     let check = |calls: std::sync::Arc<AtomicUsize>, good: Identity| {
         move |token: String| {
             calls.fetch_add(1, Ordering::SeqCst);
-            async move { (token == "good-token").then_some(good) }
+            async move { Ok((token == "good-token").then_some(good)) }
         }
     };
 
     assert_eq!(
         cache
             .verify(check(calls.clone(), good.clone()), "good-token")
-            .await,
+            .await
+            .unwrap(),
         good
     );
     assert_eq!(
         cache
             .verify(check(calls.clone(), good.clone()), "good-token")
-            .await,
+            .await
+            .unwrap(),
         good
     );
     assert_eq!(
@@ -248,10 +244,12 @@ async fn token_cache_caches_positive_and_negative_answers() {
     assert!(!cache
         .verify(check(calls.clone(), good.clone()), "bad-token")
         .await
+        .unwrap()
         .is_signed_in());
     assert!(!cache
         .verify(check(calls.clone(), good.clone()), "bad-token")
         .await
+        .unwrap()
         .is_signed_in());
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -263,6 +261,7 @@ async fn token_cache_caches_positive_and_negative_answers() {
     assert!(!cache
         .verify(check(calls.clone(), good.clone()), "")
         .await
+        .unwrap()
         .is_signed_in());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -316,8 +315,8 @@ async fn auth_endpoints() {
         "{payload}"
     );
     assert!(
-        text(&payload, "publishers").contains(TEST_PUBLISHER),
-        "/api/me should say who may publish"
+        text(&payload, "publishers") == "an allowlist of 1 entry",
+        "/api/me should describe the policy without disclosing its members"
     );
     // The page asks what it may offer, not whether one particular provider is
     // configured.
@@ -374,7 +373,7 @@ async fn a_google_account_comments_under_its_name() {
     assert_eq!(status, 400, "a subdomain was admitted: {payload}");
     assert_eq!(
         text(&payload, "message"),
-        "bob@mail.umontreal.ca may not comment here; this deployment allows @umontreal.ca"
+        "bob@mail.umontreal.ca may not comment here; this deployment allows an allowlist of 1 entry"
     );
 }
 
@@ -426,7 +425,7 @@ async fn a_google_account_owns_what_it_published() {
     );
     assert_eq!(
         text(&payload, "error"),
-        "vincent may not publish here; this deployment allows @umontreal.ca"
+        "vincent may not publish here; this deployment allows an allowlist of 1 entry"
     );
 }
 
@@ -538,7 +537,7 @@ fn cookie_of(response: &reqwest::Response, name: &str) -> String {
 }
 
 fn verified(name: &str) -> Value {
-    json!({"sub": "10769", "email": "Anne@Example.org", "email_verified": true, "name": name})
+    json!({"sub": "10769", "email": "Anne@Example.org", "email_verified": true, "hd": "example.org", "name": name})
 }
 
 // The door: one provider is a redirect into it, two are a choice, none is the
@@ -656,7 +655,7 @@ async fn the_google_callback_signs_in() {
     assert_eq!(server.instance.store.list().await.len(), 4);
 
     // No name from Google: the address's local part stands in.
-    let user = json!({"sub": "2", "email": "jean@example.org", "email_verified": true});
+    let user = json!({"sub": "2", "email": "jean@example.org", "email_verified": true, "hd": "example.org"});
     let (server, _google) = server_with_google(user, "v").await;
     let response = google_callback(&server.url, "st", "v", "").await;
     let session = cookie_of(&response, crate::auth::SESSION_COOKIE);
@@ -977,110 +976,10 @@ async fn a_google_owner_is_shown_by_name_and_never_by_email() {
 // whose fields had shifted.
 #[tokio::test]
 async fn the_google_callback_refuses_an_address_that_would_break_the_cookie() {
-    let odd = json!({"sub": "4", "email": "a|b@example.org", "email_verified": true, "name": "A"});
+    let odd = json!({"sub": "4", "email": "a|b@example.org", "email_verified": true, "hd": "example.org", "name": "A"});
     let (server, _google) = server_with_google(odd, "v").await;
     let response = google_callback(&server.url, "st", "v", "").await;
     assert_eq!(response.status().as_u16(), 403);
-}
-
-/// R04: a store whose `get` fails must never be treated as "there is no key
-/// yet". `session_key` must fail rather than mint and persist a replacement,
-/// and the originally stored key must survive untouched underneath.
-#[tokio::test]
-async fn transient_read_failure_does_not_rotate_key() {
-    let dir = tempfile::tempdir().unwrap();
-    let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
-    let original = crate::auth::session_key(inner.as_ref()).await.unwrap();
-
-    struct FailRead(Arc<dyn BlobStore>);
-    #[async_trait::async_trait]
-    impl BlobStore for FailRead {
-        async fn get(&self, _: &str) -> BlobResult<Vec<u8>> {
-            Err(BlobError::Other("transient GET failure".into()))
-        }
-        async fn get_versioned(&self, k: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
-            self.0.get_versioned(k).await
-        }
-        async fn put(&self, k: &str, b: Vec<u8>, t: &str) -> BlobResult<()> {
-            self.0.put(k, b, t).await
-        }
-        async fn swap(&self, k: &str, b: Vec<u8>, e: &str) -> BlobResult<BlobVersion> {
-            self.0.swap(k, b, e).await
-        }
-        async fn list(&self, k: &str) -> BlobResult<Vec<BlobInfo>> {
-            self.0.list(k).await
-        }
-        async fn delete(&self, k: &[String]) -> BlobResult<()> {
-            self.0.delete(k).await
-        }
-        fn describe(&self) -> String {
-            self.0.describe()
-        }
-    }
-
-    assert!(
-        crate::auth::session_key(&FailRead(inner.clone()))
-            .await
-            .is_err(),
-        "a transient read failure must fail startup, not rotate the key"
-    );
-    assert_eq!(
-        crate::auth::session_key(inner.as_ref()).await.unwrap(),
-        original,
-        "the original key must be untouched after the failed read"
-    );
-}
-
-/// R04: an existing key that does not parse as 32 bytes of hex is a corrupt
-/// deployment, not an absent one. `session_key` must refuse it rather than
-/// silently overwrite it with a fresh replacement.
-#[tokio::test]
-async fn malformed_session_key_is_not_overwritten() {
-    let dir = tempfile::tempdir().unwrap();
-    let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
-    inner
-        .put(
-            blob::SESSION_KEY_KEY,
-            b"not valid hex at all".to_vec(),
-            "text/plain",
-        )
-        .await
-        .unwrap();
-
-    assert!(
-        crate::auth::session_key(inner.as_ref()).await.is_err(),
-        "a malformed stored key must be reported as an error"
-    );
-    assert_eq!(
-        inner.get(blob::SESSION_KEY_KEY).await.unwrap(),
-        b"not valid hex at all".to_vec(),
-        "a malformed key must never be overwritten"
-    );
-}
-
-/// R04: two servers racing to initialize the same empty storage must agree on
-/// one key rather than each minting and persisting their own.
-#[tokio::test]
-async fn concurrent_session_key_initialization_agrees() {
-    let dir = tempfile::tempdir().unwrap();
-    let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
-
-    let mut tasks = Vec::new();
-    for _ in 0..8 {
-        let store = inner.clone();
-        tasks.push(tokio::spawn(async move {
-            crate::auth::session_key(store.as_ref()).await.unwrap()
-        }));
-    }
-    let mut keys = Vec::new();
-    for task in tasks {
-        keys.push(task.await.unwrap());
-    }
-    let first = keys[0].clone();
-    assert!(
-        keys.iter().all(|key| *key == first),
-        "concurrent first-time initializations disagreed on the signing key"
-    );
 }
 
 /// R33: a stream of distinct, never-repeated invalid bearer tokens must not
@@ -1092,7 +991,7 @@ async fn token_cache_caps_size_under_distinct_invalid_tokens() {
     let cache = TokenCache::for_test(Duration::from_secs(600), Duration::from_secs(600));
     for i in 0..(TOKEN_CACHE_CAP + 500) {
         let token = format!("bad-token-{i}");
-        cache.verify(|_| async { None }, &token).await;
+        cache.verify(|_| async { Ok(None) }, &token).await.unwrap();
         assert!(
             cache.len() <= TOKEN_CACHE_CAP,
             "cache grew past its cap after {i} distinct invalid tokens"
@@ -1108,15 +1007,16 @@ async fn token_cache_sweeps_expired_entries_on_insert() {
     let cache = TokenCache::for_test(Duration::from_secs(600), Duration::from_millis(20));
     for i in 0..50 {
         cache
-            .verify(|_| async { None }, &format!("stale-{i}"))
-            .await;
+            .verify(|_| async { Ok(None) }, &format!("stale-{i}"))
+            .await
+            .unwrap();
     }
     assert_eq!(cache.len(), 50);
 
     tokio::time::sleep(Duration::from_millis(60)).await;
     // The insert that follows the wait is what should sweep everything that
     // expired while the cache sat idle.
-    cache.verify(|_| async { None }, "fresh").await;
+    cache.verify(|_| async { Ok(None) }, "fresh").await.unwrap();
     assert_eq!(
         cache.len(),
         1,
@@ -1180,20 +1080,17 @@ async fn a_dead_session_cookie_is_cleared_and_the_listing_recovers() {
     );
 
     // A live session is never cleared by the same path.
-    let live = sign_session(
-        &server.instance.key,
-        &Identity::github("vincent", "42"),
-        now_unix() + 3600,
-    );
+    let live = session_as("vincent");
     let me = client()
         .get(format!("{}/api/me", server.url))
         .header("X-Komodoc-Client", "shell")
-        .header("Cookie", format!("komodoc_session={live}"))
+        .header("Cookie", live)
         .send()
         .await
         .unwrap();
     assert_eq!(me.status(), 200);
     assert!(!clears_session(&me), "a live session was cleared");
+    assert_eq!(me.json::<Value>().await.unwrap()["handle"], "vincent");
 
     // Without the cookie, which is what the browser sends next, the listing
     // is the anonymous publisher's to read.
@@ -1204,4 +1101,17 @@ async fn a_dead_session_cookie_is_cleared_and_the_listing_recovers() {
         .await
         .unwrap();
     assert_eq!(listing.status(), 200);
+}
+
+#[tokio::test]
+async fn third_party_google_address_gets_an_actionable_refusal() {
+    let user = json!({"sub":"77", "email":"former@example.org", "email_verified":true});
+    let (server, _google) = server_with_google(user, "v").await;
+    let response = google_callback(&server.url, "st", "v", "").await;
+    assert_eq!(response.status(), 403);
+    assert!(response
+        .text()
+        .await
+        .unwrap()
+        .contains(crate::auth::UNVERIFIED_WORKSPACE_DOMAIN));
 }

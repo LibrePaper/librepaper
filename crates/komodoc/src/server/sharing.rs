@@ -439,8 +439,8 @@ impl Server {
             "can_share": true,
             // What the deployment's switches allow, so the dialog offers only
             // the choices that would actually be accepted.
-            "publishers": self.publishers.describe(),
-            "commenters_policy": self.commenters.describe(),
+            "publishers": self.publishers.public_description(),
+            "commenters_policy": self.commenters.public_description(),
             // Whether editing, and commenting, ask for a sign-in at all: a
             // link cannot carry a role the deployment itself would refuse an
             // anonymous caller.
@@ -509,7 +509,7 @@ impl Server {
                 403,
                 &json!({"error": format!(
                     "{} may not publish here; this deployment's --publishers allows {}",
-                    account.handle, self.publishers.describe()
+                    account.handle, self.publishers.public_description()
                 )}),
             );
         }

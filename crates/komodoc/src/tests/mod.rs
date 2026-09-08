@@ -9,6 +9,7 @@ mod admission;
 mod agent_cli;
 mod assets;
 mod auth;
+mod auth_regressions;
 mod automation;
 mod blob;
 mod device;

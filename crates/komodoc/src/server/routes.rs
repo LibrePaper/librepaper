@@ -124,7 +124,10 @@ pub(super) async fn handle(
             let Ok(body) = to_bytes(request.into_body(), 1 << 14).await else {
                 return write_json(413, &json!({"error": "that is too much body for a code"}));
             };
-            return server.handle_device(&path, &headers, &arrival, &body).await;
+            let source = crate::room::rate_key(&client_address(peer, &headers));
+            return server
+                .handle_device(&path, &headers, &arrival, &body, &source)
+                .await;
         }
         if let Some(response) = server
             .handle_auth(

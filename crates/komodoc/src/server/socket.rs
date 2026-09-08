@@ -610,7 +610,11 @@ impl Server {
     /// document, and short-lived so it cannot be kept.
     pub(super) fn state_reference(&self, slug: &str) -> String {
         let until = crate::util::now_unix() + 120;
-        let token = crate::auth::sign(&self.key, &format!("state:{slug}:{until}"));
+        let token = crate::auth::sign(
+            &self.key,
+            "socket-state-v1",
+            &format!("state:{slug}:{until}"),
+        );
         format!("/api/documents/{slug}/state?until={until}&token={token}")
     }
 

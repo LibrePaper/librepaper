@@ -41,10 +41,13 @@ fn every_pseudonym_is_an_adjective_and_a_lizard_from_the_lists() {
 
     for input in ["visitor:1", "visitor:2", "github:alice", "google:99", ""] {
         let name = pseudonym_for(input, "some-slug");
+        let (words, suffix) = name.rsplit_once('-').expect("a distinguishing suffix");
+        assert_eq!(suffix.len(), 4);
+        assert!(suffix.bytes().all(|b| b.is_ascii_hexdigit()));
         let matched = adjectives.iter().any(|adjective| {
             lizards
                 .iter()
-                .any(|lizard| name == format!("{adjective}{lizard}"))
+                .any(|lizard| words == format!("{adjective}{lizard}"))
         });
         assert!(matched, "{name:?} is not <adjective><lizard>");
     }
