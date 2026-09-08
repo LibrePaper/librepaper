@@ -109,6 +109,7 @@ impl Server {
         if let Err(error) = self
             .store
             .reserve_object_bytes(slug, size, Some(&mutation_actor))
+            .await
         {
             return match error {
                 PutError::Quota { status, message }
@@ -128,7 +129,7 @@ impl Server {
             )
             .await;
         if stored.is_err() {
-            self.store.release_object_bytes(slug, size);
+            self.store.release_object_bytes(slug, size).await;
         }
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),

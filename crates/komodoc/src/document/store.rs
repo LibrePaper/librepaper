@@ -596,8 +596,21 @@ impl std::fmt::Display for PutError {
     }
 }
 
+/// Declared input for a document-store job.  Every one of them carries a
+/// slug, an account id or an object key and no payload; the ones that own a
+/// document row add its size below.
+const STORE_JOB_BYTES: usize = 512;
+
 impl Store {
-    pub fn reserve_object_bytes(
+    /// Take a document-bytes reservation before an object is written.
+    ///
+    /// A caller cancelled after dispatch leaves the reservation taken. That is
+    /// the conservative outcome the lifecycle rules ask for and it is the
+    /// behaviour that already existed: the reservation is refunded by
+    /// `release_object_bytes` on the write path's own error handling, and a
+    /// reservation no write ever consumes is reconciled by the object ledger,
+    /// never by re-running the mutation.
+    pub async fn reserve_object_bytes(
         &self,
         slug: &str,
         bytes: i64,
@@ -606,22 +619,32 @@ impl Store {
         let Some(catalog) = &self.catalog else {
             return Ok(());
         };
+        let slug = slug.to_string();
+        let actor = actor.cloned();
+        let per_owner = self.config.storage.per_owner;
+        let total = self.config.storage.total;
         catalog
-            .reserve_document_bytes_with_authority(
-                slug,
-                bytes,
-                self.config.storage.per_owner,
-                self.config.storage.total,
-                actor.map(|actor| crate::storage::catalog::MutationAuthority {
-                    account_id: actor.account_id.as_str(),
-                    owner_key: actor.owner_key.as_str(),
-                    generation: actor.session_generation.as_str(),
-                    link_hash: actor.link_hash.as_str(),
-                    policy_editor: actor.policy_editor,
-                    automation: actor.automation,
-                    unowned_publisher: actor.unowned_publisher,
-                }),
-            )
+            .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+                catalog.reserve_document_bytes_with_authority(
+                    &slug,
+                    bytes,
+                    per_owner,
+                    total,
+                    actor
+                        .as_ref()
+                        .map(|actor| crate::storage::catalog::MutationAuthority {
+                            account_id: actor.account_id.as_str(),
+                            owner_key: actor.owner_key.as_str(),
+                            generation: actor.session_generation.as_str(),
+                            link_hash: actor.link_hash.as_str(),
+                            policy_editor: actor.policy_editor,
+                            automation: actor.automation,
+                            unowned_publisher: actor.unowned_publisher,
+                        }),
+                )
+            })
+            .await
+            .map_err(crate::storage::catalog::CatalogError::from)
             .map_err(|error| match error {
                 crate::storage::catalog::CatalogError::Conflict(message)
                     if message.contains("actor") =>
@@ -651,12 +674,18 @@ impl Store {
             })
     }
 
-    pub fn admit_replacement_upload(&self, slug: &str) -> Result<(), PutError> {
+    pub async fn admit_replacement_upload(&self, slug: &str) -> Result<(), PutError> {
         let Some(catalog) = &self.catalog else {
             return Ok(());
         };
+        let slug = slug.to_string();
+        let uploads_per_hour = self.config.storage.uploads_per_hour;
         catalog
-            .admit_document_upload(slug, self.config.storage.uploads_per_hour)
+            .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+                catalog.admit_document_upload(&slug, uploads_per_hour)
+            })
+            .await
+            .map_err(crate::storage::catalog::CatalogError::from)
             .map_err(|error| match error {
                 crate::storage::catalog::CatalogError::Conflict(message)
                     if message.contains("upload rate") =>
@@ -670,18 +699,33 @@ impl Store {
             })
     }
 
-    pub fn release_object_bytes(&self, slug: &str, bytes: i64) {
+    /// Refund a document-bytes reservation the caller did not use.
+    ///
+    /// Once dispatched this runs whether or not the caller is still there,
+    /// which is the point: the refund is the cleanup for a failed object
+    /// write, and losing it to a cancelled request would leave the document
+    /// charged for bytes it never stored.
+    pub async fn release_object_bytes(&self, slug: &str, bytes: i64) {
         if let Some(catalog) = &self.catalog {
-            let _ = catalog.release_document_bytes(slug, bytes);
+            let slug = slug.to_string();
+            let _ = catalog
+                .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+                    catalog.release_document_bytes(&slug, bytes)
+                })
+                .await;
         }
     }
 
-    pub fn begin_delete(&self, slug: &str) -> Result<Option<String>, String> {
+    pub async fn begin_delete(&self, slug: &str) -> Result<Option<String>, String> {
         let Some(catalog) = &self.catalog else {
             return Ok(None);
         };
+        let slug = slug.to_string();
         catalog
-            .begin_delete(slug)
+            .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+                catalog.begin_delete(&slug)
+            })
+            .await
             .map(|document| Some(document.storage_id))
             .map_err(|err| err.to_string())
     }
@@ -717,12 +761,22 @@ impl Store {
         // immutable tree object exist; otherwise abort, and discard a never-
         // activated creation so it cannot consume quota forever.
         for pending in catalog
-            .pending_publications(1000)
+            .execute_operation(STORE_JOB_BYTES, |catalog| {
+                catalog.pending_publications(1000)
+            })
+            .await
             .map_err(|error| error.to_string())?
         {
-            let operation = catalog
-                .operation(&pending.storage_id, &pending.request_id)
-                .map_err(|error| error.to_string())?;
+            let operation = {
+                let storage_id = pending.storage_id.clone();
+                let request_id = pending.request_id.clone();
+                catalog
+                    .execute_operation(STORE_JOB_BYTES, move |catalog| {
+                        catalog.operation(&storage_id, &request_id)
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?
+            };
             let staged_sha = operation.as_ref().and_then(|operation| {
                 serde_json::from_str::<serde_json::Value>(&operation.intent)
                     .ok()
@@ -762,24 +816,36 @@ impl Store {
             } else {
                 false
             };
+            let storage_id = pending.storage_id.clone();
+            let request_id = pending.request_id.clone();
             if staged {
-                let sha = staged_sha.as_deref().expect("staged publication SHA");
+                let sha = staged_sha
+                    .as_deref()
+                    .expect("staged publication SHA")
+                    .to_string();
                 catalog
-                    .commit_operation(&pending.storage_id, &pending.request_id, sha, sha)
+                    .execute_operation(STORE_JOB_BYTES, move |catalog| {
+                        catalog.commit_operation(&storage_id, &request_id, &sha, &sha)
+                    })
+                    .await
                     .map_err(|error| error.to_string())?;
             } else {
+                let lifecycle_slug = pending.slug.clone();
+                let creating = pending.lifecycle == "creating";
                 catalog
-                    .abort_operation(
-                        &pending.storage_id,
-                        &pending.request_id,
-                        "startup discarded incomplete publication",
-                    )
+                    .execute_operation(STORE_JOB_BYTES, move |catalog| {
+                        catalog.abort_operation(
+                            &storage_id,
+                            &request_id,
+                            "startup discarded incomplete publication",
+                        )?;
+                        if creating {
+                            catalog.discard_aborted_creation(&lifecycle_slug)?;
+                        }
+                        Ok(())
+                    })
+                    .await
                     .map_err(|error| error.to_string())?;
-                if pending.lifecycle == "creating" {
-                    catalog
-                        .discard_aborted_creation(&pending.slug)
-                        .map_err(|error| error.to_string())?;
-                }
             }
         }
         Ok(Store {
@@ -804,7 +870,7 @@ impl Store {
     #[allow(dead_code)]
     pub async fn get(&self, slug: &str) -> Option<IndexEntry> {
         if let Some(catalog) = &self.catalog {
-            return load_catalog_entry(catalog, slug, true).ok().flatten();
+            return load_catalog_entry(catalog, slug, true).await.ok().flatten();
         }
         {
             let mut state = self.state.lock().await;
@@ -834,7 +900,7 @@ impl Store {
     /// flattened into a misleading 404.
     pub async fn get_result(&self, slug: &str) -> Result<Option<IndexEntry>, CatalogError> {
         if let Some(catalog) = &self.catalog {
-            return load_catalog_entry(catalog, slug, true);
+            return load_catalog_entry(catalog, slug, true).await;
         }
         Ok(self.get(slug).await)
     }
@@ -843,21 +909,18 @@ impl Store {
     /// out of ordinary reads and listings, but lets an exact retry reconcile
     /// an unknown-commit request instead of inventing a new slug.
     #[allow(dead_code)]
-    pub fn pending_publication(&self, slug: &str) -> Option<IndexEntry> {
-        let catalog = self.catalog.as_ref()?;
-        let document = catalog.document(slug).ok()??;
-        let pending = document.pending_publication.is_some();
-        pending.then(|| IndexEntry::from_catalog(document))
+    pub async fn pending_publication(&self, slug: &str) -> Option<IndexEntry> {
+        self.pending_publication_result(slug).await.ok().flatten()
     }
 
-    pub fn pending_publication_result(
+    pub async fn pending_publication_result(
         &self,
         slug: &str,
     ) -> Result<Option<IndexEntry>, CatalogError> {
         let Some(catalog) = self.catalog.as_ref() else {
             return Ok(None);
         };
-        let Some(document) = catalog.document(slug)? else {
+        let Some(document) = document_row(catalog, slug).await? else {
             return Ok(None);
         };
         Ok(document
@@ -870,6 +933,7 @@ impl Store {
     pub async fn list(&self) -> Vec<IndexEntry> {
         if let Some(catalog) = &self.catalog {
             let mut entries: Vec<_> = catalog_entries(catalog)
+                .await
                 .unwrap_or_default()
                 .into_values()
                 .collect();
@@ -884,7 +948,7 @@ impl Store {
 
     pub async fn list_result(&self) -> Result<Vec<IndexEntry>, CatalogError> {
         if let Some(catalog) = &self.catalog {
-            let mut entries: Vec<_> = catalog_entries(catalog)?.into_values().collect();
+            let mut entries: Vec<_> = catalog_entries(catalog).await?.into_values().collect();
             entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
             return Ok(entries);
         }
@@ -895,7 +959,7 @@ impl Store {
     /// compatibility helpers this never turns a busy/corrupt catalogue into
     /// an empty successful response.
     #[allow(dead_code)]
-    pub fn visible_page(
+    pub async fn visible_page(
         &self,
         account_id: Option<&str>,
         owner_key: Option<&str>,
@@ -903,9 +967,10 @@ impl Store {
         limit: u32,
     ) -> Result<Vec<IndexEntry>, CatalogError> {
         self.visible_page_with_options(account_id, owner_key, cursor, limit, true)
+            .await
     }
 
-    pub fn visible_page_with_options(
+    pub async fn visible_page_with_options(
         &self,
         account_id: Option<&str>,
         owner_key: Option<&str>,
@@ -916,26 +981,37 @@ impl Store {
         let catalog = self.catalog.as_ref().ok_or_else(|| {
             CatalogError::Invalid("bounded listing requires the local catalogue".into())
         })?;
-        catalog
-            .visible_documents_with_examples(
-                account_id,
-                owner_key,
-                cursor,
-                limit,
-                include_examples,
-            )?
-            .into_iter()
-            .map(|document| {
-                // Listing rows need grants/guest roles, but never need to
-                // decrypt and expose link secrets for every document.
-                load_catalog_entry(catalog, &document.slug, false)?.ok_or(CatalogError::NotFound)
+        let account_id = account_id.map(str::to_owned);
+        let owner_key = owner_key.map(str::to_owned);
+        let cursor = cursor.map(|(a, b)| (a.to_owned(), b.to_owned()));
+        let page = catalog
+            .execute_operation(STORE_JOB_BYTES, move |catalog| {
+                catalog.visible_documents_with_examples(
+                    account_id.as_deref(),
+                    owner_key.as_deref(),
+                    cursor.as_ref().map(|(a, b)| (a.as_str(), b.as_str())),
+                    limit,
+                    include_examples,
+                )
             })
-            .collect()
+            .await
+            .map_err(CatalogError::from)?;
+        let mut entries = Vec::with_capacity(page.len());
+        for document in page {
+            // Listing rows need grants/guest roles, but never need to
+            // decrypt and expose link secrets for every document.
+            entries.push(
+                load_catalog_entry(catalog, &document.slug, false)
+                    .await?
+                    .ok_or(CatalogError::NotFound)?,
+            );
+        }
+        Ok(entries)
     }
 
-    pub fn get_checked(&self, slug: &str) -> Result<Option<IndexEntry>, CatalogError> {
+    pub async fn get_checked(&self, slug: &str) -> Result<Option<IndexEntry>, CatalogError> {
         match &self.catalog {
-            Some(catalog) => load_catalog_entry(catalog, slug, true),
+            Some(catalog) => load_catalog_entry(catalog, slug, true).await,
             None => Err(CatalogError::Invalid(
                 "checked lookup requires the local catalogue".into(),
             )),
@@ -955,8 +1031,8 @@ impl Store {
         // directly instead.
         let (digest, identity) = match &self.catalog {
             Some(catalog) => {
-                let document = catalog
-                    .document(slug)
+                let document = document_row(catalog, slug)
+                    .await
                     .map_err(|error| BlobError::Other(error.to_string()))?
                     .ok_or(BlobError::NotFound)?;
                 let identity = if document.storage_id.is_empty() {
@@ -982,8 +1058,8 @@ impl Store {
 
     pub async fn read(&self, slug: &str, digest: &str) -> Result<Vec<u8>, BlobError> {
         let identity = match &self.catalog {
-            Some(catalog) => catalog
-                .document(slug)
+            Some(catalog) => document_row(catalog, slug)
+                .await
                 .map_err(|error| BlobError::Other(error.to_string()))?
                 .map(|document| document.storage_id)
                 .filter(|identity| !identity.is_empty())
@@ -1173,13 +1249,18 @@ impl Store {
             .catalog
             .as_ref()
             .ok_or_else(|| "publication receipts require the local catalogue".to_string())?;
-        let document = catalog
-            .document(slug)
+        let document = document_row(catalog, slug)
+            .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "document not found".to_string())?;
         if let Some(request_id) = document.pending_publication {
+            let storage_id = document.storage_id.clone();
+            let wanted = request_id.clone();
             let operation = catalog
-                .operation(&document.storage_id, &request_id)
+                .execute_operation(STORE_JOB_BYTES, move |catalog| {
+                    catalog.operation(&storage_id, &wanted)
+                })
+                .await
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "publication receipt is missing".to_string())?;
             if operation.request_digest != request_digest {
@@ -1188,68 +1269,92 @@ impl Store {
             return Ok(request_id);
         }
         let request_id = new_id();
+        let intent_slug = slug.to_string();
+        let kind = kind.to_string();
+        let storage_id = document.storage_id.clone();
+        let expected_head = document.sha.clone();
+        let actor = actor.cloned();
+        let submit_request_id = request_id.clone();
+        let request_digest = request_digest.to_string();
         catalog
-            .prepare_operation(&OperationRequest {
-                storage_id: &document.storage_id,
-                request_id: &request_id,
-                kind,
-                request_digest,
-                // This is parsed back with serde_json -- by the startup
-                // roll-forward above, and by `stage_publication_measurement`
-                // and `stage_publication_checkpoint` in operations.rs -- so it
-                // must actually be JSON. Rust's `Debug` escaping (the old
-                // `format!("{:?}", ...)` this replaced) is not JSON escaping:
-                // a control character in an owner key, say, becomes a `\u{7f}`
-                // that no JSON parser accepts, and the whole receipt becomes
-                // unreadable from then on.
-                intent: &if let Some(actor) = actor {
-                    serde_json::json!({
-                        "slug": slug,
-                        "kind": kind,
-                        "staged_required": true,
-                        "expected_head": document.sha,
-                        "new_head": null,
-                        "durable_coverage": null,
-                        "reservations": [],
-                        "output_descriptors": [],
-                        "actor": {
-                            "account_id": actor.account_id,
-                            "owner_key": actor.owner_key,
-                            "generation": actor.session_generation,
-                        },
-                    })
-                    .to_string()
-                } else {
-                    serde_json::json!({
-                        "slug": slug,
-                        "kind": kind,
-                        "staged_required": true,
-                        "expected_head": document.sha,
-                        "new_head": null,
-                        "durable_coverage": null,
-                        "reservations": [],
-                        "output_descriptors": [],
-                    })
-                    .to_string()
-                },
-                created_at: now_unix(),
-                actor: actor.map(|actor| OperationActor {
-                    account_id: actor.account_id.as_str(),
-                    owner_key: actor.owner_key.as_str(),
-                    generation: actor.session_generation.as_str(),
-                    required_role: "editor",
-                }),
+            .execute_operation(STORE_JOB_BYTES + intent_slug.len(), move |catalog| {
+                let slug = intent_slug.as_str();
+                let kind = kind.as_str();
+                let document_sha = expected_head.as_str();
+                let actor = actor.as_ref();
+                catalog.prepare_operation(&OperationRequest {
+                    storage_id: &storage_id,
+                    request_id: &submit_request_id,
+                    kind,
+                    request_digest: &request_digest,
+                    // This is parsed back with serde_json -- by the startup
+                    // roll-forward above, and by `stage_publication_measurement`
+                    // and `stage_publication_checkpoint` in operations.rs -- so it
+                    // must actually be JSON. Rust's `Debug` escaping (the old
+                    // `format!("{:?}", ...)` this replaced) is not JSON escaping:
+                    // a control character in an owner key, say, becomes a `\u{7f}`
+                    // that no JSON parser accepts, and the whole receipt becomes
+                    // unreadable from then on.
+                    intent: &if let Some(actor) = actor {
+                        serde_json::json!({
+                            "slug": slug,
+                            "kind": kind,
+                            "staged_required": true,
+                            "expected_head": document_sha,
+                            "new_head": null,
+                            "durable_coverage": null,
+                            "reservations": [],
+                            "output_descriptors": [],
+                            "actor": {
+                                "account_id": actor.account_id,
+                                "owner_key": actor.owner_key,
+                                "generation": actor.session_generation,
+                            },
+                        })
+                        .to_string()
+                    } else {
+                        serde_json::json!({
+                            "slug": slug,
+                            "kind": kind,
+                            "staged_required": true,
+                            "expected_head": document_sha,
+                            "new_head": null,
+                            "durable_coverage": null,
+                            "reservations": [],
+                            "output_descriptors": [],
+                        })
+                        .to_string()
+                    },
+                    created_at: now_unix(),
+                    actor: actor.map(|actor| OperationActor {
+                        account_id: actor.account_id.as_str(),
+                        owner_key: actor.owner_key.as_str(),
+                        generation: actor.session_generation.as_str(),
+                        required_role: "editor",
+                    }),
+                })
             })
+            .await
             .map_err(|error| error.to_string())?;
         Ok(request_id)
     }
 
-    pub fn reserve_publication_peak(&self, slug: &str, bytes: i64) -> Result<(), String> {
+    /// Reserve the publication peak before object I/O.
+    ///
+    /// A caller cancelled after dispatch leaves the reservation taken and the
+    /// pending receipt owning it; `commit_publication`/`abort_publication`
+    /// settle it by that receipt's request id, so the reservation is never
+    /// orphaned and the mutation is never repeated.
+    pub async fn reserve_publication_peak(&self, slug: &str, bytes: i64) -> Result<(), String> {
         let Some(catalog) = &self.catalog else {
             return Ok(());
         };
+        let slug = slug.to_string();
         catalog
-            .reserve_publication_peak(slug, bytes)
+            .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+                catalog.reserve_publication_peak(&slug, bytes)
+            })
+            .await
             .map_err(|error| error.to_string())
     }
 
@@ -1257,15 +1362,20 @@ impl Store {
         let Some(catalog) = &self.catalog else {
             return Ok(());
         };
-        let document = catalog
-            .document(slug)
+        let document = document_row(catalog, slug)
+            .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "document not found".to_string())?;
         let Some(request_id) = document.pending_publication else {
             return Ok(());
         };
+        let storage_id = document.storage_id.clone();
+        let result = result.to_string();
         catalog
-            .commit_operation(&document.storage_id, &request_id, result, result)
+            .execute_operation(STORE_JOB_BYTES + result.len(), move |catalog| {
+                catalog.commit_operation(&storage_id, &request_id, &result, &result)
+            })
+            .await
             .map_err(|error| error.to_string())?;
         Ok(())
     }
@@ -1274,14 +1384,22 @@ impl Store {
         let Some(catalog) = &self.catalog else {
             return Ok(());
         };
-        let Some(document) = catalog.document(slug).map_err(|error| error.to_string())? else {
+        let Some(document) = document_row(catalog, slug)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
             return Ok(());
         };
         let Some(request_id) = document.pending_publication else {
             return Ok(());
         };
+        let storage_id = document.storage_id.clone();
+        let result = result.to_string();
         catalog
-            .abort_operation(&document.storage_id, &request_id, result)
+            .execute_operation(STORE_JOB_BYTES + result.len(), move |catalog| {
+                catalog.abort_operation(&storage_id, &request_id, &result)
+            })
+            .await
             .map_err(|error| error.to_string())?;
         Ok(())
     }
@@ -1291,8 +1409,8 @@ impl Store {
             .catalog
             .as_ref()
             .expect("put_catalog requires a catalogue");
-        let existing = catalog
-            .document(&v.slug)
+        let existing = document_row(catalog, &v.slug)
+            .await
             .map_err(|err| PutError::Storage(err.to_string()))?;
         let now = timestamp();
         let (owner_id, owner_key, title, created_at, example, storage_id, source_format, main) =
@@ -1344,20 +1462,24 @@ impl Store {
                 .split_once(':')
                 .map(|(provider, _)| provider)
                 .unwrap_or("github");
+            let account = Account {
+                id: owner_id.to_string(),
+                provider: provider.to_string(),
+                handle: v.owner.clone(),
+                name: v.owner_name.clone(),
+                email: String::new(),
+                first_seen: created_at.clone(),
+                last_seen: now.clone(),
+                plan: "default".to_string(),
+                status: "active".to_string(),
+                session_generation: random_storage_id(),
+                erasure_cursor: None,
+            };
             catalog
-                .upsert_account(&Account {
-                    id: owner_id.to_string(),
-                    provider: provider.to_string(),
-                    handle: v.owner.clone(),
-                    name: v.owner_name.clone(),
-                    email: String::new(),
-                    first_seen: created_at.clone(),
-                    last_seen: now.clone(),
-                    plan: "default".to_string(),
-                    status: "active".to_string(),
-                    session_generation: random_storage_id(),
-                    erasure_cursor: None,
+                .execute_operation(STORE_JOB_BYTES + account.id.len(), move |catalog| {
+                    catalog.upsert_account(&account)
                 })
+                .await
                 .map_err(|err| PutError::Storage(err.to_string()))?;
         }
         // A complete server upload supplies its exact initial object peak
@@ -1401,22 +1523,29 @@ impl Store {
             source_format,
             main,
         };
-        let result = if existing.is_some() {
-            catalog.replace_document_admitted(
-                &document,
-                self.config.storage.per_owner,
-                self.config.storage.total,
-                self.config.storage.uploads_per_hour,
-            )
-        } else {
-            catalog.create_document_admitted(
-                &document,
-                self.config.storage.per_owner,
-                self.config.storage.total,
-                self.config.storage.documents_per_owner,
-                self.config.storage.uploads_per_hour,
-            )
-        };
+        let replacing = existing.is_some();
+        let limits = self.config.storage;
+        let result = catalog
+            .execute_operation(STORE_JOB_BYTES + document.slug.len(), move |catalog| {
+                if replacing {
+                    catalog.replace_document_admitted(
+                        &document,
+                        limits.per_owner,
+                        limits.total,
+                        limits.uploads_per_hour,
+                    )
+                } else {
+                    catalog.create_document_admitted(
+                        &document,
+                        limits.per_owner,
+                        limits.total,
+                        limits.documents_per_owner,
+                        limits.uploads_per_hour,
+                    )
+                }
+            })
+            .await
+            .map_err(crate::storage::catalog::CatalogError::from);
         let document = result.map_err(|err| match err {
             crate::storage::catalog::CatalogError::Conflict(message)
                 if message.contains("quota exceeded") || message.contains("upload rate") =>
@@ -1440,8 +1569,8 @@ impl Store {
             }
             other => PutError::Storage(other.to_string()),
         })?;
-        let document = catalog
-            .document(&document.slug)
+        let document = document_row(catalog, &document.slug)
+            .await
             .map_err(|err| PutError::Storage(err.to_string()))?
             .ok_or_else(|| PutError::Storage("catalogue publication disappeared".into()))?;
         let entry = IndexEntry::from_catalog(document);
@@ -1491,22 +1620,55 @@ impl Store {
             if sha.is_none() {
                 return Ok(());
             }
-            if catalog
-                .document(slug)
+            if document_row(catalog, slug)
+                .await
                 .ok()
                 .flatten()
                 .and_then(|document| document.pending_publication)
                 .is_some()
             {
+                let (slug, sha, format, main) = (
+                    slug.to_string(),
+                    sha.map(str::to_owned),
+                    format.to_string(),
+                    main.to_string(),
+                );
                 catalog
-                    .stage_publication_measurement(slug, sha, size, format, main)
+                    .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+                        catalog.stage_publication_measurement(
+                            &slug,
+                            sha.as_deref(),
+                            size,
+                            &format,
+                            &main,
+                        )
+                    })
+                    .await
                     .map_err(|err| err.to_string())?;
                 return Ok(());
             }
             let updated_at = sha.map(|_| timestamp());
-            let document = catalog
-                .record_document_measurement(slug, size, sha, updated_at.as_deref(), format, main)
-                .map_err(|err| err.to_string())?;
+            let document = {
+                let (owned_slug, sha, format, main) = (
+                    slug.to_string(),
+                    sha.map(str::to_owned),
+                    format.to_string(),
+                    main.to_string(),
+                );
+                catalog
+                    .execute_operation(STORE_JOB_BYTES + owned_slug.len(), move |catalog| {
+                        catalog.record_document_measurement(
+                            &owned_slug,
+                            size,
+                            sha.as_deref(),
+                            updated_at.as_deref(),
+                            &format,
+                            &main,
+                        )
+                    })
+                    .await
+                    .map_err(|err| err.to_string())?
+            };
             self.state
                 .lock()
                 .await
@@ -1576,7 +1738,10 @@ impl Store {
     /// the index entry such a publish still changes.
     pub async fn rename(&self, slug: &str, title: &str) -> Result<(), String> {
         if let Some(catalog) = &self.catalog {
-            let Some(mut document) = catalog.document(slug).map_err(|err| err.to_string())? else {
+            let Some(mut document) = document_row(catalog, slug)
+                .await
+                .map_err(|err| err.to_string())?
+            else {
                 return Ok(());
             };
             if title.is_empty() || title == document.title {
@@ -1585,7 +1750,10 @@ impl Store {
             document.title = title.to_string();
             document.updated_at = timestamp();
             let document = catalog
-                .update_document(&document)
+                .execute_operation(STORE_JOB_BYTES + document.slug.len(), move |catalog| {
+                    catalog.update_document(&document)
+                })
+                .await
                 .map_err(|err| err.to_string())?;
             self.state
                 .lock()
@@ -1640,14 +1808,17 @@ impl Store {
     {
         if let Some(catalog) = &self.catalog {
             let Some(mut entry) = load_catalog_entry(catalog, slug, true)
+                .await
                 .map_err(|err| ModifyError::Storage(err.to_string()))?
             else {
                 return Err(ModifyError::NotFound);
             };
             change(&mut entry).map_err(ModifyError::Refused)?;
-            update_catalog_entry_access(catalog, &entry, None)
+            update_catalog_entry_access(catalog, entry, None)
+                .await
                 .map_err(|err| ModifyError::Storage(err.to_string()))?;
             let refreshed = load_catalog_entry(catalog, slug, true)
+                .await
                 .map_err(|err| ModifyError::Storage(err.to_string()))?
                 .ok_or(ModifyError::NotFound)?;
             self.state
@@ -1702,12 +1873,14 @@ impl Store {
             return self.modify(slug, change).await;
         };
         let Some(mut entry) = load_catalog_entry(catalog, slug, true)
+            .await
             .map_err(|err| ModifyError::Storage(err.to_string()))?
         else {
             return Err(ModifyError::NotFound);
         };
         change(&mut entry).map_err(ModifyError::Refused)?;
-        update_catalog_entry_access(catalog, &entry, Some(actor))
+        update_catalog_entry_access(catalog, entry.clone(), Some(actor.clone()))
+            .await
             .map_err(|err| ModifyError::Refused(err.to_string()))?;
         self.state
             .lock()
@@ -1734,36 +1907,47 @@ impl Store {
         }
         if let Some(catalog) = &self.catalog {
             let provider = id.split_once(':').map(|part| part.0).unwrap_or("github");
-            catalog
-                .upsert_account(&Account {
-                    id: id.to_string(),
-                    provider: provider.into(),
-                    handle: login.to_lowercase(),
-                    name: name.to_string(),
-                    email: String::new(),
-                    first_seen: timestamp(),
-                    last_seen: timestamp(),
-                    plan: "default".into(),
-                    status: "active".into(),
-                    session_generation: if cfg!(test) {
-                        "test-session-generation".into()
-                    } else {
-                        random_storage_id()
-                    },
-                    erasure_cursor: None,
+            let account = Account {
+                id: id.to_string(),
+                provider: provider.into(),
+                handle: login.to_lowercase(),
+                name: name.to_string(),
+                email: String::new(),
+                first_seen: timestamp(),
+                last_seen: timestamp(),
+                plan: "default".into(),
+                status: "active".into(),
+                session_generation: if cfg!(test) {
+                    "test-session-generation".into()
+                } else {
+                    random_storage_id()
+                },
+                erasure_cursor: None,
+            };
+            let visitor = visitor_key.to_string();
+            let new_owner = id.to_string();
+            let per_owner = self.config.storage.per_owner;
+            // The account row and every transfer it authorises run in one job.
+            // Each transfer is still its own transaction, exactly as before;
+            // what the job removes is the runtime worker parked on the
+            // connection once per document in the deployment.
+            let moved = catalog
+                .execute_operation(STORE_JOB_BYTES + account.id.len(), move |catalog| {
+                    catalog.upsert_account(&account)?;
+                    let mut moved = 0;
+                    for document in catalog.documents()? {
+                        if document.owner_id.is_none() && document.owner_key == visitor {
+                            catalog.transfer_ownership(&document.slug, &new_owner, per_owner)?;
+                            moved += 1;
+                        }
+                    }
+                    Ok(moved)
                 })
+                .await
                 .map_err(|err| err.to_string())?;
-            let documents = catalog.documents().map_err(|err| err.to_string())?;
-            let mut moved = 0;
-            for document in documents {
-                if document.owner_id.is_none() && document.owner_key == visitor_key {
-                    catalog
-                        .transfer_ownership(&document.slug, id, self.config.storage.per_owner)
-                        .map_err(|err| err.to_string())?;
-                    moved += 1;
-                }
-            }
-            let entries = catalog_entries(catalog).map_err(|err| err.to_string())?;
+            let entries = catalog_entries(catalog)
+                .await
+                .map_err(|err| err.to_string())?;
             let mut state = self.state.lock().await;
             for (slug, entry) in entries {
                 state.entries.insert(slug, entry);
@@ -1823,7 +2007,10 @@ impl Store {
         // deployment happens to be cached rather than the whole of it. The
         // catalogue, when there is one, is asked directly instead.
         if let Some(catalog) = &self.catalog {
-            let documents = catalog.documents().ok()?;
+            let documents = catalog
+                .execute_operation(STORE_JOB_BYTES, |catalog| catalog.documents())
+                .await
+                .ok()?;
             let active: Vec<_> = documents
                 .into_iter()
                 .filter(|document| document.status == "active")
@@ -1948,11 +2135,19 @@ impl Store {
     /// listing pointing at nothing.
     pub async fn remove(&self, slug: &str) -> Result<usize, String> {
         if let Some(catalog) = &self.catalog {
-            let document = catalog
-                .document(slug)
+            let document = document_row(catalog, slug)
+                .await
                 .map_err(|err| err.to_string())?
                 .ok_or_else(|| format!("document {slug} was not found"))?;
-            catalog.begin_delete(slug).map_err(|err| err.to_string())?;
+            {
+                let slug = slug.to_string();
+                catalog
+                    .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+                        catalog.begin_delete(&slug).map(|_| ())
+                    })
+                    .await
+                    .map_err(|err| err.to_string())?;
+            }
             let mut keys: Vec<(String, i64)> = Vec::new();
             for prefix in [
                 document_prefix(&document.storage_id),
@@ -1986,15 +2181,27 @@ impl Store {
             // Queue every known object before deleting any of them.  A crash
             // after this point leaves the document deleting and the durable
             // queue is sufficient for the next maintenance pass to resume.
-            for (key, bytes) in &keys {
+            {
+                let queued: Vec<(String, i64)> = keys.clone();
+                let slug = slug.to_string();
                 catalog
-                    .queue_delete(&crate::storage::catalog::PendingDelete {
-                        slug: slug.to_string(),
-                        object_key: key.clone(),
-                        bytes: *bytes,
-                        queued_at: now_unix(),
-                        delete_after: now_unix(),
-                    })
+                    .execute_operation(
+                        STORE_JOB_BYTES
+                            + queued.iter().map(|(key, _)| key.len() + 16).sum::<usize>(),
+                        move |catalog| {
+                            for (key, bytes) in &queued {
+                                catalog.queue_delete(&crate::storage::catalog::PendingDelete {
+                                    slug: slug.clone(),
+                                    object_key: key.clone(),
+                                    bytes: *bytes,
+                                    queued_at: now_unix(),
+                                    delete_after: now_unix(),
+                                })?;
+                            }
+                            Ok(())
+                        },
+                    )
+                    .await
                     .map_err(|err| err.to_string())?;
             }
             let mut removed = 0;
@@ -2003,13 +2210,18 @@ impl Store {
                     .delete(std::slice::from_ref(key))
                     .await
                     .map_err(|err| format!("could not reclaim document objects: {err}"))?;
+                let (slug, key) = (slug.to_string(), key.clone());
                 catalog
-                    .complete_delete_object(slug, key)
+                    .execute_operation(STORE_JOB_BYTES + key.len(), move |catalog| {
+                        catalog.complete_delete_object(&slug, &key)
+                    })
+                    .await
                     .map_err(|err| err.to_string())?;
                 removed += 1;
             }
             crate::storage::journal::JournalStore::new(catalog.clone())
-                .retire_storage(&document.storage_id, now_unix())
+                .retire_storage_async(document.storage_id.clone(), now_unix())
+                .await
                 .map_err(|err| format!("could not retire journal objects: {err}"))?;
             let retirement_worker = crate::storage::maintenance::JournalRetirementWorker::new(
                 catalog.clone(),
@@ -2021,7 +2233,15 @@ impl Store {
                 .run_once(now_unix())
                 .await
                 .map_err(|err| err.to_string())?;
-            catalog.finish_delete(slug).map_err(|err| err.to_string())?;
+            {
+                let slug = slug.to_string();
+                catalog
+                    .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+                        catalog.finish_delete(&slug)
+                    })
+                    .await
+                    .map_err(|err| err.to_string())?;
+            }
             self.state.lock().await.entries.remove(slug);
             return Ok(removed);
         }
@@ -2278,21 +2498,62 @@ impl IndexEntry {
     }
 }
 
-fn catalog_entries(catalog: &Catalog) -> Result<HashMap<String, IndexEntry>, CatalogError> {
+/// One document row, read on a blocking thread.
+async fn document_row(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+) -> Result<Option<crate::storage::catalog::Document>, CatalogError> {
+    let slug = slug.to_string();
+    catalog
+        .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+            catalog.document(&slug)
+        })
+        .await
+        .map_err(CatalogError::from)
+}
+
+async fn catalog_entries(
+    catalog: &Arc<Catalog>,
+) -> Result<HashMap<String, IndexEntry>, CatalogError> {
+    let documents = catalog
+        .execute_operation(STORE_JOB_BYTES, |catalog| catalog.documents())
+        .await
+        .map_err(CatalogError::from)?;
     let mut entries = HashMap::new();
-    for document in catalog.documents()? {
+    for document in documents {
         if document.status != "active" {
             continue;
         }
         let slug = document.slug.clone();
-        if let Some(entry) = load_catalog_entry(catalog, &slug, true)? {
+        if let Some(entry) = load_catalog_entry(catalog, &slug, true).await? {
             entries.insert(slug, entry);
         }
     }
     Ok(entries)
 }
 
-fn load_catalog_entry(
+/// Load one listing/detail entry as a single job.
+///
+/// The link secrets are unsealed *after* the connection closure returns rather
+/// than inside it.  Unsealing is a catalogue call of its own, and calling one
+/// while the connection is held is the re-entrancy this boundary forbids: it
+/// works only for as long as `open_link_key` happens not to touch the
+/// connection, and it would deadlock the single connection the moment it did.
+async fn load_catalog_entry(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    decrypt_links: bool,
+) -> Result<Option<IndexEntry>, CatalogError> {
+    let slug = slug.to_string();
+    catalog
+        .execute_operation(STORE_JOB_BYTES + slug.len(), move |catalog| {
+            load_catalog_entry_sql(catalog, &slug, decrypt_links)
+        })
+        .await
+        .map_err(CatalogError::from)
+}
+
+fn load_catalog_entry_sql(
     catalog: &Catalog,
     slug: &str,
     decrypt_links: bool,
@@ -2304,6 +2565,11 @@ fn load_catalog_entry(
         return Ok(None);
     }
     let mut entry = IndexEntry::from_catalog(document);
+    // Sealed envelopes come out of SQL here and are opened below, outside the
+    // connection.
+    #[allow(clippy::type_complexity)]
+    let mut sealed_links: Vec<(String, String, Vec<u8>, String, Option<i64>, String, String)> =
+        Vec::new();
     catalog.with_connection(|connection| {
         if let Some(owner_id) = (!entry.publisher_id.is_empty()).then_some(&entry.publisher_id) {
             if let Some((handle, name)) = connection
@@ -2347,29 +2613,17 @@ fn load_catalog_entry(
                 "SELECT role, hash, sealed, label, budget, since, until
                  FROM links WHERE slug = ?1 ORDER BY role LIMIT ?2",
             )?;
-            entry.links = links
+            sealed_links = links
                 .query_map(rusqlite::params![slug, MAX_LINKS_PER_RESULT], |row| {
-                    let sealed: Vec<u8> = row.get(2)?;
-                    let role: String = row.get(0)?;
-                    let hash: String = row.get(1)?;
-                    let key = catalog
-                        .open_link_key(&entry.storage_id, &role, &hash, &sealed)
-                        .map_err(|error| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                sealed.len(),
-                                rusqlite::types::Type::Blob,
-                                Box::new(error),
-                            )
-                        })?;
-                    Ok(LinkGrant {
-                        role,
-                        hash,
-                        key,
-                        label: row.get(3)?,
-                        budget: row.get(4)?,
-                        since: row.get(5)?,
-                        until: row.get(6)?,
-                    })
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
         } else {
@@ -2408,6 +2662,18 @@ fn load_catalog_entry(
             .collect::<Result<Vec<_>, _>>()?;
         Ok(())
     })?;
+    for (role, hash, sealed, label, budget, since, until) in sealed_links {
+        let key = catalog.open_link_key(&entry.storage_id, &role, &hash, &sealed)?;
+        entry.links.push(LinkGrant {
+            role,
+            hash,
+            key,
+            label,
+            budget,
+            since,
+            until,
+        });
+    }
     Ok(Some(entry))
 }
 
@@ -2415,7 +2681,25 @@ fn load_catalog_entry(
 /// treating its cached access lists as a whole-row snapshot.  Metadata and
 /// access changes commit together; unchanged access rows retain their sealed
 /// values and absent rows alone are removed.
-fn update_catalog_entry_access(
+async fn update_catalog_entry_access(
+    catalog: &Arc<Catalog>,
+    entry: IndexEntry,
+    actor: Option<MutationActor>,
+) -> Result<(), CatalogError> {
+    catalog
+        .execute_operation(STORE_JOB_BYTES + entry.slug.len(), move |catalog| {
+            update_catalog_entry_access_sql(catalog, &entry, actor.as_ref())
+        })
+        .await
+        .map_err(CatalogError::from)
+}
+
+/// A read-modify-write across five catalogue calls, exactly as before: the
+/// final `update_document_access` re-checks the actor's rights and session
+/// generation inside its own transaction, which is what makes the sequence
+/// safe without being one transaction.  Running it as one job keeps that
+/// sequence off a runtime worker without changing its atomicity.
+fn update_catalog_entry_access_sql(
     catalog: &Catalog,
     entry: &IndexEntry,
     actor: Option<&MutationActor>,

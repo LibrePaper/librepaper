@@ -287,7 +287,7 @@ async fn catalog_publication_receipt_retries_and_commits_after_reopen() {
         .await
         .unwrap();
     assert!(store.get("receipt").await.is_none());
-    assert!(store.pending_publication("receipt").is_some());
+    assert!(store.pending_publication("receipt").await.is_some());
     let staged_sha = stage_room_publication(
         store.clone(),
         blobs.clone(),
@@ -369,6 +369,7 @@ async fn catalog_replacement_receipt_hides_old_head_until_commit() {
         .unwrap();
     store
         .reserve_publication_peak("replace-receipt", 2 << 20)
+        .await
         .unwrap();
     assert!(store.get("replace-receipt").await.is_none());
     let new_head =

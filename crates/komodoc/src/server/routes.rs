@@ -261,13 +261,17 @@ pub(super) async fn handle(
             .zip(listing_query.get("after_slug"))
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
         let entries = if server.store.catalog.is_some() {
-            match server.store.visible_page_with_options(
-                (!who.id.is_empty()).then_some(who.id.as_str()),
-                (!who.key.is_empty()).then_some(who.key.as_str()),
-                listing_cursor,
-                listing_limit,
-                server.listing,
-            ) {
+            match server
+                .store
+                .visible_page_with_options(
+                    (!who.id.is_empty()).then_some(who.id.as_str()),
+                    (!who.key.is_empty()).then_some(who.key.as_str()),
+                    listing_cursor,
+                    listing_limit,
+                    server.listing,
+                )
+                .await
+            {
                 Ok(entries) => entries,
                 Err(error) => {
                     eprintln!("could not query document listing: {error}");

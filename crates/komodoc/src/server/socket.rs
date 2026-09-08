@@ -119,7 +119,7 @@ impl Server {
         // conjure one, and since the rate limiter counts per room, a new slug
         // per comment would also mean no rate limit at all.
         let entry = if self.store.catalog.is_some() {
-            match self.store.get_checked(slug) {
+            match self.store.get_checked(slug).await {
                 Ok(Some(entry)) => entry,
                 Ok(None) => return plain(404, "not found"),
                 Err(error) => {
