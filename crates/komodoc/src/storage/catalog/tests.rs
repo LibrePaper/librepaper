@@ -319,7 +319,7 @@ fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
 #[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 12);
+    assert_eq!(catalog.schema_version().unwrap(), 13);
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection

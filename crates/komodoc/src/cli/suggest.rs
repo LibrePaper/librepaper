@@ -3,6 +3,56 @@
 
 use super::*;
 
+/// A captured document revision is the canonical lowercase SHA-256 tree
+/// digest emitted by the snapshot endpoint. Rejecting malformed values at the
+/// CLI boundary keeps an assistant from accidentally posting an empty or
+/// ambiguous revision.
+pub(crate) fn revision_value(value: &str) -> Result<String, String> {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        Ok(value.to_string())
+    } else {
+        Err("revision must be a 64-character lowercase SHA-256 digest".into())
+    }
+}
+
+pub(crate) async fn post_assistant_json(
+    target: &str,
+    payload: &Value,
+    credentials: &Credentials,
+    timeout: Duration,
+) -> Result<(u16, Value), String> {
+    let body = serde_json::to_vec(payload)
+        .map_err(|err| format!("could not encode the request: {err}"))?;
+    let owned = credentials.headers();
+    let mut request = crate::http::client()
+        .post(target)
+        .timeout(timeout)
+        .header("content-type", "application/json")
+        .header("x-komodoc-automation", "1");
+    for (name, value) in &owned {
+        request = request.header(*name, value);
+    }
+    let response = request
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| format!("POST {target}: {err}"))?;
+    let status = response.status().as_u16();
+    let raw = response
+        .bytes()
+        .await
+        .map_err(|err| format!("POST {target}: {err}"))?;
+    Ok((
+        status,
+        serde_json::from_slice(&raw)
+            .unwrap_or_else(|_| json!({"error": String::from_utf8_lossy(&raw)})),
+    ))
+}
+
 /// The refusal text a suggestion route answers with, in `message` rather than
 /// `error`: everything else the CLI reads uses `detail_of`, which falls back
 /// to the whole payload when `message` is what is actually there.
@@ -22,6 +72,25 @@ pub(crate) struct Anchor {
     pub(crate) prefix: String,
     pub(crate) suffix: String,
     pub(crate) position: i64,
+}
+
+fn target_for(identifier: &str, server_flag: &str, key_flag: &str) -> (String, String, String) {
+    let supplied_key = link_key(key_flag);
+    if identifier.starts_with("http://") || identifier.starts_with("https://") {
+        if let Ok(link) = crate::cli::peer::DocumentLink::parse(identifier, "") {
+            let key = if supplied_key.is_empty() {
+                link_key(identifier)
+            } else {
+                supplied_key
+            };
+            return (link.server().to_string(), key, link.slug().to_string());
+        }
+    }
+    (
+        server_from(server_flag),
+        supplied_key,
+        identifier.to_string(),
+    )
 }
 
 /// Finds `find` in `source`, refusing when it occurs zero or more than once
@@ -73,9 +142,46 @@ pub async fn suggest_passage(
     server_flag: String,
     key: String,
 ) {
-    let server = server_from(&server_flag);
-    let key = link_key(&key);
-    let slug = resolve_identifier(identifier, &server, &key).await;
+    suggest_passage_with_revision(
+        identifier,
+        find,
+        replace,
+        path,
+        note,
+        String::new(),
+        server_flag,
+        key,
+    )
+    .await;
+}
+
+/// The revision-aware form used by the assistant context. The old
+/// `suggest_passage` signature remains available to scripts and tests.
+#[allow(clippy::too_many_arguments)]
+pub async fn suggest_passage_with_revision(
+    identifier: &str,
+    find: &str,
+    replace: &str,
+    path: String,
+    note: String,
+    revision: String,
+    server_flag: String,
+    key: String,
+) {
+    if !revision.is_empty() {
+        revision_value(&revision).unwrap_or_else(|err| die(err));
+    }
+    let path = if path.is_empty()
+        && (identifier.starts_with("http://") || identifier.starts_with("https://"))
+    {
+        crate::cli::peer::DocumentLink::parse(identifier, "")
+            .map(|link| link.path().to_string())
+            .unwrap_or_default()
+    } else {
+        path
+    };
+    let (server, key, slug) = target_for(identifier, &server_flag, &key);
+    let slug = resolve_identifier(&slug, &server, &key).await;
     let credentials = Credentials::new(&stored_token_for(&server), &key);
 
     let (status, checkpoint) = get_as(
@@ -105,25 +211,29 @@ pub async fn suggest_passage(
         Err(message) => die(message),
     };
 
-    let (status, payload) = post_json_as(
-        &format!("{server}/api/documents/{slug}/comments"),
-        &json!({
-            "type": "comment",
-            "motivation": "editing",
+    let mut request = json!({
+        "type": "comment",
+        "motivation": "editing",
+        "exact": anchor.exact,
+        "prefix": anchor.prefix,
+        "suffix": anchor.suffix,
+        "position": anchor.position,
+        "source": {
+            "path": target_path,
             "exact": anchor.exact,
             "prefix": anchor.prefix,
             "suffix": anchor.suffix,
             "position": anchor.position,
-            "source": {
-                "path": target_path,
-                "exact": anchor.exact,
-                "prefix": anchor.prefix,
-                "suffix": anchor.suffix,
-                "position": anchor.position,
-            },
-            "proposed": replace,
-            "body": note,
-        }),
+        },
+        "proposed": replace,
+        "body": note,
+    });
+    if !revision.is_empty() {
+        request["revision"] = json!(revision);
+    }
+    let (status, payload) = post_assistant_json(
+        &format!("{server}/api/documents/{slug}/comments"),
+        &request,
         &credentials,
         Duration::from_secs(30),
     )
@@ -136,6 +246,156 @@ pub async fn suggest_passage(
         ));
     }
     println!("{}", text(&payload["comment"], "id"));
+}
+
+/// Post one source anchor copied from an assistant context. The source value
+/// is retained as a JSON value so fields and their spelling survive the CLI
+/// boundary unchanged.
+pub async fn suggest_anchor(
+    identifier: &str,
+    anchor_json: &str,
+    replace: &str,
+    note: String,
+    revision: String,
+    server_flag: String,
+    key: String,
+) {
+    revision_value(&revision).unwrap_or_else(|err| die(err));
+    let anchor: Value = serde_json::from_str(anchor_json)
+        .unwrap_or_else(|err| die(format!("invalid --anchor JSON: {err}")));
+    if !anchor.is_object() {
+        die("--anchor must be a JSON object");
+    }
+    for field in ["path", "exact", "prefix", "suffix", "position"] {
+        if anchor.get(field).is_none() {
+            die(format!("--anchor is missing {field}"));
+        }
+    }
+    let (server, key, slug) = target_for(identifier, &server_flag, &key);
+    let slug = resolve_identifier(&slug, &server, &key).await;
+    let mut request = json!({
+        "type": "comment",
+        "motivation": "editing",
+        "exact": anchor["exact"],
+        "prefix": anchor["prefix"],
+        "suffix": anchor["suffix"],
+        "position": anchor["position"],
+        "source": anchor,
+        "proposed": replace,
+        "body": note,
+    });
+    if !revision.is_empty() {
+        request["revision"] = json!(revision);
+    }
+    let credentials = Credentials::new(&stored_token_for(&server), &key);
+    let (status, payload) = post_assistant_json(
+        &format!("{server}/api/documents/{slug}/comments"),
+        &request,
+        &credentials,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap_or_else(|err| die(err));
+    if status != 200 {
+        die(format!(
+            "suggest failed ({status}): {}",
+            suggestion_message(&payload)
+        ));
+    }
+    println!("{}", text(&payload["comment"], "id"));
+}
+
+/// Post a batch of anchored proposals. The input accepts either an array of
+/// items or `{\"revision\": ..., \"items\": [...]}`. A separately supplied
+/// `--revision` must agree with any revision recorded in the file.
+pub async fn suggest_batch(
+    identifier: &str,
+    file: &str,
+    revision: String,
+    server_flag: String,
+    key: String,
+) {
+    let raw = std::fs::read_to_string(file)
+        .unwrap_or_else(|err| die(format!("could not read batch {file}: {err}")));
+    let input: Value =
+        serde_json::from_str(&raw).unwrap_or_else(|err| die(format!("invalid batch JSON: {err}")));
+    let (file_revision, items) = match input {
+        Value::Array(items) => (String::new(), items),
+        Value::Object(mut object) => {
+            let revision = object
+                .remove("revision")
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let items = object.remove("items").unwrap_or(Value::Null);
+            let Some(items) = items.as_array() else {
+                die("batch JSON must contain an items array");
+            };
+            (revision, items.clone())
+        }
+        _ => die("batch JSON must be an array or an object with items"),
+    };
+    if items.is_empty() {
+        die("batch must contain at least one item");
+    }
+    if items.len() > 100 {
+        die("batch cannot contain more than 100 items");
+    }
+    if !revision.is_empty() && !file_revision.is_empty() && revision != file_revision {
+        die("--revision disagrees with the revision in the batch file");
+    }
+    let revision = if revision.is_empty() {
+        file_revision
+    } else {
+        revision
+    };
+    if revision.is_empty() {
+        die("a revision is required for a batch (use --revision or include revision in the file)");
+    }
+    revision_value(&revision).unwrap_or_else(|err| die(err));
+    let mut checked = Vec::with_capacity(items.len());
+    for (index, item) in items.into_iter().enumerate() {
+        let Some(object) = item.as_object() else {
+            die(format!("batch item {index} must be an object"));
+        };
+        let Some(anchor) = object.get("anchor") else {
+            die(format!("batch item {index} is missing anchor"));
+        };
+        if !anchor.is_object() {
+            die(format!("batch item {index} anchor must be an object"));
+        }
+        if object.get("proposed").and_then(Value::as_str).is_none() {
+            die(format!("batch item {index} is missing proposed text"));
+        }
+        let mut item = json!({
+            "anchor": anchor,
+            "proposed": object["proposed"],
+        });
+        if let Some(body) = object.get("body") {
+            item["body"] = body.clone();
+        }
+        checked.push(item);
+    }
+    let (server, key, slug) = target_for(identifier, &server_flag, &key);
+    let slug = resolve_identifier(&slug, &server, &key).await;
+    let credentials = Credentials::new(&stored_token_for(&server), &key);
+    let (status, payload) = post_assistant_json(
+        &format!("{server}/api/documents/{slug}/suggestions"),
+        &json!({"revision": revision, "items": checked}),
+        &credentials,
+        Duration::from_secs(60),
+    )
+    .await
+    .unwrap_or_else(|err| die(err));
+    if status != 200 {
+        die(format!(
+            "suggest batch failed ({status}): {}",
+            suggestion_message(&payload)
+        ));
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into())
+    );
 }
 
 /// Why deciding a suggestion did not go through: refused outright, in which

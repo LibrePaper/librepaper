@@ -2,6 +2,8 @@
   import IconButton from "./IconButton.svelte";
   import CommentCard from "./CommentCard.svelte";
   import PanelHeader from "./PanelHeader.svelte";
+  import { reviewGroups, rejectPass } from "../lib/assistant-review.js";
+  import { tick } from "svelte";
 
   // The annotations, in document order: an annotation is about a place in the
   // text, so the column follows the page rather than the order things were
@@ -31,6 +33,7 @@
     onreply,
     onaccept,
     onreject,
+    onrejectconfirmed,
     pending,
   } = $props();
 
@@ -43,6 +46,29 @@
   }
 
   const shown = $derived([...comments].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
+  const groups = $derived(reviewGroups(shown));
+  let rejecting = $state("");
+  let passResult = $state("");
+
+  async function rejectGroup(group) {
+    if (!canModerate || rejecting || !onrejectconfirmed) return;
+    rejecting = group.pass;
+    passResult = "";
+    try {
+      const results = await rejectPass([...group.pending], onrejectconfirmed);
+      const failed = results.filter((result) => !result.rejected);
+      passResult = `${results.length - failed.length} rejected${failed.length ? `; ${failed.length} could not be rejected: ${failed[0].error}` : "."}`;
+    } finally { rejecting = ""; }
+  }
+
+  async function reviewNext(group) {
+    const next = group.pending.find((comment) => !comment.deciding);
+    if (!next) return;
+    await tick();
+    const card = document.getElementById(`comment-${next.id}`);
+    card?.scrollIntoView({ block: "nearest" });
+    card?.querySelector("button")?.focus({ preventScroll: true });
+  }
 
   const open = $derived(comments.filter((comment) => !comment.resolved).length);
 
@@ -90,7 +116,22 @@
 
   <div id="comments" class="flex flex-col gap-3">
     {@render pending?.()}
-    {#each shown as comment (comment)}
+    {#if passResult}<p class="panel-muted" role="status">{passResult}</p>{/if}
+    {#each groups as group (group.key)}
+      <div class="flex flex-col gap-3" data-pass={group.pass || undefined}>
+      {#if group.pass}
+        <div class="pass-header">
+          <strong>Writing pass · {group.comments.length} suggestions</strong>
+          <p class="panel-meta">{group.pending.length} pending</p>
+          {#if canModerate && group.pending.length}
+            <div class="flex gap-2">
+              <button class="btn btn-sm preset-tonal-surface" disabled={Boolean(rejecting)} onclick={() => void reviewNext(group)}>Review next</button>
+              <button class="btn btn-sm preset-tonal-surface" disabled={Boolean(rejecting) || !onrejectconfirmed} onclick={() => void rejectGroup(group)}>{rejecting === group.pass ? "Rejecting…" : "Reject all"}</button>
+            </div>
+          {/if}
+        </div>
+      {/if}
+      {#each group.comments as comment (comment)}
       <CommentCard
         {canComment}
         {comment}
@@ -106,6 +147,8 @@
         {onaccept}
         {onreject}
       />
+      {/each}
+      </div>
     {/each}
   </div>
 </div>
@@ -114,4 +157,5 @@
   .comments-panel { display: flex; flex-direction: column; overflow: hidden; }
   .comments-panel > :global(*) { flex-shrink: 0; }
   #comments { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .pass-header { padding: calc(var(--spacing) * 2); border-left: 3px solid var(--color-primary-500); }
 </style>

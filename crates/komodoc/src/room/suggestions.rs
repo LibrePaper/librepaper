@@ -316,7 +316,9 @@ impl Room {
                         .manifest
                         .checkpoints
                         .iter()
-                        .find(|point| point.sha == comment.revision)
+                        .find(|point| {
+                            point.sha == comment.revision || point.content_sha() == comment.revision
+                        })
                         .cloned()
                 };
                 // A resident room intentionally keeps only a bounded history
@@ -325,27 +327,27 @@ impl Room {
                 // into a spurious stale error.
                 if base_point.is_none() {
                     if let Some(catalog) = self.catalog.get() {
-                        base_point = catalog
-                            .checkpoint(&self.slug, &comment.revision)
-                            .map_err(|error| AcceptError::Failed(error.to_string()))?
-                            .map(|point| crate::document::history::Checkpoint {
-                                sha: point.sha,
-                                tree_sha: point.tree_sha,
-                                parent: point.parent,
-                                at: point.at,
-                                by: point.by,
-                                why: point.why,
-                                source_format: point.source_format,
-                                size: point.size,
-                                label: point.label,
-                                commit: point.git_commit,
-                                dirty: point.dirty,
-                                tree: true,
-                                changed: point
-                                    .changed
-                                    .and_then(|value| serde_json::from_str(&value).ok())
-                                    .unwrap_or_default(),
-                            });
+                        let point = catalog
+                            .checkpoint_by_content_sha(&self.slug, &comment.revision)
+                            .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        base_point = point.map(|point| crate::document::history::Checkpoint {
+                            sha: point.sha,
+                            tree_sha: point.tree_sha,
+                            parent: point.parent,
+                            at: point.at,
+                            by: point.by,
+                            why: point.why,
+                            source_format: point.source_format,
+                            size: point.size,
+                            label: point.label,
+                            commit: point.git_commit,
+                            dirty: point.dirty,
+                            tree: true,
+                            changed: point
+                                .changed
+                                .and_then(|value| serde_json::from_str(&value).ok())
+                                .unwrap_or_default(),
+                        });
                     }
                 }
                 let Some(base_point) = base_point else {

@@ -378,6 +378,21 @@ pub(super) async fn handle(
         return server.handle_chat(request, &arrival, slug, tail).await;
     }
 
+    if let ["api", "documents", slug, "suggestions"] = parts[..] {
+        if method == Method::POST {
+            return server
+                .handle_assistant_batch(request, peer, &arrival, slug)
+                .await;
+        }
+    }
+    if let ["api", "documents", slug, "assistant", "capabilities"] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_assistant_capabilities(request.headers(), &arrival, slug)
+                .await;
+        }
+    }
+
     // The figures. Putting one takes an editor, because it puts bytes on the
     // server; reading one takes whatever reading the document takes, so a
     // private paper's figures are as private as its text.

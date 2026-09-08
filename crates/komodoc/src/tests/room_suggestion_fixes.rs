@@ -164,6 +164,7 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
             outcome: String::new(),
             accept_request: String::new(),
             revision: String::new(),
+            pass: String::new(),
             resolved: false,
             resolved_at: None,
             resolved_in: String::new(),

@@ -27,7 +27,7 @@ mod journal;
 mod operations;
 mod room_edits;
 
-const LATEST_SCHEMA: i64 = 12;
+const LATEST_SCHEMA: i64 = 13;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
 const MIGRATIONS: &[(i64, &str)] = &[
     // Versions are applied in order; append new migrations at the end.
@@ -72,6 +72,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         12,
         include_str!("../../../migrations/0012_account_examples.sql"),
+    ),
+    (
+        13,
+        include_str!("../../../migrations/0013_comment_pass.sql"),
     ),
 ];
 
@@ -314,6 +318,7 @@ pub struct Comment {
     pub source_suffix: Option<String>,
     pub source_position: Option<i64>,
     pub proposed: Option<String>,
+    pub pass: String,
     pub outcome: String,
     pub accept_request: String,
     pub revision: String,

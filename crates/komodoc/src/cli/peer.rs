@@ -202,8 +202,13 @@ pub struct Snapshot {
     pub slug: String,
     #[serde(default)]
     pub title: String,
+    /// Canonical live source-tree revision used by anchored suggestions.
+    #[serde(default)]
+    pub sha: String,
     #[serde(default)]
     pub format: String,
+    #[serde(default)]
+    pub main: String,
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -357,7 +362,30 @@ impl AutomationPeer {
     ) -> Result<OperationResult, String> {
         validate_file_path(path)?;
         let source = (!path.is_empty()).then(|| json!({"path":path,"exact":exact}));
-        self.annotation("comment", request_id, json!({"type":"comment", "body":body, "exact":exact, "source":source, "motivation":"commenting", "request_id":request_id, "version":1, "protocol":"komodoc.room.v1"})).await
+        self.comment_with_source(body, exact, source, None, request_id)
+            .await
+    }
+
+    /// Add a comment with the complete source anchor and captured revision.
+    /// The revision is deliberately sent at the top level, where the REST
+    /// comments protocol records it alongside the source anchor.
+    pub async fn comment_with_source(
+        &self,
+        body: &str,
+        exact: &str,
+        source: Option<Value>,
+        revision: Option<&str>,
+        request_id: &str,
+    ) -> Result<OperationResult, String> {
+        let mut payload = json!({
+            "type":"comment", "body":body, "exact":exact, "source":source,
+            "motivation":"commenting", "request_id":request_id,
+            "version":1, "protocol":"komodoc.room.v1"
+        });
+        if let Some(revision) = revision.filter(|value| !value.is_empty()) {
+            payload["revision"] = json!(revision);
+        }
+        self.annotation("comment", request_id, payload).await
     }
 
     pub async fn reply(
@@ -946,18 +974,27 @@ impl AutomationPeer {
         text: &str,
         request_id: &str,
     ) -> Result<Value, String> {
-        validate_conversation(conversation, token)?;
-        tokio::time::timeout(
-            REQUEST_TIMEOUT,
-            self.chat_request(
-                reqwest::Method::POST,
-                &format!("/{conversation}"),
-                token,
-                Some(json!({"id":request_id,"role":"agent","text":text})),
-            ),
+        self.chat_post_with_results(conversation, token, text, request_id, None)
+            .await
+    }
+
+    pub async fn chat_post_with_results(
+        &self,
+        conversation: &str,
+        token: &str,
+        text: &str,
+        request_id: &str,
+        results: Option<Value>,
+    ) -> Result<Value, String> {
+        let payload = chat_post_payload(request_id, text, results);
+        self.chat_request(
+            reqwest::Method::POST,
+            &format!("/{conversation}"),
+            token,
+            Some(payload),
         )
         .await
-        .map_err(|_| "timed out posting chat reply".to_string())?
+        .map_err(|_| "timed out posting chat reply".to_string())
     }
 
     pub async fn chat_watch(
@@ -1041,6 +1078,30 @@ impl AutomationPeer {
             .map_err(|err| format!("request failed: {err}"))
     }
 
+    async fn asset_bytes(&self, sha: &str) -> Result<Vec<u8>, String> {
+        if sha.len() != 64
+            || !sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(format!("invalid asset digest {sha:?}"));
+        }
+        let endpoint = format!(
+            "{}/api/documents/{}/assets/{sha}",
+            self.link.server(),
+            self.link.slug()
+        );
+        let response = self.request(reqwest::Method::GET, &endpoint, None).await?;
+        if !response.status().is_success() {
+            return Err(http_error(response).await);
+        }
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|err| format!("could not read asset {sha}: {err}"))
+    }
+
     async fn fetch_state(&self, reference: &str) -> Result<Vec<u8>, String> {
         let target = state_reference(self.link.server(), reference)?;
         let response = self.request(reqwest::Method::GET, &target, None).await?;
@@ -1053,6 +1114,14 @@ impl AutomationPeer {
             .map(|bytes| bytes.to_vec())
             .map_err(|err| format!("could not fetch document state: {err}"))
     }
+}
+
+pub(crate) fn chat_post_payload(request_id: &str, text: &str, results: Option<Value>) -> Value {
+    let mut payload = json!({"id":request_id,"role":"agent","text":text});
+    if let Some(results) = results {
+        payload["context"] = json!({"results": results});
+    }
+    payload
 }
 
 fn state_reference(server: &str, reference: &str) -> Result<String, String> {
@@ -1178,6 +1247,8 @@ pub enum AgentCommand {
     Comments { link: String },
     /// Print effective capabilities before attempting a write.
     Capabilities { link: String },
+    /// Compile the live source locally and print diagnostics as JSON.
+    Diagnostics { link: String },
     /// Add a source annotation.
     Comment {
         link: String,
@@ -1186,7 +1257,16 @@ pub enum AgentCommand {
         #[arg(long, default_value = "")]
         exact: String,
         #[arg(long, default_value = "")]
+        prefix: String,
+        #[arg(long, default_value = "")]
+        suffix: String,
+        #[arg(long)]
+        position: Option<i64>,
+        #[arg(long, default_value = "")]
         path: String,
+        /// Revision on which this source anchor was captured.
+        #[arg(long)]
+        revision: Option<String>,
         #[arg(long, value_name = "ID")]
         request_id: Option<String>,
     },
@@ -1265,6 +1345,9 @@ pub enum ChatCommand {
         message: String,
         #[arg(long)]
         request_id: Option<String>,
+        /// JSON result identifiers to relay under context.results.
+        #[arg(long, value_name = "JSON")]
+        results: Option<String>,
     },
 }
 
@@ -1304,6 +1387,7 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
         | AgentCommand::Source { link }
         | AgentCommand::Comments { link }
         | AgentCommand::Capabilities { link }
+        | AgentCommand::Diagnostics { link }
         | AgentCommand::Comment { link, .. }
         | AgentCommand::Reply { link, .. }
         | AgentCommand::Resolve { link, .. }
@@ -1337,13 +1421,21 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
                     token,
                     message,
                     request_id,
+                    results,
                     ..
                 } => {
-                    peer.chat_post(
+                    let results = results
+                        .map(|raw| {
+                            serde_json::from_str(&raw)
+                                .map_err(|err| format!("invalid --results JSON: {err}"))
+                        })
+                        .transpose()?;
+                    peer.chat_post_with_results(
                         &conversation,
                         &chat_token(token)?,
                         &message,
                         &request_id.unwrap_or_else(random_request_id),
+                        results,
                     )
                     .await?
                 }
@@ -1387,10 +1479,18 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
             "{}",
             serde_json::to_string(peer.capabilities()).map_err(|err| err.to_string())?
         ),
+        AgentCommand::Diagnostics { .. } => {
+            let snapshot = peer.snapshot().await?;
+            println!("{}", diagnostics_json_for_peer(&peer, &snapshot).await?);
+        }
         AgentCommand::Comment {
             body,
             exact,
+            prefix,
+            suffix,
+            position,
             path,
+            revision,
             request_id,
             ..
         } => {
@@ -1401,7 +1501,19 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
                 path
             };
             validate_file_path(&path)?;
-            print_result(peer.comment_at(&body, &exact, &path, &id).await?)?;
+            let source = (!path.is_empty()).then(|| {
+                json!({
+                    "path": path,
+                    "exact": exact,
+                    "prefix": prefix,
+                    "suffix": suffix,
+                    "position": position,
+                })
+            });
+            print_result(
+                peer.comment_with_source(&body, &exact, source, revision.as_deref(), &id)
+                    .await?,
+            )?;
         }
         AgentCommand::Reply {
             comment_id,
@@ -1463,6 +1575,144 @@ fn print_result(result: OperationResult) -> Result<(), String> {
         return Err(format!("automation operation failed ({})", result.status));
     }
     Ok(())
+}
+
+/// Compile a snapshot with the same native engine used by publishing. The
+/// command intentionally returns a JSON list so an agent can pass each entry
+/// directly into an explain task without parsing human-oriented compiler
+/// output.
+#[allow(dead_code)]
+pub(crate) fn diagnostics_json(snapshot: &Snapshot) -> Result<String, String> {
+    diagnostics_json_with_files(snapshot, &[])
+}
+
+async fn diagnostics_json_for_peer(
+    peer: &AutomationPeer,
+    snapshot: &Snapshot,
+) -> Result<String, String> {
+    // A `?file=` link selects a directory document's file. Keep that choice
+    // attached to the same snapshot while compiling, rather than silently
+    // switching back to the tree's main file.
+    let selected = snapshot_for_path(snapshot, peer.link.path())?;
+    let mut assets = Vec::new();
+    if let Some(files) = selected.files.as_object() {
+        for (path, entry) in files {
+            if entry.get("kind").and_then(Value::as_str) != Some("asset") {
+                continue;
+            }
+            let Some(sha) = entry.get("sha").and_then(Value::as_str) else {
+                continue;
+            };
+            assets.push((path.clone(), peer.asset_bytes(sha).await?));
+        }
+    }
+    diagnostics_json_with_files(&selected, &assets)
+}
+
+pub(crate) fn snapshot_for_path(snapshot: &Snapshot, path: &str) -> Result<Snapshot, String> {
+    if path.is_empty() {
+        return Ok(snapshot.clone());
+    }
+    let source = snapshot
+        .texts
+        .get(path)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("remote file {path:?} does not exist"))?;
+    let mut selected = snapshot.clone();
+    selected.main = path.to_string();
+    selected.source = source.to_string();
+    selected.source_sha = source_sha(source);
+    // Directory snapshots report the main file's format. A file query can
+    // select another supported format, so resolve the renderer from its own
+    // extension just as the reader does for the document tree.
+    if let Some(format) = crate::document::render::document_format(path) {
+        selected.format = format.to_string();
+    }
+    Ok(selected)
+}
+
+fn diagnostics_json_with_files(
+    snapshot: &Snapshot,
+    asset_files: &[(String, Vec<u8>)],
+) -> Result<String, String> {
+    let path = if snapshot.main.is_empty() {
+        "main".to_string()
+    } else {
+        snapshot.main.clone()
+    };
+    let source = if snapshot.source.is_empty() {
+        snapshot
+            .texts
+            .get(&path)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    } else {
+        snapshot.source.as_str()
+    };
+    let format = snapshot.format.to_ascii_lowercase();
+    let compiled = match format.as_str() {
+        "markdown" | "md" => komodoc_engine::markdown::compile(source, &snapshot.title),
+        "html" | "htm" => komodoc_engine::html::compile(source, &snapshot.title),
+        "typst" | "typ" => {
+            let files: Vec<(String, Vec<u8>)> = snapshot
+                .texts
+                .as_object()
+                .into_iter()
+                .flat_map(|texts| texts.iter())
+                .map(|(name, text)| {
+                    (
+                        name.clone(),
+                        text.as_str().unwrap_or_default().as_bytes().to_vec(),
+                    )
+                })
+                .collect();
+            let mut files = files;
+            files.extend(asset_files.iter().cloned());
+            let (compiled, _) = crate::document::render::read_and_note_from_files(
+                &path,
+                source,
+                &snapshot.title,
+                &files,
+            );
+            compiled
+        }
+        other => {
+            return Err(format!(
+            "unsupported document format {other:?}; diagnostics supports markdown, typst, and html"
+            ))
+        }
+    };
+    let mut output = Vec::with_capacity(compiled.diagnostics.len());
+    for diagnostic in compiled.diagnostics {
+        let diagnostic_path = if diagnostic.file.is_empty() {
+            path.clone()
+        } else {
+            diagnostic.file.clone()
+        };
+        let diagnostic_source = if diagnostic.file.is_empty() {
+            source
+        } else {
+            snapshot
+                .texts
+                .get(&diagnostic.file)
+                .and_then(Value::as_str)
+                .unwrap_or(source)
+        };
+        let source_line = diagnostic
+            .line
+            .checked_sub(1)
+            .and_then(|line| diagnostic_source.lines().nth(line))
+            .unwrap_or_default();
+        output.push(json!({
+            "severity": diagnostic.severity.as_str(),
+            "path": diagnostic_path,
+            "line": diagnostic.line,
+            "column": diagnostic.column,
+            "message": diagnostic.message,
+            "source_line": source_line,
+        }));
+    }
+    serde_json::to_string(&output).map_err(|err| format!("could not encode diagnostics: {err}"))
 }
 
 fn random_request_id() -> String {

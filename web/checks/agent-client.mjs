@@ -4,7 +4,9 @@ import { createAgentClient } from "../src/lib/agent-client.js";
 const requests = [];
 const fetcher = async (url, init) => {
   requests.push({ url, ...init, headers: { ...init.headers } });
-  const route = new URL(url, "https://docs.example").pathname.split("/chat")[1];
+  const pathname = new URL(url, "https://docs.example").pathname;
+  if (pathname.endsWith("/assistant/capabilities")) return Response.json({ can_read: true, can_comment: true, can_edit: false });
+  const route = pathname.split("/chat")[1];
   if (route === "") return Response.json({ id: "conversation-1", token: "chat-secret" });
   if (route === "/conversation-1" && init.method === "DELETE") return Response.json({ deleted: true });
   throw new Error(`unexpected route ${route} ${init.method}`);
@@ -50,6 +52,10 @@ try {
   assert.equal(created.headers["X-Komodoc-Client"], "shell");
   assert.equal(created.headers["X-Komodoc-Key"], "document-secret");
   assert.equal(created.headers["X-Komodoc-Chat-Token"], undefined);
+  const capabilities = await client.capabilities();
+  assert.deepEqual(capabilities, { can_read: true, can_comment: true, can_edit: false });
+  assert.equal(requests[1].url, "/api/documents/paper/assistant/capabilities");
+  assert.equal(requests[1].headers["X-Komodoc-Key"], "document-secret");
   const socket = FakeWebSocket.instances[0];
   assert.equal(new URL(socket.url).searchParams.get("k"), "document-secret");
   assert.equal(socket.url.includes("chat-secret"), false, "chat capability stays out of the URL");
@@ -63,11 +69,11 @@ try {
   assert.equal(sent.type, "message");
   assert.equal(sent.text, "Explain this");
   assert.equal(sent.context.file, "paper.md");
-  assert.equal(sent.context.selection, "A passage");
+  assert.deepEqual(sent.context.selection, { path: "paper.md", exact: "A passage", prefix: "", suffix: "", position: null });
   assert.match(sent.id, /^[a-z0-9-]+$/);
   assert.deepEqual(client.current.messages.at(-1), {
     id: sent.id, role: "user", text: "Explain this",
-    context: { file: "paper.md", selection: "A passage" },
+    context: { file: "paper.md", selection: { path: "paper.md", exact: "A passage", prefix: "", suffix: "", position: null } },
   });
 } finally { client.dispose(); }
 

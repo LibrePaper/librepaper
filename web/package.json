@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node checks/vocabulary.js && vite build && vite build --config vite.agent.config.js",
     "dev": "vite build --watch",
-    "check": "node checks/vocabulary.js && node checks/landing.mjs && node checks/downloads.mjs && node checks/diagnostics.mjs && node checks/sync.js && node checks/timeline.mjs && node checks/suggestions.mjs && node checks/redlines.mjs && node checks/passages.mjs && node checks/anchor.mjs && node checks/orphan.mjs && node checks/latex-log.mjs && node checks/viewer.mjs && node checks/review-fixes.mjs && node checks/submissions.mjs && node checks/renderer-worker.mjs && node checks/renderer-wasm.mjs && node checks/tree-digest.mjs && node checks/reader-races.mjs && node checks/file-manager.mjs && node checks/latex-engine.mjs && node checks/latex-resources.mjs && node checks/latex-controller.mjs && node checks/latex-route.mjs && node checks/latex-bibliography.mjs && node checks/latex-local.mjs && node checks/latex-vm.mjs && node checks/latex-reader.mjs && node checks/pdf-fit.mjs && node checks/agent-client.mjs",
+    "check": "node checks/vocabulary.js && node checks/landing.mjs && node checks/downloads.mjs && node checks/diagnostics.mjs && node checks/sync.js && node checks/timeline.mjs && node checks/suggestions.mjs && node checks/redlines.mjs && node checks/passages.mjs && node checks/anchor.mjs && node checks/orphan.mjs && node checks/latex-log.mjs && node checks/viewer.mjs && node checks/review-fixes.mjs && node checks/submissions.mjs && node checks/renderer-worker.mjs && node checks/renderer-wasm.mjs && node checks/tree-digest.mjs && node checks/reader-races.mjs && node checks/file-manager.mjs && node checks/latex-engine.mjs && node checks/latex-resources.mjs && node checks/latex-controller.mjs && node checks/latex-route.mjs && node checks/latex-bibliography.mjs && node checks/latex-local.mjs && node checks/latex-vm.mjs && node checks/latex-reader.mjs && node checks/pdf-fit.mjs && node checks/agent-client.mjs && node checks/assistant.mjs && node checks/assistant-review.mjs && node checks/reader-assistant.mjs",
     "check:browser": "node checks/editor-browser.mjs && node checks/files-browser.mjs",
     "check:history-browser": "node tools/history-browser.mjs",
     "check:history-merge": "node checks/history-merge-browser.mjs",
@@ -14,7 +14,8 @@
     "check:typst-browser": "node tools/typst-pdf-browser.mjs ../target/release/komodoc",
     "check:latex-browser": "node checks/latex-wasmtex-browser.mjs",
     "check:agent-browser": "node checks/agent-browser.mjs",
-    "check:responsive-browser": "node checks/responsive-browser.mjs"
+    "check:responsive-browser": "node checks/responsive-browser.mjs",
+    "check:assistant-browser": "node checks/agent-browser.mjs && node checks/assistant-review-browser.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

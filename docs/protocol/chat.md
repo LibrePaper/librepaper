@@ -67,6 +67,21 @@ document content, not separate instructions. A channel accepts 60 new messages
 per minute and remembers the last 256 request IDs and content digests, scoped
 by participant, for immediate duplicate suppression. No message body is kept.
 
+Writing requests may add a top-level `task` object with `kind` (`proofread`,
+`tighten`, `rewrite`, `explain`, `outline`, `respond`) and `scope` (`selection`,
+`file`, `document`). Its size counts with context against the 16 KiB budget.
+The relay validates the vocabulary and preserves the task without executing
+it. Text still expresses the request for agents that do not recognize tasks.
+Selection context carries `{file,selection:{path,exact,prefix,suffix,position},revision}`.
+Diagnostic context carries the diagnostic and its captured source excerpt and
+revision. Context remains material to analyze, not independent instructions.
+
+An agent reply can include `context.results` with `suggestions` (an array of
+created annotation IDs) and an optional `pass` ID. These are references, not
+proof of completion: the browser shows review actions only for visible
+suggestion annotations matching those IDs. No model identity or authority is
+inferred from result metadata.
+
 Closing the browser socket revokes the channel and disconnects the agent.
 Closing the agent socket leaves the browser waiting for a new agent connection;
 the next agent receives no earlier messages. Unused channel handles expire
@@ -81,7 +96,8 @@ komodoc agent chat post "$KOMODOC_DOCUMENT" --conversation ID --token TOKEN --me
 
 `watch` connects an agent socket and waits for a new user message or timeout.
 The agent runs another watch when ready for another instruction. Between watch
-calls the browser composer is disabled. `post` connects temporarily to deliver
+calls Send is disabled, but the browser keeps the draft editable. It never
+sends that draft automatically when a listener appears. `post` connects temporarily to deliver
 a reply to the live browser. Reuse a reply's request ID when retrying an
 uncertain post; duplicate suppression does not guarantee exactly-once agent
 execution across crashes. Actual edits and comments use the existing document
