@@ -408,3 +408,58 @@ async fn an_unreachable_mirror_warns_and_does_not_die() {
         .await
         .is_none());
 }
+
+// R28 -- a doubly percent-encoded parent segment must not reach the upstream
+// mirror outside the configured base, while ordinary and singly-encoded
+// mirror paths keep working.
+mod r28_latex_mirror_containment {
+    use crate::server::latex::Mirror;
+
+    #[tokio::test]
+    async fn doubly_encoded_parent_is_refused_and_never_reaches_upstream() {
+        let router = axum::Router::new()
+            .fallback(|uri: axum::http::Uri| async move { uri.path().to_string() });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let mirror = Mirror::Upstream {
+            base: format!("http://{addr}/latex/"),
+            client: reqwest::Client::new(),
+        };
+
+        // The escape from R28: this must 404 locally, never reach the
+        // upstream fixture, and certainly never see `/private.json` (which
+        // would be the fixture's own path, outside `/latex/`).
+        let result = mirror.get("%252e%252e/private.json").await;
+        assert_eq!(result.status, 404);
+        let body = String::from_utf8_lossy(&result.bytes).to_string();
+        assert_ne!(
+            body, "/private.json",
+            "the doubly encoded parent escaped the mirror base"
+        );
+
+        // A singly-encoded parent must also be refused.
+        let result = mirror.get("%2e%2e/private.json").await;
+        assert_eq!(result.status, 404);
+
+        // manifest.json still passes through to the real upstream path.
+        let result = mirror.get("manifest.json").await;
+        assert_eq!(result.status, 200);
+        assert_eq!(
+            String::from_utf8(result.bytes).unwrap(),
+            "/latex/manifest.json"
+        );
+
+        // A nested digest-named file still passes through too.
+        let result = mirror
+            .get("swiftlatex-pdftex/2dfb2fc534b459b5/swiftlatexpdftex.wasm")
+            .await;
+        assert_eq!(result.status, 200);
+        assert_eq!(
+            String::from_utf8(result.bytes).unwrap(),
+            "/latex/swiftlatex-pdftex/2dfb2fc534b459b5/swiftlatexpdftex.wasm"
+        );
+    }
+}

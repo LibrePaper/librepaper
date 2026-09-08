@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::cli::export::{render_jsonld, render_markdown, ANNOTATION_CONTEXT};
 use crate::cli::short_ids;
 use crate::config::Configuration;
-use crate::room::{Comment, Region, Reply};
+use crate::room::{self, Comment, Region, Reply};
 
 fn sample_comments() -> Vec<Comment> {
     vec![Comment {
@@ -456,4 +456,30 @@ fn since_keeps_the_comments_made_at_or_after_a_checkpoint() {
         crate::cli::export::since(a_review(), &checkpoints, "nowhere").len(),
         3
     );
+}
+
+// R30 -- a reply to a figure comment must appear in the response-to-reviewers
+// export exactly once, with its creator, the same as a reply to a text
+// comment does.
+#[test]
+fn response_export_includes_figure_reply_exactly_once() {
+    let item = room::Comment {
+        body: "figure question".into(),
+        region: Some(room::Region::default()),
+        replies: vec![room::Reply {
+            body: "THE AUTHOR ANSWER".into(),
+            creator: "Author".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let report =
+        crate::cli::export::render_response("title", &[item], "", &Configuration::default(), "");
+    assert!(report.contains("figure question"));
+    let occurrences = report.matches("THE AUTHOR ANSWER").count();
+    assert_eq!(
+        occurrences, 1,
+        "expected the figure reply exactly once, found {occurrences} in: {report}"
+    );
+    assert!(report.contains("**Author:** THE AUTHOR ANSWER"));
 }

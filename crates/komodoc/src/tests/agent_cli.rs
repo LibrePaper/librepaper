@@ -1,5 +1,5 @@
 //! Library-level coverage for a headless peer joining the same room as a
-//! browser. The executable boundary is covered by `tests/agent_cli.rs`; this
+//! browser. The executable boundary is covered by `tests/agent_binary.rs`; this
 //! module intentionally uses the in-process test server so it can coordinate
 //! the two Yjs replicas and reopen the durable store.
 

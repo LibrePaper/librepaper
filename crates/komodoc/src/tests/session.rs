@@ -1,6 +1,5 @@
-//! Regression tests for the findings of REVIEW-codex-crates.md (session group).
-#![allow(unused_imports)]
-use super::*;
+//! The shared document as the server holds it: restores that keep a peer's
+//! words, edits at UTF-16 edges, and the limits admission enforces.
 use std::collections::{BTreeMap, HashMap};
 
 use crate::document::history::{Tree, TreeEntry};
@@ -12,7 +11,7 @@ use yrs::{Map, Transact};
 /// browser path does; the room's three-way merge then supplies the body that
 /// the path-based restore applies as separate word edits.
 #[test]
-fn review_restore_keeps_a_disjoint_peer_word() {
+fn restore_keeps_a_disjoint_peer_word() {
     let doc = session::new_doc();
     let base = "alpha beta gamma";
     let id = session::put_text(&doc, "main.md", base);
@@ -56,7 +55,7 @@ fn review_restore_keeps_a_disjoint_peer_word() {
 /// (Unicode scalar) positions first, so this must now simply succeed and
 /// read back the replacement text.
 #[test]
-fn review_replacing_emoji_splits_surrogate_pair() {
+fn replacing_emoji_splits_surrogate_pair() {
     let doc = session::new_doc();
     session::replace_text(&doc, "\u{1F600}", "main.md"); // 😀
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -73,7 +72,7 @@ fn review_replacing_emoji_splits_surrogate_pair() {
 /// same boundary code without any surrogate pair split at stake; it must
 /// keep working exactly as it did before the fix.
 #[test]
-fn review_adjacent_emoji_replacement() {
+fn adjacent_emoji_replacement() {
     let doc = session::new_doc();
     session::replace_text(&doc, "\u{1F600}\u{1F601}", "main.md"); // 😀😁
     session::replace_text(&doc, "\u{1F601}\u{1F600}", "main.md"); // 😁😀
@@ -84,7 +83,7 @@ fn review_adjacent_emoji_replacement() {
 /// not disturb the character itself, and must not offer Yrs a boundary
 /// inside its surrogate pair.
 #[test]
-fn review_insertion_and_deletion_around_emoji() {
+fn insertion_and_deletion_around_emoji() {
     let doc = session::new_doc();
     session::replace_text(&doc, "a\u{1F600}b", "main.md"); // a😀b
     session::replace_text(&doc, "aXX\u{1F600}b", "main.md"); // insert before
@@ -100,7 +99,7 @@ fn review_insertion_and_deletion_around_emoji() {
 /// then rebuild a fresh document from the encoded state and confirm it reads
 /// the replacement rather than failing to decode/apply.
 #[test]
-fn review_emoji_replacement_round_trips_through_encoded_update() {
+fn emoji_replacement_round_trips_through_encoded_update() {
     let doc = session::new_doc();
     session::replace_text(&doc, "\u{1F600}", "main.md");
     session::replace_text(&doc, "\u{1F601}", "main.md");
@@ -115,7 +114,7 @@ fn review_emoji_replacement_round_trips_through_encoded_update() {
 /// to catch it exactly. `admit_update`'s rehearsal now sums every retained
 /// string value, including `meta`, so this must be refused as `TooLarge`.
 #[test]
-fn review_metadata_bypasses_byte_limit() {
+fn metadata_bypasses_byte_limit() {
     let doc = session::new_doc();
     let meta = doc.get_or_insert_map(session::META);
     meta.insert(&mut doc.transact_mut(), "payload", "x".repeat(200_000));
@@ -134,7 +133,7 @@ fn review_metadata_bypasses_byte_limit() {
 /// fresh batch of 20 files must now be rejected as `TooMany` under a ceiling
 /// of 5.
 #[test]
-fn review_file_count_fast_path_rejects_oversized_batch() {
+fn file_count_fast_path_rejects_oversized_batch() {
     let doc = session::new_doc();
     for i in 0..20 {
         session::put_text(&doc, &format!("{i}.txt"), "x");
@@ -152,7 +151,7 @@ fn review_file_count_fast_path_rejects_oversized_batch() {
 /// legitimate files rejected even a no-op update. A document with 3 files
 /// under a ceiling of 5 must admit a no-op update.
 #[test]
-fn review_file_count_no_op_on_valid_document_fits() {
+fn file_count_no_op_on_valid_document_fits() {
     let legitimate = session::new_doc();
     for i in 0..3 {
         session::put_text(&legitimate, &format!("{i}.txt"), "x");

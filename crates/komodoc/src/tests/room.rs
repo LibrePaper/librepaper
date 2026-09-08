@@ -1,9 +1,5 @@
-//! Regression tests for the findings of REVIEW-codex-crates.md (room group).
-//! Each test below inverts the probe of the same name from the review's
-//! diagnostic module: where the probe asserted the defect, this asserts the
-//! fix.
-#![allow(unused_imports)]
-use super::*;
+//! The room below the routes: what it persists and when, how it checkpoints
+//! under contention, and what it does when the store fails under it.
 
 use crate::config::Configuration;
 use crate::document::history;
@@ -229,7 +225,7 @@ impl BlobStore for HookStore {
 /// from the earlier generation must not have cleared `dirty` out from under
 /// it.
 #[tokio::test]
-async fn review_checkpoint_race_drops_dirty_edit() {
+async fn checkpoint_race_drops_dirty_edit() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     let sha = store.get("probe").await.unwrap().sha;
     store
@@ -272,7 +268,7 @@ async fn review_checkpoint_race_drops_dirty_edit() {
 /// Edits proceed during a checkpoint's storage write and remain dirty until
 /// their own generation has been written.
 #[tokio::test]
-async fn review_edit_during_session_write_stays_dirty() {
+async fn edit_during_session_write_stays_dirty() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     store
         .blobs
@@ -318,7 +314,7 @@ async fn review_edit_during_session_write_stays_dirty() {
 /// same content actually writes the manifest instead of returning success
 /// through the deduplication branch with nothing on disk.
 #[tokio::test]
-async fn review_failed_manifest_write_never_retries() {
+async fn failed_manifest_write_never_retries() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     store
         .blobs
@@ -350,7 +346,7 @@ async fn review_failed_manifest_write_never_retries() {
 /// that completes while a checkpoint's write is in flight must survive that
 /// checkpoint, both in memory and once reloaded from storage.
 #[tokio::test]
-async fn review_concurrent_label_is_lost_by_checkpoint() {
+async fn concurrent_label_is_lost_by_checkpoint() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     let a = store.get("probe").await.unwrap().sha;
     store
@@ -424,7 +420,7 @@ async fn review_concurrent_label_is_lost_by_checkpoint() {
 /// checkpoint tree that fails to load during pruning must not cost its asset
 /// its life. Nothing is deleted on a pass where a tree could not be read.
 #[tokio::test]
-async fn review_failed_tree_read_prunes_retained_asset() {
+async fn failed_tree_read_prunes_retained_asset() {
     let config = Configuration {
         asset_grace: 0,
         ..Configuration::default()
@@ -470,7 +466,7 @@ async fn review_failed_tree_read_prunes_retained_asset() {
 /// rather than open empty and writable, and the corrupt object must be
 /// preserved rather than silently overwritten.
 #[tokio::test]
-async fn review_corrupt_session_overwritten_on_load() {
+async fn corrupt_session_overwritten_on_load() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     store
         .blobs
@@ -524,7 +520,7 @@ async fn review_corrupt_session_overwritten_on_load() {
 /// to a previous tree's content must move the index head and the in-memory
 /// pointer, even though the manifest gains no duplicate entry.
 #[tokio::test]
-async fn review_revisiting_checkpoint_leaves_wrong_head() {
+async fn revisiting_checkpoint_leaves_wrong_head() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     let a = room.tree().await.digest();
@@ -553,7 +549,7 @@ async fn review_revisiting_checkpoint_leaves_wrong_head() {
 /// selected tree, rather than merging against the first request's half-made
 /// state.
 #[tokio::test]
-async fn review_concurrent_restores_are_serialized() {
+async fn concurrent_restores_are_serialized() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     store
         .blobs
@@ -630,7 +626,7 @@ async fn review_concurrent_restores_are_serialized() {
 /// sockets and nothing new since its checkpoint must report idle on the very
 /// first tick, without hashing the whole tree.
 #[tokio::test]
-async fn review_quiet_room_never_reports_idle() {
+async fn quiet_room_never_reports_idle() {
     let (_dir, _store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     {
@@ -649,7 +645,7 @@ async fn review_quiet_room_never_reports_idle() {
 /// genuinely changed text right afterward is taken immediately -- not
 /// deferred -- and the index sha moves.
 #[tokio::test]
-async fn review_idle_tick_defers_next_changed_checkpoint() {
+async fn idle_tick_defers_next_changed_checkpoint() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     let old = store.get("probe").await.unwrap().sha;
@@ -675,7 +671,7 @@ async fn review_idle_tick_defers_next_changed_checkpoint() {
 /// extension, so the checkpoint and index entry agree on what the main file
 /// actually is.
 #[tokio::test]
-async fn review_changing_main_does_not_change_format() {
+async fn changing_main_does_not_change_format() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     {
@@ -693,7 +689,7 @@ async fn review_changing_main_does_not_change_format() {
 /// R27's `main_path_for` fix: a single-file LaTeX document's implied main
 /// file is `main.tex`, not `main.txt`.
 #[test]
-fn review_latex_main_path_is_tex_not_txt() {
+fn latex_main_path_is_tex_not_txt() {
     assert_eq!(room::main_path_for("", "latex"), "main.tex");
 }
 
@@ -705,7 +701,7 @@ fn review_latex_main_path_is_tex_not_txt() {
 /// rendering bytes from the quota until the next checkpoint happens to
 /// recompute it.
 #[tokio::test]
-async fn review_persist_forgets_asset_and_rendering_charges() {
+async fn persist_forgets_asset_and_rendering_charges() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     room.put_asset(vec![1; 100000], (200000, 200000))
@@ -735,7 +731,7 @@ async fn review_persist_forgets_asset_and_rendering_charges() {
 /// more. With `history_max=1`, four distinct revisions must leave one
 /// checkpoint and only its one text blob, not all four.
 #[tokio::test]
-async fn review_shed_history_leaks_text_blobs() {
+async fn shed_history_leaks_text_blobs() {
     let mut config = Configuration::default();
     config.session.history_max = 1;
     let (_dir, store, rooms) = fixture(config).await;
@@ -759,7 +755,7 @@ async fn review_shed_history_leaks_text_blobs() {
 /// still in the manifest, even after an earlier checkpoint that also shared
 /// it has been shed.
 #[tokio::test]
-async fn review_shed_history_keeps_blob_shared_by_retained_checkpoints() {
+async fn shed_history_keeps_blob_shared_by_retained_checkpoints() {
     let mut config = Configuration::default();
     config.session.history_max = 2;
     let (_dir, store, rooms) = fixture(config).await;
@@ -795,7 +791,7 @@ async fn review_shed_history_keeps_blob_shared_by_retained_checkpoints() {
 /// pre-upload total to read -- it must be refused by a reservation, not
 /// admitted alongside the first.
 #[tokio::test]
-async fn review_concurrent_asset_admission_exceeds_limit() {
+async fn concurrent_asset_admission_exceeds_limit() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     store
         .blobs
@@ -831,7 +827,7 @@ async fn review_concurrent_asset_admission_exceeds_limit() {
 /// it, rather than accept it into memory and let persistence be the only
 /// thing that later refuses to save it.
 #[tokio::test]
-async fn review_read_only_room_relays_edits() {
+async fn read_only_room_relays_edits() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     let other = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     other.attach_store(store);
@@ -858,7 +854,7 @@ async fn review_read_only_room_relays_edits() {
 /// `name_asset` must leave the in-memory document untouched rather than
 /// diverge from the copy another server is actually persisting.
 #[tokio::test]
-async fn review_read_only_room_mutators_do_not_mutate() {
+async fn read_only_room_mutators_do_not_mutate() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     let other = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     other.attach_store(store);
@@ -1229,7 +1225,7 @@ async fn room_try_get_refuses_hard_count_limit() {
 /// unverified rather than silently extending it on the strength of an
 /// unconfirmed answer.
 #[tokio::test]
-async fn review_lease_error_reports_held() {
+async fn lease_error_reports_held() {
     let dir = tempfile::tempdir().unwrap();
     let hooked = HookStore::new(Arc::new(blob::FsStore::new(dir.path())) as Arc<dyn BlobStore>);
     *hooked.fail.lock().unwrap() = Some(blob::room_lock_key("probe"));
@@ -1255,7 +1251,7 @@ async fn review_lease_error_reports_held() {
 /// servable by `get` while an unrelated cold room's lease read is still
 /// blocked in flight.
 #[tokio::test]
-async fn review_get_does_not_block_on_a_cold_room() {
+async fn get_does_not_block_on_a_cold_room() {
     let dir = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path()));
     let config = Arc::new(Configuration::default());

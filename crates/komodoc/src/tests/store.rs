@@ -1,5 +1,5 @@
-//! Regression tests for the findings of REVIEW-codex-crates.md (store group).
-#![allow(unused_imports)]
+//! The store and the catalogue under it: what a publication goes through,
+//! what two stores over one bucket agree on, and what survives a reopen.
 use super::*;
 
 #[tokio::test]
@@ -53,7 +53,7 @@ async fn publish(store: &store::Store, slug: &str, title: &str) {
 /// `get` on the second store must report the name the first store set, not
 /// the stale value it started with.
 #[tokio::test]
-async fn review_index_conflict_retries_and_converges() {
+async fn index_conflict_retries_and_converges() {
     let (_dir, blobs, config) = shared_blobs();
     let first = store::Store::open(blobs.clone(), config.clone())
         .await
@@ -87,7 +87,7 @@ async fn review_index_conflict_retries_and_converges() {
 /// path does it. `second` is opened before `first` ever publishes "fresh",
 /// so its in-memory index starts out with no knowledge that it will exist.
 #[tokio::test]
-async fn review_put_on_first_store_visible_on_second() {
+async fn put_on_first_store_visible_on_second() {
     let (_dir, blobs, config) = shared_blobs();
     let first = store::Store::open(blobs.clone(), config.clone())
         .await
@@ -181,7 +181,7 @@ async fn catalog_account_owner_is_never_owned_by_anonymous_callers() {
 /// rather than dropping the checkpoint's size and sha on the floor, and the
 /// retry lands on top of whatever the winner left, not over it.
 #[tokio::test]
-async fn review_record_history_conflict_retries_and_lands() {
+async fn record_history_conflict_retries_and_lands() {
     let (_dir, blobs, config) = shared_blobs();
     let first = store::Store::open(blobs.clone(), config.clone())
         .await

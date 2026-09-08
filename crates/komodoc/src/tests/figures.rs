@@ -737,3 +737,34 @@ async fn a_history_is_as_readable_as_the_document_it_belongs_to() {
     );
     assert_eq!(get_same_origin(&owner, &server.url, &path).await.0, 200);
 }
+
+// R29 -- a markdown image destination with a space, which comrak
+// percent-encodes before the resolver ever sees it, must still resolve to
+// the asset the resolver has under its real, unencoded name. A genuine
+// external URL must be left untouched.
+#[test]
+fn markdown_image_path_with_space_resolves_to_the_asset() {
+    let html = komodoc_engine::markdown::render_with("![plot](<fig/my plot.png>)", "", &|path| {
+        if path == "fig/my plot.png" {
+            Some("data:image/png;base64,AAAA".into())
+        } else {
+            None
+        }
+    });
+    assert!(
+        html.contains("src=\"data:image/png;base64,AAAA\""),
+        "the encoded image path was not resolved: {html}"
+    );
+    assert!(!html.contains("fig/my%20plot.png"));
+}
+
+#[test]
+fn markdown_external_image_is_left_alone() {
+    let html = komodoc_engine::markdown::render_with(
+        "![plot](https://example.test/plot.png)",
+        "",
+        &|_path| Some("data:image/png;base64,SHOULD-NOT-BE-USED".into()),
+    );
+    assert!(html.contains("src=\"https://example.test/plot.png\""));
+    assert!(!html.contains("SHOULD-NOT-BE-USED"));
+}

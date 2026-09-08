@@ -544,3 +544,42 @@ async fn a_bucket_source_round_trips() {
         b"# hello"
     );
 }
+
+// R32 -- the path signed in the canonical request must be exactly the path
+// that goes out on the wire, even when the configured prefix contains a
+// space (which used to yield `%20` on the wire but `%2520` in the canonical
+// request).
+#[test]
+fn s3_canonical_path_matches_the_transmitted_path_for_a_prefix_with_a_space() {
+    use crate::storage::s3::{canonical_path, S3Store};
+    use crate::storage::StorageOptions;
+
+    let options = StorageOptions {
+        endpoint: "https://example.invalid".into(),
+        bucket: "bucket".into(),
+        region: "auto".into(),
+        prefix: "a prefix/with space".into(),
+        access_key: "key".into(),
+        secret_key: "secret".into(),
+        ..StorageOptions::default()
+    };
+    let store = S3Store::new(&options);
+    let target = store.url("document.html");
+    let parsed = url::Url::parse(&target).unwrap();
+
+    let transmitted_path = parsed.path().to_string();
+    let signed_path = canonical_path(&parsed);
+
+    assert_eq!(
+        signed_path, transmitted_path,
+        "the canonical request must sign exactly the path that was sent"
+    );
+    assert!(
+        transmitted_path.contains("%20"),
+        "the space should be singly encoded on the wire: {transmitted_path}"
+    );
+    assert!(
+        !signed_path.contains("%2520"),
+        "the canonical request must not double-encode the space: {signed_path}"
+    );
+}
