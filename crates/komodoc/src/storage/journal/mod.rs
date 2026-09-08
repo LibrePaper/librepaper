@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use rusqlite::{params, OptionalExtension};
@@ -21,12 +21,14 @@ use crate::storage::blob::{
 };
 use crate::storage::catalog::{Catalog, CatalogError};
 
+mod budget;
 mod coordinator;
 mod recovery;
 mod runtime;
 mod segment;
 mod store;
 
+pub use budget::*;
 pub use coordinator::*;
 pub use recovery::*;
 pub use runtime::*;
@@ -37,9 +39,28 @@ pub use store::*;
 pub enum JournalError {
     Invalid(String),
     Corrupt(String),
+    /// A permanent size refusal: the work is past a ceiling this journal
+    /// format supports, and no retry of the same work can succeed.
     Limit(String),
+    /// A temporary capacity refusal: a shared budget is momentarily full and
+    /// the same work may succeed once another operation settles. It is a
+    /// separate variant because reporting saturation as a permanent limit
+    /// tells a person their document can never be saved, which is false.
+    Busy(String),
     Storage(String),
     Catalog(CatalogError),
+}
+
+impl JournalError {
+    /// Whether retrying the identical request is pointless.
+    pub fn is_permanent(&self) -> bool {
+        matches!(self, Self::Limit(_) | Self::Invalid(_) | Self::Corrupt(_))
+    }
+
+    /// Whether the same request may succeed once capacity frees up.
+    pub fn is_temporary(&self) -> bool {
+        matches!(self, Self::Busy(_))
+    }
 }
 
 impl fmt::Display for JournalError {
@@ -48,6 +69,7 @@ impl fmt::Display for JournalError {
             Self::Invalid(message) => write!(f, "invalid journal request: {message}"),
             Self::Corrupt(message) => write!(f, "corrupt journal segment: {message}"),
             Self::Limit(message) => write!(f, "journal limit exceeded: {message}"),
+            Self::Busy(message) => write!(f, "journal capacity is full: {message}"),
             Self::Storage(message) => write!(f, "journal storage error: {message}"),
             Self::Catalog(error) => write!(f, "journal catalogue error: {error}"),
         }

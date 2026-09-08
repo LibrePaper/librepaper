@@ -362,11 +362,12 @@ async fn seed_with_store(
             .unwrap_or_else(|err| die(format!("could not read local journal state: {err}")))
             .deployment_id;
         if !deployment_id.is_empty() {
-            let journal = crate::storage::journal::JournalRuntime::new_with_limits(
+            let journal = crate::storage::journal::JournalRuntime::new_with_policy(
                 catalog.clone(),
                 blobs.clone(),
                 deployment_id,
-                crate::storage::journal::CoordinatorLimits::default(),
+                crate::storage::journal::CoordinatorLimits::from_persistence(&config.persistence()),
+                config.persistence(),
                 config.storage.per_owner,
                 config.storage.total,
             )

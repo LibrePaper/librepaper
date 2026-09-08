@@ -26,6 +26,10 @@ pub struct JournalRuntime {
     pub(super) owner_limit: i64,
     pub(super) total_limit: i64,
     pub(super) next_operation: AtomicU64,
+    /// The one persistence policy this runtime enforces: `E` for what it will
+    /// accept, `Q` through the coordinator, and `M` through `memory`.
+    pub(super) persistence: crate::config::PersistenceLimits,
+    pub(super) memory: Arc<MemoryBudget>,
 }
 
 /// A compaction borrow is scoped to the object-publication attempt. If
@@ -88,10 +92,44 @@ impl JournalRuntime {
         owner_limit: i64,
         total_limit: i64,
     ) -> JournalResult<Arc<Self>> {
+        Self::new_with_policy(
+            catalog,
+            blobs,
+            deployment_id,
+            limits,
+            crate::config::PersistenceLimits::default(),
+            owner_limit,
+            total_limit,
+        )
+    }
+
+    /// The constructor a deployment uses: it validates the persistence policy
+    /// before anything can be appended, so a configuration that could accept
+    /// work it can never durably save fails at startup rather than at the
+    /// first oversized save.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_policy(
+        catalog: Arc<Catalog>,
+        blobs: Arc<dyn BlobStore>,
+        deployment_id: impl Into<String>,
+        limits: CoordinatorLimits,
+        persistence: crate::config::PersistenceLimits,
+        owner_limit: i64,
+        total_limit: i64,
+    ) -> JournalResult<Arc<Self>> {
         if owner_limit < -1 || total_limit < -1 {
             return Err(JournalError::Invalid("invalid journal quota limits".into()));
         }
+        persistence.validate().map_err(JournalError::Invalid)?;
+        if limits.max_queued_bytes < persistence.max_encoded_snapshot_bytes {
+            return Err(JournalError::Invalid(
+                "the journal queue cannot hold one maximum snapshot".into(),
+            ));
+        }
+        let memory = MemoryBudget::new(persistence.max_staging_bytes);
         Ok(Arc::new(Self {
+            persistence,
+            memory,
             coordinator: AsyncMutex::new(JournalCoordinator::new(limits)?),
             publication: catalog.journal_gate.clone(),
             pending: AsyncMutex::new(HashSet::new()),
@@ -103,6 +141,18 @@ impl JournalRuntime {
             total_limit,
             next_operation: AtomicU64::new(1),
         }))
+    }
+
+    /// The persistence policy every caller of this runtime shares.
+    pub fn persistence(&self) -> crate::config::PersistenceLimits {
+        self.persistence
+    }
+
+    /// The memory admission `append` and `compact` charge their copies to.
+    /// Exposed so tests can read its counters and so a caller that stages a
+    /// snapshot of its own can be charged against the same budget.
+    pub fn memory(&self) -> Arc<MemoryBudget> {
+        Arc::clone(&self.memory)
     }
 
     pub fn latest_sequence(&self, storage_id: &str, epoch: u64) -> JournalResult<u64> {
@@ -209,6 +259,31 @@ impl JournalRuntime {
                 "invalid journal append identity".into(),
             ));
         }
+        if storage_id.len() > MAX_JOURNAL_IDENTITY_BYTES {
+            return Err(JournalError::Invalid(
+                "journal storage identity is past the framing limit".into(),
+            ));
+        }
+        // `E`, at the last place before a payload becomes durable work. The
+        // room refuses an oversized candidate before applying it; this is the
+        // backstop for every other caller, so nothing can be acknowledged
+        // that a recovery base could not carry back.
+        if payload.len() > self.persistence.max_encoded_snapshot_bytes {
+            return Err(JournalError::Limit(format!(
+                "a snapshot of {} bytes is past the {} byte encoded ceiling",
+                payload.len(),
+                self.persistence.max_encoded_snapshot_bytes
+            )));
+        }
+        // `M`, before the first large copy. The permit is owned for the whole
+        // operation and released by Drop, so a cancelled append returns it
+        // without an await in its unwind.
+        let _memory = self
+            .memory
+            .acquire(crate::config::PersistenceLimits::staging_cost(
+                payload.len(),
+            ))
+            .await?;
         let identity = (storage_id.to_owned(), epoch, sequence);
         loop {
             let wait = {
@@ -319,15 +394,23 @@ impl JournalRuntime {
         let seal_result = {
             let mut coordinator = self.coordinator.lock().await;
             match coordinator.seal(true) {
-                Ok(segments) => Ok(segments),
+                // Charged as executing while the seal still holds the queue
+                // mutex, so the round's bytes never leave `Q` unaccounted
+                // between the queue and its object I/O. `_executing` is
+                // released by Drop on every path out of this function,
+                // cancellation included.
+                Ok(segments) => {
+                    let executing = coordinator.begin_executing(&segments);
+                    Ok((segments, executing))
+                }
                 Err(error) => {
                     coordinator.remove_identity(&identity.0, identity.1, identity.2);
                     Err(error)
                 }
             }
         };
-        let segments = match seal_result {
-            Ok(segments) => segments,
+        let (segments, _executing) = match seal_result {
+            Ok(sealed) => sealed,
             Err(error) => {
                 self.finish_pending(std::iter::once(identity)).await;
                 return Err(error);
@@ -609,6 +692,28 @@ impl JournalRuntime {
                 "invalid journal compaction identity".into(),
             ));
         }
+        if storage_id.len() > MAX_JOURNAL_IDENTITY_BYTES {
+            return Err(JournalError::Invalid(
+                "journal storage identity is past the framing limit".into(),
+            ));
+        }
+        if payload.len() > self.persistence.max_encoded_snapshot_bytes {
+            return Err(JournalError::Limit(format!(
+                "a recovery base of {} bytes is past the {} byte encoded ceiling",
+                payload.len(),
+                self.persistence.max_encoded_snapshot_bytes
+            )));
+        }
+        // Compaction holds the payload, the framed base body, and the
+        // manifest shards at once, and it overlaps whatever appends are
+        // already in flight. Admitted against the same budget, before the
+        // first of those copies is made.
+        let _memory = self
+            .memory
+            .acquire(crate::config::PersistenceLimits::staging_cost(
+                payload.len(),
+            ))
+            .await?;
         let _publication = self.publication.lock().await;
         if self.store.unresolved_preparation()?.is_some() {
             self.store.reconcile_pending(self.blobs.as_ref()).await?;
@@ -725,7 +830,14 @@ impl JournalRuntime {
                         JOURNAL_MAINTENANCE_RESERVE_BYTES,
                         base.committed_at,
                     )
-                    .map_err(JournalError::from)?;
+                    // The reserve is shared with every other compaction, so
+                    // being turned away by it is capacity, not a document
+                    // that can never be compacted.
+                    .map_err(|error| {
+                        JournalError::Busy(format!(
+                            "the compaction maintenance reserve is full: {error}"
+                        ))
+                    })?;
                 Some(MaintenanceBorrow {
                     catalog: self.store.catalog.clone(),
                     slug,

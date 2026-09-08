@@ -310,11 +310,12 @@ pub async fn serve(options: ServeOptions) {
         commenters.clone(),
     );
     if let Some(catalog) = instance.store.catalog.clone() {
-        let journal = crate::storage::journal::JournalRuntime::new_with_limits(
+        let journal = crate::storage::journal::JournalRuntime::new_with_policy(
             catalog,
             blobs.clone(),
             deployment_id.clone(),
-            crate::storage::journal::CoordinatorLimits::default(),
+            crate::storage::journal::CoordinatorLimits::from_persistence(&config.persistence()),
+            config.persistence(),
             config.storage.per_owner,
             config.storage.total,
         )
