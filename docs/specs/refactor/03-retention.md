@@ -30,3 +30,32 @@ policy and event-versus-content identity unchanged.
 - Inject failure between manifest persistence and deletion. Uncertain inputs
   preserve objects; confirmed physical deletion alone releases accounting.
 - Show bounded concurrent decoded tree bodies and document reference-set growth.
+
+## Implementation evidence
+
+Checkpoint cleanup now calls one `prune_retained` pass. It holds the existing
+manifest gate while reading the paginated history and running its consumers,
+so labels and checkpoint graph mutation cannot make the plan stale. It acquires
+neither room state nor an asset/rendering gate during tree I/O. Final asset
+checks still protect current references, in-flight uploads, and grace periods;
+text pruning refreshes live references after listing. Checkpoint serialization
+continues to exclude concurrent text-object writers.
+
+Trees are deduplicated by content identity, read with concurrency four, and
+discarded as soon as text/asset references have been extracted. The pass retains
+checkpoint metadata and digest sets, whose memory grows with retained history
+and distinct referenced objects; it does not retain an unbounded decoded-tree
+cache. Rendering consumers reuse metadata even when a tree read fails, while
+asset/text consumers skip deletion on incomplete dependency evidence.
+
+The deterministic workload has 201 events over nine unique trees, crossing both
+the 64-entry resident tail and 200-entry SQL page. It measures two catalogue
+operations for one traversal, nine tree reads, and peak read concurrency four.
+The previous three consumers required three history traversals and independently
+loaded the trees for asset and text references. The same regression protects a
+source edit arriving during blob listing and verifies that a missing retained
+tree leaves potentially referenced text and assets intact.
+
+The content-identity accessor extraction is a separate track 8 commit and keeps
+legacy fallback and event identity comparisons distinct. Track 1 still owns the
+asynchronous catalogue call-site migration.

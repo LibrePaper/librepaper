@@ -68,6 +68,18 @@ pub struct Checkpoint {
     pub changed: Vec<String>,
 }
 
+impl Checkpoint {
+    /// Immutable tree identity, distinct from the history event's `sha`.
+    /// Legacy checkpoints used their event SHA for both roles.
+    pub fn content_sha(&self) -> &str {
+        if self.tree_sha.is_empty() {
+            &self.sha
+        } else {
+            &self.tree_sha
+        }
+    }
+}
+
 /// One file in a tree. `id` is carried for a text so that a restore can put
 /// the file back as itself rather than as a new file at the same path; an
 /// asset has none, since an asset is named by its path and its bytes live
@@ -302,11 +314,7 @@ impl Manifest {
             sha: point.sha.clone(),
             seq,
             durable_seq,
-            tree_sha: if point.tree_sha.is_empty() {
-                point.sha.clone()
-            } else {
-                point.tree_sha.clone()
-            },
+            tree_sha: point.content_sha().to_string(),
             parent: point.parent.clone(),
             at: point.at.clone(),
             by: point.by.clone(),

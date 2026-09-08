@@ -282,6 +282,16 @@ pub struct Checkpoint {
     pub changed: Option<String>,
 }
 
+impl Checkpoint {
+    pub fn content_sha(&self) -> &str {
+        if self.tree_sha.is_empty() {
+            &self.sha
+        } else {
+            &self.tree_sha
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Comment {
     pub slug: String,

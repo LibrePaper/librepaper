@@ -311,26 +311,14 @@ impl Room {
             .iter()
             .rev()
             .find(|point| point.sha == sha)
-            .map(|point| {
-                if point.tree_sha.is_empty() {
-                    point.sha.clone()
-                } else {
-                    point.tree_sha.clone()
-                }
-            });
+            .map(|point| point.content_sha().to_string());
         resident.or_else(|| {
             self.catalog.get().and_then(|catalog| {
                 catalog
                     .checkpoint(&self.slug, sha)
                     .ok()
                     .flatten()
-                    .map(|point| {
-                        if point.tree_sha.is_empty() {
-                            point.sha
-                        } else {
-                            point.tree_sha
-                        }
-                    })
+                    .map(|point| point.content_sha().to_string())
             })
         })
     }
@@ -704,11 +692,7 @@ impl Room {
         }
         let state = self.state.lock().await;
         state.manifest.checkpoints.iter().rev().find_map(|point| {
-            let content = if point.tree_sha.is_empty() {
-                &point.sha
-            } else {
-                &point.tree_sha
-            };
+            let content = point.content_sha();
             (state
                 .session
                 .rendering_sizes
@@ -733,67 +717,31 @@ impl Room {
     /// object still inside the grace period is kept whatever the manifest
     /// says, because a browser uploads a PDF and its SyncTeX file in two
     /// requests, and a checkpoint can land between them.
-    pub(super) async fn prune_renderings(&self) {
-        // Checkpoint and label writers use manifest_write.  Keep that order
-        // before rendering_write to avoid a checkpoint/pruner lock cycle.
-        let _manifest_writer = self.manifest_write.lock().await;
+    pub(super) async fn prune_renderings(&self, checkpoints: &[Checkpoint]) {
+        // The pass already owns manifest_write; rendering publication remains
+        // serialized until registration retirement and cache completion.
         let _rendering_writer = self.rendering_write.lock().await;
         let now = now_unix();
         let grace = self.config.asset_grace;
-        let catalog_history = if let Some(catalog) = self.catalog.get() {
-            match load_catalog_history(catalog, &self.slug) {
-                Ok(rows) => Some(rows),
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read checkpoint history of {} while pruning renderings ({error})",
-                        self.slug
-                    );
-                    return;
-                }
-            }
-        } else {
-            None
-        };
         let (kept, held, written_at) = {
             let state = self.state.lock().await;
             let held = state.session.rendering_sizes.clone();
-            let checkpoints = catalog_history
-                .as_deref()
-                .unwrap_or(&state.manifest.checkpoints);
             let mut kept: std::collections::HashSet<String> = state
                 .manifest
                 .checkpoints
                 .iter()
                 .filter(|point| !point.label.is_empty())
-                .map(|point| {
-                    if point.tree_sha.is_empty() {
-                        point.sha.clone()
-                    } else {
-                        point.tree_sha.clone()
-                    }
-                })
+                .map(|point| point.content_sha().to_string())
                 .collect();
             for point in checkpoints.iter().filter(|point| !point.label.is_empty()) {
-                kept.insert(if point.tree_sha.is_empty() {
-                    point.sha.clone()
-                } else {
-                    point.tree_sha.clone()
-                });
+                kept.insert(point.content_sha().to_string());
             }
             if let Some(newest) = checkpoints.iter().rev().find(|point| {
-                let content = if point.tree_sha.is_empty() {
-                    &point.sha
-                } else {
-                    &point.tree_sha
-                };
+                let content = point.content_sha();
                 held.contains_key(&rendering_name(content, false))
                     || held.contains_key(&rendering_name(content, true))
             }) {
-                kept.insert(if newest.tree_sha.is_empty() {
-                    newest.sha.clone()
-                } else {
-                    newest.tree_sha.clone()
-                });
+                kept.insert(newest.content_sha().to_string());
             }
             (kept, held, state.session.rendering_written_at.clone())
         };
@@ -862,72 +810,19 @@ impl Room {
     /// all is deleted on a pass where that happens: the sweep aborts and
     /// tries again next time, rather than risk a figure a restore still
     /// needs (R15).
-    pub(super) async fn prune_assets(&self) {
+    pub(super) async fn prune_assets(&self, references: &retention::RetainedReferences) {
         let now = now_unix();
         let grace = self.config.asset_grace;
-        let catalog_history = if let Some(catalog) = self.catalog.get() {
-            match load_catalog_history(catalog, &self.slug) {
-                Ok(rows) => Some(rows),
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read checkpoint history of {} while pruning assets ({error})",
-                        self.slug
-                    );
-                    return;
-                }
-            }
-        } else {
-            None
-        };
-        let (live, trees, written_at, path, id) = {
+        let (mut kept, written_at) = {
             let state = self.state.lock().await;
-            let live: std::collections::HashSet<String> = session::assets_of(&state.session.doc)
-                .into_values()
-                .collect();
-            let trees: Vec<Checkpoint> = catalog_history
-                .clone()
-                .unwrap_or_else(|| state.manifest.checkpoints.clone());
             (
-                live,
-                trees,
+                session::assets_of(&state.session.doc)
+                    .into_values()
+                    .collect::<HashSet<_>>(),
                 state.session.asset_written_at.clone(),
-                session::main_path(&state.session.doc),
-                session::main_id(&state.session.doc),
             )
         };
-        // Every digest any surviving checkpoint names. A restore has to find
-        // its figures where the tree says they are.
-        let mut kept = live;
-        for point in &trees {
-            if !point.tree {
-                continue; // a checkpoint from before directories names none
-            }
-            match crate::document::history::load_tree(
-                self.blobs.as_ref(),
-                &self.storage_id,
-                point,
-                &path,
-                &id,
-            )
-            .await
-            {
-                Ok(tree) => {
-                    for entry in tree.files.values() {
-                        if entry.kind == "asset" {
-                            kept.insert(entry.sha.clone());
-                        }
-                    }
-                }
-                Err(err) => {
-                    eprintln!(
-                        "warning: could not read checkpoint {} of {} while pruning assets \
-                         ({err}); skipping this pass rather than risk a figure it still names",
-                        point.sha, self.slug
-                    );
-                    return;
-                }
-            }
-        }
+        kept.extend(references.assets.iter().cloned());
         let Ok(found) = self
             .blobs
             .list(&crate::storage::blob::asset_prefix(&self.storage_id))

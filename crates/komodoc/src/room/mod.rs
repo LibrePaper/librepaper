@@ -35,6 +35,7 @@ mod checkpoint;
 mod command;
 mod comments;
 mod figures;
+mod retention;
 mod suggestions;
 mod text;
 
