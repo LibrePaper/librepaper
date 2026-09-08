@@ -222,6 +222,22 @@ pub struct CommentView {
     pub deletable: bool,
 }
 
+impl CommentView {
+    /// The one place `mine` and `deletable` are derived from a caller's
+    /// identity, so a snapshot (`snapshot_for`, `snapshot_bundle`) and a
+    /// broadcast event (`comment_event_for`) can never disagree about what a
+    /// given author/owner combination is allowed to see or do. `author` is
+    /// empty for an anonymous caller, who is never "mine" on anything and can
+    /// only delete when `is_owner` is set.
+    pub fn for_viewer(comment: &Comment, author: &str, is_owner: bool) -> CommentView {
+        CommentView {
+            comment: comment.clone(),
+            mine: !author.is_empty() && comment.author == author,
+            deletable: deletable(comment, author, is_owner),
+        }
+    }
+}
+
 /// Rule H's authorization test: the document's owner may delete anything on
 /// it, and everyone else only their own -- and "their own" never matches on
 /// two callers who both have no author key, which is what an anonymous caller
@@ -378,11 +394,7 @@ impl Room {
         let Some(comment) = state.comments.iter().find(|comment| comment.id == id) else {
             return payload.clone();
         };
-        let view = CommentView {
-            comment: comment.clone(),
-            mine: !author.is_empty() && comment.author == author,
-            deletable: deletable(comment, author, is_owner),
-        };
+        let view = CommentView::for_viewer(comment, author, is_owner);
         let mut event = payload.clone();
         if let Ok(value) = serde_json::to_value(view) {
             event["comment"] = value;

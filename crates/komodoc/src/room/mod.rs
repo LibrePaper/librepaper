@@ -1651,11 +1651,7 @@ impl Room {
         state
             .comments
             .iter()
-            .map(|item| CommentView {
-                comment: item.clone(),
-                mine: !author.is_empty() && item.author == author,
-                deletable: deletable(item, author, is_owner),
-            })
+            .map(|item| CommentView::for_viewer(item, author, is_owner))
             .collect()
     }
 
@@ -1682,11 +1678,7 @@ impl Room {
         let comments = state
             .comments
             .iter()
-            .map(|item| CommentView {
-                comment: item.clone(),
-                mine: !author.is_empty() && item.author == author,
-                deletable: deletable(item, author, is_owner),
-            })
+            .map(|item| CommentView::for_viewer(item, author, is_owner))
             .collect();
         (source, format, tree, texts, comments)
     }
