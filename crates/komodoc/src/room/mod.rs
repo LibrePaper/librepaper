@@ -435,6 +435,23 @@ impl Drop for InFlight<'_> {
     }
 }
 
+/// The two cancellation gates the room tests park a caller in: after an edit
+/// reservation commits, and after a checkpoint's budget admission commits.
+/// Both are the window the completion hook cannot observe, and both are keyed
+/// by slug so tests in one process cannot gate each other's rooms.
+#[cfg(test)]
+type TestGate = std::sync::Mutex<Option<(String, Arc<tokio::sync::Semaphore>)>>;
+
+#[cfg(test)]
+pub(crate) fn after_edit_reservation_gate() -> &'static TestGate {
+    &catalog::AFTER_EDIT_RESERVATION
+}
+
+#[cfg(test)]
+pub(crate) fn after_checkpoint_admission_gate() -> &'static TestGate {
+    &checkpoint::AFTER_CHECKPOINT_ADMISSION
+}
+
 pub struct RoomSet {
     /// Who this server is, in the lock objects it takes. A name rather than a
     /// pid, because a pid means nothing to whoever reads the refusal.
@@ -2154,6 +2171,8 @@ impl Room {
         } else {
             None
         };
+        #[cfg(test)]
+        pause_after_edit_reservation(&self.slug).await;
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
         // with this main file.

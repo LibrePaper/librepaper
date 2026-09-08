@@ -15,6 +15,7 @@ mod auth;
 mod auth_regressions;
 mod automation;
 mod blob;
+mod catalogue_room;
 mod checkpoint_attribution;
 mod commands;
 mod device;

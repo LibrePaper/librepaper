@@ -227,6 +227,35 @@ impl Drop for PendingEditReservation {
     }
 }
 
+/// A test-only gate for the window between an edit reservation committing and
+/// the room taking ownership of it.
+///
+/// That window is the one the completion hook cannot observe — the hook runs
+/// on the executing thread before the result is handed back — so it is the
+/// window `Drop` covers, and a test needs a way to park a caller inside it.
+/// The gate is keyed by slug so that one test's gate cannot stop another
+/// test's room in the same process.
+#[cfg(test)]
+pub(crate) static AFTER_EDIT_RESERVATION: std::sync::Mutex<
+    Option<(String, Arc<tokio::sync::Semaphore>)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(super) async fn pause_after_edit_reservation(slug: &str) {
+    let gate = {
+        let held = match AFTER_EDIT_RESERVATION.lock() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        held.as_ref()
+            .filter(|(gated, _)| gated == slug)
+            .map(|(_, gate)| gate.clone())
+    };
+    if let Some(gate) = gate {
+        let _ = gate.acquire().await;
+    }
+}
+
 /// Reserve a complete pending snapshot for one update.
 ///
 /// The reservation is taken on a blocking thread under the boundary's
