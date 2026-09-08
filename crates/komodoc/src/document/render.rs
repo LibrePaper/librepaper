@@ -338,6 +338,29 @@ pub fn document_format(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The default main-file name for a format, the inverse of
+/// [`document_format`]: given an already-known `main` (`named`, e.g. from an
+/// existing tree entry), keeps it unchanged; otherwise picks the name that
+/// format's own extension implies, which is what every document published
+/// before directories was called on the laptop it came from. An unrecognized
+/// or empty format falls back to `main.txt` rather than guessing.
+pub fn main_path_for(named: &str, format: &str) -> String {
+    if !named.is_empty() {
+        return named.to_string();
+    }
+    match format {
+        "typst" => "main.typ",
+        "markdown" => "main.md",
+        "html" => "main.html",
+        // A single-file LaTeX source is still LaTeX; calling it `main.txt`
+        // is what made a document open advertising a format its own main
+        // file's extension already contradicted (R27).
+        "latex" => "main.tex",
+        _ => "main.txt",
+    }
+    .to_string()
+}
+
 /// Reads a file under `root`, and nothing outside it. The path typst asks for
 /// is already normalised -- no `..` survives its own resolution -- but the
 /// containment is checked rather than trusted, the same as every key is.

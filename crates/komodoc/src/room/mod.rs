@@ -2357,24 +2357,13 @@ pub fn tree_of(
 }
 
 /// What to call the one file a migrated document turns out to have. The index
-/// entry's own `main` if it has one; otherwise the name its format implies,
-/// which is what every document published before directories was called on
-/// the laptop it came from.
+/// entry's own `main` if it has one; otherwise the name its format implies.
+/// The format-to-default-path policy lives beside the shared format detector
+/// in `document::render`, which already owns the inverse (`document_format`,
+/// wrapped here as `format_from_path`); keeping both directions of that
+/// mapping in one place is what stops them from drifting apart.
 pub fn main_path_for(named: &str, format: &str) -> String {
-    if !named.is_empty() {
-        return named.to_string();
-    }
-    match format {
-        "typst" => "main.typ",
-        "markdown" => "main.md",
-        "html" => "main.html",
-        // A single-file LaTeX source is still LaTeX; calling it `main.txt`
-        // is what made a document open advertising a format its own main
-        // file's extension already contradicted (R27).
-        "latex" => "main.tex",
-        _ => "main.txt",
-    }
-    .to_string()
+    crate::document::render::main_path_for(named, format)
 }
 
 /// The format a main file's own extension implies, the inverse of
