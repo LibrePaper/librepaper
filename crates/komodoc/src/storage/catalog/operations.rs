@@ -32,15 +32,15 @@ impl Catalog {
                 .ok_or(CatalogError::NotFound)?;
             let owner_bytes: i64 = if let Some(id) = owner_id {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents WHERE owner_id = ?1",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents WHERE owner_id = ?1",
                     [id],
                     |row| row.get(0),
                 )
             } else {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents WHERE owner_id IS NULL AND owner_key = ?1",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents WHERE owner_id IS NULL AND owner_key = ?1",
                     [owner_key],
                     |row| row.get(0),
                 )
@@ -48,8 +48,8 @@ impl Catalog {
             .map_err(CatalogError::from)?;
             let total_bytes: i64 = tx
                 .query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents",
                     [],
                     |row| row.get(0),
                 )
@@ -87,37 +87,7 @@ impl Catalog {
     /// Reconcile measured retained payload and release excess ordinary slack.
     /// Maintenance borrowing remains reserved until a separate cleanup step.
     pub fn reconcile(&self, slug: &str, measured_size: i64) -> CatalogResult<Document> {
-        if measured_size < 0 {
-            return Err(CatalogError::Invalid("negative measured size".into()));
-        }
-        self.immediate(|tx| {
-            let (old_counted, maintenance): (i64, i64) = tx
-                .query_row(
-                    "SELECT counted_size, maintenance_reserved FROM documents WHERE slug = ?1",
-                    [slug],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(CatalogError::from)?
-                .ok_or(CatalogError::NotFound)?;
-            if measured_size > old_counted {
-                return Err(CatalogError::Conflict(
-                    "measured usage exceeds its reservation".into(),
-                ));
-            }
-            let new_counted = measured_size.max(maintenance);
-            tx.execute(
-                "UPDATE documents SET size = ?2, counted_size = ?3 WHERE slug = ?1",
-                params![slug, measured_size, new_counted],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE totals SET bytes = bytes - ?1 WHERE id = 1",
-                [old_counted - new_counted],
-            )
-            .map_err(CatalogError::from)?;
-            Self::document_in_tx(tx, slug)
-        })
+        self.record_document_measurement(slug, measured_size, None, None, "", "")
     }
 
     /// Mark a live row deleting, withdrawing it from normal reads.
@@ -142,6 +112,18 @@ impl Catalog {
                     return Err(CatalogError::NotFound);
                 }
             }
+            // Withdrawal resolves product publications in the same transaction.
+            // Their reservations remain charged until physical deletion; a late
+            // publisher cannot reactivate the row or strand an undiscoverable
+            // prepared receipt after pending_publication has been cleared.
+            tx.execute(
+                "UPDATE catalog_operations SET status='aborted',
+                 result='document deletion withdrew the publication'
+                 WHERE status='prepared' AND storage_id IN
+                   (SELECT storage_id FROM documents WHERE slug=?1 AND status='deleting')",
+                [slug],
+            )
+            .map_err(CatalogError::from)?;
             Self::document_in_tx(tx, slug)
         })
     }
@@ -574,14 +556,14 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             let owner_bytes: i64 = if let Some(owner_id) = owner_id {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size),0) FROM documents WHERE owner_id=?1",
+                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1",
                     [owner_id],
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?
             } else {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size),0) FROM documents
+                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents
                      WHERE owner_id IS NULL AND owner_key=?1",
                     [owner_key],
                     |row| row.get(0),
@@ -589,7 +571,7 @@ impl Catalog {
                 .map_err(CatalogError::from)?
             };
             let total: i64 = tx
-                .query_row("SELECT bytes FROM totals WHERE id=1", [], |row| row.get(0))
+                .query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents", [], |row| row.get(0))
                 .map_err(CatalogError::from)?;
             if owner_limit >= 0 && owner_bytes.saturating_add(bytes) > owner_limit {
                 return Err(CatalogError::Conflict("owner byte quota exceeded".into()));
@@ -741,6 +723,13 @@ impl Catalog {
                     ));
                 }
             }
+            let retiring: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pending_deletes WHERE slug=?1 AND object_key=?2)",
+                params![slug, object_key], |row| row.get(0),
+            )?;
+            if retiring {
+                return Err(CatalogError::Conflict("object is queued for deletion; retry after cleanup".into()));
+            }
             let old_bytes: i64 = tx.query_row("SELECT bytes FROM object_accounting WHERE storage_id=?1 AND object_key=?2", params![storage_id,object_key], |r|r.get(0)).optional().map_err(CatalogError::from)?.unwrap_or(0);
             if let Some((reserved_old, reserved_new)) = tx
                 .query_row(
@@ -760,9 +749,16 @@ impl Catalog {
                 return Ok(new_bytes.saturating_sub(old_bytes));
             }
             let delta = new_bytes.saturating_sub(old_bytes);
-            let owner_bytes: i64 = if let Some(id)=owner_id { tx.query_row("SELECT COALESCE(SUM(counted_size-maintenance_reserved),0) FROM documents WHERE owner_id=?1",[id],|r|r.get(0)) } else { tx.query_row("SELECT COALESCE(SUM(counted_size-maintenance_reserved),0) FROM documents WHERE owner_id IS NULL AND owner_key=?1",[owner_key],|r|r.get(0)) }.map_err(CatalogError::from)?;
-            let total:i64=tx.query_row("SELECT COALESCE(SUM(counted_size-maintenance_reserved),0) FROM documents",[],|r|r.get(0)).map_err(CatalogError::from)?;
-            let charge_delta = if pending_publication.is_none() { delta } else { 0 };
+            let owner_bytes: i64 = if let Some(id)=owner_id { tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1",[id],|r|r.get(0)) } else { tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id IS NULL AND owner_key=?1",[owner_key],|r|r.get(0)) }.map_err(CatalogError::from)?;
+            let total:i64=tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents",[],|r|r.get(0)).map_err(CatalogError::from)?;
+            // Session/journal publication spends the quota already held for
+            // this snapshot. Other object writes still include that reservation.
+            let credit: i64 = if kind.starts_with("journal_") || (kind == "mutable" && object_key.starts_with("sessions/")) {
+                tx.query_row("SELECT writing_bytes FROM room_edit_reservations WHERE storage_id=?1", [&storage_id], |row| row.get(0)).optional()?.unwrap_or(0)
+            } else { 0 };
+            let charge_delta = if pending_publication.is_none() { delta.max(0) } else { 0 };
+            let owner_bytes = owner_bytes.saturating_sub(credit);
+            let total = total.saturating_sub(credit);
             if owner_limit>=0 && owner_bytes.saturating_add(charge_delta)>owner_limit { return Err(CatalogError::Conflict("owner byte quota exceeded".into())); }
             if total_limit>=0 && total.saturating_add(charge_delta)>total_limit { return Err(CatalogError::Conflict("deployment byte quota exceeded".into())); }
             tx.execute("INSERT INTO object_reservations(storage_id,operation_id,object_key,old_bytes,new_bytes,created_at) VALUES(?1,?2,?3,?4,?5,unixepoch()) ON CONFLICT(storage_id,operation_id,object_key) DO UPDATE SET new_bytes=excluded.new_bytes",params![storage_id,operation_id,object_key,old_bytes,new_bytes]).map_err(CatalogError::from)?;
@@ -802,7 +798,7 @@ impl Catalog {
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?;
-            if pending.is_none() && new_bytes<old_bytes { let released=old_bytes-new_bytes; tx.execute("UPDATE documents SET counted_size=counted_size-?2 WHERE storage_id=?1",params![storage_id,released]).map_err(CatalogError::from)?; tx.execute("UPDATE totals SET bytes=bytes-?1 WHERE id=1",[released]).map_err(CatalogError::from)?; }
+            if pending.is_none() && new_bytes<old_bytes { let released: i64 = tx.query_row("SELECT MIN(?2,MAX(0,counted_size-size)) FROM documents WHERE storage_id=?1",params![storage_id,old_bytes-new_bytes],|row|row.get(0))?; tx.execute("UPDATE documents SET counted_size=counted_size-?2 WHERE storage_id=?1",params![storage_id,released]).map_err(CatalogError::from)?; tx.execute("UPDATE totals SET bytes=bytes-?1 WHERE id=1",[released]).map_err(CatalogError::from)?; }
             Ok(())
         })
     }
@@ -1169,7 +1165,9 @@ impl Catalog {
                         |row| row.get(0),
                     )
                     .map_err(CatalogError::from)?;
-                let counted = measured.saturating_add(reserved).max(maintenance);
+                let counted = measured
+                    .saturating_add(reserved)
+                    .saturating_add(maintenance);
                 if counted > old_counted {
                     return Err(CatalogError::Conflict(
                         "publication measurement exceeds its reservation".into(),
@@ -1386,19 +1384,49 @@ impl Catalog {
             .map_err(CatalogError::from)?;
             // Deleting documents retain all accounting until finish_delete;
             // active documents (rendering retirement) release it here.
-            let active: Option<(i64, i64)> = tx
+            let active: Option<(String, i64, i64, i64)> = tx
                 .query_row(
-                    "SELECT size,counted_size FROM documents WHERE slug=?1 AND status='active'",
+                    "SELECT storage_id,size,counted_size,maintenance_reserved
+                     FROM documents WHERE slug=?1 AND status='active'",
                     [slug],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()
                 .map_err(CatalogError::from)?;
-            if let Some((size, counted)) = active {
-                let released = bytes.min(counted.saturating_sub(size)).max(0);
+            if let Some((storage_id, size, counted, maintenance)) = active {
+                let accounted: Option<i64> = tx
+                    .query_row(
+                        "SELECT bytes FROM object_accounting WHERE storage_id=?1 AND object_key=?2",
+                        params![storage_id, object_key],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
                 tx.execute(
-                    "UPDATE documents SET counted_size=counted_size-?2 WHERE slug=?1",
-                    params![slug, released],
+                    "DELETE FROM object_accounting WHERE storage_id=?1 AND object_key=?2",
+                    params![storage_id, object_key],
+                )?;
+                let remaining: i64 = tx.query_row(
+                    "SELECT COALESCE(SUM(bytes),0) FROM object_accounting WHERE storage_id=?1",
+                    [&storage_id],
+                    |row| row.get(0),
+                )?;
+                let reserved: i64 = tx.query_row(
+                    "SELECT COALESCE(SUM(MAX(new_bytes-old_bytes,0)),0)
+                     FROM object_reservations WHERE storage_id=?1",
+                    [&storage_id],
+                    |row| row.get(0),
+                )?;
+                let reclaimed = accounted.unwrap_or(bytes).max(0);
+                let new_size = size.saturating_sub(reclaimed).max(remaining);
+                let new_counted = counted.saturating_sub(reclaimed).max(
+                    new_size
+                        .saturating_add(maintenance)
+                        .saturating_add(reserved),
+                );
+                let released = counted - new_counted;
+                tx.execute(
+                    "UPDATE documents SET size=?2,counted_size=?3 WHERE slug=?1",
+                    params![slug, new_size, new_counted],
                 )
                 .map_err(CatalogError::from)?;
                 tx.execute("UPDATE totals SET bytes=bytes-?1 WHERE id=1", [released])

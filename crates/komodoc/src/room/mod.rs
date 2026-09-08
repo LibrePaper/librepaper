@@ -25,7 +25,7 @@ use crate::document::history::{self, Checkpoint, Manifest};
 use crate::document::session;
 use crate::storage::blob::{
     checkpoint_key, room_key, session_key, take_room_lease, BlobError, BlobStore, BlobVersion,
-    Lease, LOCK_STALE_SECONDS,
+    Lease,
 };
 use crate::util::{clean, new_id};
 use crate::util::{now_unix, parse_timestamp, timestamp};
@@ -202,14 +202,6 @@ pub struct Session {
     /// checkpoint has to record what a figure weighs and the shared document
     /// carries only its name.
     pub asset_sizes: HashMap<String, i64>,
-    /// Bytes claimed against `max_assets` for an upload that is between
-    /// checking the ceiling and either landing in `asset_sizes` or failing.
-    /// Counted alongside `asset_sizes` while an upload is in flight, so a
-    /// second concurrent upload cannot read the pre-reservation total and
-    /// pass the same ceiling the first one is still in the middle of
-    /// spending (R22). Removed on both success (replaced by the real entry)
-    /// and failure (nothing was ever written).
-    pub asset_reserved: HashMap<String, i64>,
     /// When each asset was written here, for the grace period. Uploading a
     /// figure and naming it are two requests, and an asset pruned in between
     /// is one somebody had just successfully uploaded. Held in memory only:
@@ -260,12 +252,6 @@ pub struct RoomState {
     pub comments_version: BlobVersion,
 }
 
-/// How old this server's claim on a room may get before a write renews it.
-/// Comfortably inside the window a lock goes stale in, so a room being
-/// written is never a room another server may take.
-#[allow(dead_code)]
-pub const RENEW_AFTER_SECONDS: i64 = LOCK_STALE_SECONDS / 3;
-
 pub struct Room {
     pub slug: String,
     /// Immutable catalogue identity used for every document-owned object.
@@ -314,6 +300,14 @@ pub struct Room {
     /// doing their normal storage work; a publication holds the write permit
     /// for its mutation and compensating rollback.
     pub(crate) publication_checkpoint: RwLock<()>,
+    /// Serialize asset deletion with uploads and CRDT asset references.
+    assets_write: Mutex<()>,
+    /// Bytes reserved by uploads whose blob write has not registered its
+    /// metadata yet. The count lets same-digest uploads share one quota claim
+    /// while each cancelled future releases its own claim.
+    asset_uploads: std::sync::Mutex<HashMap<String, (i64, usize)>>,
+    /// Serialize PDF/SyncTeX metadata publication and retirement.
+    rendering_write: Mutex<()>,
     /// Keep checkpoint snapshots and their commits in the same order.
     checkpoint_write: Mutex<()>,
     /// A restore spans several storage reads and two checkpoints. Serializing
@@ -384,6 +378,25 @@ impl<'a> InFlight<'a> {
 impl Drop for InFlight<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+struct RoomWriteQuota<'a> {
+    room: &'a Room,
+    committed: bool,
+}
+impl Drop for RoomWriteQuota<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Some(catalog) = self.room.catalog.get() {
+                if let Err(error) = catalog.finish_room_write(&self.room.storage_id, false) {
+                    eprintln!(
+                        "warning: could not restore pending edit quota for {}: {error}",
+                        self.room.slug
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -534,14 +547,15 @@ impl RoomSet {
         // Reserve the per-slug loading slot while holding the room map and
         // loading-map locks together. A concurrent cold request then counts
         // this load instead of passing the same capacity check.
-        let (slot, owns_slot) = {
+        let slot = {
             let mut rooms = self.rooms.lock().await;
             if let Some(existing) = rooms.get(slug).cloned() {
                 return Ok(existing);
             }
             let mut loading = self.loading.lock().await;
+            loading.retain(|_, slot| Arc::strong_count(slot) > 1);
             if let Some(slot) = loading.get(slug).cloned() {
-                (slot, false)
+                slot
             } else {
                 let mut bytes = 0usize;
                 for room in rooms.values() {
@@ -556,7 +570,7 @@ impl RoomSet {
                     // room exists the caller still gets the retryable
                     // admission error below.
                     let target = self.config.session.rooms_max.saturating_sub(loading.len());
-                    evict_idle(&mut rooms, target).await;
+                    evict_idle(&mut rooms, target, self.config.session.rooms_bytes_max).await;
                     bytes = 0;
                     for room in rooms.values() {
                         bytes = bytes.saturating_add(room.resident_bytes().await);
@@ -572,25 +586,11 @@ impl RoomSet {
                 }
                 let slot = Arc::new(Mutex::new(None));
                 loading.insert(slug.to_string(), slot.clone());
-                (slot, true)
+                slot
             }
         };
-        if !owns_slot {
-            // `get` joins the existing slot and returns the same loaded room;
-            // using it here also handles an oversized load without leaving a
-            // waiter parked forever when the owner refuses to cache it.
-            drop(slot);
-            let room = self.get(slug).await;
-            if self.rooms.lock().await.contains_key(slug) {
-                return Ok(room);
-            }
-            return Err(RoomAdmissionError::AtCapacity {
-                rooms: self.rooms.lock().await.len(),
-                bytes: room.resident_bytes().await,
-            });
-        }
-        drop(slot);
         let room = self.get(slug).await;
+        drop(slot);
         if self.rooms.lock().await.contains_key(slug) {
             return Ok(room);
         }
@@ -610,7 +610,14 @@ impl RoomSet {
         // both proceed while this one is still in flight (R35). Two callers
         // racing to load the same slug share one slot and one load.
         let slot = {
+            // Recheck while reserving the load, in the same lock order as try_get.
+            // A loader may have published since the first fast-path lookup.
+            let rooms = self.rooms.lock().await;
+            if let Some(room) = rooms.get(slug) {
+                return room.clone();
+            }
             let mut loading = self.loading.lock().await;
+            loading.retain(|_, slot| Arc::strong_count(slot) > 1);
             loading
                 .entry(slug.to_string())
                 .or_insert_with(|| Arc::new(Mutex::new(None)))
@@ -628,7 +635,12 @@ impl RoomSet {
         {
             let mut rooms = self.rooms.lock().await;
             if rooms.len().saturating_add(loading_count) >= self.config.session.rooms_max {
-                evict_idle(&mut rooms, self.config.session.rooms_max).await;
+                evict_idle(
+                    &mut rooms,
+                    self.config.session.rooms_max,
+                    self.config.session.rooms_bytes_max,
+                )
+                .await;
             }
         }
         // Taken before anything is read, so a second server writing the same
@@ -724,6 +736,9 @@ impl RoomSet {
             session_write: Mutex::new(()),
             publication_write: Mutex::new(()),
             publication_checkpoint: RwLock::new(()),
+            assets_write: Mutex::new(()),
+            asset_uploads: std::sync::Mutex::new(HashMap::new()),
+            rendering_write: Mutex::new(()),
             checkpoint_write: Mutex::new(()),
             restore_write: Mutex::new(()),
             manifest_write: Mutex::new(()),
@@ -749,7 +764,6 @@ impl RoomSet {
                     last_tree: None,
                     blobs_written: std::collections::HashSet::new(),
                     asset_sizes: HashMap::new(),
-                    asset_reserved: HashMap::new(),
                     asset_written_at: HashMap::new(),
                     rendering_sizes: HashMap::new(),
                     rendering_written_at: HashMap::new(),
@@ -764,6 +778,18 @@ impl RoomSet {
         room.load().await;
         let room_bytes = room.resident_bytes().await;
         let mut rooms = self.rooms.lock().await;
+        if room_bytes <= self.config.session.rooms_bytes_max {
+            evict_idle(
+                &mut rooms,
+                self.config.session.rooms_max,
+                self.config
+                    .session
+                    .rooms_bytes_max
+                    .saturating_sub(room_bytes)
+                    .saturating_add(1),
+            )
+            .await;
+        }
         let mut cached_bytes = 0usize;
         for cached in rooms.values() {
             cached_bytes = cached_bytes.saturating_add(cached.resident_bytes().await);
@@ -777,7 +803,11 @@ impl RoomSet {
             // strict try_get wrapper converts this uncached result into a
             // retryable admission error instead of recursing forever.
             drop(rooms);
-            *loaded = None;
+            // An uncached compatibility result has no sweeper and must never
+            // accept work that only its caller can keep alive. Waiters still
+            // share this result, rather than loading their own writable copy.
+            room.read_only.store(true, Ordering::Relaxed);
+            *loaded = Some(room.clone());
             self.loading.lock().await.remove(slug);
             return room;
         }
@@ -790,7 +820,18 @@ impl RoomSet {
     /// Drops a document's comments and disconnects anyone still reading it.
     /// Reached only through the delete route, which checks ownership first.
     pub async fn purge_with_identity(&self, slug: &str, storage_id: Option<&str>) {
-        let existing = self.rooms.lock().await.get(slug).cloned();
+        let (mut existing, loading) = {
+            let rooms = self.rooms.lock().await;
+            let loading = self.loading.lock().await;
+            (rooms.get(slug).cloned(), loading.get(slug).cloned())
+        };
+        if existing.is_none() {
+            if let Some(slot) = loading {
+                // Loading owns this gate until the room is published. Fence
+                // that exact instance before deletion can finish.
+                existing = slot.lock().await.clone();
+            }
+        }
         if existing.is_none() && storage_id.is_some() {
             // Store::remove performs the durable enumerate-and-queue step.
             // Do not delete anything here: doing so would create an
@@ -806,11 +847,11 @@ impl RoomSet {
         // Restore/accept paths take restore_write before checkpoint_write;
         // acquire the same order here so fencing cannot deadlock with a
         // restore that is already in flight.
+        room.read_only.store(true, Ordering::Relaxed);
         let _restore_writer = room.restore_write.lock().await;
         let _checkpoint_writer = room.checkpoint_write.lock().await;
         let _manifest_writer = room.manifest_write.lock().await;
         let _session_writer = room.session_write.lock().await;
-        room.read_only.store(true, Ordering::Relaxed);
         {
             let mut state = room.state.lock().await;
             state.comments.clear();
@@ -864,6 +905,15 @@ impl RoomSet {
                 for document in due {
                     if let Ok(room) = self.try_get(&document.slug).await {
                         let _ = room.tick().await;
+                        let state = room.state.lock().await;
+                        if !state.session.dirty
+                            && state.session.generation == state.session.checkpoint_generation
+                        {
+                            // A manual checkpoint can leave this scheduler clock
+                            // stale. Advance examined, unchanged rows so the next
+                            // page of due documents gets its turn.
+                            let _ = catalog.touch_auto_checkpoint(&document.slug, now);
+                        }
                     }
                 }
             }
@@ -878,7 +928,12 @@ impl RoomSet {
                 let stale = match rooms.get(&slug) {
                     Some(room) => {
                         let state = room.state.lock().await;
-                        state.sockets.is_empty() && !state.session.dirty && now - state.touched > 60
+                        Arc::strong_count(room) == 1
+                            && state.sockets.is_empty()
+                            && !state.session.dirty
+                            && state.session.asked.is_none()
+                            && room.checkpointing.load(Ordering::Relaxed) == 0
+                            && now - state.touched > 60
                     }
                     None => false,
                 };
@@ -911,6 +966,16 @@ impl RoomSet {
 }
 
 impl Room {
+    fn snapshot_budget(&self, bytes: usize) -> i64 {
+        let bytes = bytes.min(i64::MAX as usize) as i64;
+        if self.journal.get().is_some() {
+            // Segment framing, manifest publication and a possible recovery base.
+            bytes.saturating_mul(3).saturating_add(8192)
+        } else {
+            bytes
+        }
+    }
+
     async fn load(&self) {
         if let Some(catalog) = self.catalog.get() {
             match load_catalog_comments(catalog, &self.slug) {
@@ -1053,36 +1118,13 @@ impl Room {
                         "warning: could not read the session for {}: {err}",
                         self.slug
                     );
+                    self.read_only.store(true, Ordering::Relaxed);
                     let mut state = self.state.lock().await;
                     state.manifest = manifest;
                     state.session.format = format;
                     return;
                 }
             }
-        };
-
-        // The session object is a disposable serving cache once the local
-        // journal is authoritative. Recover a committed full-state record
-        // before falling back to the published source, so an acknowledged
-        // update is not silently replaced after a torn session write.
-        let stored = if stored.is_none() {
-            match self.journal.get() {
-                Some(journal) => match journal.recover_latest(&self.storage_id).await {
-                    Ok(Some(raw)) => Some((raw, BlobVersion::new())),
-                    Ok(None) => None,
-                    Err(error) => {
-                        eprintln!(
-                            "warning: could not recover the journal for {}: {error}",
-                            self.slug
-                        );
-                        self.read_only.store(true, Ordering::Relaxed);
-                        None
-                    }
-                },
-                None => None,
-            }
-        } else {
-            stored
         };
 
         let seed = match &stored {
@@ -1348,10 +1390,6 @@ impl Room {
         ))
     }
 
-    /// Rewrites the whole room. Comment volume per document is in the dozens,
-    /// so this stays cheaper than any incremental scheme. The in-memory copy
-    /// is the source of truth while anyone is connected; writing goes wherever
-    /// the documents go, so the server holds nothing that only it has.
     /// Whether another server holds this room, as of the last time we asked.
     pub fn read_only(&self) -> bool {
         self.read_only.load(Ordering::Relaxed)
@@ -1415,8 +1453,9 @@ impl Room {
                  keeps counting down from the last renewal storage actually confirmed",
                 self.slug
             );
-            lease.holder = renewed.holder;
-            lease.epoch = renewed.epoch;
+            if now_unix() >= lease.safe_until() {
+                return false;
+            }
         }
         true
     }
@@ -1530,6 +1569,8 @@ impl Room {
         }
     }
 
+    /// Persist a complete comment snapshot for legacy storage and fixture callers.
+    /// Catalogue operations normally persist just the changed row.
     pub async fn save(&self, state: &mut RoomState) -> Result<(), String> {
         if !self.hold().await {
             return Err("this room is held by another server".into());
@@ -1833,6 +1874,7 @@ impl Room {
                 "this room is being written by another server; reconnect to continue editing",
             );
         }
+        let _assets_writer = self.assets_write.lock().await;
         let mut state = self.state.lock().await;
         if self.read_only() {
             return Applied::Refuse(
@@ -1877,44 +1919,34 @@ impl Room {
             }
             session::DecodedAdmission::Fits(decoded) => decoded,
         };
-        // Reserve the incoming CRDT payload against the authoritative
-        // document quota before touching the live Y.Doc.  The reservation is
-        // deliberately conservative (the update may contain deletes) and is
-        // released after the serialized in-memory apply; the eventual
-        // journal/session object takes its own exact object reservation. This
-        // closes the window where several accepted updates could grow one
-        // aggregate CRDT past the owner/deployment ceiling before the next
-        // durable write notices.
-        let aggregate_reservation = if let Some(store) = self.store.get() {
-            if update.is_empty() {
-                false
-            } else if store
-                .reserve_object_bytes(&self.slug, update.len() as i64, None)
-                .is_err()
-            {
-                return Applied::Refuse("this document has reached its storage quota");
-            } else {
-                true
+        // Reserve the whole next snapshot, not just this message. The SQL
+        // admission view includes unsaved work in every live room and keeps a
+        // separate reservation for a snapshot already being written.
+        let previous_pending = if let Some(catalog) = self.catalog.get() {
+            let bound = session::encode_state(&state.session.doc)
+                .len()
+                .saturating_add(update.len());
+            match catalog.reserve_room_edit(
+                &self.slug,
+                self.snapshot_budget(bound),
+                self.config.storage.per_owner,
+                self.config.storage.total,
+            ) {
+                Ok(previous) => Some(previous),
+                Err(_) => return Applied::Refuse("this document has reached its storage quota"),
             }
         } else {
-            false
+            None
         };
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
         // with this main file.
         let main_before = session::main_path(&state.session.doc);
         if session::apply_decoded_update(&state.session.doc, decoded).is_err() {
-            if aggregate_reservation {
-                if let Some(store) = self.store.get() {
-                    store.release_object_bytes(&self.slug, update.len() as i64);
-                }
+            if let (Some(catalog), Some(previous)) = (self.catalog.get(), previous_pending) {
+                let _ = catalog.reserve_room_edit(&self.slug, previous, -1, -1);
             }
             return Applied::Ignored;
-        }
-        if aggregate_reservation {
-            if let Some(store) = self.store.get() {
-                store.release_object_bytes(&self.slug, update.len() as i64);
-            }
         }
         // Taken after the peer's update rather than before it, so that what is
         // relayed below is the correction alone and not the peer's own work
@@ -2014,6 +2046,16 @@ impl Room {
         let (body, generation, durable, mut version) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
+            if let Some(catalog) = self.catalog.get() {
+                catalog
+                    .begin_room_write(
+                        &self.slug,
+                        self.snapshot_budget(body.len()),
+                        self.config.storage.per_owner,
+                        self.config.storage.total,
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
             let generation = state.session.generation;
             state.session.encoded_size = Some((generation, body.len() as i64));
             let durable: Vec<(u64, i64)> = state
@@ -2022,6 +2064,10 @@ impl Room {
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
             (body, generation, durable, state.session_version.clone())
+        };
+        let mut quota = RoomWriteQuota {
+            room: self,
+            committed: false,
         };
         let size = body.len() as i64;
         // `generation` is normally advanced by every mediated CRDT mutation.
@@ -2059,15 +2105,17 @@ impl Room {
             self.write_owned(&session_key(&self.slug), body, &mut version)
                 .await?;
         }
+        if let Some(catalog) = self.catalog.get() {
+            catalog
+                .finish_room_write(&self.storage_id, true)
+                .map_err(|error| error.to_string())?;
+        }
+        quota.committed = true;
         let mut state = self.state.lock().await;
         state.session_version = version;
         if state.session.generation == generation {
-            // Keep the logical generation in step with the journal when a
-            // direct internal mutation left it unchanged.  A concurrent edit
-            // has a newer generation and must remain dirty instead.
-            if self.journal.get().is_some() {
-                state.session.generation = durable_sequence;
-            }
+            // The journal cursor and logical edit generation are independent:
+            // persisting a document must not make an older checkpoint cover it.
             state.session.dirty = false;
             state.session.dirty_since = 0;
         }
@@ -2162,15 +2210,6 @@ impl Room {
             let _ = self.checkpoint(why, &by).await;
             return false;
         }
-        if !differs && since_checkpoint >= limits.history_interval_seconds {
-            // A cold document can be due solely because its persisted clock
-            // is old.  There is no new tree to checkpoint, but advancing the
-            // clock prevents every sweeper pass from reopening the same
-            // unchanged document forever.
-            if let Some(catalog) = self.catalog.get() {
-                let _ = catalog.touch_auto_checkpoint(&self.slug, now);
-            }
-        }
         sockets == 0 && !dirty
     }
 
@@ -2184,24 +2223,22 @@ impl Room {
     /// manifest metadata, so a room cannot bypass the deployment budget by
     /// keeping those structures outside the session byte count.
     async fn resident_bytes(&self) -> usize {
-        let state = self.state.lock().await;
-        let session = session::encode_state(&state.session.doc).len();
+        let mut state = self.state.lock().await;
+        let generation = state.session.generation;
+        let session = match state.session.encoded_size {
+            Some((encoded, size)) if encoded == generation => size.max(0) as usize,
+            _ => {
+                let size = session::encode_state(&state.session.doc).len();
+                state.session.encoded_size = Some((generation, size as i64));
+                size
+            }
+        };
         let comments = serde_json::to_vec(&state.comments)
             .map(|bytes| bytes.len())
             .unwrap_or(usize::MAX);
-        let manifest = match self.catalog.get() {
-            Some(catalog) => match catalog.checkpoint_stats(&self.slug) {
-                Ok((_, bytes)) => bytes.max(0) as usize,
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read checkpoint accounting for {}: {error}",
-                        self.slug
-                    );
-                    usize::MAX
-                }
-            },
-            None => state.manifest.bytes().max(0) as usize,
-        };
+        let manifest = serde_json::to_vec(&state.manifest)
+            .map(|bytes| bytes.len())
+            .unwrap_or(usize::MAX);
         session
             .saturating_add(comments)
             .saturating_add(manifest)
@@ -2299,17 +2336,9 @@ pub fn main_path_for(named: &str, format: &str) -> String {
 /// extension none of the four formats claim, which the caller reads as "keep
 /// what was there".
 pub fn format_from_path(path: &str) -> String {
-    if crate::document::render::is_markdown(path) {
-        "markdown".to_string()
-    } else if crate::document::render::is_typst(path) {
-        "typst".to_string()
-    } else if crate::document::render::is_latex(path) {
-        "latex".to_string()
-    } else if crate::document::render::is_html(path) {
-        "html".to_string()
-    } else {
-        String::new()
-    }
+    crate::document::render::document_format(path)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Base64, which is how a binary update travels on a JSON socket.
@@ -2349,20 +2378,29 @@ fn send_to_all(state: &mut RoomState, skip: Option<u64>, message: &str) {
 /// its ceiling again. A room is only let go of once its document is durable;
 /// one with unwritten changes is kept however long it has been idle, because
 /// forgetting it would be losing work.
-async fn evict_idle(rooms: &mut HashMap<String, Arc<Room>>, ceiling: usize) {
-    let mut idle: Vec<(i64, String)> = Vec::new();
+async fn evict_idle(rooms: &mut HashMap<String, Arc<Room>>, ceiling: usize, bytes_ceiling: usize) {
+    let mut idle: Vec<(i64, String, usize)> = Vec::new();
+    let mut bytes = 0usize;
     for (slug, room) in rooms.iter() {
+        let size = room.resident_bytes().await;
+        bytes = bytes.saturating_add(size);
         let state = room.state.lock().await;
-        if state.sockets.is_empty() && !state.session.dirty {
-            idle.push((state.touched, slug.clone()));
+        if Arc::strong_count(room) == 1
+            && state.sockets.is_empty()
+            && !state.session.dirty
+            && state.session.asked.is_none()
+            && room.checkpointing.load(Ordering::Relaxed) == 0
+        {
+            idle.push((state.touched, slug.clone(), size));
         }
     }
     idle.sort();
-    for (_, slug) in idle {
-        if rooms.len() < ceiling {
+    for (_, slug, size) in idle {
+        if rooms.len() < ceiling && bytes < bytes_ceiling {
             break;
         }
         rooms.remove(&slug);
+        bytes = bytes.saturating_sub(size);
     }
 }
 

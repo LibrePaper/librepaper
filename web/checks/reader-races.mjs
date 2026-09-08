@@ -191,6 +191,98 @@ console.log("reader-races: all checks passed");
   assert.equal(changes, 3);
 }
 
+// Renaming the main file into LaTeX configures the already joined project,
+// even though the initial prepare ran while it was Markdown.
+{
+  let configured = 0;
+  const ctx = context({
+    session: {
+      files: {}, list: () => [], folders: () => [], mainId: () => "main",
+      mainPath: () => "paper.tex", latexSettings: () => ({ engine: "auto", release: null }),
+    },
+    files: [], folders: [], openFile: "", sourceFormat: "markdown", shownFigure: null,
+    mayEdit: true, previousFigure: null, ARRIVED_FILE: "", arrivedFileOpened: false,
+    navigationGeneration: 0, renderingRequest: 0, issued: 0, rendering: null,
+    renderingChecked: false, latestPreview: null, renderedSha: null,
+    frameShowsCheckpoint: false, everPainted: false, everPaintedShown: false,
+    docsOrigin: null, dropHeldRendering: () => {}, navigateFrame: () => {},
+    renderers: { formatOf: () => "latex", warm: () => {} },
+    configureLatex: () => configured++, sourceChanged: () => {},
+  });
+  vm.runInContext(body("  function refreshFiles()", "  // A file added"), ctx);
+  vm.runInContext("refreshFiles()", ctx);
+  assert.equal(configured, 1);
+}
+
+// LaTeX configuration follows format/session lifetime. Shared settings reach
+// the compiler once, and a late mirror response cannot write into a later session.
+{
+  const releases = [];
+  const configurations = [];
+  const updates = [];
+  let paints = 0;
+  const makeSession = () => {
+    const observers = new Set();
+    let settings = { engine: "auto", release: null };
+    return {
+      observers, writes: [],
+      meta: { observe: (fn) => observers.add(fn), unobserve: (fn) => observers.delete(fn) },
+      latexSettings: () => settings,
+      setLatexSettings(value) { this.writes.push(value); settings = { ...settings, ...value }; },
+      change(value) {
+        settings = { ...settings, ...value };
+        for (const fn of observers) fn({ changes: { keys: new Map([["latex.engine", {}]]) } });
+      },
+    };
+  };
+  const first = makeSession();
+  const ctx = context({
+    session: first, mayEdit: true, sourceFormat: "latex", SLUG: "project",
+    renderers: { available: () => true }, paintPreview: () => paints++,
+    latex: {
+      configure: (value) => configurations.push(value), cancel: () => {},
+      setSettings: (value) => updates.push(value),
+      releases: () => { const pending = deferred(); releases.push(pending); return pending.promise; },
+    },
+  });
+  vm.runInContext(body("  let latexObservedSession = null;", "  // The most recent LaTeX compile result"), ctx);
+  vm.runInContext('configureLatex("latex"); configureLatex("latex")', ctx);
+  assert.equal(configurations.length, 1);
+  assert.equal(configurations[0].project, "project");
+  assert.equal(configurations[0].mayCompile, true);
+  assert.equal(first.observers.size, 1);
+  first.change({ engine: "xelatex" });
+  assert.equal(updates[0].engine, "xelatex");
+  assert.equal(paints, 1);
+  vm.runInContext('configureLatex("markdown")', ctx);
+  assert.equal(first.observers.size, 0);
+  vm.runInContext('configureLatex("latex")', ctx);
+  assert.equal(first.observers.size, 1);
+  releases[0].resolve({ default: "stale" });
+  await Promise.resolve();
+  assert.equal(first.writes.length, 0);
+  const second = makeSession();
+  ctx.session = second;
+  vm.runInContext('configureLatex("latex")', ctx);
+  assert.equal(first.observers.size, 0);
+  assert.equal(second.observers.size, 1);
+  releases[1].resolve({ default: "old-session" });
+  await Promise.resolve();
+  assert.equal(first.writes.length, 0);
+  assert.equal(second.writes.length, 0);
+  releases[2].resolve({ default: "current" });
+  await Promise.resolve();
+  assert.equal(second.writes[0].release, "current");
+  vm.runInContext('stopLatex()', ctx);
+  assert.equal(second.observers.size, 0);
+  ctx.session = makeSession();
+  ctx.mayEdit = false;
+  vm.runInContext('configureLatex("latex")', ctx);
+  assert.equal(configurations.at(-1).mayCompile, false);
+  assert.equal(releases.length, 3, "readers must not pin the default release");
+  vm.runInContext('stopLatex()', ctx);
+}
+
 // A worker result still advances the preview after a keystroke. Requests made
 // during compilation coalesce into one render of the latest source.
 for (const invalidate of [null, "navigation", "main"]) {
@@ -384,7 +476,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
 }
 
 // A reconnect must check the document's creation before sending the old CRDT.
-for (const outcome of ["same", "recreated", "disconnected"]) {
+for (const outcome of ["same", "recreated", "disconnected", "promoted", "downgraded"]) {
   const metadata = deferred();
   const sent = [];
   let reloads = 0;
@@ -392,7 +484,8 @@ for (const outcome of ["same", "recreated", "disconnected"]) {
   const ctx = context({
     rejoinRequest: 0, connected: true, session: active,
     pendingChat: new Map(), settleChat: () => {},
-    doc: { created_at: "first" }, SLUG: "example", KEY: "", keyHeaders: () => ({}),
+    passages: { clearPassageCache: () => {} },
+    doc: { created_at: "first", ...((outcome === "promoted" || outcome === "downgraded") ? { role: outcome === "promoted" ? "reader" : "editor" } : {}) }, SLUG: "example", KEY: "", keyHeaders: () => ({}),
     fetch: () => metadata.promise, location: { reload: () => reloads++ },
     room: { send: (message) => sent.push(message) }, outbox: { disconnected: () => {} },
   });
@@ -401,10 +494,38 @@ for (const outcome of ["same", "recreated", "disconnected"]) {
   assert.equal(active.joined, false);
   assert.equal(sent.length, 0);
   if (outcome === "disconnected") await vm.runInContext("reconnected(false)", ctx);
-  metadata.resolve({ ok: true, json: async () => ({ created_at: outcome === "recreated" ? "second" : "first" }) });
+  metadata.resolve({ ok: true, json: async () => ({
+    created_at: outcome === "recreated" ? "second" : "first",
+    ...((outcome === "promoted" || outcome === "downgraded") ? {
+      role: outcome === "promoted" ? "editor" : "reader",
+    } : {}),
+  }) });
   await reconnecting;
   assert.equal(sent.length, outcome === "same" ? 1 : 0);
-  assert.equal(reloads, outcome === "recreated" ? 1 : 0);
+  assert.equal(reloads, ["recreated", "promoted", "downgraded"].includes(outcome) ? 1 : 0);
+}
+
+// A missing historical PDF clears the old pages and records an honest
+// missing rendering; repeated polls do not reload the frame forever.
+{
+  let navigations = 0;
+  const ctx = context({
+    viewing: { sha: "checkpoint", at: "today" }, renderingRequest: 0,
+    rendering: null, renderedSha: "live", latestPreview: { kind: "pdf", sha: "live" },
+    frameReady: true, frameEpoch: 0, frameReadyEpoch: 0, frameKind: "pdf",
+    everPainted: true, everPaintedShown: true, frameShowsCheckpoint: true,
+    previewTimer: null, RENDERING_POLL: 30_000,
+    SLUG: "doc", KEY: "", SHELL_HEADERS: {}, keyHeaders: () => ({}),
+    fetch: async () => ({ ok: false, arrayBuffer: async () => null }),
+    navigateFrame: () => navigations++, deliverPreview: () => {},
+  });
+  vm.runInContext(paintRendering, ctx);
+  await vm.runInContext("paintRendering()", ctx);
+  assert.equal(ctx.rendering.missing, true);
+  assert.equal(ctx.latestPreview, null);
+  assert.equal(navigations, 1);
+  await vm.runInContext("paintRendering()", ctx);
+  assert.equal(navigations, 1);
 }
 
 // A document's first rendering is stored the moment a compile succeeds; every

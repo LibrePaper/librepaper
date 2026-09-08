@@ -80,12 +80,12 @@ async fn listing_shows_only_your_own_uploads() {
         .await
         .unwrap();
     let example_room = server.instance.rooms.get("example-doc").await;
-    example_room.reserve_publication_checkpoint().unwrap();
+    let mut publication_token = example_room.reserve_publication_checkpoint().unwrap();
     example_room
         .set_main_file("<p>e</p>", "html", "main.html")
         .await;
     let example_sha = example_room
-        .checkpoint_publication_now("cli", "alice")
+        .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
         .unwrap()
         .unwrap();
@@ -93,6 +93,7 @@ async fn listing_shows_only_your_own_uploads() {
         .commit_publication("example-doc", &example_sha)
         .await
         .unwrap();
+    publication_token.commit();
     let catalog = store.catalog.as_ref().unwrap();
     let mut example = catalog.document("example-doc").unwrap().unwrap();
     example.example = true;
@@ -113,12 +114,12 @@ async fn listing_shows_only_your_own_uploads() {
         .await
         .unwrap();
     let legacy_room = server.instance.rooms.get("legacy-doc").await;
-    legacy_room.reserve_publication_checkpoint().unwrap();
+    let mut publication_token = legacy_room.reserve_publication_checkpoint().unwrap();
     legacy_room
         .set_main_file("<p>l</p>", "html", "main.html")
         .await;
     let legacy_sha = legacy_room
-        .checkpoint_publication_now("cli", "alice")
+        .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
         .unwrap()
         .unwrap();
@@ -126,6 +127,7 @@ async fn listing_shows_only_your_own_uploads() {
         .commit_publication("legacy-doc", &legacy_sha)
         .await
         .unwrap();
+    publication_token.commit();
 
     let visible = slugs_visible_with(&server.url, &session_as("alice")).await;
     assert!(

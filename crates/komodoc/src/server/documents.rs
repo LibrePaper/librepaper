@@ -347,16 +347,19 @@ impl Server {
                 return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
             }
         };
-        if let Err(err) = room.reserve_publication_checkpoint() {
-            let _ = self
-                .store
-                .abort_publication(&key, &format!("checkpoint admission failed: {err}"))
-                .await;
-            if let Err(cleanup) = self.delete_document(&key).await {
-                eprintln!("warning: could not undo refused creation of {key}: {cleanup}");
+        let mut publication_token = match room.reserve_publication_checkpoint() {
+            Ok(token) => token,
+            Err(err) => {
+                let _ = self
+                    .store
+                    .abort_publication(&key, &format!("checkpoint admission failed: {err}"))
+                    .await;
+                if let Err(cleanup) = self.delete_document(&key).await {
+                    eprintln!("warning: could not undo refused creation of {key}: {cleanup}");
+                }
+                return write_json(429, &json!({"error": err, "retryable": true}));
             }
-            return write_json(429, &json!({"error": err, "retryable": true}));
-        }
+        };
         room.set_main_file(&parsed.source, &parsed.source_format, &parsed.main)
             .await;
         // The rest of the directory, if a whole one was published. The texts
@@ -389,7 +392,7 @@ impl Server {
         // disappear. So a failure here undoes the creation instead of
         // answering with the SHA `put` wrote before the tree existed.
         let sha = match room
-            .checkpoint_publication_now("cli", &entry.publisher)
+            .checkpoint_publication_now("cli", &entry.publisher, &mut publication_token)
             .await
         {
             Ok(Some(sha)) => sha,
@@ -417,6 +420,7 @@ impl Server {
             }
             return write_json(500, &json!({"error": "could not store the document"}));
         }
+        publication_token.commit();
         // A document only its owner can open is not published in any useful
         // sense, so the upload mints the read link and hands it back beside
         // the bare URL: what `komodoc publish` prints is the thing to send.
@@ -519,10 +523,13 @@ impl Server {
                 return Err(write_json(507, &json!({"error": error})));
             }
         }
-        if let Err(error) = room.reserve_publication_checkpoint() {
-            let _ = self.store.abort_publication(&existing.slug, &error).await;
-            return Err(write_json(429, &json!({"error": error, "retryable": true})));
-        }
+        let mut publication_token = match room.reserve_publication_checkpoint() {
+            Ok(token) => token,
+            Err(error) => {
+                let _ = self.store.abort_publication(&existing.slug, &error).await;
+                return Err(write_json(429, &json!({"error": error, "retryable": true})));
+            }
+        };
 
         let mut wanted: std::collections::HashSet<String> =
             parsed.files.iter().map(|(path, _)| path.clone()).collect();
@@ -673,7 +680,7 @@ impl Server {
             parsed.title.clone()
         };
         let sha = match room
-            .checkpoint_publication_now_locked("cli", &who.key)
+            .checkpoint_publication_now_locked("cli", &who.key, &mut publication_token)
             .await
         {
             Ok(Some(sha)) => sha,
@@ -715,6 +722,7 @@ impl Server {
                 ));
             }
         }
+        publication_token.commit();
         room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
             .await;
         if let Err(err) = self.store.rename(&existing.slug, &title).await {

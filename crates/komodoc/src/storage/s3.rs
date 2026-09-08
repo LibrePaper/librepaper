@@ -375,17 +375,21 @@ impl BlobStore for S3Store {
                 .bytes()
                 .await
                 .map_err(|err| BlobError::Other(err.to_string()))?;
-            let body = String::from_utf8_lossy(&body).to_string();
+            let body = String::from_utf8(body.to_vec())
+                .map_err(|err| BlobError::Other(format!("listing {prefix} is not UTF-8: {err}")))?;
             if status != 200 {
                 return Err(BlobError::Other(format!(
                     "listing {prefix} failed ({status}): {}",
                     truncate(&body, 200)
                 )));
             }
-            let page = parse_listing(&body);
+            let page = parse_listing(&body)?;
             for (key, size, version) in page.contents {
                 // Keys come back scoped; callers speak in unscoped keys.
-                let key = key.strip_prefix(&self.prefix).unwrap_or(&key).to_string();
+                let key = key
+                    .strip_prefix(&self.prefix)
+                    .ok_or_else(|| BlobError::Other("listing returned an unscoped key".into()))?
+                    .to_string();
                 found.push(BlobInfo { key, size, version });
             }
             if !page.truncated || page.next_token.is_empty() {
@@ -397,8 +401,98 @@ impl BlobStore for S3Store {
         Ok(found)
     }
 
+    async fn list_page(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> BlobResult<Vec<BlobInfo>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut found = Vec::with_capacity(limit.min(1000));
+        let mut token: Option<String> = None;
+        let mut first_request = true;
+        let mut seen_tokens = std::collections::HashSet::new();
+        loop {
+            let remaining = limit.saturating_sub(found.len());
+            if remaining == 0 {
+                break;
+            }
+            let mut query = vec![
+                ("list-type".to_string(), "2".to_string()),
+                // S3 ListObjectsV2 caps this parameter at 1000.
+                ("max-keys".to_string(), remaining.min(1000).to_string()),
+                ("prefix".to_string(), self.scoped(prefix)),
+            ];
+            if first_request {
+                if let Some(after) = after {
+                    query.push(("start-after".to_string(), self.scoped(after)));
+                }
+                first_request = false;
+            }
+            if let Some(token) = &token {
+                query.push(("continuation-token".to_string(), token.clone()));
+            }
+            let address = format!(
+                "{}/{}?{}",
+                self.endpoint,
+                self.bucket,
+                canonical_query(&query)
+            );
+            let response = self.send(Method::GET, &address, &[], Vec::new()).await?;
+            let status = response.status().as_u16();
+            let body = response
+                .bytes()
+                .await
+                .map_err(|err| BlobError::Other(err.to_string()))?;
+            let body = String::from_utf8(body.to_vec())
+                .map_err(|err| BlobError::Other(format!("listing {prefix} is not UTF-8: {err}")))?;
+            if status != 200 {
+                return Err(BlobError::Other(format!(
+                    "listing {prefix} failed ({status}): {}",
+                    truncate(&body, 200)
+                )));
+            }
+            let page = parse_listing(&body)?;
+            for (key, size, version) in page.contents {
+                let key = key
+                    .strip_prefix(&self.prefix)
+                    .ok_or_else(|| BlobError::Other("listing returned an unscoped key".into()))?;
+                let item = BlobInfo {
+                    key: key.to_owned(),
+                    size,
+                    version,
+                };
+                if item.key.starts_with(prefix)
+                    && after.is_none_or(|cursor| item.key.as_str() > cursor)
+                {
+                    found.push(item);
+                    if found.len() == limit {
+                        break;
+                    }
+                }
+            }
+            if found.len() == limit || !page.truncated {
+                break;
+            }
+            let next = page.next_token;
+            if !seen_tokens.insert(next.clone()) {
+                return Err(BlobError::Other(
+                    "S3 listing repeated a continuation token".into(),
+                ));
+            }
+            token = Some(next);
+        }
+        found.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(found)
+    }
+
     async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
-        if self.single_writer {
+        // Even a deployment configured for one writer must retain create-only
+        // semantics: backup publication uses an empty expectation to make a
+        // recovery point immutable if two jobs are accidentally launched.
+        if self.single_writer && !expect.is_empty() {
             return self.write(key, body, "application/json", &[]).await;
         }
         let condition = if expect.is_empty() {
@@ -425,28 +519,66 @@ struct Listing {
     contents: Vec<(String, i64, String)>,
 }
 
-fn parse_listing(body: &str) -> Listing {
+fn parse_listing(body: &str) -> BlobResult<Listing> {
+    if !body.contains("<ListBucketResult") || !body.contains("</ListBucketResult>") {
+        return Err(BlobError::Other("malformed S3 listing root".into()));
+    }
+    let truncated = match element(body, "IsTruncated")
+        .ok_or_else(|| BlobError::Other("S3 listing omitted IsTruncated".into()))?
+        .trim()
+    {
+        "true" => true,
+        "false" => false,
+        value => {
+            return Err(BlobError::Other(format!(
+                "invalid S3 IsTruncated value {value:?}"
+            )))
+        }
+    };
+    let next_token = element(body, "NextContinuationToken")
+        .map(|value| unescape_xml(&value))
+        .transpose()?
+        .unwrap_or_default();
+    if truncated && next_token.is_empty() {
+        return Err(BlobError::Other(
+            "truncated S3 listing omitted continuation token".into(),
+        ));
+    }
     let mut listing = Listing {
-        truncated: element(body, "IsTruncated").as_deref() == Some("true"),
-        next_token: element(body, "NextContinuationToken").unwrap_or_default(),
+        truncated,
+        next_token,
         contents: Vec::new(),
     };
     let mut rest = body;
     while let Some(start) = rest.find("<Contents>") {
         let after = &rest[start..];
-        let Some(end) = after.find("</Contents>") else {
-            break;
-        };
+        let end = after
+            .find("</Contents>")
+            .ok_or_else(|| BlobError::Other("malformed S3 Contents element".into()))?;
         let block = &after[..end];
-        let key = unescape_xml(&element(block, "Key").unwrap_or_default());
-        let size = element(block, "Size")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let version = unescape_xml(&element(block, "ETag").unwrap_or_default());
+        let key = unescape_xml(
+            &element(block, "Key")
+                .ok_or_else(|| BlobError::Other("S3 object omitted Key".into()))?,
+        )?;
+        if key.is_empty() {
+            return Err(BlobError::Other("S3 object has an empty Key".into()));
+        }
+        let size_text = element(block, "Size")
+            .ok_or_else(|| BlobError::Other("S3 object omitted Size".into()))?;
+        let size = size_text
+            .parse::<i64>()
+            .map_err(|_| BlobError::Other(format!("invalid S3 object size {size_text:?}")))?;
+        if size < 0 {
+            return Err(BlobError::Other("S3 object has a negative Size".into()));
+        }
+        let version = element(block, "ETag")
+            .map(|value| unescape_xml(&value))
+            .transpose()?
+            .unwrap_or_default();
         listing.contents.push((key, size, version));
-        rest = &after[end..];
+        rest = &after[end + "</Contents>".len()..];
     }
-    listing
+    Ok(listing)
 }
 
 fn element(body: &str, name: &str) -> Option<String> {
@@ -457,12 +589,32 @@ fn element(body: &str, name: &str) -> Option<String> {
     Some(body[start..end].to_string())
 }
 
-fn unescape_xml(text: &str) -> String {
-    text.replace("&quot;", "\"")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+fn unescape_xml(text: &str) -> BlobResult<String> {
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        output.push_str(&rest[..start]);
+        let entity_end = rest[start..]
+            .find(';')
+            .ok_or_else(|| BlobError::Other("malformed XML entity in S3 listing".into()))?
+            + start;
+        let entity = &rest[start..=entity_end];
+        output.push_str(match entity {
+            "&quot;" => "\"",
+            "&lt;" => "<",
+            "&gt;" => ">",
+            "&apos;" => "'",
+            "&amp;" => "&",
+            _ => {
+                return Err(BlobError::Other(format!(
+                    "unknown XML entity in S3 listing: {entity}"
+                )))
+            }
+        });
+        rest = &rest[entity_end + 1..];
+    }
+    output.push_str(rest);
+    Ok(output)
 }
 
 /* ------------------------------------------------------------- signing */
@@ -529,4 +681,101 @@ pub fn canonical_query(query: &[(String, String)]) -> String {
         .map(|(key, value)| format!("{}={}", escape(key), escape(value)))
         .collect::<Vec<_>>()
         .join("&")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::response::Response;
+    use axum::routing::any;
+    use axum::Router;
+
+    #[test]
+    fn listing_decodes_escaped_keys_and_continuation_tokens() {
+        let listing = parse_listing(
+            "<ListBucketResult>\
+             <IsTruncated>true</IsTruncated>\
+             <NextContinuationToken>next&amp;page</NextContinuationToken>\
+             <Contents><Key>objects/a&amp;b</Key><Size>7</Size><ETag>&quot;tag&quot;</ETag></Contents>\
+             </ListBucketResult>",
+        )
+        .expect("valid listing");
+        assert!(listing.truncated);
+        assert_eq!(listing.next_token, "next&page");
+        assert_eq!(
+            listing.contents,
+            vec![("objects/a&b".into(), 7, "\"tag\"".into())]
+        );
+    }
+
+    #[test]
+    fn malformed_or_truncated_listing_fails_closed() {
+        for body in [
+            "<ListBucketResult><IsTruncated>true</IsTruncated></ListBucketResult>",
+            "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>x</Key><Size>bad</Size></Contents></ListBucketResult>",
+            "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>x&broken;</Key><Size>1</Size></Contents></ListBucketResult>",
+        ] {
+            assert!(parse_listing(body).is_err(), "accepted malformed listing: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_page_consumes_s3_pages_past_the_1000_object_limit() {
+        async fn bucket(request: Request<Body>) -> Response<Body> {
+            let query = request.uri().query().unwrap_or_default();
+            let continuation = url::form_urlencoded::parse(query.as_bytes())
+                .find(|(key, _)| key == "continuation-token")
+                .map(|(_, value)| value.into_owned());
+            let mut body = String::from("<ListBucketResult><IsTruncated>");
+            if continuation.is_none() {
+                body.push_str(
+                    "true</IsTruncated><NextContinuationToken>page&amp;2</NextContinuationToken>",
+                );
+                for index in 0..1000 {
+                    body.push_str(&format!(
+                        "<Contents><Key>scope/objects/{index:04}</Key><Size>1</Size></Contents>"
+                    ));
+                }
+            } else {
+                body.push_str("false</IsTruncated>");
+                body.push_str("<Contents><Key>scope/objects/1000</Key><Size>1</Size></Contents>");
+            }
+            body.push_str("</ListBucketResult>");
+            Response::new(Body::from(body))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(any(bucket)))
+                .await
+                .expect("server");
+        });
+        let options = StorageOptions {
+            endpoint: format!("http://{address}"),
+            bucket: "bucket".into(),
+            prefix: "scope/".into(),
+            access_key: "key".into(),
+            secret_key: "secret".into(),
+            ..StorageOptions::default()
+        };
+        let store = S3Store::new(&options);
+        let page = store
+            .list_page("objects/", None, 1001)
+            .await
+            .expect("bounded listing");
+        assert_eq!(page.len(), 1001);
+        assert_eq!(
+            page.first().map(|item| item.key.as_str()),
+            Some("objects/0000")
+        );
+        assert_eq!(
+            page.last().map(|item| item.key.as_str()),
+            Some("objects/1000")
+        );
+    }
 }

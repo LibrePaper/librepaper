@@ -28,7 +28,8 @@ import { IndexeddbPersistence } from ${JSON.stringify(join(root, "web/node_modul
 import { cacheName } from ${JSON.stringify(join(root, "web/src/lib/collab-cache.js"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
-import { undoDepth } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/commands/dist/index.js"))};
+import { undoDepth } from ${JSON.stringify(join(root, "web/node_modules/y-codemirror.next/src/y-undomanager.js"))};
+import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEditor.svelte"))};
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
@@ -62,7 +63,7 @@ window.editorCheck = async () => {
   const secondText = EditorView.findFromDOM(document.querySelector(".cm-editor")).state.doc.toString();
 
   // A peer changes A while this browser is looking at B.
-  session.textOf(firstFile).insert(0, "REMOTE ");
+  session.doc.transact(() => session.textOf(firstFile).insert(0, "REMOTE "), "remote");
   component.$set({ file: firstFile });
   await tick();
   await tick();
@@ -77,6 +78,111 @@ window.editorCheck = async () => {
     },
     sameView: firstView === finalView,
   };
+};
+window.remoteUndoCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const textId = value.addText("undo.md", "alpha");
+  const text = value.textOf(textId);
+  value.setMain(textId);
+  const localComponent = createClassComponent({
+    component: Editor,
+    target: document.body,
+    props: { session: value, format: "markdown", file: textId },
+  });
+  await tick();
+  const view = EditorView.findFromDOM(document.querySelectorAll(".cm-editor")[1]);
+  const remoteOrigin = {};
+  value.doc.transact(() => text.insert(0, "REMOTE "), remoteOrigin);
+  await tick();
+  view.focus();
+  const press = (key, options = {}) => view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+    key, code: "Key" + key.toUpperCase(), bubbles: true, cancelable: true, ...options,
+  }));
+  press("z", { ctrlKey: true });
+  await tick();
+  const remoteOnly = text.toString();
+  view.dispatch({ changes: { from: text.length, insert: "LOCAL" } });
+  press("z", { ctrlKey: true });
+  await tick();
+  const localUndone = text.toString();
+  press("y", { ctrlKey: true });
+  await tick();
+  const localRedone = text.toString();
+  localComponent.$destroy();
+  value.leave();
+  return { remoteOnly, localUndone, localRedone };
+};
+window.vimUndoCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const textId = value.addText("vim-undo.md", "alpha");
+  const text = value.textOf(textId);
+  value.setMain(textId);
+  const vimComponent = createClassComponent({
+    component: Editor,
+    target: document.body,
+    props: { session: value, format: "markdown", file: textId, keys: "vim" },
+  });
+  await tick();
+  for (let attempt = 0; attempt < 100 && !document.querySelector(".cm-vim-panel"); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const view = EditorView.findFromDOM(document.querySelectorAll(".cm-editor")[1]);
+  view.dispatch({ changes: { from: text.length, insert: "LOCAL" } });
+  view.focus();
+  view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+    key: "u", code: "KeyU", bubbles: true, cancelable: true,
+  }));
+  await tick();
+  const undone = text.toString();
+  view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+    key: "r", code: "KeyR", ctrlKey: true, bubbles: true, cancelable: true,
+  }));
+  await tick();
+  const redone = text.toString();
+  vimComponent.$destroy();
+  value.leave();
+  return { undone, redone };
+};
+window.mergeUndoCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const id = value.addText("merge.md", "alpha");
+  const text = value.textOf(id);
+  const host = document.createElement("section");
+  document.body.append(host);
+  const mergeComponent = createClassComponent({ component: MergeEditor, target: host,
+    props: { oldText: "alpha", newText: "alpha", liveText: text, awareness: value.awareness, editable: true },
+  });
+  await tick();
+  const views = [...host.querySelectorAll(".cm-editor")].map((el) => EditorView.findFromDOM(el));
+  const press = (view, key, options = {}) => {
+    view.focus();
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+      key: options.shiftKey ? key.toUpperCase() : key,
+      keyCode: key.toUpperCase().charCodeAt(0),
+      code: "Key" + key.toUpperCase(), ctrlKey: true, bubbles: true, cancelable: true, ...options,
+    }));
+  };
+  const errors = [];
+  const onError = (event) => errors.push(event.message);
+  window.addEventListener("error", onError);
+  value.doc.transact(() => text.insert(0, "REMOTE "), "remote");
+  press(views[0], "z");
+  press(views[1], "z");
+  const remoteOnly = text.toString();
+  views[1].dispatch({ changes: { from: text.length, insert: "LOCAL" } });
+  press(views[1], "z");
+  const undone = text.toString();
+  press(views[1], "z", { shiftKey: true });
+  const redone = text.toString();
+  mergeComponent.$set({ editable: false });
+  await tick();
+  for (const el of host.querySelectorAll(".cm-editor")) press(EditorView.findFromDOM(el), "z");
+  const readonly = text.toString();
+  window.removeEventListener("error", onError);
+  mergeComponent.$destroy();
+  host.remove();
+  value.leave();
+  return { remoteOnly, undone, redone, readonly, errors };
 };
 window.collabCacheCheck = async () => {
   const slug = "cache-upgrade";
@@ -294,6 +400,22 @@ try {
   assert.equal(result.before.caret + 7, result.after.caret);
   assert.equal(result.after.text, "REMOTE LOCAL alpha");
   console.log("editor-browser: file state, undo, caret, and inactive remote text preserved");
+  const remoteUndo = await evaluate("remoteUndoCheck()");
+  assert.equal(remoteUndo.remoteOnly, "REMOTE alpha");
+  assert.equal(remoteUndo.localUndone, "REMOTE alpha");
+  assert.equal(remoteUndo.localRedone, "REMOTE alphaLOCAL");
+  console.log("editor-browser: remote changes stay out of undo, local undo and redo work");
+  const vimUndo = await evaluate("vimUndoCheck()");
+  assert.equal(vimUndo.undone, "alpha");
+  assert.equal(vimUndo.redone, "alphaLOCAL");
+  console.log("editor-browser: Vim u and Ctrl-R use collaborative undo and redo");
+  const mergeUndo = await evaluate("mergeUndoCheck()");
+  assert.equal(mergeUndo.remoteOnly, "REMOTE alpha");
+  assert.equal(mergeUndo.undone, "REMOTE alpha");
+  assert.equal(mergeUndo.redone, "REMOTE alphaLOCAL");
+  assert.equal(mergeUndo.readonly, mergeUndo.redone);
+  assert.deepEqual(mergeUndo.errors, []);
+  console.log("editor-browser: merge undo preserves remote edits and read-only panes stay inert");
   const diagnostics = await evaluate("diagnosticsCheck()");
   assert.match(diagnostics.text, /General compiler warning/);
   assert.match(diagnostics.text, /Try this suggestion/);

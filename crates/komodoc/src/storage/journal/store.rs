@@ -212,6 +212,73 @@ impl JournalStore {
                 let tx = connection
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(CatalogError::from)?;
+                let unresolved: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM journal_preparations
+                         WHERE resolved_at IS NULL",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if unresolved != 0 {
+                    return Err(CatalogError::Busy);
+                }
+                let (manifest_root, manifest_length): (String, i64) = tx
+                    .query_row(
+                        "SELECT manifest_key,manifest_length FROM journal_state WHERE id=1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(CatalogError::from)?;
+                let manifest_shards: Vec<(String, i64)> = {
+                    let mut statement = tx
+                        .prepare("SELECT object_key, encoded_bytes FROM journal_manifest_shards")
+                        .map_err(CatalogError::from)?;
+                    let rows = statement
+                        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                        .map_err(CatalogError::from)?;
+                    rows.collect::<rusqlite::Result<Vec<_>>>()
+                        .map_err(CatalogError::from)?
+                };
+                for (key, bytes) in &manifest_shards {
+                    tx.execute(
+                        "INSERT INTO journal_retirements
+                         (object_key,storage_id,kind,encoded_bytes,payload_bytes,
+                          maintenance_bytes,retired_revision,modified_at,
+                          first_unreferenced_at,delete_after)
+                         VALUES (?1,?2,'manifest',?3,0,0,
+                                 (SELECT revision FROM journal_state),?4,?4,?4)
+                         ON CONFLICT(object_key) DO NOTHING",
+                        params![key, storage_id, bytes, retired_at],
+                    )
+                    .map_err(CatalogError::from)?;
+                }
+                if !manifest_root.is_empty()
+                    && !manifest_shards.iter().any(|(key, _)| key == &manifest_root)
+                {
+                    tx.execute(
+                        "INSERT INTO journal_retirements
+                         (object_key,storage_id,kind,encoded_bytes,payload_bytes,
+                          maintenance_bytes,retired_revision,modified_at,
+                          first_unreferenced_at,delete_after)
+                         VALUES (?1,?2,'manifest',?3,0,0,
+                                 (SELECT revision FROM journal_state),?4,?4,?4)
+                         ON CONFLICT(object_key) DO NOTHING",
+                        params![manifest_root, storage_id, manifest_length, retired_at],
+                    )
+                    .map_err(CatalogError::from)?;
+                }
+                if !manifest_shards.is_empty() || !manifest_root.is_empty() {
+                    tx.execute("DELETE FROM journal_manifest_shards", [])
+                        .map_err(CatalogError::from)?;
+                    tx.execute(
+                        "UPDATE journal_state SET revision=revision+1,
+                         last_operation_id='retire-manifest',manifest_key='',
+                         manifest_digest='',manifest_length=0 WHERE id=1",
+                        [],
+                    )
+                    .map_err(CatalogError::from)?;
+                }
                 let bases = {
                     let mut statement = tx
                         .prepare(
@@ -523,6 +590,7 @@ impl JournalStore {
             } else {
                 self.resolve_preparation(&preparation.operation_id)?;
             }
+            self.release_compaction_borrow(&preparation, &plan)?;
             return Ok(());
         }
         if state.revision != preparation.expected_revision
@@ -535,11 +603,16 @@ impl JournalStore {
         }
         if preparation.kind == "compact" {
             let mut bodies = Vec::with_capacity(plan.output_keys.len());
+            let mut known_lengths = Vec::with_capacity(plan.output_keys.len());
             for key in &plan.output_keys {
                 match blobs.get(key).await {
-                    Ok(body) => bodies.push((key.clone(), body)),
+                    Ok(body) => {
+                        known_lengths.push((key.clone(), body.len() as i64));
+                        bodies.push((key.clone(), body));
+                    }
                     Err(BlobError::NotFound) => {
-                        self.abort_preparation(&preparation, &plan, &[])?;
+                        self.abort_preparation(&preparation, &plan, &known_lengths)?;
+                        self.release_compaction_borrow(&preparation, &plan)?;
                         return Ok(());
                     }
                     Err(error) => return Err(error.into()),
@@ -548,13 +621,18 @@ impl JournalStore {
             let Some((base_key, base_body)) = bodies.first() else {
                 return Err(JournalError::Corrupt("compact plan has no base".into()));
             };
-            let decoded: RecoveryBaseBody = serde_json::from_slice(base_body).map_err(|error| {
-                JournalError::Corrupt(format!("invalid prepared recovery base: {error}"))
-            })?;
+            let decoded = match decode_recovery_base(base_body) {
+                Ok(decoded) => decoded,
+                Err(_) => {
+                    self.abort_preparation(&preparation, &plan, &known_lengths)?;
+                    self.release_compaction_borrow(&preparation, &plan)?;
+                    return Ok(());
+                }
+            };
             if decoded.digest != hex::encode(Sha256::digest(&decoded.payload)) {
-                return Err(JournalError::Corrupt(
-                    "prepared recovery base payload digest mismatch".into(),
-                ));
+                self.abort_preparation(&preparation, &plan, &known_lengths)?;
+                self.release_compaction_borrow(&preparation, &plan)?;
+                return Ok(());
             }
             let base = RecoveryBase {
                 base_id: format!(
@@ -571,35 +649,46 @@ impl JournalStore {
             };
             let mut shards = Vec::with_capacity(bodies.len().saturating_sub(1));
             for (key, body) in bodies.iter().skip(1) {
-                let shard: ManifestShard = serde_json::from_slice(body).map_err(|error| {
-                    JournalError::Corrupt(format!("invalid prepared manifest shard: {error}"))
-                })?;
+                let shard: ManifestShard = match serde_json::from_slice(body) {
+                    Ok(shard) => shard,
+                    Err(_) => {
+                        self.abort_preparation(&preparation, &plan, &known_lengths)?;
+                        self.release_compaction_borrow(&preparation, &plan)?;
+                        return Ok(());
+                    }
+                };
                 if shard.object_key != *key || shard.encoded_bytes != body.len() as i64 {
-                    return Err(JournalError::Corrupt(
-                        "prepared manifest shard identity mismatch".into(),
-                    ));
+                    self.abort_preparation(&preparation, &plan, &known_lengths)?;
+                    self.release_compaction_borrow(&preparation, &plan)?;
+                    return Ok(());
                 }
                 let digest = shard.digest.clone();
                 let mut canonical = shard.clone();
                 canonical.digest.clear();
-                if hex::encode(Sha256::digest(serde_json::to_vec(&canonical).map_err(
-                    |error| JournalError::Corrupt(format!("invalid manifest shard: {error}")),
-                )?)) != digest
-                {
-                    return Err(JournalError::Corrupt(
-                        "prepared manifest shard digest mismatch".into(),
-                    ));
+                let canonical = match serde_json::to_vec(&canonical) {
+                    Ok(canonical) => canonical,
+                    Err(_) => {
+                        self.abort_preparation(&preparation, &plan, &known_lengths)?;
+                        self.release_compaction_borrow(&preparation, &plan)?;
+                        return Ok(());
+                    }
+                };
+                if hex::encode(Sha256::digest(canonical)) != digest {
+                    self.abort_preparation(&preparation, &plan, &known_lengths)?;
+                    self.release_compaction_borrow(&preparation, &plan)?;
+                    return Ok(());
                 }
                 shards.push(shard);
             }
             if shards.is_empty() {
-                return Err(JournalError::Corrupt(
-                    "compact plan has no manifest shard".into(),
-                ));
+                self.abort_preparation(&preparation, &plan, &known_lengths)?;
+                self.release_compaction_borrow(&preparation, &plan)?;
+                return Ok(());
             }
             let retire_segments = self.segment_lengths(&plan.protected_input_keys)?;
             if retire_segments.len() != plan.protected_input_keys.len() {
-                self.abort_preparation(&preparation, &plan, &[])?;
+                self.abort_preparation(&preparation, &plan, &known_lengths)?;
+                self.release_compaction_borrow(&preparation, &plan)?;
                 return Ok(());
             }
             self.commit_compaction_shards(
@@ -608,6 +697,7 @@ impl JournalStore {
                 &shards,
                 &retire_segments,
             )?;
+            self.release_compaction_borrow(&preparation, &plan)?;
             return Ok(());
         }
         if preparation.kind != "flush" {
@@ -623,17 +713,22 @@ impl JournalStore {
         let mut known_abort = false;
         for (index, key) in plan.output_keys.iter().enumerate() {
             match blobs.get(key).await {
-                Ok(body) => match Segment::decode(&body) {
-                    Ok(segment) if segment_matches_plan(&segment, &plan) => {
-                        written.push(WrittenSegment {
-                            segment_id: format!("{}-{index}", preparation.operation_id),
-                            object_key: key.clone(),
-                            digest: hex::encode(Sha256::digest(&body)),
-                            encoded_bytes: body.len() as i64,
-                        });
+                Ok(body) => {
+                    let valid = Segment::decode(&body)
+                        .map(|segment| segment_matches_plan(&segment, &plan))
+                        .unwrap_or(false);
+                    if !valid {
+                        known_abort = true;
                     }
-                    Ok(_) | Err(_) => known_abort = true,
-                },
+                    // Keep the physical length even for malformed output so
+                    // abort cleanup retains its quota charge until deletion.
+                    written.push(WrittenSegment {
+                        segment_id: format!("{}-{index}", preparation.operation_id),
+                        object_key: key.clone(),
+                        digest: hex::encode(Sha256::digest(&body)),
+                        encoded_bytes: body.len() as i64,
+                    });
+                }
                 Err(BlobError::NotFound) => known_abort = true,
                 Err(error) => return Err(error.into()),
             }
@@ -647,6 +742,48 @@ impl JournalStore {
             .map(|segment| (segment.object_key.clone(), segment.encoded_bytes))
             .collect::<Vec<_>>();
         self.abort_preparation(&preparation, &plan, &lengths)?;
+        Ok(())
+    }
+
+    fn release_compaction_borrow(
+        &self,
+        preparation: &JournalPreparation,
+        plan: &JournalPlan,
+    ) -> JournalResult<()> {
+        if preparation.kind != "compact" {
+            return Ok(());
+        }
+        let Some(storage_id) = plan.covered.first().map(|range| range.storage_id.as_str()) else {
+            return Ok(());
+        };
+        let Some(slug) = self
+            .catalog
+            .slug_by_storage_id(storage_id)
+            .map_err(JournalError::from)?
+        else {
+            return Ok(());
+        };
+        let job_id = format!("maintenance-{}", preparation.operation_id);
+        let reserved: Option<(String, i64)> = self
+            .catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT status,reserved_bytes FROM maintenance_jobs WHERE id=?1",
+                        [&job_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)
+            })
+            .map_err(JournalError::from)?;
+        if let Some((status, bytes)) = reserved {
+            if status == "active" && bytes > 0 {
+                self.catalog
+                    .release_maintenance(&job_id, &slug, bytes, crate::util::now_unix())
+                    .map_err(JournalError::from)?;
+            }
+        }
         Ok(())
     }
 
@@ -725,7 +862,7 @@ impl JournalStore {
         plan: &JournalPlan,
         known_lengths: &[(String, i64)],
     ) -> JournalResult<()> {
-        let result = self
+        let mut result = self
             .catalog
             .with_connection(|connection| {
                 let tx = connection
@@ -787,10 +924,50 @@ impl JournalStore {
                 .map(|range| range.storage_id.as_str())
                 .filter(|storage_id| !storage_id.is_empty())
                 .collect();
+            let mut accounting_error = None;
             for owner in owners {
                 for key in &plan.output_keys {
-                    let _ = self.abort_object(owner, &preparation.operation_id, key);
+                    let known_bytes = known_lengths
+                        .iter()
+                        .find(|(known_key, _)| known_key == key)
+                        .map(|(_, length)| *length);
+                    if known_bytes.is_some() {
+                        let kind = if key.contains("/bases/") {
+                            "journal_base"
+                        } else if key.contains("/manifest/") {
+                            "journal_manifest"
+                        } else {
+                            "journal_segment"
+                        };
+                        // The object exists, so turn its reservation into
+                        // accounting before scheduling deletion. This keeps
+                        // quota charged until the retirement worker confirms
+                        // physical cleanup. For owners without the matching
+                        // reservation this is an idempotent no-op.
+                        if let Err(error) = self.commit_object(
+                            owner,
+                            &preparation.operation_id,
+                            key,
+                            kind,
+                            "aborted-publication",
+                        ) {
+                            accounting_error.get_or_insert(error);
+                        }
+                    } else {
+                        // A proven missing object has no durable bytes to
+                        // protect, so its reservation can be refunded.
+                        let _ = self.abort_object(owner, &preparation.operation_id, key);
+                    }
                 }
+            }
+            if let Some(error) = accounting_error {
+                result = Err(error);
+            }
+        }
+        if preparation.kind == "compact" {
+            let release_result = self.release_compaction_borrow(preparation, plan);
+            if result.is_ok() {
+                result = release_result;
             }
         }
         result
@@ -998,6 +1175,24 @@ impl JournalStore {
                 tx.commit().map_err(CatalogError::from)?;
                 let state = read_state(connection).map_err(CatalogError::from)?;
                 Ok((state, sequences))
+            })
+            .map_err(JournalError::from)
+    }
+
+    pub(super) fn operation_sequences(&self, operation_id: &str) -> JournalResult<Vec<i64>> {
+        self.catalog
+            .with_connection(|connection| {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT segment_seq FROM journal_segments
+                         WHERE operation_id = ?1 ORDER BY segment_seq",
+                    )
+                    .map_err(CatalogError::from)?;
+                let rows = statement
+                    .query_map([operation_id], |row| row.get::<_, i64>(0))
+                    .map_err(CatalogError::from)?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(CatalogError::from)
             })
             .map_err(JournalError::from)
     }

@@ -324,7 +324,14 @@ impl Server {
                         &json!({"error": "the text moved while that was being stored"}),
                     );
                 }
-                Err(err) => return write_json(500, &json!({"error": err})),
+                Err(err) => {
+                    let status = if err.contains("quota exceeded") {
+                        507
+                    } else {
+                        500
+                    };
+                    return write_json(status, &json!({"error": err}));
+                }
             }
         }
         // Provenance rides with the PDF as a header rather than a second

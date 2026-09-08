@@ -13,12 +13,11 @@ pub(super) const JOURNAL_MAINTENANCE_RESERVE_BYTES: i64 = 64 * 1024 * 1024;
 
 /// Production bridge used by Room.  It serializes the prepare/object
 /// write/commit protocol while leaving the coordinator responsible for queue
-/// limits and segment framing.  A failed SQL commit intentionally leaves the
-/// preparation unresolved; startup then refuses to serve until an operator or
-/// reconciliation worker proves the outcome.
+/// limits and segment framing. Known failures are reconciled while holding the
+/// gate; only an ambiguous publication remains for startup reconciliation.
 pub struct JournalRuntime {
     pub(super) coordinator: AsyncMutex<JournalCoordinator>,
-    pub(super) publication: AsyncMutex<()>,
+    pub(super) publication: Arc<AsyncMutex<()>>,
     pub(super) pending: AsyncMutex<HashSet<(String, u64, u64)>>,
     pub(super) pending_notify: Notify,
     pub(super) store: Arc<JournalStore>,
@@ -94,7 +93,7 @@ impl JournalRuntime {
         }
         Ok(Arc::new(Self {
             coordinator: AsyncMutex::new(JournalCoordinator::new(limits)?),
-            publication: AsyncMutex::new(()),
+            publication: catalog.journal_gate.clone(),
             pending: AsyncMutex::new(HashSet::new()),
             pending_notify: Notify::new(),
             store: Arc::new(JournalStore::new(catalog)),
@@ -110,6 +109,13 @@ impl JournalRuntime {
         self.store.latest_sequence(storage_id, epoch)
     }
 
+    /// Gate shared by journal publication, manifest reclamation, and journal
+    /// retirement. Callers must hold it across reachability reads, immutable
+    /// object writes, and the catalogue pointer transition.
+    pub fn publication_gate(&self) -> Arc<AsyncMutex<()>> {
+        Arc::clone(&self.publication)
+    }
+
     pub fn compaction_due(
         &self,
         storage_id: &str,
@@ -120,6 +126,17 @@ impl JournalRuntime {
     }
 
     pub fn retire_storage(&self, storage_id: &str, retired_at: i64) -> JournalResult<()> {
+        self.store.retire_storage(storage_id, retired_at)
+    }
+
+    /// Invalidate the derived manifest graph and retire one document while the
+    /// same gate excludes publication and journal retirement workers.
+    pub async fn retire_storage_with_manifest(
+        &self,
+        storage_id: &str,
+        retired_at: i64,
+    ) -> JournalResult<()> {
+        let _publication = self.publication.lock().await;
         self.store.retire_storage(storage_id, retired_at)
     }
 
@@ -221,26 +238,6 @@ impl JournalRuntime {
             .iter()
             .flat_map(|record| record.payload.iter().copied())
             .collect::<Vec<_>>();
-        match self
-            .committed_payload_status(storage_id, epoch, sequence, &record_payload)
-            .await
-        {
-            Ok(Some(true)) => {
-                self.finish_pending(std::iter::once(identity)).await;
-                return Ok(Vec::new());
-            }
-            Ok(Some(false)) => {
-                self.finish_pending(std::iter::once(identity)).await;
-                return Err(JournalError::Invalid(format!(
-                    "journal sequence {storage_id}/{epoch}/{sequence} has a different payload"
-                )));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                self.finish_pending(std::iter::once(identity)).await;
-                return Err(error);
-            }
-        }
         {
             let mut coordinator = self.coordinator.lock().await;
             if !coordinator.contains_identity(storage_id, epoch, sequence) {
@@ -260,6 +257,37 @@ impl JournalRuntime {
         // next seal (or the current one if the coordinator has not sealed
         // yet) instead of every room producing a one-record segment.
         let _publication = self.publication.lock().await;
+        match self.store.unresolved_preparation() {
+            Ok(Some(_)) => {
+                if let Err(error) = self.store.reconcile_pending(self.blobs.as_ref()).await {
+                    self.coordinator.lock().await.remove_identity(
+                        &identity.0,
+                        identity.1,
+                        identity.2,
+                    );
+                    self.finish_pending(std::iter::once(identity)).await;
+                    return Err(error);
+                }
+                if let Err(error) = self.reconcile_object_reservations().await {
+                    self.coordinator.lock().await.remove_identity(
+                        &identity.0,
+                        identity.1,
+                        identity.2,
+                    );
+                    self.finish_pending(std::iter::once(identity)).await;
+                    return Err(error);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.coordinator
+                    .lock()
+                    .await
+                    .remove_identity(&identity.0, identity.1, identity.2);
+                self.finish_pending(std::iter::once(identity)).await;
+                return Err(error);
+            }
+        }
         match self
             .committed_payload_status(storage_id, epoch, sequence, &record_payload)
             .await
@@ -288,14 +316,21 @@ impl JournalRuntime {
                 return Err(error);
             }
         }
-        let segments = {
+        let seal_result = {
             let mut coordinator = self.coordinator.lock().await;
             match coordinator.seal(true) {
-                Ok(segments) => segments,
+                Ok(segments) => Ok(segments),
                 Err(error) => {
-                    self.finish_pending(std::iter::once(identity)).await;
-                    return Err(error);
+                    coordinator.remove_identity(&identity.0, identity.1, identity.2);
+                    Err(error)
                 }
+            }
+        };
+        let segments = match seal_result {
+            Ok(segments) => segments,
+            Err(error) => {
+                self.finish_pending(std::iter::once(identity)).await;
+                return Err(error);
             }
         };
         let identities = segment_identities(&segments);
@@ -340,12 +375,9 @@ impl JournalRuntime {
         let written = match self.write_segments(&operation_id, &segments).await {
             Ok(written) => written,
             Err(error) => {
-                // The preparation remains unresolved deliberately: a
-                // partial object write is an ambiguous publication and
-                // startup must reconcile it before admitting another
-                // operation. Keep the records in memory for that retry
-                // once reconciliation has established the outcome.
-                self.coordinator.lock().await.requeue(segments);
+                let _ = self
+                    .recover_failed_flush(&operation_id, segments, &identity)
+                    .await;
                 self.finish_pending(identities.into_iter()).await;
                 return Err(error);
             }
@@ -356,16 +388,13 @@ impl JournalRuntime {
         let (_, sequences) = match result {
             Ok(value) => value,
             Err(error) => {
-                for (segment, written_segment) in segments.iter().zip(&written) {
-                    if let Some(record) = segment.records.first() {
-                        let _ = self.store.abort_object(
-                            &record.storage_id,
-                            &operation_id,
-                            &written_segment.object_key,
-                        );
-                    }
-                }
+                let recovered = self
+                    .recover_failed_flush(&operation_id, segments, &identity)
+                    .await;
                 self.finish_pending(identities.into_iter()).await;
+                if let Some(sequences) = recovered {
+                    return Ok(sequences);
+                }
                 return Err(error);
             }
         };
@@ -378,15 +407,10 @@ impl JournalRuntime {
                     "journal_segment",
                     &written_segment.digest,
                 ) {
-                    for (remaining_segment, remaining_written) in segments.iter().zip(&written) {
-                        if let Some(remaining_record) = remaining_segment.records.first() {
-                            let _ = self.store.abort_object(
-                                &remaining_record.storage_id,
-                                &operation_id,
-                                &remaining_written.object_key,
-                            );
-                        }
-                    }
+                    // The SQL head is already durable. Keep reservations in
+                    // place and let the object-accounting reconciler finish
+                    // them after a transient catalogue failure.
+                    let _ = self.reconcile_object_reservations().await;
                     self.finish_pending(identities.into_iter()).await;
                     return Err(error);
                 }
@@ -406,6 +430,42 @@ impl JournalRuntime {
         }
         drop(pending);
         self.pending_notify.notify_waiters();
+    }
+
+    /// Reconcile a failed flush while the publication gate is still held.
+    /// Known aborts return the unaffected records to the queue and discard the
+    /// identity whose request was rejected. Ambiguous failures keep the
+    /// preparation and durable reservations for startup reconciliation.
+    async fn recover_failed_flush(
+        &self,
+        operation_id: &str,
+        segments: Vec<Segment>,
+        failed_identity: &(String, u64, u64),
+    ) -> Option<Vec<i64>> {
+        if self
+            .store
+            .reconcile_pending(self.blobs.as_ref())
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        if self.store.unresolved_preparation().ok().flatten().is_some() {
+            return None;
+        }
+        let sequences = self.store.operation_sequences(operation_id).ok()?;
+        if !sequences.is_empty() {
+            return Some(sequences);
+        }
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.requeue(vec![Segment {
+            records: segments
+                .into_iter()
+                .flat_map(|segment| segment.records)
+                .collect(),
+        }]);
+        coordinator.remove_identity(&failed_identity.0, failed_identity.1, failed_identity.2);
+        None
     }
 
     pub(super) async fn committed_payload_status(
@@ -442,7 +502,7 @@ impl JournalRuntime {
                     base.object_key
                 )));
             }
-            let recovered: RecoveryBaseBody = serde_json::from_slice(&body).map_err(|error| {
+            let recovered = decode_recovery_base(&body).map_err(|error| {
                 JournalError::Corrupt(format!(
                     "invalid recovery base {}: {error}",
                     base.object_key
@@ -493,7 +553,6 @@ impl JournalRuntime {
         segments: &[Segment],
     ) -> JournalResult<Vec<WrittenSegment>> {
         let mut result = Vec::with_capacity(segments.len());
-        let mut reservations: Vec<(String, String)> = Vec::with_capacity(segments.len());
         for (index, segment) in segments.iter().enumerate() {
             let id = format!("{operation_id}-{index}");
             let body = segment.encode()?;
@@ -504,7 +563,9 @@ impl JournalRuntime {
                 .first()
                 .map(|record| record.storage_id.as_str())
                 .ok_or_else(|| JournalError::Invalid("empty journal segment".into()))?;
-            if let Err(error) = self.store.reserve_object(
+            // Earlier segments may already be durable. Keep reservations
+            // until reconciliation checks the output set and queues cleanup.
+            self.store.reserve_object(
                 owner,
                 operation_id,
                 &key,
@@ -512,26 +573,15 @@ impl JournalRuntime {
                 body.len() as i64,
                 self.owner_limit,
                 self.total_limit,
-            ) {
-                for (reserved_owner, object_key) in &reservations {
-                    let _ = self
-                        .store
-                        .abort_object(reserved_owner, operation_id, object_key);
-                }
-                return Err(error);
-            }
-            reservations.push((owner.to_owned(), key.clone()));
+            )?;
             if let Err(error) = self
                 .blobs
                 .put(&key, body.clone(), "application/octet-stream")
                 .await
             {
-                // A failed object write is known abort; release the exact
-                // replacement reservation before returning.
-                let _ = self.store.abort_object(owner, operation_id, &key);
-                for (owner, object_key) in reservations {
-                    let _ = self.store.abort_object(&owner, operation_id, &object_key);
-                }
+                // The object store may have accepted the write before
+                // reporting an error. Leave reservations durable until the
+                // preparation reconciler proves which objects exist.
                 return Err(JournalError::from(error));
             }
             result.push(WrittenSegment {
@@ -560,6 +610,10 @@ impl JournalRuntime {
             ));
         }
         let _publication = self.publication.lock().await;
+        if self.store.unresolved_preparation()?.is_some() {
+            self.store.reconcile_pending(self.blobs.as_ref()).await?;
+            self.reconcile_object_reservations().await?;
+        }
         let state = self.store.state()?;
         let operation_id = format!(
             "compact-{}-{}-{}-{}",
@@ -582,11 +636,7 @@ impl JournalRuntime {
             payload,
             digest: payload_digest,
         };
-        let base_bytes = serde_json::to_vec(&base_body)
-            .map_err(|error| JournalError::Invalid(format!("invalid recovery base: {error}")))?;
-        if base_bytes.len() > MAX_SEGMENT_BYTES {
-            return Err(JournalError::Limit("recovery base is too large".into()));
-        }
+        let base_bytes = encode_recovery_base(&base_body)?;
         let base_digest = hex::encode(Sha256::digest(&base_bytes));
         let base = RecoveryBase {
             base_id: format!("{storage_id}-{epoch}-{sequence}"),
@@ -658,14 +708,6 @@ impl JournalRuntime {
             }],
             protected_input_keys: retire_segments.iter().map(|(key, _)| key.clone()).collect(),
         };
-        self.store.prepare(
-            &operation_id,
-            "compact",
-            state.revision,
-            &state.writer_generation,
-            base.committed_at,
-            &plan,
-        )?;
         let mut maintenance_borrow = if maintenance_bytes > 0 {
             if let Some(slug) = self
                 .store
@@ -697,6 +739,23 @@ impl JournalRuntime {
         } else {
             None
         };
+        // Reserve temporary maintenance headroom before creating the durable
+        // preparation. A quota rejection therefore cannot strand a global
+        // unresolved operation.
+        let preparation = match self.store.prepare(
+            &operation_id,
+            "compact",
+            state.revision,
+            &state.writer_generation,
+            base.committed_at,
+            &plan,
+        ) {
+            Ok(preparation) => preparation,
+            Err(error) => {
+                drop(maintenance_borrow);
+                return Err(error);
+            }
+        };
         // A maintenance borrow is the explicit headroom for compaction's
         // temporary copies. Ordinary quota checks must not charge that peak
         // a second time while the borrow is active.
@@ -718,16 +777,16 @@ impl JournalRuntime {
             let _ = self
                 .store
                 .abort_object(storage_id, &operation_id, &base_key);
+            let _ = self.store.abort_preparation(&preparation, &plan, &[]);
             return Err(error);
         }
         if let Err(error) = self
             .blobs
-            .put(&base_key, base_bytes, "application/json")
+            .put(&base_key, base_bytes, "application/octet-stream")
             .await
         {
-            for (key, _) in &accounting_keys {
-                let _ = self.store.abort_object(storage_id, &operation_id, key);
-            }
+            let _ = self.store.reconcile_pending(self.blobs.as_ref()).await;
+            let _ = self.reconcile_object_reservations().await;
             return Err(JournalError::from(error));
         }
         let mut finalized = Vec::with_capacity(shards.len());
@@ -744,10 +803,7 @@ impl JournalRuntime {
             ) {
                 let _ = self
                     .store
-                    .abort_object(storage_id, &operation_id, &shard.object_key);
-                for (key, _) in &accounting_keys {
-                    let _ = self.store.abort_object(storage_id, &operation_id, key);
-                }
+                    .abort_preparation(&preparation, &plan, &accounting_keys);
                 return Err(error);
             }
             accounting_keys.push((shard.object_key.clone(), shard_bytes.len() as i64));
@@ -756,9 +812,8 @@ impl JournalRuntime {
                 .put(&shard.object_key, shard_bytes, "application/json")
                 .await
             {
-                for (key, _) in &accounting_keys {
-                    let _ = self.store.abort_object(storage_id, &operation_id, key);
-                }
+                let _ = self.store.reconcile_pending(self.blobs.as_ref()).await;
+                let _ = self.reconcile_object_reservations().await;
                 return Err(JournalError::from(error));
             }
             finalized.push(shard);
@@ -771,9 +826,8 @@ impl JournalRuntime {
         ) {
             Ok(state) => state,
             Err(error) => {
-                for (key, _) in &accounting_keys {
-                    let _ = self.store.abort_object(storage_id, &operation_id, key);
-                }
+                let _ = self.store.reconcile_pending(self.blobs.as_ref()).await;
+                let _ = self.reconcile_object_reservations().await;
                 return Err(error);
             }
         };
@@ -789,11 +843,7 @@ impl JournalRuntime {
                 },
                 "",
             ) {
-                for (remaining_key, _) in &accounting_keys {
-                    let _ = self
-                        .store
-                        .abort_object(storage_id, &operation_id, remaining_key);
-                }
+                let _ = self.reconcile_object_reservations().await;
                 return Err(error);
             }
         }

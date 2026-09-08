@@ -154,8 +154,9 @@ function provenanceDetail(provenance) {
 /// when there is no rendering at all; this only covers the three states a
 /// rendering object itself can be in.
 export function renderedNoteText(rendering) {
-  if (!rendering || rendering.current) return "";
+  if (!rendering) return "";
   if (rendering.missing) return "this version was never rendered";
+  if (rendering.current) return "";
   const date = (rendering.at || "").slice(0, 10);
   const detail = provenanceDetail(rendering.provenance);
   return `rendered from an earlier version, ${date}${detail ? ` (${detail})` : ""}`;
