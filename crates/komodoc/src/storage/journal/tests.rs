@@ -233,7 +233,8 @@ async fn compaction_replays_base_and_retires_segments() {
     let store = JournalStore::new(catalog.clone());
     assert_eq!(store.committed_segments().expect("segments").len(), 1);
     let base = store
-        .recovery_base("storage")
+        .recovery_base("storage".to_string())
+        .await
         .expect("base metadata")
         .expect("base");
     assert!(blobs.get(&base.object_key).await.is_ok());

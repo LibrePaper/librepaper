@@ -99,6 +99,31 @@ impl From<CatalogError> for CatalogExecError {
     }
 }
 
+/// Collapse a boundary error into the catalogue error the migrated call sites
+/// already handle, so moving a caller onto `execute` does not force a new
+/// error type through every layer above it.
+///
+/// The mapping preserves what callers act on: admission saturation is
+/// `Busy`, which every retry path already treats as temporary; shutdown is
+/// `Closed`, the same error the synchronous API returns once SQLite is gone;
+/// an oversized declaration and a panicked job are programming faults, not
+/// conditions a caller can retry into success, so both surface as `Invalid`.
+impl From<CatalogExecError> for CatalogError {
+    fn from(err: CatalogExecError) -> Self {
+        match err {
+            CatalogExecError::Catalog(err) => err,
+            CatalogExecError::Saturated => CatalogError::Busy,
+            CatalogExecError::ShuttingDown => CatalogError::Closed,
+            CatalogExecError::TooLarge { bytes, limit } => CatalogError::Invalid(format!(
+                "catalogue request of {bytes} bytes exceeds {limit}"
+            )),
+            CatalogExecError::Panicked => {
+                CatalogError::Invalid("catalogue job panicked".to_string())
+            }
+        }
+    }
+}
+
 /// How a submitted job ended, as seen by the service rather than the caller.
 #[derive(Clone, Copy, Debug)]
 pub enum CatalogOutcome<'a> {
@@ -312,6 +337,23 @@ impl Catalog {
             .await
     }
 
+    /// Reserve and submit one existing catalogue operation in one step.  See
+    /// [`CatalogReservation::operation`] for what a job may do.
+    pub async fn execute_operation<T, F>(
+        self: &Arc<Self>,
+        input_bytes: usize,
+        job: F,
+    ) -> Result<T, CatalogExecError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Catalog) -> CatalogResult<T> + Send + 'static,
+    {
+        self.reserve_execution(input_bytes)
+            .await?
+            .operation(job)
+            .await
+    }
+
     /// Reserve and submit a `BEGIN IMMEDIATE` transaction job in one step.
     pub async fn execute_transaction<T, F>(
         self: &Arc<Self>,
@@ -460,6 +502,50 @@ impl CatalogReservation {
         F: FnOnce(&Transaction<'_>) -> CatalogResult<T> + Send + 'static,
     {
         self.submit(Work::Transaction(Box::new(job)), None).await
+    }
+
+    /// Submit one existing catalogue operation — a named `Catalog` method —
+    /// to run on a blocking thread.
+    ///
+    /// Every such method already opens and commits exactly one `IMMEDIATE`
+    /// transaction of its own, so a method call *is* the atomic unit
+    /// `transaction` asks callers to preserve; it simply takes the connection
+    /// itself rather than being handed one.  That is also why a job may not
+    /// receive the connection here: a closure that held the connection and
+    /// then called a catalogue method would deadlock on the same
+    /// non-reentrant mutex, which is the hazard `document/store.rs` had at the
+    /// one place it did that.
+    ///
+    /// The alternative — splitting each of the 142 catalogue methods into an
+    /// `&Transaction` body plus two wrappers — buys nothing here, because the
+    /// body would still be run as one transaction by one job, and it would
+    /// rewrite the whole catalogue module for a migration that only needs to
+    /// move the *call* off the Tokio worker.
+    ///
+    /// A closure that calls several methods gets several transactions, exactly
+    /// as the synchronous caller did; it must therefore not be used to make a
+    /// sequence atomic that was not atomic before.
+    pub async fn operation<T, F>(self, job: F) -> Result<T, CatalogExecError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Catalog) -> CatalogResult<T> + Send + 'static,
+    {
+        self.submit(Work::Operation(Box::new(job)), None).await
+    }
+
+    /// Submit an operation job with a service-owned completion hook.
+    pub async fn operation_with_completion<T, F, C>(
+        self,
+        job: F,
+        completion: C,
+    ) -> Result<T, CatalogExecError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Catalog) -> CatalogResult<T> + Send + 'static,
+        C: CatalogCompletion,
+    {
+        self.submit(Work::Operation(Box::new(job)), Some(Box::new(completion)))
+            .await
     }
 
     /// Submit a connection job with a service-owned completion hook.
@@ -641,10 +727,12 @@ fn run_completion(
 
 type ConnectionJob<T> = Box<dyn FnOnce(&mut Connection) -> CatalogResult<T> + Send>;
 type TransactionJob<T> = Box<dyn for<'a> FnOnce(&Transaction<'a>) -> CatalogResult<T> + Send>;
+type OperationJob<T> = Box<dyn FnOnce(&Catalog) -> CatalogResult<T> + Send>;
 
 enum Work<T> {
     Connection(ConnectionJob<T>),
     Transaction(TransactionJob<T>),
+    Operation(OperationJob<T>),
 }
 
 impl<T> Work<T> {
@@ -652,6 +740,7 @@ impl<T> Work<T> {
         match self {
             Self::Connection(job) => catalog.with_connection(job),
             Self::Transaction(job) => catalog.immediate(job),
+            Self::Operation(job) => job(catalog),
         }
     }
 }

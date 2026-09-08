@@ -312,7 +312,7 @@ impl JournalRuntime {
         let _publication = self.publication.lock().await;
         self.verify_manifest_chain().await?;
         let mut latest: Option<(u64, u64, Vec<u8>)> = None;
-        let base = self.store.recovery_base(storage_id)?;
+        let base = self.store.recovery_base(storage_id.to_owned()).await?;
         if let Some(base) = base {
             let body = self.blobs.get(&base.object_key).await?;
             if hex::encode(Sha256::digest(&body)) != base.digest {
@@ -334,18 +334,19 @@ impl JournalRuntime {
             latest = Some((decoded.epoch, decoded.sequence, decoded.payload));
             let descriptors = self
                 .store
-                .replay_descriptors(storage_id, Some((base.epoch, base.sequence)))?;
+                .replay_descriptors(storage_id, Some((base.epoch, base.sequence)))
+                .await?;
             return self
                 .recover_from_descriptors(storage_id, descriptors, latest)
                 .await;
         }
-        let descriptors = self.store.replay_descriptors(storage_id, None)?;
+        let descriptors = self.store.replay_descriptors(storage_id, None).await?;
         self.recover_from_descriptors(storage_id, descriptors, latest)
             .await
     }
 
     pub(super) async fn verify_manifest_chain(&self) -> JournalResult<()> {
-        let state = self.store.state()?;
+        let state = self.store.state_async().await?;
         if state.manifest_key.is_empty() {
             return Ok(());
         }
