@@ -547,7 +547,7 @@ impl Server {
             Err(response) => return response,
         };
         let current_who = self.viewer(&current_entry, &headers, arrival, None).await;
-        if !current_who.at_least(Role::Owner) {
+        if current_who.auth_failed || !current_who.at_least(Role::Owner) {
             return write_json(404, &json!({"error": "not found"}));
         }
         // The earlier viewer check is only for a non-enumerating HTTP reply.
@@ -605,26 +605,39 @@ impl Server {
                 };
             }
         }
-        let moved = self
-            .store
-            .modify(slug, |entry| {
-                if !entry.owned_by(&current_who.key, &current_who.id.id) {
-                    return Err("ownership changed".into());
-                }
-                entry.publisher = account.handle.clone();
-                entry.publisher_id = account.id.clone();
-                entry.publisher_name = account.name.clone();
-                // The new owner holds everything by owning it, so a grant to
-                // them is a row that no longer says anything.
-                entry
-                    .editors
-                    .retain(|grant| stored_id(&grant.id) != account.id);
-                entry
-                    .commenters
-                    .retain(|grant| stored_id(&grant.id) != account.id);
-                Ok(())
-            })
-            .await;
+        // The catalogue path has already committed the ownership change in
+        // its authoritative transaction. Reload that row into the Store cache
+        // rather than applying the legacy closure a second time: that closure
+        // quite correctly sees the new owner and would reject a successful
+        // transfer as an ownership race. Legacy stores have no catalogue
+        // transaction, so retain the ownership guard around their write.
+        let moved = if self.store.catalog.is_some() {
+            self.store
+                .get_result(slug)
+                .await
+                .map_err(|error| ModifyError::Storage(error.to_string()))
+                .and_then(|entry| entry.ok_or(ModifyError::NotFound))
+        } else {
+            self.store
+                .modify(slug, |entry| {
+                    if !entry.owned_by(&current_who.key, &current_who.id.id) {
+                        return Err("ownership changed".into());
+                    }
+                    entry.publisher = account.handle.clone();
+                    entry.publisher_id = account.id.clone();
+                    entry.publisher_name = account.name.clone();
+                    // The new owner holds everything by owning it, so a grant
+                    // to them is a row that no longer says anything.
+                    entry
+                        .editors
+                        .retain(|grant| stored_id(&grant.id) != account.id);
+                    entry
+                        .commenters
+                        .retain(|grant| stored_id(&grant.id) != account.id);
+                    Ok(())
+                })
+                .await
+        };
         match moved {
             Ok(entry) => {
                 // The old owner is very likely still connected. Reauthorize
