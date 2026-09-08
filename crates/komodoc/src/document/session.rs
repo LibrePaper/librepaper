@@ -1450,11 +1450,13 @@ mod tests {
             );
             path_map.insert(&mut txn, "bb".to_string(), base_path.clone());
         }
-        let mut config = Configuration::default();
         // Room for the base path and for the placeholder once suffixed, but
         // not for the base path once suffixed: `aaaaaaaaaaa (2).txt` is 19
         // bytes, one over this ceiling.
-        config.max_path = 18;
+        let config = Configuration {
+            max_path: 18,
+            ..Configuration::default()
+        };
         let rules = config.paths();
         let done = repair(&doc, &rules);
 
