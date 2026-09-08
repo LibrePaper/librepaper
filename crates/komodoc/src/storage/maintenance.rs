@@ -2395,4 +2395,213 @@ mod tests {
         assert_eq!(worker.run_once(3).await.expect("cleanup pass"), 1);
         assert!(blobs.get(key).await.is_err());
     }
+    /// A store that reports one key deleted and then parks, so a maintenance
+    /// pass can be cancelled at the exact point between the object going away
+    /// and the catalogue learning about it.
+    struct PausingStore {
+        inner: Arc<dyn BlobStore>,
+        reached: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: tokio::sync::Semaphore,
+    }
+
+    #[async_trait::async_trait]
+    impl BlobStore for PausingStore {
+        async fn get(&self, key: &str) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            self.inner.get(key).await
+        }
+        async fn exists(&self, key: &str) -> crate::storage::blob::BlobResult<bool> {
+            self.inner.exists(key).await
+        }
+        async fn put(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
+            self.inner.put(key, body, content_type).await
+        }
+        async fn delete(&self, keys: &[String]) -> crate::storage::blob::BlobResult<()> {
+            self.inner.delete(keys).await
+        }
+        async fn delete_each(
+            &self,
+            keys: &[String],
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::DeleteOutcome>> {
+            let outcomes = self.inner.delete_each(keys).await?;
+            let reached = self.reached.lock().expect("reached").take();
+            if let Some(reached) = reached {
+                let _ = reached.send(());
+                // The object is gone and the catalogue has not been told.
+                // Hold here until the test decides what happens next.
+                let _ = self.release.acquire().await;
+            }
+            Ok(outcomes)
+        }
+        async fn list(
+            &self,
+            prefix: &str,
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+            self.inner.list(prefix).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            after: Option<&str>,
+            limit: usize,
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+            self.inner.list_page(prefix, after, limit).await
+        }
+        async fn swap(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            expect: &str,
+        ) -> crate::storage::blob::BlobResult<crate::storage::blob::BlobVersion> {
+            self.inner.swap(key, body, expect).await
+        }
+        async fn get_versioned(
+            &self,
+            key: &str,
+        ) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)>
+        {
+            self.inner.get_versioned(key).await
+        }
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
+    }
+
+    /// Cancelling a retirement pass at its most dangerous point -- the object
+    /// is gone, the catalogue has not been told -- must never leave the
+    /// charge released while the queue row still names the key, or the row
+    /// removed while the charge stands. Both moves are one job, so the pass
+    /// is either exactly where it was or exactly finished, and a later pass
+    /// converges either way.
+    #[tokio::test]
+    async fn a_cancelled_retirement_pass_leaves_accounting_and_queue_consistent() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+        catalog
+            .create_document(&NewDocument {
+                slug: "shared".into(),
+                storage_id: "storage-shared".into(),
+                title: "Shared".into(),
+                sha: String::new(),
+                created_at: "2026-01-01T00:00:00.000Z".into(),
+                published_at: "2026-01-01T00:00:00.000Z".into(),
+                updated_at: "2026-01-01T00:00:00.000Z".into(),
+                example: false,
+                owner_key: "owner".into(),
+                owner_id: None,
+                status: "active".into(),
+                size: 0,
+                counted_size: 64,
+                maintenance_reserved: 0,
+                last_auto_checkpoint_at: 0,
+                source_format: "markdown".into(),
+                main: "README.md".into(),
+            })
+            .expect("document");
+        let key = "journal/deployment/segments/cancelled";
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO object_accounting(storage_id,object_key,kind,bytes)
+                         VALUES ('storage-shared',?1,'journal_segment',64)",
+                        [key],
+                    )
+                    .map_err(CatalogError::from)?;
+                connection
+                    .execute("UPDATE totals SET bytes=64 WHERE id=1", [])
+                    .map_err(CatalogError::from)?;
+                connection
+                    .execute(
+                        "INSERT INTO journal_retirements
+                         (object_key,storage_id,kind,encoded_bytes,modified_at,
+                          first_unreferenced_at,delete_after)
+                         VALUES (?1,'storage-shared','segment',64,1,1,1)",
+                        [key],
+                    )
+                    .map_err(CatalogError::from)?;
+                Ok(())
+            })
+            .expect("fixture");
+
+        let directory = tempfile::tempdir().expect("blob directory");
+        let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        inner
+            .put(key, vec![0u8; 64], "application/octet-stream")
+            .await
+            .expect("segment");
+        let (reached, deleted) = tokio::sync::oneshot::channel();
+        let blobs = Arc::new(PausingStore {
+            inner: inner.clone(),
+            reached: std::sync::Mutex::new(Some(reached)),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        let worker =
+            JournalRetirementWorker::new(catalog.clone(), blobs.clone(), 16).expect("worker");
+        let pass = tokio::spawn(async move { worker.run_once(2).await });
+        deleted.await.expect("the object was removed");
+        pass.abort();
+        blobs.release.add_permits(1);
+        assert!(pass.await.unwrap_err().is_cancelled());
+
+        // Whatever the cancellation caught, the two must agree.
+        let (charged, queued) = catalog
+            .with_connection(|connection| {
+                let charged: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM object_accounting WHERE object_key=?1",
+                        [key],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                let queued: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM journal_retirements WHERE object_key=?1",
+                        [key],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                Ok((charged, queued))
+            })
+            .expect("state");
+        assert_eq!(
+            charged, queued,
+            "the charge and the queue row must be released together"
+        );
+
+        // And a later pass converges to released, exactly once: the totals
+        // never go negative and the row is gone.
+        let plain_worker =
+            JournalRetirementWorker::new(catalog.clone(), inner, 16).expect("worker");
+        plain_worker.run_once(3).await.expect("second pass");
+        plain_worker.run_once(4).await.expect("third pass");
+        catalog
+            .with_connection(|connection| {
+                let rows: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM journal_retirements WHERE object_key=?1",
+                        [key],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                assert_eq!(rows, 0);
+                let charged: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM object_accounting WHERE object_key=?1",
+                        [key],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                assert_eq!(charged, 0);
+                let total: i64 = connection
+                    .query_row("SELECT bytes FROM totals WHERE id=1", [], |row| row.get(0))
+                    .map_err(CatalogError::from)?;
+                assert_eq!(total, 0);
+                Ok(())
+            })
+            .expect("converged");
+    }
 }

@@ -129,7 +129,7 @@ impl Server {
                 session_generation: random_token(),
                 erasure_cursor: None,
             };
-            match catalog.upsert_account(&profile) {
+            match crate::server::upsert_account_job(catalog, profile).await {
                 Ok(account) if account.status == "active" => {
                     signed_who.session_generation = account.session_generation;
                 }
@@ -405,7 +405,8 @@ impl Server {
                                 "commenters": self.commenters.public_description(),
                             }),
                         );
-                        self.clear_dead_session(&mut response, headers, arrival);
+                        self.clear_dead_session(&mut response, headers, arrival)
+                            .await;
                         return Some(response);
                     }
                 };
@@ -430,7 +431,8 @@ impl Server {
                     }),
                 );
                 if !id.is_signed_in() {
-                    self.clear_dead_session(&mut response, headers, arrival);
+                    self.clear_dead_session(&mut response, headers, arrival)
+                        .await;
                 }
                 Some(response)
             }

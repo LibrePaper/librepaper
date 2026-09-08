@@ -154,7 +154,9 @@ pub(super) async fn handle(
         {
             let mut response = write_json(status, &json!({"error": message}));
             if status == 401 {
-                server.clear_dead_session(&mut response, request.headers(), &arrival);
+                server
+                    .clear_dead_session(&mut response, request.headers(), &arrival)
+                    .await;
             }
             return response;
         }
@@ -216,13 +218,28 @@ pub(super) async fn handle(
         let Some(catalog) = &server.store.catalog else {
             return write_json(503, &json!({"error": "local catalogue unavailable"}));
         };
-        if let Err(error) = catalog.begin_erasure(&identity.id, &crate::util::new_id()) {
-            return write_json(409, &json!({"error": error.to_string()}));
+        {
+            let account_id = identity.id.clone();
+            let generation = crate::util::new_id();
+            if let Err(error) = catalog
+                .execute_operation(
+                    crate::server::SERVER_JOB_BYTES + account_id.len(),
+                    move |catalog| catalog.begin_erasure(&account_id, &generation),
+                )
+                .await
+            {
+                return write_json(409, &json!({"error": error.to_string()}));
+            }
         }
         server.reauthorize_all().await;
         server.rooms.erase_author_from_caches(&identity.id).await;
-        if let Err(error) =
-            crate::storage::maintenance::run_erasure_pass(catalog, crate::util::now_unix(), 25, 250)
+        if let Err(error) = crate::storage::maintenance::run_erasure_pass_async(
+            catalog,
+            crate::util::now_unix(),
+            25,
+            250,
+        )
+        .await
         {
             eprintln!("warning: account erasure pass failed: {error}");
         }

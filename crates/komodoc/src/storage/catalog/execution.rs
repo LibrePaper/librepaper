@@ -1198,4 +1198,128 @@ mod tests {
         assert!(completed.recv().await.unwrap());
         assert_eq!(catalog.execution_snapshot().failed, 1);
     }
+    // The migrated storage callers, exercised through the boundary they now
+    // use. These are about the callers, not the machinery above: what they
+    // assert is that a caller that used to take the connection on a runtime
+    // worker no longer does, and that shutdown settles its work in the right
+    // order.
+
+    /// A journal publication parked inside SQL must not stop the runtime.
+    /// This is the acceptance criterion applied to a real caller: the ticks
+    /// are counted before the blocked job is released, so the assertion is on
+    /// progress, not on elapsed time.
+    #[tokio::test]
+    async fn a_blocked_journal_job_does_not_stop_unrelated_tasks() {
+        let catalog = catalog();
+        let store = crate::storage::journal::JournalStore::new(catalog.clone());
+        store.initialize("deployment", "generation").unwrap();
+        let (release, blocked) = mpsc::channel::<()>();
+        let holder = {
+            let catalog = catalog.clone();
+            tokio::spawn(async move {
+                catalog
+                    .execute(0, move |connection| {
+                        let tx = connection
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                            .map_err(CatalogError::from)?;
+                        let _ = blocked.recv();
+                        tx.rollback().map_err(CatalogError::from)?;
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+            })
+        };
+        // A second caller that needs the same connection. It waits on a
+        // blocking thread, not on this runtime.
+        let waiting = {
+            let store = crate::storage::journal::JournalStore::new(catalog.clone());
+            tokio::spawn(async move { store.state_async().await })
+        };
+        let ticks = Arc::new(AtomicUsize::new(0));
+        {
+            let ticks = ticks.clone();
+            tokio::spawn(async move {
+                for _ in 0..100 {
+                    ticks.fetch_add(1, Ordering::Relaxed);
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(ticks.load(Ordering::Relaxed), 100);
+        release.send(()).unwrap();
+        holder.await.unwrap();
+        assert_eq!(
+            waiting.await.unwrap().unwrap().writer_generation,
+            "generation"
+        );
+    }
+
+    /// Shutdown while journal work is queued and executing: the executing
+    /// transaction keeps the connection until it commits, the queued request
+    /// is rejected before any SQL runs, and SQLite closes only afterwards.
+    #[tokio::test]
+    async fn shutdown_settles_executing_journal_work_and_rejects_the_queue() {
+        let catalog = catalog();
+        let store = crate::storage::journal::JournalStore::new(catalog.clone());
+        store.initialize("deployment", "generation").unwrap();
+        narrow_executing_budget(&catalog);
+        let (release, blocked) = mpsc::channel::<()>();
+        let (started, executing) = tokio::sync::oneshot::channel();
+        let committing = {
+            let catalog = catalog.clone();
+            tokio::spawn(async move {
+                catalog
+                    .execute(0, move |connection| {
+                        let _ = started.send(());
+                        let _ = blocked.recv();
+                        connection
+                            .execute(
+                                "UPDATE journal_state SET last_operation_id=?1 WHERE id=1",
+                                ["settled"],
+                            )
+                            .map_err(CatalogError::from)?;
+                        Ok(())
+                    })
+                    .await
+            })
+        };
+        executing.await.unwrap();
+        // Queued behind the one executing permit, so shutdown reaches it
+        // before it starts.
+        let queued = {
+            let store = crate::storage::journal::JournalStore::new(catalog.clone());
+            tokio::spawn(async move {
+                store
+                    .retire_storage_async("storage-1".to_string(), 10)
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        let shutdown = {
+            let catalog = catalog.clone();
+            tokio::spawn(async move { catalog.shutdown().await })
+        };
+        // The drain cannot finish while the transaction holds the connection.
+        tokio::task::yield_now().await;
+        assert!(!shutdown.is_finished());
+        release.send(()).unwrap();
+        committing.await.unwrap().unwrap();
+        assert!(matches!(
+            queued.await.unwrap(),
+            Err(crate::storage::journal::JournalError::Catalog(
+                CatalogError::Closed
+            ))
+        ));
+        shutdown.await.unwrap();
+        // The executing work committed before SQLite closed, and every path
+        // now reports closure.
+        assert!(matches!(store.state(), Err(_)));
+        assert!(matches!(
+            catalog.reserve_execution(0).await,
+            Err(CatalogExecError::ShuttingDown)
+        ));
+    }
 }
