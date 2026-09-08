@@ -62,6 +62,7 @@ pub enum Command {
 pub enum CommandError {
     Unknown {
         kind: String,
+        comment_id: String,
         temp_id: String,
         request_id: String,
     },
@@ -87,10 +88,11 @@ impl CommandError {
     pub fn response(&self) -> Value {
         let (comment_id, temp_id, request_id) = match self {
             Self::Unknown {
+                comment_id,
                 temp_id,
                 request_id,
                 ..
-            } => ("", temp_id, request_id),
+            } => (comment_id.as_str(), temp_id, request_id),
             Self::Missing {
                 comment_id,
                 temp_id,
@@ -301,6 +303,7 @@ impl Message {
             }
             _ => Err(CommandError::Unknown {
                 kind,
+                comment_id: self.comment_id,
                 temp_id,
                 request_id,
             }),

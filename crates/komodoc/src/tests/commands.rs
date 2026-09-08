@@ -9,6 +9,7 @@ use crate::storage::blob::FsStore;
 fn wire_adapter_rejects_unknown_kinds_without_losing_correlation() {
     let error = Message {
         kind: "future-comment-operation".into(),
+        comment_id: "existing-comment".into(),
         temp_id: "optimistic-17".into(),
         request_id: "request-17".into(),
         ..Message::default()
@@ -20,6 +21,7 @@ fn wire_adapter_rejects_unknown_kinds_without_losing_correlation() {
     let response = error.response();
     assert_eq!(response["temp_id"], "optimistic-17");
     assert_eq!(response["request_id"], "request-17");
+    assert_eq!(response["comment_id"], "existing-comment");
 }
 
 #[test]
