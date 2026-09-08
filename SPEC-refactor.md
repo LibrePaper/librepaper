@@ -1,17 +1,21 @@
-# Deferred room refactors
+# Deferred room and storage refactors
 
 Status: proposed; implementation is not part of this document.
 
-Baseline: `328a45b` on `live-markdown-editor` (2026-09-08). Concurrent,
-uncommitted storage, document, and web changes are outside this baseline.
-Reconcile those changes before implementing overlapping work.
+Baseline: `864dbb8` on `live-markdown-editor` (2026-09-08), incorporating the
+room fixes at `328a45b` and storage fixes at `b87d92b`. Concurrent, uncommitted
+document and web changes are outside this baseline. Reconcile those changes
+before implementing overlapping work. Storage findings and their dispositions
+are recorded in [the combined storage review](docs/reviews/storage-review.md).
 
 ## Purpose and boundaries
 
 Reduce editing stalls, repeated storage work, and inconsistent internal APIs in
-`crates/komodoc/src/room/`. Preserve the durability, authorization, quota, and
-concurrency guarantees established by the room fixes. Deliver this work as
-separate, reviewable changes rather than another wholesale module rewrite.
+`crates/komodoc/src/room/` and `crates/komodoc/src/storage/`, and close the
+remaining attribution and storage-limit gaps. Preserve the durability,
+authorization, quota, and concurrency guarantees established by the fixes.
+Deliver this work as separate, reviewable changes rather than another
+wholesale module rewrite.
 
 The following correctness work is already complete and is not a new task here:
 
@@ -29,6 +33,12 @@ The following correctness work is already complete and is not a new task here:
 - Targeted catalogue updates for comment decisions, cached CRDT encoded size,
   removal of duplicate session recovery, and delegation of `format_from_path`
   to the existing document format detector.
+- Journal failure reconciliation, binary recovery bases with legacy decoding,
+  exact segment framing, erasure stage cursors, manifest retirement, shared
+  segment ownership transfer, and synchronization of recovery and reclamation.
+- Rendering retirement and authorization checks, publication withdrawal,
+  maintenance accounting, filesystem temporary-object filtering, private
+  backup staging, canonical manifest verification, and native S3 pagination.
 
 Ordinary comment resolution remains available under the existing commenter
 policy. Suggestion decisions require editor rights. Do not reinterpret the
@@ -56,10 +66,18 @@ original review as a request to make all comment resolution owner-only.
 - Existing persisted records, request digests, wire fields, and client
   correlation IDs remain compatible unless a change explicitly supplies a
   migration or compatibility adapter.
+- Physical reclamation releases accounting only after deletion is confirmed.
+  Ambiguous writes retain conservative charges and durable recovery or cleanup
+  records; a transient read error is not evidence that an object is absent.
+- The catalogue-owned journal gate protects the current single-process local
+  authority. Preserve it across graph reads, publication, recovery, and
+  reclamation. It does not establish a cross-process or hosted reader protocol;
+  adding such support requires a separate fencing and lease design.
 
 ## 1. Move catalogue work off Tokio workers
 
-Priority: high. Primary files: `storage/catalog/` and its callers in `room/`.
+Priority: high. Primary files: `storage/catalog/` and asynchronous callers in
+`room/`, `storage/journal/`, maintenance, server handlers, and CLI paths.
 
 The catalogue uses `std::sync::Mutex<rusqlite::Connection>`. Room operations call
 its synchronous methods from asynchronous tasks. Connection lock contention,
@@ -291,13 +309,143 @@ Acceptance: public behavior and persisted identities remain unchanged, existing
 focused tests pass, and new tests cover shared policy boundaries rather than
 simply repeating helper implementations.
 
+## 9. Persist stable checkpoint author identities for erasure
+
+Priority: high. Primary files: `storage/catalog/` schema and checkpoint/erasure
+operations, `room/checkpoint.rs`, and other checkpoint creation/import callers.
+
+Checkpoint attribution currently stores display handles while erasure matches
+account IDs. Renamed or reused handles cannot reliably identify an account's
+historical contributions.
+
+Persist an optional stable account ID separately from display attribution.
+Obtain it from authenticated caller identity and pass it through every
+checkpoint-writing path. Define anonymous, imported, and system-authored
+checkpoints explicitly; a display string must never become an account ID by
+assumption. Keep existing display and history behavior compatible.
+
+Supply a schema migration and update row conversion, backup/restore, and
+checkpoint callers together. Backfill historical IDs only when authoritative
+records establish the association. Preserve unresolved legacy attribution as
+an explicit migration limitation; do not match by current handle, erase another
+account's contributions, or claim complete historical erasure without evidence.
+
+Erasure must use the stable ID to remove identifying attribution, including
+the associated display metadata, through bounded, restartable batches. Preserve
+checkpoint content and event identity, and ensure new writes cannot reintroduce
+attribution for an erasing account after an asynchronous wait. If attribution is
+also retained in immutable objects, define their replacement and reclamation
+before declaring that part of erasure complete.
+
+Acceptance: cover account renames, reused handles, distinct accounts with the
+same display name, anonymous/imported checkpoints, legacy rows, interrupted
+migrations and erasure passes, and concurrent checkpoint creation. Backup and
+restore preserve the identity distinction. Erasing one account does not remove
+another account's attribution or change retained document content.
+
+## 10. Align document admission with journal and recovery limits
+
+Priority: high. Primary files: `config.rs`, publication and room admission,
+`storage/journal/coordinator.rs`, `segment.rs`, and `recovery.rs`.
+
+`--max-size` currently permits 100 MiB documents, while the default journal
+queue holds 64 MiB of aggregate payload and recovery bases have a 64 MiB payload
+bound. The binary codec fixes JSON expansion for ordinary documents; it does
+not make all advertised size configurations durable.
+
+Define one supported relationship among source size, encoded CRDT snapshot
+size, queue capacity, segment framing, recovery-base size, and compaction peak
+accounting. Include CRDT and metadata overhead: a source-byte ceiling is not an
+encoded-state ceiling. Preserve bounded aggregate memory across concurrent
+rooms; raising a global constant alone is insufficient.
+
+Either support the advertised range with bounded chunking/streaming and matching
+admission, or reject unsupported configurations and oversized updates before
+accepting work that cannot be durably saved. Distinguish temporary queue
+saturation from a permanently unsupported document size. Propagate the chosen
+limits to startup/configuration validation, CLI/server errors, and documentation.
+Retain existing segment and recovery compatibility or provide a versioned
+migration if the persisted format must change.
+
+Acceptance: exercise the default 4 MiB boundary, the 64 MiB boundary, the maximum
+advertised configuration, and just-over-limit inputs, including CRDT overhead.
+Every accepted snapshot can be appended, acknowledged, compacted, backed up,
+restored, and recovered after restart. Concurrent large documents remain within
+queue and memory budgets; rejected work cannot enter a repeated-save/quota-loss
+loop. Verify cancellation and temporary compaction accounting at these limits.
+
+## 11. Add bounded S3 retries and batch deletion
+
+Priority: medium. Primary files: `storage/s3.rs`, `storage/blob.rs`, and
+maintenance callers. Native listing pagination is already implemented.
+
+Define retries by operation and failure class. Bound attempts and total elapsed
+time, use backoff with jitter, honor applicable provider retry delays, and retain
+cancellation. Authentication failures, invalid requests, NotFound, and
+conditional-write conflicts must retain their distinct meanings. Reconcile an
+ambiguous write before deciding whether to retry; never silently replace a
+conditional write with an unconditional overwrite or repeat a product mutation.
+
+Use provider-supported batch deletion with bounded batch sizes. Account for
+each object's outcome, including partial failures in an otherwise successful
+HTTP response. A successfully deleted or already absent object may complete its
+retirement; failed or uncertain objects retain their queue rows and charges.
+Adapt the blob API/callers where needed so mixed outcomes remain expressible.
+Preserve create-only backup publication and current listing cursor semantics.
+
+Acceptance: a mock provider exercises throttling, transient server failures,
+connection loss after an accepted write, conditional conflicts, retry exhaustion,
+cancellation, and partial deletion responses. Retries respect their bounds and
+batch failures never release accounting for an object whose deletion is
+unconfirmed. Local blob behavior remains compatible. This work does not enable
+hosted serving or multiple deployment writers.
+
+## 12. Make remote backup creation and cleanup mutually exclusive
+
+Priority: medium, before exposing the currently unused blob-backup API to
+concurrent callers. Primary files: `storage/backup.rs` and the blob-store contract.
+
+Same-ID creation and incomplete-backup cleanup currently require external
+serialization. A final NotFound check before deletion narrows a race but cannot
+prevent a creator from publishing its manifest immediately afterward. The local
+CLI backup path already has a separate offline lock; preserve that behavior.
+
+Choose and enforce an ownership protocol covering private object writes,
+completion publication, and cleanup for a backup ID. An externally held lock
+may remain appropriate if the API makes that obligation enforceable. Supporting
+distributed callers requires conditional claims/fencing with defined crash and
+stale-owner recovery; a process-local mutex or a time-based guess is insufficient.
+Do not weaken completion-marker immutability or treat transient reads as absence.
+
+Acceptance: deterministic barriers interleave creation, cleanup, and competing
+creators around the final manifest check/publication. Completed backups remain
+verifiable and unchanged; abandoned attempts can be reclaimed after ownership
+is safely recovered. Cover crashes and transient reads as well as successful
+cleanup. Until implemented, retain the documented serialization requirement.
+
+## External review coverage still to assess
+
+The external storage report's content endpoint returned HTTP 403. Only the
+findings included in the supplied summary were reconciled with the local review;
+its remaining medium, low, and nit findings are not verified implementation
+tasks or completed work.
+
+When the full report becomes available, map each additional finding to the
+current source and existing sections here. Record it as confirmed, already
+fixed, duplicate, unsupported, or deferred, with evidence and an actionable
+acceptance criterion where work remains. Do not carry forward the external
+severity totals as independently established totals.
+
 ## Delivery and validation
 
 Start with catalogue execution and lock scope changes, in coordinated but
 separately reviewable steps. Follow with shared pruning and rendering lookup,
 then memory estimates and API cleanup. Small independent helper extractions can
-land separately. Each change must include a before/after description and the
-specific failure or cost it addresses.
+land separately. Stable attribution and size-limit work are correctness tracks
+that can proceed independently; neither should wait for performance profiling.
+S3 retry/batching and remote backup ownership are separate operational changes.
+Each change must include a before/after description and the specific failure or
+cost it addresses, with migrations and caller updates delivered together.
 
 Use deterministic blocking/failure fixtures and operation counters for
 concurrency and I/O assertions. Avoid timing-only tests. Benchmark representative
@@ -311,8 +459,12 @@ Retain the regression suites in `tests/room_checkpoint_fixes.rs`,
 `tests/room_suggestion_fixes.rs`. Run relevant existing room, history, admission,
 quota, socket, rendering, and suggestion tests for each change, followed by
 workspace tests, formatting, and Clippy with warnings denied before merging.
-The baseline validation was 783 passing tests and one ignored; it is a record,
-not a required fixed test count.
+Also retain the storage catalogue, journal, maintenance, blob, backup, and S3
+regressions, including large-snapshot recovery, erasure restart, shared-segment
+deletion, ambiguous writes, quota preservation, and pagination boundaries.
+The room review recorded 783 passing tests and one ignored; the storage fixes
+rebased onto it recorded 808 passing tests and one ignored. These are historical
+validation records, not required fixed test counts for the current branch.
 
 Completion requires measured reductions in the targeted work, preserved
 correctness under cancellation and injected failures, and a final call-site and

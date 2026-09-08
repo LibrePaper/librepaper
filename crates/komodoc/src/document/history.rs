@@ -285,7 +285,9 @@ impl Manifest {
         // `-1` asks the catalogue transaction to allocate the next sequence;
         // persisted rows themselves are always non-negative.
         if seq < -1 || durable_seq < 0 {
-            return Err("checkpoint sequence must be non-negative".into());
+            return Err(
+                "seq must be -1 or non-negative, and durable_seq must be non-negative".into(),
+            );
         }
         let changed = if point.changed.is_empty() {
             Some("[]".to_string())

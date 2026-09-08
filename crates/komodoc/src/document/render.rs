@@ -63,15 +63,26 @@ pub fn title_from_latex(source: &str) -> String {
     };
     // The footnote macros carry an acknowledgement, not a title, so they are
     // removed argument and all before the rest of the macros are unwrapped.
+    // `\footnote` is a prefix of `\footnotemark`, so the longer name is
+    // searched first, and a match is only real when the next character is
+    // not itself part of the name -- otherwise `\footnotemark` would be
+    // found as `\footnote` followed by a stray `mark`.
     let mut text = body;
-    for macro_name in ["\\thanks", "\\footnote", "\\footnotemark", "\\label"] {
-        while let Some(at) = text.find(macro_name) {
+    for macro_name in ["\\thanks", "\\footnotemark", "\\footnote", "\\label"] {
+        let mut search_from = 0;
+        while let Some(found) = text[search_from..].find(macro_name) {
+            let at = search_from + found;
             let rest = &text[at + macro_name.len()..];
+            if rest.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+                search_from = at + macro_name.len();
+                continue;
+            }
             let taken = match balanced(rest) {
                 Some((_, used)) => macro_name.len() + used,
                 None => macro_name.len(),
             };
             text.replace_range(at..at + taken, "");
+            search_from = at;
         }
     }
     let mut out = String::new();
@@ -376,6 +387,33 @@ mod tests {
         let escaping = "#import \"../komodoc-above-the-root.typ\": word\n#word\n";
         assert!(render_typst_document(&main, escaping, "T").output.is_none());
         let _ = std::fs::remove_file(above);
+    }
+
+    // `\footnote` is a prefix of `\footnotemark`, so a naive search for the
+    // shorter name first would match inside the longer one, leave `mark`
+    // behind, and turn this title into "A Titlemark".
+    #[test]
+    fn a_footnotemark_after_the_title_is_dropped_whole() {
+        assert_eq!(
+            title_from_latex("\\title{A Title\\footnotemark}"),
+            "A Title"
+        );
+    }
+
+    #[test]
+    fn a_footnote_after_the_title_is_dropped_with_its_argument() {
+        assert_eq!(
+            title_from_latex("\\title{A Title\\footnote{note}}"),
+            "A Title"
+        );
+    }
+
+    #[test]
+    fn a_thanks_after_the_title_is_still_dropped_with_its_argument() {
+        assert_eq!(
+            title_from_latex("\\title{A Title\\thanks{funding}}"),
+            "A Title"
+        );
     }
 
     // What `publish` prints, and why nothing is uploaded: the diagnostics, in

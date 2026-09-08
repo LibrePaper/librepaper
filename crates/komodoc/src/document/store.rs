@@ -36,9 +36,7 @@ use crate::storage::blob::{
     document_key, document_prefix, examples_key, legacy_source_key, room_key, room_lock_key,
     source_key, source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
 };
-use crate::storage::catalog::{
-    Account, Catalog, CatalogError, NewDocument, OperationActor, OperationRequest,
-};
+use crate::storage::catalog::{Account, Catalog, CatalogError, OperationActor, OperationRequest};
 use crate::util::new_id;
 use crate::util::{now_unix, parse_timestamp, timestamp};
 
@@ -737,13 +735,30 @@ impl Store {
                     })
             });
             let staged = if let Some(sha) = staged_sha.as_deref().filter(|sha| !sha.is_empty()) {
-                blobs
+                match blobs
                     .get(&crate::storage::blob::checkpoint_key(
                         &pending.storage_id,
                         sha,
                     ))
                     .await
-                    .is_ok()
+                {
+                    Ok(_) => true,
+                    Err(BlobError::NotFound) => false,
+                    Err(error) => {
+                        // A transient storage error -- a timeout, a hiccup --
+                        // is not proof the checkpoint is missing. Treating it
+                        // as missing would abort, and for a creation discard,
+                        // a publication that may well be complete, the
+                        // instant the object store it lives in has a bad
+                        // moment. Leave it pending and let a later check of
+                        // this same slug decide once storage actually answers.
+                        eprintln!(
+                            "warning: could not check staged publication for {}: {error}; leaving it pending",
+                            pending.slug
+                        );
+                        continue;
+                    }
+                }
             } else {
                 false
             };
@@ -932,21 +947,32 @@ impl Store {
     /// has one unversioned key instead, which is read when there is nothing
     /// under the digest.
     pub async fn read_source(&self, slug: &str) -> Result<Vec<u8>, BlobError> {
-        let digest = {
-            let state = self.state.lock().await;
-            match state.entries.get(slug) {
-                Some(entry) => entry.sha.clone(),
-                None => return Err(BlobError::NotFound),
+        // In catalogue mode `state.entries` is only a lazily filled
+        // compatibility cache -- it starts empty and gains a slug only once
+        // something else has already touched it -- so a document nobody has
+        // looked up since startup would answer not-found here even though
+        // the catalogue has it. The catalogue, when there is one, is asked
+        // directly instead.
+        let (digest, identity) = match &self.catalog {
+            Some(catalog) => {
+                let document = catalog
+                    .document(slug)
+                    .map_err(|error| BlobError::Other(error.to_string()))?
+                    .ok_or(BlobError::NotFound)?;
+                let identity = if document.storage_id.is_empty() {
+                    slug.to_string()
+                } else {
+                    document.storage_id
+                };
+                (document.sha, identity)
             }
-        };
-        let identity = match &self.catalog {
-            Some(catalog) => catalog
-                .document(slug)
-                .map_err(|error| BlobError::Other(error.to_string()))?
-                .map(|document| document.storage_id)
-                .filter(|identity| !identity.is_empty())
-                .unwrap_or_else(|| slug.to_string()),
-            None => slug.to_string(),
+            None => {
+                let state = self.state.lock().await;
+                match state.entries.get(slug) {
+                    Some(entry) => (entry.sha.clone(), slug.to_string()),
+                    None => return Err(BlobError::NotFound),
+                }
+            }
         };
         match self.blobs.get(&source_key(&identity, &digest)).await {
             Err(BlobError::NotFound) => self.blobs.get(&legacy_source_key(slug)).await,
@@ -1043,85 +1069,9 @@ impl Store {
             guests: shared.guests,
         };
         let previous = state.entries.insert(v.slug.clone(), entry.clone());
-        if let Some(catalog) = &self.catalog {
-            let result = if previous.is_none() {
-                let owner_id = (!entry.publisher_id.is_empty()).then(|| entry.publisher_id.clone());
-                if let Some(owner_id) = &owner_id {
-                    let provider = owner_id
-                        .split_once(':')
-                        .map(|(provider, _)| provider)
-                        .unwrap_or("github");
-                    if let Err(err) = catalog.upsert_account(&Account {
-                        id: owner_id.clone(),
-                        provider: provider.to_string(),
-                        handle: entry.publisher.clone(),
-                        name: entry.publisher_name.clone(),
-                        email: if entry.publisher.contains('@') {
-                            entry.publisher.clone()
-                        } else {
-                            String::new()
-                        },
-                        first_seen: entry.created_at.clone(),
-                        last_seen: entry.updated_at.clone(),
-                        plan: "default".to_string(),
-                        status: "active".to_string(),
-                        session_generation: random_storage_id(),
-                        erasure_cursor: None,
-                    }) {
-                        match previous {
-                            Some(old) => {
-                                state.entries.insert(v.slug.clone(), old);
-                            }
-                            None => {
-                                state.entries.remove(&v.slug);
-                            }
-                        }
-                        return Err(PutError::Storage(err.to_string()));
-                    }
-                }
-                let owner_key = if owner_id.is_some() {
-                    String::new()
-                } else if entry.publisher.is_empty() {
-                    format!("example:{}", entry.slug)
-                } else {
-                    entry.publisher.clone()
-                };
-                catalog
-                    .create_document(&NewDocument {
-                        slug: entry.slug.clone(),
-                        storage_id: entry.storage_id.clone(),
-                        title: entry.title.clone(),
-                        sha: entry.sha.clone(),
-                        created_at: entry.created_at.clone(),
-                        published_at: entry.created_at.clone(),
-                        updated_at: entry.updated_at.clone(),
-                        example: entry.example,
-                        owner_key,
-                        owner_id,
-                        status: "active".to_string(),
-                        size: entry.size,
-                        counted_size: entry.size,
-                        maintenance_reserved: 0,
-                        last_auto_checkpoint_at: now_unix(),
-                        source_format: entry.source_format.clone(),
-                        main: entry.main.clone(),
-                    })
-                    .map(|_| ())
-            } else {
-                update_catalog_document(catalog, &entry)
-            };
-            if let Err(err) = result {
-                match previous {
-                    Some(old) => {
-                        state.entries.insert(v.slug.clone(), old);
-                    }
-                    None => {
-                        state.entries.remove(&v.slug);
-                    }
-                }
-                return Err(PutError::Storage(err.to_string()));
-            }
-        }
+        // `put` returns through `put_catalog` above whenever a catalogue
+        // exists, so everything from here on is the legacy JSON-index path
+        // and never touches the catalogue at all.
         let mut written = self.save_locked(&mut state).await;
         // Another process moved the index between our reading it and our
         // writing it. The quota was decided against an index that no longer
@@ -1130,14 +1080,42 @@ impl Store {
         // last of a quota. One retry: a second conflict means the index is
         // busier than this write is worth.
         if matches!(written, Err(BlobError::Conflict)) {
-            if let Err(err) = self.reload_locked(&mut state, &v.slug).await {
-                state.entries.remove(&v.slug);
-                return Err(PutError::Storage(err));
+            let stored = match self.reload_locked(&mut state, &v.slug).await {
+                Ok(stored) => stored,
+                Err(err) => {
+                    // The reload itself failed, so there is no fresher answer
+                    // for what storage actually holds. Fall back to what
+                    // this instance had before attempting the replacement,
+                    // rather than a bare removal that would delete a
+                    // document that was never actually gone.
+                    match previous.clone() {
+                        Some(previous) => {
+                            state.entries.insert(v.slug.clone(), previous);
+                        }
+                        None => {
+                            state.entries.remove(&v.slug);
+                        }
+                    }
+                    return Err(PutError::Storage(err));
+                }
+            };
+            // `admit` must see this exactly as storage does: a replacement
+            // when storage still has a row for this slug, a creation when it
+            // does not. Removing the slug unconditionally -- as this used to
+            // do -- turned every replacement retried here into a brand-new
+            // document, asking for a free document-count slot the document
+            // already occupied.
+            let mut reference = state.entries.clone();
+            match &stored {
+                Some(stored) => {
+                    reference.insert(v.slug.clone(), stored.clone());
+                }
+                None => {
+                    reference.remove(&v.slug);
+                }
             }
-            let mut without = state.entries.clone();
-            without.remove(&v.slug);
             let fresh = StoreState {
-                entries: without,
+                entries: reference,
                 index_version: state.index_version.clone(),
                 refreshed_at: state.refreshed_at,
             };
@@ -1149,8 +1127,20 @@ impl Store {
                 size,
                 now_unix(),
             ) {
-                state.entries.remove(&v.slug);
-                let _ = self.save_locked(&mut state).await;
+                // Memory must equal the index just reloaded: the entry
+                // storage actually has for this slug, or nothing if it never
+                // had one. Saving here -- as this used to do -- would
+                // overwrite that just-read index with a copy missing this
+                // slug, deleting a document the refused write only ever
+                // meant to replace.
+                match stored {
+                    Some(stored) => {
+                        state.entries.insert(v.slug.clone(), stored);
+                    }
+                    None => {
+                        state.entries.remove(&v.slug);
+                    }
+                }
                 return Err(refused);
             }
             written = self.save_locked(&mut state).await;
@@ -1204,21 +1194,43 @@ impl Store {
                 request_id: &request_id,
                 kind,
                 request_digest,
+                // This is parsed back with serde_json -- by the startup
+                // roll-forward above, and by `stage_publication_measurement`
+                // and `stage_publication_checkpoint` in operations.rs -- so it
+                // must actually be JSON. Rust's `Debug` escaping (the old
+                // `format!("{:?}", ...)` this replaced) is not JSON escaping:
+                // a control character in an owner key, say, becomes a `\u{7f}`
+                // that no JSON parser accepts, and the whole receipt becomes
+                // unreadable from then on.
                 intent: &if let Some(actor) = actor {
-                    format!(
-                        "{{\"slug\":{:?},\"kind\":{:?},\"staged_required\":true,\"expected_head\":{:?},\"new_head\":null,\"durable_coverage\":null,\"reservations\":[],\"output_descriptors\":[],\"actor\":{{\"account_id\":{:?},\"owner_key\":{:?},\"generation\":{:?}}}}}",
-                        slug,
-                        kind,
-                        document.sha,
-                        actor.account_id,
-                        actor.owner_key,
-                        actor.session_generation,
-                    )
+                    serde_json::json!({
+                        "slug": slug,
+                        "kind": kind,
+                        "staged_required": true,
+                        "expected_head": document.sha,
+                        "new_head": null,
+                        "durable_coverage": null,
+                        "reservations": [],
+                        "output_descriptors": [],
+                        "actor": {
+                            "account_id": actor.account_id,
+                            "owner_key": actor.owner_key,
+                            "generation": actor.session_generation,
+                        },
+                    })
+                    .to_string()
                 } else {
-                    format!(
-                        "{{\"slug\":{:?},\"kind\":{:?},\"staged_required\":true,\"expected_head\":{:?},\"new_head\":null,\"durable_coverage\":null,\"reservations\":[],\"output_descriptors\":[]}}",
-                        slug, kind, document.sha
-                    )
+                    serde_json::json!({
+                        "slug": slug,
+                        "kind": kind,
+                        "staged_required": true,
+                        "expected_head": document.sha,
+                        "new_head": null,
+                        "durable_coverage": null,
+                        "reservations": [],
+                        "output_descriptors": [],
+                    })
+                    .to_string()
                 },
                 created_at: now_unix(),
                 actor: actor.map(|actor| OperationActor {
@@ -1479,10 +1491,10 @@ impl Store {
             if sha.is_none() {
                 return Ok(());
             }
-            if self
-                .catalog
-                .as_ref()
-                .and_then(|catalog| catalog.document(slug).ok().flatten())
+            if catalog
+                .document(slug)
+                .ok()
+                .flatten()
                 .and_then(|document| document.pending_publication)
                 .is_some()
             {
@@ -1802,6 +1814,45 @@ impl Store {
     /// the deployment over a ceiling. `None` for a document with no index
     /// entry, which has no owner to charge and no ceiling to reach.
     pub async fn room_for(&self, slug: &str) -> Option<i64> {
+        // `state.entries` is only a compatibility cache in catalogue mode: it
+        // starts empty in `open_with_catalog` and gains a slug only once
+        // something else has already looked it up. Answering from that cache
+        // alone means a document untouched since startup reads as "no
+        // ceiling" instead of the ceiling it actually has, and even a cached
+        // document's ceiling is computed against whatever fraction of the
+        // deployment happens to be cached rather than the whole of it. The
+        // catalogue, when there is one, is asked directly instead.
+        if let Some(catalog) = &self.catalog {
+            let documents = catalog.documents().ok()?;
+            let active: Vec<_> = documents
+                .into_iter()
+                .filter(|document| document.status == "active")
+                .collect();
+            let mine = active.iter().find(|document| document.slug == slug)?;
+            let owner_id = mine.owner_id.clone();
+            let owner_key = mine.owner_key.clone();
+            let (mut total, mut mine_bytes) = (0i64, 0i64);
+            for other in &active {
+                if other.slug == slug {
+                    continue;
+                }
+                let counted = other.counted_size.max(other.size);
+                total += counted;
+                let same_owner = match &owner_id {
+                    Some(id) => other.owner_id.as_deref() == Some(id.as_str()),
+                    None => other.owner_key == owner_key,
+                };
+                if same_owner {
+                    mine_bytes += counted;
+                }
+            }
+            let limits = self.config.storage;
+            return Some(
+                (limits.total - total)
+                    .min(limits.per_owner - mine_bytes)
+                    .max(0),
+            );
+        }
         let state = self.state.lock().await;
         let entry = state.entries.get(slug)?;
         let owner = entry.publisher.clone();
@@ -2042,14 +2093,11 @@ impl Store {
     /// it is what stops one of them overwriting the other's documents. A
     /// conflict is reported rather than retried, because what to do about it
     /// is the caller's decision.
+    ///
+    /// Only ever called in legacy JSON-index mode: every catalogue-backed
+    /// caller returns before reaching this, so there is no catalogue branch
+    /// here to keep in sync with the catalogue schema.
     pub async fn save_locked(&self, state: &mut StoreState) -> Result<(), BlobError> {
-        if let Some(catalog) = &self.catalog {
-            for entry in state.entries.values() {
-                update_catalog_document(catalog, entry)
-                    .map_err(|err| BlobError::Other(err.to_string()))?;
-            }
-            return Ok(());
-        }
         let raw =
             serde_json::to_vec(&state.entries).map_err(|err| BlobError::Other(err.to_string()))?;
         let at = self
@@ -2066,8 +2114,18 @@ impl Store {
     /// decision that was made against the old one has to be made again against
     /// the new one. That is what serializes admission deployment-wide -- a
     /// decision is only ever committed against the index it was made from.
-    async fn reload_locked(&self, state: &mut StoreState, slug: &str) -> Result<(), String> {
+    ///
+    /// Returns whatever storage actually had for `slug` before this process's
+    /// own in-flight change was laid back over it, so a caller that ends up
+    /// refusing that change can restore exactly what was there rather than
+    /// guessing -- or, worse, assuming there was nothing.
+    async fn reload_locked(
+        &self,
+        state: &mut StoreState,
+        slug: &str,
+    ) -> Result<Option<IndexEntry>, String> {
         let (entries, at) = load_index(self.blobs.as_ref()).await?;
+        let stored = entries.get(slug).cloned();
         let mine = state.entries.get(slug).cloned();
         state.entries = entries;
         state.index_version = at;
@@ -2076,7 +2134,7 @@ impl Store {
         } else {
             state.entries.remove(slug);
         }
-        Ok(())
+        Ok(stored)
     }
 
     /// Reloads the index from storage into `state`, unconditionally. Unlike
@@ -2353,107 +2411,6 @@ fn load_catalog_entry(
     Ok(Some(entry))
 }
 
-fn update_catalog_document(catalog: &Catalog, entry: &IndexEntry) -> Result<(), CatalogError> {
-    catalog.with_connection(|connection| {
-        let tx = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(CatalogError::from)?;
-        let old_counted: i64 = tx
-            .query_row(
-                "SELECT counted_size FROM documents WHERE slug = ?1 AND status = 'active'",
-                [&entry.slug],
-                |row| row.get(0),
-            )
-            .map_err(CatalogError::from)?;
-        let new_counted = old_counted.max(entry.size);
-        let changed = tx.execute(
-            "UPDATE documents SET title = ?2, sha = ?3, updated_at = ?4,
-                    size = ?5, counted_size = ?6, source_format = ?7, main = ?8,
-                    example = ?9, owner_key = ?10, owner_id = ?11
-             WHERE slug = ?1 AND status = 'active'",
-            rusqlite::params![
-                entry.slug,
-                entry.title,
-                entry.sha,
-                entry.updated_at,
-                entry.size,
-                new_counted,
-                entry.source_format,
-                entry.main,
-                i64::from(entry.example),
-                if entry.publisher_id.is_empty() {
-                    &entry.publisher
-                } else {
-                    ""
-                },
-                if entry.publisher_id.is_empty() {
-                    None
-                } else {
-                    Some(entry.publisher_id.as_str())
-                },
-            ],
-        )?;
-        if changed != 1 {
-            return Err(CatalogError::NotFound);
-        }
-        if new_counted != old_counted {
-            tx.execute(
-                "UPDATE totals SET bytes = bytes + ?1 WHERE id = 1",
-                [new_counted - old_counted],
-            )?;
-        }
-        tx.execute("DELETE FROM grants WHERE slug = ?1", [&entry.slug])?;
-        for (role, grants) in [("editor", &entry.editors), ("commenter", &entry.commenters)] {
-            for grant in grants {
-                tx.execute(
-                    "INSERT INTO accounts
-                     (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation)
-                     VALUES (?1, CASE WHEN instr(?1, ':') > 0 THEN substr(?1, 1, instr(?1, ':') - 1) ELSE 'github' END,
-                             ?2, ?3, '', ?4, ?4, 'default', 'active', ?5)
-                     ON CONFLICT(id) DO UPDATE SET handle = excluded.handle, name = excluded.name",
-                    rusqlite::params![grant.id, grant.login, grant.shown(), grant.since, random_storage_id()],
-                )?;
-                tx.execute(
-                    "INSERT INTO grants (slug, role, account_id, since) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![entry.slug, role, grant.id, grant.since],
-                )?;
-            }
-        }
-        tx.execute("DELETE FROM guests WHERE slug = ?1", [&entry.slug])?;
-        for guest in &entry.guests {
-            tx.execute(
-                "INSERT INTO accounts
-                 (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation)
-                 VALUES (?1, CASE WHEN instr(?1, ':') > 0 THEN substr(?1, 1, instr(?1, ':') - 1) ELSE 'github' END,
-                         '', ?2, '', ?3, ?3, 'default', 'active', ?4)
-                 ON CONFLICT(id) DO UPDATE SET name = excluded.name",
-                rusqlite::params![guest.id, guest.name, guest.since, random_storage_id()],
-            )?;
-            tx.execute(
-                "INSERT INTO guests (slug, account_id, since, link_hash) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![entry.slug, guest.id, guest.since, guest.link],
-            )?;
-        }
-        tx.execute("DELETE FROM links WHERE slug = ?1", [&entry.slug])?;
-        for link in &entry.links {
-            let sealed = catalog.seal_link_key(
-                &entry.storage_id,
-                &link.role,
-                &link.hash,
-                &link.key,
-            )?;
-            tx.execute(
-                "INSERT INTO links (slug, role, hash, sealed, label, budget, since, until)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params![entry.slug, link.role, link.hash, sealed,
-                                  link.label, link.budget, link.since, link.until],
-            )?;
-        }
-        tx.commit().map_err(CatalogError::from)?;
-        Ok(())
-    })
-}
-
 /// Apply a compatibility entry to the authoritative catalogue without
 /// treating its cached access lists as a whole-row snapshot.  Metadata and
 /// access changes commit together; unchanged access rows retain their sealed
@@ -2466,9 +2423,16 @@ fn update_catalog_entry_access(
     let mut document = catalog
         .document(&entry.slug)?
         .ok_or(CatalogError::NotFound)?;
-    document.title = entry.title.clone();
-    document.sha = entry.sha.clone();
-    document.updated_at = entry.updated_at.clone();
+    // Every caller of this function -- `modify`, `modify_as_owner`, and the
+    // link/grant/owner closures in the HTTP layer -- changes only who a
+    // document names and whose it is; none of them touch the document's
+    // content or its checkpoint. `entry` is loaded, mutated by the caller's
+    // closure, and written back here, but the load can race a checkpoint
+    // committed by another writer in between: copying `title`, `sha`,
+    // `updated_at`, `size`, `counted_size`, `source_format`, or `main` from
+    // this possibly-stale snapshot would silently revert that newer
+    // checkpoint. So only the fields an access change is actually allowed to
+    // touch are written back: `example`, and the owner identity.
     document.example = entry.example;
     document.owner_key = if entry.unowned {
         // Anonymous command-line uploads use an internal sentinel so they
@@ -2481,10 +2445,6 @@ fn update_catalog_entry_access(
         String::new()
     };
     document.owner_id = (!entry.publisher_id.is_empty()).then(|| entry.publisher_id.clone());
-    document.size = entry.size;
-    document.counted_size = document.counted_size.max(entry.size);
-    document.source_format = entry.source_format.clone();
-    document.main = entry.main.clone();
 
     let current_links = catalog.links(&entry.slug)?;
     let mut links = Vec::with_capacity(entry.links.len());

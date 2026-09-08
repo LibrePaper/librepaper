@@ -531,3 +531,54 @@ async fn catalog_removal_queue_resumes_after_reopen() {
     reopened.finish_delete("remove-me").unwrap();
     assert!(reopened.document("remove-me").unwrap().is_none());
 }
+
+/// `room_for` must consult the catalogue itself, not just the compatibility
+/// cache in `state.entries`: `open_with_catalog` starts that cache empty, and
+/// it only ever gains a slug once something else has looked it up. A store
+/// that has never been asked about either document must still charge the
+/// other document's bytes against the shared ceiling -- a `room_for` reading
+/// only the empty cache would instead answer `None` ("no ceiling") for the
+/// document it was never asked about, and would undercount the ceiling even
+/// for one it was.
+#[tokio::test]
+async fn room_for_charges_uncached_catalog_documents() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut limits = Configuration::default();
+    limits.storage.total = 1000;
+    limits.storage.per_owner = 1000;
+    let config = Arc::new(limits);
+    let (blobs, catalog) = local_catalog_store(&dir);
+    let store = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+        .await
+        .unwrap();
+    store
+        .put(store::Publication {
+            slug: "first".into(),
+            source: "abcd".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    store
+        .put(store::Publication {
+            slug: "second".into(),
+            source: "abcdef".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    // A brand new `Store` over the same catalogue: its compatibility cache is
+    // empty, and neither document has ever been looked up through it.
+    let fresh = store::Store::open_with_catalog(blobs, config, catalog)
+        .await
+        .unwrap();
+    let room = fresh
+        .room_for("first")
+        .await
+        .expect("first is a document the catalogue actually has");
+    // Only "second"'s six bytes are charged against the ceiling.
+    assert_eq!(room, 1000 - 6);
+}
