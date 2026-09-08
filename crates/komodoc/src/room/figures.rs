@@ -311,26 +311,14 @@ impl Room {
             .iter()
             .rev()
             .find(|point| point.sha == sha)
-            .map(|point| {
-                if point.tree_sha.is_empty() {
-                    point.sha.clone()
-                } else {
-                    point.tree_sha.clone()
-                }
-            });
+            .map(|point| point.content_sha().to_string());
         resident.or_else(|| {
             self.catalog.get().and_then(|catalog| {
                 catalog
                     .checkpoint(&self.slug, sha)
                     .ok()
                     .flatten()
-                    .map(|point| {
-                        if point.tree_sha.is_empty() {
-                            point.sha
-                        } else {
-                            point.tree_sha
-                        }
-                    })
+                    .map(|point| point.content_sha().to_string())
             })
         })
     }
@@ -704,11 +692,7 @@ impl Room {
         }
         let state = self.state.lock().await;
         state.manifest.checkpoints.iter().rev().find_map(|point| {
-            let content = if point.tree_sha.is_empty() {
-                &point.sha
-            } else {
-                &point.tree_sha
-            };
+            let content = point.content_sha();
             (state
                 .session
                 .rendering_sizes
@@ -765,35 +749,17 @@ impl Room {
                 .checkpoints
                 .iter()
                 .filter(|point| !point.label.is_empty())
-                .map(|point| {
-                    if point.tree_sha.is_empty() {
-                        point.sha.clone()
-                    } else {
-                        point.tree_sha.clone()
-                    }
-                })
+                .map(|point| point.content_sha().to_string())
                 .collect();
             for point in checkpoints.iter().filter(|point| !point.label.is_empty()) {
-                kept.insert(if point.tree_sha.is_empty() {
-                    point.sha.clone()
-                } else {
-                    point.tree_sha.clone()
-                });
+                kept.insert(point.content_sha().to_string());
             }
             if let Some(newest) = checkpoints.iter().rev().find(|point| {
-                let content = if point.tree_sha.is_empty() {
-                    &point.sha
-                } else {
-                    &point.tree_sha
-                };
+                let content = point.content_sha();
                 held.contains_key(&rendering_name(content, false))
                     || held.contains_key(&rendering_name(content, true))
             }) {
-                kept.insert(if newest.tree_sha.is_empty() {
-                    newest.sha.clone()
-                } else {
-                    newest.tree_sha.clone()
-                });
+                kept.insert(newest.content_sha().to_string());
             }
             (kept, held, state.session.rendering_written_at.clone())
         };
