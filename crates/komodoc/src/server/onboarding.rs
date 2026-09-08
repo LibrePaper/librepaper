@@ -92,7 +92,7 @@ impl Server {
                     .await;
             }
             let sha = room
-                // First sign-in provisioning is the new account s own write.
+                // First sign-in provisioning is the new account's own write.
                 .checkpoint(
                     "onboarding",
                     crate::room::Attribution::account(&who.id, &who.handle),

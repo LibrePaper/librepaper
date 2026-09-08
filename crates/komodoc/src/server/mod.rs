@@ -879,7 +879,7 @@ impl Server {
         // has moved on. A checkpoint whose text is already the current one
         // costs nothing and adds no entry.
         if is_comment {
-            // The checkpoint a comment sits on is the commenter s write. It
+            // The checkpoint a comment sits on is the commenter's write. It
             // carries their stable account when they are signed in, and the
             // same pseudonym the comment shows as its display string.
             if let Err(err) = room

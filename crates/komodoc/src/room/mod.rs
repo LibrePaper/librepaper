@@ -181,7 +181,7 @@ pub struct Session {
     /// When the last update arrived, and who sent it. Both feed the quiet
     /// checkpoint, whose `by` is the editor whose update last landed. The
     /// stable account travels with the display name so an automatic
-    /// checkpoint of somebody else s keystrokes is attributed to them and
+    /// checkpoint of somebody else's keystrokes is attributed to them and
     /// can be reached by their erasure.
     pub updated_at: i64,
     pub by: Attribution,
