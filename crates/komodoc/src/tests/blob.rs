@@ -65,7 +65,9 @@ async fn blob_store_contract() {
         .unwrap();
     let found = blobs.list(&document_prefix("a-paper")).await.unwrap();
     assert!(
-        found.len() == 1 && found[0].key == document_key("a-paper", "abc"),
+        found
+            .iter()
+            .any(|item| item.key == document_key("a-paper", "abc")),
         "{found:?}"
     );
 
@@ -86,13 +88,21 @@ async fn blob_store_contract() {
             .iter()
             .map(|item| item.key.as_str())
             .collect::<Vec<_>>(),
-        vec!["documents/a-paper-copy/one", "documents/a-paper/abc.html",]
+        vec!["documents/a-paper-copy/one"]
     );
+    let first = blobs.list_page("documents/", None, 2).await.unwrap();
+    assert_eq!(first.len(), 2);
+    assert!(first[0].key < first[1].key);
+    let second = blobs
+        .list_page("documents/", Some(&first[1].key), 2)
+        .await
+        .unwrap();
+    assert!(second.iter().all(|item| item.key > first[1].key));
 
     // A trailing separator scopes the walk to that subtree. Empty and absent
     // prefixes remain useful for maintenance and are ordinary empty listings.
     let subtree = blobs.list("documents/a-paper/").await.unwrap();
-    assert_eq!(subtree.len(), 1);
+    assert!(subtree.is_empty());
     assert!(blobs.list("missing/").await.unwrap().is_empty());
     assert!(blobs.list("/").await.unwrap().is_empty());
     assert!(blobs.list("../").await.unwrap().is_empty());

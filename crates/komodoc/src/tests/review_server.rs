@@ -134,7 +134,7 @@ async fn review_creation_saves_source_or_reports_failure() {
     let dir = tempfile::tempdir().unwrap();
     let inner: std::sync::Arc<dyn BlobStore> = std::sync::Arc::new(FsStore::new(dir.path()));
     let hooked = HookStore::new(inner.clone());
-    let (url, _server) = server_over_blobs(hooked.clone(), Configuration::default()).await;
+    let (url, _server) = server_over_blobs_legacy(hooked.clone(), Configuration::default()).await;
     *hooked.fail.lock().unwrap() = Some("history/".into());
     let (status, _entry) = post(
         &url,
@@ -147,7 +147,7 @@ async fn review_creation_saves_source_or_reports_failure() {
         "a creation whose checkpoint could not land must not report success, got {status}"
     );
     *hooked.fail.lock().unwrap() = None;
-    let (_url, restarted) = server_over_blobs(inner, Configuration::default()).await;
+    let (_url, restarted) = server_over_blobs_legacy(inner, Configuration::default()).await;
     assert!(
         restarted.store.list().await.is_empty(),
         "a failed creation must not leave a half-published document behind"

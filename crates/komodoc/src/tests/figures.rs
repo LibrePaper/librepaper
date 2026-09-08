@@ -160,7 +160,15 @@ async fn the_same_figure_twice_is_stored_once() {
         .instance
         .store
         .blobs
-        .list(&crate::blob::asset_prefix(&slug))
+        .list(&crate::blob::asset_prefix(
+            &server
+                .instance
+                .store
+                .get(&slug)
+                .await
+                .expect("the document is in the index")
+                .storage_id,
+        ))
         .await
         .unwrap();
     assert_eq!(stored.len(), 1, "the same bytes were stored twice");

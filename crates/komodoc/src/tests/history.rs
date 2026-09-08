@@ -489,7 +489,7 @@ async fn concurrent_updates_cannot_pass_the_size_limit() {
 async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let blobs = Failing::over(Arc::new(FsStore::new(dir.path())));
-    let (base, instance) = server_over_blobs(blobs.clone(), Configuration::default()).await;
+    let (base, instance) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let slug = text(&publish_with_source(&base).await, "slug");
     let before = crate::history::load(blobs.as_ref(), &slug)
         .await
@@ -548,7 +548,7 @@ async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
 async fn a_manifest_missing_its_newest_entry_is_repaired() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let blobs = Failing::over(Arc::new(FsStore::new(dir.path())));
-    let (base, instance) = server_over_blobs(blobs.clone(), Configuration::default()).await;
+    let (base, instance) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let slug = text(&publish_with_source(&base).await, "slug");
     let room = instance.rooms.get(&slug).await;
 
@@ -655,7 +655,18 @@ async fn a_comment_lands_on_a_checkpoint_that_contains_its_quotation() {
         .latest()
         .cloned()
         .expect("a checkpoint");
-    let bytes = checkpoint_text(server.instance.store.blobs.as_ref(), &slug, &newest.sha).await;
+    let entry = server
+        .instance
+        .store
+        .get(&slug)
+        .await
+        .expect("the document is in the index");
+    let bytes = checkpoint_text(
+        server.instance.store.blobs.as_ref(),
+        &entry.storage_id,
+        &newest.sha,
+    )
+    .await;
     assert!(
         bytes.contains("a sentence to quote"),
         "the comment's checkpoint does not contain what it quotes"
@@ -930,7 +941,8 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
     let slug = "my-paper-abcdefghij";
     write_the_old_layout(dir.path(), slug).await;
 
-    let (base, instance) = server_over(dir.path(), Configuration::default()).await;
+    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let (base, instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
     // This entry names a publisher on record, so the bare URL opens it only
     // for them -- exactly the account the old layout recorded here.
     let owner = session_as(TEST_PUBLISHER);
@@ -999,13 +1011,16 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
         instance.store.blobs.get(&session_key(slug)).await.is_ok(),
         "the live document was not written"
     );
-    for prefix in [
-        crate::blob::document_prefix(slug),
-        crate::blob::source_prefix(slug),
-    ] {
-        let found = instance.store.blobs.list(&prefix).await.unwrap();
-        assert!(found.is_empty(), "{prefix} still holds {found:?}");
-    }
+    // The migrated source and checkpoint body now share the same immutable
+    // content-addressed object.  It must remain reachable under the
+    // catalogue/legacy storage identity; only the old unversioned source
+    // object is disposable.
+    assert!(instance
+        .store
+        .blobs
+        .get(&crate::blob::blob_key(slug, &tree.files[&tree.main].sha))
+        .await
+        .is_ok());
 }
 
 /// The oldest layout of all kept one unversioned source per document, at
@@ -1054,7 +1069,8 @@ async fn a_document_with_an_unversioned_source_keeps_its_own_format() {
         .await
         .unwrap();
 
-    let (base, _instance) = server_over(dir.path(), Configuration::default()).await;
+    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let (base, _instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
     let (status, payload) = get_json(&base, &format!("/api/documents/{slug}/source")).await;
     assert_eq!(status, 200, "{payload}");
     assert_eq!(
@@ -1100,7 +1116,8 @@ async fn an_old_html_document_is_seeded_from_its_page() {
         .await
         .unwrap();
 
-    let (base, _instance) = server_over(dir.path(), Configuration::default()).await;
+    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let (base, _instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
     // This entry names a publisher on record, so it opens only for them.
     let (status, payload) = get_json_as(
         &session_as(TEST_PUBLISHER),
@@ -1601,7 +1618,11 @@ async fn a_second_process_over_the_same_storage_does_not_write() {
 #[tokio::test]
 async fn a_former_owner_cannot_write_after_being_taken_over() {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let (url, stalled) = server_over(dir.path(), Configuration::default()).await;
+    // This test deliberately edits the old session/lock object keys directly;
+    // use the explicit legacy harness so that those writes exercise the same
+    // layout as the room under test rather than bypassing the SQLite journal.
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let (url, stalled) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let slug = text(&publish_with_source(&url).await, "slug");
     let old = stalled.rooms.get(&slug).await;
     old.set_source("# From the first owner\n", "markdown").await;
@@ -1609,7 +1630,6 @@ async fn a_former_owner_cannot_write_after_being_taken_over() {
 
     // Its lease goes stale, and somebody takes it over. Written directly,
     // because the alternative is a test that waits five minutes.
-    let blobs = FsStore::new(dir.path());
     blobs
         .put(
             &crate::blob::room_lock_key(&slug),
@@ -1625,7 +1645,7 @@ async fn a_former_owner_cannot_write_after_being_taken_over() {
         .unwrap();
     // And the new owner writes the session, which is what moves it out from
     // under the old one.
-    let (_, taker) = server_over(dir.path(), Configuration::default()).await;
+    let (_, taker) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let now_theirs = taker.rooms.get(&slug).await;
     now_theirs
         .set_source("# From the new owner\n", "markdown")

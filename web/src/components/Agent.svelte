@@ -75,7 +75,7 @@
     if (!connection.id || !connection.token || !validDocumentLink()) return "";
     const documentLink = agentLink || link;
     return [
-      "Install the Komodoc skill: https://raw.githubusercontent.com/vincentarelbundock/komodoc/main/skills/komodoc/SKILL.md",
+      "Install the Komodoc skills: npx skills add vincentarelbundock/komodoc",
       "Give these commands to your preferred agent. Run watch whenever the agent is ready for your next message; messages are never queued.",
       `komodoc agent chat watch ${shell(documentLink)} --conversation ${shell(connection.id)} --token ${shell(connection.token)} --timeout 25`,
       `komodoc agent chat post ${shell(documentLink)} --conversation ${shell(connection.id)} --token ${shell(connection.token)} --message 'Your reply'`,

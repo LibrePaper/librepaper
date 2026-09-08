@@ -870,6 +870,7 @@ impl AutomationPeer {
         conversation: &str,
         token: &str,
         timeout: Duration,
+        after: Option<u64>,
     ) -> Result<Value, String> {
         use futures_util::{SinkExt, StreamExt};
         validate_conversation(conversation, token)?;
@@ -880,7 +881,7 @@ impl AutomationPeer {
                     .map_err(|err| format!("could not join chat: {err}"))?;
             socket
                 .send(Message::Text(
-                    json!({"type":"join","token":token,"role":"agent"})
+                    json!({"type":"join","token":token,"role":"agent","after":after})
                         .to_string()
                         .into(),
                 ))
@@ -895,7 +896,12 @@ impl AutomationPeer {
                     return Err(event["message"].as_str().unwrap_or("chat rejected").into());
                 }
                 if event["type"] == "message" && event["message"]["role"] == "user" {
-                    return Ok(json!({"messages":[event["message"].clone()],"timed_out":false}));
+                    let mut result =
+                        json!({"messages":[event["message"].clone()],"timed_out":false});
+                    if let Some(cursor) = event["message"]["cursor"].as_u64() {
+                        result["next_cursor"] = json!(cursor);
+                    }
+                    return Ok(result);
                 }
             }
             Err("chat closed while waiting for a message".into())
@@ -1119,6 +1125,8 @@ pub enum ChatCommand {
         /// Conversation credential; defaults to KOMODOC_CHAT_TOKEN.
         #[arg(long)]
         token: Option<String>,
+        #[arg(long)]
+        after: Option<u64>,
         #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=300))]
         timeout: u64,
     },
@@ -1188,6 +1196,7 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
                 ChatCommand::Watch {
                     conversation,
                     token,
+                    after,
                     timeout,
                     ..
                 } => {
@@ -1195,6 +1204,7 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
                         &conversation,
                         &chat_token(token)?,
                         Duration::from_secs(timeout),
+                        after,
                     )
                     .await?
                 }

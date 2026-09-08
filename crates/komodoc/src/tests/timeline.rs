@@ -237,10 +237,15 @@ async fn a_checkpoint_can_be_named_and_unnamed() {
     );
 
     // And it survives being read back from storage rather than from memory.
-    let manifest = crate::history::load(server.instance.store.blobs.as_ref(), &slug)
-        .await
-        .expect("a manifest");
-    assert_eq!(manifest.checkpoints[0].label, "sent to the journal");
+    let durable = server
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .expect("the production catalogue")
+        .checkpoints(&slug, None, 200)
+        .expect("checkpoints");
+    assert_eq!(durable[0].label, "sent to the journal");
 
     let (status, answer) = patch_label(&cookie, &server.url, &slug, &sha, "").await;
     assert_eq!(status, 200, "{answer}");

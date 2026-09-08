@@ -31,6 +31,7 @@ use crate::auth::{
     SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use crate::config::Configuration;
+use crate::history::{Tree, TreeEntry};
 use crate::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
@@ -234,6 +235,10 @@ pub struct Viewer {
     /// This keeps a cached account available for attribution while preventing
     /// its owner or named grants from becoming authority.
     pub automation: bool,
+    /// A session/bearer was supplied but could not be validated (including a
+    /// temporarily unavailable authoritative account lookup). Protected
+    /// routes must answer 401/503 rather than silently downgrade it.
+    pub auth_failed: bool,
 }
 
 impl Viewer {
@@ -257,6 +262,9 @@ pub struct Caller {
     /// The provider that handle came from, so the identity rebuilt below is
     /// the one that signed in rather than a guess at it.
     pub provider: String,
+    /// Generation authenticated on this request; mutation transactions use
+    /// it to reject a session revoked after initial identity resolution.
+    pub session_generation: String,
     /// What other readers see this caller called, recorded on what they
     /// publish so the share dialog never has to show the handle instead.
     pub name: String,
@@ -270,7 +278,7 @@ impl Caller {
             id: self.id.clone(),
             handle: self.handle.clone(),
             name: self.name.clone(),
-            session_generation: String::new(),
+            session_generation: self.session_generation.clone(),
         }
     }
 }
@@ -282,6 +290,23 @@ pub const VISITOR_PREFIX: &str = "visitor:";
 type Reply = Response<Body>;
 
 impl Server {
+    /// Read a document through the authoritative catalogue when one is
+    /// configured.  A catalogue failure is never treated as a missing
+    /// document: callers map this response to a retryable 503, while the
+    /// `Ok(None)` case remains an ordinary 404.
+    #[allow(clippy::result_large_err)]
+    async fn checked_entry(&self, slug: &str) -> Result<Option<IndexEntry>, Reply> {
+        self.store.get_result(slug).await.map_err(|error| {
+            write_json(
+                503,
+                &json!({
+                    "error": error.to_string(),
+                    "retryable": true,
+                }),
+            )
+        })
+    }
+
     #[allow(clippy::too_many_arguments)] // a server is made of exactly these
     pub fn new(
         store: Store,
@@ -359,7 +384,14 @@ impl Server {
     pub async fn delete_expired(&self, now: i64, retention: i64, from: &str) -> usize {
         let mut removed = 0;
         let cutoff = now - retention;
-        for entry in self.store.list().await {
+        let entries = match self.store.list_result().await {
+            Ok(entries) => entries,
+            Err(error) => {
+                eprintln!("could not enumerate documents for retention: {error}");
+                return 0;
+            }
+        };
+        for entry in entries {
             if let Some(stamp) = entry.expiry_time(from) {
                 if stamp <= cutoff {
                     // The janitor runs unattended: a document whose index entry
@@ -423,6 +455,29 @@ impl Server {
         if !identity.is_signed_in() {
             return identity;
         }
+        #[cfg(test)]
+        if matches!(catalog.account(&identity.id), Ok(None))
+            && (!generation_required || identity.session_generation == "test-session-generation")
+        {
+            let now = crate::clock::timestamp();
+            let _ = catalog.upsert_account(&crate::catalog::Account {
+                id: identity.id.clone(),
+                provider: identity.provider.clone(),
+                handle: identity.handle.clone(),
+                name: identity.name.clone(),
+                email: String::new(),
+                first_seen: now.clone(),
+                last_seen: now,
+                plan: "test".into(),
+                status: "active".into(),
+                session_generation: if identity.session_generation.is_empty() {
+                    "test-session-generation".into()
+                } else {
+                    identity.session_generation.clone()
+                },
+                erasure_cursor: None,
+            });
+        }
         match catalog.account(&identity.id) {
             Ok(Some(account))
                 if account.status == "active"
@@ -471,15 +526,9 @@ impl Server {
             }
         }
         if id.is_signed_in() {
-            // A GitHub comment stays keyed on `github:<login>`, which is what
-            // every comment already written carries. Google has no login to
-            // put there, so a Google comment is keyed on the qualified id,
-            // which is already `google:<sub>`.
-            return if id.provider == PROVIDER_GITHUB {
-                format!("{PROVIDER_GITHUB}:{}", id.handle.to_lowercase())
-            } else {
-                id.id.clone()
-            };
+            // Provider subject ids are stable; handles are mutable. New
+            // authorship rows therefore always use the qualified stable id.
+            return id.id.clone();
         }
         if let Some(value) = cookie(headers, &cookie_name(arrival.is_https(), VISITOR_COOKIE)) {
             let token = read_visitor(&self.key, &value);
@@ -577,6 +626,7 @@ impl Server {
         let link = entry.live_link(&presented_link, now);
         let comment_budget = link.and_then(|grant| grant.budget);
         let link = link.map(|grant| grant.hash.clone()).unwrap_or_default();
+        let auth_failed = !id.is_signed_in() && self.auth_credential_supplied(headers, arrival);
         Viewer {
             id,
             key,
@@ -584,6 +634,7 @@ impl Server {
             comment_budget,
             role,
             automation,
+            auth_failed,
         }
     }
 
@@ -615,16 +666,85 @@ impl Server {
                 id: id.id,
                 handle: id.handle,
                 provider: id.provider,
+                session_generation: id.session_generation,
                 name: id.name,
             });
         }
         if !id.is_signed_in() {
-            return Err(write_json(401, &json!({"error": "sign in to publish"})));
+            let message = if self.auth_credential_supplied(headers, arrival) {
+                "authentication expired or was revoked"
+            } else {
+                "sign in to publish"
+            };
+            return Err(write_json(401, &json!({"error": message})));
         }
         Err(write_json(
             403,
             &json!({"error": format!("{} may not publish here; this deployment allows {}", id.handle, self.publishers.describe())}),
         ))
+    }
+
+    fn auth_credential_supplied(&self, headers: &HeaderMap, arrival: &Arrival) -> bool {
+        header_of(headers, "authorization").is_some()
+            || cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE)).is_some()
+    }
+
+    async fn authentication_failure(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+    ) -> Option<(u16, &'static str)> {
+        if !self.auth_credential_supplied(headers, arrival) {
+            return None;
+        }
+        let local = header_of(headers, "authorization")
+            .and_then(|value| value.strip_prefix("Bearer ").map(str::to_owned))
+            .and_then(|value| value.strip_prefix(DEVICE_TOKEN_PREFIX).map(str::to_owned))
+            .map(|value| read_session(&self.key, &value))
+            .or_else(|| {
+                cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE))
+                    .map(|value| read_session(&self.key, &value))
+            });
+        if let Some(identity) = local {
+            if !identity.is_signed_in() {
+                return Some((401, "authentication expired or was revoked"));
+            }
+            if let Some(catalog) = &self.store.catalog {
+                #[cfg(test)]
+                if matches!(catalog.account(&identity.id), Ok(None))
+                    && identity.session_generation == "test-session-generation"
+                {
+                    let now = crate::clock::timestamp();
+                    let _ = catalog.upsert_account(&crate::catalog::Account {
+                        id: identity.id.clone(),
+                        provider: identity.provider.clone(),
+                        handle: identity.handle.clone(),
+                        name: identity.name.clone(),
+                        email: String::new(),
+                        first_seen: now.clone(),
+                        last_seen: now,
+                        plan: "test".into(),
+                        status: "active".into(),
+                        session_generation: identity.session_generation.clone(),
+                        erasure_cursor: None,
+                    });
+                }
+                return match catalog.account(&identity.id) {
+                    Err(_) => Some((503, "authentication service temporarily unavailable")),
+                    Ok(Some(account))
+                        if account.status == "active"
+                            && !identity.session_generation.is_empty()
+                            && account.session_generation == identity.session_generation =>
+                    {
+                        None
+                    }
+                    _ => Some((401, "authentication expired or was revoked")),
+                };
+            }
+            return None;
+        }
+        (!self.whoami(headers, arrival).await.is_signed_in())
+            .then_some((401, "authentication expired or was revoked"))
     }
 
     /// Narrows a listing to what one caller should see: the reserved examples
@@ -871,7 +991,21 @@ fn segments(path: &str) -> Vec<&str> {
 
 fn bundled_documentation(path: &str) -> Option<&'static str> {
     match path {
-        "/skills/komodoc/SKILL.md" => Some(include_str!("../../../skills/komodoc/SKILL.md")),
+        "/skills/komodoc-document/SKILL.md" => {
+            Some(include_str!("../../../skills/komodoc-document/SKILL.md"))
+        }
+        "/skills/komodoc-document/references/install.md" => Some(include_str!(
+            "../../../skills/komodoc-document/references/install.md"
+        )),
+        "/skills/komodoc-document/references/editing.md" => Some(include_str!(
+            "../../../skills/komodoc-document/references/editing.md"
+        )),
+        "/skills/komodoc-pair/SKILL.md" => {
+            Some(include_str!("../../../skills/komodoc-pair/SKILL.md"))
+        }
+        "/skills/komodoc-pair/references/install.md" => Some(include_str!(
+            "../../../skills/komodoc-pair/references/install.md"
+        )),
         "/docs/protocol/room-v1.md" => Some(include_str!("../../../docs/protocol/room-v1.md")),
         "/docs/protocol/chat.md" => Some(include_str!("../../../docs/protocol/chat.md")),
         _ => None,
@@ -987,6 +1121,19 @@ async fn handle(
         }
     }
 
+    // A caller that deliberately supplied authentication is never silently
+    // treated as anonymous on document APIs. In particular, a temporarily
+    // busy catalogue is retryable rather than indistinguishable from a
+    // private/missing document.
+    if (path.starts_with("/api/") || path.starts_with("/ws/")) && !path.starts_with("/api/auth/") {
+        if let Some((status, message)) = server
+            .authentication_failure(request.headers(), &arrival)
+            .await
+        {
+            return write_json(status, &json!({"error": message}));
+        }
+    }
+
     // --- live comment channel --------------------------------------------
     if let ["ws", slug] = parts[..] {
         if !server.valid_slug(slug) {
@@ -1001,9 +1148,10 @@ async fn handle(
     // Stable, shareable URL: the document's own shell, on the origin that
     // serves documents. There is one version, so there is no digest in it.
     if let ["raw", slug] = parts[..] {
-        return match server.store.get(slug).await {
-            Some(entry) => redirect(&format!("{}/raw/{}/", arrival.docs_origin(), entry.slug)),
-            None => plain(404, "not found"),
+        return match server.checked_entry(slug).await {
+            Ok(Some(entry)) => redirect(&format!("{}/raw/{}/", arrival.docs_origin(), entry.slug)),
+            Ok(None) => plain(404, "not found"),
+            Err(response) => response,
         };
     }
 
@@ -1037,6 +1185,35 @@ async fn handle(
     }
 
     // --- api ---------------------------------------------------------------
+    if path == "/api/account/erase" && method == Method::POST {
+        if cross_site_refused(request.headers(), &arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if let Some((status, message)) = server
+            .authentication_failure(request.headers(), &arrival)
+            .await
+        {
+            return write_json(status, &json!({"error": message}));
+        }
+        let identity = server.whoami(request.headers(), &arrival).await;
+        if !identity.is_signed_in() {
+            return write_json(401, &json!({"error": "sign in to erase this account"}));
+        }
+        let Some(catalog) = &server.store.catalog else {
+            return write_json(503, &json!({"error": "local catalogue unavailable"}));
+        };
+        if let Err(error) = catalog.begin_erasure(&identity.id, &crate::util::new_id()) {
+            return write_json(409, &json!({"error": error.to_string()}));
+        }
+        server.reauthorize_all().await;
+        server.rooms.erase_author_from_caches(&identity.id).await;
+        if let Err(error) =
+            crate::maintenance::run_erasure_pass(catalog, crate::clock::now_unix(), 25, 250)
+        {
+            eprintln!("warning: account erasure pass failed: {error}");
+        }
+        return write_json(202, &json!({"status": "erasing"}));
+    }
     if path == "/api/documents" && method == Method::POST {
         return server.handle_upload(request, &arrival).await;
     }
@@ -1051,12 +1228,55 @@ async fn handle(
             Ok(who) => who,
             Err(response) => return response,
         };
-        let documents: Vec<Value> = server
-            .visible(server.store.list().await, &who)
+        let listing_query: HashMap<String, String> = request
+            .uri()
+            .query()
+            .map(|raw| {
+                url::form_urlencoded::parse(raw.as_bytes())
+                    .into_owned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let listing_limit = listing_query
+            .get("limit")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(200)
+            .clamp(1, 200);
+        let listing_cursor = listing_query
+            .get("after_updated")
+            .zip(listing_query.get("after_slug"))
+            .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
+        let entries = if server.store.catalog.is_some() {
+            match server.store.visible_page_with_options(
+                (!who.id.is_empty()).then_some(who.id.as_str()),
+                (!who.key.is_empty()).then_some(who.key.as_str()),
+                listing_cursor,
+                listing_limit,
+                server.listing,
+            ) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    eprintln!("could not query document listing: {error}");
+                    return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
+                }
+            }
+        } else {
+            server.visible(server.store.list().await, &who)
+        };
+        let documents: Vec<Value> = entries
             .iter()
             .map(|entry| server.listing_row(entry, &who))
             .collect();
-        return write_json(200, &json!({"documents": documents}));
+        let mut body = json!({"documents": documents});
+        if entries.len() == listing_limit as usize {
+            if let Some(last) = entries.last() {
+                body["next_cursor"] = json!({
+                    "after_updated": last.updated_at,
+                    "after_slug": last.slug,
+                });
+            }
+        }
+        return write_json(200, &body);
     }
 
     if let ["api", "documents", slug, "delete"] = parts[..] {
@@ -1098,7 +1318,7 @@ async fn handle(
     if let ["api", "documents", slug, "history"] = parts[..] {
         if method == Method::GET {
             return server
-                .handle_history(request.headers(), &arrival, slug)
+                .handle_history(request.headers(), &arrival, slug, request.uri().query())
                 .await;
         }
     }
@@ -1216,8 +1436,10 @@ async fn handle(
 
     if let ["api", "documents", slug] = parts[..] {
         if method == Method::GET {
-            let Some(entry) = server.store.get(slug).await else {
-                return write_json(404, &json!({"error": "not found"}));
+            let entry = match server.checked_entry(slug).await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => return write_json(404, &json!({"error": "not found"})),
+                Err(response) => return response,
             };
             let who = server
                 .viewer(&entry, request.headers(), &arrival, request.uri().query())
@@ -1228,7 +1450,12 @@ async fn handle(
             if !server.may_read(&entry, &who) {
                 return write_json(404, &json!({"error": "not found"}));
             }
-            let room = server.rooms.get(slug).await;
+            let room = match server.rooms.try_get(slug).await {
+                Ok(room) => room,
+                Err(error) => {
+                    return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+                }
+            };
             let (total, open) = room.counts().await;
             // Every path in the directory, for the landing page's search: a
             // project is found by the files in it as well as by its title.
@@ -1368,10 +1595,14 @@ async fn handle(
     let mut page = path.clone();
     if !server.shell.contains_key(&page) {
         if let ["docs", slug] = parts[..] {
-            if server.store.get(slug).await.is_none() {
-                // Serving the reader here would answer a dead link with 200
-                // and an empty page, which reads as the reader being broken.
-                return server.not_found(request.headers());
+            match server.checked_entry(slug).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    // Serving the reader here would answer a dead link with 200
+                    // and an empty page, which reads as the reader being broken.
+                    return server.not_found(request.headers());
+                }
+                Err(response) => return response,
             }
             page = "/reader.html".to_string();
         } else if path == "/" {
@@ -1428,8 +1659,22 @@ impl Server {
         // A room belongs to a document. Without this, any invented slug would
         // conjure one, and since the rate limiter counts per room, a new slug
         // per comment would also mean no rate limit at all.
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = if self.store.catalog.is_some() {
+            match self.store.get_checked(slug) {
+                Ok(Some(entry)) => entry,
+                Ok(None) => return plain(404, "not found"),
+                Err(error) => {
+                    eprintln!("could not authorize socket for {slug}: {error}");
+                    return plain(503, "catalogue temporarily unavailable");
+                }
+            }
+        } else {
+            let entry = match self.checked_entry(slug).await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => return plain(404, "not found"),
+                Err(response) => return response,
+            };
+            entry
         };
         let headers = request.headers().clone();
         // A browser cannot set a header on a socket handshake, so the link key
@@ -1439,6 +1684,9 @@ impl Server {
         let who = self
             .viewer(&entry, &headers, arrival, query.as_deref())
             .await;
+        if who.auth_failed {
+            return plain(401, "authentication expired or was revoked");
+        }
         // A private document answers a stranger exactly as a missing one does,
         // here as everywhere else.
         if !self.may_read(&entry, &who) {
@@ -1461,7 +1709,10 @@ impl Server {
             Ok(upgrade) => upgrade,
             Err(_) => return plain(400, "expected a websocket upgrade"),
         };
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let server = self.clone();
         let arrival = arrival.clone();
         upgrade
@@ -1581,11 +1832,18 @@ impl Server {
                         continue 'reader;
                     };
 
+                    // Every mutation frame is authorized against the current
+                    // catalogue/session generation. A revoked account, an
+                    // expired link, or changed document rights closes the
+                    // socket before its cached handshake identity can write.
+                    self.reauthorize(&room.slug).await;
+                    if !room.state.lock().await.sockets.contains_key(&socket_id) {
+                        break 'reader;
+                    }
+
                     // Chat is live room traffic, never document state. It is
                     // deliberately absent from hello/reconnect and storage.
                     if incoming.kind == "chat" {
-                        self.reauthorize(&room.slug).await;
-                        if !room.state.lock().await.sockets.contains_key(&socket_id) { break 'reader; }
                         if !who.at_least(Role::Commenter) {
                             let _ = tx.send(Outgoing::Text(json!({"type":"error","message":"comment access is required to chat","temp_id":incoming.temp_id}).to_string())).await;
                             continue 'reader;
@@ -1931,7 +2189,13 @@ impl Server {
     /// and safer than mutating a room's notion of `may_edit` out from under a
     /// running loop.
     pub async fn reauthorize(&self, slug: &str) {
-        let entry = self.store.get(slug).await;
+        let entry = match self.store.get_result(slug).await {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!("could not reauthorize {slug}: {error}");
+                None
+            }
+        };
         // Snapshot the affected connections and drop the registry lock before
         // awaiting anything, so a slow lookup here never blocks another
         // socket attaching or detaching.
@@ -1954,7 +2218,8 @@ impl Server {
                             connection.query.as_deref(),
                         )
                         .await;
-                    self.may_read(entry, &who)
+                    !who.auth_failed
+                        && self.may_read(entry, &who)
                         && who.at_least(Role::Editor) == connection.is_owner
                         && who.at_least(Role::Commenter) == connection.can_comment
                         && who.link == connection.link
@@ -1981,7 +2246,9 @@ impl Server {
             let _ = connection
                 .tx
                 .try_send(Outgoing::Close("access changed; reconnect"));
-            let room = self.rooms.get(slug).await;
+            let Ok(room) = self.rooms.try_get(slug).await else {
+                continue;
+            };
             room.state.lock().await.sockets.remove(&socket_id);
         }
     }
@@ -2012,10 +2279,17 @@ impl Server {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return write_json(404, &json!({"error": "not found"}));
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
         };
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => {
+                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+            }
+        };
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
         let who = self
@@ -2042,17 +2316,47 @@ impl Server {
                 let Ok(incoming) = serde_json::from_slice::<RoomMessage>(&body) else {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
+                // Body reads are an await boundary. Resolve identity and
+                // document rights again afterwards so revocation/transfer
+                // cannot race a large request into a mutation.
+                let current_entry = match self.checked_entry(slug).await {
+                    Ok(Some(entry)) => entry,
+                    Ok(None) => return write_json(404, &json!({"error": "not found"})),
+                    Err(response) => return response,
+                };
+                let current_who = self
+                    .viewer(&current_entry, &headers, arrival, query.as_deref())
+                    .await;
+                if current_who.auth_failed {
+                    return write_json(
+                        401,
+                        &json!({"error": "authentication expired or was revoked"}),
+                    );
+                }
+                if !self.may_read(&current_entry, &current_who)
+                    || (who.at_least(Role::Commenter) && !current_who.at_least(Role::Commenter))
+                {
+                    return write_json(403, &json!({"error": "comment access changed"}));
+                }
                 let address = client_address(peer, &headers);
                 let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
-                    let by = if who.key.is_empty() {
-                        who.id.handle.clone()
+                    if who.at_least(Role::Editor) && !current_who.at_least(Role::Editor) {
+                        return write_json(403, &json!({"error": "edit access changed"}));
+                    }
+                    let by = if current_who.key.is_empty() {
+                        current_who.id.handle.clone()
                     } else {
-                        who.key.clone()
+                        current_who.key.clone()
                     };
-                    self.decide_suggestion(&room, &incoming, is_owner, &by)
-                        .await
+                    self.decide_suggestion(
+                        &room,
+                        &incoming,
+                        current_who.at_least(Role::Editor),
+                        &by,
+                    )
+                    .await
                 } else {
-                    self.apply_from(&room, incoming, &address, &who, &author)
+                    self.apply_from(&room, incoming, &address, &current_who, &author)
                         .await
                 };
                 if ok {
@@ -2068,7 +2372,8 @@ impl Server {
     }
 
     async fn handle_upload(&self, request: Request<Body>, arrival: &Arrival) -> Reply {
-        if cross_site_refused(request.headers(), arrival) {
+        let headers = request.headers().clone();
+        if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
         // Checked before the body is read, so an unauthorised upload costs
@@ -2096,7 +2401,29 @@ impl Server {
         // its slug should not even tell you it is there: a title that collides
         // with another publisher's document simply becomes a new document of
         // your own.
-        let existing = self.store.get(&base).await;
+        let existing = match self.store.get_result(&base).await {
+            Ok(existing) => match existing {
+                Some(existing) => Some(existing),
+                None => match self.store.pending_publication_result(&base) {
+                    Ok(pending) => pending,
+                    Err(error) => {
+                        return write_json(
+                            503,
+                            &json!({"error": error.to_string(), "retryable": true}),
+                        )
+                    }
+                },
+            },
+            Err(error) => {
+                return write_json(
+                    503,
+                    &json!({
+                        "error": error.to_string(),
+                        "retryable": true,
+                    }),
+                )
+            }
+        };
         let mine = existing
             .as_ref()
             .is_some_and(|e| e.owned_by(&who.key, &who.id));
@@ -2112,7 +2439,22 @@ impl Server {
         // at that moment keeps their words and sees the rest change under
         // them, and the write is marked with a checkpoint.
         if mine {
-            let room = self.rooms.get(&key).await;
+            if let Err(error) = self.store.admit_replacement_upload(&key) {
+                return match error {
+                    PutError::Quota { status, message } => {
+                        write_json(status, &json!({"error": message}))
+                    }
+                    PutError::Storage(_) => {
+                        write_json(500, &json!({"error": "could not admit the replacement"}))
+                    }
+                };
+            }
+            let room = match self.rooms.try_get(&key).await {
+                Ok(room) => room,
+                Err(error) => {
+                    return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+                }
+            };
             let entry = match self
                 .edit_into_session(&room, &parsed, &who, &existing.unwrap())
                 .await
@@ -2165,6 +2507,7 @@ impl Server {
                 owner: who.key,
                 owner_id: who.id,
                 owner_name: who.name,
+                peak_bytes: Some(self.exact_publication_peak(&parsed, &main)),
             })
             .await
         {
@@ -2176,10 +2519,38 @@ impl Server {
                 return write_json(500, &json!({"error": "could not store the document"}))
             }
         };
+        if self.store.catalog.is_some() {
+            if let Err(error) = self
+                .store
+                .prepare_publication(&key, &upload_digest(&parsed), "publish", None)
+                .await
+            {
+                let _ = self
+                    .store
+                    .abort_publication(&key, &format!("prepare failed: {error}"))
+                    .await;
+                return write_json(409, &json!({"error": error}));
+            }
+        }
         // The document itself is the session, and the session's first
         // checkpoint is the source it was published with. Written here rather
         // than by the store, because it is the room that owns the document.
-        let room = self.rooms.get(&key).await;
+        let room = match self.rooms.try_get(&key).await {
+            Ok(room) => room,
+            Err(error) => {
+                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+            }
+        };
+        if let Err(err) = room.reserve_publication_checkpoint() {
+            let _ = self
+                .store
+                .abort_publication(&key, &format!("checkpoint admission failed: {err}"))
+                .await;
+            if let Err(cleanup) = self.delete_document(&key).await {
+                eprintln!("warning: could not undo refused creation of {key}: {cleanup}");
+            }
+            return write_json(429, &json!({"error": err, "retryable": true}));
+        }
         room.set_main_file(&parsed.source, &parsed.source_format, &parsed.main)
             .await;
         // The rest of the directory, if a whole one was published. The texts
@@ -2193,6 +2564,10 @@ impl Server {
         if !parsed.files.is_empty() {
             if let Err(why) = self.fill_directory(&room, &parsed).await {
                 eprintln!("warning: could not store every file of {key}: {why}");
+                let _ = self
+                    .store
+                    .abort_publication(&key, &format!("directory fill failed: {why}"))
+                    .await;
                 if let Err(err) = self.delete_document(&key).await {
                     eprintln!("warning: could not undo the creation of {key}: {err}");
                 }
@@ -2207,17 +2582,35 @@ impl Server {
         // otherwise would describe a document a crash could still make
         // disappear. So a failure here undoes the creation instead of
         // answering with the SHA `put` wrote before the tree existed.
-        let sha = match room.checkpoint("cli", &entry.publisher).await {
+        let sha = match room
+            .checkpoint_publication_now("cli", &entry.publisher)
+            .await
+        {
             Ok(Some(sha)) => sha,
             Ok(None) => entry.sha.clone(),
             Err(err) => {
                 eprintln!("warning: could not checkpoint {key}: {err}");
+                let _ = self
+                    .store
+                    .abort_publication(&key, &format!("checkpoint failed: {err}"))
+                    .await;
                 if let Err(err) = self.delete_document(&key).await {
                     eprintln!("warning: could not undo the creation of {key}: {err}");
                 }
                 return write_json(500, &json!({"error": "could not store the document"}));
             }
         };
+        if let Err(err) = self.store.commit_publication(&key, &sha).await {
+            eprintln!("warning: could not commit publication {key}: {err}");
+            let _ = self
+                .store
+                .abort_publication(&key, &format!("commit failed: {err}"))
+                .await;
+            if let Err(err) = self.delete_document(&key).await {
+                eprintln!("warning: could not undo the creation of {key}: {err}");
+            }
+            return write_json(500, &json!({"error": "could not store the document"}));
+        }
         // A document only its owner can open is not published in any useful
         // sense, so the upload mints the read link and hands it back beside
         // the bare URL: what `komodoc publish` prints is the thing to send.
@@ -2300,19 +2693,51 @@ impl Server {
         who: &Caller,
         existing: &IndexEntry,
     ) -> Result<IndexEntry, Reply> {
-        let current = {
+        let (current, rollback_bodies, rollback_format) = {
             let state = room.state.lock().await;
-            crate::room::tree_of(&state.session.doc, &state.session.asset_sizes).0
+            let (tree, bodies) =
+                crate::room::tree_of(&state.session.doc, &state.session.asset_sizes);
+            (tree, bodies, state.session.format.clone())
         };
-        let main_path = if parsed.main.is_empty() {
-            current.main.clone()
-        } else {
+        let main_path = if !parsed.main.is_empty() {
             parsed.main.clone()
+        } else if !parsed.source_format.is_empty()
+            && crate::room::format_from_path(&current.main) != parsed.source_format
+        {
+            // A one-file replacement that changes format also changes the
+            // implied main file.  Keeping `main.md` while installing an HTML
+            // source makes checkpoint's path-derived format immediately turn
+            // the replacement back into markdown.
+            crate::room::main_path_for("", &parsed.source_format)
+        } else {
+            current.main.clone()
         };
         // Validated whole, against what the document already holds, before
         // any of it touches storage or the session: a bad file in a republish
         // must leave the live document exactly as it was, not half-applied.
         self.preflight_directory(parsed, &main_path, &current)?;
+
+        let request_digest = upload_digest(parsed);
+        if self.store.catalog.is_some() {
+            let actor = crate::store::MutationActor {
+                account_id: who.id.clone(),
+                owner_key: who.key.clone(),
+                session_generation: who.session_generation.clone(),
+            };
+            self.store
+                .prepare_publication(&existing.slug, &request_digest, "replace", Some(&actor))
+                .await
+                .map_err(|error| write_json(409, &json!({"error": error})))?;
+            if let Err(error) = self.store.reserve_publication_peak(
+                &existing.slug,
+                self.exact_publication_peak(parsed, &main_path),
+            ) {
+                let _ = self.store.abort_publication(&existing.slug, &error).await;
+                return Err(write_json(507, &json!({"error": error})));
+            }
+        }
+        room.reserve_publication_checkpoint()
+            .map_err(|error| write_json(429, &json!({"error": error, "retryable": true})))?;
 
         let mut wanted: std::collections::HashSet<String> =
             parsed.files.iter().map(|(path, _)| path.clone()).collect();
@@ -2336,6 +2761,13 @@ impl Server {
                             "warning: could not store {path} of {}: {why}",
                             existing.slug
                         );
+                        let _ = self
+                            .store
+                            .abort_publication(
+                                &existing.slug,
+                                &format!("asset staging failed: {why}"),
+                            )
+                            .await;
                         return Err(write_json(
                             500,
                             &json!({"error": "could not store the document"}),
@@ -2443,8 +2875,6 @@ impl Server {
             crate::session::encode_diff(&state.session.doc, &before)
                 .unwrap_or_else(|_| crate::session::encode_state(&state.session.doc))
         };
-        room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
-            .await;
         // A title given on the command line renames the document; an empty one
         // leaves it as it is.
         let title = if parsed.title.is_empty() {
@@ -2452,18 +2882,48 @@ impl Server {
         } else {
             parsed.title.clone()
         };
-        let sha = match room.checkpoint("cli", &who.key).await {
+        let sha = match room.checkpoint_publication_now("cli", &who.key).await {
             Ok(Some(sha)) => sha,
             // Deferred: the text is in the session and durable at the next
             // write, and the checkpoint follows when the window passes.
             Ok(None) => existing.sha.clone(),
             Err(_) => {
+                if let Err(error) = room
+                    .rollback_publication(&current, &rollback_bodies, &rollback_format)
+                    .await
+                {
+                    eprintln!("warning: could not roll back {}: {error}", existing.slug);
+                }
+                let _ = self
+                    .store
+                    .abort_publication(&existing.slug, "checkpoint failed")
+                    .await;
                 return Err(write_json(
                     500,
                     &json!({"error": "could not store the document"}),
-                ))
+                ));
             }
         };
+        if self.store.catalog.is_some() {
+            if let Err(error) = self.store.commit_publication(&existing.slug, &sha).await {
+                if let Err(rollback) = room
+                    .rollback_publication(&current, &rollback_bodies, &rollback_format)
+                    .await
+                {
+                    eprintln!("warning: could not roll back {}: {rollback}", existing.slug);
+                }
+                let _ = self
+                    .store
+                    .abort_publication(&existing.slug, &format!("commit failed: {error}"))
+                    .await;
+                return Err(write_json(
+                    500,
+                    &json!({"error": "could not commit the publication"}),
+                ));
+            }
+        }
+        room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
+            .await;
         if let Err(err) = self.store.rename(&existing.slug, &title).await {
             eprintln!("warning: could not rename {}: {err}", existing.slug);
         }
@@ -2832,6 +3292,116 @@ impl Server {
         Ok(())
     }
 
+    /// Calculate the initial object peak before admission.  The room's first
+    /// checkpoint materializes one object for each unique text body, each
+    /// unique asset, its canonical tree, and its encoded fresh CRDT session.
+    /// Build that same shape in memory so quota admission is exact rather than
+    /// relying on an arbitrary safety cushion.
+    fn exact_publication_peak(&self, parsed: &Upload, main_path: &str) -> i64 {
+        let mut tree = Tree {
+            main: main_path.to_string(),
+            ..Tree::default()
+        };
+        let mut bodies = HashMap::new();
+        let main_sha = crate::store::digest_of(&parsed.source);
+        bodies.insert(main_sha.clone(), parsed.source.clone());
+        tree.files.insert(
+            main_path.to_string(),
+            TreeEntry {
+                kind: "text".to_string(),
+                id: "000000000000".to_string(),
+                sha: main_sha,
+                size: parsed.source.len() as i64,
+            },
+        );
+        for (path, raw) in &parsed.files {
+            match crate::paths::check(&self.config.paths(), path) {
+                Ok(crate::paths::Kind::Text) => {
+                    if let Ok(body) = std::str::from_utf8(raw) {
+                        let sha = crate::store::digest_of(body);
+                        bodies
+                            .entry(sha.clone())
+                            .or_insert_with(|| body.to_string());
+                        tree.files.insert(
+                            path.clone(),
+                            TreeEntry {
+                                kind: "text".to_string(),
+                                id: "000000000000".to_string(),
+                                sha,
+                                size: raw.len() as i64,
+                            },
+                        );
+                    }
+                }
+                Ok(crate::paths::Kind::Asset) => {
+                    let sha = crate::store::digest_of_bytes(raw);
+                    tree.files.insert(
+                        path.clone(),
+                        TreeEntry {
+                            kind: "asset".to_string(),
+                            id: String::new(),
+                            sha,
+                            size: raw.len() as i64,
+                        },
+                    );
+                }
+                Err(_) => {}
+            }
+        }
+        let doc = crate::session::new_doc();
+        crate::session::replace_text(&doc, &parsed.source, main_path);
+        for (path, raw) in &parsed.files {
+            match crate::paths::check(&self.config.paths(), path) {
+                Ok(crate::paths::Kind::Text) => {
+                    if let Ok(body) = std::str::from_utf8(raw) {
+                        crate::session::put_text(&doc, path, body);
+                    }
+                }
+                Ok(crate::paths::Kind::Asset) => {
+                    crate::session::put_asset(&doc, path, &crate::store::digest_of_bytes(raw));
+                }
+                Err(_) => {}
+            }
+        }
+        let text_bytes: i64 = bodies.values().map(|body| body.len() as i64).sum();
+        let mut assets = HashMap::new();
+        for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
+            assets.entry(entry.sha.clone()).or_insert(entry.size);
+        }
+        let asset_bytes: i64 = assets.values().sum();
+        let session_bytes = crate::session::encode_state(&doc);
+        // Production local catalogues attach the journal.  Its first segment
+        // identity has a fixed 32-hex storage id; the actual id has the same
+        // length, so this is exact before Store::put allocates it.
+        let journal_attached = self.rooms.journal_attached();
+        let journal_bytes = if journal_attached {
+            crate::journal::initial_segment_bytes(&"0".repeat(32), &session_bytes).unwrap_or(0)
+                as i64
+        } else {
+            0
+        };
+        let session_object_bytes = if journal_attached {
+            0
+        } else {
+            session_bytes.len() as i64
+        };
+        // The room can advance its journal cursor while admission is being
+        // completed (and the framing retry identity includes that cursor).
+        // Keep a small fixed framing allowance so the preflight reservation
+        // remains conservative at the exact quota boundary.
+        // Checkpoint accounting stores the logical tree payload size (which
+        // includes asset entries), while the live object inventory charges
+        // the asset blobs as well.  Mirror that two-sided accounting here so
+        // admission cannot under-reserve a directory containing figures.
+        text_bytes
+            .saturating_add(asset_bytes)
+            .saturating_add(asset_bytes)
+            .saturating_add(tree.to_bytes().len() as i64)
+            .saturating_add(session_object_bytes)
+            .saturating_add(journal_bytes)
+            .saturating_add(1024)
+    }
+
     /// Puts the rest of a published directory where it belongs: every text
     /// into the shared document, every figure into the store with its name
     /// written beside its digest.
@@ -2871,30 +3441,66 @@ impl Server {
     /// saying which files moved between two moments means fetching both trees
     /// and comparing them, for every row; the checkpoint records it once, when
     /// it is taken and both trees are already in hand.
-    async fn handle_history(&self, headers: &HeaderMap, arrival: &Arrival, slug: &str) -> Reply {
+    async fn handle_history(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.store.get_result(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(error) => return write_json(503, &json!({"error": error.to_string()})),
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
         if !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let room = self.rooms.get(slug).await;
-        let manifest = room.manifest().await;
-        let mut response = write_json(
-            200,
-            &json!({
-                "slug": entry.slug,
-                "main": entry.main,
-                "checkpoints": manifest.checkpoints,
-            }),
-        );
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
+        let page = query.and_then(|raw| {
+            let values: HashMap<_, _> = url::form_urlencoded::parse(raw.as_bytes())
+                .into_owned()
+                .collect();
+            if !values.contains_key("after") && !values.contains_key("limit") {
+                return None;
+            }
+            let after = values
+                .get("after")
+                .and_then(|value| value.parse::<i64>().ok());
+            let limit = values
+                .get("limit")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(64)
+                .clamp(1, 200);
+            Some((after, limit))
+        });
+        let (checkpoints, next_cursor) = if let Some((after, limit)) = page {
+            match room.checkpoint_page(after, limit).await {
+                Ok(result) => result,
+                Err(error) => return write_json(503, &json!({"error": error})),
+            }
+        } else {
+            (room.manifest().await.checkpoints, None)
+        };
+        let mut body = json!({
+            "slug": entry.slug,
+            "main": entry.main,
+            "checkpoints": checkpoints,
+        });
+        if let Some(next) = next_cursor {
+            body["next_cursor"] = json!(next);
+        }
+        let mut response = write_json(200, &body);
         set(&mut response, "cache-control", "private, no-store");
         response
     }
@@ -2925,27 +3531,28 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.store.get_result(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(error) => return write_json(503, &json!({"error": error.to_string()})),
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
         if !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let room = self.rooms.get(slug).await;
-        let manifest = room.manifest().await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         // The manifest is the list of checkpoints this document has, and an
         // object under the history prefix that the manifest does not name is
         // not one of them -- a shed checkpoint whose object is still there,
         // most likely. Asking the manifest rather than the store is what keeps
         // the two from disagreeing.
-        let Some(point) = manifest
-            .checkpoints
-            .iter()
-            .find(|point| point.sha == sha)
-            .cloned()
-        else {
-            return plain(404, "not found");
+        let point = match room.checkpoint_by_sha(sha).await {
+            Ok(Some(point)) => point,
+            Ok(None) => return plain(404, "not found"),
+            Err(error) => return write_json(503, &json!({"error": error})),
         };
         let (tree, bodies) = match room.checkpoint_texts(&point).await {
             Ok(found) => found,
@@ -3001,8 +3608,10 @@ impl Server {
         if cross_site_refused(request.headers(), arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, request.headers(), arrival, None).await;
         // As everywhere else: a document somebody may not change is not a
@@ -3024,8 +3633,22 @@ impl Server {
         // panel is a list of names rather than of paragraphs.
         let label = crate::util::clean(label, MAX_LABEL);
         let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
-        let room = self.rooms.get(slug).await;
-        match room.label(sha, &label).await {
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
+        match room
+            .label_as(
+                sha,
+                &label,
+                Some((
+                    who.id.id.as_str(),
+                    who.key.as_str(),
+                    who.id.session_generation.as_str(),
+                )),
+            )
+            .await
+        {
             Ok(true) => write_json(200, &json!({"sha": sha, "label": label})),
             Ok(false) => plain(404, "not found"),
             Err(err) => write_json(500, &json!({"error": err})),
@@ -3043,10 +3666,12 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
-        let who = self.viewer(&entry, &headers, arrival, None).await;
+        let who = self.viewer(&entry, request.headers(), arrival, None).await;
         if !who.at_least(Role::Editor) {
             return plain(404, "not found");
         }
@@ -3069,24 +3694,26 @@ impl Server {
             return write_json(400, &json!({"error": "a checkpoint SHA is required"}));
         }
 
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         // The owner may have transferred the document, or a link may have
         // been revoked, while the request body was being read. Recheck the
         // role immediately before the room mutation as well as before it.
-        let Some(current_entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let current_entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
         let current_who = self.viewer(&current_entry, &headers, arrival, None).await;
         if !current_who.at_least(Role::Editor) {
             return plain(404, "not found");
         }
-        let point = room
-            .manifest()
-            .await
-            .checkpoints
-            .into_iter()
-            .filter(|point| point.sha.starts_with(requested))
-            .collect::<Vec<_>>();
+        let point = match room.checkpoints_prefix(requested).await {
+            Ok(point) => point,
+            Err(error) => return write_json(503, &json!({"error": error})),
+        };
         let point = match point.as_slice() {
             [] => return plain(404, "not found"),
             [point] => point.clone(),
@@ -3106,12 +3733,10 @@ impl Server {
             "update": encode_update(&update),
         }))
         .await;
-        let checkpoint = room
-            .manifest()
-            .await
-            .checkpoints
-            .into_iter()
-            .find(|candidate| candidate.sha == sha);
+        let checkpoint = match room.checkpoint_by_sha(&sha).await {
+            Ok(point) => point,
+            Err(error) => return write_json(503, &json!({"error": error})),
+        };
         write_json(
             200,
             &json!({
@@ -3135,14 +3760,17 @@ impl Server {
         arrival: &Arrival,
         slug: &str,
     ) -> Reply {
+        let headers = request.headers().clone();
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        if cross_site_refused(request.headers(), arrival) {
+        if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, request.headers(), arrival, None).await;
         // A caller who may not edit is told the document is not there, on the
@@ -3172,6 +3800,15 @@ impl Server {
         let Ok(body) = to_bytes(request.into_body(), ceiling).await else {
             return write_json(413, &json!({"error": "that figure is too large"}));
         };
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
+        };
+        let who = self.viewer(&entry, &headers, arrival, None).await;
+        if who.auth_failed || !who.at_least(Role::Editor) {
+            return write_json(403, &json!({"error": "edit access changed"}));
+        }
         let size = body.len() as i64;
         // The owner's quota and the deployment's, which a figure counts
         // against exactly as a text does. `room_for` is what this document may
@@ -3184,16 +3821,40 @@ impl Server {
                 );
             }
         }
-        let room = self.rooms.get(slug).await;
-        match room
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
+        let mutation_actor = crate::store::MutationActor {
+            account_id: who.id.id.clone(),
+            owner_key: who.key.clone(),
+            session_generation: who.id.session_generation.clone(),
+        };
+        if let Err(PutError::Quota { status, message }) =
+            self.store
+                .reserve_object_bytes(slug, size, Some(&mutation_actor))
+        {
+            return write_json(status, &json!({"error": message}));
+        }
+        let stored = room
             .put_asset(
                 body.to_vec(),
                 (self.config.max_asset, self.config.max_assets),
             )
-            .await
-        {
+            .await;
+        if stored.is_err() {
+            self.store.release_object_bytes(slug, size);
+        }
+        match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
-            Err(why) => write_json(413, &json!({"error": why})),
+            Err(why) => {
+                let status = if why.contains("quota exceeded") {
+                    507
+                } else {
+                    413
+                };
+                write_json(status, &json!({"error": why}))
+            }
         }
     }
 
@@ -3220,14 +3881,19 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
         if !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let Some(bytes) = room.read_asset(sha).await else {
             return plain(404, "not found");
         };
@@ -3272,13 +3938,22 @@ impl Server {
         if cross_site_refused(request.headers(), arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, request.headers(), arrival, None).await;
         // As for a figure: a document somebody may not change is not a
         // document they need to learn the shape of.
-        if !who.at_least(Role::Editor) {
+        // A cookie-less CLI publish to an open deployment has no owner key;
+        // its document is deliberately unowned, but the same publisher
+        // policy that admitted the source must still admit its native PDF.
+        // Keep this exception narrow: it cannot attach to owned documents or
+        // to deployments that require a named publisher.
+        let open_unowned_publisher =
+            entry.unowned && who.id.handle.is_empty() && self.publishers.allows("");
+        if !who.at_least(Role::Editor) && !open_unowned_publisher {
             return plain(404, "not found");
         }
         // Counted before the bytes are read, so a refusal costs the body
@@ -3300,7 +3975,10 @@ impl Server {
             }
             seen.1 += 1;
         }
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         // Restore events have a unique history identity but share the
         // immutable tree identity of the checkpoint they restored.
         let content_sha = room
@@ -3407,9 +4085,24 @@ impl Server {
                 }
             }
         }
+        let mutation_owner_key = if who.id.id.is_empty() {
+            entry.publisher.as_str()
+        } else {
+            who.key.as_str()
+        };
         let reply = if current_only {
             match room
-                .put_current_rendering(&content_sha, &expected_inputs, synctex, body.to_vec())
+                .put_current_rendering_as(
+                    &content_sha,
+                    &expected_inputs,
+                    synctex,
+                    body.to_vec(),
+                    Some((
+                        who.id.id.as_str(),
+                        mutation_owner_key,
+                        who.id.session_generation.as_str(),
+                    )),
+                )
                 .await
             {
                 Ok(Some(size)) => Ok(size),
@@ -3422,8 +4115,17 @@ impl Server {
                 Err(why) => Err(why),
             }
         } else {
-            room.put_rendering(&content_sha, synctex, body.to_vec())
-                .await
+            room.put_rendering_as(
+                &content_sha,
+                synctex,
+                body.to_vec(),
+                Some((
+                    who.id.id.as_str(),
+                    mutation_owner_key,
+                    who.id.session_generation.as_str(),
+                )),
+            )
+            .await
         };
         match reply {
             Ok(size) => {
@@ -3444,7 +4146,14 @@ impl Server {
                 }
                 write_json(200, &json!({"sha": sha, "size": size}))
             }
-            Err(why) => write_json(413, &json!({"error": why})),
+            Err(why) => {
+                let status = if why.contains("quota exceeded") {
+                    507
+                } else {
+                    413
+                };
+                write_json(status, &json!({"error": why}))
+            }
         }
     }
 
@@ -3469,14 +4178,19 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
         if !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let content_sha = room
             .rendering_sha(&sha)
             .await
@@ -3528,14 +4242,19 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
         if !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let current_tree = room.tree().await;
         let live = current_tree.digest();
         let inputs = current_tree.input_digest();
@@ -3591,8 +4310,10 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return write_json(404, &json!({"error": "not found"}));
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, query).await;
         if !self.may_read(&entry, &who) {
@@ -3637,8 +4358,10 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
         // The signature says this link was minted here; it does not say who is
         // holding it. Who may read is asked again, from the request itself,
@@ -3669,7 +4392,10 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let (state, _) = room.open_state(None).await;
         let mut response = Response::new(Body::from(state));
         set(&mut response, "content-type", "application/octet-stream");
@@ -3690,8 +4416,10 @@ impl Server {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return write_json(404, &json!({"error": "not found"}));
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
         };
         // "Anyone who may read the document" is the reader role as this spec
         // defines it, which for a private document is the people named on it.
@@ -3707,7 +4435,10 @@ impl Server {
         //
         // What is answered is the live document, not a stored copy of it:
         // there is one version, and this is it.
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let source = room.source().await;
         let format = {
             let held = room.format().await;
@@ -3740,8 +4471,10 @@ impl Server {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return write_json(404, &json!({"error": "not found"}));
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, query).await;
         if !self.may_read(&entry, &who) {
@@ -3752,7 +4485,10 @@ impl Server {
         }
         let author = self.comment_author(headers, arrival, &who.id);
         let is_owner = who.at_least(Role::Editor);
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let (source, held_format, tree, texts, comments) =
             room.snapshot_bundle(&author, is_owner).await;
         let format = if held_format.is_empty() {
@@ -3800,8 +4536,10 @@ impl Server {
         if ws_origin_refused(request.headers(), arrival) {
             return plain(403, "cross-site request refused");
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return plain(404, "not found");
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         };
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
@@ -3850,6 +4588,7 @@ impl Server {
         }
         let token = join["token"].as_str().unwrap_or("").to_string();
         let role = join["role"].as_str().unwrap_or("").to_string();
+        let after = join["after"].as_u64();
         let receives = role == "user" || join["receive"].as_bool().unwrap_or(true);
         let id = connection.chat.clone().unwrap_or_default();
         let slug = connection.slug.clone();
@@ -3883,6 +4622,7 @@ impl Server {
         self.reauthorize(&slug).await;
         if self.chat.attached(&id, socket_id).await {
             let _ = tx.try_send(Outgoing::Text(ready.to_string()));
+            let _ = self.chat.drain_pending(&id, &token, socket_id, after).await;
         }
         let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
         let mut last_frame = tokio::time::Instant::now();
@@ -3924,6 +4664,7 @@ impl Server {
                 }
                 _ = housekeeping.tick() => {
                     if !self.chat.attached(&id,socket_id).await || last_frame.elapsed() > Duration::from_secs(30) { break; }
+                    let _ = self.chat.drain_pending(&id, &token, socket_id, after).await;
                     if last_ping.elapsed() >= Duration::from_secs(10) {
                         if !matches!(tokio::time::timeout(Duration::from_secs(5),socket.send(WsMessage::Ping(Vec::new().into()))).await,Ok(Ok(()))) { break; }
                         last_ping = tokio::time::Instant::now();
@@ -3951,8 +4692,10 @@ impl Server {
         if cross_site_refused(request.headers(), arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return write_json(404, &json!({"error":"not found"}));
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error":"not found"})),
+            Err(response) => return response,
         };
         let who = self
             .viewer(&entry, request.headers(), arrival, request.uri().query())
@@ -3977,9 +4720,13 @@ impl Server {
                 let Ok(mut post) = serde_json::from_slice::<crate::chat::Post>(&bytes) else {
                     return write_json(400, &json!({"error":"invalid message"}));
                 };
-                // This convenience route sends replies for a connected CLI.
-                // Browser messages must come through their paired socket.
-                post.role = "agent".into();
+                // The convenience route is used by the CLI for agent replies,
+                // but authenticated clients may also submit a user message
+                // before an agent socket connects. Those messages live in a
+                // bounded, one-shot mailbox and are delivered on watch.
+                if post.role != "user" {
+                    post.role = "agent".into();
+                }
                 self.reauthorize(slug).await;
                 self.chat.post(slug, id, &token, None, post).await
             }
@@ -4008,8 +4755,10 @@ impl Server {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return write_json(404, &json!({"error": "not found"}));
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
         };
         let headers = request.headers().clone();
         let method = request.method().clone();
@@ -4040,6 +4789,17 @@ impl Server {
         let Ok(asked) = serde_json::from_slice::<ShareRequest>(&body) else {
             return write_json(400, &json!({"error": "bad request"}));
         };
+        let current_entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        let current_who = self
+            .viewer(&current_entry, &headers, arrival, query.as_deref())
+            .await;
+        if current_who.auth_failed || !current_who.at_least(Role::Owner) {
+            return write_json(403, &json!({"error": "ownership changed"}));
+        }
 
         // A new link's key is minted before the write, because the write is
         // what commits it; whether it does anything for anybody is `role_of`'s
@@ -4086,9 +4846,14 @@ impl Server {
 
         let revoke = asked.revoke.clone().unwrap_or_default();
         let now = crate::clock::now_unix();
+        let mutation_actor = crate::store::MutationActor {
+            account_id: current_who.id.id.clone(),
+            owner_key: current_who.key.clone(),
+            session_generation: current_who.id.session_generation.clone(),
+        };
         let updated = self
             .store
-            .modify(slug, |entry| {
+            .modify_as_owner(slug, &mutation_actor, |entry| {
                 let asked_revoke = revoke.trim();
                 if !asked_revoke.is_empty() {
                     // A role word revokes that role's link; anything else is a
@@ -4266,8 +5031,10 @@ impl Server {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let Some(entry) = self.store.get(slug).await else {
-            return write_json(404, &json!({"error": "not found"}));
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
         };
         let headers = request.headers().clone();
         let who = self.viewer(&entry, &headers, arrival, None).await;
@@ -4300,6 +5067,54 @@ impl Server {
                     account.handle, self.publishers.describe()
                 )}),
             );
+        }
+        // The earlier viewer check is only for a non-enumerating HTTP reply.
+        // Recheck ownership on the authoritative row under SQLite's write
+        // lock before changing anything; transfers and revocations racing
+        // this request therefore have a single winner.
+        if let Some(catalog) = &self.store.catalog {
+            let now = crate::clock::timestamp();
+            if let Err(error) = catalog.upsert_account(&crate::catalog::Account {
+                id: account.id.clone(),
+                provider: account.provider.clone(),
+                handle: account.handle.clone(),
+                name: account.name.clone(),
+                email: String::new(),
+                first_seen: now.clone(),
+                last_seen: now,
+                plan: "default".into(),
+                status: "active".into(),
+                session_generation: if cfg!(test) {
+                    "test-session-generation".into()
+                } else {
+                    random_token()
+                },
+                erasure_cursor: None,
+            }) {
+                eprintln!("could not record transfer target: {error}");
+                return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
+            }
+            let caller_id = who.id.is_signed_in().then_some(who.id.id.as_str());
+            if let Err(error) = catalog.transfer_ownership_authorized(
+                slug,
+                caller_id,
+                &who.key,
+                &account.id,
+                self.config.storage.per_owner,
+            ) {
+                return match error {
+                    crate::catalog::CatalogError::NotFound => {
+                        write_json(404, &json!({"error": "not found"}))
+                    }
+                    crate::catalog::CatalogError::Conflict(message) => {
+                        write_json(409, &json!({"error": message}))
+                    }
+                    error => {
+                        eprintln!("could not authorize transfer of {slug}: {error}");
+                        write_json(500, &json!({"error": "could not record the change"}))
+                    }
+                };
+            }
         }
         let moved = self
             .store
@@ -4353,16 +5168,20 @@ impl Server {
         };
         // Another publisher's document answers exactly as a missing one does,
         // so a guessed slug reveals nothing.
-        let entry = match self.store.get(slug).await {
-            Some(entry) if entry.owned_by(&who.key, &who.id) => entry,
-            _ => return write_json(404, &json!({"error": "not found"})),
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) if entry.owned_by(&who.key, &who.id) => entry,
+            Ok(Some(_)) | Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
         };
         match self.delete_document(slug).await {
             Ok(removed) => write_json(
                 200,
                 &json!({"deleted": slug, "title": entry.title, "versions_removed": removed}),
             ),
-            Err(_) => write_json(500, &json!({"error": "could not remove the document"})),
+            Err(error) => {
+                eprintln!("could not remove {slug}: {error}");
+                write_json(500, &json!({"error": "could not remove the document"}))
+            }
         }
     }
 
@@ -4379,8 +5198,10 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(404, "not found");
         }
-        if self.store.get(slug).await.is_none() {
-            return plain(404, "not found");
+        match self.checked_entry(slug).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         }
         let reader = arrival.reader_origin();
         // A document whose format is `html` is sent as it is. It has to be:
@@ -4400,7 +5221,10 @@ impl Server {
         // this slug, good for two minutes, and presented on the frame's own
         // URL. Without one the empty shell is what arrives, whatever the
         // format, and nothing of the document goes with it.
-        let room = self.rooms.get(slug).await;
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let format = room.format().await;
         let admitted = self.frame_token_verifies(slug, query);
         let page = if admitted && (format.is_empty() || format == "html") {
@@ -4447,8 +5271,10 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(404, "not found");
         }
-        if self.store.get(slug).await.is_none() {
-            return plain(404, "not found");
+        match self.checked_entry(slug).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
         }
         let Some(asset) = self.shell.get("/viewer.html") else {
             return plain(404, "not found");
@@ -5000,6 +5826,16 @@ struct Upload {
     /// but the main one, by path. Texts are UTF-8 and go into the shared
     /// document; the rest are figures and go to the store under their digest.
     files: Vec<(String, Vec<u8>)>,
+}
+
+fn upload_digest(upload: &Upload) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(upload.source.as_bytes());
+    for (path, body) in &upload.files {
+        hasher.update(path.as_bytes());
+        hasher.update(body);
+    }
+    hex::encode(hasher.finalize())
 }
 
 /// What one call to the share route asks for. Every field is optional, and

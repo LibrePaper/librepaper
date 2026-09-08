@@ -1332,6 +1332,7 @@ async fn no_listing_keeps_the_examples_off_a_strangers_list() {
         id: "github:anne".into(),
         handle: "anne".into(),
         provider: "github".into(),
+        session_generation: "test-session-generation".into(),
         name: "anne".into(),
     };
     assert_eq!(

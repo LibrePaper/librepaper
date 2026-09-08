@@ -224,6 +224,95 @@ impl Manifest {
         self.checkpoints.iter().any(|point| point.sha == sha)
     }
 
+    /// Rehydrate the in-memory timeline from the authoritative catalogue.
+    ///
+    /// The local catalogue stores one row per checkpoint rather than a
+    /// whole-document manifest blob.  Keeping this conversion here makes the
+    /// room code independent of SQL column layout while preserving the wire
+    /// representation used by the history API.  Rows are sorted by `seq`
+    /// before they become a manifest; callers may therefore pass a bounded
+    /// page or the complete result without relying on database row order.
+    #[allow(dead_code)]
+    pub fn from_catalog_rows(mut rows: Vec<crate::catalog::Checkpoint>) -> Result<Self, String> {
+        rows.sort_by_key(|row| row.seq);
+        let mut checkpoints = Vec::with_capacity(rows.len());
+        for row in rows {
+            let changed = match row.changed.as_deref() {
+                None => Vec::new(),
+                Some(raw) => serde_json::from_str::<Vec<String>>(raw).map_err(|err| {
+                    format!("checkpoint {} has invalid changed metadata: {err}", row.sha)
+                })?,
+            };
+            checkpoints.push(Self::from_catalog_row(row, changed));
+        }
+        Ok(Self { checkpoints })
+    }
+
+    #[allow(dead_code)]
+    fn from_catalog_row(row: crate::catalog::Checkpoint, changed: Vec<String>) -> Checkpoint {
+        Checkpoint {
+            sha: row.sha,
+            tree_sha: row.tree_sha,
+            parent: row.parent,
+            at: row.at,
+            by: row.by,
+            why: row.why,
+            source_format: row.source_format,
+            size: row.size,
+            label: row.label,
+            commit: row.git_commit,
+            dirty: row.dirty,
+            tree: true,
+            changed,
+        }
+    }
+
+    /// Convert this timeline entry to the catalogue's normalized row shape.
+    /// `seq` and `durable_seq` are supplied by the journal coordinator because
+    /// they are not properties of an immutable checkpoint object.
+    #[allow(dead_code)]
+    pub fn catalog_row(
+        slug: &str,
+        point: &Checkpoint,
+        seq: i64,
+        durable_seq: i64,
+    ) -> Result<crate::catalog::Checkpoint, String> {
+        // `-1` asks the catalogue transaction to allocate the next sequence;
+        // persisted rows themselves are always non-negative.
+        if seq < -1 || durable_seq < 0 {
+            return Err("checkpoint sequence must be non-negative".into());
+        }
+        let changed = if point.changed.is_empty() {
+            Some("[]".to_string())
+        } else {
+            Some(
+                serde_json::to_string(&point.changed)
+                    .map_err(|err| format!("could not encode changed metadata: {err}"))?,
+            )
+        };
+        Ok(crate::catalog::Checkpoint {
+            slug: slug.to_string(),
+            sha: point.sha.clone(),
+            seq,
+            durable_seq,
+            tree_sha: if point.tree_sha.is_empty() {
+                point.sha.clone()
+            } else {
+                point.tree_sha.clone()
+            },
+            parent: point.parent.clone(),
+            at: point.at.clone(),
+            by: point.by.clone(),
+            why: point.why.clone(),
+            source_format: point.source_format.clone(),
+            size: point.size,
+            label: point.label.clone(),
+            git_commit: point.commit.clone(),
+            dirty: point.dirty,
+            changed,
+        })
+    }
+
     /// What every checkpoint of this document costs, which is the half of the
     /// index entry's `size` that is not the session state.
     pub fn bytes(&self) -> i64 {

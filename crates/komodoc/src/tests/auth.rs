@@ -316,6 +316,18 @@ async fn auth_endpoints() {
     assert_eq!(payload["providers"], json!(["github"]), "{payload}");
 }
 
+#[tokio::test]
+async fn invalid_explicit_session_is_not_downgraded_to_anonymous() {
+    let server = new_test_server().await;
+    let response = client()
+        .get(format!("{}/api/documents/not-there", server.url))
+        .header("authorization", "Bearer kmd_not-a-signed-session")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 401);
+}
+
 // A Google account is named to other readers by its profile name, and keyed
 // on its qualified sub. Its email is the handle the switches match, and it
 // reaches nobody but its owner.

@@ -46,10 +46,11 @@ async fn delete_expired_removes_only_what_is_old() {
             })
             .await
             .unwrap();
-        let mut state = server.instance.store.state.lock().await;
-        let entry = state.entries.get_mut(slug).unwrap();
-        entry.updated_at = format_unix(now - age_days * 86_400);
-        entry.created_at = entry.updated_at.clone();
+        let catalog = server.instance.store.catalog.as_ref().unwrap();
+        let mut document = catalog.document(slug).unwrap().unwrap();
+        document.updated_at = format_unix(now - age_days * 86_400);
+        document.created_at = document.updated_at.clone();
+        catalog.update_document(&document).unwrap();
     }
 
     let removed = server

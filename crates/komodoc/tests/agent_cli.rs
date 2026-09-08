@@ -40,7 +40,6 @@ impl LiveServer {
         let mut child = Command::new(env!("CARGO_BIN_EXE_komodoc"))
             .args([
                 "serve",
-                "--data",
                 data.path().to_str().expect("data path is UTF-8"),
                 "--port",
                 &port.to_string(),

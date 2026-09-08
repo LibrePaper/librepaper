@@ -524,9 +524,24 @@ link also changes source. Signing in supplies attribution and satisfies the
 deployment's sign-in policy; it does not give an agent using a read link the
 owner's editing rights.
 
-Install the [Komodoc skill](skills/komodoc/SKILL.md) in your agent's skill
-directory. It explains how to install the single Komodoc binary locally and
-use its commands. Any agent that can run commands can use it:
+Komodoc ships two agent skills. Install them with:
+
+```sh
+npx skills add vincentarelbundock/komodoc
+```
+
+That works for Claude Code, opencode, Cursor, and the other agents
+[`skills`](https://github.com/vercel-labs/skills) supports; pass
+`--agent claude-code` to pick one. You can also copy the directories under
+[`skills/`](skills) into your agent's skill directory by hand.
+
+- [`komodoc-document`](skills/komodoc-document/SKILL.md) — read, comment on,
+  and edit a document from its link.
+- [`komodoc-pair`](skills/komodoc-pair/SKILL.md) — pair live in the sidebar
+  chat.
+
+Each explains how to install the single Komodoc binary locally and use its
+commands. Any agent that can run commands can use them:
 
 ```sh
 komodoc agent capabilities 'https://komodoc.example.org/docs/paper#k=YOUR_KEY'
@@ -549,7 +564,8 @@ for other people's changes. Edits synchronize through the same collaborative
 session as the browser and wait for durable acknowledgement.
 
 The robot icon opens a private live channel. Start your preferred
-agent yourself, then give it the connection instructions from that panel.
+agent yourself, then give it the connection instructions from that panel;
+`komodoc-pair` is the skill that covers this mode.
 The agent uses `komodoc agent chat watch` to receive messages and
 `komodoc agent chat post` to reply. It uses the same document commands above
 for comments and edits. No local service, pairing, provider adapter, or

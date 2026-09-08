@@ -171,7 +171,7 @@ async fn s3_store_against_a_bucket() {
         objects
             .lock()
             .unwrap()
-            .contains_key("komodoc/documents/a-paper/abc.html"),
+            .contains_key("komodoc/content/a-paper/trees/abc"),
         "the object landed outside the prefix"
     );
 
@@ -376,7 +376,7 @@ async fn a_server_backed_by_a_bucket() {
         // The live document, and the checkpoint the index names. No rendered
         // page and no second copy of the source: nothing derived is stored.
         format!("komodoc/sessions/{slug}"),
-        format!("komodoc/history/{slug}/{}", text(&document, "sha")),
+        format!("komodoc/content/{slug}/trees/{}", text(&document, "sha")),
         format!("komodoc/history/{slug}/index.json"),
     ] {
         assert!(

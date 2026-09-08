@@ -347,11 +347,60 @@ impl StorageFlags {
     }
 }
 
-/// Legacy import is intentionally disabled. The catalogue migration starts
-/// from an empty deployment and startup refuses a detected old layout rather
-/// than silently importing or treating it as empty. Kept as a no-op shim
-/// until the server startup call is removed by the catalogue integration.
+/// Move source files from the pre-versioned object layout into the legacy
+/// source key that readers still understand. Local catalogue startup rejects
+/// whole legacy deployments before reaching this shim; it remains useful for
+/// injected/blob-backed compatibility stores and is deliberately independent
+/// of the catalogue's stable `storage_id` layout.
 pub async fn migrate_legacy_source(blobs: &dyn BlobStore) -> usize {
-    let _ = blobs;
-    0
+    const PAGE: usize = 200;
+    let mut after: Option<String> = None;
+    let mut moved = 0;
+    loop {
+        let page = match blobs.list_page("documents/", after.as_deref(), PAGE).await {
+            Ok(page) => page,
+            Err(_) => break,
+        };
+        if page.is_empty() {
+            break;
+        }
+        for object in &page {
+            let Some(slug) = object
+                .key
+                .strip_prefix("documents/")
+                .and_then(|tail| tail.strip_suffix("/source.txt"))
+                .filter(|slug| !slug.is_empty() && !slug.contains('/'))
+            else {
+                continue;
+            };
+            let target = crate::blob::legacy_source_key(slug);
+            let body = match blobs.get(&object.key).await {
+                Ok(body) => body,
+                Err(_) => continue,
+            };
+            // Never replace a source that has already been migrated. Deleting
+            // the old duplicate still makes retries converge to one object.
+            match blobs.get(&target).await {
+                Ok(_) => {}
+                Err(crate::blob::BlobError::NotFound) => {
+                    if blobs.put(&target, body, "text/plain").await.is_err() {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            }
+            if blobs
+                .delete(std::slice::from_ref(&object.key))
+                .await
+                .is_ok()
+            {
+                moved += 1;
+            }
+        }
+        after = page.last().map(|object| object.key.clone());
+        if page.len() < PAGE {
+            break;
+        }
+    }
+    moved
 }

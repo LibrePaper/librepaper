@@ -14,11 +14,15 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::blob::{clear_storage, release_room_locks};
+use crate::auth::{link_sealing_key_file, session_key_file};
+use crate::backup::verify_local_backup;
+use crate::blob::{clear_storage_checked, release_room_locks};
 use crate::cli::{server_from, stored_token_for};
 use crate::clock::timestamp;
 use crate::config::Configuration;
+use crate::config::DeploymentProfile;
 use crate::http::{detail_of, get_json, get_with_token, post_json, put_current_bytes, text};
+use crate::journal::JournalStore;
 use crate::render::{
     is_latex, is_markdown, is_typst, render_markdown_document, render_typst_document,
 };
@@ -111,9 +115,148 @@ pub fn latex_prose(source: &str) -> String {
 }
 
 pub async fn seed(options: StorageOptions, owner: &str, documents: &[SeedDocument]) {
-    let blobs = open_storage(options).await.unwrap_or_else(|err| die(err));
+    seed_with_backup(options, owner, documents, None).await;
+}
+
+pub async fn seed_with_backup(
+    options: StorageOptions,
+    owner: &str,
+    documents: &[SeedDocument],
+    backup: Option<&std::path::Path>,
+) {
+    let mut resolved = options.clone();
+    resolved.fill_from_environment();
+    let (profile, paths) = resolved.profile().unwrap_or_else(|err| die(err));
+    let blobs = open_storage(resolved.clone())
+        .await
+        .unwrap_or_else(|err| die(err));
     let config = Arc::new(Configuration::default());
-    seed_into(blobs, config, owner, documents).await;
+    if profile == DeploymentProfile::Local {
+        let lock =
+            crate::serve::acquire_writer_lock(&paths.writer_lock).unwrap_or_else(|err| die(err));
+        let catalog_path = paths
+            .catalog
+            .as_ref()
+            .unwrap_or_else(|| die("local deployment has no catalogue path"));
+        let catalog = Arc::new(
+            crate::catalog::Catalog::open(catalog_path)
+                .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
+        );
+        let catalog_nonempty = catalog
+            .totals()
+            .map(|(_, documents)| documents != 0)
+            .unwrap_or_else(|err| die(format!("could not inspect catalogue: {err}")));
+        let deployment_id = paths
+            .ensure_deployment_identity(catalog_nonempty)
+            .unwrap_or_else(|err| die(err));
+        if catalog_nonempty {
+            let backup = backup.unwrap_or_else(|| {
+                die("refusing to reset a nonempty deployment without --backup <verified-point>")
+            });
+            let manifest = verify_local_backup(backup)
+                .unwrap_or_else(|err| die(format!("seed backup verification failed: {err}")));
+            if manifest.deployment_id != deployment_id {
+                die("seed backup belongs to a different deployment identity");
+            }
+            let current_schema: i64 = catalog
+                .with_connection(|connection| {
+                    connection
+                        .query_row("PRAGMA user_version", [], |row| row.get(0))
+                        .map_err(crate::catalog::CatalogError::from)
+                })
+                .unwrap_or_else(|err| die(format!("could not read catalogue schema: {err}")));
+            let current_revision = catalog
+                .journal_state()
+                .unwrap_or_else(|err| die(format!("could not read journal state: {err}")))
+                .revision;
+            if manifest.schema_version != current_schema
+                || manifest.head_revision != current_revision
+            {
+                die("seed backup is not an exact verified point for this deployment");
+            }
+            let current_catalog_digest = crate::backup::catalog_snapshot_digest(catalog_path)
+                .unwrap_or_else(|err| die(format!("could not verify current catalogue: {err}")));
+            if manifest.catalog.digest != current_catalog_digest {
+                die("seed backup is not fresh for the current catalogue state");
+            }
+        }
+        let secrets = paths
+            .secrets
+            .as_ref()
+            .unwrap_or_else(|| die("local deployment has no secrets directory"));
+        let link_key = link_sealing_key_file(&secrets.join("links.key"), catalog_nonempty)
+            .unwrap_or_else(|err| die(err));
+        session_key_file(&secrets.join("session.key"), catalog_nonempty)
+            .unwrap_or_else(|err| die(err));
+        catalog
+            .set_link_sealing_key(&link_key)
+            .unwrap_or_else(|err| die(format!("could not configure link sealing: {err}")));
+        let marker = paths.state.join("seed-reset.json");
+        let marker_body = serde_json::json!({
+            "deployment_id": deployment_id,
+            "backup": backup.map(|path| path.display().to_string()),
+            "stage": "prepared",
+        });
+        write_seed_marker(&marker, &marker_body)
+            .unwrap_or_else(|err| die(format!("could not write seed reset marker: {err}")));
+        reset_catalog(&catalog).unwrap_or_else(|err| die(err));
+        update_seed_marker(&marker, "catalog-reset")
+            .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
+        JournalStore::new(catalog.clone())
+            .initialize_local(&deployment_id)
+            .unwrap_or_else(|err| die(format!("could not initialize local journal: {err}")));
+        seed_into_catalog(blobs, config, owner, documents, catalog, &marker).await;
+        update_seed_marker(&marker, "seeded")
+            .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
+        let _ = std::fs::remove_file(marker);
+        drop(lock);
+    } else {
+        seed_into(blobs, config, owner, documents).await;
+    }
+}
+
+fn reset_catalog(catalog: &crate::catalog::Catalog) -> Result<(), String> {
+    catalog
+        .with_connection(|connection| {
+            // Foreign-key-safe order.  The seed command is explicitly a
+            // destructive replacement of the demonstration deployment.
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     DELETE FROM pending_deletes;
+                     DELETE FROM deletion_discovery;
+                     DELETE FROM journal_retirements;
+                     DELETE FROM journal_segment_coverage;
+                     DELETE FROM journal_bases;
+                     DELETE FROM journal_manifest_shards;
+                     DELETE FROM journal_segments;
+                     DELETE FROM journal_preparations;
+                     UPDATE journal_state SET deployment_id='', writer_generation='',
+                         revision=0, last_operation_id='', next_segment_seq=0,
+                         manifest_key='', manifest_digest='', manifest_length=0,
+                         tail_after=0 WHERE id=1;
+                     DELETE FROM catalog_operations;
+                     DELETE FROM checkpoint_budgets;
+                     DELETE FROM maintenance_jobs;
+                     DELETE FROM account_activity;
+                     DELETE FROM erasure_batches;
+                     DELETE FROM messages;
+                     DELETE FROM conversations;
+                     DELETE FROM replies;
+                     DELETE FROM comments;
+                     DELETE FROM renderings;
+                     DELETE FROM checkpoints;
+                     DELETE FROM guests;
+                     DELETE FROM grants;
+                     DELETE FROM links;
+                     DELETE FROM documents;
+                     DELETE FROM accounts;
+                     UPDATE totals SET bytes = 0, documents = 0 WHERE id = 1;
+                     COMMIT;",
+                )
+                .map_err(crate::catalog::CatalogError::from)
+        })
+        .map_err(|err| format!("could not reset catalogue before seeding: {err}"))
 }
 
 /// Seeds a store, whatever holds it. Starts from nothing: seeding is for
@@ -137,13 +280,98 @@ pub async fn seed_into(
     owner: &str,
     documents: &[SeedDocument],
 ) {
-    clear_storage(blobs.as_ref()).await;
-    let store = Store::open(blobs.clone(), config.clone())
+    clear_storage_checked(blobs.as_ref())
         .await
-        .unwrap_or_else(|err| die(err));
+        .unwrap_or_else(|err| {
+            die(format!(
+                "could not clear object storage before seeding: {err}"
+            ))
+        });
+    seed_with_store(blobs, config, owner, documents, None).await;
+}
+
+async fn seed_into_catalog(
+    blobs: Arc<dyn crate::blob::BlobStore>,
+    config: Arc<Configuration>,
+    owner: &str,
+    documents: &[SeedDocument],
+    catalog: Arc<crate::catalog::Catalog>,
+    marker: &Path,
+) {
+    update_seed_marker(marker, "clearing-objects")
+        .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
+    clear_storage_checked(blobs.as_ref())
+        .await
+        .unwrap_or_else(|err| {
+            die(format!(
+                "could not clear object storage before seeding: {err}"
+            ))
+        });
+    update_seed_marker(marker, "objects-cleared")
+        .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
+    seed_with_store(blobs, config, owner, documents, Some(catalog)).await;
+}
+
+fn write_seed_marker(path: &Path, body: &Value) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "seed reset marker has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec(body).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
+    let file = std::fs::File::open(&temporary).map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    std::fs::rename(&temporary, path).map_err(|error| error.to_string())?;
+    crate::config::DeploymentPaths::protect_file(path)?;
+    std::fs::File::open(parent)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| error.to_string())
+}
+
+fn update_seed_marker(path: &Path, stage: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let mut body: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    body["stage"] = Value::String(stage.to_string());
+    write_seed_marker(path, &body)
+}
+
+async fn seed_with_store(
+    blobs: Arc<dyn crate::blob::BlobStore>,
+    config: Arc<Configuration>,
+    owner: &str,
+    documents: &[SeedDocument],
+    catalog: Option<Arc<crate::catalog::Catalog>>,
+) {
+    let store = match catalog {
+        Some(catalog) => Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
+            .await
+            .unwrap_or_else(|err| die(err)),
+        None => Store::open(blobs.clone(), config.clone())
+            .await
+            .unwrap_or_else(|err| die(err)),
+    };
     let store = Arc::new(store);
     let rooms = RoomSet::new(blobs.clone(), config.clone());
     rooms.attach_store(store.clone());
+    if let Some(catalog) = &store.catalog {
+        let deployment_id = catalog
+            .journal_state()
+            .unwrap_or_else(|err| die(format!("could not read local journal state: {err}")))
+            .deployment_id;
+        if !deployment_id.is_empty() {
+            let journal = crate::journal::JournalRuntime::new_with_limits(
+                catalog.clone(),
+                blobs.clone(),
+                deployment_id,
+                crate::journal::CoordinatorLimits::default(),
+                config.storage.per_owner,
+                config.storage.total,
+            )
+            .unwrap_or_else(|err| die(format!("could not initialize local journal: {err}")));
+            rooms.attach_journal(journal);
+        }
+    }
     let mut seeded = Vec::new();
 
     for document in documents {

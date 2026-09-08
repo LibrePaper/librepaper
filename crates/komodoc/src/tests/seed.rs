@@ -171,8 +171,8 @@ async fn seeding_with_an_owner_makes_the_examples_theirs() {
     let entries = Store::open(blobs, config).await.unwrap().list().await;
     assert!(entries[0].publisher.is_empty());
     assert!(
-        entries[0].owned_by("visitor:abc", ""),
-        "with no owner the examples are everybody's"
+        !entries[0].owned_by("visitor:abc", ""),
+        "an anonymous visitor acquired owner mutation rights"
     );
 }
 

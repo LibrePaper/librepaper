@@ -145,12 +145,37 @@ async fn unicode_concurrent_peer_edits_survive_headless_restart() {
         "concurrent disjoint edits were not merged: {final_text:?}"
     );
 
-    // Reopen the same durable blob store through a new RoomSet to verify the
-    // acknowledged update is recoverable independently of the live room.
+    // Reopen the same catalogue/object store through a fresh production
+    // RoomSet to verify the acknowledged update is recoverable independently
+    // of the live room.  A test restart has to release the old in-process
+    // lease first; a real process exit does that as part of shutdown.
+    maintenance.abort();
+    server
+        .instance
+        .store
+        .blobs
+        .delete(&[crate::blob::room_lock_key(&slug)])
+        .await
+        .expect("the test server releases its room lease");
+    let catalog = server
+        .instance
+        .store
+        .catalog
+        .clone()
+        .expect("the production test store has a catalogue");
     let recovered_rooms = crate::room::RoomSet::new(
         server.instance.store.blobs.clone(),
-        std::sync::Arc::new(crate::config::Configuration::default()),
+        server.instance.store.config.clone(),
+    );
+    recovered_rooms.attach_store(server.instance.store.clone());
+    recovered_rooms.attach_journal(
+        crate::journal::JournalRuntime::new(
+            catalog.clone(),
+            server.instance.store.blobs.clone(),
+            "test-deployment",
+            crate::journal::CoordinatorLimits::default(),
+        )
+        .expect("the restarted journal runtime opens"),
     );
     assert_eq!(recovered_rooms.get(&slug).await.source().await, final_text);
-    maintenance.abort();
 }

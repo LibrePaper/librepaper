@@ -10,7 +10,11 @@ use super::*;
 async fn bundled_agent_documents_are_allowlisted() {
     let server = new_test_server().await;
     for path in [
-        "/skills/komodoc/SKILL.md",
+        "/skills/komodoc-document/SKILL.md",
+        "/skills/komodoc-document/references/install.md",
+        "/skills/komodoc-document/references/editing.md",
+        "/skills/komodoc-pair/SKILL.md",
+        "/skills/komodoc-pair/references/install.md",
         "/docs/protocol/room-v1.md",
         "/docs/protocol/chat.md",
     ] {

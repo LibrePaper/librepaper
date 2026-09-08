@@ -21,6 +21,11 @@ struct Channel {
     browser: Option<Peer>,
     agent: Option<Peer>,
     requests: VecDeque<(String, String)>,
+    /// User messages accepted by the authenticated HTTP mailbox while the
+    /// agent is between socket connections.  This is deliberately bounded
+    /// and is consumed on delivery; it is not a transcript.
+    pending: VecDeque<(u64, String)>,
+    next_cursor: u64,
     minute: i64,
     sent: u32,
 }
@@ -106,6 +111,8 @@ impl Hub {
                 browser: None,
                 agent: None,
                 requests: VecDeque::new(),
+                pending: VecDeque::new(),
+                next_cursor: 0,
                 minute: 0,
                 sent: 0,
             },
@@ -154,6 +161,50 @@ impl Hub {
                 .iter()
                 .any(|peer| peer.as_ref().is_some_and(|peer| peer.socket == socket))
         })
+    }
+
+    /// Deliver queued HTTP mailbox messages to a newly connected agent.  The
+    /// queue is consumed only after a sender slot has been reserved, so a
+    /// full websocket queue does not lose a message.  `after` is a cursor
+    /// supplied by a reconnecting agent; old messages are intentionally not
+    /// replayed because chat remains ephemeral rather than becoming a
+    /// transcript store.
+    pub async fn drain_pending(
+        &self,
+        id: &str,
+        token: &str,
+        socket: u64,
+        after: Option<u64>,
+    ) -> Result<(), Error> {
+        let mut channels = self.channels.lock().await;
+        let channel = channels
+            .get_mut(id)
+            .filter(|channel| token_matches(&channel.token_hash, token))
+            .ok_or((404, "channel not found"))?;
+        let peer = channel
+            .agent
+            .as_ref()
+            .filter(|peer| peer.socket == socket && peer.receives)
+            .ok_or((409, "agent is not listening"))?;
+
+        if let Some(after) = after {
+            while channel
+                .pending
+                .front()
+                .is_some_and(|(cursor, _)| *cursor <= after)
+            {
+                channel.pending.pop_front();
+            }
+        }
+        while let Some((_, payload)) = channel.pending.front().cloned() {
+            let slot = match peer.tx.try_reserve() {
+                Ok(slot) => slot,
+                Err(_) => break,
+            };
+            slot.send(Outgoing::Text(payload));
+            channel.pending.pop_front();
+        }
+        Ok(())
     }
 
     pub async fn detach(&self, id: &str, socket: u64) {
@@ -236,31 +287,51 @@ impl Hub {
             .get_mut(id)
             .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
             .ok_or((404, "channel not found"))?;
+        let mailbox = post.role == "user" && socket.is_none();
+        let offline_reply = post.role == "agent" && socket.is_none();
         let (sender, recipient) = if post.role == "user" {
             (&channel.browser, &channel.agent)
         } else {
             (&channel.agent, &channel.browser)
         };
-        let sender = sender.as_ref().ok_or((409, "sender is not connected"))?;
-        if socket.is_some_and(|socket| socket != sender.socket) {
-            return Err((403, "wrong participant"));
-        }
-        let recipient = recipient.as_ref().ok_or((
-            409,
-            if post.role == "user" {
-                "agent is not connected"
-            } else {
-                "browser is not connected"
-            },
-        ))?;
-        if !recipient.receives {
-            return Err((409, "recipient is not listening"));
-        }
         let payload = json!({"type":"message","message":{"id":post.id,"role":post.role,"text":post.text,"context":post.context}});
         let digest = crate::store::digest_of(&payload.to_string());
         let request = format!("{}:{}", post.role, post.id);
-        if let Some((_, previous)) = channel.requests.iter().find(|(key, _)| key == &request) {
-            return if previous == &digest {
+        let duplicate = channel
+            .requests
+            .iter()
+            .find(|(key, _)| key == &request)
+            .map(|(_, previous)| previous == &digest);
+        if (mailbox || offline_reply) && duplicate.is_some() {
+            return if duplicate == Some(true) {
+                Ok(json!({"type":"ack","id":post.id}))
+            } else {
+                Err((409, "message id already used for different content"))
+            };
+        }
+        let sender = sender.as_ref();
+        if !mailbox && !offline_reply {
+            let sender = sender.ok_or((409, "sender is not connected"))?;
+            if socket.is_some_and(|socket| socket != sender.socket) {
+                return Err((403, "wrong participant"));
+            }
+        }
+        let recipient = recipient.as_ref();
+        if !mailbox && !offline_reply {
+            let recipient = recipient.ok_or((
+                409,
+                if post.role == "user" {
+                    "agent is not connected"
+                } else {
+                    "browser is not connected"
+                },
+            ))?;
+            if !recipient.receives {
+                return Err((409, "recipient is not listening"));
+            }
+        }
+        if let Some(previous) = duplicate {
+            return if previous {
                 Ok(json!({"type":"ack","id":post.id}))
             } else {
                 Err((409, "message id already used for different content"))
@@ -274,26 +345,89 @@ impl Hub {
         if channel.sent >= 60 {
             return Err((429, "too many chat messages; try again shortly"));
         }
-        // Reserve both queues first: a slow participant causes a clear refusal,
-        // never an offline queue or a half-delivered successful message.
-        let recipient_slot = recipient
-            .tx
-            .try_reserve()
-            .map_err(|_| (409, "recipient cannot receive messages"))?;
-        let sender_slot = sender
-            .tx
-            .try_reserve()
-            .map_err(|_| (409, "sender cannot receive messages"))?;
+        let cursor = if post.role == "user" {
+            channel.next_cursor = channel.next_cursor.saturating_add(1);
+            Some(channel.next_cursor)
+        } else {
+            None
+        };
+        let payload = if let Some(cursor) = cursor {
+            let mut payload = payload;
+            payload["message"]["cursor"] = json!(cursor);
+            payload
+        } else {
+            payload
+        };
         let text = payload.to_string();
-        recipient_slot.send(Outgoing::Text(text.clone()));
-        sender_slot.send(Outgoing::Text(text));
+        if mailbox {
+            if recipient.is_none_or(|peer| !peer.receives) {
+                if channel.pending.len() >= 256 {
+                    return Err((409, "chat mailbox is full"));
+                }
+                channel
+                    .pending
+                    .push_back((cursor.expect("user cursor"), text));
+            } else {
+                let recipient_slot = recipient
+                    .expect("checked recipient")
+                    .tx
+                    .try_reserve()
+                    .map_err(|_| (409, "recipient cannot receive messages"))?;
+                recipient_slot.send(Outgoing::Text(text));
+            }
+        } else if offline_reply {
+            // When the agent socket is live, an HTTP reply is echoed to the
+            // sender as well as delivered to the browser. Reserve both
+            // queues first so a full peer queue cannot half-deliver it.
+            let recipient_slot = recipient
+                .filter(|peer| peer.receives)
+                .map(|peer| {
+                    peer.tx
+                        .try_reserve()
+                        .map_err(|_| (409, "recipient cannot receive messages"))
+                })
+                .transpose()?;
+            let sender_slot = sender
+                .filter(|peer| peer.receives)
+                .map(|peer| {
+                    peer.tx
+                        .try_reserve()
+                        .map_err(|_| (409, "sender cannot receive messages"))
+                })
+                .transpose()?;
+            if let Some(slot) = recipient_slot {
+                slot.send(Outgoing::Text(text.clone()));
+            }
+            if let Some(slot) = sender_slot {
+                slot.send(Outgoing::Text(text));
+            }
+        } else {
+            // Reserve both queues first: a slow participant causes a clear
+            // refusal, never a half-delivered successful message.
+            let recipient = recipient.ok_or((409, "agent is not connected"))?;
+            let recipient_slot = recipient
+                .tx
+                .try_reserve()
+                .map_err(|_| (409, "recipient cannot receive messages"))?;
+            let sender_slot = sender
+                .ok_or((409, "sender is not connected"))?
+                .tx
+                .try_reserve()
+                .map_err(|_| (409, "sender cannot receive messages"))?;
+            recipient_slot.send(Outgoing::Text(text.clone()));
+            sender_slot.send(Outgoing::Text(text));
+        }
         channel.requests.push_back((request, digest));
         if channel.requests.len() > 256 {
             channel.requests.pop_front();
         }
         channel.sent += 1;
         channel.touched_at = now();
-        Ok(json!({"type":"ack","id":post.id}))
+        let mut ack = json!({"type":"ack","id":post.id});
+        if let Some(cursor) = cursor {
+            ack["cursor"] = json!(cursor);
+        }
+        Ok(ack)
     }
 }
 
@@ -402,5 +536,39 @@ mod tests {
             404
         );
         browser_rx.close();
+    }
+
+    #[tokio::test]
+    async fn authenticated_http_user_message_waits_for_agent_and_is_idempotent() {
+        let hub = Hub::default();
+        let channel = hub.create("paper").await.unwrap();
+        let id = channel["id"].as_str().unwrap();
+        let token = channel["token"].as_str().unwrap();
+        let ack = hub.post("paper", id, token, None, post()).await.unwrap();
+        assert_eq!(ack["cursor"], 1);
+        assert_eq!(
+            hub.drain_pending(id, "wrong", 1, None).await.unwrap_err().0,
+            404
+        );
+
+        let (agent, mut agent_rx) = mpsc::channel(16);
+        hub.attach("paper", id, token, "agent", true, 1, agent)
+            .await
+            .unwrap();
+        hub.drain_pending(id, token, 1, None).await.unwrap();
+        let mut delivered = None;
+        while let Ok(Outgoing::Text(text)) = agent_rx.try_recv() {
+            let value: Value = serde_json::from_str(&text).unwrap();
+            if value["type"] == "message" {
+                delivered = Some(value);
+            }
+        }
+        let delivered = delivered.expect("mailbox message was delivered");
+        assert_eq!(delivered["message"]["id"], "one");
+        assert_eq!(delivered["message"]["cursor"], 1);
+        assert_eq!(
+            hub.post("paper", id, token, None, post()).await.unwrap()["id"],
+            "one"
+        );
     }
 }

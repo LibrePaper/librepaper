@@ -204,11 +204,23 @@ async fn build_test_server(
 ) -> TestServerParts {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let config = Arc::new(config);
-    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
-    let store = Store::open(blobs.clone(), config.clone())
+    let objects = dir.path().join("objects");
+    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(&objects));
+    let catalog = Arc::new(
+        crate::catalog::Catalog::open(dir.path().join("catalog.sqlite"))
+            .expect("the file-backed test catalogue opens"),
+    );
+    catalog
+        .set_link_sealing_key(TEST_KEY)
+        .expect("test link sealing is configured");
+    let journal_store = crate::journal::JournalStore::new(catalog.clone());
+    journal_store
+        .initialize_local("test-deployment")
+        .expect("the test journal initializes");
+    let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
         .await
         .expect("an empty store opens");
-    let rooms = RoomSet::new(blobs, config.clone());
+    let rooms = RoomSet::new(blobs.clone(), config.clone());
     let app = if with_app {
         GithubApp {
             client_id: "test-client".into(),
@@ -230,6 +242,14 @@ async fn build_test_server(
     );
     server.accounts = Arc::new(TestAccounts);
     server.listing = listing;
+    let journal = crate::journal::JournalRuntime::new(
+        catalog,
+        blobs,
+        "test-deployment",
+        crate::journal::CoordinatorLimits::default(),
+    )
+    .expect("the test journal runtime opens");
+    server.rooms.attach_journal(journal);
     TestServerParts {
         instance: server,
         dir,
@@ -262,12 +282,74 @@ pub async fn serve_instance(instance: Arc<Server>, dir: tempfile::TempDir) -> Te
 /// directory belongs to whoever made it, so this borrows it rather than
 /// holding it.
 pub async fn server_over(path: &std::path::Path, config: Configuration) -> (String, Arc<Server>) {
-    server_over_blobs(Arc::new(FsStore::new(path)), config).await
+    let blobs: Arc<dyn crate::blob::BlobStore> = Arc::new(FsStore::new(path.join("objects")));
+    let config = Arc::new(config);
+    let catalog = Arc::new(
+        crate::catalog::Catalog::open(path.join("catalog.sqlite"))
+            .expect("the file-backed catalogue reopens"),
+    );
+    catalog
+        .set_link_sealing_key(TEST_KEY)
+        .expect("test link sealing is configured");
+    crate::journal::JournalStore::new(catalog.clone())
+        .initialize_local("test-deployment")
+        .expect("the journal reopens");
+    let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+        .await
+        .expect("the store reopens");
+    let rooms = RoomSet::new(blobs.clone(), config.clone());
+    // `server_over` models a separate local deployment process.  Keep the
+    // process-wide writer lock in the RoomSet so a second instance becomes a
+    // reader, while a normal embedded/legacy fixture can still use room
+    // leases when it has no deployment command around it.
+    match crate::serve::acquire_writer_lock(&path.join("state/writer.lock")) {
+        Ok(lock) => rooms.attach_deployment_lock(lock),
+        Err(_) => rooms.attach_deployment_lock_unavailable(),
+    }
+    let mut instance = Server::new(
+        store,
+        rooms,
+        load_shell(&config).expect("the shell loads"),
+        GithubApp {
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+            ..GithubApp::default()
+        },
+        TEST_KEY.to_vec(),
+        config,
+        Policy::parse(TEST_PUBLISHER),
+        Policy::parse("anyone"),
+    );
+    instance.accounts = Arc::new(TestAccounts);
+    instance.rooms.attach_journal(
+        crate::journal::JournalRuntime::new(
+            catalog,
+            blobs,
+            "test-deployment",
+            crate::journal::CoordinatorLimits::default(),
+        )
+        .expect("journal runtime"),
+    );
+    let instance = Arc::new(instance);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port");
+    let address = listener.local_addr().expect("an address");
+    let router = instance.clone().router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("serve");
+    });
+    (format!("http://{address}"), instance)
 }
 
 /// The same, over whatever store is given -- a failing one, in the tests that
 /// inject storage failures.
-pub async fn server_over_blobs(
+pub async fn server_over_blobs_legacy(
     blobs: Arc<dyn crate::blob::BlobStore>,
     config: Configuration,
 ) -> (String, Arc<Server>) {
@@ -324,9 +406,11 @@ pub fn google_session_as(sub: &str, email: &str, name: &str) -> String {
 }
 
 fn cookie_for(id: &Identity) -> String {
+    let mut id = id.clone();
+    id.session_generation = "test-session-generation".into();
     format!(
         "{SESSION_COOKIE}={}",
-        sign_session(TEST_KEY, id, now_unix() + 3600)
+        sign_session(TEST_KEY, &id, now_unix() + 3600)
     )
 }
 
@@ -623,7 +707,11 @@ impl Socket {
         loop {
             let mut header = [0u8; 2];
             tokio::time::timeout(
-                std::time::Duration::from_secs(10),
+                // Journal-backed rooms honour the deployment-wide fifteen
+                // second regular flush floor.  A test socket must therefore
+                // allow one complete flush interval before declaring a
+                // durable acknowledgement lost.
+                std::time::Duration::from_secs(30),
                 self.reader.read_exact(&mut header),
             )
             .await
@@ -732,9 +820,13 @@ pub async fn test_server_checking(
 /// and reads back that way here -- which is the same allowance the timeline
 /// makes, so a test that asks "what did this checkpoint say" gets an answer
 /// across the change rather than one shape of it.
-pub async fn checkpoint_text(blobs: &dyn crate::blob::BlobStore, slug: &str, sha: &str) -> String {
+pub async fn checkpoint_text(
+    blobs: &dyn crate::blob::BlobStore,
+    storage_id: &str,
+    sha: &str,
+) -> String {
     let raw = blobs
-        .get(&crate::blob::checkpoint_key(slug, sha))
+        .get(&crate::blob::checkpoint_key(storage_id, sha))
         .await
         .expect("the checkpoint object");
     let Ok(tree) = serde_json::from_slice::<crate::history::Tree>(&raw) else {
@@ -742,7 +834,7 @@ pub async fn checkpoint_text(blobs: &dyn crate::blob::BlobStore, slug: &str, sha
     };
     let entry = tree.files.get(&tree.main).expect("the main file");
     let body = blobs
-        .get(&crate::blob::blob_key(slug, &entry.sha))
+        .get(&crate::blob::blob_key(storage_id, &entry.sha))
         .await
         .expect("the text the tree names");
     String::from_utf8_lossy(&body).to_string()

@@ -59,6 +59,7 @@ pub struct DeploymentPaths {
     pub state: PathBuf,
     pub secrets: Option<PathBuf>,
     pub writer_lock: PathBuf,
+    pub deployment_identity: PathBuf,
     pub replica: Option<PathBuf>,
 }
 
@@ -71,6 +72,7 @@ impl DeploymentPaths {
             objects: Some(deployment.join("objects")),
             secrets: Some(deployment.join("secrets")),
             writer_lock: state.join("writer.lock"),
+            deployment_identity: state.join("deployment.id"),
             state,
             deployment: Some(deployment),
             replica: None,
@@ -82,6 +84,7 @@ impl DeploymentPaths {
         Self {
             replica: Some(state.join("catalog-replica.db")),
             writer_lock: state.join("writer.lock"),
+            deployment_identity: state.join("deployment.id"),
             state,
             deployment: None,
             catalog: None,
@@ -152,6 +155,61 @@ impl DeploymentPaths {
                 .map_err(|err| format!("could not protect {}: {err}", path.display()))?;
         }
         Ok(())
+    }
+
+    /// Return the persistent random identity for this deployment. A missing
+    /// identity is only repaired for an empty local deployment; changing the
+    /// identity of a non-empty catalogue would make journal and backup
+    /// namespaces ambiguous after a restore.
+    pub fn ensure_deployment_identity(&self, catalog_nonempty: bool) -> Result<String, String> {
+        match std::fs::read_to_string(&self.deployment_identity) {
+            Ok(value) => {
+                let value = value.trim().to_string();
+                if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(format!(
+                        "deployment identity {} is not a 256-bit hex id",
+                        self.deployment_identity.display()
+                    ));
+                }
+                Ok(value)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !catalog_nonempty => {
+                let value = hex::encode(rand::random::<[u8; 32]>());
+                if let Some(parent) = self.deployment_identity.parent() {
+                    std::fs::create_dir_all(parent).map_err(|error| {
+                        format!("could not create {}: {error}", parent.display())
+                    })?;
+                }
+                let temporary = self.deployment_identity.with_extension("tmp");
+                std::fs::write(&temporary, format!("{value}\n"))
+                    .map_err(|error| format!("could not write deployment identity: {error}"))?;
+                Self::protect_file(&temporary)?;
+                std::fs::File::open(&temporary)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|error| {
+                        format!("could not persist deployment identity contents: {error}")
+                    })?;
+                std::fs::rename(&temporary, &self.deployment_identity)
+                    .map_err(|error| format!("could not publish deployment identity: {error}"))?;
+                Self::protect_file(&self.deployment_identity)?;
+                if let Some(parent) = self.deployment_identity.parent() {
+                    let directory = std::fs::File::open(parent)
+                        .map_err(|error| format!("could not open identity directory: {error}"))?;
+                    directory.sync_all().map_err(|error| {
+                        format!("could not persist deployment identity: {error}")
+                    })?;
+                }
+                Ok(value)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(format!(
+                "nonempty deployment is missing {}",
+                self.deployment_identity.display()
+            )),
+            Err(error) => Err(format!(
+                "could not read {}: {error}",
+                self.deployment_identity.display()
+            )),
+        }
     }
 }
 
@@ -275,6 +333,13 @@ pub struct SessionLimit {
     pub write_after_seconds: i64,
     /// Seconds of quiet before a checkpoint is taken.
     pub checkpoint_seconds: i64,
+    /// Maximum interval between automatic checkpoints for changed rooms,
+    /// independent of quiet-time debounce and room eviction.
+    pub history_interval_seconds: i64,
+    /// Rolling-hour exact/automatic checkpoint budget for one owner.
+    pub checkpoint_owner_per_hour: i64,
+    /// Rolling-hour checkpoint budget shared by the deployment.
+    pub checkpoint_deployment_per_hour: i64,
     /// The most checkpoints one document keeps. Zero is no cap.
     pub history_max: usize,
     /// A state larger than this is fetched over HTTP instead of being sent
@@ -284,6 +349,8 @@ pub struct SessionLimit {
     /// How many documents may be held in memory at once. The least recently
     /// used idle room is persisted and evicted past this.
     pub rooms_max: usize,
+    /// Conservative resident-memory budget for all open and loading rooms.
+    pub rooms_bytes_max: usize,
     /// How many frames may be queued for one socket before it is disconnected.
     /// A peer that cannot keep up is resynchronised on reconnect, which costs
     /// one state transfer and bounds what a slow reader can make the server
@@ -402,9 +469,13 @@ impl Default for Configuration {
             session: SessionLimit {
                 write_after_seconds: 2,
                 checkpoint_seconds: 5 * 60,
+                history_interval_seconds: 60 * 60,
+                checkpoint_owner_per_hour: 300,
+                checkpoint_deployment_per_hour: 10_000,
                 history_max: 0,
                 inline_state_max: 256 * 1024,
                 rooms_max: 200,
+                rooms_bytes_max: 512 * 1024 * 1024,
                 peer_queue: 256,
                 updates_per_minute: 3000,
             },

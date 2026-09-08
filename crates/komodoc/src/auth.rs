@@ -460,17 +460,113 @@ pub async fn session_key(blobs: &dyn BlobStore) -> Result<Vec<u8>, String> {
 /// deployments keep secrets outside the object namespace so a bucket listing
 /// or object-store credential cannot disclose the cookie-signing material.
 pub fn session_key_file(path: &std::path::Path, catalog_nonempty: bool) -> Result<Vec<u8>, String> {
+    deployment_secret_key(path, catalog_nonempty, "session")
+}
+
+pub fn link_sealing_key_file(
+    path: &std::path::Path,
+    catalog_nonempty: bool,
+) -> Result<Vec<u8>, String> {
+    deployment_secret_key(path, catalog_nonempty, "link-sealing")
+}
+
+/// Versioned local link-key ring. The first key encrypts new envelopes; the
+/// remainder are retained for interrupted rotations and backup restore. A
+/// legacy single hex key is accepted as a one-entry ring.
+pub fn link_sealing_keyring_file(
+    path: &std::path::Path,
+    catalog_nonempty: bool,
+) -> Result<Vec<Vec<u8>>, String> {
+    match std::fs::read(path) {
+        Ok(raw) => {
+            if let Some(key) = decode_session_key(&raw) {
+                return Ok(vec![key]);
+            }
+            let value: serde_json::Value = serde_json::from_slice(&raw).map_err(|err| {
+                format!("the link keyring at {} is invalid: {err}", path.display())
+            })?;
+            if value["version"].as_u64() != Some(1) {
+                return Err(format!("unsupported link keyring at {}", path.display()));
+            }
+            let keys = value["keys"]
+                .as_array()
+                .ok_or_else(|| format!("the link keyring at {} has no keys", path.display()))?
+                .iter()
+                .map(|row| hex::decode(row["key"].as_str().unwrap_or("")))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| {
+                    format!(
+                        "the link keyring at {} contains an invalid key",
+                        path.display()
+                    )
+                })?;
+            if keys.is_empty() || keys.iter().any(|key| key.len() != 32) {
+                return Err(format!(
+                    "the link keyring at {} contains an invalid key",
+                    path.display()
+                ));
+            }
+            Ok(keys)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let primary = link_sealing_key_file(path, catalog_nonempty)?;
+            Ok(vec![primary])
+        }
+        Err(error) => Err(format!("could not read {}: {error}", path.display())),
+    }
+}
+
+pub fn write_link_sealing_keyring(path: &std::path::Path, keys: &[Vec<u8>]) -> Result<(), String> {
+    use std::io::Write;
+    if keys.is_empty() || keys.iter().any(|key| key.len() != 32) {
+        return Err("link keyring needs 32-byte keys".into());
+    }
+    let body=serde_json::to_vec(&serde_json::json!({"version":1,"keys":keys.iter().map(|key|serde_json::json!({"id":hex::encode(sha2::Sha256::digest(key))[..16].to_string(),"key":hex::encode(key)})).collect::<Vec<_>>() })).map_err(|e|e.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent", path.display()))?;
+    let temporary = path.with_extension(format!("tmp-{}", hex::encode(random_bytes(8))));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
+    let result = (|| {
+        file.write_all(&body)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)?;
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok::<_, std::io::Error>(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!(
+            "could not durably update {}: {error}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn deployment_secret_key(
+    path: &std::path::Path,
+    catalog_nonempty: bool,
+    purpose: &str,
+) -> Result<Vec<u8>, String> {
     use std::io::Write;
 
     match std::fs::read(path) {
         Ok(raw) => {
             return decode_session_key(&raw)
-                .ok_or_else(|| format!("the session key at {} is not readable", path.display()));
+                .ok_or_else(|| format!("the {purpose} key at {} is not readable", path.display()));
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound && !catalog_nonempty => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
-                "the nonempty catalogue is missing its session key at {}",
+                "the nonempty catalogue is missing its {purpose} key at {}",
                 path.display()
             ));
         }

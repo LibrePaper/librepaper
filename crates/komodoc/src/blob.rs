@@ -92,6 +92,24 @@ pub trait BlobStore: Send + Sync {
     /// outcome asked for is the outcome either way.
     async fn delete(&self, keys: &[String]) -> BlobResult<()>;
     async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>>;
+    /// A deterministic bounded page. Implementations backed by remote APIs
+    /// may override this with native cursors; the default preserves the
+    /// contract for small test stores.
+    async fn list_page(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> BlobResult<Vec<BlobInfo>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut found = self.list(prefix).await?;
+        found.retain(|item| after.is_none_or(|cursor| item.key.as_str() > cursor));
+        found.sort_by(|a, b| a.key.cmp(&b.key));
+        found.truncate(limit);
+        Ok(found)
+    }
 
     /// Writes body only if the object's current version is `expect`, where the
     /// empty version means "only if it does not exist". It is what the index is
@@ -103,6 +121,13 @@ pub trait BlobStore: Send + Sync {
     /// Says where these bytes are, for the line `serve` prints at startup. An
     /// operator should never have to guess which bucket they are writing to.
     fn describe(&self) -> String;
+
+    /// A local filesystem store is already coordinated by its owning process
+    /// and catalogue.  It does not need a blob-backed room lease on cold open;
+    /// remote stores retain the conservative lease default.
+    fn is_local(&self) -> bool {
+        false
+    }
 }
 
 /// How a store with no versions of its own supplies one: the digest of the
@@ -290,6 +315,30 @@ impl BlobStore for FsStore {
         .await
     }
 
+    async fn list_page(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> BlobResult<Vec<BlobInfo>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(scope) = self.list_scope(prefix)? else {
+            return Ok(Vec::new());
+        };
+        let root = self.dir.clone();
+        let prefix = prefix.to_string();
+        let after = after.map(str::to_string);
+        self.blocking(move || {
+            let mut found = Vec::with_capacity(limit);
+            walk_bounded(&root, &scope, &prefix, after.as_deref(), limit, &mut found)?;
+            found.sort_by(|a, b| a.key.cmp(&b.key));
+            Ok(found)
+        })
+        .await
+    }
+
     async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
         let path = self.path_for(key)?;
         let swapping = self.swapping.clone();
@@ -314,6 +363,10 @@ impl BlobStore for FsStore {
 
     fn describe(&self) -> String {
         self.dir.display().to_string()
+    }
+
+    fn is_local(&self) -> bool {
+        true
     }
 }
 
@@ -370,6 +423,77 @@ fn walk(root: &Path, dir: &Path, prefix: &str, found: &mut Vec<BlobInfo>) -> Blo
             size: info.len() as i64,
             version: String::new(),
         });
+    }
+    Ok(())
+}
+
+/// Scan a directory tree while retaining only the lexicographically smallest
+/// `limit` keys after the cursor. Runtime follows the tree size, but resident
+/// result memory is strictly bounded even when a corrupt/local deployment has
+/// millions of objects under one document.
+fn walk_bounded(
+    root: &Path,
+    dir: &Path,
+    prefix: &str,
+    after: Option<&str>,
+    limit: usize,
+    found: &mut Vec<BlobInfo>,
+) -> BlobResult<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(())
+        }
+        Err(err) => return Err(err.into()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() {
+            continue;
+        }
+        if kind.is_dir() {
+            walk_bounded(root, &path, prefix, after, limit, found)?;
+            continue;
+        }
+        if !kind.is_file() {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        let key = relative
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if !key.starts_with(prefix) || after.is_some_and(|cursor| key.as_str() <= cursor) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        found.push(BlobInfo {
+            key,
+            size: metadata.len() as i64,
+            version: String::new(),
+        });
+        if found.len() > limit {
+            let worst = found
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.key.cmp(&b.key))
+                .map(|(index, _)| index)
+                .unwrap();
+            found.swap_remove(worst);
+        }
     }
     Ok(())
 }
@@ -584,17 +708,32 @@ pub fn journal_base_key(deployment_id: &str, storage_id: &str, revision: &str) -
 /// Removes everything komodoc wrote and nothing else. Seeding starts from
 /// nothing, and on a bucket somebody else supplied, "nothing" means our keys
 /// -- never the container, and never what else is in it.
+#[allow(dead_code)]
 pub async fn clear_storage(blobs: &dyn BlobStore) {
-    for prefix in ["content/", "journal/"] {
-        let Ok(found) = blobs.list(prefix).await else {
-            continue;
-        };
+    let _ = clear_storage_checked(blobs).await;
+}
+
+/// The seed/reset path must not continue after a partial object cleanup.  The
+/// compatibility `clear_storage` wrapper above remains best-effort for old
+/// callers, while destructive local reset uses this checked variant.
+pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
+    for prefix in [
+        "content/",
+        "journal/",
+        "rooms/",
+        "sessions/",
+        "history/",
+        "documents/",
+        "sources/",
+        "examples/",
+    ] {
+        let found = blobs.list(prefix).await?;
         let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
         if !keys.is_empty() {
-            let _ = blobs.delete(&keys).await;
+            blobs.delete(&keys).await?;
         }
     }
-    let _ = blobs.delete(&[INDEX_KEY.to_string()]).await;
+    blobs.delete(&[INDEX_KEY.to_string()]).await
 }
 
 /* ----------------------------------------------------------- room locks */
@@ -639,6 +778,7 @@ pub const LOCK_STALE_SECONDS: i64 = 5 * 60;
 /// to cover the worst clock disagreement between two servers plus the longest
 /// a write can take to land, because the whole point is that a holder stops
 /// writing strictly before anybody else could start.
+#[allow(dead_code)]
 pub const LEASE_GUARD_SECONDS: i64 = 60;
 
 /// What a server holds on a room. `held` is false when somebody else has it,
@@ -649,6 +789,7 @@ pub struct Lease {
     pub holder: String,
     pub epoch: u64,
     /// When this lease was last written, as seconds since the epoch.
+    #[allow(dead_code)]
     pub taken_at: i64,
     /// Whether `taken_at` (and the rest of this answer) was actually
     /// confirmed against storage, rather than assumed after a storage error.
@@ -665,6 +806,7 @@ pub struct Lease {
 
 impl Lease {
     /// The last moment at which writing under this lease is certainly safe.
+    #[allow(dead_code)]
     pub fn safe_until(&self) -> i64 {
         self.taken_at + LOCK_STALE_SECONDS - LEASE_GUARD_SECONDS
     }

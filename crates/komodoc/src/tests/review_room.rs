@@ -29,7 +29,7 @@ async fn fixture(config: Configuration) -> (tempfile::TempDir, Arc<store::Store>
     );
     let rooms = room::RoomSet::new(blobs, config);
     rooms.attach_store(store.clone());
-    store
+    let _entry = store
         .put(store::Publication {
             slug: "probe".into(),
             source: "A".into(),
@@ -43,6 +43,107 @@ async fn fixture(config: Configuration) -> (tempfile::TempDir, Arc<store::Store>
     room.set_source("A", "markdown").await;
     room.checkpoint("comment", "alice").await.unwrap();
     (dir, store, rooms)
+}
+
+/// A catalogue history is paged at 200 rows.  Reopening and changing one
+/// checkpoint must not treat the first page as the complete manifest and
+/// delete the newer rows.
+#[tokio::test]
+async fn catalog_history_pagination_preserves_newer_checkpoints() {
+    let dir = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let mut config = Configuration::default();
+    config.session.history_max = 512;
+    let config = Arc::new(config);
+    let store = Arc::new(
+        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+            .await
+            .unwrap(),
+    );
+    let rooms = room::RoomSet::new(blobs.clone(), config.clone());
+    rooms.attach_store(store.clone());
+    let _entry = store
+        .put(store::Publication {
+            slug: "catalog-history".into(),
+            source: "revision-0".into(),
+            source_format: "markdown".into(),
+            owner: "alice".into(),
+            peak_bytes: Some(1 << 20),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Complete the production publication receipt through the room: object
+    // writes and checkpoint metadata are staged before the SQL commit.
+    store
+        .prepare_publication(
+            "catalog-history",
+            &store::digest_of("revision-0"),
+            "publish",
+            None,
+        )
+        .await
+        .unwrap();
+    let room = rooms.get("catalog-history").await;
+    room.reserve_publication_checkpoint().unwrap();
+    room.set_main_file("revision-0", "markdown", "main.md")
+        .await;
+    let initial_sha = room
+        .checkpoint_publication_now("cli", "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .commit_publication("catalog-history", &initial_sha)
+        .await
+        .unwrap();
+    for revision in 1..=205 {
+        room.set_source(&format!("revision-{revision}"), "markdown")
+            .await;
+        room.checkpoint_now("cli", "alice").await.unwrap();
+    }
+    let before = room.manifest().await;
+    assert_eq!(before.checkpoints.len(), 206);
+    let newest = before.latest().unwrap().sha.clone();
+    rooms.flush().await;
+    blobs
+        .delete(&[blob::room_lock_key("catalog-history")])
+        .await
+        .unwrap();
+
+    let reopened = room::RoomSet::new(blobs, config);
+    reopened.attach_store(store);
+    let reopened_room = reopened.get("catalog-history").await;
+    let loaded = reopened_room.manifest().await;
+    assert_eq!(loaded.checkpoints.len(), 206);
+    assert_eq!(loaded.latest().unwrap().sha, newest);
+    let (old_tree, old_bodies) = reopened_room
+        .checkpoint_texts(&loaded.checkpoints[0])
+        .await
+        .unwrap();
+    let old_entry = old_tree.files.get(&old_tree.main).unwrap();
+    assert_eq!(old_bodies.get(&old_entry.sha).unwrap(), "revision-0");
+    assert!(reopened_room
+        .label(&loaded.checkpoints[0].sha, "keep")
+        .await
+        .unwrap());
+    assert_eq!(reopened_room.manifest().await.checkpoints.len(), 206);
+
+    let mut seen = 0;
+    let mut after = None;
+    loop {
+        let page = catalog.checkpoints("catalog-history", after, 200).unwrap();
+        if page.is_empty() {
+            break;
+        }
+        seen += page.len();
+        after = page.last().map(|row| row.seq);
+        if page.len() < 200 {
+            break;
+        }
+    }
+    assert_eq!(seen, 206);
 }
 
 /// A `BlobStore` wrapper that can pause one specific (op, key) call until told
@@ -643,7 +744,7 @@ async fn review_shed_history_leaks_text_blobs() {
         room.checkpoint("comment", "").await.unwrap();
     }
     assert_eq!(room.manifest().await.checkpoints.len(), 1);
-    let objects = store.blobs.list("history/probe/blobs/").await.unwrap();
+    let objects = store.blobs.list(&blob::blob_prefix("probe")).await.unwrap();
     assert_eq!(
         objects.len(),
         1,
@@ -774,6 +875,348 @@ async fn review_read_only_room_mutators_do_not_mutate() {
     assert!(!session::texts_of(&state.session.doc).contains_key("extra.txt"));
     assert!(session::assets_of(&state.session.doc).is_empty());
     println!("read-only room's direct mutators leave the document untouched");
+}
+
+/// The production catalogue-backed room path journals an acknowledged
+/// session before its y-ack, and can reconstruct the serving session when the
+/// disposable session object is gone.
+#[tokio::test]
+async fn catalog_room_mutation_is_journaled_and_recovers() {
+    let dir = tempfile::tempdir().unwrap();
+    let objects = dir.path().join("objects");
+    std::fs::create_dir_all(&objects).unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects));
+    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let config = Arc::new(Configuration::default());
+    let store = Arc::new(
+        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+            .await
+            .unwrap(),
+    );
+    store
+        .put(store::Publication {
+            slug: "journal-room".into(),
+            source: "initial".into(),
+            source_format: "markdown".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let deployment_id = "review-deployment";
+    crate::journal::JournalStore::new(catalog.clone())
+        .initialize_local(deployment_id)
+        .unwrap();
+    let runtime = crate::journal::JournalRuntime::new(
+        catalog.clone(),
+        blobs.clone(),
+        deployment_id,
+        crate::journal::CoordinatorLimits::default(),
+    )
+    .unwrap();
+    let rooms = room::RoomSet::new(blobs.clone(), config.clone());
+    rooms.attach_store(store.clone());
+    rooms.attach_journal(runtime);
+    let room = rooms.get("journal-room").await;
+    room.set_source("journaled", "markdown").await;
+    room.checkpoint_now("cli", "alice").await.unwrap();
+
+    let segments: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row("SELECT COUNT(*) FROM journal_segments", [], |row| {
+                    row.get(0)
+                })
+                .map_err(crate::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert!(
+        segments >= 1,
+        "the room checkpoint must publish a journal segment"
+    );
+
+    blobs
+        .delete(&[blob::session_key("journal-room")])
+        .await
+        .unwrap();
+    blobs
+        .delete(&[blob::room_lock_key("journal-room")])
+        .await
+        .unwrap();
+    let recovered_runtime = crate::journal::JournalRuntime::new(
+        catalog.clone(),
+        blobs.clone(),
+        deployment_id,
+        crate::journal::CoordinatorLimits::default(),
+    )
+    .unwrap();
+    let recovered_rooms = room::RoomSet::new(blobs, config);
+    recovered_rooms.attach_store(store);
+    recovered_rooms.attach_journal(recovered_runtime);
+    let recovered = recovered_rooms.get("journal-room").await;
+    assert_eq!(recovered.source().await, "journaled");
+}
+
+#[tokio::test]
+async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    let objects = dir.path().join("objects");
+    std::fs::create_dir_all(&objects).unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects));
+    let catalog = Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let config = Arc::new(Configuration::default());
+    let store = Arc::new(
+        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+            .await
+            .unwrap(),
+    );
+    store
+        .put(store::Publication {
+            slug: "comment-receipt".into(),
+            source: "initial".into(),
+            source_format: "markdown".into(),
+            owner: "alice".into(),
+            peak_bytes: Some(1 << 20),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let rooms = room::RoomSet::new(blobs, config);
+    rooms.attach_store(store.clone());
+    let room = rooms.get("comment-receipt").await;
+    store
+        .prepare_publication("comment-receipt", "initial-request", "publish", None)
+        .await
+        .unwrap();
+    room.reserve_publication_checkpoint().unwrap();
+    room.set_main_file("initial", "markdown", "main.md").await;
+    let initial_sha = room
+        .checkpoint_publication_now("cli", "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .commit_publication("comment-receipt", &initial_sha)
+        .await
+        .unwrap();
+    let comment = room::Message {
+        kind: "comment".into(),
+        body: "please review".into(),
+        exact: "initial".into(),
+        temp_id: "123e4567-e89b-12d3-a456-426614174000".into(),
+        request_id: "comment-request-1".into(),
+        ..Default::default()
+    };
+    let (response, ok) = room
+        .apply(
+            comment.clone(),
+            "127.0.0.1",
+            "github:reviewer",
+            "",
+            None,
+            false,
+        )
+        .await;
+    assert!(ok, "{response}");
+    let (_, retry_ok) = room
+        .apply(comment, "127.0.0.1", "github:reviewer", "", None, false)
+        .await;
+    assert!(retry_ok);
+    let snapshot = room.snapshot().await;
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].seq, 1);
+
+    let reply = room::Message {
+        kind: "reply".into(),
+        comment_id: snapshot[0].id.clone(),
+        body: "done".into(),
+        temp_id: "123e4567-e89b-12d3-a456-426614174001".into(),
+        request_id: "reply-request-1".into(),
+        ..Default::default()
+    };
+    let (_, reply_ok) = room
+        .apply(
+            reply.clone(),
+            "127.0.0.1",
+            "github:reviewer",
+            "",
+            None,
+            false,
+        )
+        .await;
+    assert!(reply_ok);
+    let (_, reply_retry_ok) = room
+        .apply(reply, "127.0.0.1", "github:reviewer", "", None, false)
+        .await;
+    assert!(reply_retry_ok);
+    assert_eq!(room.snapshot().await[0].replies.len(), 1);
+
+    let operations: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM catalog_operations WHERE storage_id=(SELECT storage_id FROM documents WHERE slug='comment-receipt')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(crate::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(operations, 3); // publication, comment, reply
+    assert_eq!(
+        catalog
+            .document("comment-receipt")
+            .unwrap()
+            .unwrap()
+            .comment_seq,
+        1
+    );
+}
+
+#[tokio::test]
+async fn automatic_checkpoint_uses_hourly_interval_without_quiet_time() {
+    let mut config = Configuration::default();
+    config.session.checkpoint_seconds = 60 * 60;
+    config.session.history_interval_seconds = 1;
+    let (_dir, _store, rooms) = fixture(config).await;
+    let room = rooms.get("probe").await;
+    room.set_source("B", "markdown").await;
+    {
+        let mut state = room.state.lock().await;
+        state.session.last_checkpoint_at = crate::clock::now_unix() - 2;
+        state.session.updated_at = crate::clock::now_unix();
+    }
+    assert!(!room.tick().await);
+    assert_eq!(room.manifest().await.checkpoints.len(), 2);
+}
+
+#[tokio::test]
+async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let objects = dir.path().join("objects");
+    std::fs::create_dir_all(&objects).unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
+    let catalog_path = dir.path().join("catalog.db");
+    let catalog = Arc::new(crate::catalog::Catalog::open(&catalog_path).unwrap());
+    let config = Arc::new(Configuration::default());
+    let store = Arc::new(
+        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+            .await
+            .unwrap(),
+    );
+    store
+        .put(store::Publication {
+            slug: "budgeted".into(),
+            source: "source".into(),
+            owner: "alice".into(),
+            peak_bytes: Some(1 << 20),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    store
+        .prepare_publication("budgeted", &store::digest_of("source"), "publish", None)
+        .await
+        .unwrap();
+    let rooms = room::RoomSet::new(blobs, config);
+    rooms.attach_store(store.clone());
+    let room = rooms.get("budgeted").await;
+    room.reserve_publication_checkpoint().unwrap();
+    room.set_main_file("source", "markdown", "main.md").await;
+    let initial_sha = room
+        .checkpoint_publication_now("cli", "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .commit_publication("budgeted", &initial_sha)
+        .await
+        .unwrap();
+    for _ in 0..300 {
+        assert!(catalog
+            .admit_checkpoint("budgeted", 7 * 3600, false)
+            .unwrap());
+    }
+    assert!(!catalog
+        .admit_checkpoint("budgeted", 7 * 3600, true)
+        .unwrap());
+    assert!(catalog
+        .admit_checkpoint("budgeted", 7 * 3600, false)
+        .is_err());
+    drop(catalog);
+    let reopened = crate::catalog::Catalog::open(catalog_path).unwrap();
+    assert!(!reopened
+        .admit_checkpoint("budgeted", 7 * 3600, true)
+        .unwrap());
+}
+
+#[tokio::test]
+async fn room_opens_read_only_when_catalogue_authorization_read_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let catalog =
+        Arc::new(crate::catalog::Catalog::open(dir.path().join("catalog.sqlite")).unwrap());
+    catalog
+        .create_document(&crate::catalog::NewDocument {
+            slug: "catalog-fault".into(),
+            storage_id: "storage-catalog-fault".into(),
+            title: "Fault".into(),
+            sha: "sha".into(),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            published_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+            example: false,
+            owner_key: "owner".into(),
+            owner_id: None,
+            status: "active".into(),
+            size: 0,
+            counted_size: 0,
+            maintenance_reserved: 0,
+            last_auto_checkpoint_at: 0,
+            source_format: "markdown".into(),
+            main: "README.md".into(),
+        })
+        .unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection
+                .execute("DROP TABLE guests", [])
+                .map(|_| ())
+                .map_err(crate::catalog::CatalogError::from)
+        })
+        .unwrap();
+    let store = Arc::new(
+        store::Store::open_with_catalog(blobs.clone(), Arc::new(Configuration::default()), catalog)
+            .await
+            .unwrap(),
+    );
+    let rooms = room::RoomSet::new(blobs, Arc::new(Configuration::default()));
+    rooms.attach_store(store);
+    let room = rooms.get("catalog-fault").await;
+    assert!(room.read_only());
+}
+
+#[tokio::test]
+async fn room_try_get_refuses_hard_count_limit() {
+    let mut config = Configuration::default();
+    config.session.rooms_max = 1;
+    let (_dir, store, rooms) = fixture(config).await;
+    let first = rooms.get("probe").await;
+    first.set_source("unsaved", "markdown").await;
+    store
+        .put(store::Publication {
+            slug: "second-room".into(),
+            source: "second".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        rooms.try_get("second-room").await,
+        Err(room::RoomAdmissionError::AtCapacity { .. })
+    ));
+    assert_eq!(rooms.open_count().await, 1);
 }
 
 /// R24, inverting `review_lease_error_reports_held`: a storage error reading

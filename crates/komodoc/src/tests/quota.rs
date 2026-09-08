@@ -105,6 +105,36 @@ async fn uploads_per_hour_is_refused() {
 }
 
 #[tokio::test]
+async fn replacement_counts_against_upload_rate() {
+    let server = with_storage(StorageLimit {
+        total: 1 << 30,
+        per_owner: 1 << 20,
+        documents_per_owner: 50,
+        uploads_per_hour: 1,
+    })
+    .await;
+    let (status, first) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "First", "html": "<p>first</p>"}),
+    )
+    .await;
+    assert_eq!(status, 201, "first upload got {status}: {first}");
+    let slug = text(&first, "slug");
+    let (status, payload) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "Replacement", "slug": slug, "html": "<p>second</p>"}),
+    )
+    .await;
+    assert_eq!(status, 429, "got {status} {payload}");
+    assert_eq!(
+        text(&payload, "error"),
+        "too many uploads this hour; try later"
+    );
+}
+
+#[tokio::test]
 async fn global_total_quota_is_refused() {
     let server = with_storage(StorageLimit {
         total: 10,
@@ -130,7 +160,9 @@ async fn global_total_quota_is_refused() {
 async fn replacing_does_not_double_count_size() {
     let server = with_storage(StorageLimit {
         total: 1 << 30,
-        per_owner: 30,
+        // Admission reserves the encoded session/tree as well as source
+        // bytes, so this ceiling must fit one complete measured publication.
+        per_owner: 1 << 20,
         documents_per_owner: 50,
         uploads_per_hour: 30,
     })
@@ -188,7 +220,7 @@ async fn replacing_keeps_one_document_and_nothing_derived() {
         .instance
         .store
         .blobs
-        .list(&crate::blob::document_prefix(&slug))
+        .list(&crate::blob::rendering_prefix(&slug))
         .await
         .unwrap();
     assert!(found.is_empty(), "a rendered version was kept: {found:?}");
@@ -250,4 +282,81 @@ async fn refused_upload_writes_nothing() {
         stored.is_empty(),
         "a refused upload left objects behind: {stored:?}"
     );
+}
+
+/// A parsed publication reserves its complete known object peak before the
+/// source/tree/session objects are materialized. A source that merely fits
+/// the raw byte ceiling therefore cannot leave a partial catalogue row or
+/// object behind when the peak does not fit.
+#[tokio::test]
+async fn large_publication_is_refused_before_object_materialization() {
+    let ceiling = 600 * 1024;
+    let server = with_storage(StorageLimit {
+        total: ceiling,
+        per_owner: ceiling,
+        documents_per_owner: 50,
+        uploads_per_hour: 50,
+    })
+    .await;
+    let (status, payload) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "Large", "html": "x".repeat(ceiling as usize)}),
+    )
+    .await;
+    assert_eq!(status, 507, "got {status} {payload}");
+    assert!(server
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .document("large")
+        .unwrap()
+        .is_none());
+    assert!(server
+        .instance
+        .store
+        .blobs
+        .list("documents/")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn small_publication_accounting_covers_every_materialized_object() {
+    let server = new_test_server().await;
+    let source = "x".repeat(100);
+    let (status, payload) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "Ledger", "html": source}),
+    )
+    .await;
+    assert_eq!(status, 201, "got {status} {payload}");
+    let slug = text(&payload, "slug");
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let document = catalog.document(&slug).unwrap().unwrap();
+    let ledger: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COALESCE(SUM(bytes),0) FROM object_accounting WHERE storage_id=?1",
+                    [&document.storage_id],
+                    |row| row.get(0),
+                )
+                .map_err(crate::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert!(
+        ledger >= 100,
+        "ledger did not retain the uploaded payload: {ledger}"
+    );
+    assert!(
+        document.size >= ledger,
+        "size {} under ledger {ledger}",
+        document.size
+    );
+    assert!(document.counted_size >= ledger);
 }

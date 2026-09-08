@@ -26,6 +26,7 @@ pub struct S3Store {
     prefix: String, // every key komodoc writes lives under this
     access_key: String,
     secret_key: String,
+    single_writer: bool,
 }
 
 impl S3Store {
@@ -41,6 +42,7 @@ impl S3Store {
             prefix,
             access_key: options.access_key.clone(),
             secret_key: options.secret_key.clone(),
+            single_writer: options.single_writer,
         }
     }
 
@@ -396,6 +398,9 @@ impl BlobStore for S3Store {
     }
 
     async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
+        if self.single_writer {
+            return self.write(key, body, "application/json", &[]).await;
+        }
         let condition = if expect.is_empty() {
             ("If-None-Match", "*".to_string())
         } else {

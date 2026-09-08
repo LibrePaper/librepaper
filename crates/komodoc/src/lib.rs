@@ -8,6 +8,7 @@
 
 mod assets;
 mod auth;
+pub mod backup;
 mod blob;
 pub mod catalog;
 mod chat;
@@ -18,8 +19,10 @@ pub mod config;
 mod export;
 mod history;
 mod http;
+pub mod journal;
 mod latex;
 mod local;
+pub mod maintenance;
 mod origins;
 pub mod paths;
 pub mod peer;
@@ -195,6 +198,12 @@ enum Command {
         service: ServiceFlags,
         #[command(flatten)]
         storage: StorageFlags,
+    },
+    /// Rotate the local deployment's sealed-link key, retaining the old key
+    /// until every catalogue envelope has been resealed.
+    RotateLinkKey {
+        /// Local deployment directory containing catalog.db and secrets/.
+        dir: String,
     },
     /// List your documents
     List {
@@ -407,6 +416,29 @@ enum Command {
         /// visitor holds the owner's controls on them
         #[arg(long, value_name = "ACCOUNT")]
         owner: Option<String>,
+        /// Verified local backup required before replacing a nonempty catalog.
+        #[arg(long, value_name = "DIRECTORY")]
+        backup: Option<String>,
+    },
+    /// Create a verified offline SQLite/object/secrets recovery point.
+    Backup {
+        #[command(flatten)]
+        storage: StorageFlags,
+        /// Directory in which the named backup directory is created.
+        #[arg(long, value_name = "DIRECTORY")]
+        output: String,
+        /// Backup name; defaults to a timestamped id.
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+    },
+    /// Restore a verified local backup into a new deployment directory.
+    RestoreBackup {
+        /// Backup directory containing manifest.json.
+        #[arg(long, value_name = "DIRECTORY")]
+        backup: String,
+        /// New deployment directory; it must not already exist.
+        #[arg(long, value_name = "DIRECTORY")]
+        directory: String,
     },
     /// The local compilation service: run native TeX on this machine for
     /// the browser editor when its own compiler cannot
@@ -508,6 +540,60 @@ pub async fn main() {
                 config,
             })
             .await
+        }
+        Command::RotateLinkKey { dir } => {
+            let root = std::path::PathBuf::from(dir);
+            let _writer_lock = serve::acquire_writer_lock(&root.join("state/writer.lock"))
+                .unwrap_or_else(|error| die(error));
+            let catalog = catalog::Catalog::open(root.join("catalog.db"))
+                .unwrap_or_else(|error| die(format!("could not open catalogue: {error}")));
+            let key_path = root.join("secrets/links.key");
+            let keys =
+                auth::link_sealing_keyring_file(&key_path, true).unwrap_or_else(|error| die(error));
+            let key_id = |key: &[u8]| {
+                use sha2::Digest;
+                hex::encode(sha2::Sha256::digest(key))[..16].to_string()
+            };
+            let durable_primary = catalog
+                .link_keyring_primary_id()
+                .unwrap_or_else(|error| die(error.to_string()));
+            let source_index = durable_primary
+                .as_deref()
+                .and_then(|primary| keys.iter().position(|key| key_id(key) == primary))
+                .unwrap_or(0);
+            let source = keys[source_index].clone();
+            // If the file was updated before a process died, its first key is
+            // the durable destination even though SQLite still names the old
+            // primary. Reuse it; otherwise create a new destination. This
+            // makes rerunning the command resume instead of starting a second
+            // rotation with an undecryptable source.
+            let destination = if key_id(&keys[0]) != key_id(&source) {
+                keys[0].clone()
+            } else {
+                auth::random_bytes(32)
+            };
+            let mut persisted = Vec::with_capacity(keys.len() + 1);
+            persisted.push(destination.clone());
+            persisted.push(source.clone());
+            for key in keys {
+                if key_id(&key) != key_id(&destination) && key_id(&key) != key_id(&source) {
+                    persisted.push(key);
+                }
+            }
+            auth::write_link_sealing_keyring(&key_path, &persisted)
+                .unwrap_or_else(|error| die(error));
+            catalog
+                .set_link_sealing_key(&source)
+                .unwrap_or_else(|error| die(error.to_string()));
+            for old in persisted.iter().skip(1) {
+                catalog
+                    .add_link_decryption_key(old)
+                    .unwrap_or_else(|error| die(error.to_string()));
+            }
+            let changed = catalog
+                .rotate_link_sealing_key(&destination)
+                .unwrap_or_else(|error| die(error.to_string()));
+            println!("resealed {changed} links");
         }
         Command::List { server } => cli::list_documents(server.unwrap_or_default()).await,
         Command::Comment { id, key, server } => {
@@ -675,12 +761,34 @@ pub async fn main() {
             storage,
             server,
             owner,
+            backup,
         } => {
             let documents = seed_examples::seed_documents();
             match server {
                 Some(server) if !server.is_empty() => seed::seed_remote(server, &documents).await,
-                _ => seed::seed(storage.options(), &owner.unwrap_or_default(), &documents).await,
+                _ => match backup {
+                    Some(backup) => {
+                        seed::seed_with_backup(
+                            storage.options(),
+                            &owner.unwrap_or_default(),
+                            &documents,
+                            Some(std::path::Path::new(&backup)),
+                        )
+                        .await
+                    }
+                    None => {
+                        seed::seed(storage.options(), &owner.unwrap_or_default(), &documents).await
+                    }
+                },
             }
+        }
+        Command::Backup {
+            storage,
+            output,
+            id,
+        } => backup::backup_cli(storage.options(), output, id.unwrap_or_default()).await,
+        Command::RestoreBackup { backup, directory } => {
+            backup::restore_cli(backup, directory).await
         }
         Command::Local { command } => local::cli::run(LocalArgs { command }).await,
         Command::Agent { command } => {
