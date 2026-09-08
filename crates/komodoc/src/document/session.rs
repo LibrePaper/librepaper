@@ -49,8 +49,8 @@ use yrs::types::text::TextPrelim;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Array, Doc, GetString, Map, MapRef, OffsetKind, Options, Out, ReadTxn, RootRef, StateVector,
-    Text, TextRef, Transact, TransactionMut, Update,
+    Array, Assoc, Doc, GetString, IndexedSequence, Map, MapRef, OffsetKind, Options, Out, ReadTxn,
+    RootRef, StateVector, StickyIndex, Text, TextRef, Transact, TransactionMut, Update,
 };
 
 use crate::document::paths::{self, Rules};
@@ -119,6 +119,37 @@ fn string_at<T: ReadTxn>(map: &MapRef, txn: &T, key: &str) -> Option<String> {
     }
 }
 
+/// The string a value holds, for the `Any::String` case without the
+/// surrounding punctuation a `Display` impl gives a non-string value.
+///
+/// `yrs` 0.27's `Display for Any::String` writes the string unquoted, not
+/// `"like this"`; code here used to call `.trim_matches('"')` on every
+/// `Any::to_string()`, on the theory that it stripped quoting `Display` had
+/// added. It hadn't, so that trim was instead stripping legitimate leading or
+/// trailing quote characters from a path or a digest a peer actually wrote.
+/// This returns the string as it is for a string, and falls back to
+/// `Display` only for the other `Any` variants.
+fn any_string(any: &yrs::Any) -> String {
+    match any {
+        yrs::Any::String(value) => value.to_string(),
+        _ => any.to_string(),
+    }
+}
+
+/// The id of the text currently named `path`, or `None` when nothing in
+/// `path_map` is. Three callers used to walk `path_map` themselves for this;
+/// kept in one place so a change to how a path is read out of the map -- like
+/// the `any_string` fix above -- only has to be made once.
+fn id_of_path<T: ReadTxn>(path_map: &MapRef, txn: &T, path: &str) -> Option<String> {
+    path_map
+        .iter(txn)
+        .find(|(_, value)| match value {
+            Out::Any(any) => any_string(any) == path,
+            _ => false,
+        })
+        .map(|(id, _)| id.to_string())
+}
+
 /// The id of the main file, or "" when the document has none yet.
 pub fn main_id(doc: &Doc) -> String {
     let (_, _, _, meta) = maps(doc);
@@ -180,7 +211,6 @@ pub fn latex_settings(doc: &Doc) -> (String, String) {
 
 /// Names the main file. An editor's act rather than a keystroke: the server
 /// needs it to render a checkpoint and to say what format the document is in.
-#[allow(dead_code)] // the file list that calls it is step 2
 pub fn set_main(doc: &Doc, id: &str) {
     let (_, _, _, meta) = maps(doc);
     let mut txn = doc.transact_mut();
@@ -210,10 +240,7 @@ pub fn assets_of(doc: &Doc) -> BTreeMap<String, String> {
     assets
         .iter(&txn)
         .filter_map(|(path, value)| match value {
-            Out::Any(any) => Some((
-                path.to_string(),
-                any.to_string().trim_matches('"').to_string(),
-            )),
+            Out::Any(any) => Some((path.to_string(), any_string(&any))),
             _ => None,
         })
         .collect()
@@ -227,10 +254,7 @@ pub fn paths_of(doc: &Doc) -> HashMap<String, String> {
     path_map
         .iter(&txn)
         .filter_map(|(id, value)| match value {
-            Out::Any(any) => Some((
-                id.to_string(),
-                any.to_string().trim_matches('"').to_string(),
-            )),
+            Out::Any(any) => Some((id.to_string(), any_string(&any))),
             _ => None,
         })
         .collect()
@@ -294,6 +318,13 @@ pub enum Repair {
     Renamed { id: String, to: String },
     /// Two files at one path; the second one seen was moved aside.
     Collided { id: String, to: String },
+    /// A path a person can already see, rewritten by trimming or Unicode
+    /// normalisation alone -- no rename and no collision, just the same name
+    /// spelled the way this document stores names. Reported on its own,
+    /// because the room only relays a repair when it has something to say,
+    /// and a peer whose path silently changed underneath it would otherwise
+    /// diverge from the copy the server now holds.
+    Normalised { id: String, to: String },
     /// An asset key the rules refuse. There is nothing to rename it to -- the
     /// key *is* the name -- so the entry goes.
     DroppedAsset { path: String },
@@ -323,10 +354,7 @@ pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
     let mut named: Vec<(String, String)> = path_map
         .iter(&txn)
         .filter_map(|(id, value)| match value {
-            Out::Any(any) => Some((
-                id.to_string(),
-                any.to_string().trim_matches('"').to_string(),
-            )),
+            Out::Any(any) => Some((id.to_string(), any_string(&any))),
             _ => None,
         })
         .collect();
@@ -334,6 +362,11 @@ pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
 
     let mut taken: HashSet<String> = HashSet::new();
     for (id, path) in named {
+        // Whether this id has already had a `Renamed` or `Collided` pushed
+        // for it below -- the two repairs that already say a path changed.
+        // A `Normalised` at the end is only for a path that changed and had
+        // neither said so yet.
+        let mut reported = false;
         let mut wanted = match paths::check(rules, &path) {
             Ok(paths::Kind::Text) => paths::normalise(&path),
             // A text at an asset's name, or at no known name at all: the file
@@ -345,24 +378,55 @@ pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
                     id: id.clone(),
                     to: placeholder.clone(),
                 });
+                reported = true;
                 placeholder
             }
         };
         if taken.contains(&paths::collision_key(&wanted)) {
+            let mut base = wanted.clone();
             let mut nth = 2;
-            let base = wanted.clone();
-            while taken.contains(&paths::collision_key(&paths::suffixed(&base, nth))) {
+            let mut fell_back = false;
+            let mut candidate = paths::suffixed(&base, nth);
+            loop {
+                // `suffixed` only ever makes a name longer, so a base already
+                // close to the rules' length ceiling can be pushed over it by
+                // its own suffix. Inserting that candidate unchecked would
+                // write a path the rules refuse right back into the document
+                // the rules are supposed to hold -- the next repair pass
+                // would then see the same refused path forever. The
+                // placeholder is short enough that, suffixed the same way, it
+                // fits under any ceiling a deployment would sensibly set; it
+                // is tried once, so a ceiling shorter even than that cannot
+                // turn this into a loop that never ends.
+                if !fell_back && !matches!(paths::check(rules, &candidate), Ok(paths::Kind::Text)) {
+                    base = paths::placeholder(&id);
+                    nth = 2;
+                    fell_back = true;
+                    candidate = paths::suffixed(&base, nth);
+                    continue;
+                }
+                if !taken.contains(&paths::collision_key(&candidate)) {
+                    break;
+                }
                 nth += 1;
+                candidate = paths::suffixed(&base, nth);
             }
-            wanted = paths::suffixed(&base, nth);
+            wanted = candidate;
             done.push(Repair::Collided {
                 id: id.clone(),
                 to: wanted.clone(),
             });
+            reported = true;
         }
         taken.insert(paths::collision_key(&wanted));
         if wanted != path {
-            path_map.insert(&mut txn, id.clone(), wanted);
+            path_map.insert(&mut txn, id.clone(), wanted.clone());
+            if !reported {
+                done.push(Repair::Normalised {
+                    id: id.clone(),
+                    to: wanted,
+                });
+            }
         }
     }
 
@@ -390,10 +454,15 @@ pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
     // An asset is named by its key, so a key the rules refuse has nothing to
     // be renamed to: the bytes are still in the store, and setting the key
     // again with a name that passes is what puts them back.
-    let asset_paths: Vec<String> = assets
+    // Sorted for the same reason `named` is above: two assets that collide
+    // only once case is folded (`Fig.png` and `fig.png`) must move the same
+    // one of the two aside on every server, and a hash map's iteration order
+    // is not that.
+    let mut asset_paths: Vec<String> = assets
         .iter(&txn)
         .map(|(path, _)| path.to_string())
         .collect();
+    asset_paths.sort();
     for path in asset_paths {
         let refused = !matches!(paths::check(rules, &path), Ok(paths::Kind::Asset));
         if refused || taken.contains(&paths::collision_key(&path)) {
@@ -507,7 +576,15 @@ fn any_bytes(any: &yrs::Any) -> usize {
     match any {
         yrs::Any::Null | yrs::Any::Undefined => 0,
         yrs::Any::Bool(_) => 1,
-        yrs::Any::Number(_) | yrs::Any::BigInt(_) => 8,
+        // 8 charged a small integer for more than the two or so bytes lib0's
+        // varint encoding actually spends on it, which is backwards for a
+        // bound this admission leans on: `admit_decoded_update`'s cheap path
+        // trusts that the document after applying an update is at most the
+        // document before plus the update's own encoded length, and that only
+        // holds if nothing charged here costs more than it does on the wire.
+        // 1 byte is never more than a number actually costs, whatever its
+        // magnitude, so the bound stays sound.
+        yrs::Any::Number(_) | yrs::Any::BigInt(_) => 1,
         yrs::Any::String(value) => value.len(),
         yrs::Any::Buffer(value) => value.len(),
         yrs::Any::Array(values) => values.iter().map(any_bytes).sum(),
@@ -534,6 +611,17 @@ fn any_bytes(any: &yrs::Any) -> usize {
 /// happens to mention its id: `files` and `paths` describe the same file,
 /// so counting both would let a document of `max_files / 2` legitimate files
 /// reject its own no-op edits.
+///
+/// A pending update -- one yrs could not integrate because its predecessor
+/// has not arrived -- sits outside every map above, in the store's own
+/// holding area, and used to be invisible here: nobody's bytes and nobody's
+/// files. A peer that kept sending updates which all depended on one it never
+/// sent could grow that holding area without bound, because nothing charged
+/// it and nothing ever refused the next one. `bytes` now adds its encoded
+/// length, so the ceiling every other write obeys applies to it too. Its
+/// files cannot be counted the same way -- what it would add is only known
+/// once it is integrated -- so `pending` still says to fall back to the exact
+/// rehearsal for that count.
 struct Measurement {
     bytes: usize,
     files: usize,
@@ -597,6 +685,12 @@ fn measure(doc: &Doc) -> Measurement {
         bytes += name.len();
         bytes += value_bytes(&txn, &value);
     }
+    // See the struct comment: a pending update sits beside these roots, not
+    // inside them, so it has to be added on its own rather than found by
+    // walking a map.
+    if let Some(pending) = txn.store().pending_update() {
+        bytes += pending.update.encode_v1().len();
+    }
     Measurement {
         bytes,
         files: files_count,
@@ -626,6 +720,11 @@ pub fn apply_decoded_update(doc: &Doc, update: Update) -> Result<(), String> {
 /// `encoded` must be the same v1 bytes that produced `update`. It is used only
 /// by the exact rehearsal, while the conservative size/file bounds use its
 /// length because those bounds are on the wire payload.
+///
+/// `measure` charges a pending update -- one waiting on a predecessor that
+/// has not arrived -- by its own encoded length, so a stream of updates that
+/// all depend on one that never comes is bounded by the same ceiling as any
+/// other write, and does not sit uncounted growing the store forever.
 pub fn admit_decoded_update(
     doc: &Doc,
     update: Update,
@@ -637,10 +736,12 @@ pub fn admit_decoded_update(
     let bytes_fit = measured.bytes.saturating_add(encoded.len()) <= ceiling;
     let files_fit = measured.files.saturating_add(encoded.len()) <= max_files;
     // A yrs document may retain an out-of-order update in its pending store.
-    // It is included by encode_state but absent from the visible roots that
-    // measure walks. Rehearse whenever one is present, or a later predecessor
-    // could integrate the pending payload after this cheap check and cross
-    // the quota without being measured.
+    // `measure` now charges its bytes directly, so `bytes_fit` above already
+    // accounts for it; what it does not and cannot account for is how many
+    // files that payload would add once its predecessor arrives and it
+    // integrates, since that is only knowable by actually integrating it.
+    // Rehearse whenever one is present, so `files_fit` stays exact rather
+    // than blind to what is sitting there unintegrated.
     if !measured.pending && bytes_fit && files_fit {
         return DecodedAdmission::Fits(update);
     }
@@ -823,16 +924,22 @@ fn edit_text(txn: &mut TransactionMut, text: &TextRef, wanted: &str) {
 ///
 /// Back to front, so that an edit's offsets are still the ones `diff`
 /// measured when it is applied. Offsets are UTF-16 code units on both sides.
-pub fn apply_edits(doc: &Doc, edits: &[komodoc_text::Edit]) {
+///
+/// Returns whether the edits were applied at all: see `apply_text_edits` for
+/// what makes a set of edits fit the text they are offered against. A caller
+/// that already trusts its own offsets -- the diff this file computed against
+/// the text it is about to edit -- can ignore this; one applying edits a
+/// message carried from somewhere else should not.
+pub fn apply_edits(doc: &Doc, edits: &[komodoc_text::Edit]) -> bool {
     let (files, _, _, meta) = maps(doc);
     let mut txn = doc.transact_mut();
     let Some(id) = string_at(&meta, &txn, MAIN) else {
-        return;
+        return false;
     };
     let Some(text) = text_at(&files, &txn, &id) else {
-        return;
+        return false;
     };
-    apply_text_edits(&mut txn, &text, edits);
+    apply_text_edits(&mut txn, &text, edits)
 }
 
 /// Applies word-level edits to the `Y.Text` at `path`, in one transaction,
@@ -840,41 +947,58 @@ pub fn apply_edits(doc: &Doc, edits: &[komodoc_text::Edit]) {
 /// needs, since it edits a named file rather than the main one and has to
 /// hand what it did to every other socket, the way `set_main_file` does for
 /// the main file. `None` when `path` names no text in the document, which is
-/// the caller's cue that the anchor no longer applies to anything.
+/// the caller's cue that the anchor no longer applies to anything, and also
+/// when the edits do not fit the text at that path any more -- see
+/// `apply_text_edits`.
 pub fn apply_path_edits(doc: &Doc, path: &str, edits: &[komodoc_text::Edit]) -> Option<Vec<u8>> {
     let (files, path_map, _, _) = maps(doc);
     let id = {
         let txn = doc.transact();
-        path_map
-            .iter(&txn)
-            .find(|(_, value)| match value {
-                Out::Any(any) => any.to_string().trim_matches('"') == path,
-                _ => false,
-            })
-            .map(|(id, _)| id.to_string())
+        id_of_path(&path_map, &txn, path)
     }?;
     let before = encode_vector(doc);
-    {
+    let applied = {
         let mut txn = doc.transact_mut();
         let text = text_at(&files, &txn, &id)?;
-        apply_text_edits(&mut txn, &text, edits);
+        apply_text_edits(&mut txn, &text, edits)
+    };
+    if !applied {
+        return None;
     }
     encode_diff(doc, &before).ok()
+}
+
+/// Captures a position in the text at `path` that follows the same CRDT
+/// content when concurrent updates shift its ordinary UTF-16 offset.
+pub fn sticky_index_at_path(
+    doc: &Doc,
+    path: &str,
+    index: u32,
+    assoc: Assoc,
+) -> Option<StickyIndex> {
+    let (files, path_map, _, _) = maps(doc);
+    let txn = doc.transact();
+    let id = id_of_path(&path_map, &txn, path)?;
+    let text = text_at(&files, &txn, &id)?;
+    text.sticky_index(&txn, index, assoc)
+}
+
+/// Resolves a previously captured CRDT position to the current UTF-16 offset.
+pub fn offset_of_sticky_index(doc: &Doc, index: &StickyIndex) -> Option<u32> {
+    let txn = doc.transact();
+    index.get_offset(&txn).map(|offset| offset.index)
 }
 
 /// Applies edits to the text identified by its current directory path. The
 /// path is only used to find the Y.Text; the text's CRDT identity remains
 /// unchanged, so a concurrent rename or edit still applies to the same file.
+/// `false` when `path` names no text, or when the edits do not fit the text
+/// there -- see `apply_text_edits`.
 pub fn apply_edits_at(doc: &Doc, path: &str, edits: &[komodoc_text::Edit]) -> bool {
     let (files, path_map, _, _) = maps(doc);
     let id = {
         let txn = doc.transact();
-        path_map.iter(&txn).find_map(|(id, value)| {
-            let Out::Any(value) = value else {
-                return None;
-            };
-            (value.to_string().trim_matches('"') == path).then(|| id.to_string())
-        })
+        id_of_path(&path_map, &txn, path)
     };
     let Some(id) = id else {
         return false;
@@ -883,11 +1007,41 @@ pub fn apply_edits_at(doc: &Doc, path: &str, edits: &[komodoc_text::Edit]) -> bo
     let Some(text) = text_at(&files, &txn, &id) else {
         return false;
     };
-    apply_text_edits(&mut txn, &text, edits);
-    true
+    apply_text_edits(&mut txn, &text, edits)
 }
 
-fn apply_text_edits(txn: &mut TransactionMut, text: &TextRef, edits: &[komodoc_text::Edit]) {
+/// Applies word-level edits to `text`, or none of them at all. `komodoc-text`
+/// measures `edit.at`/`edit.delete` against a copy of this text it holds
+/// somewhere else -- the room's last-known body, a merge's base -- and by the
+/// time they arrive here that copy can be stale: a concurrent edit already
+/// changed the length, or the message is simply wrong. `remove_range` and
+/// `insert` trust their offsets and panic past the end of the text, so every
+/// offset is checked against the text's current length, in the UTF-16 code
+/// units yrs and these edits both count in, before any of them touches the
+/// text. The edits are also required to be sorted by `at` and
+/// non-overlapping, which is what `diff` always produces and what applying
+/// them back to front (below) assumes: an edit whose `at` starts before the
+/// previous one's `at + delete` ends would have its offset invalidated by
+/// that later, larger-offset edit being applied first.
+///
+/// Returns whether the edits fit and were applied. On `false`, the text is
+/// exactly as it was: nothing is applied until every edit has passed the
+/// check, because applying half a message and dropping the rest would leave
+/// the text in a shape nothing asked for.
+fn apply_text_edits(
+    txn: &mut TransactionMut,
+    text: &TextRef,
+    edits: &[komodoc_text::Edit],
+) -> bool {
+    let len = text.get_string(txn).encode_utf16().count();
+    let mut end_of_previous = 0;
+    for edit in edits {
+        let end = edit.at.saturating_add(edit.delete);
+        if end > len || edit.at < end_of_previous {
+            return false;
+        }
+        end_of_previous = end;
+    }
     for edit in edits.iter().rev() {
         if edit.delete > 0 {
             text.remove_range(txn, edit.at as u32, edit.delete as u32);
@@ -896,23 +1050,17 @@ fn apply_text_edits(txn: &mut TransactionMut, text: &TextRef, edits: &[komodoc_t
             text.insert(txn, edit.at as u32, &edit.insert);
         }
     }
+    true
 }
 
 /// Puts a text at a path, making the file if there is none there. Returns its
 /// id. What a publish of a directory and a restore both build the document
 /// with.
-#[allow(dead_code)] // the directory publish that calls it is step 4
 pub fn put_text(doc: &Doc, path: &str, body: &str) -> String {
     let (files, path_map, _, _) = maps(doc);
     let existing = {
         let txn = doc.transact();
-        path_map
-            .iter(&txn)
-            .find(|(_, value)| match value {
-                Out::Any(any) => any.to_string().trim_matches('"') == path,
-                _ => false,
-            })
-            .map(|(id, _)| id.to_string())
+        id_of_path(&path_map, &txn, path)
     };
     let mut txn = doc.transact_mut();
     match existing {
@@ -932,7 +1080,6 @@ pub fn put_text(doc: &Doc, path: &str, body: &str) -> String {
 }
 
 /// Names an asset's digest at a path.
-#[allow(dead_code)] // the asset routes that call it are step 3
 pub fn put_asset(doc: &Doc, path: &str, sha: &str) {
     let (_, _, assets, _) = maps(doc);
     let mut txn = doc.transact_mut();
@@ -947,7 +1094,6 @@ pub fn put_asset(doc: &Doc, path: &str, sha: &str) {
 /// than being deleted and made again, so an editor watching a restore sees the
 /// words change under their caret instead of their file disappearing and a new
 /// one arriving in its place.
-#[allow(dead_code)] // retained for directory/history unit tests
 pub fn restore(doc: &Doc, tree: &crate::document::history::Tree, bodies: &HashMap<String, String>) {
     restore_with(doc, tree, |_, entry| {
         bodies.get(&entry.sha).cloned().unwrap_or_default()
@@ -983,7 +1129,22 @@ fn restore_with(
         path_by_id.insert(id.clone(), path.clone());
     }
     let mut txn = doc.transact_mut();
-    let mut kept: HashSet<String> = HashSet::new();
+    // Two different things to not do twice, kept apart on purpose. A
+    // checkpoint's Y.Text -- the physical thing edited or created below --
+    // must not be touched a second time for a second path that resolves to
+    // it; a checkpoint *entry*'s id must not be reused for a second entry
+    // that names it, which is what catches a malformed or legacy tree with
+    // one id under two paths. They used to share one set, which is sound
+    // only when the id a path resolves to and the id the entry itself
+    // carries are the same id. A path swap breaks exactly that: restoring
+    // `a.md` can resolve, by live path, to the Y.Text a swap put there for
+    // `b.md`'s id, so what gets kept and what an entry carries are two
+    // different ids for the rest of this pass. Sharing one set then made the
+    // second entry's own id look already "kept" -- by the first entry's
+    // unrelated Y.Text -- and skip, so only one of the two swapped files
+    // survived the cleanup below.
+    let mut kept_texts: HashSet<String> = HashSet::new();
+    let mut seen_entries: HashSet<String> = HashSet::new();
     let mut main = String::new();
     for (path, entry) in &tree.files {
         if entry.kind == "asset" {
@@ -994,8 +1155,22 @@ fn restore_with(
         // checkpoint's old path and the live path for one Y.Text id. Keep the
         // live path when it is present; assigning the id to both paths would
         // make the path map lose one of them nondeterministically.
+        //
+        // "Present" has to mean this id's own entry sits at the live path in
+        // the checkpoint being restored, not merely that some entry does.
+        // Two files can trade paths between the checkpoint and now -- `a.md`
+        // and `b.md` swapped -- and then each one's live path is a key the
+        // tree happens to have, but for the *other* file. Checking only
+        // `contains_key` treated that as "this id's live path is covered
+        // too" for both of them at once, so neither ever fell through to be
+        // kept below and the cleanup pass at the end deleted both.
         if let Some(live_path) = path_by_id.get(&entry.id) {
-            if live_path != path && tree.files.contains_key(live_path) {
+            if live_path != path
+                && tree
+                    .files
+                    .get(live_path)
+                    .is_some_and(|other| other.id == entry.id)
+            {
                 if *path == tree.main {
                     if let Some(id) = by_path.get(live_path) {
                         main = id.clone();
@@ -1004,10 +1179,13 @@ fn restore_with(
                 continue;
             }
         }
-        if by_path.get(path).is_some_and(|id| kept.contains(id))
-            || (!entry.id.is_empty() && kept.contains(&entry.id))
+        if by_path.get(path).is_some_and(|id| kept_texts.contains(id))
+            || (!entry.id.is_empty() && seen_entries.contains(&entry.id))
         {
             continue;
+        }
+        if !entry.id.is_empty() {
+            seen_entries.insert(entry.id.clone());
         }
         let body = body_for(path, entry);
         let id = if let Some(id) = by_path.get(path).cloned() {
@@ -1044,12 +1222,12 @@ fn restore_with(
         if *path == tree.main {
             main = id.clone();
         }
-        kept.insert(id);
+        kept_texts.insert(id);
     }
     // What the tree does not have is not in the document any more. A restore
     // is the tree, whole.
     for (id, _) in here {
-        if !kept.contains(&id) {
+        if !kept_texts.contains(&id) {
             files.remove(&mut txn, &id);
             path_map.remove(&mut txn, &id);
         }
@@ -1064,5 +1242,238 @@ fn restore_with(
     }
     if !main.is_empty() {
         meta.insert(&mut txn, MAIN, main);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Configuration;
+    use crate::document::history::{Tree, TreeEntry};
+
+    /// R1: `restore_with` skipped a checkpoint entry whenever *some* text
+    /// occupied its live path anywhere in the tree, not only when that live
+    /// occupant was itself the file this entry names. Two files traded paths
+    /// (`a.md`/`b.md` swapped relative to the checkpoint) made every entry
+    /// skip, `kept` stayed empty, and the cleanup pass deleted both texts.
+    /// The fix ties the skip to the id at the live path matching this
+    /// entry's id, so a swap no longer makes every entry look covered by
+    /// another one.
+    #[test]
+    fn restore_recovers_both_files_after_a_path_swap() {
+        let doc = new_doc();
+        let id_a = put_text(&doc, "a.md", "AAA");
+        let id_b = put_text(&doc, "b.md", "BBB");
+        set_main(&doc, &id_a);
+
+        // A checkpoint recording today's paths.
+        let mut files = BTreeMap::new();
+        files.insert(
+            "a.md".to_string(),
+            TreeEntry {
+                kind: "text".to_string(),
+                id: id_a.clone(),
+                sha: "sha-a".to_string(),
+                size: 3,
+            },
+        );
+        files.insert(
+            "b.md".to_string(),
+            TreeEntry {
+                kind: "text".to_string(),
+                id: id_b.clone(),
+                sha: "sha-b".to_string(),
+                size: 3,
+            },
+        );
+        let tree = Tree {
+            main: "a.md".to_string(),
+            files,
+            settings: None,
+        };
+
+        // A peer swaps the two live paths after the checkpoint was taken.
+        let (_, path_map, _, _) = maps(&doc);
+        {
+            let mut txn = doc.transact_mut();
+            path_map.insert(&mut txn, id_a.clone(), "b.md".to_string());
+            path_map.insert(&mut txn, id_b.clone(), "a.md".to_string());
+        }
+
+        let mut bodies = HashMap::new();
+        bodies.insert("sha-a".to_string(), "AAA".to_string());
+        bodies.insert("sha-b".to_string(), "BBB".to_string());
+        restore(&doc, &tree, &bodies);
+
+        let texts = texts_of(&doc);
+        assert_eq!(texts.get("a.md").map(String::as_str), Some("AAA"));
+        assert_eq!(texts.get("b.md").map(String::as_str), Some("BBB"));
+    }
+
+    /// R2: `measure` counted only the maps a document names, so an update
+    /// whose predecessor never arrives sat in yrs's own pending store,
+    /// counted by nobody, and every later out-of-order update was admitted
+    /// beside it -- one socket could grow the store without bound just by
+    /// never sending the update everything else depended on. With the
+    /// pending payload's own encoded length added to `bytes`, the same
+    /// stream eventually crosses the ceiling like any other write would.
+    #[test]
+    fn admission_bounds_a_stream_of_updates_missing_their_predecessor() {
+        let target = new_doc();
+        let ceiling = 300;
+        let max_files = 1000;
+        let mut refused = false;
+        for i in 0..64 {
+            // A fresh peer per iteration, so each update is out of order for
+            // a predecessor `target` has never seen and never will.
+            let source = new_doc();
+            put_text(&source, "seed.md", "seed");
+            let vector = encode_vector(&source);
+            put_text(
+                &source,
+                "seed.md",
+                &"more words than the last one ".repeat(i + 1),
+            );
+            let update = encode_diff(&source, &vector).expect("diff encodes");
+            match admit_update(&target, &update, ceiling, max_files) {
+                Admission::Fits => {
+                    apply_update(&target, &update).expect("an admitted update always applies");
+                }
+                Admission::TooLarge => {
+                    refused = true;
+                    break;
+                }
+                other => panic!("unexpected admission: {other:?}"),
+            }
+        }
+        assert!(
+            refused,
+            "a stream of updates that never supplies the predecessor they all depend on must eventually be refused"
+        );
+    }
+
+    /// R3: `apply_text_edits` handed `edit.at`/`edit.delete` straight to
+    /// `remove_range`, which panics past the end of the text. An edit built
+    /// against a body the text has since moved on from must be refused
+    /// instead, leaving the text exactly as it was.
+    #[test]
+    fn an_edit_past_the_end_is_refused_and_changes_nothing() {
+        let doc = new_doc();
+        put_text(&doc, "main.md", "hello");
+        let edits = [komodoc_text::Edit {
+            at: 10,
+            delete: 1,
+            insert: "x".to_string(),
+        }];
+        assert!(!apply_edits_at(&doc, "main.md", &edits));
+        assert_eq!(
+            texts_of(&doc).get("main.md").map(String::as_str),
+            Some("hello")
+        );
+    }
+
+    /// R5a: a path rewritten by trimming or Unicode normalisation alone used
+    /// to be reported nowhere, and the room only relays a repair when it has
+    /// something to say -- so a peer that already held the untrimmed path
+    /// never learned it had changed underneath it.
+    #[test]
+    fn repair_reports_a_pure_normalisation() {
+        let doc = new_doc();
+        let id = put_text(&doc, "  main.md  ", "hello");
+        set_main(&doc, &id);
+        let config = Configuration::default();
+        let rules = config.paths();
+        let done = repair(&doc, &rules);
+        assert!(done.iter().any(|repair| matches!(
+            repair,
+            Repair::Normalised { id: rid, to } if rid == &id && to == "main.md"
+        )));
+        assert_eq!(paths_of(&doc).get(&id).map(String::as_str), Some("main.md"));
+    }
+
+    /// R5b: only text paths were in `taken` before assets were checked
+    /// against it, so two assets that collide once case is folded --
+    /// `Fig.png` and `fig.png` -- both survived. Sorting `asset_paths`
+    /// before the loop that fills `taken` per asset makes the second one
+    /// seen the one that goes, deterministically.
+    #[test]
+    fn repair_drops_the_case_colliding_asset() {
+        let doc = new_doc();
+        let (_, _, assets, _) = maps(&doc);
+        {
+            let mut txn = doc.transact_mut();
+            assets.insert(&mut txn, "Fig.png".to_string(), "sha1".to_string());
+            assets.insert(&mut txn, "fig.png".to_string(), "sha2".to_string());
+        }
+        let config = Configuration::default();
+        let rules = config.paths();
+        let done = repair(&doc, &rules);
+        let dropped: Vec<String> = done
+            .iter()
+            .filter_map(|repair| match repair {
+                Repair::DroppedAsset { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        // "F" sorts before "f", so `Fig.png` is seen first and kept; the
+        // second one seen, `fig.png`, is the one the repair drops.
+        assert_eq!(dropped, vec!["fig.png".to_string()]);
+        assert_eq!(
+            assets_of(&doc),
+            BTreeMap::from([("Fig.png".to_string(), "sha1".to_string())])
+        );
+    }
+
+    /// R5c: `paths::suffixed` only ever lengthens a name, so a base path
+    /// already close to the rules' length ceiling could be pushed over it by
+    /// its own collision suffix, and the result was inserted with no check
+    /// at all. The fallback below drops to `paths::placeholder`, which is
+    /// short enough to survive the same suffixing under any ceiling this
+    /// deployment sets.
+    #[test]
+    fn repair_falls_back_to_a_placeholder_when_a_suffixed_name_is_too_long() {
+        let doc = new_doc();
+        let (files, path_map, _, _) = maps(&doc);
+        let base_path = format!("{}.txt", "a".repeat(11)); // 15 bytes
+        {
+            let mut txn = doc.transact_mut();
+            files.insert(
+                &mut txn,
+                "aa".to_string(),
+                TextPrelim::new("first".to_string()),
+            );
+            path_map.insert(&mut txn, "aa".to_string(), base_path.clone());
+            files.insert(
+                &mut txn,
+                "bb".to_string(),
+                TextPrelim::new("second".to_string()),
+            );
+            path_map.insert(&mut txn, "bb".to_string(), base_path.clone());
+        }
+        let mut config = Configuration::default();
+        // Room for the base path and for the placeholder once suffixed, but
+        // not for the base path once suffixed: `aaaaaaaaaaa (2).txt` is 19
+        // bytes, one over this ceiling.
+        config.max_path = 18;
+        let rules = config.paths();
+        let done = repair(&doc, &rules);
+
+        let collided = done
+            .iter()
+            .find_map(|repair| match repair {
+                Repair::Collided { id, to } if id == "bb" => Some(to.clone()),
+                _ => None,
+            })
+            .expect("bb's collision with aa is reported");
+        assert_eq!(collided, "unnamed-bb (2).txt");
+        assert!(paths::check(&rules, &collided).is_ok());
+        assert_eq!(
+            paths_of(&doc).get("aa").map(String::as_str),
+            Some(base_path.as_str())
+        );
+        assert_eq!(
+            paths_of(&doc).get("bb").map(String::as_str),
+            Some(collided.as_str())
+        );
     }
 }
