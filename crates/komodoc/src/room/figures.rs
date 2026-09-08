@@ -88,7 +88,12 @@ impl Room {
         } else {
             crate::storage::blob::rendering_key(&self.storage_id, sha)
         };
-        self.blobs.get(&key).await.ok().map(|_| size)
+        self.blobs
+            .exists(&key)
+            .await
+            .ok()
+            .filter(|exists| *exists)
+            .map(|_| size)
     }
 
     /// Removes a blob whose catalogue object reservation was already
@@ -282,7 +287,7 @@ impl Room {
             } else {
                 crate::storage::blob::rendering_key(&self.storage_id, sha)
             };
-            return self.blobs.get(&key).await.is_ok();
+            return self.blobs.exists(&key).await.unwrap_or(false);
         }
         let name = rendering_name(sha, synctex);
         self.state
@@ -663,54 +668,57 @@ impl Room {
     /// needs to decide between showing a PDF and saying "not yet rendered",
     /// and it is answered here because the manifest and the live tree are both
     /// held here.
+    #[allow(dead_code)] // convenience for embedded callers and focused tests
     pub async fn newest_rendering(&self) -> Option<(String, String, bool)> {
-        // The resident manifest is deliberately only a tail.  A reopened
-        // room must consult the catalogue's complete history or an older
-        // retained PDF becomes invisible after enough newer checkpoints.
-        let points = if let Some(catalog) = self.catalog.get() {
-            load_catalog_history(catalog, &self.slug).ok()?
-        } else {
-            self.state.lock().await.manifest.checkpoints.clone()
-        };
-        let (sha, at, content_sha) = if let Some(catalog) = self.catalog.get() {
-            points.iter().rev().find_map(|point| {
-                let content = if point.tree_sha.is_empty() {
-                    &point.sha
-                } else {
-                    &point.tree_sha
-                };
-                catalog
-                    .rendering(&self.slug, content)
-                    .ok()
-                    .flatten()
-                    .map(|_| (point.sha.clone(), point.at.clone(), content.clone()))
-            })?
-        } else {
-            let state = self.state.lock().await;
-            points.iter().rev().find_map(|point| {
-                let content = if point.tree_sha.is_empty() {
-                    &point.sha
-                } else {
-                    &point.tree_sha
-                };
-                (state
+        self.newest_rendering_for(&self.tree().await.digest()).await
+    }
+
+    /// Use a digest the caller already computed for the response. This is not
+    /// a persistent cache and requires no mutation invalidation protocol.
+    pub async fn newest_rendering_for(&self, current_tree: &str) -> Option<(String, String, bool)> {
+        if let Some(catalog) = self.catalog.get() {
+            let candidate = catalog.newest_rendering_candidate(&self.slug).ok()??;
+            let pdf = crate::storage::blob::rendering_key(&self.storage_id, &candidate.tree_sha);
+            let pdf_available = self.blobs.exists(&pdf).await.unwrap_or(false);
+            let sync_available = if !pdf_available && candidate.synctex {
+                let key = crate::storage::blob::rendering_synctex_key(
+                    &self.storage_id,
+                    &candidate.tree_sha,
+                );
+                self.blobs.exists(&key).await.unwrap_or(false)
+            } else {
+                false
+            };
+            // Preserve this endpoint's existing unavailable-candidate policy:
+            // answer without a rendering, rather than silently choosing an
+            // older registration. BlobStore retains missing/error distinctions;
+            // this optional metadata endpoint deliberately treats both as unavailable.
+            if !pdf_available && !sync_available {
+                return None;
+            }
+            return Some((
+                candidate.event_sha,
+                candidate.at,
+                current_tree == candidate.tree_sha,
+            ));
+        }
+        let state = self.state.lock().await;
+        state.manifest.checkpoints.iter().rev().find_map(|point| {
+            let content = if point.tree_sha.is_empty() {
+                &point.sha
+            } else {
+                &point.tree_sha
+            };
+            (state
+                .session
+                .rendering_sizes
+                .contains_key(&rendering_name(content, false))
+                || state
                     .session
                     .rendering_sizes
-                    .contains_key(&rendering_name(content, false))
-                    || state
-                        .session
-                        .rendering_sizes
-                        .contains_key(&rendering_name(content, true)))
-                .then(|| (point.sha.clone(), point.at.clone(), content.clone()))
-            })?
-        };
-        let current = self.tree().await.digest() == content_sha;
-        if !self.has_rendering(&content_sha, false).await
-            && !self.has_rendering(&content_sha, true).await
-        {
-            return None;
-        }
-        Some((sha, at, current))
+                    .contains_key(&rendering_name(content, true)))
+            .then(|| (point.sha.clone(), point.at.clone(), current_tree == content))
+        })
     }
 
     /// Drops the renderings that are no longer worth their bytes. A rendering

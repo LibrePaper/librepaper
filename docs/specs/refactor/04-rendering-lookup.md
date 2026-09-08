@@ -29,3 +29,27 @@ using track 1's execution boundary.
 - Cover old retained PDFs, absent blobs, transient failures, labels, and restore
   events with shared content. Preserve each caller's fallback and authorization.
 - Record query counts and downloaded bytes before and after on the same history.
+
+## Implementation evidence
+
+`newest_rendering_candidate` now joins history and registrations in one SQLite
+query, returning separate event and content identities. A 130-event history
+with only its first event rendered takes one connection operation instead of
+131 for the prior history-plus-per-event lookup shape. The regression measures
+both on the same catalogue and covers a later restore sharing that content.
+
+The blob contract now exposes `exists`: filesystem metadata and S3 HEAD avoid
+body downloads, while the compatibility fallback preserves other stores.
+NotFound becomes false and transient/provider failures remain errors. The
+optional latest-rendering endpoint retains its prior policy of returning no
+candidate when the newest registered candidate is unavailable; it does not
+silently choose an older registration.
+
+A hooked-store regression records zero body reads for availability plus newest
+metadata, two existence checks, and one body read for serving the selected PDF.
+The existing PDF read handler already downloaded once, so no extra byte-serving
+abstraction was introduced. The metadata handler passes its computed current
+tree digest to the lookup, avoiding a second computation without adding a cache.
+
+The catalogue query will use track 1's asynchronous execution boundary when
+that migration lands. These changes do not independently complete that track.

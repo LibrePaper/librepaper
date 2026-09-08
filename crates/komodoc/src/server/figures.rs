@@ -555,7 +555,7 @@ impl Server {
         let current_tree = room.tree().await;
         let live = current_tree.digest();
         let inputs = current_tree.input_digest();
-        match room.newest_rendering().await {
+        match room.newest_rendering_for(&live).await {
             Some((sha, at, current)) => {
                 // The content identity, not the (possibly-a-restore) history
                 // event SHA: provenance is stored beside the PDF under the

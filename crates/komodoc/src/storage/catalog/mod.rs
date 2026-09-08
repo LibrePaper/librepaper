@@ -365,6 +365,16 @@ pub struct Rendering {
     pub synctex_bytes: i64,
 }
 
+/// A history event and its registered rendering's content identity. The event
+/// may be a restore of an older tree, so these identities are not interchangeable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenderingCandidate {
+    pub event_sha: String,
+    pub tree_sha: String,
+    pub at: String,
+    pub synctex: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingDelete {
     pub slug: String,
@@ -432,6 +442,8 @@ pub struct JournalSegment {
 /// deployment; pooled/hosted drivers can implement the same operations using
 /// their primary transaction API.
 pub struct Catalog {
+    #[cfg(test)]
+    pub(crate) connection_operations: std::sync::atomic::AtomicUsize,
     connection: Mutex<Connection>,
     // One authority owns publication, recovery, and physical journal reclamation.
     // Every runtime/worker built from this catalogue shares the same gate.
@@ -516,6 +528,8 @@ impl Catalog {
         Ok(Self {
             connection: Mutex::new(connection),
             journal_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            connection_operations: std::sync::atomic::AtomicUsize::new(0),
             link_sealing_keys: RwLock::new(Vec::new()),
         })
     }
@@ -535,6 +549,9 @@ impl Catalog {
         &self,
         operation: impl FnOnce(&mut Connection) -> CatalogResult<T>,
     ) -> CatalogResult<T> {
+        #[cfg(test)]
+        self.connection_operations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut connection = self.lock_connection()?;
         operation(&mut connection)
     }

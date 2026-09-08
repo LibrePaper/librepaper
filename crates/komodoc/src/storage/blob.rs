@@ -88,6 +88,16 @@ pub type BlobResult<T> = Result<T, BlobError>;
 #[async_trait]
 pub trait BlobStore: Send + Sync {
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>>;
+    /// Check availability without downloading the body when supported by the
+    /// backend. Missing objects are ordinary false results; transient failures
+    /// remain errors. The fallback keeps embedded/test stores compatible.
+    async fn exists(&self, key: &str) -> BlobResult<bool> {
+        match self.get(key).await {
+            Ok(_) => Ok(true),
+            Err(BlobError::NotFound) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
     async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()>;
     /// Removes keys; ones that are not there are not an error, because the
     /// outcome asked for is the outcome either way.
@@ -243,6 +253,19 @@ impl FsStore {
 
 #[async_trait]
 impl BlobStore for FsStore {
+    async fn exists(&self, key: &str) -> BlobResult<bool> {
+        let path = self.path_for(key)?;
+        self.blocking(move || match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => Ok(true),
+            Ok(_) => Err(BlobError::Other("object is not a regular file".into())),
+            Err(error) => match BlobError::from(error) {
+                BlobError::NotFound => Ok(false),
+                error => Err(error),
+            },
+        })
+        .await
+    }
+
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
         let path = self.path_for(key)?;
         self.blocking(move || std::fs::read(path).map_err(BlobError::from))
@@ -998,6 +1021,23 @@ pub async fn take_room_lease(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn existence_distinguishes_missing_objects_from_invalid_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        let blobs = FsStore::new(directory.path());
+        assert!(!blobs.exists("missing").await.unwrap());
+        blobs
+            .put("nested/object", b"body".to_vec(), "")
+            .await
+            .unwrap();
+        assert!(blobs.exists("nested/object").await.unwrap());
+        assert!(matches!(
+            blobs.exists("nested").await,
+            Err(BlobError::Other(_))
+        ));
+        assert!(blobs.exists("../outside").await.is_err());
+    }
 
     #[tokio::test]
     async fn atomic_temporary_files_are_private_and_not_listed() {

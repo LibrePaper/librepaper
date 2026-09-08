@@ -8,6 +8,59 @@ use crate::storage::blob;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[tokio::test]
+async fn rendering_metadata_never_downloads_the_pdf_and_read_downloads_once() {
+    use crate::storage::blob::BlobStore;
+    use std::sync::atomic::Ordering;
+
+    let server = new_test_server().await;
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let original = server.instance.rooms.get(&slug).await;
+    let event = original.manifest().await.latest().unwrap().sha.clone();
+    let content = original.rendering_sha(&event).await.unwrap();
+    let pdf = b"%PDF metadata test".to_vec();
+    original
+        .put_rendering(&content, false, pdf.clone())
+        .await
+        .unwrap();
+    let hooked = HookStore::new(server.instance.store.blobs.clone());
+    let rooms = crate::room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    rooms.attach_store(server.instance.store.clone());
+    let room = rooms.get(&slug).await;
+    hooked.body_reads.store(0, Ordering::Relaxed);
+    hooked.existence_checks.store(0, Ordering::Relaxed);
+    assert!(room.has_rendering(&content, false).await);
+    assert_eq!(room.newest_rendering().await.unwrap().0, event);
+    assert_eq!(hooked.body_reads.load(Ordering::Relaxed), 0);
+    assert_eq!(hooked.existence_checks.load(Ordering::Relaxed), 2);
+    assert_eq!(room.read_rendering(&content, false).await, Some(pdf));
+    assert_eq!(hooked.body_reads.load(Ordering::Relaxed), 1);
+
+    let storage_id = server
+        .instance
+        .store
+        .get_result(&slug)
+        .await
+        .unwrap()
+        .unwrap()
+        .storage_id;
+    let key = blob::rendering_key(&storage_id, &content);
+    *hooked.fail.lock().unwrap() = Some(key.clone());
+    assert!(
+        hooked.exists(&key).await.is_err(),
+        "transient failures remain distinct from absence"
+    );
+    assert!(
+        room.newest_rendering().await.is_none(),
+        "preserve optional endpoint fallback"
+    );
+    *hooked.fail.lock().unwrap() = None;
+    hooked.delete(&[key.clone()]).await.unwrap();
+    assert!(!hooked.exists(&key).await.unwrap());
+    assert!(room.newest_rendering().await.is_none());
+}
+
 /// A rendering attached to an old checkpoint remains discoverable after the
 /// room has shed that checkpoint from its in-memory tail.  The catalogue is
 /// the complete history in this case; the resident manifest is deliberately

@@ -155,6 +155,8 @@ pub(super) struct HookStore {
     pub(super) fail: Mutex<Option<String>>,
     pub(super) reached: tokio::sync::Notify,
     pub(super) resume: tokio::sync::Notify,
+    pub(super) body_reads: std::sync::atomic::AtomicUsize,
+    pub(super) existence_checks: std::sync::atomic::AtomicUsize,
 }
 impl HookStore {
     pub(super) fn new(inner: Arc<dyn BlobStore>) -> Arc<Self> {
@@ -164,6 +166,8 @@ impl HookStore {
             fail: Mutex::new(None),
             reached: tokio::sync::Notify::new(),
             resume: tokio::sync::Notify::new(),
+            body_reads: std::sync::atomic::AtomicUsize::new(0),
+            existence_checks: std::sync::atomic::AtomicUsize::new(0),
         })
     }
     async fn hook(&self, op: &str, key: &str) -> BlobResult<()> {
@@ -194,7 +198,15 @@ impl HookStore {
 }
 #[async_trait::async_trait]
 impl BlobStore for HookStore {
+    async fn exists(&self, k: &str) -> BlobResult<bool> {
+        self.existence_checks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.hook("exists", k).await?;
+        self.inner.exists(k).await
+    }
     async fn get(&self, k: &str) -> BlobResult<Vec<u8>> {
+        self.body_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.hook("get", k).await?;
         self.inner.get(k).await
     }

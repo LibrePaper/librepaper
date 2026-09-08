@@ -21,6 +21,80 @@ fn account() -> Account {
 }
 
 #[test]
+fn newest_rendering_joins_full_history_and_keeps_restore_event_identity() {
+    use std::sync::atomic::Ordering;
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    assert!(catalog.newest_rendering_candidate("doc").unwrap().is_none());
+    for seq in 0..130 {
+        catalog
+            .insert_checkpoint(&Checkpoint {
+                slug: "doc".into(),
+                sha: format!("event-{seq}"),
+                seq,
+                durable_seq: 0,
+                tree_sha: String::new(),
+                parent: String::new(),
+                at: format!("at-{seq}"),
+                by: String::new(),
+                why: "test".into(),
+                source_format: "markdown".into(),
+                size: 0,
+                label: String::new(),
+                git_commit: String::new(),
+                dirty: false,
+                changed: None,
+            })
+            .unwrap();
+    }
+    catalog
+        .publish_rendering(&Rendering {
+            slug: "doc".into(),
+            tree_sha: "event-0".into(),
+            at: "old".into(),
+            backend: "test".into(),
+            engine: String::new(),
+            release: String::new(),
+            tools: String::new(),
+            bytes: 10,
+            synctex: true,
+            synctex_bytes: 5,
+        })
+        .unwrap();
+    // Measure the prior traversal/lookup shape against the joined lookup on
+    // the same connection and retained history, without timing assumptions.
+    let before = catalog.connection_operations.load(Ordering::Relaxed);
+    let history = catalog.checkpoints("doc", None, 200).unwrap();
+    for point in history.iter().rev() {
+        if catalog.rendering("doc", &point.sha).unwrap().is_some() {
+            break;
+        }
+    }
+    let previous_operations = catalog.connection_operations.load(Ordering::Relaxed) - before;
+    let before = catalog.connection_operations.load(Ordering::Relaxed);
+    let candidate = catalog.newest_rendering_candidate("doc").unwrap().unwrap();
+    let joined_operations = catalog.connection_operations.load(Ordering::Relaxed) - before;
+    assert_eq!(previous_operations, 131);
+    assert_eq!(joined_operations, 1);
+    assert_eq!(candidate.event_sha, "event-0");
+    assert_eq!(candidate.tree_sha, "event-0", "legacy SHA fallback");
+    assert!(candidate.synctex);
+    let mut restored = catalog.checkpoint("doc", "event-129").unwrap().unwrap();
+    restored.seq = -1;
+    restored.sha = "restore-event".into();
+    restored.tree_sha = "event-0".into();
+    restored.at = "restore-time".into();
+    catalog.insert_checkpoint(&restored).unwrap();
+    let candidate = catalog.newest_rendering_candidate("doc").unwrap().unwrap();
+    assert_eq!(candidate.event_sha, "restore-event");
+    assert_eq!(candidate.tree_sha, "event-0");
+    assert_eq!(candidate.at, "restore-time");
+    catalog.retire_rendering("doc", "event-0", 1, 1).unwrap();
+    assert!(catalog.newest_rendering_candidate("doc").unwrap().is_none());
+}
+
+#[test]
 fn new_account_examples_resume_without_reenrolling_on_profile_refresh() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();

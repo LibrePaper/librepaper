@@ -311,6 +311,17 @@ async fn problem(method: &str, key: &str, response: Response) -> BlobError {
 
 #[async_trait]
 impl BlobStore for S3Store {
+    async fn exists(&self, key: &str) -> BlobResult<bool> {
+        let response = self
+            .send(Method::HEAD, &self.url(key), &[], Vec::new())
+            .await?;
+        match response.status().as_u16() {
+            200 => Ok(true),
+            404 => Ok(false),
+            _ => Err(problem("HEAD", key, response).await),
+        }
+    }
+
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
         Ok(self.get_versioned(key).await?.0)
     }
@@ -691,6 +702,42 @@ mod tests {
     use axum::response::Response;
     use axum::routing::any;
     use axum::Router;
+
+    #[tokio::test]
+    async fn existence_uses_head_and_preserves_provider_errors() {
+        async fn bucket(request: Request<Body>) -> Response<Body> {
+            assert_eq!(request.method(), Method::HEAD, "metadata must not use GET");
+            let status = match request.uri().path() {
+                "/bucket/present" => 200,
+                "/bucket/missing" => 404,
+                "/bucket/forbidden" => 403,
+                _ => 503,
+            };
+            Response::builder()
+                .status(status)
+                .body(Body::empty())
+                .unwrap()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(any(bucket)))
+                .await
+                .unwrap();
+        });
+        let store = S3Store::new(&StorageOptions {
+            endpoint: format!("http://{address}"),
+            bucket: "bucket".into(),
+            access_key: "key".into(),
+            secret_key: "secret".into(),
+            ..StorageOptions::default()
+        });
+        assert!(store.exists("present").await.unwrap());
+        assert!(!store.exists("missing").await.unwrap());
+        assert!(store.exists("forbidden").await.is_err());
+        assert!(store.exists("unavailable").await.is_err());
+        server.abort();
+    }
 
     #[test]
     fn listing_decodes_escaped_keys_and_continuation_tokens() {

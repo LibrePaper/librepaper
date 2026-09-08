@@ -681,6 +681,35 @@ impl Catalog {
         self.with_connection(|c| c.query_row("SELECT slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes FROM renderings WHERE slug=?1 AND tree_sha=?2",params![slug,tree_sha],|r|Ok(Rendering{slug:r.get(0)?,tree_sha:r.get(1)?,at:r.get(2)?,backend:r.get(3)?,engine:r.get(4)?,release:r.get(5)?,tools:r.get(6)?,bytes:r.get(7)?,synctex:r.get::<_,i64>(8)?!=0,synctex_bytes:r.get(9)?})).optional().map_err(CatalogError::from))
     }
 
+    /// Resolve in SQL rather than reading the full history and issuing one
+    /// rendering lookup for every event without a registration. Registration
+    /// is only a candidate: the caller still checks the backing object.
+    pub fn newest_rendering_candidate(
+        &self,
+        slug: &str,
+    ) -> CatalogResult<Option<RenderingCandidate>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT c.sha, COALESCE(NULLIF(c.tree_sha,''),c.sha), c.at, r.synctex
+                 FROM checkpoints c JOIN renderings r
+                 ON r.slug=c.slug AND r.tree_sha=COALESCE(NULLIF(c.tree_sha,''),c.sha)
+                 WHERE c.slug=?1 ORDER BY c.seq DESC LIMIT 1",
+                    [slug],
+                    |row| {
+                        Ok(RenderingCandidate {
+                            event_sha: row.get(0)?,
+                            tree_sha: row.get(1)?,
+                            at: row.get(2)?,
+                            synctex: row.get::<_, i64>(3)? != 0,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(CatalogError::from)
+        })
+    }
+
     pub fn retire_rendering(
         &self,
         slug: &str,
