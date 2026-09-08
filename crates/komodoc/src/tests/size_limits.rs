@@ -136,8 +136,10 @@ mod room_fixture {
     pub struct Fixture {
         pub rooms: RoomSet,
         pub journal: Arc<journal::JournalRuntime>,
-        #[allow(dead_code)]
         pub store: Arc<store::Store>,
+        pub catalog: Arc<crate::storage::catalog::Catalog>,
+        pub blobs: Arc<dyn BlobStore>,
+        pub config: Arc<Configuration>,
         #[allow(dead_code)]
         dir: tempfile::TempDir,
     }
@@ -156,14 +158,14 @@ mod room_fixture {
                 .await
                 .expect("the store opens"),
         );
-        let rooms = RoomSet::new(blobs.clone(), config);
+        let rooms = RoomSet::new(blobs.clone(), config.clone());
         rooms.attach_store(store.clone());
         journal::JournalStore::new(catalog.clone())
             .initialize_local("size-test")
             .expect("the journal initializes");
         let runtime = journal::JournalRuntime::new_with_policy(
-            catalog,
-            blobs,
+            catalog.clone(),
+            blobs.clone(),
             "size-test",
             journal::CoordinatorLimits::from_persistence(&persistence),
             persistence,
@@ -176,8 +178,30 @@ mod room_fixture {
             rooms,
             journal: runtime,
             store,
+            catalog,
+            blobs,
+            config,
             dir,
         }
+    }
+
+    /// A second process over the same storage: what a restart is.
+    pub async fn reopen(fixture: &Fixture) -> RoomSet {
+        let persistence = fixture.config.persistence();
+        let runtime = journal::JournalRuntime::new_with_policy(
+            fixture.catalog.clone(),
+            fixture.blobs.clone(),
+            "size-test",
+            journal::CoordinatorLimits::from_persistence(&persistence),
+            persistence,
+            -1,
+            -1,
+        )
+        .expect("the journal runtime reopens");
+        let rooms = RoomSet::new(fixture.blobs.clone(), fixture.config.clone());
+        rooms.attach_store(fixture.store.clone());
+        rooms.attach_journal(runtime);
+        rooms
     }
 
     pub async fn publish(fixture: &Fixture, slug: &str, source: &str) -> Arc<crate::room::Room> {
@@ -355,4 +379,338 @@ async fn the_journal_refuses_a_snapshot_past_the_encoded_ceiling() {
         0,
         "a refused append must not leak its memory admission"
     );
+}
+
+/// `M` admits by bytes, not by operation count, and a permit is the only
+/// thing that holds the budget: releasing it is a drop, so no path out of an
+/// operation can leak it.
+#[tokio::test]
+async fn the_memory_budget_admits_by_bytes_and_releases_on_drop() {
+    let budget = crate::storage::journal::MemoryBudget::new(100);
+    let held = budget.try_acquire(60).expect("the first save fits");
+    assert_eq!(budget.held_bytes(), 60);
+    let refused = budget
+        .try_acquire(60)
+        .expect_err("a second save of the same size does not");
+    assert!(refused.is_temporary(), "{refused}");
+    assert!(!refused.is_permanent(), "{refused}");
+    drop(held);
+    assert_eq!(budget.held_bytes(), 0);
+    budget.try_acquire(60).expect("and now it fits again");
+    assert_eq!(budget.peak_bytes(), 60);
+}
+
+/// A save larger than the whole budget can never be admitted, so it is
+/// refused permanently rather than parked forever behind work that will
+/// never make room for it.
+#[tokio::test]
+async fn a_save_larger_than_the_whole_budget_is_permanent() {
+    let budget = crate::storage::journal::MemoryBudget::new(100);
+    let error = budget
+        .acquire(200)
+        .await
+        .expect_err("nothing can make 200 fit in 100");
+    assert!(error.is_permanent(), "{error}");
+}
+
+/// Spin the runtime until `ready` holds, without sleeping. On the
+/// current-thread runtime these tests use, yielding is what lets a spawned
+/// task make progress, so this is a barrier rather than a timing assertion.
+async fn until(mut ready: impl FnMut() -> bool) {
+    for _ in 0..10_000 {
+        if ready() {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("the condition never held");
+}
+
+/// A producer waiting with a snapshot in hand is not free, so the waiting set
+/// is bounded too: past it the next producer is refused temporarily instead
+/// of parked. And a producer whose future is dropped gives its place back.
+#[tokio::test]
+async fn waiting_producers_are_bounded_and_cancellation_releases_a_place() {
+    let budget = crate::storage::journal::MemoryBudget::new(100);
+    let held = budget.try_acquire(100).expect("the budget is taken");
+
+    let waiting = budget.clone();
+    let parked =
+        tokio::spawn(async move { waiting.acquire(80).await.map(|permit| permit.bytes()) });
+    until(|| budget.waiters() == 1).await;
+
+    let refused = budget
+        .acquire(80)
+        .await
+        .expect_err("the waiting set is already full");
+    assert!(refused.is_temporary(), "{refused}");
+
+    parked.abort();
+    until(|| budget.waiters() == 0).await;
+    assert_eq!(
+        budget.held_bytes(),
+        100,
+        "a cancelled waiter must not have taken any budget"
+    );
+
+    // With the place given back, another producer may wait again, and is
+    // woken by the release rather than by a timer.
+    let waiting = budget.clone();
+    let parked =
+        tokio::spawn(async move { waiting.acquire(80).await.map(|permit| permit.bytes()) });
+    until(|| budget.waiters() == 1).await;
+    drop(held);
+    assert_eq!(
+        parked
+            .await
+            .expect("the waiter runs")
+            .expect("and is woken"),
+        80
+    );
+}
+
+/// `Q` counts a sealed round until its operation settles, not until it left
+/// the queue. Before this, sealing released the bytes before a single object
+/// had been written, so a burst could queue a second full round on top of one
+/// still in object I/O.
+#[test]
+fn the_queue_budget_holds_a_sealed_round_until_it_settles() {
+    use crate::storage::journal::{CoordinatorLimits, JournalCoordinator, JournalRecord};
+    let limits = CoordinatorLimits {
+        max_queued_bytes: 8192,
+        max_queued_records: 8,
+        max_segment_bytes: 8192,
+        max_records_per_segment: 8,
+    };
+    let mut coordinator = JournalCoordinator::new(limits).expect("the coordinator opens");
+    coordinator
+        .enqueue(JournalRecord::new("doc-1", 1, "retry-1", 0, vec![1u8; 6000]).expect("a record"))
+        .expect("the first record is queued");
+    let segments = coordinator.seal(true).expect("the round seals");
+    let executing = coordinator.begin_executing(&segments);
+    assert_eq!(coordinator.queued_bytes(), 0);
+    assert_eq!(coordinator.executing_bytes(), 6000);
+
+    let refused = coordinator
+        .enqueue(JournalRecord::new("doc-2", 1, "retry-2", 0, vec![2u8; 6000]).expect("a record"))
+        .expect_err("a second round cannot be queued on top of one still executing");
+    assert!(refused.is_temporary(), "{refused}");
+    assert!(!refused.is_permanent(), "{refused}");
+
+    drop(executing);
+    assert_eq!(coordinator.executing_bytes(), 0);
+    coordinator
+        .enqueue(JournalRecord::new("doc-2", 1, "retry-2", 0, vec![2u8; 6000]).expect("a record"))
+        .expect("and fits once the first round has settled");
+}
+
+/// Two large rooms saving at once stay inside `M`: the budget's own peak
+/// counter, not a process-memory sample, is the evidence.
+#[tokio::test]
+async fn concurrent_rooms_stay_inside_the_memory_budget() {
+    let mut config = Configuration::default();
+    config.max_document = 32 * 1024;
+    config.persistence.max_encoded_snapshot_bytes = 64 * 1024;
+    // Room for exactly one maximum snapshot at a time.
+    config.persistence.max_staging_bytes = PersistenceLimits::staging_cost(64 * 1024);
+    let fixture = room_fixture::open(config).await;
+    let budget = fixture.journal.memory();
+    let payload = vec![9u8; 60 * 1024];
+    let (first, second) = tokio::join!(
+        fixture.journal.append("doc-a", 1, payload.clone()),
+        fixture.journal.append("doc-b", 1, payload.clone()),
+    );
+    first.expect("the first save lands");
+    second.expect("the second save lands");
+    assert_eq!(
+        budget.held_bytes(),
+        0,
+        "both saves released their admission"
+    );
+    assert!(
+        budget.peak_bytes() <= budget.capacity(),
+        "peak {} is past the {} byte budget",
+        budget.peak_bytes(),
+        budget.capacity()
+    );
+    assert!(
+        budget.peak_bytes() >= PersistenceLimits::staging_cost(60 * 1024),
+        "the budget was never actually charged"
+    );
+}
+
+/// A snapshot at the configured boundary makes the whole durable round trip:
+/// it is appended, acknowledged, compacted, and read back identically by a
+/// second process over the same storage.
+#[tokio::test]
+async fn a_boundary_snapshot_appends_acknowledges_compacts_and_recovers() {
+    let mut config = Configuration::default();
+    config.max_document = 64 * 1024;
+    config.persistence.max_encoded_snapshot_bytes = 256 * 1024;
+    let fixture = room_fixture::open(config).await;
+    let room = room_fixture::publish(&fixture, "boundary", "start\n").await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+    room.attach(1, "test".into(), tx, true).await;
+    let peer = Peer::joining(&room).await;
+
+    // As close to the source ceiling as the paths and metadata leave room for.
+    let body = "b".repeat(64 * 1024 - 2048);
+    let update = peer.rewrite(&body);
+    assert!(matches!(
+        room.receive_update(1, &update, 7, "alice").await,
+        crate::room::Applied::Relay
+    ));
+    room.persist()
+        .await
+        .expect("the boundary snapshot persists");
+    let sha = room
+        .checkpoint_now("cli", "alice")
+        .await
+        .expect("the boundary snapshot checkpoints");
+    assert!(sha.is_some());
+
+    // Durably acknowledged, and only after the write.
+    let mut acknowledged = None;
+    while let Ok(frame) = rx.try_recv() {
+        if let crate::room::Outgoing::Text(text) = frame {
+            if text.contains("y-ack") {
+                acknowledged = Some(text);
+            }
+        }
+    }
+    let acknowledgement = acknowledged.expect("the boundary snapshot is acknowledged");
+    assert!(acknowledgement.contains("\"seq\":7"), "{acknowledgement}");
+
+    // A restart over the same storage, with the session object gone, so the
+    // content has to come back through the journal.
+    fixture
+        .blobs
+        .delete(&[crate::storage::blob::session_key("boundary")])
+        .await
+        .expect("the session object is removed");
+    fixture
+        .blobs
+        .delete(&[crate::storage::blob::room_lock_key("boundary")])
+        .await
+        .expect("the room lock is removed");
+    let restarted = room_fixture::reopen(&fixture).await;
+    let recovered = restarted.get("boundary").await;
+    assert_eq!(
+        recovered.source().await,
+        body,
+        "the recovered document must be byte-identical"
+    );
+}
+
+/// The 64 MiB boundary the journal formats actually impose: a recovery base
+/// decodes up to it, so an encoded ceiling at it is a supported (if not
+/// shipped) configuration, and one byte past it is not.
+#[test]
+fn the_sixty_four_megabyte_boundary_is_where_the_formats_stop() {
+    let at_the_boundary = PersistenceLimits {
+        max_encoded_snapshot_bytes: 64 * MIB,
+        max_queued_payload_bytes: 64 * MIB,
+        max_staging_bytes: PersistenceLimits::staging_cost(64 * MIB),
+        ..PersistenceLimits::default()
+    };
+    at_the_boundary
+        .validate()
+        .expect("64 MiB is exactly what the recovery base and queue support");
+    let past_it = PersistenceLimits {
+        max_encoded_snapshot_bytes: 64 * MIB + 1,
+        ..at_the_boundary
+    };
+    assert!(past_it.validate().is_err());
+}
+
+/// A refused save leaves nothing behind: no queued bytes, no executing bytes,
+/// no memory admission. A permanent refusal in particular must not leave work
+/// in the queue for the next flush to retry forever.
+#[tokio::test]
+async fn a_refused_save_leaks_no_queue_or_memory_reservation() {
+    let mut config = Configuration::default();
+    config.max_document = 32 * 1024;
+    config.persistence.max_encoded_snapshot_bytes = 64 * 1024;
+    let fixture = room_fixture::open(config).await;
+    let refused = fixture
+        .journal
+        .append("doc-1", 1, vec![3u8; 64 * 1024 + 1])
+        .await
+        .expect_err("past E");
+    assert!(refused.is_permanent(), "{refused}");
+    assert_eq!(fixture.journal.payload_bytes_in_flight().await, (0, 0));
+    assert_eq!(fixture.journal.memory().held_bytes(), 0);
+
+    // And a save that does fit still works afterwards: the refusal did not
+    // wedge the runtime.
+    fixture
+        .journal
+        .append("doc-1", 1, vec![3u8; 32 * 1024])
+        .await
+        .expect("an admissible save still lands");
+    assert_eq!(fixture.journal.payload_bytes_in_flight().await, (0, 0));
+    assert_eq!(fixture.journal.memory().held_bytes(), 0);
+}
+
+/// The shipped default ceilings, exercised for real: a 4 MiB source is
+/// admitted, appended, checkpointed, and read back identically after a
+/// restart, and one byte past the ceiling is refused. It costs a few seconds
+/// in a debug build, which is the price of checking the boundary this
+/// delivery is actually about rather than a scaled-down stand-in for it.
+#[tokio::test]
+async fn the_shipped_four_megabyte_default_survives_a_restart() {
+    boundary_source_survives_a_restart(Configuration::default(), "four-mib", 4 * MIB).await;
+}
+
+/// The same at the new supported maximum. Ignored in the ordinary suite:
+/// twice the bytes for the same assertions. Worth running whenever the
+/// supported maximum or the encoded ceiling moves.
+#[tokio::test]
+#[ignore = "encodes an 8 MiB CRDT document; the 4 MiB case covers the same path"]
+async fn the_supported_maximum_source_survives_a_restart() {
+    let mut config = Configuration::default();
+    config
+        .set_max_document(SUPPORTED_MAX_SOURCE_BYTES / MIB)
+        .expect("the supported maximum is configurable");
+    boundary_source_survives_a_restart(config, "eight-mib", SUPPORTED_MAX_SOURCE_BYTES).await;
+}
+
+async fn boundary_source_survives_a_restart(config: Configuration, slug: &str, ceiling: usize) {
+    let fixture = room_fixture::open(config).await;
+    let room = room_fixture::publish(&fixture, slug, "start\n").await;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1024);
+    room.attach(1, "test".into(), tx, true).await;
+    let peer = Peer::joining(&room).await;
+
+    let body = "m".repeat(ceiling - 4096);
+    let update = peer.rewrite(&body);
+    assert!(matches!(
+        room.receive_update(1, &update, 1, "alice").await,
+        crate::room::Applied::Relay
+    ));
+    room.persist()
+        .await
+        .expect("the boundary snapshot persists");
+    room.checkpoint_now("cli", "alice")
+        .await
+        .expect("and checkpoints");
+
+    let over = peer.rewrite(&"m".repeat(ceiling + 1));
+    assert!(matches!(
+        room.receive_update(1, &over, 2, "alice").await,
+        crate::room::Applied::Refuse(_)
+    ));
+
+    fixture
+        .blobs
+        .delete(&[crate::storage::blob::session_key(slug)])
+        .await
+        .expect("the session object is removed");
+    fixture
+        .blobs
+        .delete(&[crate::storage::blob::room_lock_key(slug)])
+        .await
+        .expect("the room lock is removed");
+    let restarted = room_fixture::reopen(&fixture).await;
+    assert_eq!(restarted.get(slug).await.source().await, body);
 }

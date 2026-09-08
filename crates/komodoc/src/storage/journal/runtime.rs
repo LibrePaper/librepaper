@@ -148,6 +148,13 @@ impl JournalRuntime {
         self.persistence
     }
 
+    /// Payload bytes queued and executing against `Q`, in that order. What
+    /// tests assert on, and what a diagnostic would report.
+    pub async fn payload_bytes_in_flight(&self) -> (usize, usize) {
+        let coordinator = self.coordinator.lock().await;
+        (coordinator.queued_bytes(), coordinator.executing_bytes())
+    }
+
     /// The memory admission `append` and `compact` charge their copies to.
     /// Exposed so tests can read its counters and so a caller that stages a
     /// snapshot of its own can be charged against the same budget.

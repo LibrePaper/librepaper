@@ -109,7 +109,7 @@ impl JournalCoordinator {
     /// Take ownership of a sealed round's payload bytes. Called while the
     /// seal still holds this mutex, so the bytes never leave `Q` unaccounted
     /// between leaving the queue and being charged as executing.
-    pub(super) fn begin_executing(&self, segments: &[Segment]) -> ExecutingBytes {
+    pub fn begin_executing(&self, segments: &[Segment]) -> ExecutingBytes {
         let bytes = segments
             .iter()
             .flat_map(|segment| segment.records.iter())
