@@ -803,7 +803,7 @@ impl Server {
     async fn apply_from(
         &self,
         room: &Room,
-        mut incoming: RoomMessage,
+        incoming: RoomMessage,
         address: &str,
         who: &Viewer,
         author: &str,
@@ -833,6 +833,12 @@ impl Server {
                 false,
             );
         }
+        let command = match incoming.into_command() {
+            Ok(command) => command,
+            Err(error) => return (error.response(), false),
+        };
+        let is_comment = command.is_comment();
+        let mut incoming = command.into_message();
         // The client's name is never trusted, for a comment or for a reply to
         // one: a signed-in commenter is named by their account, and anyone
         // else is given the same pseudonym every time they return to this
@@ -852,7 +858,7 @@ impl Server {
         // about it, rather than being reconstructed later from a document that
         // has moved on. A checkpoint whose text is already the current one
         // costs nothing and adds no entry.
-        if incoming.kind == "comment" {
+        if is_comment {
             if let Err(err) = room.checkpoint("comment", &incoming.creator).await {
                 // Not a reason to refuse the comment: the comment is the
                 // reader's work, and the checkpoint is bookkeeping about it.
@@ -865,9 +871,12 @@ impl Server {
         // Which link the remark came in on, so an owner can tell reviewer two
         // from reviewer three without either having signed anything. Empty for
         // a commenter by name.
+        let command = incoming
+            .into_command()
+            .expect("server-mutated command remains valid");
         let (mut result, ok) = room
-            .apply(
-                incoming,
+            .apply_command(
+                command,
                 address,
                 author,
                 &who.link,
@@ -913,9 +922,13 @@ impl Server {
         if !may_edit {
             return fail("only an editor may decide a suggestion");
         }
-        if incoming.kind == "accept" {
+        let command = match incoming.clone().into_command() {
+            Ok(command) => command,
+            Err(error) => return (error.response(), false),
+        };
+        if command.kind() == "accept" {
             return match room
-                .accept_suggestion(&incoming.comment_id, &incoming.request_id, by)
+                .accept_suggestion(command.comment_id(), command.request_id(), by)
                 .await
             {
                 Ok(Accepted::Applied {
@@ -927,9 +940,9 @@ impl Server {
                         .await;
                     (
                         json!({
-                            "type": "accept", "comment_id": incoming.comment_id,
+                            "type": "accept", "comment_id": command.comment_id(),
                             "resolved_in": sha, "resolved_at": resolved_at,
-                            "request_id": incoming.request_id,
+                            "request_id": command.request_id(),
                             "version": 1, "protocol": "komodoc.room.v1",
                         }),
                         true,
@@ -941,9 +954,9 @@ impl Server {
                     // retry answering with what already happened is exactly
                     // that, not a refusal.
                     json!({
-                        "type": "accept", "comment_id": incoming.comment_id,
+                        "type": "accept", "comment_id": command.comment_id(),
                         "resolved_in": sha, "resolved_at": resolved_at,
-                        "request_id": incoming.request_id, "noop": true,
+                        "request_id": command.request_id(), "noop": true,
                         "version": 1, "protocol": "komodoc.room.v1",
                     }),
                     true,
@@ -951,9 +964,9 @@ impl Server {
                 Err(AcceptError::Refused(text)) => fail(&text),
                 Err(AcceptError::Stale) => (
                     json!({
-                        "type": "error", "stale": true, "comment_id": incoming.comment_id,
+                        "type": "error", "stale": true, "comment_id": command.comment_id(),
                         "message": "the passage has changed since this was suggested",
-                        "request_id": incoming.request_id,
+                        "request_id": command.request_id(),
                         "version": 1, "protocol": "komodoc.room.v1",
                     }),
                     false,
@@ -962,9 +975,9 @@ impl Server {
             };
         }
         // "reject"
-        match room.reject_suggestion(&incoming.comment_id).await {
+        match room.reject_suggestion(command.comment_id()).await {
             Ok(mut result) => {
-                result["request_id"] = json!(incoming.request_id);
+                result["request_id"] = json!(command.request_id());
                 result["version"] = json!(1);
                 result["protocol"] = json!("komodoc.room.v1");
                 (result, true)

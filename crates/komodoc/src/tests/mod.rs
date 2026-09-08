@@ -12,6 +12,7 @@ mod auth;
 mod auth_regressions;
 mod automation;
 mod blob;
+mod commands;
 mod device;
 mod directories;
 pub mod edit;

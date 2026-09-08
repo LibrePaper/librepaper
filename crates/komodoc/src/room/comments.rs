@@ -395,6 +395,7 @@ impl Room {
     /// sender. `author` is the caller's own author key, and `is_owner` says
     /// whether the caller owns the document this room belongs to; both come
     /// from the caller's identity and are never taken from the message itself.
+    #[allow(dead_code)]
     pub async fn apply(
         &self,
         incoming: Message,
@@ -404,6 +405,27 @@ impl Room {
         budget: Option<i64>,
         is_owner: bool,
     ) -> (Value, bool) {
+        let command = match incoming.into_command() {
+            Ok(command) => command,
+            Err(error) => return (error.response(), false),
+        };
+        self.apply_command(command, address, author, via, budget, is_owner)
+            .await
+    }
+
+    /// Applies a command after the compatible wire adapter has validated its
+    /// discriminator and operation-specific required fields.
+    pub async fn apply_command(
+        &self,
+        command: Command,
+        address: &str,
+        author: &str,
+        via: &str,
+        budget: Option<i64>,
+        is_owner: bool,
+    ) -> (Value, bool) {
+        let operation = command.kind();
+        let incoming = command.into_message();
         // Suggestions are document operations as well as comment metadata.
         // Serialize comment decisions with acceptance so a resolve/delete
         // cannot race the CRDT edit and leave the catalogue outcome detached
@@ -443,11 +465,10 @@ impl Room {
                 })
             });
         if let Some(id) = requested_id.as_deref() {
-            if incoming.kind == "comment" || incoming.kind == "reply" {
+            if operation == "comment" || operation == "reply" {
                 for item in &state.comments {
                     if item.id == id {
-                        if incoming.kind == "comment" && !author.is_empty() && item.author == author
-                        {
+                        if operation == "comment" && !author.is_empty() && item.author == author {
                             let mut result = json!({"type": "comment", "comment": item, "temp_id": id,
                                     "request_id": incoming.request_id});
                             if !incoming.request_id.is_empty() {
@@ -458,7 +479,7 @@ impl Room {
                         return fail("that submission ID is already in use");
                     }
                     if let Some(reply) = item.replies.iter().find(|reply| reply.id == id) {
-                        if incoming.kind == "reply"
+                        if operation == "reply"
                             && item.id == incoming.comment_id
                             && !author.is_empty()
                             && reply.author == author
@@ -475,16 +496,6 @@ impl Room {
                     }
                 }
             }
-        }
-
-        // Reject malformed operation names before charging the caller's rate
-        // budget. Otherwise an unknown frame can consume the same admission
-        // slot as a real comment and make a subsequent valid write fail.
-        if !matches!(
-            incoming.kind.as_str(),
-            "comment" | "reply" | "resolve" | "delete" | "anchor"
-        ) {
-            return fail("unknown message type");
         }
 
         // What the document says at this moment, by name. The socket takes a
@@ -506,7 +517,7 @@ impl Room {
             return fail(&format!("too many comments from this {source}; try later"));
         }
 
-        if incoming.kind == "resolve" {
+        if operation == "resolve" {
             let Some(index) = state
                 .comments
                 .iter()
@@ -615,7 +626,7 @@ impl Room {
             );
         }
 
-        if incoming.kind == "delete" {
+        if operation == "delete" {
             let Some(index) = state
                 .comments
                 .iter()
@@ -661,7 +672,7 @@ impl Room {
         // Guarded the same way a delete is: the author of the comment, or an
         // editor, and only once -- a comment that already has an anchor of
         // record is not overwritten by a second try.
-        if incoming.kind == "anchor" {
+        if operation == "anchor" {
             let Some(index) = state
                 .comments
                 .iter()
@@ -716,7 +727,7 @@ impl Room {
         // note. Everything else is a remark, and a remark with no words is
         // nothing.
         if body.is_empty()
-            && !(incoming.kind == "comment"
+            && !(operation == "comment"
                 && matches!(motivation.as_str(), "highlighting" | "editing"))
         {
             return fail("comment body is required");
@@ -728,7 +739,7 @@ impl Room {
             creator = "Anonymous".to_string();
         }
 
-        match incoming.kind.as_str() {
+        match operation {
             "reply" => {
                 let Some(index) = state
                     .comments
