@@ -56,7 +56,7 @@ async fn rendering_metadata_never_downloads_the_pdf_and_read_downloads_once() {
         "preserve optional endpoint fallback"
     );
     *hooked.fail.lock().unwrap() = None;
-    hooked.delete(&[key.clone()]).await.unwrap();
+    hooked.delete(std::slice::from_ref(&key)).await.unwrap();
     assert!(!hooked.exists(&key).await.unwrap());
     assert!(room.newest_rendering().await.is_none());
 }
