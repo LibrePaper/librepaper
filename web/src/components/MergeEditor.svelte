@@ -4,9 +4,9 @@
   // caller after every accepted hunk or manual edit.
   import { EditorState } from "@codemirror/state";
   import { EditorView, lineNumbers, keymap } from "@codemirror/view";
-  import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+  import { defaultKeymap, indentWithTab } from "@codemirror/commands";
   import { MergeView } from "@codemirror/merge";
-  import { yCollab } from "y-codemirror.next";
+  import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
   import IconButton from "./IconButton.svelte";
 
   let {
@@ -28,11 +28,10 @@
   let host = $state(null);
   let merge = null;
 
-  function extensions(readOnly = false) {
+  function extensions(readOnly = false, collaborative = false) {
     return [
       lineNumbers(),
-      history(),
-      keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
+      keymap.of([indentWithTab, ...defaultKeymap, ...(collaborative ? yUndoManagerKeymap : [])]),
       EditorView.lineWrapping,
       ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
     ];
@@ -49,7 +48,7 @@
       b: {
         doc: liveText?.toString() ?? String(newText || ""),
         extensions: [
-          ...extensions(!editable),
+          ...extensions(!editable, Boolean(editable && liveText)),
           // Binding the editable side to the live Y.Text means a revert
           // button inserts only its hunk and preserves a coauthor's update
           // that landed while this view was open.
