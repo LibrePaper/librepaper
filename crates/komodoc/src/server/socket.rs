@@ -482,7 +482,7 @@ impl Server {
                                     continue 'reader;
                                 };
                                 match room
-                                    .receive_update(socket_id, &update, incoming.seq, &author)
+                                    .receive_update(socket_id, &update, incoming.seq, who.attributed_as(&author))
                                     .await
                                 {
                                     Applied::Ignored => {
@@ -533,9 +533,9 @@ impl Server {
                                 };
                                 let immediate = who.automation || !incoming.request_id.is_empty();
                                 let result = if immediate {
-                                    room.checkpoint_now(&why, &author).await
+                                    room.checkpoint_now(&why, who.attributed_as(&author)).await
                                 } else {
-                                    room.checkpoint(&why, &author).await
+                                    room.checkpoint(&why, who.attributed_as(&author)).await
                                 };
                                 let payload = match result {
                                     Ok(Some(sha)) => json!({
@@ -570,11 +570,7 @@ impl Server {
                     }
 
                     let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
-                        let by = if who.key.is_empty() {
-                            who.id.handle.clone()
-                        } else {
-                            who.key.clone()
-                        };
+                        let by = who.attribution();
                         self.decide_suggestion(&room, &incoming, may_edit, &by)
                             .await
                     } else {
@@ -633,7 +629,7 @@ impl Server {
                     room.slug
                 );
             }
-            let _ = room.checkpoint("left", &author).await;
+            let _ = room.checkpoint("left", who.attributed_as(&author)).await;
         }
         room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
             .await;

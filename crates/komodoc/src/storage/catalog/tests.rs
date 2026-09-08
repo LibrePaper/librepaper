@@ -45,6 +45,7 @@ fn newest_rendering_joins_full_history_and_keeps_restore_event_identity() {
                 git_commit: String::new(),
                 dirty: false,
                 changed: None,
+                by_account: None,
             })
             .unwrap();
     }
@@ -797,6 +798,7 @@ fn sql_children_are_bounded_and_expiry_filtered() {
             git_commit: String::new(),
             dirty: false,
             changed: None,
+            by_account: None,
         })
         .unwrap();
     assert_eq!(checkpoint.seq, 0);

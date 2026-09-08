@@ -40,6 +40,7 @@ mod suggestions;
 mod text;
 
 use catalog::*;
+pub use checkpoint::Attribution;
 pub use command::Command;
 pub use comments::*;
 pub use figures::*;
@@ -178,13 +179,16 @@ pub struct Session {
     /// then, so an idle room is not re-hashed every second to answer that.
     pub checkpoint_generation: u64,
     /// When the last update arrived, and who sent it. Both feed the quiet
-    /// checkpoint, whose `by` is the editor whose update last landed.
+    /// checkpoint, whose `by` is the editor whose update last landed. The
+    /// stable account travels with the display name so an automatic
+    /// checkpoint of somebody else s keystrokes is attributed to them and
+    /// can be reached by their erasure.
     pub updated_at: i64,
-    pub by: String,
+    pub by: Attribution,
     /// A checkpoint asked for from outside and not yet taken, with the reason
     /// it was asked for and who asked. Deferred rather than refused when it
     /// arrives inside `CHECKPOINT_DEFER_SECONDS` of the last one.
-    pub asked: Option<(String, String)>,
+    pub asked: Option<(String, Attribution)>,
     pub last_checkpoint_at: i64,
     /// The SHA of the newest checkpoint, so quiet after quiet costs nothing.
     pub last_checkpoint: String,
@@ -481,6 +485,31 @@ impl RoomSet {
             for comment in &mut state.comments {
                 comment.replies.retain(|reply| reply.author != account_id);
             }
+            // The resident manifest is a cache of catalogue rows the erasure
+            // worker is rewriting behind it, and it is also what a staged
+            // write and a timeline read are served from.  Scrub it here so a
+            // room that stays resident through the whole erasure can neither
+            // show the erased attribution nor stage it back.  Only the
+            // identifying fields move: sha, tree, parent, timestamps and
+            // labels are the document's history, not the account's.
+            for point in &mut state.manifest.checkpoints {
+                if point.by_account.as_deref() == Some(account_id) {
+                    point.by_account = None;
+                    point.by = crate::storage::catalog::ERASED_ATTRIBUTION.to_string();
+                }
+            }
+            // The pending attribution a quiet, automatic or deferred
+            // checkpoint would be written with. Left alone, the next tick
+            // would name the erasing account on a checkpoint taken after the
+            // worker had already passed that document.
+            if state.session.by.is_account(account_id) {
+                state.session.by = Attribution::erased();
+            }
+            if let Some((_, asked)) = state.session.asked.as_mut() {
+                if asked.is_account(account_id) {
+                    *asked = Attribution::erased();
+                }
+            }
         }
         // A room can be evicted and reloaded while the bounded erasure worker
         // is still draining SQLite.  Invalidate immutable checkpoint reads as
@@ -751,7 +780,7 @@ impl RoomSet {
                     encoded_size: None,
                     checkpoint_generation: 0,
                     updated_at: 0,
-                    by: String::new(),
+                    by: Attribution::system(),
                     asked: None,
                     last_checkpoint_at: 0,
                     last_checkpoint: String::new(),
@@ -1910,7 +1939,14 @@ impl Room {
     /// a scratch copy only when the bound cannot decide, so no number of
     /// concurrent writers can talk their way past the quota between them and
     /// the ordinary path measures the document but avoids cloning its CRDT.
-    pub async fn receive_update(&self, socket: u64, update: &[u8], seq: i64, by: &str) -> Applied {
+    pub async fn receive_update(
+        &self,
+        socket: u64,
+        update: &[u8],
+        seq: i64,
+        by: impl Into<Attribution>,
+    ) -> Applied {
+        let by = by.into();
         let _publication_writer = self.publication_write.lock().await;
         if self.read_only() {
             // Another server holds this room's lease. Applying and relaying
@@ -2041,7 +2077,7 @@ impl Room {
         state.session.mark_dirty(now);
         state.session.generation += 1;
         state.session.updated_at = now;
-        state.session.by = by.to_string();
+        state.session.by = by.clone();
         Applied::Relay
     }
 

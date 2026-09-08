@@ -301,7 +301,7 @@ impl Server {
                     &json!({"error": "that is not a checkpoint of this document, or the text has moved on"}),
                 );
             }
-            match room.checkpoint("render", &who.key).await {
+            match room.checkpoint("render", who.attribution()).await {
                 Ok(Some(taken)) => {
                     let taken_content = room
                         .rendering_sha(&taken)

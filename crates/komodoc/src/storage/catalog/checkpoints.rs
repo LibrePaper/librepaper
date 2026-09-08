@@ -14,11 +14,49 @@ impl Catalog {
         }
         self.immediate(|tx| {
             let seq = if checkpoint.seq < 0 { tx.query_row("SELECT COALESCE(MAX(seq)+1,0) FROM checkpoints WHERE slug=?1", [&checkpoint.slug], |r| r.get(0)).map_err(CatalogError::from)? } else { checkpoint.seq };
-            let changed = tx.execute("INSERT INTO checkpoints(slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed)
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)", params![checkpoint.slug,checkpoint.sha,seq,checkpoint.durable_seq,checkpoint.tree_sha,checkpoint.parent,checkpoint.at,checkpoint.by,checkpoint.why,checkpoint.source_format,checkpoint.size,checkpoint.label,checkpoint.git_commit,checkpoint.dirty as i64,checkpoint.changed]).map_err(CatalogError::from)?;
+            let (by, by_account) = Self::attribution_for_insert(tx, checkpoint)?;
+            let changed = tx.execute("INSERT INTO checkpoints(slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed,by_account)
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![checkpoint.slug,checkpoint.sha,seq,checkpoint.durable_seq,checkpoint.tree_sha,checkpoint.parent,checkpoint.at,by,checkpoint.why,checkpoint.source_format,checkpoint.size,checkpoint.label,checkpoint.git_commit,checkpoint.dirty as i64,checkpoint.changed,by_account]).map_err(CatalogError::from)?;
             if changed != 1 { return Err(CatalogError::Conflict("checkpoint was not inserted".into())); }
             Self::checkpoint_in_tx(tx, &checkpoint.slug, &checkpoint.sha)
         })
+    }
+
+    /// The attribution a checkpoint may durably carry, decided inside the
+    /// transaction that writes the row.
+    ///
+    /// A checkpoint is admitted, its objects written, and only then inserted;
+    /// an erasure can begin anywhere in that window.  Deciding here -- at the
+    /// durable write boundary, under the same `BEGIN IMMEDIATE` as the insert
+    /// and therefore serialized against `begin_erasure` and every erasure
+    /// batch -- is what stops a checkpoint queued before the erasure started
+    /// from reintroducing attribution the worker has already passed.
+    ///
+    /// The checkpoint itself is never refused: its content, sha, tree, parent
+    /// and timestamp are the document's history and belong to the document,
+    /// not to the account.  Only the identifying attribution is dropped.
+    pub(super) fn attribution_for_insert(
+        tx: &Transaction<'_>,
+        checkpoint: &Checkpoint,
+    ) -> CatalogResult<(String, Option<String>)> {
+        let Some(account) = checkpoint.by_account.as_deref().filter(|id| !id.is_empty()) else {
+            return Ok((checkpoint.by.clone(), None));
+        };
+        let status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM accounts WHERE id=?1",
+                [account],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(CatalogError::from)?;
+        // An account this catalogue has never seen is not an erasing one:
+        // deployments exist whose identities are not catalogued at all, and
+        // refusing their attribution would lose it for everyone.
+        if status.as_deref() == Some("erasing") {
+            return Ok((ERASED_ATTRIBUTION.to_string(), None));
+        }
+        Ok((checkpoint.by.clone(), Some(account.to_string())))
     }
 
     /// Apply one staged manifest to SQLite in one transaction.  Checkpoint
@@ -60,11 +98,12 @@ impl Catalog {
                 } else {
                     checkpoint.seq
                 };
+                let (by, by_account) = Self::attribution_for_insert(tx, checkpoint)?;
                 tx.execute(
                     "INSERT INTO checkpoints
                      (slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,
-                      size,label,git_commit,dirty,changed)
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                      size,label,git_commit,dirty,changed,by_account)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
                     params![
                         checkpoint.slug,
                         checkpoint.sha,
@@ -73,7 +112,7 @@ impl Catalog {
                         checkpoint.tree_sha,
                         checkpoint.parent,
                         checkpoint.at,
-                        checkpoint.by,
+                        by,
                         checkpoint.why,
                         checkpoint.source_format,
                         checkpoint.size,
@@ -81,6 +120,7 @@ impl Catalog {
                         checkpoint.git_commit,
                         checkpoint.dirty as i64,
                         checkpoint.changed,
+                        by_account,
                     ],
                 )
                 .map_err(CatalogError::from)?;
@@ -209,7 +249,7 @@ impl Catalog {
             let mut s = c
                 .prepare(
                     "SELECT slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,
-                            size,label,git_commit,dirty,changed
+                            size,label,git_commit,dirty,changed,by_account
                      FROM checkpoints WHERE slug=?1 AND sha LIKE ?2 || '%' ORDER BY seq LIMIT 2",
                 )
                 .map_err(CatalogError::from)?;
@@ -230,7 +270,7 @@ impl Catalog {
     ) -> CatalogResult<Vec<Checkpoint>> {
         let limit = i64::from(limit.clamp(1, 200));
         self.with_connection(|c| {
-            let mut s = c.prepare("SELECT slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed FROM checkpoints WHERE slug=?1 AND (?2 IS NULL OR seq>?2) ORDER BY seq LIMIT ?3").map_err(CatalogError::from)?;
+            let mut s = c.prepare("SELECT slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed,by_account FROM checkpoints WHERE slug=?1 AND (?2 IS NULL OR seq>?2) ORDER BY seq LIMIT ?3").map_err(CatalogError::from)?;
             let mut rows=s.query(params![slug,after_seq,limit]).map_err(CatalogError::from)?;
             let mut out=Vec::new(); while let Some(r)=rows.next().map_err(CatalogError::from)? { out.push(Self::read_checkpoint(r).map_err(CatalogError::from)?); } Ok(out)
         })
@@ -246,7 +286,7 @@ impl Catalog {
             let mut s = c
                 .prepare(
                     "SELECT slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,
-                            size,label,git_commit,dirty,changed
+                            size,label,git_commit,dirty,changed,by_account
                      FROM checkpoints WHERE slug=?1 ORDER BY seq DESC LIMIT ?2",
                 )
                 .map_err(CatalogError::from)?;
@@ -564,7 +604,7 @@ impl Catalog {
         slug: &str,
         sha: &str,
     ) -> rusqlite::Result<Option<Checkpoint>> {
-        c.query_row("SELECT slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed FROM checkpoints WHERE slug=?1 AND sha=?2",params![slug,sha],Self::read_checkpoint).optional()
+        c.query_row("SELECT slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed,by_account FROM checkpoints WHERE slug=?1 AND sha=?2",params![slug,sha],Self::read_checkpoint).optional()
     }
 
     pub(super) fn checkpoint_in_tx(
@@ -572,7 +612,7 @@ impl Catalog {
         slug: &str,
         sha: &str,
     ) -> CatalogResult<Checkpoint> {
-        tx.query_row("SELECT slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed FROM checkpoints WHERE slug=?1 AND sha=?2",params![slug,sha],Self::read_checkpoint).map_err(CatalogError::from)
+        tx.query_row("SELECT slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed,by_account FROM checkpoints WHERE slug=?1 AND sha=?2",params![slug,sha],Self::read_checkpoint).map_err(CatalogError::from)
     }
 
     pub(super) fn read_checkpoint(r: &rusqlite::Row<'_>) -> rusqlite::Result<Checkpoint> {
@@ -592,6 +632,7 @@ impl Catalog {
             git_commit: r.get(12)?,
             dirty: r.get::<_, i64>(13)? != 0,
             changed: r.get(14)?,
+            by_account: r.get(15)?,
         })
     }
 

@@ -154,8 +154,9 @@ impl Room {
         &self,
         comment_id: &str,
         request_id: &str,
-        by: &str,
+        by: impl Into<Attribution>,
     ) -> Result<Accepted, AcceptError> {
+        let by = &by.into();
         let _restore_writer = self.restore_write.lock().await;
         if self.read_only() {
             return Err(AcceptError::Failed(
@@ -211,7 +212,7 @@ impl Room {
         // comment cache is stale.
         let acceptance_digest = request_digest(&json!({
             "comment_id": comment_id,
-            "by": by,
+            "by": by.display(),
             "proposed": comment.proposed.clone(),
         }));
         let staged_update = if let (Some(catalog), false) =
@@ -334,6 +335,7 @@ impl Room {
                                 parent: point.parent,
                                 at: point.at,
                                 by: point.by,
+                                by_account: point.by_account,
                                 why: point.why,
                                 source_format: point.source_format,
                                 size: point.size,
@@ -454,7 +456,7 @@ impl Room {
             state.session.mark_dirty(now_unix());
             state.session.generation += 1;
             state.session.updated_at = now_unix();
-            state.session.by = by.to_string();
+            state.session.by = by.clone();
         }
 
         let sha = match self.checkpoint_now("accept", by).await {

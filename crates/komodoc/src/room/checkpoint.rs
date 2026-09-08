@@ -3,6 +3,95 @@
 
 use super::*;
 
+/// Who a checkpoint is attributed to.
+///
+/// `display` is the mutable string the timeline shows: a handle, an owner
+/// key, a pseudonym, or nothing at all. `account` is the stable provider id
+/// of the authenticated caller, and is the only thing account erasure can
+/// match on. A handle can be renamed, and a released handle can be taken by
+/// somebody else, so a display string can never establish that a historical
+/// checkpoint belongs to an account. Nothing in this type ever turns one into
+/// the other: an account id is only ever supplied by a caller that
+/// authenticated it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Attribution {
+    display: String,
+    account: Option<String>,
+}
+
+impl Attribution {
+    /// A write by a caller whose account this request authenticated. An empty
+    /// id is not an identity and is recorded as unattributed rather than as an
+    /// account named "".
+    pub fn account(account_id: &str, display: &str) -> Self {
+        if account_id.is_empty() {
+            return Self::unattributed(display);
+        }
+        Self {
+            display: display.to_string(),
+            account: Some(account_id.to_string()),
+        }
+    }
+
+    /// A write with a display string but no authoritative account behind it:
+    /// an anonymous or link-bounded caller, a pseudonymous commenter, or a
+    /// document seeded or imported by the command line. Erasure cannot reach
+    /// these, and that is deliberate -- there is nothing to say whose they are.
+    pub fn unattributed(display: &str) -> Self {
+        Self {
+            display: display.to_string(),
+            account: None,
+        }
+    }
+
+    /// A write the deployment made for itself, with no requester behind it:
+    /// the automatic and quiet checkpoints a room takes on its own clock when
+    /// no update author is known.
+    pub fn system() -> Self {
+        Self::default()
+    }
+
+    pub fn display(&self) -> &str {
+        &self.display
+    }
+
+    pub fn account_id(&self) -> Option<&str> {
+        self.account.as_deref()
+    }
+
+    pub(crate) fn is_account(&self, account_id: &str) -> bool {
+        self.account.as_deref() == Some(account_id)
+    }
+
+    /// What this becomes once the account behind it has been erased: the same
+    /// replacement the catalogue writes, and no stable id.
+    pub(crate) fn erased() -> Self {
+        Self::unattributed(crate::storage::catalog::ERASED_ATTRIBUTION)
+    }
+}
+
+/// A bare display string is display-only attribution, never an account. This
+/// exists so that tests and the callers that genuinely have nothing but a
+/// name stay readable; a caller that does know its account must say so with
+/// `Attribution::account`.
+impl From<&str> for Attribution {
+    fn from(display: &str) -> Self {
+        Self::unattributed(display)
+    }
+}
+
+impl From<&String> for Attribution {
+    fn from(display: &String) -> Self {
+        Self::unattributed(display)
+    }
+}
+
+impl From<&Attribution> for Attribution {
+    fn from(value: &Attribution) -> Self {
+        value.clone()
+    }
+}
+
 /// A charged checkpoint budget bucket held across an asynchronous publication.
 /// Dropping it refunds the exact owner and hour admitted by SQLite.
 pub struct PublicationCheckpointToken {
@@ -68,15 +157,24 @@ impl Room {
     /// costs storage and loses nothing. A manifest missing its newest entry is
     /// repaired by the next checkpoint, which finds the object present and
     /// names it as `parent` -- `repair` below is that.
-    pub async fn checkpoint(&self, why: &str, by: &str) -> Result<Option<String>, String> {
-        self.checkpoint_impl(why, by, true, false, None, None).await
+    pub async fn checkpoint(
+        &self,
+        why: &str,
+        by: impl Into<Attribution>,
+    ) -> Result<Option<String>, String> {
+        self.checkpoint_impl(why, &by.into(), true, false, None, None)
+            .await
     }
 
     /// Takes a checkpoint immediately, even when the ordinary deliberate-save
     /// debounce window is still open. An accept uses this: the edit it just
     /// made is a deliberate act by the editor, not a keystroke to wait out.
-    pub async fn checkpoint_now(&self, why: &str, by: &str) -> Result<Option<String>, String> {
-        self.checkpoint_impl(why, by, false, false, None, None)
+    pub async fn checkpoint_now(
+        &self,
+        why: &str,
+        by: impl Into<Attribution>,
+    ) -> Result<Option<String>, String> {
+        self.checkpoint_impl(why, &by.into(), false, false, None, None)
             .await
     }
 
@@ -109,7 +207,7 @@ impl Room {
     pub async fn checkpoint_publication_now(
         &self,
         why: &str,
-        by: &str,
+        by: impl Into<Attribution>,
         token: &mut PublicationCheckpointToken,
     ) -> Result<Option<String>, String> {
         let _restore_writer = self.restore_write.lock().await;
@@ -123,10 +221,10 @@ impl Room {
     pub(crate) async fn checkpoint_publication_now_locked(
         &self,
         why: &str,
-        by: &str,
+        by: impl Into<Attribution>,
         token: &mut PublicationCheckpointToken,
     ) -> Result<Option<String>, String> {
-        self.checkpoint_impl_locked(why, by, false, false, None, Some(token))
+        self.checkpoint_impl_locked(why, &by.into(), false, false, None, Some(token))
             .await
     }
 
@@ -135,7 +233,10 @@ impl Room {
     /// linear history, and deduplicating it would make restoring to an old
     /// revision silently disappear from the timeline. The event gets its own
     /// object key while retaining the same immutable tree bytes.
-    pub(super) async fn checkpoint_restore(&self, by: &str) -> Result<Option<String>, String> {
+    pub(super) async fn checkpoint_restore(
+        &self,
+        by: &Attribution,
+    ) -> Result<Option<String>, String> {
         self.checkpoint_impl("restore", by, false, true, None, None)
             .await
     }
@@ -143,7 +244,7 @@ impl Room {
     pub(super) async fn checkpoint_impl(
         &self,
         why: &str,
-        by: &str,
+        by: &Attribution,
         defer: bool,
         force_event: bool,
         protected: Option<&str>,
@@ -159,7 +260,7 @@ impl Room {
     async fn checkpoint_impl_locked(
         &self,
         why: &str,
-        by: &str,
+        by: &Attribution,
         defer: bool,
         force_event: bool,
         protected: Option<&str>,
@@ -194,7 +295,7 @@ impl Room {
                 && state.session.last_checkpoint_at > 0
                 && now - state.session.last_checkpoint_at < CHECKPOINT_DEFER_SECONDS
             {
-                state.session.asked = Some((why.to_string(), by.to_string()));
+                state.session.asked = Some((why.to_string(), by.clone()));
                 (
                     crate::document::history::Tree::default(),
                     HashMap::new(),
@@ -489,7 +590,8 @@ impl Room {
                 tree_sha: content_sha.clone(),
                 parent,
                 at: timestamp(),
-                by: by.to_string(),
+                by: by.display().to_string(),
+                by_account: by.account_id().map(str::to_string),
                 why: why.to_string(),
                 source_format: format.clone(),
                 size: tree.size(),
@@ -726,7 +828,11 @@ impl Room {
                 tree_sha: String::new(),
                 parent,
                 at: timestamp(),
+                // A recovered entry is one this server found standing in
+                // storage with nothing naming it. Nothing records who wrote
+                // it, so it is attributed to nobody rather than guessed at.
                 by: String::new(),
+                by_account: None,
                 why: "recovered".to_string(),
                 source_format: format.to_string(),
                 size,
@@ -1055,8 +1161,9 @@ impl Room {
     pub async fn restore_and_checkpoint(
         &self,
         point: &Checkpoint,
-        by: &str,
+        by: impl Into<Attribution>,
     ) -> Result<(Vec<u8>, String), String> {
+        let by = &by.into();
         let _restore_writer = self.restore_write.lock().await;
         if self.read_only() {
             return Err("this room is held by another server".into());

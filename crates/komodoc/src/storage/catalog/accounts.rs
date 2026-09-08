@@ -471,6 +471,19 @@ impl Catalog {
                     }
                     (last.map(|(slug, comment, reply)| serde_json::json!([slug, comment, reply]).to_string()), has_rows)
                 }
+                // Checkpoints are the account's contributions to documents it
+                // may not own.  The row itself is retained -- its content,
+                // sha, tree_sha, parent, timestamps and label are the
+                // document's history, and the event identity other rows point
+                // at -- and only the identifying attribution is cleared.
+                //
+                // Two stages, because there are two ways a row can name this
+                // account.  The indexed one is the stable id; the legacy one
+                // is a pre-migration row whose `by` literally holds an account
+                // id, which is what the erasure query matched before this
+                // column existed.  That second match is on the account id, not
+                // on a handle: no row is selected because its display name
+                // resembles the account's.
                 "checkpoints" => {
                     let (after_slug, after_sha) = cursor_parts
                         .as_ref()
@@ -485,7 +498,7 @@ impl Catalog {
                     let mut rows = tx
                         .prepare(
                             "SELECT slug, sha FROM checkpoints
-                             WHERE by=?1
+                             WHERE by_account=?1
                                AND (slug>?2 OR (slug=?2 AND sha>?3))
                              ORDER BY slug, sha LIMIT ?4",
                         )
@@ -500,9 +513,48 @@ impl Catalog {
                     let has_rows = last.is_some();
                     for (slug, sha) in rows.drain(..) {
                         tx.execute(
-                            "UPDATE checkpoints SET by='Deleted user'
-                             WHERE slug=?1 AND sha=?2 AND by=?3",
-                            params![slug, sha, id],
+                            "UPDATE checkpoints SET by=?4, by_account=NULL
+                             WHERE slug=?1 AND sha=?2 AND by_account=?3",
+                            params![slug, sha, id, ERASED_ATTRIBUTION],
+                        )
+                        .map_err(CatalogError::from)?;
+                    }
+                    (last.map(|(slug, sha)| serde_json::json!([slug, sha]).to_string()), has_rows)
+                }
+                "checkpoints_legacy" => {
+                    let (after_slug, after_sha) = cursor_parts
+                        .as_ref()
+                        .map(|parts| {
+                            if parts.len() != 2 {
+                                return Err(CatalogError::Invalid(
+                                    "invalid legacy checkpoints cursor".into(),
+                                ));
+                            }
+                            Ok((parts[0].as_str(), parts[1].as_str()))
+                        })
+                        .transpose()?
+                        .unwrap_or(("", ""));
+                    let mut rows = tx
+                        .prepare(
+                            "SELECT slug, sha FROM checkpoints
+                             WHERE by_account IS NULL AND by=?1
+                               AND (slug>?2 OR (slug=?2 AND sha>?3))
+                             ORDER BY slug, sha LIMIT ?4",
+                        )
+                        .map_err(CatalogError::from)?
+                        .query_map(params![id, after_slug, after_sha, i64::from(limit)], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .map_err(CatalogError::from)?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .map_err(CatalogError::from)?;
+                    let last = rows.last().cloned();
+                    let has_rows = last.is_some();
+                    for (slug, sha) in rows.drain(..) {
+                        tx.execute(
+                            "UPDATE checkpoints SET by=?4
+                             WHERE slug=?1 AND sha=?2 AND by_account IS NULL AND by=?3",
+                            params![slug, sha, id, ERASED_ATTRIBUTION],
                         )
                         .map_err(CatalogError::from)?;
                     }
@@ -555,7 +607,9 @@ impl Catalog {
                        (SELECT COUNT(*) FROM guests WHERE account_id=?1) +
                        (SELECT COUNT(*) FROM comments WHERE author=?1) +
                        (SELECT COUNT(*) FROM replies WHERE author=?1) +
-                       (SELECT COUNT(*) FROM checkpoints WHERE by=?1)",
+                       (SELECT COUNT(*) FROM checkpoints WHERE by_account=?1) +
+                       (SELECT COUNT(*) FROM checkpoints
+                        WHERE by_account IS NULL AND by=?1)",
                     [id],
                     |row| row.get(0),
                 )

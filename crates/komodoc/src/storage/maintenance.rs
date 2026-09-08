@@ -96,7 +96,14 @@ pub fn run_erasure_pass(
     let mut touched = 0;
     for id in catalog.erasing_accounts(None, accounts)? {
         touched += 1;
-        let stages = ["grants", "guests", "comments", "replies", "checkpoints"];
+        let stages = [
+            "grants",
+            "guests",
+            "comments",
+            "replies",
+            "checkpoints",
+            "checkpoints_legacy",
+        ];
         let (current, stored_cursor) = catalog
             .erasure_progress(&id)?
             .unwrap_or_else(|| (stages[0].to_string(), None));

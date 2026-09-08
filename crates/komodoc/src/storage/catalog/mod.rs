@@ -27,7 +27,7 @@ mod journal;
 mod operations;
 mod room_edits;
 
-const LATEST_SCHEMA: i64 = 12;
+const LATEST_SCHEMA: i64 = 13;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
 const MIGRATIONS: &[(i64, &str)] = &[
     // Versions are applied in order; append new migrations at the end.
@@ -73,7 +73,16 @@ const MIGRATIONS: &[(i64, &str)] = &[
         12,
         include_str!("../../../migrations/0012_account_examples.sql"),
     ),
+    (
+        13,
+        include_str!("../../../migrations/0013_checkpoint_attribution.sql"),
+    ),
 ];
+
+/// What `by` reads as once an account's identifying attribution has been
+/// removed.  Kept as a constant so the erasure stages, the durable write
+/// boundary and the resident-room scrub all agree on one replacement.
+pub const ERASED_ATTRIBUTION: &str = "Deleted user";
 
 /// Errors returned by the catalogue driver.
 #[derive(Debug)]
@@ -273,6 +282,13 @@ pub struct Checkpoint {
     pub parent: String,
     pub at: String,
     pub by: String,
+    /// The stable provider id (`accounts.id`) of the authenticated caller who
+    /// wrote this checkpoint, when there is one.  `by` is a display handle and
+    /// may be renamed or reused, so it cannot establish historical account
+    /// identity; this is what erasure matches on.  `None` means no
+    /// authoritative association exists -- an anonymous, imported, system or
+    /// automatic write, or a row that predates this column.
+    pub by_account: Option<String>,
     pub why: String,
     pub source_format: String,
     pub size: i64,

@@ -306,11 +306,7 @@ impl Server {
             [point] => point.clone(),
             _ => return write_json(409, &json!({"error": "checkpoint prefix is ambiguous"})),
         };
-        let by = if current_who.key.is_empty() {
-            current_who.id.handle.clone()
-        } else {
-            current_who.key.clone()
-        };
+        let by = current_who.attribution();
         let (update, sha) = match room.restore_and_checkpoint(&point, &by).await {
             Ok(result) => result,
             Err(err) => return write_json(409, &json!({"error": err})),
