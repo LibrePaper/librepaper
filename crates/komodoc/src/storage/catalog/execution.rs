@@ -134,6 +134,35 @@ where
     }
 }
 
+/// A service-owned completion hook for a job that was given the catalogue
+/// rather than its connection.
+///
+/// It runs in the same place and under the same rules as `CatalogCompletion`
+/// — on the executing thread, after the job, before the request's permits are
+/// released, and whether or not the caller is still waiting — but it is
+/// handed the catalogue, so its reconciliation can be an ordinary catalogue
+/// method instead of hand-written SQL.  Room reservation cleanup needs that:
+/// the reservation it must release is owned by a catalogue method, not by a
+/// statement the room layer knows how to write.
+pub trait CatalogServiceCompletion: Send + 'static {
+    fn complete(self: Box<Self>, outcome: CatalogOutcome<'_>, catalog: &Catalog);
+}
+
+impl<F> CatalogServiceCompletion for F
+where
+    F: FnOnce(CatalogOutcome<'_>, &Catalog) + Send + 'static,
+{
+    fn complete(self: Box<Self>, outcome: CatalogOutcome<'_>, catalog: &Catalog) {
+        (*self)(outcome, catalog)
+    }
+}
+
+/// Which kind of completion hook a request carries.
+enum Completion {
+    Connection(Box<dyn CatalogCompletion>),
+    Service(Box<dyn CatalogServiceCompletion>),
+}
+
 #[derive(Default)]
 struct Counters {
     queued: AtomicUsize,
@@ -312,6 +341,25 @@ impl Catalog {
             .await
     }
 
+    /// Reserve and submit a catalogue job in one step, for callers whose
+    /// inputs are already owned and small.  See
+    /// `CatalogReservation::execute_catalog` for why such a job is given the
+    /// catalogue rather than the connection.
+    pub async fn execute_catalog<T, F>(
+        self: &Arc<Self>,
+        input_bytes: usize,
+        job: F,
+    ) -> Result<T, CatalogExecError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Catalog) -> CatalogResult<T> + Send + 'static,
+    {
+        self.reserve_execution(input_bytes)
+            .await?
+            .execute_catalog(job)
+            .await
+    }
+
     /// Reserve and submit a `BEGIN IMMEDIATE` transaction job in one step.
     pub async fn execute_transaction<T, F>(
         self: &Arc<Self>,
@@ -473,8 +521,11 @@ impl CatalogReservation {
         F: FnOnce(&mut Connection) -> CatalogResult<T> + Send + 'static,
         C: CatalogCompletion,
     {
-        self.submit(Work::Connection(Box::new(job)), Some(Box::new(completion)))
-            .await
+        self.submit(
+            Work::Connection(Box::new(job)),
+            Some(Completion::Connection(Box::new(completion))),
+        )
+        .await
     }
 
     /// Submit a transaction job with a service-owned completion hook.
@@ -488,14 +539,55 @@ impl CatalogReservation {
         F: FnOnce(&Transaction<'_>) -> CatalogResult<T> + Send + 'static,
         C: CatalogCompletion,
     {
-        self.submit(Work::Transaction(Box::new(job)), Some(Box::new(completion)))
-            .await
+        self.submit(
+            Work::Transaction(Box::new(job)),
+            Some(Completion::Connection(Box::new(completion))),
+        )
+        .await
+    }
+
+    /// Submit a job that is handed the catalogue instead of its connection.
+    ///
+    /// The connection is deliberately *not* locked around such a job, so the
+    /// job may call the ordinary synchronous catalogue methods.  Each of
+    /// those still opens and commits its own `BEGIN IMMEDIATE` transaction,
+    /// exactly as it does when called directly, so moving a caller onto the
+    /// boundary neither splits an existing transaction nor silently fuses two
+    /// of them; what changes is only that the wait happens on a blocking
+    /// thread under bounded admission.  A caller that needs several
+    /// statements to be atomic and has a transaction-shaped catalogue method
+    /// for them still uses `transaction`.
+    pub async fn execute_catalog<T, F>(self, job: F) -> Result<T, CatalogExecError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Catalog) -> CatalogResult<T> + Send + 'static,
+    {
+        self.submit(Work::Catalog(Box::new(job)), None).await
+    }
+
+    /// Submit a catalogue job with a service-owned completion hook.  The hook
+    /// is given the catalogue for the same reason the job is.
+    pub async fn execute_catalog_with_completion<T, F, C>(
+        self,
+        job: F,
+        completion: C,
+    ) -> Result<T, CatalogExecError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Catalog) -> CatalogResult<T> + Send + 'static,
+        C: CatalogServiceCompletion,
+    {
+        self.submit(
+            Work::Catalog(Box::new(job)),
+            Some(Completion::Service(Box::new(completion))),
+        )
+        .await
     }
 
     async fn submit<T>(
         mut self,
         work: Work<T>,
-        completion: Option<Box<dyn CatalogCompletion>>,
+        completion: Option<Completion>,
     ) -> Result<T, CatalogExecError>
     where
         T: Send + 'static,
@@ -627,24 +719,26 @@ impl CatalogReservation {
 
 /// A completion hook is service-owned cleanup: a panic in one must not take
 /// down the blocking worker or the connection with it.
-fn run_completion(
-    catalog: &Arc<Catalog>,
-    completion: Box<dyn CatalogCompletion>,
-    outcome: CatalogOutcome<'_>,
-) {
-    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        if let Ok(mut guard) = catalog.lock_connection() {
-            completion.complete(outcome, &mut guard);
+fn run_completion(catalog: &Arc<Catalog>, completion: Completion, outcome: CatalogOutcome<'_>) {
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| match completion {
+        Completion::Connection(completion) => {
+            if let Ok(mut guard) = catalog.lock_connection() {
+                completion.complete(outcome, &mut guard);
+            }
         }
+        // The catalogue methods this hook calls take the lock themselves.
+        Completion::Service(completion) => completion.complete(outcome, catalog),
     }));
 }
 
 type ConnectionJob<T> = Box<dyn FnOnce(&mut Connection) -> CatalogResult<T> + Send>;
 type TransactionJob<T> = Box<dyn for<'a> FnOnce(&Transaction<'a>) -> CatalogResult<T> + Send>;
+type CatalogJob<T> = Box<dyn FnOnce(&Catalog) -> CatalogResult<T> + Send>;
 
 enum Work<T> {
     Connection(ConnectionJob<T>),
     Transaction(TransactionJob<T>),
+    Catalog(CatalogJob<T>),
 }
 
 impl<T> Work<T> {
@@ -652,6 +746,10 @@ impl<T> Work<T> {
         match self {
             Self::Connection(job) => catalog.with_connection(job),
             Self::Transaction(job) => catalog.immediate(job),
+            // Not wrapped in `with_connection`: the connection mutex is not
+            // reentrant, so a job that calls catalogue methods must be given
+            // the catalogue with the lock free.
+            Self::Catalog(job) => job(catalog),
         }
     }
 }

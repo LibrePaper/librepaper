@@ -1,14 +1,966 @@
 //! The bridge to the catalogue: reading a room's comments, manifest and
 //! renderings out of it when the room loads, and writing them back.
+//!
+//! Every function here submits its SQL through the catalogue's execution
+//! boundary rather than running it on the caller's Tokio worker.  The shapes
+//! are the ones that boundary asks for: capacity is reserved before large
+//! owned inputs are built, one job carries a whole existing sequence of
+//! catalogue calls, and a job never performs object-store I/O or calls back
+//! into the room.
 
 use super::*;
+use crate::storage::catalog::{Catalog, CatalogExecError, MutationAuthority, RoomEditReservation};
+
+/// What a job's owned arguments cost beyond the strings it carries: the
+/// identifiers, limits and flags every catalogue descriptor has.  Small
+/// enough that such a request may wait for admission rather than being shed,
+/// which is what keeps an ordinary edit from failing under a burst.
+pub(super) const DESCRIPTOR_BYTES: usize = 128;
+
+/// A `MutationAuthority` a job can own.
+///
+/// The borrowed form cannot cross the boundary — a job takes owned inputs —
+/// and the authority is re-checked inside the catalogue transaction, so it
+/// has to arrive there intact rather than being validated early and dropped.
+#[derive(Clone, Debug)]
+pub(super) struct OwnedAuthority {
+    account_id: String,
+    owner_key: String,
+    generation: String,
+    link_hash: String,
+    policy_editor: bool,
+    automation: bool,
+    unowned_publisher: bool,
+}
+
+impl OwnedAuthority {
+    pub(super) fn new(actor: &MutationAuthority<'_>) -> Self {
+        Self {
+            account_id: actor.account_id.to_string(),
+            owner_key: actor.owner_key.to_string(),
+            generation: actor.generation.to_string(),
+            link_hash: actor.link_hash.to_string(),
+            policy_editor: actor.policy_editor,
+            automation: actor.automation,
+            unowned_publisher: actor.unowned_publisher,
+        }
+    }
+
+    pub(super) fn borrow(&self) -> MutationAuthority<'_> {
+        MutationAuthority {
+            account_id: &self.account_id,
+            owner_key: &self.owner_key,
+            generation: &self.generation,
+            link_hash: &self.link_hash,
+            policy_editor: self.policy_editor,
+            automation: self.automation,
+            unowned_publisher: self.unowned_publisher,
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        self.account_id.len() + self.owner_key.len() + self.generation.len() + self.link_hash.len()
+    }
+}
+
+/// The pending-snapshot reservation one accepted edit owns between the
+/// catalogue transaction that took it and the room state that accounts for
+/// it.
+///
+/// Cancellation is why this is a type rather than two catalogue calls.  A
+/// caller can disappear at two different moments — while the reserving
+/// transaction is still running, and after it has committed but before the
+/// awaiting future resumes — and only the first is visible to the execution
+/// boundary's completion hook, which runs on the executing thread before the
+/// result is handed back.  The hook settles the first case, this guard's
+/// `Drop` the second, and one shared slot makes sure only one of them acts.
+/// Both undo the reservation by its generation, so a reservation that a newer
+/// edit or session write has already replaced is left alone; that also makes
+/// a duplicated rollback a no-op rather than a way to release quota twice.
+pub(super) struct PendingEditReservation {
+    catalog: Arc<Catalog>,
+    slug: String,
+    slot: Arc<ReservationSlot<RoomEditReservation>>,
+}
+
+/// The handshake between the caller that will own a reservation and the
+/// completion hook that must settle it if that caller disappears.
+///
+/// `T` is whatever the undo needs: the generation of a room edit, the owner
+/// and hour of a checkpoint token, or nothing at all when the operation id
+/// already identifies what to release.  Exactly one of the two sides ever
+/// takes the value out, because both go through this mutex.
+pub(super) struct ReservationSlot<T> {
+    state: std::sync::Mutex<ReservationSlotState<T>>,
+}
+
+struct ReservationSlotState<T> {
+    /// What the job reserved, once its transaction has committed.
+    reserved: Option<T>,
+    /// The awaiting caller has gone, or has handed the reservation on.
+    caller_gone: bool,
+    /// Somebody has taken responsibility for this reservation.
+    settled: bool,
+}
+
+impl<T> Default for ReservationSlot<T> {
+    fn default() -> Self {
+        Self {
+            state: std::sync::Mutex::new(ReservationSlotState {
+                reserved: None,
+                caller_gone: false,
+                settled: false,
+            }),
+        }
+    }
+}
+
+impl<T> ReservationSlot<T> {
+    /// Recorded by the job itself, on the executing thread, before the
+    /// completion hook can look at it.
+    pub(super) fn record(&self, reserved: T) {
+        self.lock().reserved = Some(reserved);
+    }
+
+    /// The completion hook's claim: it owns the undo only if the caller was
+    /// already gone when the request settled.
+    pub(super) fn on_completion(&self) -> Option<T> {
+        let mut state = self.lock();
+        if state.settled || !state.caller_gone {
+            return None;
+        }
+        state.settled = true;
+        state.reserved.take()
+    }
+
+    /// The caller's claim, on cancellation or an explicit undo.  When the job
+    /// has not committed yet there is nothing to undo and the hook will find
+    /// `caller_gone` set.
+    pub(super) fn abandon(&self) -> Option<T> {
+        let mut state = self.lock();
+        state.caller_gone = true;
+        if state.settled {
+            return None;
+        }
+        let reserved = state.reserved.take()?;
+        state.settled = true;
+        Some(reserved)
+    }
+
+    /// What the caller would have to undo, without settling it: the guard
+    /// stays responsible until the undo has actually happened.
+    pub(super) fn peek(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        let state = self.lock();
+        if state.settled {
+            return None;
+        }
+        state.reserved.clone()
+    }
+
+    /// Nobody owes anything: the room has taken the reservation on, or the
+    /// undo has run.
+    pub(super) fn keep(&self) {
+        let mut state = self.lock();
+        state.caller_gone = true;
+        state.settled = true;
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ReservationSlotState<T>> {
+        match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
+impl PendingEditReservation {
+    /// The room state now accounts for these bytes.  The reservation stays
+    /// charged until the room's next reservation replaces it, which is what
+    /// makes room admission include unsaved work.
+    pub(super) fn keep(self) {
+        self.slot.keep();
+    }
+
+    /// The update was refused after the bytes were reserved, so give them
+    /// back now rather than leaving the document charged for a snapshot that
+    /// will never exist.  Cancellation here is safe: the guard stays armed
+    /// across the await, and a rollback that ran twice is refused by the
+    /// generation the second time.
+    pub(super) async fn rollback(self) {
+        let Some(reservation) = self.slot.peek() else {
+            return;
+        };
+        let slug = self.slug.clone();
+        let restored = self
+            .catalog
+            .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+                catalog.restore_room_edit(&slug, reservation)
+            })
+            .await;
+        if restored.is_ok() {
+            self.slot.keep();
+        }
+    }
+}
+
+impl Drop for PendingEditReservation {
+    fn drop(&mut self) {
+        let Some(reservation) = self.slot.abandon() else {
+            return;
+        };
+        // The caller was cancelled after the reservation committed and before
+        // it took ownership.  A `Drop` cannot await, so this is the one
+        // catalogue call the room still makes synchronously; it runs only on
+        // that cancellation path, it is a single conditional statement, and
+        // the alternative — leaving the bytes charged until the document is
+        // edited again — is a quota leak on a document nobody may touch
+        // again.
+        if let Err(error) = self.catalog.restore_room_edit(&self.slug, reservation) {
+            eprintln!(
+                "warning: could not release the pending edit reservation for {}: {error}",
+                self.slug
+            );
+        }
+    }
+}
+
+/// Reserve a complete pending snapshot for one update.
+///
+/// The reservation is taken on a blocking thread under the boundary's
+/// admission, so the quota decision no longer parks a Tokio worker on the
+/// connection; what it does still hold is the caller's room gates, which is
+/// recorded in the track 1 inventory for track 2 to shorten.
+pub(super) async fn reserve_pending_edit(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    bytes: i64,
+    owner_limit: i64,
+    total_limit: i64,
+) -> Result<PendingEditReservation, CatalogExecError> {
+    let slot = Arc::new(ReservationSlot::default());
+    let guard = PendingEditReservation {
+        catalog: catalog.clone(),
+        slug: slug.to_string(),
+        slot: slot.clone(),
+    };
+    let job_slot = slot.clone();
+    let job_slug = slug.to_string();
+    let cleanup = EditReservationCleanup {
+        slug: slug.to_string(),
+        slot,
+    };
+    catalog
+        .reserve_execution(slug.len() + DESCRIPTOR_BYTES)
+        .await?
+        .execute_catalog_with_completion(
+            move |catalog| {
+                let reservation =
+                    catalog.reserve_room_edit(&job_slug, bytes, owner_limit, total_limit)?;
+                job_slot.record(reservation);
+                Ok(())
+            },
+            cleanup,
+        )
+        .await?;
+    Ok(guard)
+}
+
+/// The single session writer's reservation, held from the transaction that
+/// moves the pending snapshot into it until the snapshot is durable.
+///
+/// This is the `RoomWriteQuota` the room used to build by hand, with the
+/// cancellation window closed: the reservation is created by the same call
+/// that takes it, so there is no longer a gap between the catalogue
+/// transaction committing and the guard existing in which a cancelled writer
+/// would leave `writing_bytes` charged forever.  Settlement is unconditional
+/// because the session writer gate serialises these: no newer session write
+/// can have taken the row while this one still holds the gate.
+pub(super) struct RoomWriteReservation {
+    catalog: Arc<Catalog>,
+    storage_id: String,
+    slot: Arc<ReservationSlot<()>>,
+}
+
+impl RoomWriteReservation {
+    /// The snapshot is durable, so its cost has moved into ordinary object
+    /// accounting.
+    pub(super) async fn commit(self) -> Result<(), String> {
+        if self.slot.abandon().is_none() {
+            return Ok(());
+        }
+        let storage_id = self.storage_id.clone();
+        self.catalog
+            .execute_catalog(storage_id.len() + DESCRIPTOR_BYTES, move |catalog| {
+                catalog.finish_room_write(&storage_id, true)
+            })
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl Drop for RoomWriteReservation {
+    fn drop(&mut self) {
+        if self.slot.abandon().is_none() {
+            return;
+        }
+        // The write failed or its caller went away: the bytes go back to the
+        // room's pending reservation, which is what admission counts. A
+        // `Drop` cannot await, and this is the same synchronous call the
+        // hand-written quota guard made before.
+        if let Err(error) = self.catalog.finish_room_write(&self.storage_id, false) {
+            eprintln!(
+                "warning: could not restore pending edit quota for {}: {error}",
+                self.storage_id
+            );
+        }
+    }
+}
+
+/// The service's half of the session writer's reservation.
+struct RoomWriteCleanup {
+    storage_id: String,
+    slot: Arc<ReservationSlot<()>>,
+}
+
+impl crate::storage::catalog::CatalogServiceCompletion for RoomWriteCleanup {
+    fn complete(
+        self: Box<Self>,
+        outcome: crate::storage::catalog::CatalogOutcome<'_>,
+        catalog: &Catalog,
+    ) {
+        if !matches!(outcome, crate::storage::catalog::CatalogOutcome::Committed) {
+            return;
+        }
+        if self.slot.on_completion().is_none() {
+            return;
+        }
+        if let Err(error) = catalog.finish_room_write(&self.storage_id, false) {
+            eprintln!(
+                "warning: could not restore pending edit quota for {}: {error}",
+                self.storage_id
+            );
+        }
+    }
+}
+
+/// Move a room's pending snapshot into the session writer's reservation.
+pub(super) async fn begin_room_write(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    storage_id: &str,
+    bytes: i64,
+    owner_limit: i64,
+    total_limit: i64,
+) -> Result<RoomWriteReservation, CatalogExecError> {
+    let slot = Arc::new(ReservationSlot::default());
+    let guard = RoomWriteReservation {
+        catalog: catalog.clone(),
+        storage_id: storage_id.to_string(),
+        slot: slot.clone(),
+    };
+    let cleanup = RoomWriteCleanup {
+        storage_id: storage_id.to_string(),
+        slot: slot.clone(),
+    };
+    let job_slug = slug.to_string();
+    catalog
+        .reserve_execution(slug.len() + storage_id.len() + DESCRIPTOR_BYTES)
+        .await?
+        .execute_catalog_with_completion(
+            move |catalog| {
+                catalog.begin_room_write(&job_slug, bytes, owner_limit, total_limit)?;
+                slot.record(());
+                Ok(())
+            },
+            cleanup,
+        )
+        .await?;
+    Ok(guard)
+}
+
+/// The service's half of the reservation handshake: it runs on the executing
+/// thread whether or not the caller is still waiting, and undoes the
+/// reservation only when the caller had already gone by the time the
+/// transaction settled.
+struct EditReservationCleanup {
+    slug: String,
+    slot: Arc<ReservationSlot<RoomEditReservation>>,
+}
+
+impl crate::storage::catalog::CatalogServiceCompletion for EditReservationCleanup {
+    fn complete(
+        self: Box<Self>,
+        outcome: crate::storage::catalog::CatalogOutcome<'_>,
+        catalog: &Catalog,
+    ) {
+        if !matches!(outcome, crate::storage::catalog::CatalogOutcome::Committed) {
+            // Nothing committed, so there is no reservation to undo.
+            return;
+        }
+        let Some(reservation) = self.slot.on_completion() else {
+            return;
+        };
+        if let Err(error) = catalog.restore_room_edit(&self.slug, reservation) {
+            eprintln!(
+                "warning: could not release the pending edit reservation for {}: {error}",
+                self.slug
+            );
+        }
+    }
+}
+
+/// The owned identity of one accounted object mutation.  Reserve, commit and
+/// abort all name the same `operation_id`, which is the receipt this
+/// reservation is reconciled by: an abort can only ever release the operation
+/// it names, so a late cleanup cannot touch a newer upload of the same key.
+#[derive(Clone, Debug)]
+pub(super) struct ObjectChange {
+    pub(super) slug: String,
+    pub(super) storage_id: String,
+    pub(super) operation_id: String,
+    pub(super) object_key: String,
+    pub(super) kind: String,
+}
+
+impl ObjectChange {
+    fn bytes(&self) -> usize {
+        DESCRIPTOR_BYTES
+            + self.slug.len()
+            + self.storage_id.len()
+            + self.operation_id.len()
+            + self.object_key.len()
+            + self.kind.len()
+    }
+}
+
+/// An object reservation the room owns between the catalogue transaction that
+/// took it and the object-store write that settles it.
+///
+/// Before this guard existed the abort was only issued on the error paths a
+/// caller reached by returning, so a caller cancelled during the upload — the
+/// long await in the middle — left the bytes reserved for the life of the
+/// process.  The guard settles that case and the cancelled-during-SQL case
+/// the same way the pending edit reservation does: a completion hook for the
+/// window the caller cannot observe, `Drop` for the window after it.
+pub(super) struct ObjectChangeGuard {
+    catalog: Arc<Catalog>,
+    change: ObjectChange,
+    slot: Arc<ReservationSlot<()>>,
+}
+
+impl ObjectChangeGuard {
+    /// The object is written: turn the reservation into durable accounting.
+    /// A failed commit aborts inside the same job, so the reservation is
+    /// released even if this caller never sees the answer.
+    pub(super) async fn commit(self, at: String) -> Result<(), String> {
+        let change = self.change.clone();
+        let input_bytes = change.bytes() + at.len();
+        let committed = self
+            .catalog
+            .execute_catalog(input_bytes, move |catalog| {
+                match catalog.commit_object_change(
+                    &change.storage_id,
+                    &change.operation_id,
+                    &change.object_key,
+                    &change.kind,
+                    &at,
+                ) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        let _ = catalog.abort_object_change(
+                            &change.storage_id,
+                            &change.operation_id,
+                            &change.object_key,
+                        );
+                        Err(error)
+                    }
+                }
+            })
+            .await;
+        match committed {
+            Ok(()) => {
+                self.slot.keep();
+                Ok(())
+            }
+            // The job's own abort ran, or nothing was submitted at all; either
+            // way `Drop` re-checks and a repeated abort of the same operation
+            // id is a no-op.
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// The object was not written.  Release the reservation now rather than
+    /// leaving it to the guard, so the failure path stays off the connection
+    /// on the caller's thread.
+    pub(super) async fn abort(self) {
+        if self.slot.abandon().is_none() {
+            return;
+        }
+        let change = self.change.clone();
+        let input_bytes = change.bytes();
+        let aborted = self
+            .catalog
+            .execute_catalog(input_bytes, move |catalog| {
+                catalog.abort_object_change(
+                    &change.storage_id,
+                    &change.operation_id,
+                    &change.object_key,
+                )
+            })
+            .await;
+        if let Err(error) = aborted {
+            eprintln!(
+                "warning: could not release the object reservation for {}: {error}",
+                self.change.object_key
+            );
+        }
+    }
+}
+
+impl Drop for ObjectChangeGuard {
+    fn drop(&mut self) {
+        if self.slot.abandon().is_none() {
+            return;
+        }
+        // Cancelled while holding a live reservation.  A `Drop` cannot await,
+        // and leaving the bytes charged would count an object that was never
+        // written against the document's quota until the process restarts.
+        if let Err(error) = self.catalog.abort_object_change(
+            &self.change.storage_id,
+            &self.change.operation_id,
+            &self.change.object_key,
+        ) {
+            eprintln!(
+                "warning: could not release the object reservation for {}: {error}",
+                self.change.object_key
+            );
+        }
+    }
+}
+
+/// The service's half of the object reservation handshake.
+struct ObjectChangeCleanup {
+    change: ObjectChange,
+    slot: Arc<ReservationSlot<()>>,
+}
+
+impl crate::storage::catalog::CatalogServiceCompletion for ObjectChangeCleanup {
+    fn complete(
+        self: Box<Self>,
+        outcome: crate::storage::catalog::CatalogOutcome<'_>,
+        catalog: &Catalog,
+    ) {
+        if !matches!(outcome, crate::storage::catalog::CatalogOutcome::Committed) {
+            return;
+        }
+        if self.slot.on_completion().is_none() {
+            return;
+        }
+        if let Err(error) = catalog.abort_object_change(
+            &self.change.storage_id,
+            &self.change.operation_id,
+            &self.change.object_key,
+        ) {
+            eprintln!(
+                "warning: could not release the object reservation for {}: {error}",
+                self.change.object_key
+            );
+        }
+    }
+}
+
+/// Reserve the bytes one object write is about to add.
+pub(super) async fn reserve_object_change(
+    catalog: &Arc<Catalog>,
+    change: ObjectChange,
+    new_bytes: i64,
+    owner_limit: i64,
+    total_limit: i64,
+    actor: Option<OwnedAuthority>,
+) -> Result<ObjectChangeGuard, CatalogExecError> {
+    let slot = Arc::new(ReservationSlot::default());
+    let guard = ObjectChangeGuard {
+        catalog: catalog.clone(),
+        change: change.clone(),
+        slot: slot.clone(),
+    };
+    let cleanup = ObjectChangeCleanup {
+        change: change.clone(),
+        slot: slot.clone(),
+    };
+    let input_bytes = change.bytes()
+        + actor
+            .as_ref()
+            .map(OwnedAuthority::bytes)
+            .unwrap_or_default();
+    catalog
+        .reserve_execution(input_bytes)
+        .await?
+        .execute_catalog_with_completion(
+            move |catalog| {
+                let request = crate::storage::catalog::ObjectReservationRequest {
+                    slug: &change.slug,
+                    operation_id: &change.operation_id,
+                    object_key: &change.object_key,
+                    kind: &change.kind,
+                    new_bytes,
+                    owner_limit,
+                    total_limit,
+                };
+                match &actor {
+                    Some(actor) => {
+                        catalog.reserve_object_change_with_authority(request, actor.borrow())?
+                    }
+                    None => catalog.reserve_object_change(request)?,
+                };
+                slot.record(());
+                Ok(())
+            },
+            cleanup,
+        )
+        .await?;
+    Ok(guard)
+}
+
+/// One document row, read through the boundary.  Every room path that only
+/// needs the catalogue's view of a document goes through here rather than
+/// taking the connection on a Tokio worker.
+pub(super) async fn read_catalog_document(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+) -> Result<Option<crate::storage::catalog::Document>, CatalogExecError> {
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.document(&slug)
+        })
+        .await
+}
+
+/// The checkpoint that already records this content, if there is one.
+pub(super) async fn read_checkpoint_by_content_sha(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    content_sha: &str,
+) -> Result<Option<crate::storage::catalog::Checkpoint>, String> {
+    let slug = slug.to_string();
+    let content_sha = content_sha.to_string();
+    catalog
+        .execute_catalog(
+            slug.len() + content_sha.len() + DESCRIPTOR_BYTES,
+            move |catalog| catalog.checkpoint_by_content_sha(&slug, &content_sha),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Advance the automatic-checkpoint clock for a document.
+pub(super) async fn touch_auto_checkpoint(catalog: &Arc<Catalog>, slug: &str, at: i64) {
+    let slug = slug.to_string();
+    let _ = catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.touch_auto_checkpoint(&slug, at)
+        })
+        .await;
+}
+
+/// The complete persisted checkpoint count and byte total.
+pub(super) async fn read_checkpoint_stats(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+) -> Result<(u64, i64), CatalogExecError> {
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.checkpoint_stats(&slug)
+        })
+        .await
+}
+
+/// Keep an already durable checkpoint descriptor inside a prepared
+/// publication receipt.
+///
+/// The document read, the checkpoint read and the staging write are one job.
+/// They were three transactions and they still are; what they no longer do is
+/// take the connection three times from the checkpoint path's Tokio worker,
+/// and a caller that goes away after the first two cannot leave the third
+/// unissued, because the job owns the whole sequence once it is dispatched.
+pub(super) async fn stage_existing_publication_checkpoint(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    sha: &str,
+) -> Result<(), String> {
+    let slug = slug.to_string();
+    let sha = sha.to_string();
+    catalog
+        .execute_catalog(slug.len() + sha.len() + DESCRIPTOR_BYTES, move |catalog| {
+            if catalog
+                .document(&slug)?
+                .and_then(|document| document.pending_publication)
+                .is_none()
+            {
+                return Ok(());
+            }
+            if let Some(checkpoint) = catalog.checkpoint(&slug, &sha)? {
+                catalog.stage_publication_checkpoint(&slug, &checkpoint)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Apply the catalogue's own retention limits to a document's history.
+pub(super) async fn shed_checkpoints_to_limits(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    keep_count: usize,
+    ceiling: Option<i64>,
+    protected: String,
+) -> Result<Vec<String>, String> {
+    let input_bytes = slug.len() + DESCRIPTOR_BYTES + protected.len();
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(
+            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+            move |catalog| {
+                catalog.shed_checkpoints_to_limits(&slug, keep_count, ceiling, &protected)
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Remove shed checkpoint rows, and report which ones went, so the caller
+/// deletes only the objects whose metadata is actually gone.  One job for the
+/// whole set: each row is still its own transaction, and a row that fails
+/// keeps its object for a later retry exactly as before.
+pub(super) async fn delete_checkpoints(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    shas: Vec<String>,
+) -> Vec<String> {
+    let input_bytes = slug.len() + DESCRIPTOR_BYTES + shas.iter().map(String::len).sum::<usize>();
+    let slug_owned = slug.to_string();
+    let reported = catalog
+        .execute_catalog(
+            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+            move |catalog| {
+                let mut removed = Vec::new();
+                for sha in &shas {
+                    match catalog.delete_checkpoint(&slug_owned, sha) {
+                        Ok(_) => removed.push(sha.clone()),
+                        Err(error) => eprintln!(
+                            "warning: could not remove shed checkpoint {sha} for \
+                             {slug_owned}: {error}"
+                        ),
+                    }
+                }
+                Ok(removed)
+            },
+        )
+        .await;
+    match reported {
+        Ok(removed) => removed,
+        Err(error) => {
+            eprintln!("warning: could not remove shed checkpoints for {slug}: {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// Resolve a checkpoint prefix against the authoritative catalogue.
+pub(super) async fn read_checkpoints_prefix(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    prefix: &str,
+) -> Result<Vec<crate::storage::catalog::Checkpoint>, String> {
+    let slug = slug.to_string();
+    let prefix = prefix.to_string();
+    catalog
+        .execute_catalog(
+            slug.len() + prefix.len() + DESCRIPTOR_BYTES,
+            move |catalog| catalog.checkpoints_prefix(&slug, &prefix),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// One keyset page of the authoritative checkpoint timeline.
+pub(super) async fn read_checkpoints_page(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    after_seq: Option<i64>,
+    limit: u32,
+) -> Result<Vec<crate::storage::catalog::Checkpoint>, String> {
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.checkpoints(&slug, after_seq, limit)
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Label a checkpoint, with the request's authority re-checked inside the
+/// write.
+///
+/// There is no operation id here, and adding one would change a persisted
+/// record for a mutation that is already idempotent: a label write sets the
+/// stored label to exactly what the request asked for, so a repeat is the
+/// same write and a cancelled caller leaves either the old label or the new
+/// one, never a half-applied state.  That is the reconciliation rule for this
+/// operation, and it is why it needs no completion hook.
+pub(super) async fn label_checkpoint(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    sha: &str,
+    label: &str,
+    actor: Option<OwnedAuthority>,
+) -> crate::storage::catalog::CatalogResult<()> {
+    let input_bytes = slug.len()
+        + sha.len()
+        + label.len()
+        + DESCRIPTOR_BYTES
+        + actor
+            .as_ref()
+            .map(OwnedAuthority::bytes)
+            .unwrap_or_default();
+    let slug = slug.to_string();
+    let sha = sha.to_string();
+    let label = label.to_string();
+    match catalog
+        .execute_catalog(input_bytes, move |catalog| match &actor {
+            Some(actor) => catalog
+                .label_checkpoint_with_authority(&slug, &sha, &label, actor.borrow())
+                .map(|_| ()),
+            None => catalog.label_checkpoint(&slug, &sha, &label).map(|_| ()),
+        })
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(CatalogExecError::Catalog(error)) => Err(error),
+        Err(error) => Err(crate::storage::catalog::CatalogError::Invalid(
+            error.to_string(),
+        )),
+    }
+}
+
+/// One rendering row, read through the boundary.
+pub(super) async fn read_catalog_rendering(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    tree_sha: &str,
+) -> Option<crate::storage::catalog::Rendering> {
+    let slug = slug.to_string();
+    let tree_sha = tree_sha.to_string();
+    catalog
+        .execute_catalog(
+            slug.len() + tree_sha.len() + DESCRIPTOR_BYTES,
+            move |catalog| catalog.rendering(&slug, &tree_sha),
+        )
+        .await
+        .ok()
+        .flatten()
+}
+
+/// One checkpoint row, read through the boundary.
+pub(super) async fn read_catalog_checkpoint(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    sha: &str,
+) -> Result<Option<crate::storage::catalog::Checkpoint>, CatalogExecError> {
+    let slug = slug.to_string();
+    let sha = sha.to_string();
+    catalog
+        .execute_catalog(slug.len() + sha.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.checkpoint(&slug, &sha)
+        })
+        .await
+}
+
+/// The newest rendering this document could show, read through the boundary.
+pub(super) async fn read_newest_rendering_candidate(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+) -> Option<crate::storage::catalog::RenderingCandidate> {
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.newest_rendering_candidate(&slug)
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Release the object accounting for a blob that has been deleted.
+pub(super) async fn release_object_accounting(catalog: &Arc<Catalog>, key: &str) {
+    let key = key.to_string();
+    let _ = catalog
+        .execute_catalog(key.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.release_object_accounting_key(&key)
+        })
+        .await;
+}
+
+/// Retire a pruning pass's renderings.  One job for the whole pass: the
+/// per-rendering retirements were already separate transactions, and issuing
+/// them from one blocking thread keeps a long pass from taking the connection
+/// once per rendering from a Tokio worker.
+pub(super) async fn retire_renderings(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    shas: Vec<String>,
+    now: i64,
+) {
+    let input_bytes = slug.len()
+        + DESCRIPTOR_BYTES
+        + shas
+            .iter()
+            .map(|sha| sha.len())
+            .sum::<usize>()
+            .min(crate::storage::catalog::MAX_REQUEST_BYTES);
+    let slug = slug.to_string();
+    let _ = catalog
+        .execute_catalog(
+            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+            move |catalog| {
+                for sha in &shas {
+                    let _ = catalog.retire_rendering(&slug, sha, now, now);
+                }
+                Ok(())
+            },
+        )
+        .await;
+}
 
 /// Load the mutable annotation state from SQLite.  The JSON room object is
 /// retained only for isolated legacy fixtures; a catalogue-backed room never
 /// consults it, so a restart has one authoritative source for comments and
 /// replies.
-pub(super) fn load_catalog_comments(
-    catalog: &crate::storage::catalog::Catalog,
+///
+/// The comment listing and its per-comment reply reads are one job: they were
+/// already one read each, and issuing them from a single blocking thread
+/// keeps a cold room's load from taking the connection five hundred separate
+/// times from a Tokio worker.
+pub(super) async fn load_catalog_comments(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+) -> Result<(i64, Vec<Comment>), CatalogExecError> {
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            load_catalog_comments_blocking(catalog, &slug)
+        })
+        .await
+}
+
+fn load_catalog_comments_blocking(
+    catalog: &Catalog,
     slug: &str,
 ) -> crate::storage::catalog::CatalogResult<(i64, Vec<Comment>)> {
     let rows = catalog.comments(slug, None, 500)?;
@@ -182,10 +1134,62 @@ pub(super) fn request_digest(value: &Value) -> String {
 /// far) costs nothing worth batching. Do not add a new caller on a request
 /// path: update the one row that changed instead, the way every handler
 /// above already does.
-pub(super) fn save_catalog_comments(
-    catalog: &crate::storage::catalog::Catalog,
+pub(super) async fn save_catalog_comments(
+    catalog: &Arc<Catalog>,
     slug: &str,
     seq: &mut i64,
+    comments: &mut [Comment],
+) -> Result<(), String> {
+    // Reserved from the borrowed comments, before the owned copy the job
+    // carries is built: a caller that copied first would already have spent
+    // the memory the budget exists to bound.
+    let input_bytes = slug.len()
+        + DESCRIPTOR_BYTES
+        + comments
+            .iter()
+            .map(comment_bytes)
+            .sum::<usize>()
+            .min(crate::storage::catalog::MAX_REQUEST_BYTES);
+    let reservation = catalog
+        .reserve_execution(input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES))
+        .await
+        .map_err(|error| error.to_string())?;
+    let slug_owned = slug.to_string();
+    let mut owned: Vec<Comment> = comments.to_vec();
+    let assigned = reservation
+        .execute_catalog(move |catalog| {
+            save_catalog_comments_blocking(catalog, &slug_owned, &mut owned)
+                .map_err(crate::storage::catalog::CatalogError::Invalid)?;
+            Ok(owned.iter().map(|item| item.seq).collect::<Vec<i64>>())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    for (item, item_seq) in comments.iter_mut().zip(assigned) {
+        item.seq = item_seq;
+        *seq = (*seq).max(item_seq);
+    }
+    Ok(())
+}
+
+/// What one comment costs as an owned job input.  An estimate rather than a
+/// measurement: it names the fields that actually carry a person's text.
+fn comment_bytes(item: &Comment) -> usize {
+    DESCRIPTOR_BYTES
+        + item.body.len()
+        + item.exact.len()
+        + item.prefix.len()
+        + item.suffix.len()
+        + item.proposed.as_ref().map(String::len).unwrap_or_default()
+        + item
+            .replies
+            .iter()
+            .map(|reply| DESCRIPTOR_BYTES + reply.body.len())
+            .sum::<usize>()
+}
+
+fn save_catalog_comments_blocking(
+    catalog: &Catalog,
+    slug: &str,
     comments: &mut [Comment],
 ) -> Result<(), String> {
     for item in comments.iter_mut() {
@@ -207,7 +1211,6 @@ pub(super) fn save_catalog_comments(
                 .insert_comment(&row)
                 .map_err(|err| err.to_string())?;
             item.seq = inserted.seq;
-            *seq = (*seq).max(inserted.seq);
         }
         let current_replies = catalog
             .replies(slug, &item.id, 100)
@@ -252,8 +1255,8 @@ pub(super) fn save_catalog_comments(
     // process inserted, and replacing all rows would erase that concurrent
     // write.
     // comment_seq is only ever advanced by insert_comment.  Never write the
-    // room's possibly stale cached value back over the authoritative counter.
-    let _ = seq;
+    // room's possibly stale cached value back over the authoritative counter;
+    // the caller only raises its cached maximum from the seqs assigned here.
     Ok(())
 }
 
@@ -262,26 +1265,43 @@ pub(super) fn save_catalog_comments(
 /// tail here bounds resident memory for documents with years of checkpoints.
 pub(super) const RESIDENT_CATALOG_HISTORY: u32 = 64;
 
-pub(super) fn load_catalog_manifest(
-    catalog: &crate::storage::catalog::Catalog,
+pub(super) async fn load_catalog_manifest(
+    catalog: &Arc<Catalog>,
     slug: &str,
-) -> crate::storage::catalog::CatalogResult<Manifest> {
-    let rows = catalog.checkpoints_tail(slug, RESIDENT_CATALOG_HISTORY)?;
-    Manifest::from_catalog_rows(rows).map_err(crate::storage::catalog::CatalogError::Invalid)
+) -> Result<Manifest, CatalogExecError> {
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            let rows = catalog.checkpoints_tail(&slug, RESIDENT_CATALOG_HISTORY)?;
+            Manifest::from_catalog_rows(rows)
+                .map_err(crate::storage::catalog::CatalogError::Invalid)
+        })
+        .await
 }
 
-pub(super) fn load_catalog_history(
-    catalog: &crate::storage::catalog::Catalog,
+/// The complete timeline, paged inside one job.
+///
+/// The paging stays: a room with years of checkpoints must not read them in
+/// one statement.  What changes is that the whole loop is one admitted
+/// request on a blocking thread instead of one connection acquisition per
+/// page from a Tokio worker.
+pub(super) async fn load_catalog_history(
+    catalog: &Arc<Catalog>,
     slug: &str,
-) -> crate::storage::catalog::CatalogResult<Vec<Checkpoint>> {
-    let rows = load_catalog_checkpoint_rows(catalog, slug)?;
-    Manifest::from_catalog_rows(rows)
-        .map(|manifest| manifest.checkpoints)
-        .map_err(crate::storage::catalog::CatalogError::Invalid)
+) -> Result<Vec<Checkpoint>, CatalogExecError> {
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            let rows = load_catalog_checkpoint_rows(catalog, &slug)?;
+            Manifest::from_catalog_rows(rows)
+                .map(|manifest| manifest.checkpoints)
+                .map_err(crate::storage::catalog::CatalogError::Invalid)
+        })
+        .await
 }
 
-pub(super) fn load_catalog_checkpoint_rows(
-    catalog: &crate::storage::catalog::Catalog,
+fn load_catalog_checkpoint_rows(
+    catalog: &Catalog,
     slug: &str,
 ) -> crate::storage::catalog::CatalogResult<Vec<crate::storage::catalog::Checkpoint>> {
     // Catalog reads are deliberately bounded.  Never load only the first
@@ -304,13 +1324,58 @@ pub(super) fn load_catalog_checkpoint_rows(
     Ok(rows)
 }
 
-pub(super) fn save_catalog_manifest(
-    catalog: &crate::storage::catalog::Catalog,
+pub(super) async fn save_catalog_manifest(
+    catalog: &Arc<Catalog>,
     slug: &str,
     previous: &Manifest,
     manifest: &Manifest,
     durable_seq: i64,
 ) -> Result<(), String> {
+    let rows = manifest_rows_to_write(slug, previous, manifest, durable_seq)?;
+    // Reserved from the rows that will actually be written, before they are
+    // handed to the job.
+    let input_bytes = slug.len()
+        + DESCRIPTOR_BYTES
+        + rows
+            .iter()
+            .map(|row| DESCRIPTOR_BYTES + row.sha.len() + row.label.len() + row.by.len())
+            .sum::<usize>();
+    let slug_owned = slug.to_string();
+    catalog
+        .execute_catalog(
+            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+            move |catalog| {
+                // A publication has a prepared receipt.  Keep its checkpoint
+                // descriptor in that receipt until the final commit
+                // transaction; ordinary checkpoints retain the direct atomic
+                // insert path.
+                if catalog
+                    .document(&slug_owned)?
+                    .and_then(|document| document.pending_publication)
+                    .is_some()
+                {
+                    if let Some(row) = rows.last() {
+                        catalog.stage_publication_checkpoint(&slug_owned, row)?;
+                    }
+                } else {
+                    catalog.insert_checkpoints_atomic(&rows)?;
+                }
+                Ok(())
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())
+    // A resident-tail snapshot intentionally omits older rows.  Absence from
+    // `previous`/`manifest` therefore never means deletion; destructive
+    // retention is an explicit catalogue operation with its own policy.
+}
+
+fn manifest_rows_to_write(
+    slug: &str,
+    previous: &Manifest,
+    manifest: &Manifest,
+    durable_seq: i64,
+) -> Result<Vec<crate::storage::catalog::Checkpoint>, String> {
     let previous_by_sha: HashMap<_, _> = previous
         .checkpoints
         .iter()
@@ -331,69 +1396,53 @@ pub(super) fn save_catalog_manifest(
             rows.push(row);
         }
     }
-    // A publication has a prepared receipt.  Keep its checkpoint descriptor
-    // in that receipt until the final commit transaction; ordinary checkpoints
-    // retain the direct atomic insert path.
-    if catalog
-        .document(slug)
-        .map_err(|err| err.to_string())?
-        .and_then(|document| document.pending_publication)
-        .is_some()
-    {
-        if let Some(row) = rows.last() {
-            catalog
-                .stage_publication_checkpoint(slug, row)
-                .map_err(|err| err.to_string())?;
-        }
-    } else {
-        catalog
-            .insert_checkpoints_atomic(&rows)
-            .map_err(|err| err.to_string())?;
-    }
-    // A resident-tail snapshot intentionally omits older rows.  Absence from
-    // `previous`/`manifest` therefore never means deletion; destructive
-    // retention is an explicit catalogue operation with its own policy.
-    Ok(())
+    Ok(rows)
 }
 
-#[allow(dead_code)]
-pub(super) fn save_catalog_rendering(
-    catalog: &crate::storage::catalog::Catalog,
+/// Record a rendering's catalogue row: read what is there, merge this
+/// upload's half of it, publish.
+///
+/// The read and the publish are one job.  They were two transactions before
+/// and they still are, but a caller cancelled between them used to leave the
+/// blocking read having parked a Tokio worker for nothing; now the whole
+/// sequence belongs to the service once it is dispatched, and the publish
+/// happens whether or not the uploader is still waiting for its answer.  The
+/// authority travels owned into the job because it is re-checked inside the
+/// publishing transaction.
+pub(super) async fn save_catalog_rendering_with_authority(
+    catalog: &Arc<Catalog>,
     slug: &str,
     tree_sha: &str,
     synctex: bool,
     size: i64,
-    actor: Option<(&str, &str, &str)>,
+    actor: Option<OwnedAuthority>,
 ) -> Result<(), String> {
-    save_catalog_rendering_with_authority(
-        catalog,
-        slug,
-        tree_sha,
-        synctex,
-        size,
-        actor.map(|actor| crate::storage::catalog::MutationAuthority {
-            account_id: actor.0,
-            owner_key: actor.1,
-            generation: actor.2,
-            link_hash: "",
-            policy_editor: true,
-            automation: false,
-            unowned_publisher: false,
-        }),
-    )
+    let input_bytes = slug.len()
+        + tree_sha.len()
+        + DESCRIPTOR_BYTES
+        + actor
+            .as_ref()
+            .map(OwnedAuthority::bytes)
+            .unwrap_or_default();
+    let slug = slug.to_string();
+    let tree_sha = tree_sha.to_string();
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            save_catalog_rendering_blocking(catalog, &slug, &tree_sha, synctex, size, actor)
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
-pub(super) fn save_catalog_rendering_with_authority(
-    catalog: &crate::storage::catalog::Catalog,
+fn save_catalog_rendering_blocking(
+    catalog: &Catalog,
     slug: &str,
     tree_sha: &str,
     synctex: bool,
     size: i64,
-    actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-) -> Result<(), String> {
-    let previous = catalog
-        .rendering(slug, tree_sha)
-        .map_err(|err| err.to_string())?;
+    actor: Option<OwnedAuthority>,
+) -> crate::storage::catalog::CatalogResult<()> {
+    let previous = catalog.rendering(slug, tree_sha)?;
     let rendering = crate::storage::catalog::Rendering {
         slug: slug.to_string(),
         tree_sha: tree_sha.to_string(),
@@ -431,14 +1480,10 @@ pub(super) fn save_catalog_rendering_with_authority(
     };
     if let Some(actor) = actor {
         catalog
-            .publish_rendering_with_authority(&rendering, actor)
+            .publish_rendering_with_authority(&rendering, actor.borrow())
             .map(|_| ())
-            .map_err(|err| err.to_string())
     } else {
-        catalog
-            .publish_rendering(&rendering)
-            .map(|_| ())
-            .map_err(|err| err.to_string())
+        catalog.publish_rendering(&rendering).map(|_| ())
     }
 }
 

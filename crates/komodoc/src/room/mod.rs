@@ -435,25 +435,6 @@ impl Drop for InFlight<'_> {
     }
 }
 
-struct RoomWriteQuota<'a> {
-    room: &'a Room,
-    committed: bool,
-}
-impl Drop for RoomWriteQuota<'_> {
-    fn drop(&mut self) {
-        if !self.committed {
-            if let Some(catalog) = self.room.catalog.get() {
-                if let Err(error) = catalog.finish_room_write(&self.room.storage_id, false) {
-                    eprintln!(
-                        "warning: could not restore pending edit quota for {}: {error}",
-                        self.room.slug
-                    );
-                }
-            }
-        }
-    }
-}
-
 pub struct RoomSet {
     /// Who this server is, in the lock objects it takes. A name rather than a
     /// pid, because a pid means nothing to whoever reads the refusal.
@@ -759,7 +740,7 @@ impl RoomSet {
         }
         let mut catalog_read_failed = false;
         let catalog_document = match self.catalog.get() {
-            Some(catalog) => match catalog.document(slug) {
+            Some(catalog) => match read_catalog_document(catalog, slug).await {
                 Ok(document) => document,
                 Err(error) => {
                     eprintln!(
@@ -976,11 +957,13 @@ impl RoomSet {
         // in memory at once, and hard admission simply defers the remainder.
         if let Some(catalog) = self.catalog.get() {
             let now = now_unix();
-            if let Ok(due) = catalog.documents_due_auto_checkpoint(
-                now,
-                self.config.session.history_interval_seconds,
-                64,
-            ) {
+            let interval = self.config.session.history_interval_seconds;
+            let due = catalog
+                .execute_catalog(DESCRIPTOR_BYTES, move |catalog| {
+                    catalog.documents_due_auto_checkpoint(now, interval, 64)
+                })
+                .await;
+            if let Ok(due) = due {
                 for document in due {
                     if let Ok(room) = self.try_get(&document.slug).await {
                         let _ = room.tick().await;
@@ -990,8 +973,16 @@ impl RoomSet {
                         {
                             // A manual checkpoint can leave this scheduler clock
                             // stale. Advance examined, unchanged rows so the next
-                            // page of due documents gets its turn.
-                            let _ = catalog.touch_auto_checkpoint(&document.slug, now);
+                            // page of due documents gets its turn.  The room's
+                            // state guard is still held across this await, as
+                            // it was across the synchronous call it replaces;
+                            // shortening that scope belongs to track 2.
+                            let slug = document.slug.clone();
+                            let _ = catalog
+                                .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+                                    catalog.touch_auto_checkpoint(&slug, now)
+                                })
+                                .await;
                         }
                     }
                 }
@@ -1114,7 +1105,7 @@ impl Room {
 
     async fn load(&self) {
         if let Some(catalog) = self.catalog.get() {
-            match load_catalog_comments(catalog, &self.slug) {
+            match load_catalog_comments(catalog, &self.slug).await {
                 Ok((seq, comments)) => {
                     let mut state = self.state.lock().await;
                     state.seq = seq;
@@ -1153,7 +1144,7 @@ impl Room {
     /// is rolled back loses nothing.
     async fn load_session(&self) {
         let (manifest, manifest_at) = if let Some(catalog) = self.catalog.get() {
-            match load_catalog_manifest(catalog, &self.slug) {
+            match load_catalog_manifest(catalog, &self.slug).await {
                 Ok(manifest) => (manifest, BlobVersion::new()),
                 Err(err) => {
                     eprintln!(
@@ -1607,40 +1598,39 @@ impl Room {
         body: Vec<u8>,
         version: &mut BlobVersion,
     ) -> Result<(), String> {
-        let operation_id = crate::util::new_id();
-        if let Some(catalog) = self.catalog.get() {
-            catalog
-                .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-                    slug: &self.slug,
-                    operation_id: &operation_id,
-                    object_key: key,
-                    kind: "mutable",
-                    new_bytes: body.len() as i64,
-                    owner_limit: self.config.storage.per_owner,
-                    total_limit: self.config.storage.total,
-                })
-                .map_err(|error| error.to_string())?;
-        }
+        let change = ObjectChange {
+            slug: self.slug.clone(),
+            storage_id: self.storage_id.clone(),
+            operation_id: crate::util::new_id(),
+            object_key: key.to_string(),
+            kind: "mutable".into(),
+        };
+        let reservation = match self.catalog.get() {
+            Some(catalog) => Some(
+                reserve_object_change(
+                    catalog,
+                    change,
+                    body.len() as i64,
+                    self.config.storage.per_owner,
+                    self.config.storage.total,
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+            ),
+            None => None,
+        };
         match self.blobs.swap(key, body, version).await {
             Ok(at) => {
-                if let Some(catalog) = self.catalog.get() {
-                    if let Err(error) = catalog.commit_object_change(
-                        &self.storage_id,
-                        &operation_id,
-                        key,
-                        "mutable",
-                        &at,
-                    ) {
-                        let _ = catalog.abort_object_change(&self.storage_id, &operation_id, key);
-                        return Err(error.to_string());
-                    }
+                if let Some(reservation) = reservation {
+                    reservation.commit(at.clone()).await?;
                 }
                 *version = at;
                 Ok(())
             }
             Err(BlobError::Conflict) => {
-                if let Some(catalog) = self.catalog.get() {
-                    let _ = catalog.abort_object_change(&self.storage_id, &operation_id, key);
+                if let Some(reservation) = reservation {
+                    reservation.abort().await;
                 }
                 eprintln!(
                     "warning: {key} was written by another server; this one is read-only for {} \
@@ -1651,8 +1641,8 @@ impl Room {
                 Err("this room is written by another server".into())
             }
             Err(err) => {
-                if let Some(catalog) = self.catalog.get() {
-                    let _ = catalog.abort_object_change(&self.storage_id, &operation_id, key);
+                if let Some(reservation) = reservation {
+                    reservation.abort().await;
                 }
                 Err(err.to_string())
             }
@@ -1666,39 +1656,38 @@ impl Room {
         kind: &str,
         actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
     ) -> Result<(), String> {
-        let operation_id = crate::util::new_id();
-        if let Some(catalog) = self.catalog.get() {
-            let request = crate::storage::catalog::ObjectReservationRequest {
-                slug: &self.slug,
-                operation_id: &operation_id,
-                object_key: key,
-                kind,
-                new_bytes: body.len() as i64,
-                owner_limit: self.config.storage.per_owner,
-                total_limit: self.config.storage.total,
-            };
-            let reserved = if let Some(actor) = actor {
-                catalog.reserve_object_change_with_authority(request, actor)
-            } else {
-                catalog.reserve_object_change(request)
-            };
-            reserved.map_err(|error| error.to_string())?;
-        }
+        let change = ObjectChange {
+            slug: self.slug.clone(),
+            storage_id: self.storage_id.clone(),
+            operation_id: crate::util::new_id(),
+            object_key: key.to_string(),
+            kind: kind.to_string(),
+        };
+        let reservation = match self.catalog.get() {
+            Some(catalog) => Some(
+                reserve_object_change(
+                    catalog,
+                    change,
+                    body.len() as i64,
+                    self.config.storage.per_owner,
+                    self.config.storage.total,
+                    actor.as_ref().map(OwnedAuthority::new),
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+            ),
+            None => None,
+        };
         match self.blobs.put(key, body, "application/octet-stream").await {
             Ok(()) => {
-                if let Some(catalog) = self.catalog.get() {
-                    if let Err(error) =
-                        catalog.commit_object_change(&self.storage_id, &operation_id, key, kind, "")
-                    {
-                        let _ = catalog.abort_object_change(&self.storage_id, &operation_id, key);
-                        return Err(error.to_string());
-                    }
+                if let Some(reservation) = reservation {
+                    reservation.commit(String::new()).await?;
                 }
                 Ok(())
             }
             Err(error) => {
-                if let Some(catalog) = self.catalog.get() {
-                    let _ = catalog.abort_object_change(&self.storage_id, &operation_id, key);
+                if let Some(reservation) = reservation {
+                    reservation.abort().await;
                 }
                 Err(error.to_string())
             }
@@ -1717,7 +1706,7 @@ impl Room {
             return Err("this room is held by another server".into());
         }
         if let Some(catalog) = self.catalog.get() {
-            save_catalog_comments(catalog, &self.slug, &mut state.seq, &mut state.comments)?;
+            save_catalog_comments(catalog, &self.slug, &mut state.seq, &mut state.comments).await?;
             return Ok(());
         }
         let raw = json!({"seq": state.seq, "comments": to_stored(&state.comments)});
@@ -2078,6 +2067,15 @@ impl Room {
             }
             session::DecodedAdmission::Fits(decoded) => decoded,
         };
+        // The quota reservation below is awaited, and a parsed `yrs::Update`
+        // is not `Send`, so it cannot be held across that await: the socket
+        // task's future has to stay spawnable. The parse is therefore dropped
+        // here and repeated once the bytes are reserved. Repeating it is
+        // cheap beside the full document encode this same path already does
+        // to size the reservation, and it is the alternative to reserving
+        // before the size and file ceilings have decided -- which would
+        // charge, however briefly, for updates this room refuses.
+        drop(decoded);
         // `S` bounds what a person can see; `E` bounds what persistence has
         // to write, and the two move independently -- a document whose text
         // never grows still accumulates CRDT history and metadata. A
@@ -2129,17 +2127,28 @@ impl Room {
         // Reserve the whole next snapshot, not just this message. The SQL
         // admission view includes unsaved work in every live room and keeps a
         // separate reservation for a snapshot already being written.
-        let previous_pending = if let Some(catalog) = self.catalog.get() {
+        //
+        // The reservation is taken through the catalogue's execution
+        // boundary, so the quota decision waits on a blocking thread instead
+        // of parking a Tokio worker on the connection.  What it returns is a
+        // guard rather than a number: a caller cancelled between that
+        // transaction committing and this room accounting for the bytes must
+        // not leave them charged, and only the guard and its completion hook
+        // between them cover both halves of that window.
+        let pending_edit = if let Some(catalog) = self.catalog.get() {
             let bound = session::encode_state(&state.session.doc)
                 .len()
                 .saturating_add(update.len());
-            match catalog.reserve_room_edit(
+            match reserve_pending_edit(
+                catalog,
                 &self.slug,
                 self.snapshot_budget(bound),
                 self.config.storage.per_owner,
                 self.config.storage.total,
-            ) {
-                Ok(previous) => Some(previous),
+            )
+            .await
+            {
+                Ok(reservation) => Some(reservation),
                 Err(_) => return Applied::Refuse("this document has reached its storage quota"),
             }
         } else {
@@ -2149,9 +2158,11 @@ impl Room {
         // main-file pointer can be told from a document that already opened
         // with this main file.
         let main_before = session::main_path(&state.session.doc);
-        if session::apply_decoded_update(&state.session.doc, decoded).is_err() {
-            if let (Some(catalog), Some(previous)) = (self.catalog.get(), previous_pending) {
-                let _ = catalog.reserve_room_edit(&self.slug, previous, -1, -1);
+        let applied = session::decode_update(update)
+            .and_then(|decoded| session::apply_decoded_update(&state.session.doc, decoded));
+        if applied.is_err() {
+            if let Some(pending_edit) = pending_edit {
+                pending_edit.rollback().await;
             }
             return Applied::Ignored;
         }
@@ -2206,6 +2217,12 @@ impl Room {
         state.session.generation += 1;
         state.session.updated_at = now;
         state.session.by = by.clone();
+        // The room state now accounts for the reserved snapshot, so the
+        // reservation stays charged until the next one replaces it rather
+        // than being rolled back by the guard.
+        if let Some(pending_edit) = pending_edit {
+            pending_edit.keep();
+        }
         Applied::Relay
     }
 
@@ -2256,7 +2273,7 @@ impl Room {
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
-        let (body, generation, durable, mut version) = {
+        let (body, generation, durable, mut version, quota) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
             // `E`, at the last gate before anything durable happens. Room
@@ -2277,16 +2294,26 @@ impl Room {
                     });
                 return Err(refusal.message());
             }
-            if let Some(catalog) = self.catalog.get() {
-                catalog
-                    .begin_room_write(
+            // The reservation comes back as a guard rather than as a bare
+            // success, so the window between this transaction committing and
+            // the room owning the reservation cannot leak it; the session
+            // writer gate is still held across the await, which is what
+            // serialises the row.
+            let quota = match self.catalog.get() {
+                Some(catalog) => Some(
+                    begin_room_write(
+                        catalog,
                         &self.slug,
+                        &self.storage_id,
                         self.snapshot_budget(body.len()),
                         self.config.storage.per_owner,
                         self.config.storage.total,
                     )
-                    .map_err(|error| error.to_string())?;
-            }
+                    .await
+                    .map_err(|error| error.to_string())?,
+                ),
+                None => None,
+            };
             let generation = state.session.generation;
             state.session.note_encoded_len(generation, body.len());
             let durable: Vec<(u64, i64)> = state
@@ -2294,11 +2321,13 @@ impl Room {
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            (body, generation, durable, state.session_version.clone())
-        };
-        let mut quota = RoomWriteQuota {
-            room: self,
-            committed: false,
+            (
+                body,
+                generation,
+                durable,
+                state.session_version.clone(),
+                quota,
+            )
         };
         let size = body.len() as i64;
         // `generation` is normally advanced by every mediated CRDT mutation.
@@ -2336,12 +2365,9 @@ impl Room {
             self.write_owned(&session_key(&self.slug), body, &mut version)
                 .await?;
         }
-        if let Some(catalog) = self.catalog.get() {
-            catalog
-                .finish_room_write(&self.storage_id, true)
-                .map_err(|error| error.to_string())?;
+        if let Some(quota) = quota {
+            quota.commit().await?;
         }
-        quota.committed = true;
         let mut state = self.state.lock().await;
         state.session_version = version;
         if state.session.generation == generation {

@@ -31,9 +31,10 @@ mod room_edits;
 
 pub use execution::{
     CatalogCompletion, CatalogExecError, CatalogExecutionSnapshot, CatalogOutcome,
-    CatalogReservation, MAX_ADMITTED_REQUESTS, MAX_EXECUTING, MAX_QUEUED_BYTES, MAX_REQUEST_BYTES,
-    MAX_WAITING_PRODUCERS, SMALL_REQUEST_BYTES,
+    CatalogReservation, CatalogServiceCompletion, MAX_ADMITTED_REQUESTS, MAX_EXECUTING,
+    MAX_QUEUED_BYTES, MAX_REQUEST_BYTES, MAX_WAITING_PRODUCERS, SMALL_REQUEST_BYTES,
 };
+pub use room_edits::RoomEditReservation;
 
 const LATEST_SCHEMA: i64 = 14;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
@@ -563,7 +564,11 @@ impl Catalog {
                 "CREATE TEMP TABLE room_edit_reservations (
                 storage_id TEXT PRIMARY KEY,
                 pending_bytes INTEGER NOT NULL DEFAULT 0,
-                writing_bytes INTEGER NOT NULL DEFAULT 0
+                writing_bytes INTEGER NOT NULL DEFAULT 0,
+                -- Advanced by every write to the row, so cleanup for a
+                -- cancelled edit can prove it is undoing its own
+                -- reservation and not a newer one.
+                generation INTEGER NOT NULL DEFAULT 0
              );
              CREATE TEMP VIEW admission_documents AS
              SELECT d.*, d.counted_size - d.maintenance_reserved

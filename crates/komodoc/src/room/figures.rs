@@ -81,7 +81,7 @@ impl Drop for AssetUpload<'_> {
 impl Room {
     async fn catalog_rendering_size(&self, sha: &str, synctex: bool) -> Option<i64> {
         let catalog = self.catalog.get()?;
-        let row = catalog.rendering(&self.slug, sha).ok().flatten()?;
+        let row = read_catalog_rendering(catalog, &self.slug, sha).await?;
         if synctex && !row.synctex {
             return None;
         }
@@ -123,7 +123,7 @@ impl Room {
             return false;
         }
         if let Some(catalog) = self.catalog.get() {
-            let _ = catalog.release_object_accounting_key(key);
+            release_object_accounting(catalog, key).await;
         }
         true
     }
@@ -291,10 +291,8 @@ impl Room {
     /// same bytes: a second `PUT` of one is a hash and nothing else.
     pub async fn has_rendering(&self, sha: &str, synctex: bool) -> bool {
         if let Some(catalog) = self.catalog.get() {
-            let registered = catalog
-                .rendering(&self.slug, sha)
-                .ok()
-                .flatten()
+            let registered = read_catalog_rendering(catalog, &self.slug, sha)
+                .await
                 .is_some_and(|row| !synctex || row.synctex);
             if !registered {
                 return false;
@@ -329,15 +327,15 @@ impl Room {
             .rev()
             .find(|point| point.sha == sha)
             .map(|point| point.content_sha().to_string());
-        resident.or_else(|| {
-            self.catalog.get().and_then(|catalog| {
-                catalog
-                    .checkpoint(&self.slug, sha)
-                    .ok()
-                    .flatten()
-                    .map(|point| point.content_sha().to_string())
-            })
-        })
+        if let Some(sha) = resident {
+            return Some(sha);
+        }
+        let catalog = self.catalog.get()?;
+        read_catalog_checkpoint(catalog, &self.slug, sha)
+            .await
+            .ok()
+            .flatten()
+            .map(|point| point.content_sha().to_string())
     }
 
     /// Stores a rendering the browser compiled, under the SHA of the
@@ -422,8 +420,15 @@ impl Room {
         };
         if let Some(catalog) = self.catalog.get() {
             if let Err(error) = save_catalog_rendering_with_authority(
-                catalog, &self.slug, sha, synctex, size, actor,
-            ) {
+                catalog,
+                &self.slug,
+                sha,
+                synctex,
+                size,
+                actor.as_ref().map(OwnedAuthority::new),
+            )
+            .await
+            {
                 self.abandon_rendering(&key, &format, &main).await;
                 return Err(error);
             }
@@ -526,11 +531,25 @@ impl Room {
             if current.digest() != sha || current.input_digest() != inputs {
                 (Ok(false), format, main)
             } else {
-                let metadata: Result<(), String> = self.catalog.get().map_or(Ok(()), |catalog| {
-                    save_catalog_rendering_with_authority(
-                        catalog, &self.slug, sha, synctex, size, actor,
-                    )
-                });
+                // The publication stays under the state lock: an edit may run
+                // during the upload, but it must not land between this
+                // identity check and the metadata write and leave a stale PDF
+                // marked as current. The await is new; the gate it holds is
+                // the one this code already held.
+                let metadata: Result<(), String> = match self.catalog.get() {
+                    Some(catalog) => {
+                        save_catalog_rendering_with_authority(
+                            catalog,
+                            &self.slug,
+                            sha,
+                            synctex,
+                            size,
+                            actor.as_ref().map(OwnedAuthority::new),
+                        )
+                        .await
+                    }
+                    None => Ok(()),
+                };
                 match metadata {
                     Ok(()) => {
                         note_rendering(&mut state, name, size);
@@ -559,10 +578,8 @@ impl Room {
     /// A rendering's bytes, for whoever may read the document.
     pub async fn read_rendering(&self, sha: &str, synctex: bool) -> Option<Vec<u8>> {
         if let Some(catalog) = self.catalog.get() {
-            let registered = catalog
-                .rendering(&self.slug, sha)
-                .ok()
-                .flatten()
+            let registered = read_catalog_rendering(catalog, &self.slug, sha)
+                .await
                 .is_some_and(|row| !synctex || row.synctex);
             if !registered {
                 return None;
@@ -637,9 +654,7 @@ impl Room {
             // before the maintenance worker removes the immutable bytes.
             // Do not expose that queued-for-deletion provenance during the
             // interval between those two steps.
-            if !catalog.rendering(&self.slug, sha).ok().flatten().is_some() {
-                return None;
-            }
+            read_catalog_rendering(catalog, &self.slug, sha).await?;
         }
         self.blobs
             .get(&crate::storage::blob::rendering_provenance_key(
@@ -664,7 +679,7 @@ impl Room {
     /// a persistent cache and requires no mutation invalidation protocol.
     pub async fn newest_rendering_for(&self, current_tree: &str) -> Option<(String, String, bool)> {
         if let Some(catalog) = self.catalog.get() {
-            let candidate = catalog.newest_rendering_candidate(&self.slug).ok()??;
+            let candidate = read_newest_rendering_candidate(catalog, &self.slug).await?;
             let pdf = crate::storage::blob::rendering_key(&self.storage_id, &candidate.tree_sha);
             let pdf_available = self.blobs.exists(&pdf).await.unwrap_or(false);
             let sync_available = if !pdf_available && candidate.synctex {
@@ -768,10 +783,9 @@ impl Room {
                     .strip_suffix(".synctex")
                     .or_else(|| name.strip_suffix(".provenance.json"))
                     .unwrap_or(name);
-                if retired.insert(sha.to_string()) {
-                    let _ = catalog.retire_rendering(&self.slug, sha, now, now);
-                }
+                retired.insert(sha.to_string());
             }
+            retire_renderings(catalog, &self.slug, retired.into_iter().collect(), now).await;
             let mut state = self.state.lock().await;
             for name in gone {
                 state.session.rendering_sizes.remove(&name);

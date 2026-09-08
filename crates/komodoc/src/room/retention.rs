@@ -17,7 +17,7 @@ impl Room {
     pub(super) async fn prune_retained(&self, written: &history::Tree) {
         let _manifest_writer = self.manifest_write.lock().await;
         let points = match self.catalog.get() {
-            Some(catalog) => match load_catalog_history(catalog, &self.slug) {
+            Some(catalog) => match load_catalog_history(catalog, &self.slug).await {
                 Ok(points) => points,
                 Err(error) => {
                     eprintln!(
