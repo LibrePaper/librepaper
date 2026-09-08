@@ -818,7 +818,7 @@ Six flags bound what a deployment will store:
 
 | Flag | Caps | Default |
 | --- | --- | --- |
-| `--max-size` | the texts of one document, and any one rendering of it | 4 MB |
+| `--max-size` | the texts of one document, and any one rendering of it | 4 MB (maximum 8) |
 | `--max-assets` | the figures of one document | 32 MB |
 | `--quota` | everything one publisher holds | 100 MB |
 | `--storage` | the whole deployment | 5120 MB |
@@ -828,6 +828,15 @@ Six flags bound what a deployment will store:
 ```sh
 komodoc serve --max-size 8 --max-assets 16 --quota 500 --storage 10240
 ```
+
+`--max-size` may not be set above 8 MB. It bounds the text a person can see;
+what has to be durably saved is the CRDT snapshot behind that text, which
+carries the document's edit history and metadata as well, and this deployment
+supports snapshots up to 16 MB. A document can therefore reach that second
+ceiling without its visible text ever approaching the first -- an edit refused
+for that reason says so, and says that the history counts too. A configuration
+whose ceilings could accept work the journal could not durably save is refused
+at startup rather than at the first save.
 
 A document is a directory, so `--max-size` bounds the sum of its texts and
 `--max-assets` bounds its figures. Both count against `--quota`; a figure is
