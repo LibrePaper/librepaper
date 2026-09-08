@@ -225,9 +225,14 @@ async fn uncached_compatibility_room_cannot_accept_edits() {
     let rooms = RoomSet::new(Arc::new(blob::FsStore::new(dir.path())), Arc::new(config));
     let room = rooms.get("oversized").await;
     assert!(room.read_only());
-    room.set_source("must not disappear at shutdown", "markdown")
-        .await
-        .unwrap();
+    assert!(
+        matches!(
+            room.set_source("must not disappear at shutdown", "markdown")
+                .await,
+            Err(room::WriteError::ReadOnly(_))
+        ),
+        "an uncached compatibility room must refuse edits rather than drop them"
+    );
     assert_eq!(room.source().await, "");
     assert!(rooms.try_get("oversized").await.is_err());
 }

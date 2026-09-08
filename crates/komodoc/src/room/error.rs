@@ -398,7 +398,11 @@ mod tests {
             assert_eq!(original.status(), reworded.status());
             assert_eq!(original.retry(), reworded.retry());
             assert_eq!(original.refused(), reworded.refused());
-            assert_ne!(original.client_message(), reworded.client_message());
+            // A storage failure is the exception: its context is for the log,
+            // so both wordings reach a client as the same sentence.
+            if original.log_context().is_none() {
+                assert_ne!(original.client_message(), reworded.client_message());
+            }
         }
     }
 

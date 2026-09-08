@@ -531,7 +531,7 @@ impl Room {
             Ok(Some(result)) => result,
             Ok(None) => unreachable!("an unconditional session write returns its size"),
             Err(err) => {
-                return Err(WriteError::from(err));
+                return Err(err);
             }
         };
 
@@ -1119,7 +1119,7 @@ impl Room {
         &self,
         mut staged: Manifest,
         durable_seq: i64,
-    ) -> Result<(), String> {
+    ) -> Result<(), WriteError> {
         if let Some(catalog) = self.catalog.get() {
             let previous = self.state.lock().await.manifest.clone();
             save_catalog_manifest(catalog, &self.slug, &previous, &staged, durable_seq)?;
@@ -1132,7 +1132,8 @@ impl Room {
             state.manifest = staged;
             return Ok(());
         }
-        let body = serde_json::to_vec(&staged).map_err(|err| err.to_string())?;
+        let body =
+            serde_json::to_vec(&staged).map_err(|err| WriteError::Storage(err.to_string()))?;
         let mut version = self.state.lock().await.manifest_version.clone();
         self.write_owned(
             &crate::storage::blob::history_index_key(&self.slug),
@@ -1373,7 +1374,7 @@ impl Room {
         tree: &crate::document::history::Tree,
         bodies: &HashMap<String, String>,
         format: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), WriteError> {
         {
             let _assets_writer = self.assets_write.lock().await;
             let mut state = self.state.lock().await;

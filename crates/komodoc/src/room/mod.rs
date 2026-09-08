@@ -2273,7 +2273,7 @@ impl Room {
     /// Writes `sessions/<slug>` when the document has changed, and only then
     /// tells the sockets their updates are durable. Relaying an update is not
     /// an acknowledgment: nothing here says "saved" until storage has said so.
-    pub async fn persist(&self) -> Result<bool, String> {
+    pub async fn persist(&self) -> Result<bool, WriteError> {
         if self.write_session(true, true).await?.is_none() {
             return Ok(false);
         }
@@ -2295,7 +2295,7 @@ impl Room {
         &self,
         only_dirty: bool,
         acknowledge: bool,
-    ) -> Result<Option<(i64, i64)>, String> {
+    ) -> Result<Option<(i64, i64)>, WriteError> {
         let _publication_checkpoint = self.publication_checkpoint.read().await;
         self.write_session_inner(only_dirty, acknowledge).await
     }
@@ -2306,16 +2306,16 @@ impl Room {
         &self,
         only_dirty: bool,
         acknowledge: bool,
-    ) -> Result<Option<(i64, i64)>, String> {
+    ) -> Result<Option<(i64, i64)>, WriteError> {
         let _writer = self.session_write.lock().await;
         if self.read_only() {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
         if only_dirty && !self.state.lock().await.session.dirty {
             return Ok(None);
         }
         if !self.hold().await {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
         let (body, generation, durable, mut version) = {
             let mut state = self.state.lock().await;
@@ -2331,12 +2331,10 @@ impl Room {
             let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
             if body.len() > ceiling {
                 self.fence(FenceReason::Oversized);
-                let refusal =
-                    crate::config::WriteRefusal::Permanent(crate::config::SizeRefusal::Encoded {
-                        bytes: body.len(),
-                        ceiling,
-                    });
-                return Err(refusal.message());
+                return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
+                    bytes: body.len(),
+                    ceiling,
+                }));
             }
             if let Some(catalog) = self.catalog.get() {
                 catalog
@@ -2346,7 +2344,7 @@ impl Room {
                         self.config.storage.per_owner,
                         self.config.storage.total,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(WriteError::from)?;
             }
             let generation = state.session.generation;
             state.session.note_encoded_len(generation, body.len());
@@ -2400,7 +2398,7 @@ impl Room {
         if let Some(catalog) = self.catalog.get() {
             catalog
                 .finish_room_write(&self.storage_id, true)
-                .map_err(|error| error.to_string())?;
+                .map_err(WriteError::from)?;
         }
         quota.committed = true;
         let mut state = self.state.lock().await;

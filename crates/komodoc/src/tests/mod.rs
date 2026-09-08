@@ -58,4 +58,5 @@ mod tokens;
 mod uploads;
 mod visitor;
 mod wasmtex_server;
+mod write_errors;
 pub mod yjs;

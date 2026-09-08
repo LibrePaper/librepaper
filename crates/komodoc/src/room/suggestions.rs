@@ -61,7 +61,7 @@ impl Room {
         proposed: &str,
         accepted_update: &[u8],
         rollback_position: Option<yrs::StickyIndex>,
-    ) -> Result<(), String> {
+    ) -> Result<(), WriteError> {
         let compensation = {
             let mut state = self.state.lock().await;
             let live = session::texts_of(&state.session.doc)
@@ -137,7 +137,9 @@ impl Room {
             "update": encode_update(&full),
         }))
         .await;
-        Err("could not locate the accepted proposal to roll it back".into())
+        Err(WriteError::Storage(
+            "could not locate the accepted proposal to roll it back".into(),
+        ))
     }
 
     /// Accepts a suggestion: applies its proposal to the live source through

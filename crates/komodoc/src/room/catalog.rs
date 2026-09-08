@@ -310,7 +310,7 @@ pub(super) fn save_catalog_manifest(
     previous: &Manifest,
     manifest: &Manifest,
     durable_seq: i64,
-) -> Result<(), String> {
+) -> Result<(), WriteError> {
     let previous_by_sha: HashMap<_, _> = previous
         .checkpoints
         .iter()
@@ -319,7 +319,7 @@ pub(super) fn save_catalog_manifest(
     let mut rows = Vec::new();
     for point in &manifest.checkpoints {
         let row = Manifest::catalog_row(slug, point, -1, durable_seq)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
         // Keep labels from the staged resident manifest, but avoid requiring
         // a read transaction for each row. The catalogue method performs the
         // existence check and all inserts/updates in one write transaction.
@@ -336,19 +336,21 @@ pub(super) fn save_catalog_manifest(
     // retain the direct atomic insert path.
     if catalog
         .document(slug)
-        .map_err(|err| err.to_string())?
+        .map_err(WriteError::from)?
         .and_then(|document| document.pending_publication)
         .is_some()
     {
         if let Some(row) = rows.last() {
             catalog
                 .stage_publication_checkpoint(slug, row)
-                .map_err(|err| err.to_string())?;
+                .map_err(WriteError::from)?;
         }
     } else {
+        // A quota or a lost right refused here is exactly what the caller has
+        // to tell a client apart; keep it typed rather than flattening it.
         catalog
             .insert_checkpoints_atomic(&rows)
-            .map_err(|err| err.to_string())?;
+            .map_err(WriteError::from)?;
     }
     // A resident-tail snapshot intentionally omits older rows.  Absence from
     // `previous`/`manifest` therefore never means deletion; destructive

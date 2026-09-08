@@ -1607,10 +1607,12 @@ async fn a_second_process_over_the_same_storage_does_not_write() {
     // It can read the document -- serving it is not writing it.
     assert_eq!(intruder.source().await, TEST_MARKDOWN);
     // And it cannot write.
-    intruder
-        .set_source("# Not yours\n", "markdown")
-        .await
-        .unwrap();
+    // The write is refused outright now, rather than quietly producing
+    // nothing: a fenced room says so.
+    assert!(matches!(
+        intruder.set_source("# Not yours\n", "markdown").await,
+        Err(crate::room::WriteError::ReadOnly(_))
+    ));
     assert!(
         intruder.persist().await.is_err(),
         "a server without the lease wrote the document"
@@ -1673,10 +1675,11 @@ async fn a_former_owner_cannot_write_after_being_taken_over() {
     // under the old one.
     let (_, taker) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let now_theirs = taker.rooms.get(&slug).await;
-    now_theirs
+    // Refused or accepted depending on which server the lease reached
+    // first; what this test cares about is the old server, below.
+    let _ = now_theirs
         .set_source("# From the new owner\n", "markdown")
-        .await
-        .unwrap();
+        .await;
     // The new owner cannot write either while the lease says somebody else
     // holds it, which is correct -- so the lease is handed to it properly by
     // reading the room fresh once the old lock is stale. What this test cares
