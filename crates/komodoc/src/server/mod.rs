@@ -52,6 +52,7 @@ mod documents;
 mod figures;
 mod history;
 pub mod latex;
+mod onboarding;
 pub mod origins;
 mod reply;
 mod routes;
@@ -65,7 +66,6 @@ pub use reply::*;
 pub use routes::*;
 pub use sharing::*;
 pub use signin::*;
-mod onboarding;
 use socket::*;
 
 pub struct Server {
@@ -612,6 +612,14 @@ impl Server {
     // authorized request to save one on the rare refusal.
     #[allow(clippy::result_large_err)]
     async fn publisher(&self, headers: &HeaderMap, arrival: &Arrival) -> Result<Caller, Reply> {
+        if Self::is_automation(headers) {
+            return Err(write_json(
+                403,
+                &json!({
+                    "error": "automation is link-scoped and cannot publish or enumerate documents"
+                }),
+            ));
+        }
         let id = match self.authenticated_identity(headers, arrival).await {
             Ok(id) => id,
             Err(AuthenticationFailure::Invalid) => {
@@ -902,6 +910,7 @@ impl Server {
                 json!({
                     "type": "error", "message": text,
                     "comment_id": incoming.comment_id, "request_id": incoming.request_id,
+                    "version": 1, "protocol": "komodoc.room.v1",
                 }),
                 false,
             )
@@ -926,6 +935,7 @@ impl Server {
                             "type": "accept", "comment_id": incoming.comment_id,
                             "resolved_in": sha, "resolved_at": resolved_at,
                             "request_id": incoming.request_id,
+                            "version": 1, "protocol": "komodoc.room.v1",
                         }),
                         true,
                     )
@@ -939,6 +949,7 @@ impl Server {
                         "type": "accept", "comment_id": incoming.comment_id,
                         "resolved_in": sha, "resolved_at": resolved_at,
                         "request_id": incoming.request_id, "noop": true,
+                        "version": 1, "protocol": "komodoc.room.v1",
                     }),
                     true,
                 ),
@@ -948,6 +959,7 @@ impl Server {
                         "type": "error", "stale": true, "comment_id": incoming.comment_id,
                         "message": "the passage has changed since this was suggested",
                         "request_id": incoming.request_id,
+                        "version": 1, "protocol": "komodoc.room.v1",
                     }),
                     false,
                 ),
@@ -958,11 +970,11 @@ impl Server {
         match room.reject_suggestion(&incoming.comment_id).await {
             Ok(mut result) => {
                 result["request_id"] = json!(incoming.request_id);
+                result["version"] = json!(1);
+                result["protocol"] = json!("komodoc.room.v1");
                 (result, true)
             }
             Err(text) => fail(&text),
         }
     }
 }
-
-impl Server {}

@@ -331,6 +331,117 @@ async fn a_transfer_to_somebody_who_may_not_publish_is_refused() {
     );
 }
 
+#[tokio::test]
+async fn a_revoked_owner_cannot_transfer_after_recipient_lookup() {
+    use std::sync::Arc;
+
+    struct SlowAccounts {
+        started: Arc<tokio::sync::Notify>,
+        resume: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::auth::Accounts for SlowAccounts {
+        async fn lookup(&self, login: &str) -> Option<crate::auth::Identity> {
+            self.started.notify_one();
+            self.resume.notified().await;
+            Some(crate::auth::Identity::github(login, login))
+        }
+    }
+
+    // Publish through the ordinary harness, then put a second HTTP server on
+    // the same catalogue. The second server lets the recipient lookup pause
+    // while the original owner's session is revoked.
+    let original = open_server().await;
+    let document = publish_test_document(&original.url).await;
+    let slug = text(&document, "slug");
+    let config = Arc::new(Configuration::default());
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
+        crate::storage::blob::FsStore::new(original.dir.path().join("objects")),
+    );
+    let store = crate::document::store::Store::open_with_catalog(
+        blobs.clone(),
+        config.clone(),
+        original.instance.store.catalog.clone().unwrap(),
+    )
+    .await
+    .expect("the shared store opens");
+    let mut server = crate::server::Server::new(
+        store,
+        crate::room::RoomSet::new(blobs, config.clone()),
+        std::collections::HashMap::new(),
+        crate::auth::GithubApp::default(),
+        TEST_KEY.to_vec(),
+        config,
+        Policy::parse("anyone"),
+        Policy::parse("anyone"),
+    );
+    let started = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    server.accounts = Arc::new(SlowAccounts {
+        started: started.clone(),
+        resume: resume.clone(),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port");
+    let address = listener.local_addr().expect("the address");
+    let router = Arc::new(server).router();
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .expect("serve");
+    });
+
+    let base = format!("http://{address}");
+    let path = format!("/api/documents/{slug}/transfer");
+    let request = tokio::spawn({
+        let cookie = session_as(TEST_PUBLISHER);
+        async move {
+            client()
+                .post(format!("{base}{path}"))
+                .header("x-komodoc-client", "1")
+                .header("cookie", cookie)
+                .json(&json!({"to": "recipient"}))
+                .send()
+                .await
+                .expect("transfer response")
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+        .await
+        .expect("recipient lookup started");
+    original
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .revoke_sessions("github:vincent", "revoked-generation")
+        .expect("revoke the owner session");
+    resume.notify_one();
+    let response = request.await.expect("transfer task");
+    task.abort();
+    assert!(
+        matches!(response.status().as_u16(), 401 | 403 | 404),
+        "revoked owner transferred document: {}",
+        response.status()
+    );
+    assert_eq!(
+        original
+            .instance
+            .store
+            .get(&slug)
+            .await
+            .expect("the document")
+            .publisher,
+        TEST_PUBLISHER
+    );
+}
+
 /* ------------------------------------------------------- grants by link */
 
 // A reader link is the way in for anyone but the owner, and it carries no

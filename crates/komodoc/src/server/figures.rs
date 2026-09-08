@@ -101,12 +101,25 @@ impl Server {
             account_id: who.id.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.id.session_generation.clone(),
+            link_hash: who.link.clone(),
+            policy_editor: self.publishers.allows(&who.id.handle),
+            automation: who.automation,
+            unowned_publisher: false,
         };
-        if let Err(PutError::Quota { status, message }) =
-            self.store
-                .reserve_object_bytes(slug, size, Some(&mutation_actor))
+        if let Err(error) = self
+            .store
+            .reserve_object_bytes(slug, size, Some(&mutation_actor))
         {
-            return write_json(status, &json!({"error": message}));
+            return match error {
+                PutError::Quota { status, message }
+                | PutError::Authorization { status, message } => {
+                    write_json(status, &json!({"error": message}))
+                }
+                PutError::Storage(message) => {
+                    eprintln!("could not reserve figure bytes for {slug}: {message}");
+                    write_json(503, &json!({"error": "storage temporarily unavailable"}))
+                }
+            };
         }
         let stored = room
             .put_asset(
@@ -147,7 +160,7 @@ impl Server {
         }
         // A digest and nothing else: this becomes a storage key, and a key is
         // never built from something a caller can shape.
-        if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        if !is_sha(sha) {
             return plain(404, "not found");
         }
         if cross_site_refused(headers, arrival) {
@@ -172,7 +185,7 @@ impl Server {
         Response::builder()
             .status(200)
             .header("content-type", crate::server::shell::content_type(sha))
-            .header("cache-control", "public, max-age=31536000, immutable")
+            .header("cache-control", "private, no-store")
             .header("x-content-type-options", "nosniff")
             .body(Body::from(bytes))
             .unwrap()
@@ -357,23 +370,26 @@ impl Server {
                 }
             }
         }
-        let mutation_owner_key = if who.id.id.is_empty() {
-            entry.publisher.as_str()
-        } else {
-            who.key.as_str()
+        let mutation_owner_key = who.key.as_str();
+        let unowned_publisher =
+            entry.unowned && who.id.handle.is_empty() && self.publishers.allows("");
+        let mutation_authority = crate::storage::catalog::MutationAuthority {
+            account_id: who.id.id.as_str(),
+            owner_key: mutation_owner_key,
+            generation: who.id.session_generation.as_str(),
+            link_hash: who.link.as_str(),
+            policy_editor: self.publishers.allows(&who.id.handle),
+            automation: who.automation,
+            unowned_publisher,
         };
         let reply = if current_only {
             match room
-                .put_current_rendering_as(
+                .put_current_rendering_as_authority(
                     &content_sha,
                     &expected_inputs,
                     synctex,
                     body.to_vec(),
-                    Some((
-                        who.id.id.as_str(),
-                        mutation_owner_key,
-                        who.id.session_generation.as_str(),
-                    )),
+                    Some(mutation_authority),
                 )
                 .await
             {
@@ -387,15 +403,11 @@ impl Server {
                 Err(why) => Err(why),
             }
         } else {
-            room.put_rendering_as(
+            room.put_rendering_as_authority(
                 &content_sha,
                 synctex,
                 body.to_vec(),
-                Some((
-                    who.id.id.as_str(),
-                    mutation_owner_key,
-                    who.id.session_generation.as_str(),
-                )),
+                Some(mutation_authority),
             )
             .await
         };
@@ -409,7 +421,11 @@ impl Server {
                 if !synctex {
                     if let Some(raw) = provenance {
                         if let Err(why) = room
-                            .put_rendering_provenance(&content_sha, raw.into_bytes())
+                            .put_rendering_provenance_as_authority(
+                                &content_sha,
+                                raw.into_bytes(),
+                                Some(mutation_authority),
+                            )
                             .await
                         {
                             return write_json(500, &json!({"error": why}));
@@ -419,7 +435,9 @@ impl Server {
                 write_json(200, &json!({"sha": sha, "size": size}))
             }
             Err(why) => {
-                let status = if why.contains("quota exceeded") {
+                let status = if why.contains("actor rights") {
+                    403
+                } else if why.contains("quota exceeded") {
                     507
                 } else {
                     413

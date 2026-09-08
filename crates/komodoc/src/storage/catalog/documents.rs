@@ -530,6 +530,29 @@ impl Catalog {
         new_owner_id: &str,
         owner_limit: i64,
     ) -> CatalogResult<Document> {
+        self.transfer_ownership_authorized_with_generation(
+            slug,
+            caller_id,
+            caller_owner_key,
+            None,
+            new_owner_id,
+            owner_limit,
+        )
+    }
+
+    /// Authorize and transfer while also checking the caller's current
+    /// account generation under the ownership write lock.  The compatibility
+    /// method above remains for administrative callers that already operate
+    /// inside a trusted catalogue boundary.
+    pub fn transfer_ownership_authorized_with_generation(
+        &self,
+        slug: &str,
+        caller_id: Option<&str>,
+        caller_owner_key: &str,
+        caller_generation: Option<&str>,
+        new_owner_id: &str,
+        owner_limit: i64,
+    ) -> CatalogResult<Document> {
         if new_owner_id.is_empty() || owner_limit < 0 {
             return Err(CatalogError::Invalid("invalid ownership transfer".into()));
         }
@@ -544,7 +567,20 @@ impl Catalog {
                 return Err(CatalogError::NotFound);
             }
             let authorized = match old_owner.as_deref() {
-                Some(owner) => caller_id.is_some_and(|id| !id.is_empty() && id == owner),
+                Some(owner) => caller_id.is_some_and(|id| {
+                    !id.is_empty()
+                        && id == owner
+                        && caller_generation.is_none_or(|generation| {
+                            !generation.is_empty()
+                                && tx
+                                    .query_row(
+                                        "SELECT status='active' AND session_generation=?2 FROM accounts WHERE id=?1",
+                                        params![id, generation],
+                                        |row| row.get::<_, bool>(0),
+                                    )
+                                    .unwrap_or(false)
+                        })
+                }),
                 None => !owner_key.is_empty() && !caller_owner_key.is_empty() && owner_key == caller_owner_key,
             };
             if !authorized {

@@ -525,17 +525,44 @@ impl Catalog {
         total_limit: i64,
         actor: Option<(&str, &str, &str)>,
     ) -> CatalogResult<()> {
+        self.reserve_document_bytes_with_authority(
+            slug,
+            bytes,
+            owner_limit,
+            total_limit,
+            actor.map(|(account_id, owner_key, generation)| MutationAuthority {
+                account_id,
+                owner_key,
+                generation,
+                link_hash: "",
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            }),
+        )
+    }
+
+    /// Reserve bytes while rechecking account, link, policy and document
+    /// rights under the same write lock that updates quota accounting.
+    pub fn reserve_document_bytes_with_authority(
+        &self,
+        slug: &str,
+        bytes: i64,
+        owner_limit: i64,
+        total_limit: i64,
+        actor: Option<MutationAuthority<'_>>,
+    ) -> CatalogResult<()> {
         if bytes < 0 {
             return Err(CatalogError::Invalid("negative byte reservation".into()));
         }
         self.immediate(|tx| {
-            if let Some((account_id, owner_key, generation)) = actor {
-                let authorized: bool = if account_id.is_empty() {
-                    tx.query_row("SELECT EXISTS(SELECT 1 FROM documents WHERE slug=?1 AND owner_id IS NULL AND owner_key=?2 AND status='active' AND pending_publication IS NULL)", params![slug,owner_key], |row| row.get(0))
-                } else {
-                    tx.query_row("SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=?2 WHERE d.slug=?1 AND d.status='active' AND d.pending_publication IS NULL AND a.status='active' AND a.session_generation=?3 AND (d.owner_id=?2 OR EXISTS(SELECT 1 FROM grants g WHERE g.slug=d.slug AND g.account_id=?2 AND g.role='editor')))", params![slug,account_id,generation], |row| row.get(0))
-                }.map_err(CatalogError::from)?;
-                if !authorized { return Err(CatalogError::Conflict("actor edit rights or session generation changed".into())); }
+            if let Some(actor) = actor {
+                let authorized = Self::mutation_authorized_in_tx(tx, slug, actor, "editor")?;
+                if !authorized {
+                    return Err(CatalogError::Conflict(
+                        "actor edit rights or session generation changed".into(),
+                    ));
+                }
             }
             let (owner_id, owner_key): (Option<String>, String) = tx
                 .query_row(
@@ -674,6 +701,22 @@ impl Catalog {
         &self,
         request: ObjectReservationRequest<'_>,
     ) -> CatalogResult<i64> {
+        self.reserve_object_change_inner(request, None)
+    }
+
+    pub fn reserve_object_change_with_authority(
+        &self,
+        request: ObjectReservationRequest<'_>,
+        actor: MutationAuthority<'_>,
+    ) -> CatalogResult<i64> {
+        self.reserve_object_change_inner(request, Some(actor))
+    }
+
+    fn reserve_object_change_inner(
+        &self,
+        request: ObjectReservationRequest<'_>,
+        actor: Option<MutationAuthority<'_>>,
+    ) -> CatalogResult<i64> {
         let ObjectReservationRequest {
             slug,
             operation_id,
@@ -691,6 +734,13 @@ impl Catalog {
                 (String, Option<String>, String, Option<String>) = tx
                 .query_row("SELECT storage_id,owner_id,owner_key,pending_publication FROM documents WHERE slug=?1 AND status IN ('creating','active')", [slug], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
                 .map_err(CatalogError::from)?;
+            if let Some(actor) = actor {
+                if !Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
+                    return Err(CatalogError::Conflict(
+                        "actor edit rights or session generation changed".into(),
+                    ));
+                }
+            }
             let old_bytes: i64 = tx.query_row("SELECT bytes FROM object_accounting WHERE storage_id=?1 AND object_key=?2", params![storage_id,object_key], |r|r.get(0)).optional().map_err(CatalogError::from)?.unwrap_or(0);
             if let Some((reserved_old, reserved_new)) = tx
                 .query_row(

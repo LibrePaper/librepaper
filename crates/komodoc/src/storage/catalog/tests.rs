@@ -1,6 +1,6 @@
 use super::{
     Account, Catalog, Checkpoint, Conversation, JournalPreparation, JournalSegment, Link, Message,
-    NewDocument, OperationRequest, Rendering,
+    MutationAuthority, NewDocument, OperationRequest, Rendering,
 };
 use sha2::Digest;
 
@@ -694,6 +694,100 @@ fn transfer_rechecks_owner_inside_the_write_transaction() {
     assert_eq!(moved.owner_id.as_deref(), Some("acct-2"));
     assert!(catalog
         .transfer_ownership_authorized("doc", Some("acct-1"), "", "acct-1", 100)
+        .is_err());
+}
+
+#[test]
+fn transfer_rechecks_account_generation_inside_the_write_transaction() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    let mut bob = account();
+    bob.id = "acct-2".into();
+    bob.handle = "bob".into();
+    catalog.upsert_account(&bob).unwrap();
+    catalog.create_document(&document()).unwrap();
+
+    assert!(catalog
+        .transfer_ownership_authorized_with_generation(
+            "doc",
+            Some("acct-1"),
+            "",
+            Some("revoked-generation"),
+            "acct-2",
+            100,
+        )
+        .is_err());
+    let moved = catalog
+        .transfer_ownership_authorized_with_generation(
+            "doc",
+            Some("acct-1"),
+            "",
+            Some("generation-1"),
+            "acct-2",
+            100,
+        )
+        .unwrap();
+    assert_eq!(moved.owner_id.as_deref(), Some("acct-2"));
+}
+
+#[test]
+fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    let mut coauthor = account();
+    coauthor.id = "acct-2".into();
+    coauthor.handle = "bob".into();
+    coauthor.session_generation = "generation-2".into();
+    catalog.upsert_account(&coauthor).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let link_hash = "e".repeat(64);
+    catalog
+        .put_link(&Link {
+            slug: "doc".into(),
+            role: "editor".into(),
+            hash: link_hash.clone(),
+            sealed: vec![1],
+            label: String::new(),
+            budget: None,
+            since: "2026-01-01T00:00:00Z".into(),
+            until: "".into(),
+        })
+        .unwrap();
+
+    let authority = MutationAuthority {
+        account_id: "acct-2",
+        owner_key: "bob",
+        generation: "generation-2",
+        link_hash: &link_hash,
+        policy_editor: true,
+        automation: false,
+        unowned_publisher: false,
+    };
+    catalog
+        .reserve_document_bytes_with_authority("doc", 1, 100, 1_000, Some(authority))
+        .unwrap();
+    catalog
+        .put_link(&Link {
+            slug: "doc".into(),
+            role: "editor".into(),
+            hash: link_hash.clone(),
+            sealed: vec![1],
+            label: String::new(),
+            budget: None,
+            since: "2026-01-01T00:00:00Z".into(),
+            until: "2020-01-01T00:00:00Z".into(),
+        })
+        .unwrap();
+    assert!(catalog
+        .reserve_document_bytes_with_authority("doc", 1, 100, 1_000, Some(authority))
+        .is_err());
+    let automation_without_link = MutationAuthority {
+        automation: true,
+        link_hash: "",
+        ..authority
+    };
+    assert!(catalog
+        .reserve_document_bytes_with_authority("doc", 1, 100, 1_000, Some(automation_without_link),)
         .is_err());
 }
 

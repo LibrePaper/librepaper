@@ -124,7 +124,65 @@ async fn a_figure_goes_up_and_comes_back() {
 }
 
 #[tokio::test]
-async fn a_figure_is_cached_for_a_year_because_its_name_is_its_bytes() {
+async fn an_editor_link_reaches_final_asset_label_and_rendering_checks() {
+    let server = test_server_with(
+        Configuration::default(),
+        Policy::parse("anyone"),
+        Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
+    let sha = text(&document, "sha");
+    let (_, shared) = post_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}/share"),
+        json!({"link": {"role": "editor"}}),
+    )
+    .await;
+    let key = text(&shared, "key");
+
+    let asset = client()
+        .put(format!("{}/api/documents/{slug}/assets", server.url))
+        .header("x-komodoc-client", "1")
+        .header(crate::server::LINK_HEADER, &key)
+        .header("cookie", session_as("coauthor"))
+        .body("figure")
+        .send()
+        .await
+        .expect("asset response");
+    assert_eq!(asset.status(), 200);
+
+    let label = client()
+        .patch(format!("{}/api/documents/{slug}/history/{sha}", server.url))
+        .header("x-komodoc-client", "1")
+        .header(crate::server::LINK_HEADER, &key)
+        .header("cookie", session_as("coauthor"))
+        .json(&json!({"label": "reviewed"}))
+        .send()
+        .await
+        .expect("label response");
+    assert_eq!(label.status(), 200);
+
+    let rendering = client()
+        .put(format!(
+            "{}/api/documents/{slug}/renderings/{sha}",
+            server.url
+        ))
+        .header("x-komodoc-client", "1")
+        .header(crate::server::LINK_HEADER, &key)
+        .header("cookie", session_as("coauthor"))
+        .body("%PDF-1.7\nreview")
+        .send()
+        .await
+        .expect("rendering response");
+    assert_eq!(rendering.status(), 200);
+}
+
+#[tokio::test]
+async fn a_private_figure_is_not_shared_cacheable() {
     let server = new_test_server().await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
@@ -140,8 +198,7 @@ async fn a_figure_is_cached_for_a_year_because_its_name_is_its_bytes() {
         .await
         .expect("a response");
     let caching = response.headers()["cache-control"].to_str().unwrap();
-    assert!(caching.contains("immutable"), "{caching}");
-    assert!(caching.contains("max-age=31536000"), "{caching}");
+    assert_eq!(caching, "private, no-store");
 }
 
 #[tokio::test]

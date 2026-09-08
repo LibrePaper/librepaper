@@ -390,29 +390,36 @@ impl Catalog {
         label: &str,
         actor: (&str, &str, &str),
     ) -> CatalogResult<Checkpoint> {
+        self.label_checkpoint_with_authority(
+            slug,
+            sha,
+            label,
+            MutationAuthority {
+                account_id: actor.0,
+                owner_key: actor.1,
+                generation: actor.2,
+                link_hash: "",
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
+    }
+
+    /// Label a checkpoint after checking the complete request authority under
+    /// the same transaction as the label update.
+    pub fn label_checkpoint_with_authority(
+        &self,
+        slug: &str,
+        sha: &str,
+        label: &str,
+        actor: MutationAuthority<'_>,
+    ) -> CatalogResult<Checkpoint> {
         if label.len() > 256 {
             return Err(CatalogError::Invalid("checkpoint label is too long".into()));
         }
         self.immediate(|tx| {
-            let (account_id, owner_key, generation) = actor;
-            let authorized: bool = if account_id.is_empty() {
-                tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM documents
-                     WHERE slug=?1 AND owner_id IS NULL AND owner_key=?2)",
-                    params![slug, owner_key],
-                    |row| row.get(0),
-                )
-            } else {
-                tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=?2
-                     WHERE d.slug=?1 AND a.status='active' AND a.session_generation=?3
-                       AND (d.owner_id=?2 OR EXISTS(SELECT 1 FROM grants g
-                           WHERE g.slug=d.slug AND g.account_id=?2 AND g.role='editor')))",
-                    params![slug, account_id, generation],
-                    |row| row.get(0),
-                )
-            }
-            .map_err(CatalogError::from)?;
+            let authorized = Self::mutation_authorized_in_tx(tx, slug, actor, "editor")?;
             if !authorized {
                 return Err(CatalogError::Conflict(
                     "actor rights or session generation changed".into(),
@@ -506,29 +513,32 @@ impl Catalog {
         rendering: &Rendering,
         actor: (&str, &str, &str),
     ) -> CatalogResult<Rendering> {
+        self.publish_rendering_with_authority(
+            rendering,
+            MutationAuthority {
+                account_id: actor.0,
+                owner_key: actor.1,
+                generation: actor.2,
+                link_hash: "",
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
+    }
+
+    /// Publish rendering metadata after rechecking link/account authority in
+    /// the same transaction as the upsert.
+    pub fn publish_rendering_with_authority(
+        &self,
+        rendering: &Rendering,
+        actor: MutationAuthority<'_>,
+    ) -> CatalogResult<Rendering> {
         if rendering.tree_sha.is_empty() || rendering.bytes < 0 || rendering.synctex_bytes < 0 {
             return Err(CatalogError::Invalid("invalid rendering".into()));
         }
         self.immediate(|tx| {
-            let (account_id, _owner_key, generation) = actor;
-            let authorized: bool = if account_id.is_empty() {
-                tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM documents
-                     WHERE slug=?1 AND owner_id IS NULL)",
-                    params![rendering.slug],
-                    |row| row.get(0),
-                )
-            } else {
-                tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=?2
-                     WHERE d.slug=?1 AND a.status='active' AND a.session_generation=?3
-                       AND (d.owner_id=?2 OR EXISTS(SELECT 1 FROM grants g
-                           WHERE g.slug=d.slug AND g.account_id=?2 AND g.role='editor')))",
-                    params![rendering.slug, account_id, generation],
-                    |row| row.get(0),
-                )
-            }
-            .map_err(CatalogError::from)?;
+            let authorized = Self::mutation_authorized_in_tx(tx, &rendering.slug, actor, "editor")?;
             if !authorized {
                 return Err(CatalogError::Conflict(
                     "actor rights or session generation changed".into(),

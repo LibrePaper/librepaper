@@ -242,6 +242,9 @@ impl Server {
                     PutError::Quota { status, message } => {
                         write_json(status, &json!({"error": message}))
                     }
+                    PutError::Authorization { status, message } => {
+                        write_json(status, &json!({"error": message}))
+                    }
                     PutError::Storage(_) => {
                         write_json(500, &json!({"error": "could not admit the replacement"}))
                     }
@@ -311,6 +314,9 @@ impl Server {
         {
             Ok(entry) => entry,
             Err(PutError::Quota { status, message }) => {
+                return write_json(status, &json!({"error": message}))
+            }
+            Err(PutError::Authorization { status, message }) => {
                 return write_json(status, &json!({"error": message}))
             }
             Err(PutError::Storage(_)) => {
@@ -487,6 +493,10 @@ impl Server {
                 account_id: who.id.clone(),
                 owner_key: who.key.clone(),
                 session_generation: who.session_generation.clone(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
             };
             self.store
                 .prepare_publication(&existing.slug, &request_digest, "replace", Some(&actor))

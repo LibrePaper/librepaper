@@ -231,6 +231,30 @@ impl Room {
         body: Vec<u8>,
         actor: Option<(&str, &str, &str)>,
     ) -> Result<i64, String> {
+        self.put_rendering_as_authority(
+            sha,
+            synctex,
+            body,
+            actor.map(|actor| crate::storage::catalog::MutationAuthority {
+                account_id: actor.0,
+                owner_key: actor.1,
+                generation: actor.2,
+                link_hash: "",
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            }),
+        )
+        .await
+    }
+
+    pub async fn put_rendering_as_authority(
+        &self,
+        sha: &str,
+        synctex: bool,
+        body: Vec<u8>,
+        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
+    ) -> Result<i64, String> {
         let size = body.len() as i64;
         if size == 0 {
             return Err("that rendering is empty".into());
@@ -254,9 +278,9 @@ impl Room {
         // Admission and object-ledger accounting must precede the blob write;
         // otherwise the subsequent measured-history reconciliation can reject
         // a rendering that has already become durable.
-        self.put_accounted(&key, body, "rendering").await?;
+        self.put_accounted(&key, body, "rendering", actor).await?;
         if let Some(catalog) = self.catalog.get() {
-            save_catalog_rendering(catalog, &self.slug, sha, synctex, size, actor)?;
+            save_catalog_rendering_with_authority(catalog, &self.slug, sha, synctex, size, actor)?;
         }
         let (format, main) = {
             let mut state = self.state.lock().await;
@@ -296,6 +320,32 @@ impl Room {
         body: Vec<u8>,
         actor: Option<(&str, &str, &str)>,
     ) -> Result<Option<i64>, String> {
+        self.put_current_rendering_as_authority(
+            sha,
+            inputs,
+            synctex,
+            body,
+            actor.map(|actor| crate::storage::catalog::MutationAuthority {
+                account_id: actor.0,
+                owner_key: actor.1,
+                generation: actor.2,
+                link_hash: "",
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            }),
+        )
+        .await
+    }
+
+    pub async fn put_current_rendering_as_authority(
+        &self,
+        sha: &str,
+        inputs: &str,
+        synctex: bool,
+        body: Vec<u8>,
+        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
+    ) -> Result<Option<i64>, String> {
         let size = body.len() as i64;
         if size == 0 {
             return Err("that rendering is empty".into());
@@ -318,7 +368,7 @@ impl Room {
             } else {
                 crate::storage::blob::rendering_key(&self.storage_id, sha)
             };
-            self.put_accounted(&key, body, "rendering").await?;
+            self.put_accounted(&key, body, "rendering", actor).await?;
             state.session.rendering_sizes.insert(name.clone(), size);
             state.session.rendering_written_at.insert(name, now_unix());
             (
@@ -327,7 +377,7 @@ impl Room {
             )
         };
         if let Some(catalog) = self.catalog.get() {
-            save_catalog_rendering(catalog, &self.slug, sha, synctex, size, actor)?;
+            save_catalog_rendering_with_authority(catalog, &self.slug, sha, synctex, size, actor)?;
         }
         self.record_size_now(None, &format, &main).await;
         Ok(Some(size))
@@ -352,7 +402,18 @@ impl Room {
     /// parse as a JSON object and are within the size a header may carry;
     /// what is decided here is only that they are not already held and that
     /// writing them is this server's to do, exactly like `put_rendering`.
+    #[allow(dead_code)]
     pub async fn put_rendering_provenance(&self, sha: &str, body: Vec<u8>) -> Result<i64, String> {
+        self.put_rendering_provenance_as_authority(sha, body, None)
+            .await
+    }
+
+    pub async fn put_rendering_provenance_as_authority(
+        &self,
+        sha: &str,
+        body: Vec<u8>,
+        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
+    ) -> Result<i64, String> {
         let size = body.len() as i64;
         let name = rendering_provenance_name(sha);
         if !self.hold().await {
@@ -362,6 +423,7 @@ impl Room {
             &crate::storage::blob::rendering_provenance_key(&self.storage_id, sha),
             body,
             "rendering-provenance",
+            actor,
         )
         .await?;
         let (format, main) = {

@@ -560,6 +560,7 @@ pub struct Publication {
 #[derive(Debug)]
 pub enum PutError {
     Quota { status: u16, message: &'static str },
+    Authorization { status: u16, message: &'static str },
     Storage(String),
 }
 
@@ -577,12 +578,21 @@ pub struct MutationActor {
     pub account_id: String,
     pub owner_key: String,
     pub session_generation: String,
+    /// The live link that supplied authority, if any.  Only its digest is
+    /// carried into storage; the secret never leaves the request.
+    pub link_hash: String,
+    /// Whether the current publisher policy still admits this editor.
+    pub policy_editor: bool,
+    /// Automation requests may use only the supplied link authority.
+    pub automation: bool,
+    pub unowned_publisher: bool,
 }
 
 impl std::fmt::Display for PutError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PutError::Quota { message, .. } => write!(f, "{message}"),
+            PutError::Authorization { message, .. } => write!(f, "{message}"),
             PutError::Storage(message) => write!(f, "{message}"),
         }
     }
@@ -599,26 +609,47 @@ impl Store {
             return Ok(());
         };
         catalog
-            .reserve_document_bytes(
+            .reserve_document_bytes_with_authority(
                 slug,
                 bytes,
                 self.config.storage.per_owner,
                 self.config.storage.total,
-                actor.map(|actor| {
-                    (
-                        actor.account_id.as_str(),
-                        actor.owner_key.as_str(),
-                        actor.session_generation.as_str(),
-                    )
+                actor.map(|actor| crate::storage::catalog::MutationAuthority {
+                    account_id: actor.account_id.as_str(),
+                    owner_key: actor.owner_key.as_str(),
+                    generation: actor.session_generation.as_str(),
+                    link_hash: actor.link_hash.as_str(),
+                    policy_editor: actor.policy_editor,
+                    automation: actor.automation,
+                    unowned_publisher: actor.unowned_publisher,
                 }),
             )
-            .map_err(|error| PutError::Quota {
-                status: 507,
-                message: if error.to_string().contains("deployment") {
-                    "this deployment has no room left"
-                } else {
-                    "your storage quota is used up; delete a document first"
+            .map_err(|error| match error {
+                crate::storage::catalog::CatalogError::Conflict(message)
+                    if message.contains("actor") =>
+                {
+                    PutError::Authorization {
+                        status: 403,
+                        message: "edit access changed",
+                    }
+                }
+                crate::storage::catalog::CatalogError::NotFound => PutError::Authorization {
+                    status: 404,
+                    message: "not found",
                 },
+                crate::storage::catalog::CatalogError::Conflict(message)
+                    if message.contains("quota") || message.contains("deployment") =>
+                {
+                    PutError::Quota {
+                        status: 507,
+                        message: if message.contains("deployment") {
+                            "this deployment has no room left"
+                        } else {
+                            "your storage quota is used up; delete a document first"
+                        },
+                    }
+                }
+                other => PutError::Storage(other.to_string()),
             })
     }
 

@@ -184,7 +184,6 @@ impl Server {
             _ => Value::Null,
         }
     }
-
     /// Who a document is shared with, and -- for its owner -- the changes to
     /// that. Reading takes a place on the document by name, so a commenter can
     /// see who else is in the room; a reader who arrived by link is not shown
@@ -295,6 +294,10 @@ impl Server {
             account_id: current_who.id.id.clone(),
             owner_key: current_who.key.clone(),
             session_generation: current_who.id.session_generation.clone(),
+            link_hash: current_who.link.clone(),
+            policy_editor: self.publishers.allows(&current_who.id.handle),
+            automation: current_who.automation,
+            unowned_publisher: false,
         };
         let updated = self
             .store
@@ -473,6 +476,29 @@ impl Server {
         if cross_site_refused(request.headers(), arrival) {
             return write_json(403, &cross_site_refusal());
         }
+        // Establish the credential before reading an attacker-controlled body
+        // or looking up a slug.  In particular, a revoked cookie must not be
+        // able to reach account lookup and then win a stale ownership check.
+        match self
+            .authenticated_identity(request.headers(), arrival)
+            .await
+        {
+            Ok(_) => {}
+            Err(AuthenticationFailure::Invalid) => {
+                let mut response = write_json(
+                    401,
+                    &json!({"error": "authentication expired or was revoked"}),
+                );
+                self.clear_dead_session(&mut response, request.headers(), arrival);
+                return response;
+            }
+            Err(AuthenticationFailure::Unavailable) => {
+                return write_json(
+                    503,
+                    &json!({"error": "authentication service temporarily unavailable"}),
+                )
+            }
+        }
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
@@ -513,6 +539,17 @@ impl Server {
                 )}),
             );
         }
+        // Account lookup is asynchronous. Re-resolve the owner after it
+        // returns so revocation or transfer during that wait cannot proceed.
+        let current_entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        let current_who = self.viewer(&current_entry, &headers, arrival, None).await;
+        if !current_who.at_least(Role::Owner) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
         // The earlier viewer check is only for a non-enumerating HTTP reply.
         // Recheck ownership on the authoritative row under SQLite's write
         // lock before changing anything; transfers and revocations racing
@@ -539,11 +576,18 @@ impl Server {
                 eprintln!("could not record transfer target: {error}");
                 return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
             }
-            let caller_id = who.id.is_signed_in().then_some(who.id.id.as_str());
-            if let Err(error) = catalog.transfer_ownership_authorized(
+            let caller_id = current_who
+                .id
+                .is_signed_in()
+                .then_some(current_who.id.id.as_str());
+            if let Err(error) = catalog.transfer_ownership_authorized_with_generation(
                 slug,
                 caller_id,
-                &who.key,
+                &current_who.key,
+                current_who
+                    .id
+                    .is_signed_in()
+                    .then_some(current_who.id.session_generation.as_str()),
                 &account.id,
                 self.config.storage.per_owner,
             ) {
@@ -564,6 +608,9 @@ impl Server {
         let moved = self
             .store
             .modify(slug, |entry| {
+                if !entry.owned_by(&current_who.key, &current_who.id.id) {
+                    return Err("ownership changed".into());
+                }
                 entry.publisher = account.handle.clone();
                 entry.publisher_id = account.id.clone();
                 entry.publisher_name = account.name.clone();
@@ -580,11 +627,8 @@ impl Server {
             .await;
         match moved {
             Ok(entry) => {
-                // The old owner is very likely still connected, and a
-                // transfer leaves them named on the document only if they
-                // happen to hold a grant -- otherwise their socket's rung
-                // just changed from owner to whatever the document's default
-                // reading grants a stranger.
+                // The old owner is very likely still connected. Reauthorize
+                // every socket against the new catalogue owner immediately.
                 self.reauthorize(slug).await;
                 write_json(
                     200,

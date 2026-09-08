@@ -114,6 +114,25 @@ impl From<rusqlite::Error> for CatalogError {
 
 pub type CatalogResult<T> = Result<T, CatalogError>;
 
+/// The request authority carried to a final mutation transaction.  The
+/// account and generation identify a signed-in caller; a link hash is an
+/// additional, independently revocable grant.  Policy and automation are
+/// included because a route's first role check is only advisory while a body
+/// is in flight.
+#[derive(Clone, Copy, Debug)]
+pub struct MutationAuthority<'a> {
+    pub account_id: &'a str,
+    pub owner_key: &'a str,
+    pub generation: &'a str,
+    pub link_hash: &'a str,
+    pub policy_editor: bool,
+    pub automation: bool,
+    /// Explicit open, unowned publishing admission. This is kept separate
+    /// from owner_key so a route cannot turn the document's sentinel into a
+    /// caller identity.
+    pub unowned_publisher: bool,
+}
+
 /// A row in `accounts`.  Provider ids, rather than mutable handles, are the
 /// identity used by all ownership and authorization code.
 #[derive(Clone, Debug, Eq, PartialEq)]

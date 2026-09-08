@@ -104,6 +104,92 @@ pub(super) fn envelope_key_id(envelope: &[u8]) -> String {
 }
 
 impl Catalog {
+    /// Check a mutation actor against the live document and access rows.  This
+    /// is deliberately evaluated inside the caller's write transaction so a
+    /// link expiry, policy change, grant revocation, or account generation
+    /// change cannot be bypassed by a stale route-level Viewer.
+    pub(super) fn mutation_authorized_in_tx(
+        tx: &rusqlite::Transaction<'_>,
+        slug: &str,
+        actor: MutationAuthority<'_>,
+        role: &str,
+    ) -> CatalogResult<bool> {
+        let link_ok = !actor.link_hash.is_empty()
+            && actor.policy_editor
+            && tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM links l
+                       JOIN documents d ON d.slug=l.slug
+                         WHERE l.slug=?1 AND l.hash=?2 AND l.role='editor'
+                         AND d.status='active' AND d.pending_publication IS NULL
+                         AND (l.until='' OR unixepoch(l.until)>unixepoch('now')))",
+                    params![slug, actor.link_hash],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(CatalogError::from)?;
+        if actor.automation {
+            // Automation is explicitly link bounded.  An owner's cached
+            // cookie supplies attribution only and must not authorize a
+            // mutation when the link is absent, expired, or read-only.
+            if !actor.account_id.is_empty() {
+                let account_live = tx
+                    .query_row(
+                        "SELECT status='active' AND session_generation=?2
+                           FROM accounts WHERE id=?1",
+                        params![actor.account_id, actor.generation],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if !account_live {
+                    return Ok(false);
+                }
+            }
+            return Ok(role == "editor" && link_ok);
+        }
+        if actor.account_id.is_empty() {
+            if actor.unowned_publisher && actor.policy_editor {
+                return tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM documents
+                           WHERE slug=?1 AND status='active' AND pending_publication IS NULL
+                             AND owner_id IS NULL AND owner_key='example:' || slug)",
+                        [slug],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map(|open| open || link_ok)
+                    .map_err(CatalogError::from);
+            }
+            return tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM documents
+                       WHERE slug=?1 AND status='active' AND pending_publication IS NULL
+                         AND owner_id IS NULL AND owner_key=?2)",
+                    params![slug, actor.owner_key],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map(|owner| owner || link_ok)
+                .map_err(CatalogError::from);
+        }
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM documents d
+               JOIN accounts a ON a.id=?2
+              WHERE d.slug=?1 AND d.status='active' AND d.pending_publication IS NULL
+                AND a.status='active' AND a.session_generation=?3
+                AND (d.owner_id=?2 OR (?4=1 AND EXISTS(
+                    SELECT 1 FROM grants g WHERE g.slug=d.slug
+                      AND g.account_id=?2 AND g.role='editor')) OR ?5=1))",
+            params![
+                slug,
+                actor.account_id,
+                actor.generation,
+                actor.policy_editor,
+                link_ok
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(CatalogError::from)
+    }
+
     pub fn set_link_sealing_key(&self, key: &[u8]) -> CatalogResult<()> {
         let key: [u8; 32] = key
             .try_into()

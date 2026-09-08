@@ -1472,20 +1472,30 @@ impl Room {
         }
     }
 
-    async fn put_accounted(&self, key: &str, body: Vec<u8>, kind: &str) -> Result<(), String> {
+    async fn put_accounted(
+        &self,
+        key: &str,
+        body: Vec<u8>,
+        kind: &str,
+        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
+    ) -> Result<(), String> {
         let operation_id = crate::util::new_id();
         if let Some(catalog) = self.catalog.get() {
-            catalog
-                .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-                    slug: &self.slug,
-                    operation_id: &operation_id,
-                    object_key: key,
-                    kind,
-                    new_bytes: body.len() as i64,
-                    owner_limit: self.config.storage.per_owner,
-                    total_limit: self.config.storage.total,
-                })
-                .map_err(|error| error.to_string())?;
+            let request = crate::storage::catalog::ObjectReservationRequest {
+                slug: &self.slug,
+                operation_id: &operation_id,
+                object_key: key,
+                kind,
+                new_bytes: body.len() as i64,
+                owner_limit: self.config.storage.per_owner,
+                total_limit: self.config.storage.total,
+            };
+            let reserved = if let Some(actor) = actor {
+                catalog.reserve_object_change_with_authority(request, actor)
+            } else {
+                catalog.reserve_object_change(request)
+            };
+            reserved.map_err(|error| error.to_string())?;
         }
         match self.blobs.put(key, body, "application/octet-stream").await {
             Ok(()) => {

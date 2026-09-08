@@ -324,6 +324,7 @@ pub(super) fn save_catalog_manifest(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(super) fn save_catalog_rendering(
     catalog: &crate::storage::catalog::Catalog,
     slug: &str,
@@ -331,6 +332,32 @@ pub(super) fn save_catalog_rendering(
     synctex: bool,
     size: i64,
     actor: Option<(&str, &str, &str)>,
+) -> Result<(), String> {
+    save_catalog_rendering_with_authority(
+        catalog,
+        slug,
+        tree_sha,
+        synctex,
+        size,
+        actor.map(|actor| crate::storage::catalog::MutationAuthority {
+            account_id: actor.0,
+            owner_key: actor.1,
+            generation: actor.2,
+            link_hash: "",
+            policy_editor: true,
+            automation: false,
+            unowned_publisher: false,
+        }),
+    )
+}
+
+pub(super) fn save_catalog_rendering_with_authority(
+    catalog: &crate::storage::catalog::Catalog,
+    slug: &str,
+    tree_sha: &str,
+    synctex: bool,
+    size: i64,
+    actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
 ) -> Result<(), String> {
     let previous = catalog
         .rendering(slug, tree_sha)
@@ -372,7 +399,7 @@ pub(super) fn save_catalog_rendering(
     };
     if let Some(actor) = actor {
         catalog
-            .publish_rendering_authorized(&rendering, actor)
+            .publish_rendering_with_authority(&rendering, actor)
             .map(|_| ())
             .map_err(|err| err.to_string())
     } else {

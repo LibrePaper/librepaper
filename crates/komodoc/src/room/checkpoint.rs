@@ -302,6 +302,7 @@ impl Room {
                     &crate::storage::blob::blob_key(&self.storage_id, digest),
                     body.clone().into_bytes(),
                     "text",
+                    None,
                 )
                 .await
             {
@@ -324,6 +325,7 @@ impl Room {
                 &checkpoint_key(&self.storage_id, &sha),
                 tree.to_bytes(),
                 "tree",
+                None,
             )
             .await
         {
@@ -817,6 +819,30 @@ impl Room {
         label: &str,
         actor: Option<(&str, &str, &str)>,
     ) -> Result<bool, String> {
+        self.label_as_authority(
+            sha,
+            label,
+            actor.map(|actor| crate::storage::catalog::MutationAuthority {
+                account_id: actor.0,
+                owner_key: actor.1,
+                generation: actor.2,
+                link_hash: "",
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            }),
+        )
+        .await
+    }
+
+    /// Label using the complete request authority.  The authority reaches
+    /// the catalogue write so links are checked again after the body read.
+    pub async fn label_as_authority(
+        &self,
+        sha: &str,
+        label: &str,
+        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
+    ) -> Result<bool, String> {
         let _manifest_writer = self.manifest_write.lock().await;
         let resident = self.state.lock().await.manifest.has(sha);
         let catalog_checkpoint = if !resident {
@@ -840,7 +866,7 @@ impl Room {
         // a replacement of the unseen history.
         if let (Some(catalog), Some(actor)) = (self.catalog.get(), actor) {
             catalog
-                .label_checkpoint_authorized(&self.slug, sha, label, actor)
+                .label_checkpoint_with_authority(&self.slug, sha, label, actor)
                 .map_err(|error| error.to_string())?;
             let mut state = self.state.lock().await;
             if let Some(point) = state.manifest.checkpoints.iter_mut().find(|p| p.sha == sha) {
@@ -855,7 +881,7 @@ impl Room {
                 .ok_or_else(|| "catalogue disappeared while labelling".to_string())?;
             if let Some(actor) = actor {
                 catalog
-                    .label_checkpoint_authorized(&self.slug, sha, label, actor)
+                    .label_checkpoint_with_authority(&self.slug, sha, label, actor)
                     .map_err(|error| error.to_string())?;
             } else {
                 catalog

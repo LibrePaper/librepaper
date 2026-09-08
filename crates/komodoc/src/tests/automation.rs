@@ -80,6 +80,41 @@ async fn mint_role(base: &str, slug: &str, role: &str) -> String {
 }
 
 #[tokio::test]
+async fn automation_cannot_use_cached_owner_for_publish_list_or_delete() {
+    let server = new_test_server().await;
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
+    let cookie = session_as(TEST_PUBLISHER);
+
+    let (status, answer) = automation_get(&cookie, "", &server.url, "/api/list").await;
+    assert_eq!(status, 403, "automation listed documents: {answer}");
+    assert_eq!(
+        answer["error"],
+        "automation is link-scoped and cannot publish or enumerate documents"
+    );
+
+    let (status, answer) = automation_post(
+        &cookie,
+        "",
+        &server.url,
+        "/api/documents",
+        json!({"title": "automation must not publish", "html": "<p>nope</p>"}),
+    )
+    .await;
+    assert_eq!(status, 403, "automation published a document: {answer}");
+
+    let response = client()
+        .post(format!("{}/api/documents/{slug}/delete", server.url))
+        .header("x-komodoc-client", "1")
+        .header(crate::server::AUTOMATION_HEADER, "1")
+        .header("cookie", cookie)
+        .send()
+        .await
+        .expect("delete response");
+    assert_eq!(response.status(), 403, "automation deleted a document");
+}
+
+#[tokio::test]
 async fn automation_snapshot_is_link_scoped_and_consistent() {
     let server = new_test_server().await;
     let document = publish_test_document(&server.url).await;

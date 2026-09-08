@@ -29,10 +29,10 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.store.get_result(slug).await {
+        let entry = match self.checked_entry(slug).await {
             Ok(Some(entry)) => entry,
             Ok(None) => return plain(404, "not found"),
-            Err(error) => return write_json(503, &json!({"error": error.to_string()})),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
         if !self.may_read(&entry, &who) {
@@ -106,10 +106,10 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.store.get_result(slug).await {
+        let entry = match self.checked_entry(slug).await {
             Ok(Some(entry)) => entry,
             Ok(None) => return plain(404, "not found"),
-            Err(error) => return write_json(503, &json!({"error": error.to_string()})),
+            Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
         if !self.may_read(&entry, &who) {
@@ -213,19 +213,26 @@ impl Server {
             Err(error) => return plain(503, &error.to_string()),
         };
         match room
-            .label_as(
+            .label_as_authority(
                 sha,
                 &label,
-                Some((
-                    who.id.id.as_str(),
-                    who.key.as_str(),
-                    who.id.session_generation.as_str(),
-                )),
+                Some(crate::storage::catalog::MutationAuthority {
+                    account_id: who.id.id.as_str(),
+                    owner_key: who.key.as_str(),
+                    generation: who.id.session_generation.as_str(),
+                    link_hash: who.link.as_str(),
+                    policy_editor: self.publishers.allows(&who.id.handle),
+                    automation: who.automation,
+                    unowned_publisher: false,
+                }),
             )
             .await
         {
             Ok(true) => write_json(200, &json!({"sha": sha, "label": label})),
             Ok(false) => plain(404, "not found"),
+            Err(err) if err.contains("actor rights") => {
+                write_json(403, &json!({"error": "edit access changed"}))
+            }
             Err(err) => write_json(500, &json!({"error": err})),
         }
     }
