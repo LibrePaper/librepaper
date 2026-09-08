@@ -264,8 +264,10 @@ impl Peer {
 /// the refusal names the text rather than the saved state.
 #[tokio::test]
 async fn the_source_ceiling_is_enforced_at_its_boundary() {
-    let mut config = Configuration::default();
-    config.max_document = 64 * 1024;
+    let config = Configuration {
+        max_document: 64 * 1024,
+        ..Configuration::default()
+    };
     let fixture = room_fixture::open(config).await;
     let room = room_fixture::publish(&fixture, "source-boundary", "start\n").await;
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
@@ -300,8 +302,10 @@ async fn the_source_ceiling_is_enforced_at_its_boundary() {
 /// the shared document never moves and nothing is relayed.
 #[tokio::test]
 async fn a_small_source_with_a_large_history_is_refused_by_the_encoded_ceiling() {
-    let mut config = Configuration::default();
-    config.max_document = 8 * 1024;
+    let mut config = Configuration {
+        max_document: 8 * 1024,
+        ..Configuration::default()
+    };
     config.persistence.max_encoded_snapshot_bytes = 16 * 1024;
     let fixture = room_fixture::open(config).await;
     let room = room_fixture::publish(&fixture, "long-history", "start\n").await;
@@ -363,8 +367,10 @@ async fn a_small_source_with_a_large_history_is_refused_by_the_encoded_ceiling()
 /// refused permanently: no queue, no reservation, no retry.
 #[tokio::test]
 async fn the_journal_refuses_a_snapshot_past_the_encoded_ceiling() {
-    let mut config = Configuration::default();
-    config.max_document = 32 * 1024;
+    let mut config = Configuration {
+        max_document: 32 * 1024,
+        ..Configuration::default()
+    };
     config.persistence.max_encoded_snapshot_bytes = 64 * 1024;
     let fixture = room_fixture::open(config).await;
     let error = fixture
@@ -508,8 +514,10 @@ fn the_queue_budget_holds_a_sealed_round_until_it_settles() {
 /// counter, not a process-memory sample, is the evidence.
 #[tokio::test]
 async fn concurrent_rooms_stay_inside_the_memory_budget() {
-    let mut config = Configuration::default();
-    config.max_document = 32 * 1024;
+    let mut config = Configuration {
+        max_document: 32 * 1024,
+        ..Configuration::default()
+    };
     config.persistence.max_encoded_snapshot_bytes = 64 * 1024;
     // Room for exactly one maximum snapshot at a time.
     config.persistence.max_staging_bytes = PersistenceLimits::staging_cost(64 * 1024);
@@ -544,8 +552,10 @@ async fn concurrent_rooms_stay_inside_the_memory_budget() {
 /// second process over the same storage.
 #[tokio::test]
 async fn a_boundary_snapshot_appends_acknowledges_compacts_and_recovers() {
-    let mut config = Configuration::default();
-    config.max_document = 64 * 1024;
+    let mut config = Configuration {
+        max_document: 64 * 1024,
+        ..Configuration::default()
+    };
     config.persistence.max_encoded_snapshot_bytes = 256 * 1024;
     let fixture = room_fixture::open(config).await;
     let room = room_fixture::publish(&fixture, "boundary", "start\n").await;
@@ -628,8 +638,10 @@ fn the_sixty_four_megabyte_boundary_is_where_the_formats_stop() {
 /// in the queue for the next flush to retry forever.
 #[tokio::test]
 async fn a_refused_save_leaks_no_queue_or_memory_reservation() {
-    let mut config = Configuration::default();
-    config.max_document = 32 * 1024;
+    let mut config = Configuration {
+        max_document: 32 * 1024,
+        ..Configuration::default()
+    };
     config.persistence.max_encoded_snapshot_bytes = 64 * 1024;
     let fixture = room_fixture::open(config).await;
     let refused = fixture
