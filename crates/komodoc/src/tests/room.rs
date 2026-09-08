@@ -38,7 +38,7 @@ pub(super) async fn fixture(
         .await
         .unwrap();
     let room = rooms.get("probe").await;
-    room.set_source("A", "markdown").await;
+    room.set_source("A", "markdown").await.unwrap();
     room.checkpoint("comment", "alice").await.unwrap();
     (dir, store, rooms)
 }
@@ -87,7 +87,8 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
     let room = rooms.get("catalog-history").await;
     let mut publication_token = room.reserve_publication_checkpoint().unwrap();
     room.set_main_file("revision-0", "markdown", "main.md")
-        .await;
+        .await
+        .unwrap();
     let initial_sha = room
         .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
@@ -100,7 +101,8 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
     publication_token.commit();
     for revision in 1..=205 {
         room.set_source(&format!("revision-{revision}"), "markdown")
-            .await;
+            .await
+            .unwrap();
         room.checkpoint_now("cli", "alice").await.unwrap();
     }
     let before = room.manifest().await;
@@ -253,7 +255,7 @@ async fn checkpoint_race_drops_dirty_edit() {
     let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
     let room = reopened.get("probe").await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     *hooked.pause.lock().unwrap() = Some(("get".into(), blob::checkpoint_key("probe", &sha)));
     let task = tokio::spawn({
         let room = room.clone();
@@ -262,7 +264,9 @@ async fn checkpoint_race_drops_dirty_edit() {
     tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    room.set_source("C AFTER SNAPSHOT", "markdown").await;
+    room.set_source("C AFTER SNAPSHOT", "markdown")
+        .await
+        .unwrap();
     hooked.resume.notify_one();
     task.await.unwrap().unwrap();
     assert_eq!(room.source().await, "C AFTER SNAPSHOT");
@@ -295,7 +299,7 @@ async fn edit_during_session_write_stays_dirty() {
     let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
     let room = reopened.get("probe").await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
     let task = tokio::spawn({
         let room = room.clone();
@@ -309,7 +313,8 @@ async fn edit_during_session_write_stays_dirty() {
         room.set_source("C DURING SESSION WRITE", "markdown"),
     )
     .await
-    .expect("storage must not block editing");
+    .expect("storage must not block editing")
+    .unwrap();
     hooked.resume.notify_one();
     task.await.unwrap().unwrap();
     assert_eq!(room.source().await, "C DURING SESSION WRITE");
@@ -341,7 +346,7 @@ async fn failed_manifest_write_never_retries() {
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
     let room = rooms.get("probe").await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     let expected = room.tree().await.digest();
     *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
     assert!(room.checkpoint("comment", "").await.is_err());
@@ -379,7 +384,7 @@ async fn concurrent_label_is_lost_by_checkpoint() {
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(hooked_store);
     let room = rooms.get("probe").await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::history_index_key("probe")));
     let task = tokio::spawn({
         let room = room.clone();
@@ -393,7 +398,8 @@ async fn concurrent_label_is_lost_by_checkpoint() {
         room.set_source("C while manifest saves", "markdown"),
     )
     .await
-    .expect("manifest storage must not block edits");
+    .expect("manifest storage must not block edits")
+    .unwrap();
     // The checkpoint is paused mid-write, holding the manifest write gate.
     // Spawning `label` only after that pause is confirmed guarantees it
     // queues up behind the checkpoint's critical section rather than racing
@@ -444,7 +450,7 @@ async fn failed_tree_read_prunes_retained_asset() {
     let (_dir, store, rooms) = fixture(config.clone()).await;
     let room = rooms.get("probe").await;
     let (sha, _) = room.put_asset(vec![9; 10], (100, 100)).await.unwrap();
-    room.name_asset("fig.png", &sha).await;
+    room.name_asset("fig.png", &sha).await.unwrap();
     let old = room.checkpoint("comment", "").await.unwrap().unwrap();
     store
         .blobs
@@ -463,7 +469,7 @@ async fn failed_tree_read_prunes_retained_asset() {
             .get_or_insert_map(session::ASSETS)
             .remove(&mut state.session.doc.transact_mut(), "fig.png");
     }
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     *hooked.fail.lock().unwrap() = Some(blob::checkpoint_key("probe", &old));
     room.checkpoint("comment", "").await.unwrap();
     assert!(room.manifest().await.has(&old));
@@ -540,9 +546,9 @@ async fn revisiting_checkpoint_leaves_wrong_head() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     let a = room.tree().await.digest();
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     let b = room.checkpoint("comment", "alice").await.unwrap().unwrap();
-    room.set_source("A", "markdown").await;
+    room.set_source("A", "markdown").await.unwrap();
     assert_eq!(
         room.checkpoint("comment", "alice").await.unwrap().unwrap(),
         a
@@ -577,13 +583,13 @@ async fn concurrent_restores_are_serialized() {
     reopened.attach_store(store.clone());
     let room = reopened.get("probe").await;
 
-    room.set_source("first", "markdown").await;
+    room.set_source("first", "markdown").await.unwrap();
     let first = room
         .checkpoint_now("quiet", "alice")
         .await
         .unwrap()
         .unwrap();
-    room.set_source("second", "markdown").await;
+    room.set_source("second", "markdown").await.unwrap();
     let second = room
         .checkpoint_now("quiet", "alice")
         .await
@@ -672,7 +678,9 @@ async fn idle_tick_defers_next_changed_checkpoint() {
         state.touched = 0;
     }
     let _ = room.tick().await;
-    room.set_source("B AFTER LONG IDLE", "markdown").await;
+    room.set_source("B AFTER LONG IDLE", "markdown")
+        .await
+        .unwrap();
     let taken = room.checkpoint("cli", "alice").await.unwrap();
     assert!(
         taken.is_some(),
@@ -728,7 +736,7 @@ async fn persist_forgets_asset_and_rendering_charges() {
         .await
         .unwrap();
     assert!(store.get("probe").await.unwrap().size >= 200000);
-    room.set_source("A changed", "markdown").await;
+    room.set_source("A changed", "markdown").await.unwrap();
     room.persist().await.unwrap();
     let charge = store.get("probe").await.unwrap().size;
     assert!(
@@ -753,7 +761,7 @@ async fn shed_history_leaks_text_blobs() {
     let (_dir, store, rooms) = fixture(config).await;
     let room = rooms.get("probe").await;
     for s in ["B", "C", "D"] {
-        room.set_source(s, "markdown").await;
+        room.set_source(s, "markdown").await.unwrap();
         room.checkpoint("comment", "").await.unwrap();
     }
     assert_eq!(room.manifest().await.checkpoints.len(), 1);
@@ -778,11 +786,11 @@ async fn shed_history_keeps_blob_shared_by_retained_checkpoints() {
     let room = rooms.get("probe").await;
     // A second file that never changes across the next checkpoints, so its
     // blob is named by every one of them.
-    room.add_text("shared.txt", "SHARED").await;
+    room.add_text("shared.txt", "SHARED").await.unwrap();
     room.checkpoint("comment", "").await.unwrap();
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     room.checkpoint("comment", "").await.unwrap();
-    room.set_source("C", "markdown").await;
+    room.set_source("C", "markdown").await.unwrap();
     room.checkpoint("comment", "").await.unwrap();
     // history_max=2 has shed down to the two newest checkpoints by now; both
     // still name shared.txt.
@@ -876,14 +884,23 @@ async fn read_only_room_mutators_do_not_mutate() {
     other.attach_store(store);
     let room = other.get("probe").await;
     assert!(room.read_only());
-    let update = room.set_source("SHOULD NOT LAND", "markdown").await;
+    // A refusal, not an empty update: an empty update is what writing the
+    // source a document already holds produces, and the two must not look
+    // the same to a caller.
+    let refused = room.set_source("SHOULD NOT LAND", "markdown").await;
     assert!(
-        update.is_empty(),
-        "a read-only set_source must not produce an update to relay"
+        matches!(refused, Err(room::WriteError::ReadOnly(_))),
+        "a read-only set_source must refuse rather than answer with an update"
     );
     assert_eq!(room.source().await, "A");
-    room.add_text("extra.txt", "nope").await;
-    room.name_asset("fig.png", "deadbeef").await;
+    assert!(matches!(
+        room.add_text("extra.txt", "nope").await,
+        Err(room::WriteError::ReadOnly(_))
+    ));
+    assert!(matches!(
+        room.name_asset("fig.png", "deadbeef").await,
+        Err(room::WriteError::ReadOnly(_))
+    ));
     let state = room.state.lock().await;
     assert!(!session::texts_of(&state.session.doc).contains_key("extra.txt"));
     assert!(session::assets_of(&state.session.doc).is_empty());
@@ -932,7 +949,7 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
     rooms.attach_store(store.clone());
     rooms.attach_journal(runtime);
     let room = rooms.get("journal-room").await;
-    room.set_source("journaled", "markdown").await;
+    room.set_source("journaled", "markdown").await.unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
 
     let segments: i64 = catalog
@@ -1004,7 +1021,9 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
         .await
         .unwrap();
     let mut publication_token = room.reserve_publication_checkpoint().unwrap();
-    room.set_main_file("initial", "markdown", "main.md").await;
+    room.set_main_file("initial", "markdown", "main.md")
+        .await
+        .unwrap();
     let initial_sha = room
         .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
@@ -1096,7 +1115,7 @@ async fn automatic_checkpoint_uses_hourly_interval_without_quiet_time() {
     config.session.history_interval_seconds = 1;
     let (_dir, _store, rooms) = fixture(config).await;
     let room = rooms.get("probe").await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     {
         let mut state = room.state.lock().await;
         state.session.last_checkpoint_at = crate::util::now_unix() - 2;
@@ -1138,7 +1157,9 @@ async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
     rooms.attach_store(store.clone());
     let room = rooms.get("budgeted").await;
     let mut publication_token = room.reserve_publication_checkpoint().unwrap();
-    room.set_main_file("source", "markdown", "main.md").await;
+    room.set_main_file("source", "markdown", "main.md")
+        .await
+        .unwrap();
     let initial_sha = room
         .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
@@ -1220,7 +1241,7 @@ async fn room_try_get_refuses_hard_count_limit() {
     config.session.rooms_max = 1;
     let (_dir, store, rooms) = fixture(config).await;
     let first = rooms.get("probe").await;
-    first.set_source("unsaved", "markdown").await;
+    first.set_source("unsaved", "markdown").await.unwrap();
     store
         .put(store::Publication {
             slug: "second-room".into(),
@@ -1329,7 +1350,7 @@ async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
     let room = reopened.get("probe").await;
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     room.attach(123, tx, true).await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     room.state.lock().await.sockets.get_mut(&123).unwrap().sent = 1;
     *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
     let save = tokio::spawn({
@@ -1344,7 +1365,8 @@ async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
         room.set_source("newer, longer C", "markdown"),
     )
     .await
-    .expect("an editor must not wait on storage");
+    .expect("an editor must not wait on storage")
+    .unwrap();
     room.state.lock().await.sockets.get_mut(&123).unwrap().sent = 2;
     assert!(
         rx.try_recv().is_err(),
@@ -1401,7 +1423,7 @@ async fn persistence_failure_leaves_the_session_retryable() {
     let hooked = HookStore::new(store.blobs.clone());
     let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     let room = reopened.get("probe").await;
-    room.set_source("retry me", "markdown").await;
+    room.set_source("retry me", "markdown").await.unwrap();
     let version = room.state.lock().await.session_version.clone();
     *hooked.fail.lock().unwrap() = Some(blob::session_key("probe"));
     assert!(room.persist().await.is_err());
@@ -1442,8 +1464,11 @@ async fn sweeper_saves_other_rooms_while_one_write_is_paused() {
     rooms.attach_store(store.clone());
     let first = rooms.get("probe").await;
     let second = rooms.get("second").await;
-    first.set_source("first changed", "markdown").await;
-    second.set_source("second changed", "markdown").await;
+    first.set_source("first changed", "markdown").await.unwrap();
+    second
+        .set_source("second changed", "markdown")
+        .await
+        .unwrap();
     *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
     let sweep = tokio::spawn({
         let rooms = rooms.clone();
@@ -1486,7 +1511,7 @@ async fn concurrent_checkpoints_commit_in_snapshot_order() {
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
     let room = rooms.get("probe").await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
     let first = tokio::spawn({
         let room = room.clone();
@@ -1495,7 +1520,7 @@ async fn concurrent_checkpoints_commit_in_snapshot_order() {
     tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    room.set_source("C", "markdown").await;
+    room.set_source("C", "markdown").await.unwrap();
     let second = tokio::spawn({
         let room = room.clone();
         async move { room.checkpoint_now("quiet", "alice").await }

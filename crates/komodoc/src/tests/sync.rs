@@ -222,7 +222,8 @@ async fn rejoining_asks_for_the_rest_and_not_the_whole() {
 
     // The document moves on while this client is away.
     room.set_source("# My Paper\n\nWhile the socket was down.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
 
     let (rest, _) = room
         .open_state(Some(&crate::document::session::encode_vector(&mine)))

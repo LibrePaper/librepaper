@@ -137,7 +137,8 @@ async fn suggest_uses_live_text_before_the_next_checkpoint() {
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# Paper\n\nA freshly inserted passage.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     suggest_passage(
         &slug,
         "freshly inserted",
@@ -243,7 +244,8 @@ async fn accept_after_the_passage_changed_is_stale_and_would_exit_3() {
 
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# Paper\n\nThe quick green fox jumps.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
 
     let decision = decide_suggestion(&server.url, &slug, &credentials, &comment_id, "accept")
         .await

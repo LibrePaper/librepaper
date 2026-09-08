@@ -210,7 +210,7 @@ async fn failed_accept_compensates_without_losing_a_concurrent_keystroke() {
     tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    room.set_source("A!", "markdown").await;
+    room.set_source("A!", "markdown").await.unwrap();
     hooked.resume.notify_one();
     let result = accept.await.unwrap();
     assert!(
@@ -258,7 +258,9 @@ async fn catalog_fixture() -> (
     let rooms = room::RoomSet::new(blobs, config);
     rooms.attach_store(store.clone());
     let room = rooms.get("accept-probe").await;
-    room.set_main_file("A", "markdown", "main.md").await;
+    room.set_main_file("A", "markdown", "main.md")
+        .await
+        .unwrap();
     let mut token = room.reserve_publication_checkpoint().unwrap();
     let sha = room
         .checkpoint_publication_now("cli", "alice", &mut token)
@@ -309,7 +311,9 @@ async fn catalog_hook_fixture() -> (
     let rooms = room::RoomSet::new(hooked.clone(), config);
     rooms.attach_store(store.clone());
     let room = rooms.get("accept-crash").await;
-    room.set_main_file("A", "markdown", "main.md").await;
+    room.set_main_file("A", "markdown", "main.md")
+        .await
+        .unwrap();
     let mut token = room.reserve_publication_checkpoint().unwrap();
     let sha = room
         .checkpoint_publication_now("cli", "alice", &mut token)
@@ -413,7 +417,7 @@ async fn receipt_failure_survives_room_reload_before_retry() {
 async fn stale_accept_does_not_leave_an_unstaged_receipt_lock() {
     let (_dir, _store, _rooms, room) = catalog_fixture().await;
     let id = add_catalog_suggestion(&room).await;
-    room.set_source("unrelated", "markdown").await;
+    room.set_source("unrelated", "markdown").await.unwrap();
     assert!(room
         .accept_suggestion(&id, "stale-accept", "alice")
         .await
@@ -430,7 +434,7 @@ async fn staged_accept_replays_unsaved_preaccept_state_after_reload() {
         .unwrap()
         .unwrap()
         .storage_id;
-    room.set_source("A!", "markdown").await;
+    room.set_source("A!", "markdown").await.unwrap();
     let id = add_catalog_suggestion(&room).await;
 
     // The merge produces AA!; pause exactly after the prepared receipt and
@@ -503,7 +507,7 @@ async fn failed_accept_broadcasts_a_sequence_a_peer_can_replay() {
     tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    room.set_source("A!", "markdown").await;
+    room.set_source("A!", "markdown").await.unwrap();
     hooked.resume.notify_one();
     assert!(task.await.unwrap().is_err());
 
@@ -535,7 +539,7 @@ async fn review_failed_deletion_accept_restores_repeated_passage() {
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store);
     let room = rooms.get("probe").await;
-    room.set_source("A A", "markdown").await;
+    room.set_source("A A", "markdown").await.unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
     let id = add_suggestion(&room, "").await;
     *hooked.fail.lock().unwrap() = Some("content/".into());
@@ -562,7 +566,7 @@ async fn failed_deletion_restores_the_later_repeated_passage() {
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store);
     let room = rooms.get("probe").await;
-    room.set_source("A A", "markdown").await;
+    room.set_source("A A", "markdown").await.unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
     let (payload, ok) = room
         .apply(
@@ -609,7 +613,7 @@ async fn failed_deletion_follows_a_concurrent_insert_before_the_anchor() {
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
     let room = rooms.get("probe").await;
-    room.set_source("A A", "markdown").await;
+    room.set_source("A A", "markdown").await.unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
     let (payload, ok) = room
         .apply(
@@ -648,7 +652,7 @@ async fn failed_deletion_follows_a_concurrent_insert_before_the_anchor() {
     tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    room.set_source("!A ", "markdown").await;
+    room.set_source("!A ", "markdown").await.unwrap();
     hooked.resume.notify_one();
     assert!(task.await.unwrap().is_err());
     assert_eq!(room.source().await, "!A A");
@@ -666,7 +670,7 @@ async fn failed_deletion_rollback_converges_for_a_peer() {
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store);
     let room = rooms.get("probe").await;
-    room.set_source("A A", "markdown").await;
+    room.set_source("A A", "markdown").await.unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
     let (payload, ok) = room
         .apply(

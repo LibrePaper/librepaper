@@ -107,7 +107,8 @@ async fn account_examples_are_private_owned_and_created_once() {
         .unwrap();
     let room = server.instance.rooms.get(&paper.slug).await;
     room.set_main_file("# My edited example", "markdown", "regression-tables.md")
-        .await;
+        .await
+        .unwrap();
     room.checkpoint("test", "alice").await.unwrap();
     for role in ["reader", "commenter", "editor"] {
         let (status, sharing) = post_as(

@@ -572,7 +572,9 @@ impl Hub {
             .is_some_and(|peer| peer.socket == socket)
         {
             if let Some(peer) = &channel.agent {
-                let _ = peer.tx.try_send(Outgoing::Close("browser disconnected"));
+                let _ = peer
+                    .tx
+                    .try_send(Outgoing::Close("browser disconnected".into()));
             }
             channels.remove(id);
         } else if channel
@@ -593,7 +595,7 @@ impl Hub {
             .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
             .ok_or((404, "channel not found"))?;
         for peer in [&channel.browser, &channel.agent].into_iter().flatten() {
-            let _ = peer.tx.try_send(Outgoing::Close("channel closed"));
+            let _ = peer.tx.try_send(Outgoing::Close("channel closed".into()));
         }
         channels.remove(id);
         Ok(json!({"deleted":true}))
@@ -606,7 +608,7 @@ impl Hub {
                 return true;
             }
             for peer in [&channel.browser, &channel.agent].into_iter().flatten() {
-                let _ = peer.tx.try_send(Outgoing::Close("document removed"));
+                let _ = peer.tx.try_send(Outgoing::Close("document removed".into()));
             }
             false
         });

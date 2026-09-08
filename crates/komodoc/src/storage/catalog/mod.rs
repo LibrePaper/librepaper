@@ -123,6 +123,52 @@ impl fmt::Display for CatalogError {
 
 impl std::error::Error for CatalogError {}
 
+/// What a catalogue conflict actually refused, as a value.
+///
+/// A conflict carries prose because the catalogue has many of them and most
+/// need no more than a sentence in a log. A handful decide a client's status
+/// code, its retry advice and whether a reservation is released, and those
+/// must not be decided by reading a sentence. This is the one place that
+/// reads it: every layer above matches on the value, and the test below
+/// fails if a message in this module is reworded out of its class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatalogRefusal {
+    /// The owner's byte allowance is used up.
+    OwnerBytes,
+    /// The deployment's byte allowance is used up.
+    DeploymentBytes,
+    /// The owner may not have another document.
+    OwnerDocuments,
+    /// The owner has uploaded too often this hour.
+    UploadRate,
+    /// The actor's rights, or the session they were granted in, changed.
+    ActorRights,
+    /// A conflict whose only audience is a log.
+    Other,
+}
+
+impl CatalogError {
+    /// How this error classifies for a caller that has to answer a client.
+    pub fn refusal(&self) -> CatalogRefusal {
+        let Self::Conflict(message) = self else {
+            return CatalogRefusal::Other;
+        };
+        if message.contains("actor rights") {
+            CatalogRefusal::ActorRights
+        } else if message.contains("upload rate") {
+            CatalogRefusal::UploadRate
+        } else if message.contains("document count") {
+            CatalogRefusal::OwnerDocuments
+        } else if !message.contains("quota exceeded") {
+            CatalogRefusal::Other
+        } else if message.contains("deployment") {
+            CatalogRefusal::DeploymentBytes
+        } else {
+            CatalogRefusal::OwnerBytes
+        }
+    }
+}
+
 impl From<rusqlite::Error> for CatalogError {
     fn from(err: rusqlite::Error) -> Self {
         match err {
@@ -670,3 +716,51 @@ impl DerefMut for ConnectionGuard<'_> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::{CatalogError, CatalogRefusal};
+
+    /// Every refusal message this module writes that a caller classifies on.
+    /// If one is reworded, this fails here rather than moving a route's
+    /// status code without anybody noticing.
+    #[test]
+    fn every_classified_message_keeps_its_class() {
+        let cases = [
+            ("owner storage quota exceeded", CatalogRefusal::OwnerBytes),
+            ("owner byte quota exceeded", CatalogRefusal::OwnerBytes),
+            (
+                "deployment storage quota exceeded",
+                CatalogRefusal::DeploymentBytes,
+            ),
+            (
+                "deployment byte quota exceeded",
+                CatalogRefusal::DeploymentBytes,
+            ),
+            (
+                "owner document count quota exceeded",
+                CatalogRefusal::OwnerDocuments,
+            ),
+            ("owner upload rate exceeded", CatalogRefusal::UploadRate),
+            (
+                "actor rights or session generation changed",
+                CatalogRefusal::ActorRights,
+            ),
+            ("journal head changed", CatalogRefusal::Other),
+            ("comment limit reached", CatalogRefusal::Other),
+        ];
+        for (message, expected) in cases {
+            assert_eq!(
+                CatalogError::Conflict(message.into()).refusal(),
+                expected,
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_conflict_classifies() {
+        assert_eq!(CatalogError::NotFound.refusal(), CatalogRefusal::Other);
+        assert_eq!(CatalogError::Busy.refusal(), CatalogRefusal::Other);
+    }
+}

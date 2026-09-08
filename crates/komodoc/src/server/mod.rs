@@ -39,7 +39,7 @@ use crate::document::store::{
 };
 use crate::room::{
     decode_update, encode_update, AcceptError, Accepted, Applied, Command, Message as RoomMessage,
-    Outgoing, Room, RoomSet, Sender,
+    Outgoing, Room, RoomSet, Sender, WriteError,
 };
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,

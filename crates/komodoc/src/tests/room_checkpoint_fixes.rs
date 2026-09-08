@@ -14,7 +14,9 @@ async fn negative_history_allowance_still_sheds_old_checkpoints() {
     config.storage.per_owner = 1024;
     let (_dir, _store, rooms) = fixture(config).await;
     let room = rooms.get("probe").await;
-    room.set_source(&"x".repeat(2048), "markdown").await;
+    room.set_source(&"x".repeat(2048), "markdown")
+        .await
+        .unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
     assert_eq!(room.manifest().await.checkpoints.len(), 1);
 }
@@ -58,9 +60,9 @@ async fn checkpoint_acknowledges_captured_update() {
 async fn duplicate_checkpoint_persists_current_crdt_state() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     room.checkpoint_now("comment", "alice").await.unwrap();
-    room.set_source("A", "markdown").await;
+    room.set_source("A", "markdown").await.unwrap();
     let expected = room.open_state(None).await.0;
     let sha = room
         .checkpoint_now("comment", "alice")
@@ -89,7 +91,7 @@ async fn checkpoint_tree_and_session_generation_do_not_cross() {
     );
     rooms.attach_store(store);
     let room = rooms.get("probe").await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
         blob::blob_key("probe", &crate::document::store::digest_of("B")),
@@ -101,7 +103,7 @@ async fn checkpoint_tree_and_session_generation_do_not_cross() {
     tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    room.set_source("C", "markdown").await;
+    room.set_source("C", "markdown").await.unwrap();
     hooked.resume.notify_one();
     task.await.unwrap().unwrap().unwrap();
     assert_eq!(room.source().await, "C");

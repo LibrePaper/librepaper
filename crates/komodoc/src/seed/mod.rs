@@ -399,7 +399,12 @@ async fn seed_with_store(
 
         let text = visible_text(&raw);
         let room = rooms.get(&slug).await;
-        room.set_source(&source, &format).await;
+        // A seed that could not write its source has nothing to checkpoint;
+        // stopping here is what keeps a half-seeded document out of the
+        // catalogue.
+        if let Err(error) = room.set_source(&source, &format).await {
+            die(format!("could not store {}: {error}", document.file));
+        }
         // Seeded and imported documents have no authenticated caller behind
         // them: the operator ran a command. There is no account to record,
         // and the empty display name is the one this path has always written.

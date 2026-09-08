@@ -230,10 +230,13 @@ impl Server {
         {
             Ok(true) => write_json(200, &json!({"sha": sha, "label": label})),
             Ok(false) => plain(404, "not found"),
-            Err(err) if err.contains("actor rights") => {
-                write_json(403, &json!({"error": "edit access changed"}))
-            }
-            Err(err) => write_json(500, &json!({"error": err})),
+            Err(error) => refused_with(
+                &format!("could not label a checkpoint of {slug}"),
+                &error,
+                // The checkpoint the caller asked about, kept so a client can
+                // match a refusal to the row it labelled.
+                &[("sha", json!(sha))],
+            ),
         }
     }
 
@@ -309,7 +312,9 @@ impl Server {
         let by = current_who.attribution();
         let (update, sha) = match room.restore_and_checkpoint(&point, &by).await {
             Ok(result) => result,
-            Err(err) => return write_json(409, &json!({"error": err})),
+            Err(error) => {
+                return refused(&format!("could not restore {slug}"), &error);
+            }
         };
         room.broadcast(&json!({
             "type": "y-update",

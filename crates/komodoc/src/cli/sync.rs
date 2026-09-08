@@ -842,16 +842,19 @@ pub(crate) fn update_messages(update: &[u8], seq: i64) -> Vec<Value> {
     messages
 }
 
+/// Whether a close reason means there is no point reconnecting.
+///
+/// A close frame carries nothing but text, so this has to read one. The
+/// refusals the room itself decides are not listed again here: it owns that
+/// table, and asking it keeps a reworded refusal from quietly turning a
+/// permanent one into an endless reconnect loop. What remains are the
+/// reasons the socket layer sends on its own.
 fn terminal_close_reason(reason: &str) -> bool {
-    matches!(
-        reason,
-        "document deleted"
-            | "this document has reached its size limit"
-            | "this document has reached its file limit"
-            | "this document has reached its storage quota"
-            | "invalid multipart document update"
-            | "editing is not permitted"
-    )
+    crate::room::error::permanent_close_reason(reason)
+        || matches!(
+            reason,
+            "document deleted" | "invalid multipart document update" | "editing is not permitted"
+        )
 }
 
 enum PermissionError {

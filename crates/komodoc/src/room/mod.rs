@@ -34,6 +34,7 @@ mod catalog;
 mod checkpoint;
 mod command;
 mod comments;
+pub(crate) mod error;
 mod figures;
 mod retention;
 mod suggestions;
@@ -43,6 +44,7 @@ use catalog::*;
 pub use checkpoint::Attribution;
 pub use command::Command;
 pub use comments::*;
+pub use error::{FenceReason, FigureLimit, WriteError};
 pub use figures::*;
 use text::*;
 
@@ -122,7 +124,9 @@ pub struct Message {
 #[derive(Clone, Debug)]
 pub enum Outgoing {
     Text(String),
-    Close(&'static str),
+    /// The reason a peer is shown as the socket closes. Owned rather than
+    /// static because a refusal names the ceiling it ran into.
+    Close(String),
 }
 
 /// Bounded on purpose. A socket that cannot keep up is disconnected rather
@@ -303,6 +307,12 @@ pub struct Room {
     /// when the room is loaded, and again if a renewal ever finds the lock in
     /// somebody else's hands.
     read_only: std::sync::atomic::AtomicBool,
+    /// Why `read_only` is set, so a refusal can say whether the lease moved,
+    /// the document is gone, or this server could not read what it would be
+    /// writing over. Only meaningful while `read_only` is true; it is a
+    /// companion to that flag and never a substitute for the durable
+    /// catalogue and lease checks a write still makes.
+    fence_reason: std::sync::atomic::AtomicU8,
     /// How many checkpoints of this room are between their first write and
     /// their last. The blob sweep at the end of a checkpoint deletes what no
     /// tree names, and a checkpoint still on its way to writing its tree has
@@ -364,12 +374,12 @@ pub enum Applied {
     Relay,
     /// The socket may not write here, or sent nothing worth relaying.
     Ignored,
-    /// Close the socket, with this reason. Either it wrote past one of the
+    /// Close the socket, with this refusal. Either it wrote past one of the
     /// document's ceilings, it wrote faster than a person can, or this server
-    /// momentarily has no capacity to save what it wrote. A person can tell
-    /// those apart from the wording: a capacity refusal always says to try
-    /// again, and a size refusal never does.
-    Refuse(&'static str),
+    /// momentarily has no capacity to save what it wrote. The variant says
+    /// which, so the socket handler and `komodoc sync` never have to read the
+    /// message to find out whether reconnecting is worth anything.
+    Refuse(WriteError),
 }
 
 /// What a peer is told when the snapshot its update would create is past the
@@ -808,6 +818,13 @@ impl RoomSet {
             read_only: std::sync::atomic::AtomicBool::new(
                 !lease.held || deleting || catalog_read_failed,
             ),
+            fence_reason: std::sync::atomic::AtomicU8::new(if deleting {
+                FenceReason::Deleted as u8
+            } else if catalog_read_failed {
+                FenceReason::UnreadableState as u8
+            } else {
+                FenceReason::HeldElsewhere as u8
+            }),
             checkpointing: std::sync::atomic::AtomicUsize::new(0),
             holder: self.holder.clone(),
             lease: Mutex::new(lease),
@@ -885,7 +902,7 @@ impl RoomSet {
             // An uncached compatibility result has no sweeper and must never
             // accept work that only its caller can keep alive. Waiters still
             // share this result, rather than loading their own writable copy.
-            room.read_only.store(true, Ordering::Relaxed);
+            room.fence(FenceReason::NotAuthoritative);
             *loaded = Some(room.clone());
             self.loading.lock().await.remove(slug);
             return room;
@@ -926,7 +943,7 @@ impl RoomSet {
         // Restore/accept paths take restore_write before checkpoint_write;
         // acquire the same order here so fencing cannot deadlock with a
         // restore that is already in flight.
-        room.read_only.store(true, Ordering::Relaxed);
+        room.fence(FenceReason::Deleted);
         let _restore_writer = room.restore_write.lock().await;
         let _checkpoint_writer = room.checkpoint_write.lock().await;
         let _manifest_writer = room.manifest_write.lock().await;
@@ -936,7 +953,7 @@ impl RoomSet {
             state.comments.clear();
             state.seq = 0;
             for peer in state.sockets.values() {
-                let _ = peer.tx.try_send(Outgoing::Close("document deleted"));
+                let _ = peer.tx.try_send(Outgoing::Close("document deleted".into()));
             }
         }
         // The deletion worker owns object removal. Keeping all object keys in
@@ -1125,7 +1142,7 @@ impl Room {
                         "warning: could not read catalogue comments for {}: {err}",
                         self.slug
                     );
-                    self.read_only.store(true, Ordering::Relaxed);
+                    self.fence(FenceReason::UnreadableState);
                 }
             }
         } else if let Ok((raw, at)) = self.blobs.get_versioned(&room_key(&self.slug)).await {
@@ -1160,7 +1177,7 @@ impl Room {
                         "warning: the catalogue history of {} is unreadable ({err}); this room opens read-only",
                         self.slug
                     );
-                    self.read_only.store(true, Ordering::Relaxed);
+                    self.fence(FenceReason::UnreadableState);
                     (Manifest::default(), BlobVersion::new())
                 }
             }
@@ -1178,7 +1195,7 @@ impl Room {
                     "warning: the history of {} is unreadable ({err}); this room opens read-only",
                     self.slug
                 );
-                    self.read_only.store(true, Ordering::Relaxed);
+                    self.fence(FenceReason::UnreadableState);
                     (Manifest::default(), BlobVersion::new())
                 }
             }
@@ -1191,7 +1208,7 @@ impl Room {
                         "warning: could not read catalogue entry {} while loading: {error}",
                         self.slug
                     );
-                    self.read_only.store(true, Ordering::Relaxed);
+                    self.fence(FenceReason::UnreadableState);
                     None
                 }
             },
@@ -1216,7 +1233,7 @@ impl Room {
                         "warning: could not read the durable journal cursor for {}: {error}",
                         self.slug
                     );
-                    self.read_only.store(true, Ordering::Relaxed);
+                    self.fence(FenceReason::UnreadableState);
                     0
                 }
             }
@@ -1234,7 +1251,7 @@ impl Room {
                         "warning: could not recover the journal for {}: {err}",
                         self.slug
                     );
-                    self.read_only.store(true, Ordering::Relaxed);
+                    self.fence(FenceReason::UnreadableState);
                     let mut state = self.state.lock().await;
                     state.manifest = manifest;
                     state.session.format = format;
@@ -1254,7 +1271,7 @@ impl Room {
                         "warning: could not read the session for {}: {err}",
                         self.slug
                     );
-                    self.read_only.store(true, Ordering::Relaxed);
+                    self.fence(FenceReason::UnreadableState);
                     let mut state = self.state.lock().await;
                     state.manifest = manifest;
                     state.session.format = format;
@@ -1345,7 +1362,7 @@ impl Room {
                                  this room opens read-only",
                                 self.slug
                             );
-                            self.read_only.store(true, Ordering::Relaxed);
+                            self.fence(FenceReason::UnreadableState);
                         }
                     }
                 }
@@ -1486,7 +1503,7 @@ impl Room {
                         "warning: could not read published source for {}: {error}",
                         self.slug
                     );
-                    self.read_only.store(true, Ordering::Relaxed);
+                    self.fence(FenceReason::UnreadableState);
                     return None;
                 }
             }
@@ -1510,7 +1527,7 @@ impl Room {
                     "warning: could not read published page for {}: {error}",
                     self.slug
                 );
-                self.read_only.store(true, Ordering::Relaxed);
+                self.fence(FenceReason::UnreadableState);
                 return None;
             }
         };
@@ -1529,6 +1546,26 @@ impl Room {
     /// Whether another server holds this room, as of the last time we asked.
     pub fn read_only(&self) -> bool {
         self.read_only.load(Ordering::Relaxed)
+    }
+
+    /// Stops this server writing the room, recording why. The first reason
+    /// wins: a room fenced because its state could not be read stays that way
+    /// even if a later lease renewal also fails, because that is the reason an
+    /// operator has to act on.
+    fn fence(&self, reason: FenceReason) {
+        // Deletion is the exception: it is final and outranks whatever
+        // stopped writes first, because "this document is gone" is what its
+        // caller has to be told.
+        if !self.read_only.swap(true, Ordering::Relaxed) || reason == FenceReason::Deleted {
+            self.fence_reason.store(reason as u8, Ordering::Relaxed);
+        }
+    }
+
+    /// The refusal a mutator answers with while this room is fenced.
+    fn fenced(&self) -> WriteError {
+        WriteError::ReadOnly(FenceReason::from_stored(
+            self.fence_reason.load(Ordering::Relaxed),
+        ))
     }
 
     /// Says whether this server may still write the room, renewing the lease
@@ -1571,7 +1608,7 @@ impl Room {
                  for it from now on",
                 self.slug, renewed.holder, renewed.epoch
             );
-            self.read_only.store(true, Ordering::Relaxed);
+            self.fence(FenceReason::HeldElsewhere);
             return false;
         }
         if renewed.verified {
@@ -1647,7 +1684,7 @@ impl Room {
                      from now on",
                     self.slug
                 );
-                self.read_only.store(true, Ordering::Relaxed);
+                self.fence(FenceReason::HeldElsewhere);
                 Err("this room is written by another server".into())
             }
             Err(err) => {
@@ -1665,7 +1702,7 @@ impl Room {
         body: Vec<u8>,
         kind: &str,
         actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-    ) -> Result<(), String> {
+    ) -> Result<(), WriteError> {
         let operation_id = crate::util::new_id();
         if let Some(catalog) = self.catalog.get() {
             let request = crate::storage::catalog::ObjectReservationRequest {
@@ -1682,7 +1719,10 @@ impl Room {
             } else {
                 catalog.reserve_object_change(request)
             };
-            reserved.map_err(|error| error.to_string())?;
+            // The catalogue is where a quota, a lost right or a busy
+            // deployment is decided; keep those distinctions rather than
+            // flattening them into prose a caller would have to read back.
+            reserved.map_err(WriteError::from)?;
         }
         match self.blobs.put(key, body, "application/octet-stream").await {
             Ok(()) => {
@@ -1691,7 +1731,7 @@ impl Room {
                         catalog.commit_object_change(&self.storage_id, &operation_id, key, kind, "")
                     {
                         let _ = catalog.abort_object_change(&self.storage_id, &operation_id, key);
-                        return Err(error.to_string());
+                        return Err(WriteError::from(error));
                     }
                 }
                 Ok(())
@@ -1700,7 +1740,7 @@ impl Room {
                 if let Some(catalog) = self.catalog.get() {
                     let _ = catalog.abort_object_change(&self.storage_id, &operation_id, key);
                 }
-                Err(error.to_string())
+                Err(WriteError::Storage(error.to_string()))
             }
         }
     }
@@ -1881,25 +1921,33 @@ impl Room {
     /// sees the rest change under them. This is how a command-line publish, a
     /// `sync` write and a restore all reach the document.
     ///
-    /// Returns the update to relay, which is what the sockets are sent.
-    pub async fn set_source(&self, source: &str, format: &str) -> Vec<u8> {
+    /// Returns the update to relay, which is what the sockets are sent. An
+    /// empty update is a valid outcome -- writing the source a document
+    /// already holds changes nothing -- so a refusal is an `Err`, never an
+    /// empty `Vec`.
+    pub async fn set_source(&self, source: &str, format: &str) -> Result<Vec<u8>, WriteError> {
         self.set_main_file(source, format, "").await
     }
 
     /// The same, naming the main file. A directory publish knows what its
     /// document is called; a one-file publish does not and takes the name its
     /// format implies.
-    pub async fn set_main_file(&self, source: &str, format: &str, named: &str) -> Vec<u8> {
+    pub async fn set_main_file(
+        &self,
+        source: &str,
+        format: &str,
+        named: &str,
+    ) -> Result<Vec<u8>, WriteError> {
         let _publication_writer = self.publication_write.lock().await;
         if self.read_only() {
             // Another server owns this room; writing our copy would only
             // diverge from the one that is actually being persisted, and
             // `persist` would refuse it anyway (R23).
-            return Vec::new();
+            return Err(self.fenced());
         }
         let mut state = self.state.lock().await;
         if self.read_only() {
-            return Vec::new();
+            return Err(self.fenced());
         }
         let before = session::encode_vector(&state.session.doc);
         // What the main file is called, for the one case where there is not
@@ -1945,17 +1993,16 @@ impl Room {
                 session::replace_text(&scratch, source, &main_path_for(named, &implied));
                 let candidate = session::encode_state(&scratch).len();
                 if candidate > ceiling {
+                    let refusal = crate::config::SizeRefusal::Encoded {
+                        bytes: candidate,
+                        ceiling,
+                    };
                     eprintln!(
                         "warning: refusing to write {}: {}",
                         self.slug,
-                        crate::config::WriteRefusal::Permanent(
-                            crate::config::SizeRefusal::Encoded {
-                                bytes: candidate,
-                                ceiling,
-                            }
-                        )
+                        crate::config::WriteRefusal::Permanent(refusal)
                     );
-                    return Vec::new();
+                    return Err(WriteError::Size(refusal));
                 }
             }
         }
@@ -1971,8 +2018,8 @@ impl Room {
         state.session.mark_dirty(now_unix());
         state.session.generation += 1;
         state.session.updated_at = now_unix();
-        session::encode_diff(&state.session.doc, &before)
-            .unwrap_or_else(|_| session::encode_state(&state.session.doc))
+        Ok(session::encode_diff(&state.session.doc, &before)
+            .unwrap_or_else(|_| session::encode_state(&state.session.doc)))
     }
 
     /// What a socket is answered with on `y-open`: everything the document
@@ -2029,16 +2076,12 @@ impl Room {
             // holder is doing -- so it is refused before anything is touched,
             // which closes the socket and sends the client back to reconnect
             // (R23).
-            return Applied::Refuse(
-                "this room is being written by another server; reconnect to continue editing",
-            );
+            return Applied::Refuse(self.fenced());
         }
         let _assets_writer = self.assets_write.lock().await;
         let mut state = self.state.lock().await;
         if self.read_only() {
-            return Applied::Refuse(
-                "this room is being written by another server; reconnect to continue editing",
-            );
+            return Applied::Refuse(self.fenced());
         }
         let now = now_unix();
         {
@@ -2055,7 +2098,7 @@ impl Room {
             }
             peer.updates += 1;
             if peer.updates > self.config.session.updates_per_minute {
-                return Applied::Refuse("too many updates");
+                return Applied::Refuse(WriteError::RateLimited);
             }
         }
         let decoded = match session::decode_update(update) {
@@ -2071,10 +2114,14 @@ impl Room {
         ) {
             session::DecodedAdmission::Malformed => return Applied::Ignored,
             session::DecodedAdmission::TooLarge => {
-                return Applied::Refuse("this document has reached its size limit")
+                return Applied::Refuse(WriteError::Document(
+                    crate::room::error::DocumentLimit::Size,
+                ))
             }
             session::DecodedAdmission::TooMany => {
-                return Applied::Refuse("this document has reached its file limit")
+                return Applied::Refuse(WriteError::Document(
+                    crate::room::error::DocumentLimit::Files,
+                ))
             }
             session::DecodedAdmission::Fits(decoded) => decoded,
         };
@@ -2110,9 +2157,13 @@ impl Room {
                         {
                             Ok(permit) => Some(permit),
                             Err(error) if error.is_temporary() => {
-                                return Applied::Refuse(BUSY_REFUSAL)
+                                return Applied::Refuse(WriteError::ServerBusy)
                             }
-                            Err(_) => return Applied::Refuse(ENCODED_CEILING_REFUSAL),
+                            Err(_) => {
+                                return Applied::Refuse(WriteError::Document(
+                                    crate::room::error::DocumentLimit::Encoded,
+                                ))
+                            }
                         }
                     }
                     None => None,
@@ -2121,7 +2172,9 @@ impl Room {
                     return Applied::Ignored;
                 };
                 if exact > ceiling {
-                    return Applied::Refuse(ENCODED_CEILING_REFUSAL);
+                    return Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Encoded,
+                    ));
                 }
                 exact
             }
@@ -2140,7 +2193,15 @@ impl Room {
                 self.config.storage.total,
             ) {
                 Ok(previous) => Some(previous),
-                Err(_) => return Applied::Refuse("this document has reached its storage quota"),
+                Err(error) => {
+                    // The catalogue said no. Which allowance it was is in the
+                    // error; what the peer is told is that this document has
+                    // no room, which is the same either way.
+                    let _ = error;
+                    return Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Quota,
+                    ));
+                }
             }
         } else {
             None
@@ -2269,7 +2330,7 @@ impl Room {
             // forever. What is already stored stays readable.
             let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
             if body.len() > ceiling {
-                self.read_only.store(true, Ordering::Relaxed);
+                self.fence(FenceReason::Oversized);
                 let refusal =
                     crate::config::WriteRefusal::Permanent(crate::config::SizeRefusal::Encoded {
                         bytes: body.len(),

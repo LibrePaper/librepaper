@@ -356,8 +356,25 @@ impl Server {
                 return write_json(429, &json!({"error": err, "retryable": true}));
             }
         };
-        room.set_main_file(&parsed.source, &parsed.source_format, &parsed.main)
-            .await;
+        // A refused source write is the end of this publication. Registering
+        // a document whose text only ever failed to land would leave an
+        // index entry pointing at nothing -- the room is read-only, or the
+        // source is past a ceiling -- so the creation is undone here rather
+        // than at the checkpoint below, which would never be reached with
+        // anything worth writing.
+        if let Err(error) = room
+            .set_main_file(&parsed.source, &parsed.source_format, &parsed.main)
+            .await
+        {
+            let _ = self
+                .store
+                .abort_publication(&key, &format!("source write refused: {error}"))
+                .await;
+            if let Err(cleanup) = self.delete_document(&key).await {
+                eprintln!("warning: could not undo refused creation of {key}: {cleanup}");
+            }
+            return refused(&format!("could not write the source of {key}"), &error);
+        }
         // The rest of the directory, if a whole one was published. The texts
         // go into the shared document beside the main file; the figures go to
         // the store under their digests and are named in it. The preflight
@@ -367,16 +384,16 @@ impl Server {
         // happened, so it is undone the way the delete route removes a
         // document rather than answered with 201.
         if !parsed.files.is_empty() {
-            if let Err(why) = self.fill_directory(&room, &parsed).await {
-                eprintln!("warning: could not store every file of {key}: {why}");
+            if let Err(error) = self.fill_directory(&room, &parsed).await {
+                eprintln!("warning: could not store every file of {key}: {error}");
                 let _ = self
                     .store
-                    .abort_publication(&key, &format!("directory fill failed: {why}"))
+                    .abort_publication(&key, &format!("directory fill failed: {error}"))
                     .await;
                 if let Err(err) = self.delete_document(&key).await {
                     eprintln!("warning: could not undo the creation of {key}: {err}");
                 }
-                return write_json(500, &json!({"error": "could not store the document"}));
+                return refused(&format!("could not store every file of {key}"), &error);
             }
         }
         // The checkpoint names itself, and what it is named is the digest of
@@ -393,16 +410,19 @@ impl Server {
         {
             Ok(Some(sha)) => sha,
             Ok(None) => entry.sha.clone(),
-            Err(err) => {
-                eprintln!("warning: could not checkpoint {key}: {err}");
+            Err(error) => {
+                eprintln!("warning: could not checkpoint {key}: {error}");
                 let _ = self
                     .store
-                    .abort_publication(&key, &format!("checkpoint failed: {err}"))
+                    .abort_publication(&key, &format!("checkpoint failed: {error}"))
                     .await;
                 if let Err(err) = self.delete_document(&key).await {
                     eprintln!("warning: could not undo the creation of {key}: {err}");
                 }
-                return write_json(500, &json!({"error": "could not store the document"}));
+                return refused(
+                    &format!("could not checkpoint the creation of {key}"),
+                    &error,
+                );
             }
         };
         if let Err(err) = self.store.commit_publication(&key, &sha).await {
@@ -1240,13 +1260,19 @@ impl Server {
     /// `preflight_directory` has already ruled out every refusal this can
     /// still hit, so a failure here is a storage fault: the caller decides
     /// whether that leaves an inconsistent document worth undoing.
-    pub(super) async fn fill_directory(&self, room: &Room, parsed: &Upload) -> Result<(), String> {
+    pub(super) async fn fill_directory(
+        &self,
+        room: &Room,
+        parsed: &Upload,
+    ) -> Result<(), WriteError> {
         for (path, bytes) in &parsed.files {
             match crate::document::paths::check(&self.config.paths(), path) {
                 Ok(crate::document::paths::Kind::Text) => {
                     let body = std::str::from_utf8(bytes)
-                        .map_err(|_| format!("{path} is not valid UTF-8"))?;
-                    room.add_text(path, body).await;
+                        .map_err(|_| WriteError::Invalid(format!("{path} is not valid UTF-8")))?;
+                    // Every one of these is a refusal the caller stops on: a
+                    // directory half in the document is not a publication.
+                    room.add_text(path, body).await?;
                 }
                 Ok(crate::document::paths::Kind::Asset) => {
                     let (sha, _) = room
@@ -1255,9 +1281,9 @@ impl Server {
                             (self.config.max_asset, self.config.max_assets),
                         )
                         .await?;
-                    room.name_asset(path, &sha).await;
+                    room.name_asset(path, &sha).await?;
                 }
-                Err(why) => return Err(why),
+                Err(why) => return Err(WriteError::Invalid(why)),
             }
         }
         Ok(())

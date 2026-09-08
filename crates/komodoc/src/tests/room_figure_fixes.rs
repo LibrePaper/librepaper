@@ -140,7 +140,7 @@ async fn asset_uploaded_and_named_during_prune_survives() {
     let rooms = crate::room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store);
     let room = rooms.get("probe").await;
-    room.set_source("B", "markdown").await;
+    room.set_source("B", "markdown").await.unwrap();
 
     *hooked.pause.lock().unwrap() = Some(("list".into(), blob::asset_prefix("probe")));
     let checkpoint = tokio::spawn({
@@ -155,7 +155,7 @@ async fn asset_uploaded_and_named_during_prune_survives() {
         .put_asset(b"new image".to_vec(), (100, 100))
         .await
         .expect("upload during listing");
-    room.name_asset("image.png", &sha).await;
+    room.name_asset("image.png", &sha).await.unwrap();
     hooked.resume.notify_one();
     checkpoint
         .await

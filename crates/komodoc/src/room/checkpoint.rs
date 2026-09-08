@@ -161,7 +161,7 @@ impl Room {
         &self,
         why: &str,
         by: impl Into<Attribution>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, WriteError> {
         self.checkpoint_impl(why, &by.into(), true, false, None, None)
             .await
     }
@@ -173,7 +173,7 @@ impl Room {
         &self,
         why: &str,
         by: impl Into<Attribution>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, WriteError> {
         self.checkpoint_impl(why, &by.into(), false, false, None, None)
             .await
     }
@@ -209,7 +209,7 @@ impl Room {
         why: &str,
         by: impl Into<Attribution>,
         token: &mut PublicationCheckpointToken,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, WriteError> {
         let _restore_writer = self.restore_write.lock().await;
         let _publication_writer = self.publication_write.lock().await;
         let _publication_checkpoint = self.publication_checkpoint.write().await;
@@ -223,7 +223,7 @@ impl Room {
         why: &str,
         by: impl Into<Attribution>,
         token: &mut PublicationCheckpointToken,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, WriteError> {
         self.checkpoint_impl_locked(why, &by.into(), false, false, None, Some(token))
             .await
     }
@@ -236,7 +236,7 @@ impl Room {
     pub(super) async fn checkpoint_restore(
         &self,
         by: &Attribution,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, WriteError> {
         self.checkpoint_impl("restore", by, false, true, None, None)
             .await
     }
@@ -249,7 +249,7 @@ impl Room {
         force_event: bool,
         protected: Option<&str>,
         budget_token: Option<&mut PublicationCheckpointToken>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, WriteError> {
         let _publication_checkpoint = self.publication_checkpoint.read().await;
         self.checkpoint_impl_locked(why, by, defer, force_event, protected, budget_token)
             .await
@@ -265,7 +265,7 @@ impl Room {
         force_event: bool,
         protected: Option<&str>,
         budget_token: Option<&mut PublicationCheckpointToken>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, WriteError> {
         let _checkpoint_writer = self.checkpoint_write.lock().await;
         let now = now_unix();
         // Publications reserve their checkpoint token before mutating the
@@ -279,7 +279,7 @@ impl Room {
             // from the last checkpoint, so that branch would otherwise
             // report an unearned success for a request this server has no
             // business recording.
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
         // Counted for the whole of this call, every early return included:
         // the guard's drop is what lets the sweep at the end of another
@@ -381,7 +381,7 @@ impl Room {
                     }
                     Ok(None) => return Ok(None),
                     Err(error) => {
-                        return Err(error.to_string());
+                        return Err(WriteError::from(error));
                     }
                 }
             }
@@ -482,7 +482,7 @@ impl Room {
             }
         }
         if !self.hold().await {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
 
         // 1. the text blobs, before anything names them. A digest already
@@ -497,17 +497,13 @@ impl Room {
                 .collect()
         };
         for (digest, body) in &unwritten {
-            if let Err(err) = self
-                .put_accounted(
-                    &crate::storage::blob::blob_key(&self.storage_id, digest),
-                    body.clone().into_bytes(),
-                    "text",
-                    None,
-                )
-                .await
-            {
-                return Err(err.to_string());
-            }
+            self.put_accounted(
+                &crate::storage::blob::blob_key(&self.storage_id, digest),
+                body.clone().into_bytes(),
+                "text",
+                None,
+            )
+            .await?;
         }
         {
             let mut state = self.state.lock().await;
@@ -517,17 +513,13 @@ impl Room {
         }
 
         // 2. the tree, which names them.
-        if let Err(err) = self
-            .put_accounted(
-                &checkpoint_key(&self.storage_id, &sha),
-                tree.to_bytes(),
-                "tree",
-                None,
-            )
-            .await
-        {
-            return Err(err.to_string());
-        }
+        self.put_accounted(
+            &checkpoint_key(&self.storage_id, &sha),
+            tree.to_bytes(),
+            "tree",
+            None,
+        )
+        .await?;
 
         // 3. the session state, so a restart comes back at or after the
         //    checkpoint rather than before it. The generation is captured in
@@ -539,7 +531,7 @@ impl Room {
             Ok(Some(result)) => result,
             Ok(None) => unreachable!("an unconditional session write returns its size"),
             Err(err) => {
-                return Err(err);
+                return Err(WriteError::from(err));
             }
         };
 
@@ -792,7 +784,7 @@ impl Room {
                         "warning: could not read catalogue entry {} during repair: {error}",
                         self.slug
                     );
-                    self.read_only.store(true, Ordering::Relaxed);
+                    self.fence(FenceReason::UnreadableState);
                 }
             }
         }
@@ -1034,7 +1026,7 @@ impl Room {
     /// `Ok(false)` means the manifest has no such checkpoint, which is a
     /// 404 for the caller rather than a failure here.
     #[allow(dead_code)]
-    pub async fn label(&self, sha: &str, label: &str) -> Result<bool, String> {
+    pub async fn label(&self, sha: &str, label: &str) -> Result<bool, WriteError> {
         self.label_as(sha, label, None).await
     }
 
@@ -1046,7 +1038,7 @@ impl Room {
         sha: &str,
         label: &str,
         actor: Option<(&str, &str, &str)>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, WriteError> {
         self.label_as_authority(
             sha,
             label,
@@ -1070,7 +1062,7 @@ impl Room {
         sha: &str,
         label: &str,
         actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, WriteError> {
         let _manifest_writer = self.manifest_write.lock().await;
         let resident = self.state.lock().await.manifest.has(sha);
         let catalog_checkpoint = if !resident {
@@ -1078,7 +1070,7 @@ impl Room {
                 .get()
                 .map(|catalog| catalog.checkpoint(&self.slug, sha))
                 .transpose()
-                .map_err(|error| error.to_string())?
+                .map_err(WriteError::from)?
                 .flatten()
         } else {
             None
@@ -1087,7 +1079,7 @@ impl Room {
             return Ok(false);
         }
         if !self.hold().await {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
         // An old checkpoint need not be resident.  Label it directly in the
         // catalogue rather than manufacturing a partial Manifest and risking
@@ -1102,7 +1094,7 @@ impl Room {
             match result {
                 Ok(_) => {}
                 Err(crate::storage::catalog::CatalogError::NotFound) => return Ok(false),
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(WriteError::from(error)),
             }
             let mut state = self.state.lock().await;
             if let Some(point) = state.manifest.checkpoints.iter_mut().find(|p| p.sha == sha) {
@@ -1162,11 +1154,11 @@ impl Room {
         &self,
         point: &Checkpoint,
         by: impl Into<Attribution>,
-    ) -> Result<(Vec<u8>, String), String> {
+    ) -> Result<(Vec<u8>, String), WriteError> {
         let by = &by.into();
         let _restore_writer = self.restore_write.lock().await;
         if self.read_only() {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
         let base_sha = {
             let state = self.state.lock().await;
@@ -1199,14 +1191,14 @@ impl Room {
         };
         let (base_tree, base_bodies) = self.checkpoint_texts(&base_point).await?;
         if self.read_only() || !self.hold().await {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
         // Load the selected tree only after the base snapshot is fixed. Edits
         // arriving while this read is in flight are then merged against the
         // checkpoint that existed before the restore began.
         let (target_tree, target_bodies) = self.checkpoint_texts(point).await?;
         if self.read_only() || !self.hold().await {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
 
         let update = {
@@ -1305,7 +1297,11 @@ impl Room {
         };
         let restored = match self.checkpoint_restore(by).await {
             Ok(Some(sha)) => sha,
-            Ok(None) => return Err("could not create the restore checkpoint".to_string()),
+            Ok(None) => {
+                return Err(WriteError::Storage(
+                    "could not create the restore checkpoint".into(),
+                ))
+            }
             Err(err) => {
                 // The Yrs mutation already happened. Relay it even when a
                 // later manifest write failed, otherwise connected clients
@@ -1404,18 +1400,22 @@ impl Room {
 
     /// Puts a text at a path in the document, beside whatever is already
     /// there. What a directory publish adds each of its chapters with.
-    pub async fn add_text(&self, path: &str, body: &str) {
+    pub async fn add_text(&self, path: &str, body: &str) -> Result<(), super::WriteError> {
         let _publication_writer = self.publication_write.lock().await;
         if self.read_only() {
             // Another server owns this room; adding to our copy would only
             // diverge from the one being persisted (R23).
-            return;
+            return Err(self.fenced());
         }
         let mut state = self.state.lock().await;
+        if self.read_only() {
+            return Err(self.fenced());
+        }
         session::put_text(&state.session.doc, path, body);
         state.session.mark_dirty(now_unix());
         state.session.generation += 1;
         state.session.updated_at = now_unix();
+        Ok(())
     }
 
     /// Names a checkpoint, for the tests that ask what pruning keeps. The
@@ -1559,7 +1559,7 @@ impl Room {
                             "warning: could not read checkpoint accounting for {}: {error}",
                             self.slug
                         );
-                        self.read_only.store(true, Ordering::Relaxed);
+                        self.fence(FenceReason::UnreadableState);
                         return;
                     }
                 },

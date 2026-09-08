@@ -271,7 +271,8 @@ async fn accept_after_the_passage_moved_still_applies() {
         "# Paper\n\nSomething else entirely.\n\nThe quick brown fox jumps.\n",
         "markdown",
     )
-    .await;
+    .await
+    .unwrap();
 
     let (status, payload) = post(
         &server.url,
@@ -310,7 +311,8 @@ async fn accept_after_the_passage_changed_refuses_with_stale() {
     // cannot resolve it silently.
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# Paper\n\nThe quick green fox jumps.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let before = room.source().await;
 
     let (status, payload) = post(
@@ -355,7 +357,8 @@ async fn accept_with_a_concurrent_unrelated_edit_merges() {
     // different tokens, so the merge resolves without a conflict.
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# Paper\n\nThe quick brown swift fox jumps.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
 
     let (status, payload) = post(
         &server.url,

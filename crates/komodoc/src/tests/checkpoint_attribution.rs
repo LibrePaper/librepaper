@@ -67,7 +67,9 @@ async fn catalog_room(
         .unwrap();
     let room = rooms.get(slug).await;
     let mut token = room.reserve_publication_checkpoint().unwrap();
-    room.set_main_file("start", "markdown", "main.md").await;
+    room.set_main_file("start", "markdown", "main.md")
+        .await
+        .unwrap();
     let sha = room
         .checkpoint_publication_now("cli", Attribution::system(), &mut token)
         .await
@@ -94,19 +96,19 @@ async fn writer_paths_record_the_account_they_authenticated() {
         .unwrap();
     let room = rooms.get("attributed").await;
 
-    room.set_source("signed in", "markdown").await;
+    room.set_source("signed in", "markdown").await.unwrap();
     let signed = room
         .checkpoint_now("cli", Attribution::account("acct-1", "alice"))
         .await
         .unwrap()
         .unwrap();
-    room.set_source("anonymous", "markdown").await;
+    room.set_source("anonymous", "markdown").await.unwrap();
     let anonymous = room
         .checkpoint_now("comment", Attribution::unattributed("Reviewer two"))
         .await
         .unwrap()
         .unwrap();
-    room.set_source("system", "markdown").await;
+    room.set_source("system", "markdown").await.unwrap();
     let system = room
         .checkpoint_now("automatic", Attribution::system())
         .await
@@ -169,7 +171,7 @@ async fn an_erasure_during_the_object_writes_wins_at_the_durable_boundary() {
         .upsert_account(&contributor("acct-1", "alice"))
         .unwrap();
     let room = rooms.get("interleaved").await;
-    room.set_source("first revision", "markdown").await;
+    room.set_source("first revision", "markdown").await.unwrap();
     let tree = room.tree().await;
     let storage_id = catalog.document("interleaved").unwrap().unwrap().storage_id;
     *blobs.pause.lock().unwrap() = Some((
@@ -215,13 +217,15 @@ async fn resident_room_caches_drop_the_erased_account() {
         .upsert_account(&contributor("acct-2", "bob"))
         .unwrap();
     let room = rooms.get("resident").await;
-    room.set_source("alice wrote this", "markdown").await;
+    room.set_source("alice wrote this", "markdown")
+        .await
+        .unwrap();
     let mine = room
         .checkpoint_now("cli", Attribution::account("acct-1", "alice"))
         .await
         .unwrap()
         .unwrap();
-    room.set_source("bob wrote this", "markdown").await;
+    room.set_source("bob wrote this", "markdown").await.unwrap();
     let theirs = room
         .checkpoint_now("cli", Attribution::account("acct-2", "bob"))
         .await
@@ -272,13 +276,13 @@ async fn erasing_one_account_leaves_the_document_and_other_authors_alone() {
         .upsert_account(&contributor("acct-2", "alice"))
         .unwrap();
     let room = rooms.get("shared").await;
-    room.set_source("one", "markdown").await;
+    room.set_source("one", "markdown").await.unwrap();
     let mine = room
         .checkpoint_now("cli", Attribution::account("acct-1", "alice"))
         .await
         .unwrap()
         .unwrap();
-    room.set_source("two", "markdown").await;
+    room.set_source("two", "markdown").await.unwrap();
     let theirs = room
         .checkpoint_now("cli", Attribution::account("acct-2", "alice"))
         .await

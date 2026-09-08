@@ -501,7 +501,8 @@ async fn a_figure_a_kept_checkpoint_names_survives_being_removed_from_the_docume
     }
     // The text has to differ too, or the checkpoint is the same tree.
     room.set_source("# changed\n\nso the tree differs.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     room.checkpoint("quiet", TEST_PUBLISHER)
         .await
         .expect("second")
@@ -718,7 +719,8 @@ async fn the_history_says_which_paths_each_checkpoint_moved() {
     // One chapter edited, and a checkpoint taken.
     let room = server.instance.rooms.get(&slug).await;
     room.add_text("chapters/03.md", "The third chapter, revised.\n")
-        .await;
+        .await
+        .unwrap();
     room.checkpoint("quiet", TEST_PUBLISHER)
         .await
         .expect("a checkpoint")

@@ -160,3 +160,113 @@ pub(super) fn privacy_headers(response: &mut Reply) {
     set(response, "referrer-policy", "no-referrer");
     set(response, "x-robots-tag", "noindex, nofollow, noarchive");
 }
+
+/* ------------------------------------------ refused room writes */
+
+/// The one place a refused room write becomes an HTTP answer.
+///
+/// Status, retry advice and the message a client reads all come from the
+/// [`WriteError`] variant, so rewording a refusal cannot move a route from
+/// 507 to 413 or make a permanent refusal look worth retrying. `what` names
+/// the operation for the log: the storage context a failure carries is
+/// written there and never sent to a client.
+pub(super) fn refused(what: &str, error: &crate::room::WriteError) -> Reply {
+    refused_with(what, error, &[])
+}
+
+/// The same, keeping whatever correlation fields the route's clients read --
+/// a request id, a temporary id, the SHA a rendering was for. Those are the
+/// route's own wire contract; the error decides only status, message and
+/// retry.
+pub(super) fn refused_with(
+    what: &str,
+    error: &crate::room::WriteError,
+    fields: &[(&str, Value)],
+) -> Reply {
+    if let Some(context) = error.log_context() {
+        eprintln!("warning: {what}: {context}");
+    }
+    let mut payload = json!({"error": error.client_message()});
+    if error.is_temporary() {
+        payload["retryable"] = json!(true);
+    }
+    for (name, value) in fields {
+        payload[*name] = value.clone();
+    }
+    write_json(error.status(), &payload)
+}
+
+/// What a socket peer is sent for a refused write, with the correlation
+/// fields the room protocol promises. The same variant-driven mapping as the
+/// HTTP side, so a refusal reads the same whichever way a client asked.
+pub(super) fn socket_refusal(error: &crate::room::WriteError, request_id: &str) -> Value {
+    let mut payload = json!({
+        "type": "error",
+        "message": error.client_message(),
+        "request_id": request_id,
+        "version": 1,
+        "protocol": "komodoc.room.v1",
+    });
+    if error.is_temporary() {
+        payload["retryable"] = json!(true);
+    }
+    payload
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+    use crate::room::error::QuotaKind;
+    use crate::room::{FenceReason, WriteError};
+
+    fn status_of(error: &WriteError) -> u16 {
+        refused("test", error).status().as_u16()
+    }
+
+    /// The wording of a refusal is for whoever reads it. Changing it must not
+    /// move the status a route answers with, nor its retry advice.
+    #[test]
+    fn wording_does_not_decide_the_reply() {
+        let first = WriteError::Conflict("the passage has moved".into());
+        let second = WriteError::Conflict("something else entirely".into());
+        assert_eq!(status_of(&first), status_of(&second));
+        assert_eq!(first.is_temporary(), second.is_temporary());
+    }
+
+    #[test]
+    fn quota_keeps_the_status_it_had() {
+        assert_eq!(status_of(&WriteError::Quota(QuotaKind::Owner)), 507);
+        assert_eq!(status_of(&WriteError::Quota(QuotaKind::Deployment)), 507);
+        assert_eq!(status_of(&WriteError::Quota(QuotaKind::UploadRate)), 429);
+        assert_eq!(status_of(&WriteError::PermissionDenied), 403);
+    }
+
+    #[test]
+    fn correlation_fields_survive_the_mapping() {
+        let payload = socket_refusal(&WriteError::Quota(QuotaKind::Owner), "req-7");
+        assert_eq!(payload["request_id"], json!("req-7"));
+        assert_eq!(payload["type"], json!("error"));
+        assert_eq!(payload["protocol"], json!("komodoc.room.v1"));
+    }
+
+    /// A storage failure is logged with its cause and answered without it.
+    #[test]
+    fn storage_context_never_reaches_a_client() {
+        let error = WriteError::Storage("s3://bucket/key: reset".into());
+        let reply = refused_with("storing a figure", &error, &[("sha", json!("abc"))]);
+        assert_eq!(reply.status().as_u16(), 503);
+        assert_eq!(
+            WriteError::Storage("anything".into()).client_message(),
+            error.client_message()
+        );
+    }
+
+    #[test]
+    fn a_deleted_room_is_not_a_busy_one() {
+        assert_eq!(status_of(&WriteError::ReadOnly(FenceReason::Deleted)), 404);
+        assert_eq!(
+            status_of(&WriteError::ReadOnly(FenceReason::HeldElsewhere)),
+            503
+        );
+    }
+}

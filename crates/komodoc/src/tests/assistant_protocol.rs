@@ -175,7 +175,8 @@ async fn assistant_batch_item_cap_and_stale_accept_preserve_source() {
     let id = text(&result["results"][0], "id");
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# Paper\n\ncompletely different\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let (_, accepted) = post(
         &server.url,
         &format!("/api/documents/{slug}/comments"),

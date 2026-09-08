@@ -230,7 +230,9 @@ async fn provenance_is_pruned_with_its_rendering() {
     let cookie = session_as(TEST_PUBLISHER);
     let room = server.instance.rooms.get(&slug).await;
 
-    room.set_source("# My Paper\n\nfirst\n", "markdown").await;
+    room.set_source("# My Paper\n\nfirst\n", "markdown")
+        .await
+        .unwrap();
     let old_sha = live_sha(&server, &slug).await;
     let (status, answer) = put_rendering_with(
         &cookie,
@@ -243,7 +245,9 @@ async fn provenance_is_pruned_with_its_rendering() {
     .await;
     assert_eq!(status, 200, "{answer}");
 
-    room.set_source("# My Paper\n\nsecond\n", "markdown").await;
+    room.set_source("# My Paper\n\nsecond\n", "markdown")
+        .await
+        .unwrap();
     let new_sha = live_sha(&server, &slug).await;
     let (status, answer) = put_rendering_with(
         &cookie,
@@ -258,7 +262,9 @@ async fn provenance_is_pruned_with_its_rendering() {
 
     // A further checkpoint is when pruning runs; the old moment is neither
     // the newest nor labelled, so it and its provenance both go.
-    room.set_source("# My Paper\n\nthird\n", "markdown").await;
+    room.set_source("# My Paper\n\nthird\n", "markdown")
+        .await
+        .unwrap();
     room.checkpoint("quiet", TEST_PUBLISHER)
         .await
         .expect("a checkpoint");

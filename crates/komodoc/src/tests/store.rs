@@ -246,7 +246,9 @@ async fn stage_room_publication(
     rooms.attach_store(store);
     let room = rooms.get(slug).await;
     let mut publication_token = room.reserve_publication_checkpoint().unwrap();
-    room.set_main_file(source, "markdown", "main.md").await;
+    room.set_main_file(source, "markdown", "main.md")
+        .await
+        .unwrap();
     let sha = room
         .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await

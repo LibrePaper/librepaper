@@ -130,19 +130,23 @@ impl Room {
 
     /// Names a figure in the document, at a path. The bytes are already in the
     /// store; this is what makes them a figure of this document.
-    pub async fn name_asset(&self, path: &str, sha: &str) {
+    pub async fn name_asset(&self, path: &str, sha: &str) -> Result<(), WriteError> {
         let _publication_writer = self.publication_write.lock().await;
         let _assets_writer = self.assets_write.lock().await;
         if self.read_only() {
             // Another server owns this room; naming a figure in our copy
             // would only diverge from the one being persisted (R23).
-            return;
+            return Err(self.fenced());
         }
         let mut state = self.state.lock().await;
+        if self.read_only() {
+            return Err(self.fenced());
+        }
         session::put_asset(&state.session.doc, path, sha);
         state.session.mark_dirty(now_unix());
         state.session.generation += 1;
         state.session.updated_at = now_unix();
+        Ok(())
     }
 
     /* ------------------------------------------------------------- assets */
@@ -163,7 +167,7 @@ impl Room {
         &self,
         body: Vec<u8>,
         ceilings: (i64, i64),
-    ) -> Result<(String, i64), String> {
+    ) -> Result<(String, i64), WriteError> {
         self.put_asset_unlocked(body, ceilings).await
     }
 
@@ -174,22 +178,21 @@ impl Room {
         &self,
         body: Vec<u8>,
         ceilings: (i64, i64),
-    ) -> Result<(String, i64), String> {
+    ) -> Result<(String, i64), WriteError> {
         let (max_asset, max_assets) = ceilings;
         let size = body.len() as i64;
         if size == 0 {
-            return Err("that file is empty".into());
+            return Err(WriteError::Invalid("that file is empty".into()));
         }
         if size > max_asset {
-            return Err(format!(
-                "that figure is larger than the {} MB one file may be",
-                max_asset >> 20
-            ));
+            return Err(WriteError::Figure(FigureLimit::OneFile {
+                ceiling: max_asset,
+            }));
         }
         let sha = crate::document::store::digest_of_bytes(&body);
 
         if !self.hold().await {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
 
         // Keep the gate only over the in-memory admission decision.  The
@@ -207,7 +210,7 @@ impl Room {
             let mut uploads = self
                 .asset_uploads
                 .lock()
-                .map_err(|_| "asset admission is unavailable".to_string())?;
+                .map_err(|_| WriteError::Storage("asset admission is unavailable".into()))?;
             if let Some((reserved_size, count)) = uploads.get_mut(&sha) {
                 debug_assert_eq!(*reserved_size, size);
                 *count = count.saturating_add(1);
@@ -215,10 +218,9 @@ impl Room {
                 let reserved: i64 = uploads.values().map(|(bytes, _)| *bytes).sum();
                 let held: i64 = state.session.asset_sizes.values().sum();
                 if held.saturating_add(reserved).saturating_add(size) > max_assets {
-                    return Err(format!(
-                        "this document has reached the {} MB it may keep in figures",
-                        max_assets >> 20
-                    ));
+                    return Err(WriteError::Figure(FigureLimit::Document {
+                        ceiling: max_assets,
+                    }));
                 }
                 uploads.insert(sha.clone(), (size, 1));
             }
@@ -237,7 +239,7 @@ impl Room {
             )
             .await
         {
-            return Err(err.to_string());
+            return Err(WriteError::Storage(err.to_string()));
         }
         let (format, main) = {
             let _assets_writer = self.assets_write.lock().await;
@@ -349,7 +351,7 @@ impl Room {
         sha: &str,
         synctex: bool,
         body: Vec<u8>,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, WriteError> {
         self.put_rendering_as(sha, synctex, body, None).await
     }
 
@@ -359,7 +361,7 @@ impl Room {
         synctex: bool,
         body: Vec<u8>,
         actor: Option<(&str, &str, &str)>,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, WriteError> {
         self.put_rendering_as_authority(
             sha,
             synctex,
@@ -383,11 +385,11 @@ impl Room {
         synctex: bool,
         body: Vec<u8>,
         actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, WriteError> {
         let _rendering_writer = self.rendering_write.lock().await;
         let size = body.len() as i64;
         if size == 0 {
-            return Err("that rendering is empty".into());
+            return Err(WriteError::Invalid("that rendering is empty".into()));
         }
         let name = rendering_name(sha, synctex);
         {
@@ -405,7 +407,7 @@ impl Room {
             return Ok(known);
         }
         if !self.hold().await {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
         let key = rendering_object_key(&self.storage_id, &name);
         // Admission and object-ledger accounting must precede the blob write;
@@ -448,7 +450,7 @@ impl Room {
         inputs: &str,
         synctex: bool,
         body: Vec<u8>,
-    ) -> Result<Option<i64>, String> {
+    ) -> Result<Option<i64>, WriteError> {
         self.put_current_rendering_as(sha, inputs, synctex, body, None)
             .await
     }
@@ -460,7 +462,7 @@ impl Room {
         synctex: bool,
         body: Vec<u8>,
         actor: Option<(&str, &str, &str)>,
-    ) -> Result<Option<i64>, String> {
+    ) -> Result<Option<i64>, WriteError> {
         self.put_current_rendering_as_authority(
             sha,
             inputs,
@@ -486,14 +488,14 @@ impl Room {
         synctex: bool,
         body: Vec<u8>,
         actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-    ) -> Result<Option<i64>, String> {
+    ) -> Result<Option<i64>, WriteError> {
         let _rendering_writer = self.rendering_write.lock().await;
         let size = body.len() as i64;
         if size == 0 {
-            return Err("that rendering is empty".into());
+            return Err(WriteError::Invalid("that rendering is empty".into()));
         }
         if !self.hold().await {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
         let name = rendering_name(sha, synctex);
         {
@@ -526,11 +528,12 @@ impl Room {
             if current.digest() != sha || current.input_digest() != inputs {
                 (Ok(false), format, main)
             } else {
-                let metadata: Result<(), String> = self.catalog.get().map_or(Ok(()), |catalog| {
-                    save_catalog_rendering_with_authority(
-                        catalog, &self.slug, sha, synctex, size, actor,
-                    )
-                });
+                let metadata: Result<(), WriteError> =
+                    self.catalog.get().map_or(Ok(()), |catalog| {
+                        save_catalog_rendering_with_authority(
+                            catalog, &self.slug, sha, synctex, size, actor,
+                        )
+                    });
                 match metadata {
                     Ok(()) => {
                         note_rendering(&mut state, name, size);
@@ -588,7 +591,11 @@ impl Room {
     /// what is decided here is only that they are not already held and that
     /// writing them is this server's to do, exactly like `put_rendering`.
     #[allow(dead_code)]
-    pub async fn put_rendering_provenance(&self, sha: &str, body: Vec<u8>) -> Result<i64, String> {
+    pub async fn put_rendering_provenance(
+        &self,
+        sha: &str,
+        body: Vec<u8>,
+    ) -> Result<i64, WriteError> {
         self.put_rendering_provenance_as_authority(sha, body, None)
             .await
     }
@@ -598,7 +605,7 @@ impl Room {
         sha: &str,
         body: Vec<u8>,
         actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, WriteError> {
         let _rendering_writer = self.rendering_write.lock().await;
         let size = body.len() as i64;
         let name = rendering_provenance_name(sha);
@@ -606,7 +613,7 @@ impl Room {
             return Ok(*known);
         }
         if !self.hold().await {
-            return Err("this room is held by another server".into());
+            return Err(self.fenced());
         }
         self.put_accounted(
             &crate::storage::blob::rendering_provenance_key(&self.storage_id, sha),

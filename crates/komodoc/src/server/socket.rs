@@ -392,7 +392,7 @@ impl Server {
                                 incoming.update = encode_update(&update);
                             }
                             Err(reason) => {
-                                let _ = send_outgoing(&tx, Outgoing::Close(reason)).await;
+                                let _ = send_outgoing(&tx, Outgoing::Close(reason.into())).await;
                                 break 'reader;
                             }
                         }
@@ -495,7 +495,8 @@ impl Server {
                                         continue 'reader;
                                     }
                                     Applied::Refuse(reason) => {
-                                            let _ = send_outgoing(&tx, Outgoing::Close(reason)).await;
+                                            let _ = send_outgoing(&tx, Outgoing::Close(reason.client_message()))
+                                                .await;
                                         break 'reader;
                                     }
                                     Applied::Relay => {}
@@ -552,12 +553,15 @@ impl Server {
                                         "version": 1,
                                         "protocol": "komodoc.room.v1",
                                     }),
-                                    Err(message) => json!({
-                                        "type": "error", "message": message,
-                                        "request_id": incoming.request_id,
-                                        "version": 1,
-                                        "protocol": "komodoc.room.v1",
-                                    }),
+                                    Err(error) => {
+                                        if let Some(context) = error.log_context() {
+                                            eprintln!(
+                                                "warning: could not checkpoint {}: {context}",
+                                                room.slug
+                                            );
+                                        }
+                                        socket_refusal(&error, &incoming.request_id)
+                                    }
                                 };
                                 if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
                                     break 'reader;
@@ -633,7 +637,10 @@ impl Server {
         room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
             .await;
         if !writer_done {
-            if send_outgoing(&tx, Outgoing::Close("")).await.is_err() {
+            if send_outgoing(&tx, Outgoing::Close("".into()))
+                .await
+                .is_err()
+            {
                 // The queue may be full while the writer is blocked in a
                 // transport send.  The reader still owns `tx`, so waiting for
                 // the writer after a failed enqueue could otherwise hang
@@ -725,12 +732,12 @@ impl Server {
             self.chat.detach(id, socket_id).await;
             let _ = connection
                 .tx
-                .try_send(Outgoing::Close("access changed; reconnect"));
+                .try_send(Outgoing::Close("access changed; reconnect".into()));
             return;
         }
         let _ = connection
             .tx
-            .try_send(Outgoing::Close("access changed; reconnect"));
+            .try_send(Outgoing::Close("access changed; reconnect".into()));
         if let Ok(room) = self.rooms.try_get(slug).await {
             room.state.lock().await.sockets.remove(&socket_id);
         }
@@ -797,7 +804,7 @@ impl Server {
                 self.chat.detach(id, socket_id).await;
                 let _ = connection
                     .tx
-                    .try_send(Outgoing::Close("access changed; reconnect"));
+                    .try_send(Outgoing::Close("access changed; reconnect".into()));
                 continue;
             }
             // Never waited on: a socket too far behind to take the close frame
@@ -807,7 +814,7 @@ impl Server {
             // within the second.
             let _ = connection
                 .tx
-                .try_send(Outgoing::Close("access changed; reconnect"));
+                .try_send(Outgoing::Close("access changed; reconnect".into()));
             let Ok(room) = self.rooms.try_get(slug).await else {
                 continue;
             };
@@ -884,7 +891,7 @@ mod outgoing_tests {
             .expect("the test queue starts empty");
         assert!(send_outgoing_with_timeout(
             &tx,
-            Outgoing::Close("slow peer"),
+            Outgoing::Close("slow peer".into()),
             Duration::from_millis(1)
         )
         .await

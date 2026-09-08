@@ -86,7 +86,8 @@ async fn assistant_revision_survives_restore_before_a_merge_accept() {
         .cloned()
         .expect("publish checkpoint");
     room.set_source("# Paper\n\ninterim\n\nTail\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     room.checkpoint_now("quiet", "editor")
         .await
         .expect("interim checkpoint")
@@ -143,7 +144,8 @@ async fn assistant_revision_survives_restore_before_a_merge_accept() {
     // must load the restored tree by its content SHA and merge the disjoint
     // edit rather than reporting a spurious stale result.
     room.set_source("# Paper\n\nold swift target\n\nTail\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let (status, accepted) = post(
         &server.url,
         &format!("/api/documents/{slug}/comments"),

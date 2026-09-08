@@ -127,19 +127,18 @@ impl Server {
                 (self.config.max_asset, self.config.max_assets),
             )
             .await;
-        if stored.is_err() {
+        if let Err(error) = &stored {
+            // Whether the room refused before writing anything or storage
+            // failed part-way, this request's byte reservation is not ours to
+            // hold: an object that did land is the object ledger's to
+            // reconcile, and keeping the reservation as well would charge the
+            // owner twice for it.
             self.store.release_object_bytes(slug, size);
+            debug_assert!(error.refused() || error.log_context().is_some());
         }
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
-            Err(why) => {
-                let status = if why.contains("quota exceeded") {
-                    507
-                } else {
-                    413
-                };
-                write_json(status, &json!({"error": why}))
-            }
+            Err(error) => refused(&format!("could not store a figure for {slug}"), &error),
         }
     }
 
@@ -324,13 +323,11 @@ impl Server {
                         &json!({"error": "the text moved while that was being stored"}),
                     );
                 }
-                Err(err) => {
-                    let status = if err.contains("quota exceeded") {
-                        507
-                    } else {
-                        500
-                    };
-                    return write_json(status, &json!({"error": err}));
+                Err(error) => {
+                    return refused(
+                        &format!("could not checkpoint {slug} for a rendering"),
+                        &error,
+                    );
                 }
             }
         }
@@ -435,22 +432,22 @@ impl Server {
                             )
                             .await
                         {
-                            return write_json(500, &json!({"error": why}));
+                            return refused(
+                                &format!("could not store rendering provenance for {slug}"),
+                                &why,
+                            );
                         }
                     }
                 }
                 write_json(200, &json!({"sha": sha, "size": size}))
             }
-            Err(why) => {
-                let status = if why.contains("actor rights") {
-                    403
-                } else if why.contains("quota exceeded") {
-                    507
-                } else {
-                    413
-                };
-                write_json(status, &json!({"error": why}))
-            }
+            Err(error) => refused_with(
+                &format!("could not store a rendering for {slug}"),
+                &error,
+                // The digest the browser compiled is the correlation id this
+                // route's clients match a failure back to.
+                &[("sha", json!(sha))],
+            ),
         }
     }
 

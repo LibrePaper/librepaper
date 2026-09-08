@@ -88,8 +88,12 @@ impl Server {
             // A retry after a crash finishes this same copy. Never replace a
             // source already recovered from its durable session.
             if room.source().await.is_empty() {
+                // A refused starter write stops the provisioning: the
+                // checkpoint below would otherwise record an example
+                // document that has no source in it.
                 room.set_main_file(starter.source, starter.format, starter.file)
-                    .await;
+                    .await
+                    .map_err(|error| error.to_string())?;
             }
             let sha = room
                 // First sign-in provisioning is the new account's own write.

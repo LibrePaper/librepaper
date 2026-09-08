@@ -83,7 +83,8 @@ async fn listing_shows_only_your_own_uploads() {
     let mut publication_token = example_room.reserve_publication_checkpoint().unwrap();
     example_room
         .set_main_file("<p>e</p>", "html", "main.html")
-        .await;
+        .await
+        .unwrap();
     let example_sha = example_room
         .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
@@ -117,7 +118,8 @@ async fn listing_shows_only_your_own_uploads() {
     let mut publication_token = legacy_room.reserve_publication_checkpoint().unwrap();
     legacy_room
         .set_main_file("<p>l</p>", "html", "main.html")
-        .await;
+        .await
+        .unwrap();
     let legacy_sha = legacy_room
         .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await

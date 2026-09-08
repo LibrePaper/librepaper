@@ -310,14 +310,14 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(2), blobs.reached.notified())
             .await
             .unwrap();
-        room.set_source("unreferenced", "markdown").await;
+        room.set_source("unreferenced", "markdown").await.unwrap();
         blobs.resume.notify_one();
         pruning.await.unwrap();
         assert!(
             blobs.exists(&unused_text).await.unwrap(),
             "source edits during listing are protected by the final live check"
         );
-        room.set_source("retained text", "markdown").await;
+        room.set_source("retained text", "markdown").await.unwrap();
 
         for key in [&unused_text, &unused_asset] {
             blobs

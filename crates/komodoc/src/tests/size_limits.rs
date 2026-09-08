@@ -223,7 +223,9 @@ mod room_fixture {
             .await
             .expect("the publication is prepared");
         let room = fixture.rooms.get(slug).await;
-        room.set_main_file(source, "markdown", "main.md").await;
+        room.set_main_file(source, "markdown", "main.md")
+            .await
+            .unwrap();
         let sha = room
             .checkpoint_now("cli", "alice")
             .await
@@ -289,7 +291,13 @@ async fn the_source_ceiling_is_enforced_at_its_boundary() {
     else {
         panic!("a source past the ceiling must be refused");
     };
-    assert!(reason.contains("size limit"), "{reason}");
+    assert!(
+        matches!(
+            reason,
+            crate::room::WriteError::Document(crate::room::error::DocumentLimit::Size)
+        ),
+        "{reason}"
+    );
     assert_eq!(
         room.source().await.len(),
         fits.len(),
@@ -332,10 +340,21 @@ async fn a_small_source_with_a_large_history_is_refused_by_the_encoded_ceiling()
     }
     let reason = refusal.expect("a growing history must eventually be refused");
     assert!(accepted > 0, "nothing was ever accepted");
-    assert!(reason.contains("edit history"), "{reason}");
     assert!(
-        !reason.contains("try again") && !reason.contains("reconnect"),
-        "a permanent size refusal must not read as a capacity refusal: {reason}"
+        matches!(
+            reason,
+            crate::room::WriteError::Document(crate::room::error::DocumentLimit::Encoded)
+        ),
+        "{reason}"
+    );
+    // The wording still has to tell a person the history counts, and must
+    // not read as a capacity refusal -- but what decides the behaviour is
+    // the variant above, not this sentence.
+    let message = reason.client_message();
+    assert!(message.contains("edit history"), "{message}");
+    assert!(
+        !reason.is_temporary(),
+        "a permanent size refusal must not advertise a retry: {message}"
     );
     let source = room.source().await;
     assert_eq!(

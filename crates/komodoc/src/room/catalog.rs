@@ -364,7 +364,7 @@ pub(super) fn save_catalog_rendering(
     synctex: bool,
     size: i64,
     actor: Option<(&str, &str, &str)>,
-) -> Result<(), String> {
+) -> Result<(), WriteError> {
     save_catalog_rendering_with_authority(
         catalog,
         slug,
@@ -390,10 +390,10 @@ pub(super) fn save_catalog_rendering_with_authority(
     synctex: bool,
     size: i64,
     actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-) -> Result<(), String> {
+) -> Result<(), WriteError> {
     let previous = catalog
         .rendering(slug, tree_sha)
-        .map_err(|err| err.to_string())?;
+        .map_err(WriteError::from)?;
     let rendering = crate::storage::catalog::Rendering {
         slug: slug.to_string(),
         tree_sha: tree_sha.to_string(),
@@ -433,12 +433,12 @@ pub(super) fn save_catalog_rendering_with_authority(
         catalog
             .publish_rendering_with_authority(&rendering, actor)
             .map(|_| ())
-            .map_err(|err| err.to_string())
+            .map_err(WriteError::from)
     } else {
         catalog
             .publish_rendering(&rendering)
             .map(|_| ())
-            .map_err(|err| err.to_string())
+            .map_err(WriteError::from)
     }
 }
 

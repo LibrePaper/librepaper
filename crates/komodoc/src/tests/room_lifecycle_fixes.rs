@@ -226,7 +226,8 @@ async fn uncached_compatibility_room_cannot_accept_edits() {
     let room = rooms.get("oversized").await;
     assert!(room.read_only());
     room.set_source("must not disappear at shutdown", "markdown")
-        .await;
+        .await
+        .unwrap();
     assert_eq!(room.source().await, "");
     assert!(rooms.try_get("oversized").await.is_err());
 }
@@ -361,7 +362,9 @@ async fn accumulated_update_quota(journaled: bool) {
         .await
         .unwrap();
     let room = rooms.get("quota-edit").await;
-    room.set_main_file("A", "markdown", "main.md").await;
+    room.set_main_file("A", "markdown", "main.md")
+        .await
+        .unwrap();
     let sha = room.checkpoint_now("cli", "alice").await.unwrap().unwrap();
     store.commit_publication("quota-edit", &sha).await.unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(64);

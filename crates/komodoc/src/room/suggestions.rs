@@ -515,7 +515,7 @@ impl Room {
                         )
                         .await;
                 }
-                return Err(AcceptError::Failed(err));
+                return Err(AcceptError::from(err));
             }
         };
 

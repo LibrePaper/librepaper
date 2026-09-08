@@ -156,7 +156,8 @@ async fn a_rendering_goes_up_and_comes_back_and_makes_its_own_checkpoint() {
     // The document moves on, so the text a browser would have compiled is not
     // one the manifest already has.
     room.set_source("# My Paper\n\nEdited, and compiled.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let sha = live_sha(&server, &slug).await;
     assert!(
         !room.manifest().await.has(&sha),
@@ -200,7 +201,8 @@ async fn a_typst_source_starts_unrendered_and_accepts_a_pdf_artifact() {
         .get(&slug)
         .await
         .set_source("= Typst paper\n\nA paged document.\n", "typst")
-        .await;
+        .await
+        .unwrap();
     let (status, before) = get_latest_keyed("", &key, &server.url, &slug).await;
     assert_eq!(status, 200);
     assert!(
@@ -283,7 +285,8 @@ async fn a_current_artifact_cannot_be_attached_to_an_older_tree() {
         .get(&slug)
         .await
         .set_source("# My Paper\n\nA newer tree.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let (_, latest) = get_latest(&cookie, &server.url, &slug).await;
     let inputs = text(&latest, "inputs");
     assert!(!inputs.is_empty(), "latest did not identify its input tree");
@@ -505,7 +508,8 @@ async fn latest_says_which_rendering_and_whether_it_is_current() {
         .get(&slug)
         .await
         .set_source("# My Paper\n\nMoved on.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let (_, answer) = get_latest_keyed("", &key, &server.url, &slug).await;
     assert_eq!(text(&answer, "sha"), sha, "the rendering was forgotten");
     assert_eq!(answer["current"], false, "{answer}");
@@ -543,7 +547,8 @@ async fn pruning_keeps_the_newest_rendering_and_the_labelled_ones() {
     let mut shas = Vec::new();
     for (n, line) in ["first", "second", "third"].iter().enumerate() {
         room.set_source(&format!("# My Paper\n\n{line}\n"), "markdown")
-            .await;
+            .await
+            .unwrap();
         let sha = live_sha(&server, &slug).await;
         let (status, answer) = put_rendering(&cookie, &server.url, &slug, &sha, pdf(n as u8)).await;
         assert_eq!(status, 200, "{answer}");
@@ -558,7 +563,9 @@ async fn pruning_keeps_the_newest_rendering_and_the_labelled_ones() {
 
     // A checkpoint is when pruning happens, on the same pass the figures are
     // pruned on and under the same write-order rule.
-    room.set_source("# My Paper\n\nAnd on.\n", "markdown").await;
+    room.set_source("# My Paper\n\nAnd on.\n", "markdown")
+        .await
+        .unwrap();
     room.checkpoint("quiet", TEST_PUBLISHER)
         .await
         .expect("a checkpoint");
@@ -599,7 +606,9 @@ async fn a_rendering_costs_the_owner_their_quota() {
         "the rendering was not counted"
     );
 
-    room.set_source("# My Paper\n\nAgain.\n", "markdown").await;
+    room.set_source("# My Paper\n\nAgain.\n", "markdown")
+        .await
+        .unwrap();
     let next = live_sha(&server, &slug).await;
     let (status, answer) =
         put_rendering(&cookie, &server.url, &slug, &next, vec![b'x'; 3000]).await;

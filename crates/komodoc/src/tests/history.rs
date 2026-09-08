@@ -55,7 +55,8 @@ async fn restore_is_authorized_durable_and_linear() {
         .expect("the publish checkpoint");
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# My Paper\n\nA newer draft.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let current_sha = room
         .checkpoint_now("quiet", "vincent")
         .await
@@ -499,7 +500,7 @@ async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
     // The document moves on, and every write of it is refused.
     let room = instance.rooms.get(&slug).await;
     let edited = "# My Paper\n\nHello *world*, edited.\n";
-    room.set_source(edited, "markdown").await;
+    room.set_source(edited, "markdown").await.unwrap();
     blobs.refuse_writes_to("sessions/");
     assert!(
         room.persist().await.is_err(),
@@ -554,7 +555,7 @@ async fn a_manifest_missing_its_newest_entry_is_repaired() {
 
     // A checkpoint that gets as far as the index and no further.
     let lost = "# My Paper\n\nThe checkpoint the manifest never heard of.\n";
-    room.set_source(lost, "markdown").await;
+    room.set_source(lost, "markdown").await.unwrap();
     blobs.refuse_writes_to(&history_index_key(&slug));
     // The name a checkpoint of this document would have, which is the digest
     // of its tree rather than of its text: a checkpoint is the whole
@@ -586,7 +587,7 @@ async fn a_manifest_missing_its_newest_entry_is_repaired() {
     // Storage comes back, and the next checkpoint repairs it.
     blobs.allow_everything();
     let next = "# My Paper\n\nAnd the one after it.\n";
-    room.set_source(next, "markdown").await;
+    room.set_source(next, "markdown").await.unwrap();
     let taken = room
         .checkpoint("quiet", "vincent")
         .await
@@ -640,7 +641,8 @@ async fn a_comment_lands_on_a_checkpoint_that_contains_its_quotation() {
         "# My Paper\n\nHello *world*, and a sentence to quote.\n",
         "markdown",
     )
-    .await;
+    .await
+    .unwrap();
 
     let (status, posted) = post(
         &server.url,
@@ -699,7 +701,7 @@ async fn history_is_shed_rather_than_a_checkpoint_refused() {
     let mut shas = Vec::new();
     for round in 0..4 {
         let source = format!("# My Paper\n\nRound {round}.\n");
-        room.set_source(&source, "markdown").await;
+        room.set_source(&source, "markdown").await.unwrap();
         shas.push(
             room.checkpoint("quiet", "vincent")
                 .await
@@ -1605,7 +1607,10 @@ async fn a_second_process_over_the_same_storage_does_not_write() {
     // It can read the document -- serving it is not writing it.
     assert_eq!(intruder.source().await, TEST_MARKDOWN);
     // And it cannot write.
-    intruder.set_source("# Not yours\n", "markdown").await;
+    intruder
+        .set_source("# Not yours\n", "markdown")
+        .await
+        .unwrap();
     assert!(
         intruder.persist().await.is_err(),
         "a server without the lease wrote the document"
@@ -1616,7 +1621,10 @@ async fn a_second_process_over_the_same_storage_does_not_write() {
     );
 
     // What is stored is still the first server's, and it can still write.
-    owner.set_source("# Still mine\n", "markdown").await;
+    owner
+        .set_source("# Still mine\n", "markdown")
+        .await
+        .unwrap();
     owner.persist().await.expect("the owner may write");
     let (_, reloaded) = server_over(dir.path(), Configuration::default()).await;
     assert_eq!(
@@ -1641,7 +1649,9 @@ async fn a_former_owner_cannot_write_after_being_taken_over() {
     let (url, stalled) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let slug = text(&publish_with_source(&url).await, "slug");
     let old = stalled.rooms.get(&slug).await;
-    old.set_source("# From the first owner\n", "markdown").await;
+    old.set_source("# From the first owner\n", "markdown")
+        .await
+        .unwrap();
     old.persist().await.expect("the owner may write");
 
     // Its lease goes stale, and somebody takes it over. Written directly,
@@ -1665,7 +1675,8 @@ async fn a_former_owner_cannot_write_after_being_taken_over() {
     let now_theirs = taker.rooms.get(&slug).await;
     now_theirs
         .set_source("# From the new owner\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     // The new owner cannot write either while the lease says somebody else
     // holds it, which is correct -- so the lease is handed to it properly by
     // reading the room fresh once the old lock is stale. What this test cares
@@ -1682,7 +1693,8 @@ async fn a_former_owner_cannot_write_after_being_taken_over() {
 
     // The old server wakes up and tries to write what it was holding.
     old.set_source("# The stalled owner's words\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let refused = old.persist().await;
     assert!(
         refused.is_err(),

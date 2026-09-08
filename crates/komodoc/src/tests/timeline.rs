@@ -114,7 +114,8 @@ async fn a_checkpoint_comes_back_as_the_document_it_was() {
 
     // The document moves on, and the moment before it did is a checkpoint.
     room.set_source("# My Paper\n\nQuite different now.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let sha = room
         .checkpoint("quiet", TEST_PUBLISHER)
         .await
@@ -160,7 +161,8 @@ async fn a_checkpoint_carries_every_file_the_document_had() {
     let room = server.instance.rooms.get(&slug).await;
 
     room.add_text("chapters/two.md", "# Two\n\nThe second chapter.\n")
-        .await;
+        .await
+        .unwrap();
     let sha = room
         .checkpoint("quiet", TEST_PUBLISHER)
         .await
@@ -340,7 +342,8 @@ async fn a_comment_records_the_checkpoint_it_was_made_on() {
     let key = read_key_of(&document);
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# My Paper\n\nA sentence worth remarking on.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
 
     let (status, answer) = post(
         &server.url,
@@ -398,7 +401,8 @@ async fn resolving_records_the_checkpoint_it_was_settled_against() {
     // The document moves on and is checkpointed, so what it is resolved
     // against is demonstrably a later moment than what it was made on.
     room.set_source("# My Paper\n\nRewritten since.\n", "markdown")
-        .await;
+        .await
+        .unwrap();
     let later = room
         .checkpoint("quiet", TEST_PUBLISHER)
         .await
