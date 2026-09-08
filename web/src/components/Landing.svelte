@@ -141,26 +141,54 @@
   }
 
   async function showList() {
-    const listing = await fetch("/api/list", { method: "POST", headers: SHELL_HEADERS });
-    if (!listing.ok) return;
-    documents = (await listing.json()).documents;
-    // Counts and directories live in each project's room rather than in the
-    // index, so they are fetched separately and the list picks them up when
-    // they land.
-    const counted = new Map();
-    const listed = new Map();
-    await Promise.all(
-      documents.map((doc) =>
-        get(`/api/documents/${doc.slug}`)
-          .then((full) => {
-            counted.set(doc.slug, full.comment_count);
-            listed.set(doc.slug, Array.isArray(full.files) ? full.files : []);
-          })
-          .catch(() => {}),
-      ),
-    );
-    counts = counted;
-    paths = listed;
+    try {
+      // The server caps each page at 200 rows. Keep the old listing visible
+      // until every page has arrived, so a failed refresh does not erase it.
+      const bySlug = new Map();
+      let cursor = null;
+      do {
+        const query = new URLSearchParams();
+        if (cursor?.after_updated && cursor?.after_slug) {
+          query.set("after_updated", cursor.after_updated);
+          query.set("after_slug", cursor.after_slug);
+        }
+        const suffix = query.toString();
+        const listing = await fetch(`/api/list${suffix ? `?${suffix}` : ""}`, {
+          method: "POST",
+          headers: SHELL_HEADERS,
+        });
+        if (!listing.ok) throw new Error(`refresh failed (${listing.status})`);
+        const page = await listing.json();
+        if (!Array.isArray(page.documents)) throw new Error("refresh returned an invalid listing");
+        for (const doc of page.documents) {
+          if (doc?.slug) bySlug.set(doc.slug, doc);
+        }
+        cursor = page.next_cursor;
+      } while (cursor?.after_updated && cursor?.after_slug);
+
+      documents = [...bySlug.values()];
+      // Counts and directories live in each project's room rather than in the
+      // index, so they are fetched separately and the list picks them up when
+      // they land.
+      const counted = new Map();
+      const listed = new Map();
+      await Promise.all(
+        documents.map((doc) =>
+          get(`/api/documents/${doc.slug}`)
+            .then((full) => {
+              counted.set(doc.slug, full.comment_count);
+              listed.set(doc.slug, Array.isArray(full.files) ? full.files : []);
+            })
+            .catch(() => {}),
+        ),
+      );
+      counts = counted;
+      paths = listed;
+    } catch (error) {
+      problem(error?.message || "Could not refresh projects.");
+      return false;
+    }
+    return true;
   }
 
   async function deleteSelected() {
@@ -176,16 +204,36 @@
     const slugs = pendingDeletion;
     confirming = false;
     pendingDeletion = [];
-    await Promise.all(
-      slugs.map((slug) =>
-        fetch(`/api/documents/${slug}/delete`, { method: "POST", headers: SHELL_HEADERS }).catch(() => {}),
-      ),
+    const results = await Promise.all(
+      slugs.map(async (slug) => {
+        try {
+          const response = await fetch(`/api/documents/${slug}/delete`, {
+            method: "POST",
+            headers: SHELL_HEADERS,
+          });
+          return { slug, ok: response.ok };
+        } catch {
+          return { slug, ok: false };
+        }
+      }),
     );
+    const failed = results.filter((result) => !result.ok).map((result) => result.slug);
+    const succeeded = results.filter((result) => result.ok).map((result) => result.slug);
     const keep = new Set(favorites);
-    for (const slug of slugs) keep.delete(slug);
+    for (const slug of succeeded) keep.delete(slug);
     favorites = keep;
     write(FAVORITES, [...keep]);
-    selected = new Set();
+    // Preserve selections made while the requests were in flight. Only the
+    // original successful deletions are removed; failed originals stay ready
+    // for retry alongside any newly selected projects.
+    const stillSelected = new Set(selected);
+    for (const slug of succeeded) stillSelected.delete(slug);
+    for (const slug of failed) stillSelected.add(slug);
+    selected = stillSelected;
+    if (failed.length) {
+      const plural = failed.length === 1 ? "" : "s";
+      problem(`Could not delete ${failed.length} project${plural}; failed selections remain selected.`);
+    }
     await showList();
   }
 

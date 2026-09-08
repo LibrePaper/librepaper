@@ -1250,12 +1250,10 @@
   // name the server would give them -- `main_path_for` in room.rs -- so that
   // what is rendered before the maps land and what is rendered after are the
   // same document under the same title.
-  function treeNow() {
-    // A checkpoint picked out of the timeline is shown in the document pane in
-    // place of the live text. Everything downstream -- the render, the frame,
-    // the agent, the anchoring -- is the same as for the live document,
-    // because to all of it a checkpoint is just another directory.
-    if (viewing) return checkpointTree(viewing);
+  // The file manager always operates on the live directory. In particular,
+  // its list remains live while the document pane is showing a checkpoint, so
+  // downloads must use the same source as that list.
+  function liveTreeNow() {
     if (!session) return { main: "", texts: {}, digests: {} };
     const tree = session.tree();
     if (tree.main) return tree;
@@ -1267,6 +1265,15 @@
       texts: { [named]: session.text.toString() },
       digests: {},
     };
+  }
+
+  function treeNow() {
+    // A checkpoint picked out of the timeline is shown in the document pane in
+    // place of the live text. Everything downstream -- the render, the frame,
+    // the agent, the anchoring -- is the same as for the live document,
+    // because to all of it a checkpoint is just another directory.
+    if (viewing) return checkpointTree(viewing);
+    return liveTreeNow();
   }
 
   // Painting the preview is sending it to the frame: the draft is a document,
@@ -2505,9 +2512,10 @@
   /// to be told what we know.
   async function downloadTree() {
     try {
-      const tree = treeNow();
+      const tree = liveTreeNow();
+      const currentFolders = [...folders];
       const files = { ...tree.texts };
-      for (const path of folders) files[`${path}/`] = new Uint8Array();
+      for (const path of currentFolders) files[`${path}/`] = new Uint8Array();
       if (Object.keys(tree.digests || {}).length) {
         const held = await figures.gather(SLUG, tree.digests, {
           ...SHELL_HEADERS,
@@ -2553,7 +2561,8 @@
 
   async function downloadEntry(entry) {
     try {
-      const tree = treeNow();
+      const tree = liveTreeNow();
+      const currentFolders = [...folders];
       const selected = (path) => entry.kind === "folder" ? inside(path, entry.path) : path === entry.path;
       const content = Object.fromEntries(Object.entries(tree.texts).filter(([path]) => selected(path)));
       const digests = Object.fromEntries(Object.entries(tree.digests || {}).filter(([path]) => selected(path)));
@@ -2564,7 +2573,7 @@
       }
       let blob;
       if (entry.kind === "folder") {
-        for (const path of folders) if (path === entry.path || selected(path)) content[path + "/"] = new Uint8Array();
+        for (const path of currentFolders) if (path === entry.path || selected(path)) content[path + "/"] = new Uint8Array();
         content[entry.path + "/"] = new Uint8Array();
         const { zip } = await import("../lib/zip.js");
         blob = zip(content);
