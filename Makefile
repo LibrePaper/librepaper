@@ -156,8 +156,15 @@ examples/%.html: examples/%.qmd
 	@cd examples && quarto render $(notdir $<) --quiet
 
 # Not in the help: it is a step of `deploy`, not a thing to run on its own.
+# A deployment is seeded once. Resetting a nonempty catalogue is a `komodoc
+# seed --backup <verified-point>` the operator runs deliberately, so a second
+# `make deploy` serves what is there rather than refusing to start.
 seed: $(BIN) $(EXAMPLES)
-	@$(BIN) seed --data $(DATA) $(if $(OWNER),--owner $(OWNER))
+	@if [ -e $(DATA)/catalog.db ]; then \
+		echo "$(DATA) is already seeded; serving it as is (move it aside to reseed)"; \
+	else \
+		$(BIN) seed --data $(DATA) $(if $(OWNER),--owner $(OWNER)); \
+	fi
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
