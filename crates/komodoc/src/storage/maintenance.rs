@@ -48,6 +48,9 @@ pub struct PendingDeletion {
 pub struct DeletionReport {
     pub jobs_seen: usize,
     pub objects_deleted: usize,
+    /// Objects whose removal the store did not confirm. Their queue rows and
+    /// their charges are still in place; a later pass tries them again.
+    pub objects_deferred: usize,
     pub bytes_reclaimed: i64,
     pub documents_finished: usize,
 }
@@ -431,8 +434,14 @@ impl DeletionWorker {
         };
         let mut read_bytes = 0i64;
         let mut touched = Vec::new();
-        for (requests, job) in jobs.into_iter().enumerate() {
-            if requests >= self.limits.max_object_requests
+        // Admit whole objects against the same budget as before -- the budget
+        // is a bound on how much one pass reclaims, not on how many HTTP
+        // requests it takes -- then remove them in one batch. The store
+        // answers per key, and only the keys it confirmed may leave the
+        // queue.
+        let mut admitted = Vec::new();
+        for (objects, job) in jobs.into_iter().enumerate() {
+            if objects >= self.limits.max_object_requests
                 || read_bytes.saturating_add(job.bytes) > self.limits.max_read_bytes
             {
                 break;
@@ -443,14 +452,38 @@ impl DeletionWorker {
                     job.object_key
                 )));
             }
-            self.blobs
-                .delete(std::slice::from_ref(&job.object_key))
+            read_bytes = read_bytes.saturating_add(job.bytes);
+            admitted.push(job);
+        }
+        if !admitted.is_empty() {
+            let keys: Vec<String> = admitted.iter().map(|job| job.object_key.clone()).collect();
+            let outcomes = self
+                .blobs
+                .delete_each(&keys)
                 .await
                 .map_err(|error| MaintenanceError::Storage(error.to_string()))?;
-            read_bytes = read_bytes.saturating_add(job.bytes);
-            report.objects_deleted += 1;
-            report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(job.bytes);
-            touched.push(job);
+            if outcomes.len() != admitted.len() {
+                return Err(MaintenanceError::Storage(
+                    "the store reported a different number of deletion outcomes than keys".into(),
+                ));
+            }
+            for (job, outcome) in admitted.into_iter().zip(outcomes) {
+                if outcome.confirmed() {
+                    report.objects_deleted += 1;
+                    report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(job.bytes);
+                    touched.push(job);
+                } else {
+                    // The object may still be there, so its queue row and its
+                    // charge both stay: a later pass retries it, and capacity
+                    // is never released on an unconfirmed removal.
+                    report.objects_deferred += 1;
+                    eprintln!(
+                        "warning: deletion of {} deferred: {}",
+                        job.object_key,
+                        outcome.why()
+                    );
+                }
+            }
         }
 
         // Removing a queue row is separate from object I/O.  If this process
@@ -1195,10 +1228,26 @@ impl JournalRetirementWorker {
                 if referenced {
                     return Ok(false);
                 }
-                self.blobs
-                    .delete(std::slice::from_ref(&key))
+                // Accounting is released only on confirmed removal. An
+                // uncertain outcome leaves the retirement row in place and is
+                // deferred below, so a segment nobody has proved gone keeps
+                // its charge.
+                let outcome = self
+                    .blobs
+                    .delete_each(std::slice::from_ref(&key))
                     .await
                     .map_err(|error| MaintenanceError::Storage(error.to_string()))?;
+                match outcome.first() {
+                    Some(outcome) if outcome.confirmed() => {}
+                    Some(outcome) => {
+                        return Err(MaintenanceError::Storage(outcome.why().to_string()))
+                    }
+                    None => {
+                        return Err(MaintenanceError::Storage(
+                            "the store reported no deletion outcome".into(),
+                        ))
+                    }
+                }
                 self.catalog
                     .release_object_accounting_key(&key)
                     .map_err(MaintenanceError::from)?;
@@ -1240,6 +1289,251 @@ mod tests {
     use crate::storage::catalog::{Account, Catalog, Comment, NewDocument, Rendering, Reply};
     use crate::storage::journal::{CoordinatorLimits, JournalRuntime, JournalStore};
     use std::sync::Arc;
+
+    /// A store whose removals can be refused one key at a time, which is what
+    /// a provider's batch answer looks like: the request succeeded and some
+    /// of the objects in it did not go away.
+    struct PartlyRefusing {
+        inner: Arc<dyn BlobStore>,
+        refuse: std::sync::Mutex<Option<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl BlobStore for PartlyRefusing {
+        async fn get(&self, key: &str) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            self.inner.get(key).await
+        }
+        async fn exists(&self, key: &str) -> crate::storage::blob::BlobResult<bool> {
+            self.inner.exists(key).await
+        }
+        async fn put(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
+            self.inner.put(key, body, content_type).await
+        }
+        async fn delete(&self, keys: &[String]) -> crate::storage::blob::BlobResult<()> {
+            let outcomes = self.delete_each(keys).await?;
+            match outcomes.iter().find(|outcome| !outcome.confirmed()) {
+                Some(refused) => Err(crate::storage::blob::BlobError::Other(
+                    refused.why().to_string(),
+                )),
+                None => Ok(()),
+            }
+        }
+        async fn delete_each(
+            &self,
+            keys: &[String],
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::DeleteOutcome>> {
+            let refuse = self.refuse.lock().expect("refusal").clone();
+            let mut outcomes = Vec::with_capacity(keys.len());
+            for key in keys {
+                if refuse.as_deref() == Some(key.as_str()) {
+                    outcomes.push(crate::storage::blob::DeleteOutcome::Uncertain(
+                        "the connection went away".into(),
+                    ));
+                    continue;
+                }
+                let mut one = self.inner.delete_each(std::slice::from_ref(key)).await?;
+                outcomes.push(one.remove(0));
+            }
+            Ok(outcomes)
+        }
+        async fn list(
+            &self,
+            prefix: &str,
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+            self.inner.list(prefix).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            after: Option<&str>,
+            limit: usize,
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+            self.inner.list_page(prefix, after, limit).await
+        }
+        async fn swap(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            expect: &str,
+        ) -> crate::storage::blob::BlobResult<crate::storage::blob::BlobVersion> {
+            self.inner.swap(key, body, expect).await
+        }
+        async fn get_versioned(
+            &self,
+            key: &str,
+        ) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)>
+        {
+            self.inner.get_versioned(key).await
+        }
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
+    }
+
+    // Physical reclamation releases capacity only for objects the store said
+    // are gone. An object whose removal was interrupted keeps its queue row
+    // and its charge, and a later pass finishes it -- which is what stops a
+    // partial batch answer from billing an account for bytes that exist or
+    // freeing capacity for bytes that also exist.
+    #[tokio::test]
+    async fn an_unconfirmed_deletion_keeps_its_queue_row_and_its_charge() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+        catalog
+            .create_document(&NewDocument {
+                slug: "rendered".into(),
+                storage_id: "storage-rendered".into(),
+                title: "Rendered".into(),
+                sha: String::new(),
+                created_at: "2026-01-01T00:00:00.000Z".into(),
+                published_at: "2026-01-01T00:00:00.000Z".into(),
+                updated_at: "2026-01-01T00:00:00.000Z".into(),
+                example: false,
+                owner_key: "owner".into(),
+                owner_id: None,
+                status: "active".into(),
+                size: 0,
+                counted_size: 0,
+                maintenance_reserved: 0,
+                last_auto_checkpoint_at: 0,
+                source_format: "markdown".into(),
+                main: "README.md".into(),
+            })
+            .expect("document");
+        for tree in ["tree-a", "tree-b"] {
+            catalog
+                .publish_rendering(&Rendering {
+                    slug: "rendered".into(),
+                    tree_sha: tree.into(),
+                    at: "2026-01-01T00:00:01Z".into(),
+                    backend: "test".into(),
+                    engine: "test".into(),
+                    release: String::new(),
+                    tools: String::new(),
+                    bytes: 100,
+                    synctex: false,
+                    synctex_bytes: 0,
+                })
+                .expect("rendering");
+            catalog
+                .retire_rendering("rendered", tree, 1, 1)
+                .expect("retire rendering");
+        }
+
+        let refused = "content/storage-rendered/renderings/tree-a/pdf".to_string();
+        let confirmed = "content/storage-rendered/renderings/tree-b/pdf".to_string();
+        // The charges these objects carry, stated directly so the release is
+        // measured rather than inferred from the publication path.
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "UPDATE documents SET size=200,counted_size=200 WHERE slug='rendered'",
+                        [],
+                    )
+                    .map_err(CatalogError::from)?;
+                connection
+                    .execute("UPDATE totals SET bytes=200 WHERE id=1", [])
+                    .map_err(CatalogError::from)?;
+                for key in ["tree-a", "tree-b"] {
+                    connection
+                        .execute(
+                            "INSERT OR REPLACE INTO object_accounting(storage_id,object_key,kind,bytes)
+                             VALUES('storage-rendered',
+                                    'content/storage-rendered/renderings/'||?1||'/pdf',
+                                    'rendering', 100)",
+                            [key],
+                        )
+                        .map_err(CatalogError::from)?;
+                }
+                Ok(())
+            })
+            .expect("accounting");
+
+        let directory = tempfile::tempdir().expect("blob directory");
+        let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        for key in [&refused, &confirmed] {
+            inner
+                .put(key, vec![0; 100], "application/pdf")
+                .await
+                .expect("object");
+        }
+        let refusing = Arc::new(PartlyRefusing {
+            inner: inner.clone(),
+            refuse: std::sync::Mutex::new(Some(refused.clone())),
+        });
+        let blobs: Arc<dyn BlobStore> = refusing.clone();
+        let worker = DeletionWorker::new(
+            catalog.clone(),
+            blobs.clone(),
+            DeletionLimits {
+                max_jobs: 10,
+                max_object_requests: 10,
+                max_read_bytes: 1_000,
+            },
+        )
+        .expect("worker");
+
+        let report = worker.run_once(2).await.expect("interrupted pass");
+        assert_eq!(report.objects_deferred, 1);
+        assert_eq!(report.objects_deleted, 3, "{report:?}");
+        let queued = |catalog: &Catalog| -> Vec<String> {
+            catalog
+                .with_connection(|connection| {
+                    let mut statement = connection
+                        .prepare("SELECT object_key FROM pending_deletes ORDER BY object_key")
+                        .map_err(CatalogError::from)?;
+                    let rows = statement
+                        .query_map([], |row| row.get::<_, String>(0))
+                        .map_err(CatalogError::from)?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(CatalogError::from)?;
+                    Ok(rows)
+                })
+                .expect("queue")
+        };
+        let charged = |catalog: &Catalog| -> (i64, i64) {
+            catalog
+                .with_connection(|connection| {
+                    connection
+                        .query_row(
+                            "SELECT counted_size,
+                                    (SELECT COUNT(*) FROM object_accounting
+                                     WHERE storage_id='storage-rendered')
+                             FROM documents WHERE slug='rendered'",
+                            [],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .map_err(CatalogError::from)
+                })
+                .expect("charges")
+        };
+        assert_eq!(
+            queued(&catalog),
+            vec![refused.clone()],
+            "an unconfirmed removal lost its queue row"
+        );
+        assert_eq!(
+            charged(&catalog),
+            (100, 1),
+            "capacity was released for an object nobody proved was gone"
+        );
+        assert!(
+            inner.get(&refused).await.is_ok(),
+            "the refused object should still be there"
+        );
+
+        // The interruption resolves; the same row is retried and completes.
+        *refusing.refuse.lock().expect("refusal") = None;
+        let report = worker.run_once(3).await.expect("retry pass");
+        assert_eq!((report.objects_deleted, report.objects_deferred), (1, 0));
+        assert!(queued(&catalog).is_empty());
+        assert_eq!(charged(&catalog), (0, 0));
+    }
 
     #[test]
     fn document_cleanup_never_accepts_shared_namespaces() {

@@ -37,6 +37,7 @@ mod room_figure_fixes;
 mod room_lifecycle_fixes;
 mod room_suggestion_fixes;
 mod s3;
+mod s3_operations;
 mod seed;
 mod serve;
 mod session;
