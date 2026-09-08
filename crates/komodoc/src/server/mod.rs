@@ -47,6 +47,7 @@ use crate::server::origins::{
 use crate::server::shell::{renderers, ShellFile};
 use crate::util::clean;
 
+mod assistant;
 mod chat;
 mod documents;
 mod figures;

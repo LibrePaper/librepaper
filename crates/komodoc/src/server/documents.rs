@@ -1421,6 +1421,7 @@ impl Server {
             held_format
         };
         let files = tree.files.clone();
+        let tree_sha = tree.digest();
         write_json(
             200,
             &json!({
@@ -1434,6 +1435,9 @@ impl Server {
                 "files": files,
                 "texts": texts,
                 "source": source,
+                // Canonical live tree identity for assistant anchors. This
+                // remains useful before a quiet checkpoint is written.
+                "sha": tree_sha,
                 "source_sha": crate::document::store::digest_of(&source),
                 "comments": comments,
                 "role": who.role.as_str(),

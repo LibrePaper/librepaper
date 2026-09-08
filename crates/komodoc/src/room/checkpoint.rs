@@ -345,7 +345,7 @@ impl Room {
                 .get()
                 .map(|catalog| {
                     catalog
-                        .checkpoint(&self.slug, &content_sha)
+                        .checkpoint_by_content_sha(&self.slug, &content_sha)
                         .map_err(|error| error.to_string())
                 })
                 .transpose()?

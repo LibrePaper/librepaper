@@ -7,6 +7,7 @@
     main = "",
     canOpen = () => false,
     onopen,
+    onask,
     // The two LaTeX-only additions: what actually produced the current
     // preview, and every backend that was tried to get there. Both come
     // straight off the compile result Reader.svelte kept as
@@ -53,6 +54,9 @@
                 {group.warning ? "Warning" : "Error"}
               </span>
               <p class="whitespace-pre-wrap break-words">{item.message}</p>
+              {#if onask}
+                <button type="button" class="btn btn-sm preset-tonal-surface mt-2" onclick={() => onask(item)}>Ask assistant</button>
+              {/if}
               {#if item.file || item.line > 0}
                 <div class="panel-meta mt-2 break-all">
                   {#if canOpen(item)}

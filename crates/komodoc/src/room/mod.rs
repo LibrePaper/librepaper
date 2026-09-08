@@ -112,6 +112,10 @@ pub struct Message {
     /// client never has to infer which request a frame belongs to.
     #[serde(default)]
     pub request_id: String,
+    /// The revision the caller inspected. Anchored comments preserve this
+    /// value so suggestion acceptance can use the existing stale path.
+    #[serde(default)]
+    pub revision: String,
 }
 
 /// What a room sends a connected socket: a text frame, or the order to close.
@@ -1812,24 +1816,7 @@ impl Room {
         link: &str,
         budget: Option<i64>,
     ) -> bool {
-        if address.is_empty() && link.is_empty() {
-            return true;
-        }
-        let hour = now_unix() / 3600;
-        let caller = if link.is_empty() {
-            format!("address:{}", rate_key(address))
-        } else {
-            format!("link:{link}")
-        };
-        let key = format!("{caller}:{hour}");
-        let suffix = format!(":{hour}");
-        state.rate.retain(|existing, _| existing.ends_with(&suffix));
-        let count = state.rate.get(&key).copied().unwrap_or(0);
-        if count >= budget.unwrap_or(self.config.rate_per_hour) {
-            return false;
-        }
-        state.rate.insert(key, count + 1);
-        true
+        self.rate_reserve(state, address, link, budget, 1)
     }
 
     /// The source as it stands, which is what a checkpoint is made of and what

@@ -524,7 +524,7 @@ link also changes source. Signing in supplies attribution and satisfies the
 deployment's sign-in policy; it does not give an agent using a read link the
 owner's editing rights.
 
-Komodoc ships two agent skills. Install them with:
+Komodoc ships three agent skills. Install them with:
 
 ```sh
 npx skills add vincentarelbundock/komodoc
@@ -539,6 +539,8 @@ That works for Claude Code, opencode, Cursor, and the other agents
   and edit a document from its link.
 - [`komodoc-pair`](skills/komodoc-pair/SKILL.md) — pair live in the sidebar
   chat.
+- [`komodoc-write`](skills/komodoc-write/SKILL.md) — proofread, tighten, rewrite,
+  and explain with anchored suggestions an editor reviews.
 
 Each explains how to install the single Komodoc binary locally and use its
 commands. Any agent that can run commands can use them:
@@ -570,6 +572,19 @@ The agent uses `komodoc agent chat watch` to receive messages and
 `komodoc agent chat post` to reply. It uses the same document commands above
 for comments and edits. No local service, pairing, provider adapter, or
 agent launcher is needed.
+
+Choose **Copy setup prompt** in the Agent panel and paste it into your agent's
+window. Connection settings show the access granted by its document link.
+You can draft while the agent is away; Send becomes available when it is
+listening. If the conversation ends, **Reconnect agent** gives you fresh
+instructions and keeps your draft. The conversation is not saved.
+
+Select a passage and choose **Ask assistant**, then pick Tighten, Rewrite or
+Explain and review the request before sending. Suggestions appear in Comments;
+**Review suggestions** takes you to the returned proposals. A proofreading
+pass groups proposals with Review next and Reject all. Accepting a suggestion
+uses the ordinary checkpoint and stale-change protection. Diagnostics also
+offer **Ask assistant**, carrying the error's original source context.
 
 The agent must be connected before either side can send. Messages are held only
 in the live clients and server memory: they are not saved, backed up, or replayed

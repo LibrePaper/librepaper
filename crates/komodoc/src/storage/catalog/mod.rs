@@ -27,7 +27,7 @@ mod journal;
 mod operations;
 mod room_edits;
 
-const LATEST_SCHEMA: i64 = 13;
+const LATEST_SCHEMA: i64 = 14;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
 const MIGRATIONS: &[(i64, &str)] = &[
     // Versions are applied in order; append new migrations at the end.
@@ -75,7 +75,11 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (
         13,
-        include_str!("../../../migrations/0013_checkpoint_attribution.sql"),
+        include_str!("../../../migrations/0013_comment_pass.sql"),
+    ),
+    (
+        14,
+        include_str!("../../../migrations/0014_checkpoint_attribution.sql"),
     ),
 ];
 
@@ -330,6 +334,7 @@ pub struct Comment {
     pub source_suffix: Option<String>,
     pub source_position: Option<i64>,
     pub proposed: Option<String>,
+    pub pass: String,
     pub outcome: String,
     pub accept_request: String,
     pub revision: String,

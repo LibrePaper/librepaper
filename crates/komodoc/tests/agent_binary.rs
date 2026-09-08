@@ -117,9 +117,14 @@ fn available_port() -> u16 {
 }
 
 async fn agent(args: &[&str]) -> CliOutput {
+    let mut command = vec!["agent"];
+    command.extend_from_slice(args);
+    cli(&command).await
+}
+
+async fn cli(args: &[&str]) -> CliOutput {
     let config_home = tempfile::tempdir().expect("agent config directory");
     let output = Command::new(env!("CARGO_BIN_EXE_komodoc"))
-        .arg("agent")
         .args(args)
         // A test process may have a real user's token in its environment. A
         // pasted link must still be the complete authority for this command.
@@ -789,4 +794,60 @@ async fn cli_annotation_retries_a_transient_response_with_same_submission_id() {
     assert_eq!(payloads.len(), 2);
     assert_eq!(payloads[0]["request_id"], "retry-comment");
     assert_eq!(payloads[0]["temp_id"], payloads[1]["temp_id"]);
+}
+
+#[tokio::test]
+async fn assistant_binary_anchor_and_partial_batch_preserve_review_contract() {
+    let server = LiveServer::start().await;
+    let document = publish_markdown(&server, "# Paper\n\nsame\n\nsame\n").await;
+    let slug = document["slug"].as_str().unwrap();
+    let key = mint_role(&server, slug, "commenter").await;
+    let link = server.link(slug, &key);
+    let read = agent(&["read", &link]).await;
+    assert_eq!(read.status, 0, "{read:?}");
+    let snapshot = json_stdout(&read);
+    let revision = snapshot["sha"]
+        .as_str()
+        .expect("live revision exposed by agent read");
+    let anchor =
+        json!({"path":"main.md","exact":"same","prefix":"\n\n","suffix":"\n","position":15});
+    let single = cli(&[
+        "suggest",
+        &link,
+        "--anchor",
+        &anchor.to_string(),
+        "--revision",
+        revision,
+        "--replace",
+        "changed",
+    ])
+    .await;
+    assert_eq!(single.status, 0, "{single:?}");
+    assert!(!single.stdout.trim().is_empty());
+    let directory = tempfile::tempdir().unwrap();
+    let batch_path = directory.path().join("batch.json");
+    std::fs::write(&batch_path, json!({"revision": revision,"items":[
+        {"anchor":anchor,"proposed":"another"},
+        {"anchor":{"path":"main.md","exact":"absent","prefix":"","suffix":"","position":0},"proposed":"missing"}
+    ]}).to_string()).unwrap();
+    let batch = cli(&["suggest", &link, "--batch", batch_path.to_str().unwrap()]).await;
+    assert_eq!(batch.status, 0, "{batch:?}");
+    let results = json_stdout(&batch);
+    assert!(!results["pass"].as_str().unwrap().is_empty());
+    assert_eq!(results["results"][0]["status"], "created");
+    assert_eq!(results["results"][1]["status"], "anchor-not-found");
+    let read_link = server.link(slug, &read_key_of(&document));
+    let denied = cli(&[
+        "suggest",
+        &read_link,
+        "--batch",
+        batch_path.to_str().unwrap(),
+    ])
+    .await;
+    assert_ne!(denied.status, 0, "{denied:?}");
+    let after = json_stdout(&agent(&["read", &link]).await);
+    assert_eq!(
+        after["sha"], snapshot["sha"],
+        "suggestions never edit source"
+    );
 }

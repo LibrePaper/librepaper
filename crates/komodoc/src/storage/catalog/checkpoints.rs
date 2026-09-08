@@ -241,6 +241,31 @@ impl Catalog {
         self.with_connection(|c| Self::checkpoint_on(c, slug, sha).map_err(CatalogError::from))
     }
 
+    /// Find a checkpoint by the immutable tree content it records. Restore
+    /// events have a fresh history-event SHA but retain the same tree SHA, so
+    /// callers that captured a live tree digest must be able to recover any
+    /// event carrying that content.
+    pub fn checkpoint_by_content_sha(
+        &self,
+        slug: &str,
+        content_sha: &str,
+    ) -> CatalogResult<Option<Checkpoint>> {
+        self.with_connection(|c| {
+            c.query_row(
+                "SELECT slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,
+                        size,label,git_commit,dirty,changed,by_account
+                 FROM checkpoints
+                 WHERE slug=?1 AND (sha=?2 OR tree_sha=?2)
+                 ORDER BY CASE WHEN sha=?2 THEN 0 ELSE 1 END, seq
+                 LIMIT 1",
+                params![slug, content_sha],
+                Self::read_checkpoint,
+            )
+            .optional()
+            .map_err(CatalogError::from)
+        })
+    }
+
     /// Resolve a short checkpoint prefix without loading the document's
     /// history. Two rows are sufficient to distinguish an exact match from
     /// an ambiguous prefix at the HTTP boundary.

@@ -10,6 +10,7 @@
   import * as history from "../lib/history.js";
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
+  import { diagnosticContext } from "../lib/assistant-review.js";
   import { attribution, itemsFor } from "../lib/redlines.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
@@ -377,6 +378,8 @@
 
   let tool = $state("commenting");
   let pending = $state(null);
+  let assistantRequest = $state(null);
+  let selectionRevision = Promise.resolve("");
   let bar = $state({ shown: false, left: 0, top: 0 });
 
   function showSelection(selector, rect) {
@@ -410,7 +413,42 @@
       source = null;
     }
     pending.source = source;
+    const captured = pending;
+    const tree = treeNow();
+    selectionRevision = viewing?.sha ? Promise.resolve(viewing.sha) : snapshotDigest(tree);
+    void selectionRevision.then((revision) => {
+      captured.revision = revision;
+    }).catch(() => { captured.revision = ""; });
     placeBar(rect);
+  }
+
+  async function askAssistant() {
+    if (!pending?.exact) return;
+    const captured = { ...pending, source: pending.source ? { ...pending.source } : null };
+    const revision = await selectionRevision.catch(() => "");
+    assistantRequest = { id: crypto.randomUUID(), selection: captured, revision };
+    bar = { ...bar, shown: false };
+    showPanel("agent");
+    if (width <= 760) showMobileView("sidebar");
+  }
+
+  function askDiagnostic(item) {
+    assistantRequest = { id: crypto.randomUUID(), diagnostic: { ...item }, revision: item.revision || "" };
+    showPanel("agent");
+    if (width <= 760) showMobileView("sidebar");
+  }
+
+  async function reviewAssistantResults({ suggestions: ids = [], pass = "" }) {
+    const matches = comments.filter((comment) => comment.motivation === "editing" &&
+      (ids.includes(comment.id) || (pass && comment.pass === pass)));
+    const first = matches.find((comment) => !comment.resolved) || matches[0];
+    if (!first) { toastProblem("These suggestions are no longer available."); return; }
+    showPanel("comments");
+    if (width <= 760) showMobileView("sidebar");
+    await tick();
+    const card = document.getElementById(`comment-${first.id}`);
+    card?.scrollIntoView({ block: "nearest" });
+    card?.querySelector("button")?.focus({ preventScroll: true });
   }
 
   function placeBar(rect) {
@@ -418,7 +456,7 @@
       const frameRect = document.querySelector(".viewport").getBoundingClientRect();
       bar = {
         shown: true,
-        left: Math.min(innerWidth - 105, frameRect.left + rect.left + (rect.right - rect.left) / 2 - 42),
+        left: Math.max(8, Math.min(innerWidth - 260, frameRect.left + rect.left + (rect.right - rect.left) / 2 - 125)),
         top: Math.max(65, frameRect.top + rect.top - 42),
       };
       return;
@@ -520,6 +558,17 @@
     suggestions.beginDeciding(comment, action);
     comments = comments;
     room?.send({ type: action, comment_id: comment.id, request_id: crypto.randomUUID() });
+  }
+
+  async function rejectConfirmed(comment) {
+    const response = await fetch(`/api/documents/${SLUG}/comments`, {
+      method: "POST", headers: { ...SHELL_HEADERS, ...keyHeaders(KEY), "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "reject", comment_id: comment.id, request_id: crypto.randomUUID() }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const result = await response.json();
+    if (!response.ok || result.type === "error") throw new Error(result.message || result.error || "Could not reject this suggestion.");
+    receive(result);
   }
 
   // A suggestion the server refused to apply because the passage it named no
@@ -1859,9 +1908,7 @@
       // Checkpoint SHAs are already canonical server tree digests. For live
       // text, hash this exact immutable tree, after asset bytes have arrived
       // so asset sizes agree with the server's TreeEntry values.
-      const renderingName = paged
-        ? snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}))
-        : null;
+      const renderingName = snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}));
       // A manual compile is asked for once; the flag is read here, at the
       // one call site that reaches the compiler, and cleared immediately so
       // it cannot linger onto an edit's ordinary debounced compile.
@@ -1884,6 +1931,7 @@
       }
       if (format === "latex") lastLatexResult = rendered;
       const { html, pdf, synctex, diagnostics: said, seconds, log, provenance } = rendered;
+      const contextualDiagnostics = (said || []).map((item) => diagnosticContext(item, tree, renderingName));
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
       // catches up. Navigation and main-file changes still invalidate it;
@@ -1917,7 +1965,7 @@
         }
         deliverPreview(latestPreview);
         if (snapshotSource === sourceGeneration) {
-          diagnosticPainter.rendered({ page: "", diagnostics: said || [] });
+          diagnosticPainter.rendered({ page: "", diagnostics: contextualDiagnostics });
         }
         return;
       }
@@ -1930,14 +1978,14 @@
         latestPreview = { kind: "html", html };
         deliverPreview(latestPreview);
         if (snapshotSource === sourceGeneration) {
-          diagnosticPainter.rendered({ page: html, diagnostics: said || [] });
+          diagnosticPainter.rendered({ page: html, diagnostics: contextualDiagnostics });
         }
         return;
       }
       // No page: the last one that compiled stays up, and what is said is that
       // it does not compile now, and where -- once the typing has stopped.
       if (snapshotSource !== sourceGeneration) return;
-      diagnosticPainter.rendered({ page: null, diagnostics: said || [] });
+      diagnosticPainter.rendered({ page: null, diagnostics: contextualDiagnostics });
       if (paged) {
         pdfFailure = true;
         // A log the parser found nothing in is still the only account there
@@ -2989,7 +3037,9 @@
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
       {:else if tab.id === "agent"}
-        <Agent slug={SLUG} link={linkFor(SLUG)} path={session?.paths?.get(openFile) || ""} selection={pending} />
+        <Agent slug={SLUG} link={linkFor(SLUG)} path={session?.paths?.get(openFile) || ""}
+               selection={pending} revision={pending?.revision || ""} request={assistantRequest}
+               {comments} onreview={reviewAssistantResults} />
       {:else if tab.id === "chat"}
         <Chat messages={liveChat} {connected} canPost={mayChat}
               onsend={sendLiveChat} />
@@ -3004,6 +3054,7 @@
       {:else if tab.id === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
+                     onask={askDiagnostic}
                      provenance={lastLatexResult?.provenance || null} attempts={lastLatexResult?.attempts || []} />
       {:else if tab.id === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
@@ -3053,6 +3104,7 @@
                   }}
                   onresolve={resolve} ondelete={askDelete} onreply={reply}
                   onaccept={(comment) => decideSuggestion(comment, "accept")}
+                  onrejectconfirmed={rejectConfirmed}
                   onreject={(comment) => decideSuggestion(comment, "reject")}>
           {#snippet pending()}
             <PendingAnnotations items={unconfirmed}
@@ -3182,15 +3234,17 @@
   {#if guide.shown}<div class="grip-guide" class:held={guide.held} style="left: {guide.left}px"></div>{/if}
 </main>
 
-{#if bar.shown && mayChat}
-  <button
+{#if bar.shown}
+  <div
     id="selectionbar"
-    class="btn btn-sm preset-filled-primary-500 shadow-lg"
-    style="display: block; left: {bar.left}px; top: {bar.top}px"
-    onclick={barClicked}
+    class="flex gap-1"
+    style="display: flex; left: {bar.left}px; top: {bar.top}px"
   >
-    {tool === "highlighting" ? "Highlight" : tool === "region" ? "Box" : tool === "editing" ? "Suggest" : "Comment"}
-  </button>
+    {#if mayChat}<button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={barClicked}>
+      {tool === "highlighting" ? "Highlight" : tool === "region" ? "Box" : tool === "editing" ? "Suggest" : "Comment"}
+    </button>{/if}
+    {#if pending?.exact}<button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={() => void askAssistant()}>Ask assistant</button>{/if}
+  </div>
 {/if}
 
 <!-- What a selection becomes, once the reader has said what to call it and

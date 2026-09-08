@@ -324,8 +324,18 @@ pub(crate) enum Command {
         /// A full slug, or one of the short handles `list` prints
         id: String,
         /// The passage to replace, found once in the file
-        #[arg(long, value_name = "TEXT")]
-        find: String,
+        #[arg(long, value_name = "TEXT", conflicts_with_all = ["anchor", "batch"])]
+        find: Option<String>,
+        /// A source anchor copied from an assistant context, as JSON. The
+        /// object is sent unchanged to the comments endpoint.
+        #[arg(long, value_name = "JSON", conflicts_with_all = ["find", "batch"], requires = "revision")]
+        anchor: Option<String>,
+        /// The revision on which the anchor was captured.
+        #[arg(long, value_name = "SHA", value_parser = crate::cli::revision_value)]
+        revision: Option<String>,
+        /// JSON file containing a batch of anchored proposals.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["find", "anchor", "replace", "note"])]
+        batch: Option<String>,
         /// What to put in its place; empty proposes deleting the passage
         #[arg(long, value_name = "TEXT", default_value = "")]
         replace: String,
@@ -677,23 +687,58 @@ pub async fn main() {
         Command::Suggest {
             id,
             find,
+            anchor,
+            revision,
+            batch,
             replace,
             path,
             note,
             key,
             server,
-        } => {
-            suggest_passage(
-                &id,
-                &find,
-                &replace,
-                path.unwrap_or_default(),
-                note.unwrap_or_default(),
-                server.unwrap_or_default(),
-                key.unwrap_or_default(),
-            )
-            .await
-        }
+        } => match batch {
+            Some(batch) => {
+                suggest_batch(
+                    &id,
+                    &batch,
+                    revision.unwrap_or_default(),
+                    server.unwrap_or_default(),
+                    key.unwrap_or_default(),
+                )
+                .await
+            }
+            None => match (find, anchor) {
+                (Some(find), None) => {
+                    let path = path.unwrap_or_default();
+                    let note = note.unwrap_or_default();
+                    let server = server.unwrap_or_default();
+                    let key = key.unwrap_or_default();
+                    match revision.unwrap_or_default() {
+                        revision if revision.is_empty() => {
+                            suggest_passage(&id, &find, &replace, path, note, server, key).await
+                        }
+                        revision => {
+                            suggest_passage_with_revision(
+                                &id, &find, &replace, path, note, revision, server, key,
+                            )
+                            .await
+                        }
+                    }
+                }
+                (None, Some(anchor)) => {
+                    suggest_anchor(
+                        &id,
+                        &anchor,
+                        &replace,
+                        note.unwrap_or_default(),
+                        revision.unwrap_or_default(),
+                        server.unwrap_or_default(),
+                        key.unwrap_or_default(),
+                    )
+                    .await
+                }
+                _ => die("provide exactly one of --find, --anchor, or --batch"),
+            },
+        },
         Command::Accept {
             id,
             comment_id,

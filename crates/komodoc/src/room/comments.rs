@@ -115,6 +115,10 @@ pub struct Comment {
     /// rather than a remark in its own right.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed: Option<String>,
+    /// Batch identifier for assistant suggestions. Empty means this comment
+    /// was created independently of a batch.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pass: String,
     /// `accepted` or `rejected` once an editor has decided a suggestion;
     /// empty while pending and on every comment that is not one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -130,11 +134,12 @@ pub struct Comment {
     #[serde(default)]
     pub resolved_at: Option<String>,
     /// The checkpoint this comment was made on: what the reviewer was actually
-    /// looking at. Set by the server, never by the client, from the checkpoint
-    /// taken the moment the comment arrived -- so a passage can be looked up
-    /// in the text as it was rather than reconstructed from one that has moved
-    /// on. Empty on a comment from before the field existed, which is read as
-    /// the oldest checkpoint the manifest still has.
+    /// looking at. Ordinary comments use the checkpoint taken the moment they
+    /// arrive, while anchored assistant comments preserve their captured
+    /// revision -- so a passage can be looked up in the text as it was rather
+    /// than reconstructed from one that has moved on. Empty on a comment from
+    /// before the field existed, which is read as the oldest checkpoint the
+    /// manifest still has.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub revision: String,
     /// The checkpoint current when it was resolved, beside `resolved_at`.
@@ -165,6 +170,37 @@ pub struct Comment {
     #[serde(default, skip_serializing)]
     pub accept_request: String,
 }
+
+pub(super) fn valid_revision(value: &str) -> bool {
+    value.is_empty()
+        || (value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+}
+
+/// One proposal in an assistant pass. Validation and placement happen while
+/// the room's restore lock and state snapshot are held by
+/// [`Room::apply_suggestion_batch`].
+#[derive(Clone, Debug)]
+pub struct BatchSuggestion {
+    pub source: SourceAnchor,
+    pub proposed: String,
+    pub body: String,
+}
+
+/// Caller identity and admission metadata for one assistant pass.
+pub struct BatchCaller<'a> {
+    pub address: &'a str,
+    pub author: &'a str,
+    pub via: &'a str,
+    pub budget: Option<i64>,
+    pub creator: &'a str,
+}
+
+/// Refusal of the entire assistant pass, before any annotation is written.
+#[derive(Clone, Debug)]
+pub struct BatchRefusal(pub String);
 
 /// What lands on disk, one object per document. Author is excluded from a
 /// comment's own JSON so that nothing marshaling one for a client leaks it by
@@ -375,6 +411,199 @@ pub(super) fn valid_source(
 }
 
 impl Room {
+    /// Adds assistant suggestions against one immutable text snapshot. Bad or
+    /// stale anchors are item results; admission and rate-limit failures are
+    /// whole-pass refusals so a caller cannot use a batch to bypass caps.
+    pub async fn apply_suggestion_batch(
+        &self,
+        revision: &str,
+        items: &[BatchSuggestion],
+        caller: BatchCaller<'_>,
+    ) -> Result<(String, Vec<Value>), BatchRefusal> {
+        if items.is_empty() {
+            return Err(BatchRefusal("a suggestion batch cannot be empty".into()));
+        }
+        if items.len() > 100 {
+            return Err(BatchRefusal(
+                "a suggestion batch may contain at most 100 items".into(),
+            ));
+        }
+        if !valid_revision(revision) || revision.is_empty() {
+            return Err(BatchRefusal("that revision is not valid".into()));
+        }
+        let _restore_writer = self.restore_write.lock().await;
+        if !self.hold().await {
+            return Err(BatchRefusal("this room is held by another server".into()));
+        }
+        let mut state = self.state.lock().await;
+        let initial_seq = state.seq;
+        let config = self.config.clone();
+        // The SQLite catalogue has the same hard ceiling as the default
+        // configuration. Check its durable count too, since a hot room cache
+        // may lag a previous process while the room lease is being acquired.
+        let existing_comments = if let Some(catalog) = self.catalog.get() {
+            catalog
+                .comments(&self.slug, None, 500)
+                .map_err(|error| BatchRefusal(error.to_string()))?
+                .len()
+        } else {
+            state.comments.len()
+        };
+        let max_comments = config.max_comments.min(500);
+        if existing_comments.saturating_add(items.len()) > max_comments {
+            return Err(BatchRefusal(
+                "this document has reached its comment limit".into(),
+            ));
+        }
+        if !self.rate_reserve(
+            &mut state,
+            caller.address,
+            caller.via,
+            caller.budget,
+            items.len() as i64,
+        ) {
+            return Err(BatchRefusal(
+                "too many comments from this caller; try later".into(),
+            ));
+        }
+        let texts = session::texts_of(&state.session.doc);
+        let pass = new_id();
+        let mut results = Vec::with_capacity(items.len());
+        let mut events = Vec::new();
+        let mut legacy_added = Vec::new();
+        for item in items {
+            let Some(source) = valid_source(&config, Some(&item.source)) else {
+                results.push(json!({"status":"refused","reason":"invalid anchor"}));
+                continue;
+            };
+            if source != item.source {
+                results.push(json!({"status":"refused","reason":"invalid anchor"}));
+                continue;
+            }
+            let Some(text) = texts.get(&source.path) else {
+                results.push(json!({"status":"anchor-not-found"}));
+                continue;
+            };
+            if locate_anchor(text, &source).is_none() {
+                results.push(json!({"status":"anchor-not-found"}));
+                continue;
+            }
+            let proposed: String = item
+                .proposed
+                .chars()
+                .filter(|character| {
+                    let code = *character as u32;
+                    !(code < 0x09
+                        || (0x0b..=0x0c).contains(&code)
+                        || (0x0e..=0x1f).contains(&code)
+                        || code == 0x7f)
+                })
+                .collect();
+            if proposed.chars().count() > config.caps.exact {
+                results.push(json!({"status":"refused","reason":"the suggestion is too long"}));
+                continue;
+            }
+            let body = clean(&item.body, config.caps.body).trim().to_string();
+            state.seq += 1;
+            let added = Comment {
+                id: new_id(),
+                seq: state.seq,
+                motivation: "editing".into(),
+                exact: source.exact.clone(),
+                prefix: source.prefix.clone(),
+                suffix: source.suffix.clone(),
+                position: source.position,
+                region: None,
+                source: Some(source),
+                proposed: Some(proposed),
+                pass: pass.clone(),
+                outcome: String::new(),
+                body,
+                creator: caller.creator.to_string(),
+                created: timestamp(),
+                resolved: false,
+                resolved_at: None,
+                revision: revision.to_string(),
+                resolved_in: String::new(),
+                replies: Vec::new(),
+                author: caller.author.to_string(),
+                via: caller.via.to_string(),
+                accept_request: String::new(),
+            };
+            let persisted: Result<i64, String> = if let Some(catalog) = self.catalog.get() {
+                catalog_comment_row(&self.slug, &added)
+                    .map_err(|error| error.to_string())
+                    .and_then(|row| {
+                        catalog
+                            .insert_comment(&row)
+                            .map(|row| row.seq)
+                            .map_err(|error| error.to_string())
+                    })
+            } else {
+                Ok(added.seq)
+            };
+            match persisted {
+                Ok(seq) => {
+                    let mut stored = added;
+                    stored.seq = seq;
+                    state.seq = state.seq.max(seq);
+                    state.comments.push(stored.clone());
+                    let id = stored.id.clone();
+                    events.push(json!({"type":"comment","comment":stored}));
+                    results.push(json!({"status":"created","id":id}));
+                    legacy_added.push(stored);
+                }
+                Err(error) => {
+                    state.seq -= 1;
+                    results.push(json!({"status":"refused","reason":error}));
+                }
+            }
+        }
+        if self.catalog.get().is_none() && !legacy_added.is_empty() {
+            if let Err(error) = self.save(&mut state).await {
+                for added in &legacy_added {
+                    state.comments.retain(|item| item.id != added.id);
+                }
+                state.seq = initial_seq;
+                return Err(BatchRefusal(error));
+            }
+        }
+        drop(state);
+        for event in events {
+            let shared = self.comment_event_for(&event, "", false).await;
+            self.broadcast(&shared).await;
+        }
+        Ok((pass, results))
+    }
+
+    pub(super) fn rate_reserve(
+        &self,
+        state: &mut RoomState,
+        address: &str,
+        link: &str,
+        budget: Option<i64>,
+        amount: i64,
+    ) -> bool {
+        if address.is_empty() && link.is_empty() {
+            return true;
+        }
+        let hour = now_unix() / 3600;
+        let caller = if link.is_empty() {
+            format!("address:{}", rate_key(address))
+        } else {
+            format!("link:{link}")
+        };
+        let key = format!("{caller}:{hour}");
+        let suffix = format!(":{hour}");
+        state.rate.retain(|existing, _| existing.ends_with(&suffix));
+        let count = state.rate.get(&key).copied().unwrap_or(0);
+        if count.saturating_add(amount) > budget.unwrap_or(self.config.rate_per_hour) {
+            return false;
+        }
+        state.rate.insert(key, count + amount);
+        true
+    }
+
     /// Adds the same caller-specific controls to a newly-created comment
     /// event that a hello or REST snapshot carries. The shared broadcast can
     /// use an empty author (so every other caller sees `mine: false`), while
@@ -812,6 +1041,7 @@ impl Room {
                 region: raw_region,
                 source: raw_source,
                 proposed: raw_proposed,
+                revision: supplied_revision,
                 temp_id,
                 request_id,
             } => {
@@ -883,6 +1113,30 @@ impl Room {
                 } else {
                     None
                 };
+                if !valid_revision(&supplied_revision) {
+                    return fail("that revision is not valid");
+                }
+                let source = if spot.is_none() {
+                    match raw_source.as_ref() {
+                        Some(raw) => match valid_source(&config, Some(raw)) {
+                            Some(cleaned) if cleaned == *raw || supplied_revision.is_empty() => {
+                                Some(cleaned)
+                            }
+                            Some(_) => return fail("that source anchor is not valid"),
+                            None if supplied_revision.is_empty() => None,
+                            None => return fail("that source anchor is not valid"),
+                        },
+                        None if supplied_revision.is_empty() => None,
+                        None => return fail("that source anchor is not valid"),
+                    }
+                } else {
+                    None
+                };
+                let revision = if source.is_some() && !supplied_revision.is_empty() {
+                    supplied_revision
+                } else {
+                    current.clone()
+                };
                 state.seq += 1;
                 // The selector is the durable anchor. Offsets are recomputed in
                 // the reader against whatever version of the document is on
@@ -897,10 +1151,7 @@ impl Room {
                     position: position.filter(|p| *p >= 0),
                     // A region comment is anchored to the figure; the source
                     // it might otherwise have carried is not kept.
-                    source: spot
-                        .is_none()
-                        .then(|| valid_source(&config, raw_source.as_ref()))
-                        .flatten(),
+                    source,
                     region: spot,
                     proposed,
                     outcome: String::new(),
@@ -909,8 +1160,9 @@ impl Room {
                     created: timestamp(),
                     resolved: false,
                     resolved_at: None,
-                    revision: current,
+                    revision,
                     resolved_in: String::new(),
+                    pass: String::new(),
                     replies: Vec::new(),
                     author: author.to_string(),
                     via: via.to_string(),

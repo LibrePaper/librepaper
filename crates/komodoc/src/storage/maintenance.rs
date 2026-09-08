@@ -1639,6 +1639,7 @@ mod tests {
                 outcome: String::new(),
                 accept_request: String::new(),
                 revision: String::new(),
+                pass: String::new(),
                 resolved: false,
                 resolved_at: None,
                 resolved_in: String::new(),

@@ -4,7 +4,7 @@
 use super::*;
 use crate::room::Outgoing;
 use rand::RngCore;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::{mpsc, Mutex};
@@ -234,7 +234,7 @@ impl Server {
                     .recheck_chat_caller(slug, &headers, arrival, query.as_deref())
                     .await
                 {
-                    return response;
+                    return *response;
                 }
                 self.reauthorize_chat_recipient(slug, id, &post.role).await;
                 self.chat.post(slug, id, &token, None, post).await
@@ -244,7 +244,7 @@ impl Server {
                     .recheck_chat_caller(slug, &headers, arrival, query.as_deref())
                     .await
                 {
-                    return response;
+                    return *response;
                 }
                 self.chat.delete(slug, id, &token).await
             }
@@ -281,20 +281,21 @@ impl Server {
         headers: &HeaderMap,
         arrival: &Arrival,
         query: Option<&str>,
-    ) -> Result<(), Reply> {
+    ) -> Result<(), Box<Reply>> {
         let entry = self
             .checked_entry(slug)
-            .await?
-            .ok_or_else(|| write_json(404, &json!({"error":"not found"})))?;
+            .await
+            .map_err(Box::new)?
+            .ok_or_else(|| Box::new(write_json(404, &json!({"error":"not found"}))))?;
         let who = self.viewer(&entry, headers, arrival, query).await;
         if who.auth_failed {
-            return Err(write_json(
+            return Err(Box::new(write_json(
                 401,
                 &json!({"error":"authentication expired or was revoked"}),
-            ));
+            )));
         }
         if !self.may_read(&entry, &who) {
-            return Err(write_json(404, &json!({"error":"not found"})));
+            return Err(Box::new(write_json(404, &json!({"error":"not found"}))));
         }
         Ok(())
     }
@@ -329,6 +330,12 @@ struct Peer {
     receives: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Task {
+    pub kind: String,
+    pub scope: String,
+}
+
 #[derive(Deserialize)]
 pub struct Post {
     pub id: String,
@@ -337,6 +344,47 @@ pub struct Post {
     pub text: String,
     #[serde(default)]
     pub context: Value,
+    #[serde(default)]
+    pub task: Option<Task>,
+}
+
+fn valid_task(task: Option<&Task>) -> bool {
+    task.is_none_or(|task| {
+        matches!(
+            task.kind.as_str(),
+            "proofread" | "tighten" | "rewrite" | "explain" | "outline" | "respond"
+        ) && matches!(task.scope.as_str(), "selection" | "file" | "document")
+            && task.kind.len() <= 32
+            && task.scope.len() <= 32
+    })
+}
+
+fn valid_results(context: &Value) -> bool {
+    let Some(results) = context.get("results") else {
+        return true;
+    };
+    let Some(results) = results.as_object() else {
+        return false;
+    };
+    if let Some(suggestions) = results.get("suggestions") {
+        let Some(suggestions) = suggestions.as_array() else {
+            return false;
+        };
+        if suggestions.len() > 100
+            || suggestions.iter().any(|id| {
+                id.as_str().is_none_or(|id| {
+                    id.is_empty() || id.len() > 128 || id.chars().any(char::is_control)
+                })
+            })
+        {
+            return false;
+        }
+    }
+    results.get("pass").is_none_or(|pass| {
+        pass.as_str().is_some_and(|pass| {
+            !pass.is_empty() && pass.len() <= 128 && !pass.chars().any(char::is_control)
+        })
+    })
 }
 
 pub type Error = (u16, &'static str);
@@ -583,7 +631,9 @@ impl Hub {
             || !matches!(post.role.as_str(), "user" | "agent")
             || post.text.trim().is_empty()
             || post.text.len() > 32 * 1024
-            || serde_json::to_vec(&post.context)
+            || !valid_task(post.task.as_ref())
+            || !valid_results(&post.context)
+            || serde_json::to_vec(&(post.task.as_ref(), &post.context))
                 .map_err(|_| (400, "bad context"))?
                 .len()
                 > 16 * 1024
@@ -602,7 +652,11 @@ impl Hub {
         } else {
             (&channel.agent, &channel.browser)
         };
-        let payload = json!({"type":"message","message":{"id":post.id,"role":post.role,"text":post.text,"context":post.context}});
+        let mut payload = json!({"type":"message","message":{"id":post.id,"role":post.role,"text":post.text,"context":post.context}});
+        if let Some(task) = &post.task {
+            payload["message"]["task"] =
+                serde_json::to_value(task).map_err(|_| (400, "bad task"))?;
+        }
         let digest = crate::document::store::digest_of(&payload.to_string());
         let request = format!("{}:{}", post.role, post.id);
         let duplicate = channel
@@ -805,6 +859,7 @@ mod tests {
             role: "user".into(),
             text: "hi".into(),
             context: Value::Null,
+            task: None,
         }
     }
     #[tokio::test]
@@ -934,6 +989,57 @@ mod tests {
         assert_eq!(
             hub.post("paper", id, token, None, post()).await.unwrap()["id"],
             "one"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_and_result_metadata_are_relayed_and_bounded() {
+        let hub = Hub::default();
+        let channel = hub.create("paper").await.unwrap();
+        let id = channel["id"].as_str().unwrap();
+        let token = channel["token"].as_str().unwrap();
+        let (browser, _browser_rx) = mpsc::channel(16);
+        let (agent, mut agent_rx) = mpsc::channel(16);
+        hub.attach("paper", id, token, "user", true, 1, browser)
+            .await
+            .unwrap();
+        hub.attach("paper", id, token, "agent", true, 2, agent)
+            .await
+            .unwrap();
+        let mut message = post();
+        message.task = Some(Task {
+            kind: "tighten".into(),
+            scope: "selection".into(),
+        });
+        message.context = json!({
+            "results": {"suggestions": ["suggestion-1"], "pass": "pass-1"}
+        });
+        hub.post("paper", id, token, Some(1), message)
+            .await
+            .unwrap();
+        let relayed = loop {
+            let Some(Outgoing::Text(text)) = agent_rx.recv().await else {
+                panic!("agent channel closed")
+            };
+            let value: Value = serde_json::from_str(&text).unwrap();
+            if value["type"] == "message" {
+                break value;
+            }
+        };
+        assert_eq!(relayed["message"]["task"]["kind"], "tighten");
+        assert_eq!(relayed["message"]["context"]["results"]["pass"], "pass-1");
+
+        let mut invalid = post();
+        invalid.task = Some(Task {
+            kind: "unknown".into(),
+            scope: "selection".into(),
+        });
+        assert_eq!(
+            hub.post("paper", id, token, Some(1), invalid)
+                .await
+                .unwrap_err()
+                .0,
+            400
         );
     }
 }
