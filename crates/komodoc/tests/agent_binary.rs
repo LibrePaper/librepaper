@@ -6,11 +6,19 @@
 //! private test harness can coordinate Yjs replicas and restarts.
 
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::ws::{Message as WsMessage, WebSocketUpgrade};
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
 
 #[derive(Debug)]
 struct CliOutput {
@@ -208,6 +216,120 @@ fn read_key_of(document: &Value) -> String {
         .split_once("#k=")
         .map(|(_, key)| key.to_string())
         .expect("published document has a read link")
+}
+
+#[derive(Clone)]
+struct MockPeerState {
+    source: String,
+    state_update: String,
+    annotation_attempts: Arc<AtomicUsize>,
+    annotation_payloads: Arc<Mutex<Vec<Value>>>,
+}
+
+async fn mock_document(State(_state): State<Arc<MockPeerState>>) -> Json<Value> {
+    Json(json!({
+        "slug": "mock",
+        "role": "owner",
+        "can_read": true,
+        "can_comment": true,
+        "can_edit": true,
+        "can_resolve": true,
+        "can_delete": true,
+        "can_checkpoint": true,
+    }))
+}
+
+async fn mock_snapshot(State(state): State<Arc<MockPeerState>>) -> Json<Value> {
+    let source = state.source.clone();
+    Json(json!({
+        "version": 1,
+        "protocol": "komodoc.snapshot.v1",
+        "slug": "mock",
+        "source": source,
+        "source_sha": komodoc::peer::source_sha(&state.source),
+        "format": "markdown",
+        "comments": [],
+        "texts": {},
+    }))
+}
+
+async fn mock_comments(
+    State(state): State<Arc<MockPeerState>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    state.annotation_payloads.lock().await.push(payload);
+    let attempt = state.annotation_attempts.fetch_add(1, Ordering::SeqCst);
+    if attempt == 0 {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"try again"})),
+        );
+    }
+    (axum::http::StatusCode::OK, Json(json!({"ok":true})))
+}
+
+async fn mock_socket(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<MockPeerState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |mut socket| async move {
+        while let Some(Ok(message)) = socket.recv().await {
+            let WsMessage::Text(raw) = message else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
+            match value["type"].as_str().unwrap_or_default() {
+                "y-open" => {
+                    let response = json!({
+                        "type": "y-state",
+                        "update": state.state_update.clone(),
+                        "version": 1,
+                        "protocol": "komodoc.room.v1",
+                    });
+                    let _ = socket
+                        .send(WsMessage::Text(response.to_string().into()))
+                        .await;
+                }
+                "y-update-end" => {
+                    let _ = socket.send(WsMessage::Close(None)).await;
+                    return;
+                }
+                _ => {}
+            }
+        }
+    })
+}
+
+async fn start_mock_peer_server() -> (String, Arc<MockPeerState>, tokio::task::JoinHandle<()>) {
+    let source = "original".to_string();
+    let document = komodoc::session::new_doc();
+    komodoc::session::replace_text(&document, &source, "main.md");
+    use base64::Engine;
+    let state = Arc::new(MockPeerState {
+        source,
+        state_update: base64::engine::general_purpose::STANDARD
+            .encode(komodoc::session::encode_state(&document)),
+        annotation_attempts: Arc::new(AtomicUsize::new(0)),
+        annotation_payloads: Arc::new(Mutex::new(Vec::new())),
+    });
+    let router = Router::new()
+        .route("/api/documents/mock", get(mock_document))
+        .route("/api/documents/mock/snapshot", get(mock_snapshot))
+        .route("/api/documents/mock/comments", post(mock_comments))
+        .route("/ws/mock", get(mock_socket))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock peer listener");
+    let address = listener.local_addr().expect("mock peer address");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("mock peer server");
+    });
+    (format!("http://{address}"), state, handle)
 }
 
 #[tokio::test]
@@ -509,4 +631,162 @@ async fn cli_mailbox_watches_user_messages_posts_idempotently_and_checkpoints_ov
     let checkpoint = agent(&["checkpoint", &server.link(&slug, &editor)]).await;
     assert_eq!(checkpoint.status, 0, "checkpoint failed: {checkpoint:?}");
     assert_eq!(json_stdout(&checkpoint)["value"]["durable"], true);
+}
+
+#[tokio::test]
+async fn cli_posts_chat_reply_while_watch_is_connected() {
+    let server = LiveServer::start().await;
+    let document = publish_markdown(&server, "# Concurrent chat\n").await;
+    let slug = text(&document, "slug");
+    let reader = read_key_of(&document);
+    let link = server.link(&slug, &reader);
+    let created = agent(&["chat", "create", &link]).await;
+    assert_eq!(created.status, 0, "create failed: {created:?}");
+    let credentials = json_stdout(&created);
+    let id = credentials["id"].as_str().expect("conversation id");
+    let token = credentials["token"].as_str().expect("conversation token");
+
+    let config_home = tempfile::tempdir().expect("watch config directory");
+    let watch = Command::new(env!("CARGO_BIN_EXE_komodoc"))
+        .args([
+            "agent",
+            "chat",
+            "watch",
+            &link,
+            "--conversation",
+            id,
+            "--token",
+            token,
+            "--timeout",
+            "10",
+        ])
+        .env_remove("KOMODOC_TOKEN")
+        .env_remove("KOMODOC_SERVER")
+        .env_remove("KOMODOC_CHAT_TOKEN")
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch subprocess starts");
+
+    // Give the watch enough time to claim the sole agent participant slot.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let posted = agent(&[
+        "chat",
+        "post",
+        &link,
+        "--conversation",
+        id,
+        "--token",
+        token,
+        "--message",
+        "Reply while watching",
+        "--request-id",
+        "concurrent-reply",
+    ])
+    .await;
+    assert_eq!(posted.status, 0, "concurrent post failed: {posted:?}");
+
+    let client = reqwest::Client::new();
+    let sent = client
+        .post(format!("{}/api/documents/{slug}/chat/{id}", server.base))
+        .header("x-komodoc-client", "1")
+        .header("x-komodoc-automation", "1")
+        .header("x-komodoc-key", &reader)
+        .header("x-komodoc-chat-token", token)
+        .json(&json!({"id":"user-concurrent","role":"user","text":"Wake the watch"}))
+        .send()
+        .await
+        .expect("send user message");
+    assert!(sent.status().is_success(), "user message failed: {sent:?}");
+
+    let output = tokio::time::timeout(Duration::from_secs(5), watch.wait_with_output())
+        .await
+        .expect("watch exits after user message")
+        .expect("watch output");
+    assert!(output.status.success(), "watch failed: {output:?}");
+    let inbox: Value = serde_json::from_slice(&output.stdout).expect("watch JSON");
+    assert_eq!(inbox["messages"][0]["text"], "Wake the watch");
+}
+
+#[tokio::test]
+async fn cli_edit_chunks_an_large_update() {
+    let server = LiveServer::start().await;
+    let old = format!("# Large\n\n{}", "a".repeat(800_000));
+    let document = publish_markdown(&server, &old).await;
+    let slug = text(&document, "slug");
+    let editor = mint_role(&server, &slug, "editor").await;
+    let link = server.link(&slug, &editor);
+    let replacement = tempfile::NamedTempFile::new().expect("replacement file");
+    let new_source = format!("# Large\n\n{}", "b".repeat(800_000));
+    std::fs::write(replacement.path(), &new_source).expect("write large replacement");
+    let replacement_path = replacement
+        .path()
+        .to_str()
+        .expect("replacement path is UTF-8");
+    let edited = agent(&[
+        "edit",
+        &link,
+        "--file",
+        replacement_path,
+        "--expected-sha",
+        &komodoc::peer::source_sha(&old),
+    ])
+    .await;
+    assert_eq!(edited.status, 0, "large edit failed: {edited:?}");
+    assert_eq!(json_stdout(&edited)["outcome"], "success");
+}
+
+#[tokio::test]
+async fn cli_edit_reports_unknown_when_socket_closes_after_submission() {
+    let (server, _state, handle) = start_mock_peer_server().await;
+    let expected = komodoc::peer::source_sha("original");
+    let edited = agent(&[
+        "edit",
+        &format!("{server}/docs/mock"),
+        "--source",
+        "changed",
+        "--expected-sha",
+        &expected,
+    ])
+    .await;
+    handle.abort();
+    assert_ne!(edited.status, 0, "unknown edit unexpectedly succeeded");
+    let result = json_stdout(&edited);
+    assert_eq!(result["outcome"], "unknown");
+    assert_eq!(result["status"], 504);
+    assert_eq!(result["value"]["expected_sha"], expected);
+    assert_eq!(
+        result["value"]["submitted_sha"],
+        komodoc::peer::source_sha("changed")
+    );
+    assert!(result["value"]["reason"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn cli_annotation_retries_a_transient_response_with_same_submission_id() {
+    let (server, state, handle) = start_mock_peer_server().await;
+    let commented = agent(&[
+        "comment",
+        &format!("{server}/docs/mock"),
+        "--body",
+        "Please check this.",
+        "--exact",
+        "original",
+        "--request-id",
+        "retry-comment",
+    ])
+    .await;
+    handle.abort();
+    assert_eq!(
+        commented.status, 0,
+        "annotation retry failed: {commented:?}"
+    );
+    assert_eq!(json_stdout(&commented)["outcome"], "success");
+    assert_eq!(state.annotation_attempts.load(Ordering::SeqCst), 2);
+    let payloads = state.annotation_payloads.lock().await;
+    assert_eq!(payloads.len(), 2);
+    assert_eq!(payloads[0]["request_id"], "retry-comment");
+    assert_eq!(payloads[0]["temp_id"], payloads[1]["temp_id"]);
 }

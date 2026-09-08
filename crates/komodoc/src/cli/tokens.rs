@@ -46,10 +46,40 @@ pub(crate) fn tokens_path(base: &Path) -> PathBuf {
 /// All cached tokens, keyed by origin. A missing or unreadable file is the
 /// same as no tokens cached yet, which is not worth failing a command over.
 pub(super) fn load_tokens(base: &Path) -> std::collections::HashMap<String, String> {
-    std::fs::read_to_string(tokens_path(base))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+    read_tokens(base).unwrap_or_default()
+}
+
+fn read_tokens(base: &Path) -> Result<std::collections::HashMap<String, String>, String> {
+    let path = tokens_path(base);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(err) => return Err(format!("could not read {}: {err}", path.display())),
+    };
+    serde_json::from_str(&raw)
+        .map_err(|err| format!("invalid token cache {}: {err}", path.display()))
+}
+
+// Never unlink this lock: replacing its inode would let two processes lock
+// different files. The operating system releases the lock even after a crash.
+fn lock_tokens(base: &Path) -> Result<std::fs::File, String> {
+    let directory = komodoc_dir(base);
+    std::fs::create_dir_all(&directory)
+        .map_err(|err| format!("could not create {}: {err}", directory.display()))?;
+    let path = directory.join("tokens.lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&path)
+        .map_err(|err| format!("could not open {}: {err}", path.display()))?;
+    fs2::FileExt::lock_exclusive(&file)
+        .map_err(|err| format!("could not lock {}: {err}", path.display()))?;
+    Ok(file)
 }
 
 pub(super) fn save_tokens(
@@ -99,8 +129,9 @@ pub(crate) fn store_token_at(
     default_server: &str,
     token: &str,
 ) -> Result<(), String> {
+    let _lock = lock_tokens(base)?;
     let origin = origin_of(server);
-    let mut tokens = load_tokens(base);
+    let mut tokens = read_tokens(base)?;
     tokens.insert(origin.clone(), token.to_string());
     save_tokens(base, &tokens)?;
     if origin == origin_of(default_server) {
@@ -125,12 +156,40 @@ pub(crate) fn store_token_at(
 /// prefix and verifies each its own way.
 pub fn stored_token_for(server: &str) -> String {
     let env_token = std::env::var("KOMODOC_TOKEN").ok();
+    if let Some(token) = env_token
+        .as_deref()
+        .filter(|token| !token.trim().is_empty())
+    {
+        return token.trim().to_string();
+    }
     stored_token_with(
         &config_home(),
         server,
         &default_server(),
         env_token.as_deref(),
     )
+}
+
+/// Pasted automation links cannot select the destination of an ambient bearer.
+/// An environment token is used only for the explicitly configured origin;
+/// other deployments may still use their own origin-scoped cached sign-in.
+pub(crate) fn stored_agent_token_for(server: &str) -> String {
+    stored_agent_token_with(
+        &config_home(),
+        server,
+        &default_server(),
+        std::env::var("KOMODOC_TOKEN").ok().as_deref(),
+    )
+}
+
+fn stored_agent_token_with(
+    base: &Path,
+    server: &str,
+    configured: &str,
+    env: Option<&str>,
+) -> String {
+    let matches = !configured.is_empty() && origin_of(server) == origin_of(configured);
+    stored_token_with(base, server, configured, if matches { env } else { None })
 }
 
 /// The pure core of `stored_token_for`: everything above it does is read the
@@ -186,7 +245,11 @@ pub async fn login(server_flag: String) {
 
     let base = config_home();
     store_token_at(&base, &server, &default_server(), &token).unwrap_or_else(|err| die(err));
-    println!("signed in as {who}");
+    if who.is_empty() {
+        println!("signed in");
+    } else {
+        println!("signed in as {who}");
+    }
     eprintln!("  token stored in {}", tokens_path(&base).display());
 }
 
@@ -196,29 +259,42 @@ pub async fn login(server_flag: String) {
 /// one. A bearer token's file permissions are the whole of its protection at
 /// rest, so a failure to set them is reported rather than swallowed.
 pub(super) fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+    let temporary = parent.join(format!(".komodoc-write-{}", new_id()));
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
     let mut file = options
-        .open(path)
+        .open(&temporary)
         .map_err(|err| format!("could not create {}: {err}", path.display()))?;
+    let _cleanup = Cleanup(temporary.clone());
     use std::io::Write;
     file.write_all(bytes)
         .map_err(|err| format!("could not write {}: {err}", path.display()))?;
+    file.sync_all()
+        .map_err(|err| format!("could not sync {}: {err}", path.display()))?;
+    drop(file);
+    std::fs::rename(&temporary, path)
+        .map_err(|err| format!("could not replace {}: {err}", path.display()))?;
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|err| format!("could not set permissions on {}: {err}", path.display()))?;
-    }
+    std::fs::File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|err| format!("could not sync {}: {err}", parent.display()))?;
     Ok(())
 }
 
@@ -234,18 +310,27 @@ pub fn write_token(path: &Path, token: &str) -> Result<(), String> {
 /// of its own, so there is no single origin to clear selectively.
 pub fn logout() {
     let base = config_home();
-    let cleared_scoped = std::fs::remove_file(tokens_path(&base)).is_ok();
-    let legacy = legacy_token_path(&base);
-    let cleared_legacy = match std::fs::remove_file(&legacy) {
-        Ok(()) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-        Err(err) => die(format!("could not remove {}: {err}", legacy.display())),
-    };
-    if cleared_scoped || cleared_legacy {
+    if logout_at(&base).unwrap_or_else(|err| die(err)) {
         println!("signed out");
     } else {
         println!("not signed in");
     }
+}
+
+fn logout_at(base: &Path) -> Result<bool, String> {
+    if !komodoc_dir(base).exists() {
+        return Ok(false);
+    }
+    let _lock = lock_tokens(base)?;
+    let mut cleared = false;
+    for path in [tokens_path(base), legacy_token_path(base)] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => cleared = true,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("could not remove {}: {err}", path.display())),
+        }
+    }
+    Ok(cleared)
 }
 
 pub struct DeviceCode {
@@ -319,4 +404,97 @@ pub async fn poll_for_token(server: &str, code: &DeviceCode) -> Result<String, S
         }
     }
     Err("the code expired before it was approved".into())
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn automation_environment_token_requires_configured_origin() {
+        let base = tempfile::tempdir().unwrap();
+        store_token_at(
+            base.path(),
+            "https://other.test",
+            "https://home.test",
+            "other-cache",
+        )
+        .unwrap();
+        assert_eq!(
+            stored_agent_token_with(
+                base.path(),
+                "https://home.test:443",
+                "https://home.test/",
+                Some("explicit")
+            ),
+            "explicit"
+        );
+        assert_eq!(
+            stored_agent_token_with(
+                base.path(),
+                "https://other.test",
+                "https://home.test",
+                Some("explicit")
+            ),
+            "other-cache"
+        );
+        assert_eq!(
+            stored_agent_token_with(base.path(), "https://unknown.test", "", Some("explicit")),
+            ""
+        );
+    }
+
+    #[test]
+    fn corrupt_cache_is_preserved_when_login_writes() {
+        let base = tempfile::tempdir().unwrap();
+        write_token(&tokens_path(base.path()), "{broken").unwrap();
+        assert!(store_token_at(base.path(), "https://new.test", "", "new").is_err());
+        assert_eq!(
+            std::fs::read_to_string(tokens_path(base.path())).unwrap(),
+            "{broken\n"
+        );
+    }
+
+    #[test]
+    fn concurrent_logins_keep_every_origin() {
+        let base = tempfile::tempdir().unwrap();
+        std::thread::scope(|scope| {
+            for n in 0..8 {
+                let base = base.path();
+                scope.spawn(move || {
+                    store_token_at(base, &format!("https://host{n}.test"), "", "token").unwrap()
+                });
+            }
+        });
+        assert_eq!(read_tokens(base.path()).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn logout_reports_failure_to_remove_a_cache() {
+        let base = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tokens_path(base.path())).unwrap();
+        assert!(logout_at(base.path()).is_err());
+        assert!(tokens_path(base.path()).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_a_loose_file_does_not_write_secrets_into_its_inode() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempfile::tempdir().unwrap();
+        let path = base.path().join("token");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut previously_opened = std::fs::File::open(&path).unwrap();
+        write_private_file(&path, b"new-private-token").unwrap();
+        let mut old_contents = String::new();
+        previously_opened.read_to_string(&mut old_contents).unwrap();
+        assert_eq!(old_contents, "old");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new-private-token");
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }

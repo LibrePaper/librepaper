@@ -39,9 +39,8 @@ pub use tokens::*;
 #[derive(Parser)]
 #[command(name = "komodoc", version = crate::VERSION, about = "host HTML, markdown and typst documents that readers can annotate", long_about = None)]
 #[command(
-    after_help = "Serving needs a GitHub OAuth app (github.com/settings/developers) and
---publishers saying who may publish. Publishing needs neither,
-only the server and a sign-in:
+    after_help = "Configure sign-in providers and publishing permissions on the server.
+To sign in from this terminal:
 
     export KOMODOC_SERVER=https://komodoc.example.org
     komodoc login"
@@ -65,7 +64,7 @@ pub(crate) struct ServiceFlags {
     /// Who may publish: a GitHub login, a comma-separated list, 'any', or 'anyone'
     #[arg(long, value_name = "WHO")]
     publishers: Option<String>,
-    /// Who may comment: 'anyone' (default), 'any' GitHub account, or a list of logins
+    /// Who may comment: 'anyone' (default), 'any' signed-in account, or a list of accounts
     #[arg(long, value_name = "WHO")]
     commenters: Option<String>,
     /// No public front page: the examples are listed only to their owner

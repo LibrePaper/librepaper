@@ -176,23 +176,17 @@ pub async fn export_document(
     let source = format!("{server}/docs/{slug}");
     let config = Configuration::default();
 
-    // `--since` is a question about the timeline, so it needs the timeline.
-    // Nothing else here does, which is why it is fetched only when asked for.
+    let checkpoints = if !from.is_empty() || format == "response" {
+        super::history::manifest_for(&server, &slug, &who)
+            .await
+            .unwrap_or_else(|err| die(err))
+    } else {
+        Vec::new()
+    };
     let mut comments = listing.comments;
     if !from.is_empty() {
-        let checkpoints = manifest_of(&server, &slug, &who).await;
-        let matching: Vec<String> = checkpoints
-            .iter()
-            .map(|point| crate::http::text(point, "sha"))
-            .filter(|sha| sha.starts_with(&from))
-            .collect();
-        let full = match matching.len() {
-            0 => die(format!("no checkpoint of {slug} starts with {from:?}")),
-            1 => matching[0].clone(),
-            many => die(format!(
-                "{from:?} names {many} checkpoints of {slug}; give more of the digest"
-            )),
-        };
+        let full = super::history::checkpoint_sha(&checkpoints, &slug, &from)
+            .unwrap_or_else(|err| die(err));
         comments = since(comments, &checkpoints, &full);
     }
 
@@ -200,11 +194,20 @@ pub async fn export_document(
         "jsonld" | "" => render_jsonld(&title, &comments, &source, &config),
         "markdown" | "md" => render_markdown(&title, &comments, &source, &config),
         "response" => {
-            let now = text_as_it_stands(&server, &slug, &who).await;
-            let checkpoints = manifest_of(&server, &slug, &who).await;
-            let replacements = match now.as_deref() {
-                Some(now) => {
-                    response_replacements(&server, &slug, &who, &comments, &checkpoints, now).await
+            let current = match checkpoints.last() {
+                Some(point) => {
+                    checkpoint_at(&server, &slug, &who, &crate::http::text(point, "sha")).await
+                }
+                None => None,
+            };
+            let now = current.as_ref().and_then(rendered_checkpoint_text);
+            if now.is_none() {
+                eprintln!("note: rendered text is unavailable; only comments with source anchors can have Now comparisons");
+            }
+            let replacements = match current.as_ref() {
+                Some(current) => {
+                    response_replacements(&server, &slug, &who, &comments, &checkpoints, current)
+                        .await
                 }
                 None => HashMap::new(),
             };
@@ -226,8 +229,8 @@ pub async fn export_document(
         print!("{rendered}");
         return;
     }
-    std::fs::write(&out, &rendered)
-        .unwrap_or_else(|err| die(format!("could not write {out}: {err}")));
+    super::tokens::write_private_file(std::path::Path::new(&out), rendered.as_bytes())
+        .unwrap_or_else(|err| die(err));
     eprintln!("wrote {out} ({} annotation(s))", comments.len());
 }
 
@@ -510,12 +513,17 @@ pub fn render_response_with_replacements(
                 // same word-level diff used by sync; otherwise it leaves this
                 // honest status line in place.
                 if let Some(replacement) = replacements.get(&item.id) {
-                    if replacement.is_empty() {
-                        let _ = write!(out, "**Now:** deleted without replacement.\n\n");
+                    let label = if item.source.is_some() {
+                        "Now (source)"
                     } else {
-                        let _ = write!(out, "**Now:** “{}”\n\n", one_line(replacement));
+                        "Now"
+                    };
+                    if replacement.is_empty() {
+                        let _ = write!(out, "**{label}:** deleted without replacement.\n\n");
+                    } else {
+                        let _ = write!(out, "**{label}:** “{}”\n\n", one_line(replacement));
                     }
-                } else if !now.is_empty() {
+                } else if item.source.is_none() && !now.is_empty() {
                     if holds(now, &item.exact) {
                         let _ = write!(out, "**Now:** unchanged.\n\n");
                     } else {
@@ -557,46 +565,30 @@ fn holds(text: &str, exact: &str) -> bool {
 
 /* --------------------------------------------- the document as it now stands */
 
-/// The document as a reader sees it now: the newest checkpoint, rendered here,
-/// with the markup taken out.
-///
-/// The newest checkpoint rather than the live text, because a response quotes
-/// a version and the live text is the one version that has no name. And
-/// rendered here rather than asked for, because there is no rendered form on
-/// the server to ask for: nothing derived is stored, which is the rule this
-/// whole design rests on.
-///
-/// None when this machine cannot render the document -- a LaTeX paper, whose
-/// compiler is in a browser, or a typst one this fails to write out. The
-/// export then leaves the **Now** line off rather than guessing. A successfully
-/// rendered empty document remains distinguishable from a failed render.
-async fn text_as_it_stands(server: &str, slug: &str, who: &Credentials) -> Option<String> {
-    let checkpoints = manifest_of(server, slug, who).await;
-    let newest = checkpoints.last()?;
-    let sha = crate::http::text(newest, "sha");
-    text_at_checkpoint(server, slug, who, &sha).await
-}
-
-/// Reads and renders one named checkpoint. Historical response quotations use
-/// the same visible text as passage anchoring, so markup and source line wraps
-/// do not leak into the replacement shown to a reviewer.
-async fn text_at_checkpoint(
-    server: &str,
-    slug: &str,
-    who: &Credentials,
-    sha: &str,
-) -> Option<String> {
+/// Read a named version so response comparisons stay reproducible. A pruned
+/// checkpoint is unavailable; a transport or server failure remains an error.
+async fn checkpoint_at(server: &str, slug: &str, who: &Credentials, sha: &str) -> Option<Value> {
     let (status, point) = get_as(
         &format!("{server}/api/documents/{slug}/history/{sha}"),
         who,
         Duration::from_secs(60),
     )
     .await
-    .unwrap_or((0, Value::Null));
-    if status != 200 {
+    .unwrap_or_else(|err| die(err));
+    if status == 404 {
         return None;
     }
-    let main = crate::http::text(&point, "main");
+    if status != 200 {
+        die(format!(
+            "checkpoint failed ({status}): {}",
+            crate::http::detail_of(&point)
+        ));
+    }
+    Some(point)
+}
+
+fn rendered_checkpoint_text(point: &Value) -> Option<String> {
+    let main = crate::http::text(point, "main");
     let texts = point
         .get("texts")
         .and_then(Value::as_object)
@@ -607,14 +599,9 @@ async fn text_at_checkpoint(
         crate::document::render::render_markdown_document(source, "")
     } else if crate::document::render::is_html(&main) {
         source.to_string()
-    } else if crate::document::render::is_typst(&main) {
-        // Typst reads what sits beside it, so it needs a directory rather than
-        // a string. The checkpoint is written into one and taken away again;
-        // the alternative is a response that cannot quote a typst paper, which
-        // is most of the papers this is for.
-        typst_from(&main, &texts)?
     } else {
-        // LaTeX, whose compiler is in a browser and not here.
+        // Native Typst emits PDF, not HTML. Source text cannot stand in for
+        // the rendered quotation, and LaTeX likewise has no text renderer here.
         return None;
     };
     Some(crate::seed::visible_text(&page))
@@ -629,36 +616,76 @@ async fn response_replacements(
     who: &Credentials,
     comments: &[Comment],
     checkpoints: &[Value],
-    now: &str,
+    current: &Value,
 ) -> HashMap<String, String> {
     if checkpoints.is_empty() {
         return HashMap::new();
     }
     let mut out = HashMap::new();
-    let mut historical: HashMap<String, String> = HashMap::new();
+    let mut historical: HashMap<String, Option<Value>> = HashMap::new();
+    let now = rendered_checkpoint_text(current);
     for item in comments {
         if item.region.is_some() || item.exact.trim().is_empty() {
-            continue;
-        }
-        if holds(now, &item.exact) {
             continue;
         }
         let sha = checkpoints
             .iter()
             .find(|point| crate::http::text(point, "sha") == item.revision)
-            .or_else(|| checkpoints.first())
+            .or_else(|| {
+                item.revision
+                    .is_empty()
+                    .then(|| checkpoints.first())
+                    .flatten()
+            })
             .map(|point| crate::http::text(point, "sha"));
         let Some(sha) = sha else { continue };
-        let old = if let Some(cached) = historical.get(&sha) {
-            cached.clone()
-        } else {
-            let Some(loaded) = text_at_checkpoint(server, slug, who, &sha).await else {
+        if !historical.contains_key(&sha) {
+            let loaded = checkpoint_at(server, slug, who, &sha).await;
+            historical.insert(sha.clone(), loaded);
+        }
+        let Some(old) = historical.get(&sha).and_then(Option::as_ref) else {
+            continue;
+        };
+        let replacement = if let Some(anchor) = &item.source {
+            // Source selectors identify literal source, including Typst/LaTeX
+            // syntax. Never compare them against rendered prose.
+            let Some(old_source) = old["texts"].get(&anchor.path).and_then(Value::as_str) else {
                 continue;
             };
-            historical.insert(sha.clone(), loaded.clone());
-            loaded
+            let new_source = current["texts"]
+                .get(&anchor.path)
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    // Files can be renamed. Follow an exact source passage
+                    // only when one current file contains it; an absent or
+                    // ambiguous match cannot establish that it was deleted.
+                    let texts = current["texts"].as_object()?;
+                    let mut candidates =
+                        texts.values().filter_map(Value::as_str).filter(|source| {
+                            !anchor.exact.is_empty() && source.contains(&anchor.exact)
+                        });
+                    let candidate = candidates.next()?;
+                    candidates.next().is_none().then_some(candidate)
+                });
+            let Some(new_source) = new_source else {
+                continue;
+            };
+            replacement_for_selector(
+                old_source,
+                new_source,
+                &anchor.exact,
+                &anchor.prefix,
+                &anchor.suffix,
+                anchor.position,
+            )
+        } else {
+            let Some(old) = rendered_checkpoint_text(old) else {
+                continue;
+            };
+            let Some(now) = now.as_deref() else { continue };
+            replacement_from(&old, now, item)
         };
-        if let Some(replacement) = replacement_from(&old, now, item) {
+        if let Some(replacement) = replacement {
             out.insert(item.id.clone(), replacement);
         }
     }
@@ -670,21 +697,37 @@ async fn response_replacements(
 /// consulted, matching the browser anchor's exact/prefix/suffix rule.
 pub(crate) fn replacement_from(old: &str, new: &str, item: &Comment) -> Option<String> {
     let needle = one_line(&item.exact);
+    replacement_for_selector(
+        old,
+        new,
+        &needle,
+        &one_line(&item.prefix),
+        &one_line(&item.suffix),
+        item.position,
+    )
+}
+
+fn replacement_for_selector(
+    old: &str,
+    new: &str,
+    needle: &str,
+    prefix: &str,
+    suffix: &str,
+    wanted: Option<i64>,
+) -> Option<String> {
     if needle.is_empty() {
         return None;
     }
     let mut candidates = Vec::new();
     let mut from = 0;
-    while let Some(relative) = old[from..].find(&needle) {
+    while let Some(relative) = old[from..].find(needle) {
         let at = from + relative;
         let before = &old[..at];
         let after = &old[at + needle.len()..];
-        let score = usize::from(before.ends_with(&one_line(&item.prefix)))
-            + usize::from(after.starts_with(&one_line(&item.suffix)));
+        let score = usize::from(before.ends_with(prefix)) + usize::from(after.starts_with(suffix));
         candidates.push((score, at));
         from = at + needle.len();
     }
-    let wanted = item.position;
     let (_, byte_at) = candidates.into_iter().min_by(|left, right| {
         let left_distance = wanted
             .map(|position| (utf16_len(&old[..left.1]) as i64 - position).unsigned_abs())
@@ -758,50 +801,6 @@ fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
-/// Renders a typst checkpoint by writing it out and reading it back the way
-/// `publish` does. Returns None if anything about the directory is not
-/// straightforward -- including a path that tries to leave it, which nothing
-/// this server writes ever does and which is checked anyway, because this
-/// writes files on somebody's laptop from bytes that arrived over a network.
-fn typst_from(main: &str, texts: &serde_json::Map<String, Value>) -> Option<String> {
-    let root = std::env::temp_dir().join(format!("komodoc-export-{}", crate::util::new_id()));
-    for (path, body) in texts {
-        if path.starts_with('/') || path.split('/').any(|part| part == ".." || part.is_empty()) {
-            let _ = std::fs::remove_dir_all(&root);
-            return None;
-        }
-        let at = root.join(path);
-        if let Some(parent) = at.parent() {
-            std::fs::create_dir_all(parent).ok()?;
-        }
-        std::fs::write(&at, body.as_str().unwrap_or_default()).ok()?;
-    }
-    let file = root.join(main);
-    let compiled = crate::document::render::render_typst_document(&file, texts[main].as_str()?, "");
-    let _ = std::fs::remove_dir_all(&root);
-    crate::document::render::pdf_of(&compiled)
-        .map(|_| texts[main].as_str().unwrap_or_default().to_string())
-}
-
-/// The manifest, oldest first, or an empty list when there is none to read.
-async fn manifest_of(server: &str, slug: &str, who: &Credentials) -> Vec<Value> {
-    let (status, payload) = get_as(
-        &format!("{server}/api/documents/{slug}/history"),
-        who,
-        Duration::from_secs(60),
-    )
-    .await
-    .unwrap_or((0, Value::Null));
-    if status != 200 {
-        return Vec::new();
-    }
-    payload
-        .get("checkpoints")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-}
-
 /// The comments made at or after one checkpoint.
 ///
 /// "At or after" is a question about the manifest, not about clocks: a
@@ -822,4 +821,124 @@ pub fn since(comments: Vec<Comment>, checkpoints: &[Value], from: &str) -> Vec<C
         .into_iter()
         .filter(|item| place(&item.revision).unwrap_or(0) >= cut)
         .collect()
+}
+
+#[cfg(test)]
+mod checkpoint_export_tests {
+    use super::*;
+
+    #[test]
+    fn pdf_source_is_never_returned_as_rendered_text() {
+        let typst =
+            json!({"main":"main.typ", "texts":{"main.typ":"#let result = [A finding.]\n#result"}});
+        assert_eq!(rendered_checkpoint_text(&typst), None);
+        let markdown = json!({"main":"main.md", "texts":{"main.md":"A **finding**."}});
+        let rendered = rendered_checkpoint_text(&markdown).unwrap();
+        assert!(rendered.contains("A finding."), "{rendered}");
+        assert!(!rendered.contains("**"));
+    }
+
+    #[tokio::test]
+    async fn response_tracks_the_selected_occurrence_when_another_remains() {
+        use axum::{routing::get, Json};
+        let app = axum::Router::new().route("/api/documents/paper/history/old", get(|| async {
+            Json(json!({"main":"main.md", "texts":{"main.md":"The cat is blue. The cat is blue."}}))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let item = Comment {
+            id: "comment".into(),
+            exact: "The cat is blue.".into(),
+            position: Some(0),
+            revision: "old".into(),
+            ..Default::default()
+        };
+        let current =
+            json!({"main":"main.md", "texts":{"main.md":"The cat is red. The cat is blue."}});
+        let replacements = response_replacements(
+            &server,
+            "paper",
+            &Credentials::default(),
+            &[item],
+            &[json!({"sha":"old"})],
+            &current,
+        )
+        .await;
+        assert_eq!(replacements["comment"], "The cat is red.");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn typst_response_uses_literal_source_anchor_without_compiling() {
+        use axum::{routing::get, Json};
+        let old = "#import \"@preview/example:1.0.0\": *\nThe *cat* is blue.\n";
+        let current = json!({"main":"main.typ", "texts":{"main.typ":old.replace("blue", "red")}});
+        let app = axum::Router::new().route(
+            "/api/documents/paper/history/old",
+            get(move || async move { Json(json!({"main":"main.typ", "texts":{"main.typ":old}})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let comments = vec![Comment {
+            id: "comment".into(),
+            exact: "The cat is blue.".into(),
+            revision: "old".into(),
+            source: Some(crate::room::SourceAnchor {
+                path: "main.typ".into(),
+                exact: "The *cat* is blue.".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let replacements = response_replacements(
+            &server,
+            "paper",
+            &Credentials::default(),
+            &comments,
+            &[json!({"sha":"old"})],
+            &current,
+        )
+        .await;
+        assert_eq!(replacements["comment"], "The *cat* is red.");
+        let response = render_response_with_replacements(
+            "Paper",
+            &comments,
+            "",
+            &Configuration::default(),
+            "",
+            &replacements,
+        );
+        assert!(
+            response.contains("**Now (source):** “The *cat* is red.”"),
+            "{response}"
+        );
+        let renamed = json!({"main":"renamed.typ", "texts":{"renamed.typ":old}});
+        let replacements = response_replacements(
+            &server,
+            "paper",
+            &Credentials::default(),
+            &comments,
+            &[json!({"sha":"old"})],
+            &renamed,
+        )
+        .await;
+        assert_eq!(replacements["comment"], "The *cat* is blue.");
+        let ambiguous = json!({"main":"a.typ", "texts":{"a.typ":old, "b.typ":old}});
+        let replacements = response_replacements(
+            &server,
+            "paper",
+            &Credentials::default(),
+            &comments,
+            &[json!({"sha":"old"})],
+            &ambiguous,
+        )
+        .await;
+        assert!(
+            replacements.is_empty(),
+            "an ambiguous rename must not be reported as a deletion"
+        );
+        task.abort();
+    }
 }

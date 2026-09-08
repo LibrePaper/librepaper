@@ -24,6 +24,7 @@
 //! that arrived. `The merge` below is what answers that, over the three-way
 //! merge in `komodoc-text`.
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -92,27 +93,11 @@ pub async fn sync_document(
     // Asked before anything is opened, because the server drops anyone else's
     // `y-*` messages silently and a client that ran anyway would sit there
     // doing nothing.
-    let (status, document) = get_as(
-        &format!("{server}/api/documents/{slug}"),
-        &Credentials::new(&token, &key),
-        Duration::from_secs(30),
-    )
-    .await
-    .unwrap_or_else(|err| die(err));
-    if status != 200 {
-        die(format!(
-            "no document {slug:?} at {server} ({}); `komodoc publish` makes one",
-            detail_of(&document)
-        ));
-    }
-    let role = text(&document, "role");
-    let may_edit = document.get("can_edit") == Some(&Value::Bool(true))
-        || matches!(role.as_str(), "editor" | "owner");
-    if !may_edit {
-        die(format!(
-            "you may read {slug} but not edit it; syncing writes the document"
-        ));
-    }
+    check_edit_permission(&server, &slug, &token, &key)
+        .await
+        .unwrap_or_else(|err| match err {
+            PermissionError::Terminal(message) | PermissionError::Retry(message) => die(message),
+        });
 
     let target = PathBuf::from(file);
     let _lock = Lock::take(&target).unwrap_or_else(|err| die(err));
@@ -129,9 +114,32 @@ pub async fn sync_document(
         .with_key(&key)
         .with_presence_name(&presence_name);
     loop {
+        // A socket can be closed after the server's periodic authorization
+        // check. Recheck before reconnecting so a revoked editor does not
+        // spin forever trying to regain a session it may no longer write.
+        if client.established {
+            if let Err(err) = check_edit_permission(&server, &slug, &token, &key).await {
+                match err {
+                    PermissionError::Terminal(message) => {
+                        eprintln!("{message}");
+                        return;
+                    }
+                    PermissionError::Retry(message) => {
+                        eprintln!("{message}; reconnecting in {}", describe(wait));
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            _ = tokio::signal::ctrl_c() => return,
+                        }
+                        wait = (wait * 2).min(RECONNECT_MOST);
+                        continue;
+                    }
+                }
+            }
+        }
         match client.run(&slug, &mut watched).await {
-            // The room closed the socket and said why -- the document was
-            // deleted, or another server took it. Neither is waited out.
+            // Terminal policy/limit errors end the command. Restart, writer
+            // handoff, and temporary rate limits return through Err so the
+            // caller preserves the outbox and reconnects with backoff.
             Ok(reason) => {
                 if !reason.is_empty() {
                     eprintln!("{reason}");
@@ -195,6 +203,10 @@ pub struct Client {
     presence_clock: u32,
     last_presence: Instant,
     presence_name: String,
+    /// A reconnect must receive its state before debounce work can act on the
+    /// document. Otherwise a stale in-memory snapshot may overwrite the file
+    /// during the interval between `y-open` and `y-state`.
+    state_ready: bool,
     /// What is to be sent, in order. Every method below writes here rather
     /// than to the socket, so the whole of this client -- the merge included
     /// -- can be driven by a test with no socket at all, and so that nothing
@@ -213,6 +225,7 @@ impl Client {
             presence_clock: 1,
             last_presence: Instant::now(),
             presence_name: "komodoc".to_string(),
+            state_ready: false,
             outbox: Vec::new(),
             doc: session::new_doc(),
             base: String::new(),
@@ -247,14 +260,16 @@ impl Client {
         let update = session::encode_diff(&self.doc, before)?;
         self.seq += 1;
         let seq = self.seq;
-        self.say(json!({"type": "y-update", "update": encode_update(&update), "seq": seq}));
+        for message in update_messages(&update, seq) {
+            self.say(message);
+        }
         Ok(())
     }
 
     /// One connection, from the handshake to the socket closing. `Ok` with a
     /// reason means the room ended it and there is nothing to reconnect to;
     /// `Err` means the connection failed and the caller should dial again.
-    async fn run(
+    pub(crate) async fn run(
         &mut self,
         slug: &str,
         watched: &mut tokio::sync::mpsc::Receiver<()>,
@@ -288,6 +303,7 @@ impl Client {
         .map_err(|_| "timed out joining the session".to_string())?
         .map_err(|err| format!("could not join the session: {err}"))?;
         let (mut write, mut read) = socket.split();
+        self.state_ready = false;
 
         // What this client already has, so the server answers with the rest
         // and nothing more. Empty on the first connection and not on a
@@ -326,9 +342,17 @@ impl Client {
                             }
                         }
                         Message::Close(frame) => {
-                            return Ok(frame
+                            let reason = frame
                                 .map(|frame| frame.reason.to_string())
-                                .unwrap_or_default());
+                                .unwrap_or_default();
+                            if terminal_close_reason(&reason) {
+                                return Ok(reason);
+                            }
+                            return Err(if reason.is_empty() {
+                                "the server closed the session; reconnecting".to_string()
+                            } else {
+                                format!("the server closed the session ({reason}); reconnecting")
+                            });
                         }
                         Message::Ping(payload) => {
                             write.send(Message::Pong(payload)).await.map_err(|err| err.to_string())?;
@@ -395,6 +419,25 @@ impl Client {
         self.settle()
     }
 
+    #[cfg(test)]
+    pub fn settle_session_now(&mut self) -> Result<(), String> {
+        if let Some(at) = self.from_session {
+            self.from_session = Some(at - self.every);
+        }
+        self.settle()
+    }
+
+    #[cfg(test)]
+    pub fn mark_pending_for_test(&mut self) {
+        self.from_session = Some(Instant::now() - Duration::from_secs(1));
+        self.from_disk = Some(Instant::now());
+    }
+
+    #[cfg(test)]
+    pub fn has_pending_disk_for_test(&self) -> bool {
+        self.from_disk.is_some()
+    }
+
     /// Reads the file now, as the watcher and the debounce together would.
     #[cfg(test)]
     pub fn read_now(&mut self) -> Result<(), String> {
@@ -404,8 +447,16 @@ impl Client {
     /// Drains the outbox onto the socket. The one place this module writes to
     /// it, so everything above can be run without one.
     async fn flush(&mut self, write: &mut Socket) -> Result<(), String> {
-        for payload in std::mem::take(&mut self.outbox) {
-            send(write, payload).await?;
+        let pending = std::mem::take(&mut self.outbox);
+        for payload in pending.iter().cloned() {
+            if let Err(err) = send(write, payload).await {
+                // A multipart update is meaningful only as a complete
+                // sequence. Restore everything, including frames that may
+                // have reached the old socket, so the next connection starts
+                // with its y-update-start and can safely replay the update.
+                self.outbox = pending;
+                return Err(err);
+            }
         }
         Ok(())
     }
@@ -430,6 +481,7 @@ impl Client {
                     session::apply_update(&self.doc, &update)?;
                 }
                 self.joined()?;
+                self.state_ready = true;
             }
             "y-update" => {
                 let Some(update) = decode_update(&text(&message, "update")) else {
@@ -444,21 +496,18 @@ impl Client {
                 let whole = session::encode_state(&self.doc);
                 self.seq += 1;
                 let seq = self.seq;
-                self.say(json!({
-                    "type": "y-update",
-                    "update": encode_update(&whole),
-                    "replace": true,
-                    "seq": seq,
-                }));
+                for message in update_messages(&whole, seq) {
+                    self.say(message);
+                }
             }
             "y-peers" => {
                 if let Some(count) = message.get("count").and_then(Value::as_i64) {
-                    println!("joined the session ({count} peer{})", plural(count));
+                    println!("session has {count} peer{}", plural(count));
                 }
             }
             "y-checkpoint" => {
                 let sha = text(&message, "sha");
-                println!("checkpoint {}", &sha[..sha.len().min(7)]);
+                println!("checkpoint {}", sha.chars().take(7).collect::<String>());
             }
             "error" => {
                 let said = text(&message, "message");
@@ -512,9 +561,9 @@ impl Client {
                     // arrived.
                     self.reconcile(&local)?;
                 } else {
-                    // A first join: `base` is still empty, which makes the
-                    // merge take the file's whole text as a change -- exactly
-                    // right, since nothing here has agreed with anything yet.
+                    // A first join: seed `base` with the session text, then
+                    // merge so the file's whole divergence is treated as its
+                    // deliberate change.
                     self.base = remote.clone();
                     self.reconcile(&local)?;
                 }
@@ -531,13 +580,18 @@ impl Client {
         let whole = session::encode_state(&self.doc);
         self.seq += 1;
         let seq = self.seq;
-        self.say(json!({"type": "y-update", "update": encode_update(&whole), "seq": seq}));
+        for message in update_messages(&whole, seq) {
+            self.say(message);
+        }
         Ok(())
     }
 
     /// The debounce, both directions. Called on every tick; does nothing until
     /// one side has been quiet for the interval.
     fn settle(&mut self) -> Result<(), String> {
+        if !self.state_ready {
+            return Ok(());
+        }
         let now = Instant::now();
         if self
             .from_disk
@@ -550,6 +604,12 @@ impl Client {
             .from_session
             .is_some_and(|at| now.duration_since(at) >= self.every)
         {
+            // A local save may still be in its own debounce window. Reading
+            // that save and merging it is the only safe way to decide what
+            // the session should write; replacing the file first loses it.
+            if self.from_disk.is_some() {
+                return Ok(());
+            }
             self.from_session = None;
             let wanted = session::text_of(&self.doc);
             if wanted != self.base {
@@ -558,6 +618,10 @@ impl Client {
                 self.base = wanted;
             }
         }
+        self.finish_checkpoint()
+    }
+
+    fn finish_checkpoint(&mut self) -> Result<(), String> {
         if self.wants_checkpoint {
             self.wants_checkpoint = false;
             // The server spaces requested checkpoints and writes nothing when
@@ -584,10 +648,15 @@ impl Client {
                 return Ok(());
             }
         };
+        let local_digest = digest(&local);
         // The write this client made itself, coming back through the watcher.
-        if digest(&local) == self.wrote {
+        // Consume the marker. Keeping it forever makes a deliberate undo to a
+        // previous client-written version look like an echo and skip sync.
+        if local_digest == self.wrote {
+            self.wrote.clear();
             return Ok(());
         }
+        self.wrote.clear();
         if local == session::text_of(&self.doc) {
             // The file caught up with the session by some other route, or an
             // editor wrote the same bytes back. Nothing moved.
@@ -701,12 +770,13 @@ async fn fetch_state(
     token: &str,
     key: &str,
 ) -> Result<Vec<u8>, String> {
-    let target = if reference.starts_with("http") {
-        reference.to_string()
-    } else {
-        format!("{server}{reference}")
-    };
-    let mut request = reqwest::Client::new().get(&target);
+    let target = state_reference(server, reference)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|err| format!("could not create HTTP client: {err}"))?;
+    let mut request = client.get(&target);
     for (name, value) in Credentials::new(token, key).headers() {
         request = request.header(name, value);
     }
@@ -725,6 +795,112 @@ async fn fetch_state(
         .await
         .map_err(|err| format!("could not fetch the document: {err}"))?
         .to_vec())
+}
+
+/// Resolve a state reference while keeping credentials on the deployment that
+/// issued it. A malicious or stale server response must not turn the bearer
+/// token or link key into credentials for an unrelated origin.
+pub(crate) fn state_reference(server: &str, reference: &str) -> Result<String, String> {
+    let origin = url::Url::parse(server).map_err(|_| "invalid document server URL")?;
+    let target = origin
+        .join(reference)
+        .map_err(|_| "invalid document state reference")?;
+    if target.origin() != origin.origin()
+        || !target.username().is_empty()
+        || target.password().is_some()
+    {
+        return Err("refused to send document credentials to another origin".into());
+    }
+    Ok(target.to_string())
+}
+
+/// Build bounded frames for the room's multipart update protocol. The raw Yjs
+/// update is split before base64 encoding, keeping every JSON text frame well
+/// below the server's one-megabyte WebSocket limit.
+pub(crate) fn update_messages(update: &[u8], seq: i64) -> Vec<Value> {
+    const CHUNK_SIZE: usize = 600_000;
+    if update.is_empty() {
+        return Vec::new();
+    }
+    let chunks = update.len().div_ceil(CHUNK_SIZE);
+    let mut messages = Vec::with_capacity(chunks + 2);
+    messages.push(json!({
+        "type": "y-update-start",
+        "seq": seq,
+        "size": update.len(),
+        "chunks": chunks,
+    }));
+    for (index, chunk) in update.chunks(CHUNK_SIZE).enumerate() {
+        messages.push(json!({
+            "type": "y-update-chunk",
+            "seq": seq,
+            "index": index,
+            "update": encode_update(chunk),
+        }));
+    }
+    messages.push(json!({"type": "y-update-end", "seq": seq}));
+    messages
+}
+
+fn terminal_close_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "document deleted"
+            | "this document has reached its size limit"
+            | "this document has reached its file limit"
+            | "this document has reached its storage quota"
+            | "invalid multipart document update"
+            | "editing is not permitted"
+    )
+}
+
+enum PermissionError {
+    Terminal(String),
+    Retry(String),
+}
+
+async fn check_edit_permission(
+    server: &str,
+    slug: &str,
+    token: &str,
+    key: &str,
+) -> Result<(), PermissionError> {
+    let (status, document) = get_as(
+        &format!("{server}/api/documents/{slug}"),
+        &Credentials::new(token, key),
+        Duration::from_secs(30),
+    )
+    .await
+    .map_err(|err| {
+        PermissionError::Retry(format!("could not check document permissions: {err}"))
+    })?;
+    if status == 404 {
+        return Err(PermissionError::Terminal(format!(
+            "no document {slug:?} at {server} ({}); `komodoc publish` makes one",
+            detail_of(&document)
+        )));
+    }
+    if matches!(status, 401 | 403) {
+        return Err(PermissionError::Terminal(format!(
+            "access to document {slug:?} no longer permits syncing ({})",
+            detail_of(&document)
+        )));
+    }
+    if status != 200 {
+        return Err(PermissionError::Retry(format!(
+            "could not check document permissions at {server} ({})",
+            detail_of(&document)
+        )));
+    }
+    let role = text(&document, "role");
+    let may_edit = document.get("can_edit") == Some(&Value::Bool(true))
+        || matches!(role.as_str(), "editor" | "owner");
+    if !may_edit {
+        return Err(PermissionError::Terminal(format!(
+            "you may read {slug} but not edit it; syncing writes the document"
+        )));
+    }
+    Ok(())
 }
 
 pub fn socket_url(server: &str, slug: &str) -> String {
@@ -768,6 +944,14 @@ fn watch(
         .ok_or_else(|| format!("{} is not a file to watch", target.display()))?;
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
         let Ok(event) = result else { return };
+        if !matches!(
+            event.kind,
+            notify::EventKind::Create(_)
+                | notify::EventKind::Modify(_)
+                | notify::EventKind::Remove(_)
+        ) {
+            return;
+        }
         if event
             .paths
             .iter()
@@ -789,30 +973,50 @@ fn watch(
 /// The second is refused, and told which process holds it.
 #[derive(Debug)]
 pub struct Lock {
-    at: PathBuf,
+    file: File,
 }
 
 impl Lock {
     pub fn take(target: &Path) -> Result<Lock, String> {
         let at = lock_path(target);
-        if let Ok(held) = std::fs::read_to_string(&at) {
+        use fs2::FileExt;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&at)
+            .map_err(|err| format!("could not take {}: {err}", at.display()))?;
+        if file.try_lock_exclusive().is_err() {
+            let held = std::fs::read_to_string(&at).unwrap_or_default();
             return Err(format!(
-                "{} is already being synced by process {}; \
-                 stop it, or remove {} if nothing is running",
+                "{} is already being synced{}; stop it and let its process release the lock",
                 target.display(),
-                held.trim(),
-                at.display()
+                if held.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" by process {}", held.trim())
+                }
             ));
         }
-        std::fs::write(&at, std::process::id().to_string())
-            .map_err(|err| format!("could not take {}: {err}", at.display()))?;
-        Ok(Lock { at })
+        let mut file = file;
+        file.set_len(0)
+            .and_then(|_| {
+                use std::io::{Seek, SeekFrom, Write};
+                file.seek(SeekFrom::Start(0))?;
+                write!(&file, "{}", std::process::id())
+            })
+            .map_err(|err| {
+                let _ = file.unlock();
+                format!("could not write {}: {err}", at.display())
+            })?;
+        Ok(Lock { file })
     }
 }
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.at);
+        let _ = self.file.unlock();
     }
 }
 

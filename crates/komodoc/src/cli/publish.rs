@@ -3,6 +3,98 @@
 
 use super::*;
 
+/// The subset of deployment configuration that controls a publish preflight.
+/// This is decoded from `/api/config` so a CLI pointed at a deployment with
+/// operator-selected limits does not reject a document using its own defaults.
+#[derive(serde::Deserialize)]
+pub(crate) struct PublishLimits {
+    pub(crate) max_document: usize,
+    pub(crate) max_files: usize,
+    pub(crate) max_path: usize,
+    pub(crate) max_assets: i64,
+    pub(crate) max_asset: i64,
+}
+
+impl PublishLimits {
+    fn validate(self) -> Result<Self, String> {
+        if self.max_document == 0
+            || self.max_files == 0
+            || self.max_path == 0
+            || self.max_assets < 0
+            || self.max_asset < 0
+            || self.max_asset > self.max_assets
+        {
+            return Err("deployment returned invalid publishing limits".into());
+        }
+        Ok(self)
+    }
+}
+
+pub(crate) async fn publish_limits(server: &str) -> Result<PublishLimits, String> {
+    let (status, payload) =
+        get_json(&format!("{server}/api/config"), Duration::from_secs(30)).await?;
+    if status != 200 {
+        return Err(format!(
+            "could not read publishing limits ({status}): {}",
+            detail_of(&payload)
+        ));
+    }
+    serde_json::from_value(payload)
+        .map_err(|err| format!("deployment returned invalid publishing limits: {err}"))
+        .and_then(PublishLimits::validate)
+}
+
+fn config_with_publish_limits(limits: PublishLimits) -> Configuration {
+    Configuration {
+        max_document: limits.max_document,
+        max_files: limits.max_files,
+        max_path: limits.max_path,
+        max_assets: limits.max_assets,
+        max_asset: limits.max_asset,
+        ..Configuration::default()
+    }
+}
+
+pub(crate) async fn preserve_revision_title_with_token(
+    server: &str,
+    slug: &str,
+    title: &mut String,
+    token: &str,
+) -> Result<(), String> {
+    if slug.is_empty() {
+        return Ok(());
+    }
+    let (status, existing) = get_with_token(
+        &format!("{server}/api/documents/{slug}"),
+        token,
+        Duration::from_secs(30),
+    )
+    .await
+    .map_err(|err| format!("could not read existing document {slug}: {err}"))?;
+    if status != 200 {
+        return Err(format!(
+            "could not read existing document {slug} ({status}): {}",
+            detail_of(&existing)
+        ));
+    }
+    let existing_title = text(&existing, "title");
+    if existing_title.is_empty() {
+        return Err(format!(
+            "could not read existing document {slug}: response had no title"
+        ));
+    }
+    *title = existing_title;
+    Ok(())
+}
+
+async fn preserve_revision_title(
+    server: &str,
+    slug: &str,
+    title: &mut String,
+) -> Result<(), String> {
+    preserve_revision_title_with_token(server, slug, title, &stored_token_for(server)).await
+}
+
 /// The files of a directory, as the document will know them: relative paths,
 /// `/`-separated, with what does not belong left behind.
 ///
@@ -32,47 +124,75 @@ pub fn files_under(root: &Path, main_stem: &str, ignored: &dyn Fn(&Path) -> bool
     let mut stack = vec![root.to_path_buf()];
     while let Some(directory) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&directory) else {
+            eprintln!("note: could not read directory {}", directory.display());
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                eprintln!("note: could not read an entry in {}", directory.display());
+                continue;
+            };
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
+            if name.starts_with('.') || name.ends_with(".komodoc-lock") {
+                continue;
+            }
+            // Ask git about directories as well as files. An ignored
+            // directory is pruned here, avoiding a process per descendant and
+            // preserving the author's intent for generated trees.
+            if ignored(&path) {
+                continue;
+            }
+            let resolved = match path.canonicalize() {
+                Ok(resolved) => resolved,
+                Err(_) => {
+                    eprintln!("note: skipping broken or unreadable {}", path.display());
+                    continue;
+                }
+            };
+            if !resolved.starts_with(&canonical_root) {
+                eprintln!(
+                    "note: skipping {} (a symlink resolving outside {})",
+                    path.display(),
+                    root.display()
+                );
                 continue;
             }
             if path.is_dir() {
-                match path.canonicalize() {
-                    Ok(resolved) if resolved.starts_with(&canonical_root) => {
-                        // `insert` returns false for a location already
-                        // visited -- an ancestor symlink cycle, or two links
-                        // to the same place -- which is exactly when this
-                        // must not be walked again.
-                        if visited.insert(resolved) {
-                            stack.push(path);
-                        }
-                    }
-                    Ok(_) => {
-                        eprintln!(
-                            "note: skipping {} (a symlink resolving outside {})",
-                            path.display(),
-                            root.display()
-                        );
-                    }
-                    // A broken symlink resolves to nothing worth walking.
-                    Err(_) => {}
+                // `insert` returns false for a location already visited -- an
+                // ancestor symlink cycle, or two links to the same place --
+                // which is exactly when this must not be walked again.
+                if visited.insert(resolved) {
+                    stack.push(path);
                 }
+                continue;
+            }
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                eprintln!("note: skipping unreadable {}", path.display());
+                continue;
+            };
+            if !metadata.is_file() {
+                eprintln!("note: skipping non-regular file {}", path.display());
                 continue;
             }
             // The output of the document itself. A `paper.pdf` beside
             // `paper.typ` is what the last compile produced, and uploading it
             // would put a derived file in a store that keeps sources.
-            if !main_stem.is_empty() && name == format!("{main_stem}.pdf") {
+            let output = if main_stem.is_empty() {
+                None
+            } else {
+                let main = Path::new(main_stem);
+                let stem = main
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+                    .unwrap_or_else(|| main_stem.to_string());
+                Some(main.with_file_name(format!("{stem}.pdf")))
+            };
+            let relative = path.strip_prefix(root).ok();
+            if output.as_deref() == relative {
                 continue;
             }
-            if ignored(&path) {
-                continue;
-            }
-            if let Ok(relative) = path.strip_prefix(root) {
+            if let Some(relative) = relative {
                 let mut at = String::new();
                 for part in relative.components() {
                     if let std::path::Component::Normal(piece) = part {
@@ -114,7 +234,14 @@ pub fn git_ignores(root: &Path) -> Box<dyn Fn(&Path) -> bool> {
         return Box::new(|_| false);
     }
     let root = root.to_path_buf();
+    let cache = std::sync::Mutex::new(std::collections::HashMap::<PathBuf, bool>::new());
     Box::new(move |path: &Path| {
+        let relative = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
+        if let Ok(cache) = cache.lock() {
+            if let Some(&ignored) = cache.get(&relative) {
+                return ignored;
+            }
+        }
         // `git -C root` runs with `root` as its working directory, so the
         // path handed to `check-ignore` must be relative to `root` too --
         // otherwise, with a relative root such as `paper`, a root-prefixed
@@ -123,15 +250,21 @@ pub fn git_ignores(root: &Path) -> Box<dyn Fn(&Path) -> bool> {
         // pattern such as `/private.txt` never matches. `--` ends option
         // parsing first, so a filename beginning with `-` is not read as a
         // flag.
-        let relative = path.strip_prefix(&root).unwrap_or(path);
-        std::process::Command::new("git")
+        let ignored = std::process::Command::new("git")
             .arg("-C")
             .arg(&root)
             .args(["check-ignore", "-q", "--"])
             .arg(relative)
             .status()
             .map(|status| status.success())
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if let Ok(mut cache) = cache.lock() {
+            cache.insert(
+                path.strip_prefix(&root).unwrap_or(path).to_path_buf(),
+                ignored,
+            );
+        }
+        ignored
     })
 }
 
@@ -197,18 +330,32 @@ pub(super) async fn publish_directory(
     server_flag: String,
     main: String,
 ) {
-    let config = Configuration::default();
+    let title_explicit = !title.is_empty();
+    let server = server_from(&server_flag);
+    let config = publish_limits(&server)
+        .await
+        .map(config_with_publish_limits)
+        .unwrap_or_else(|err| die(err));
     let rules = config.paths();
     // The main file first, since what it is called decides what is skipped as
     // its output. Worked out from the whole listing, so `--main` can name a
     // file the rules would otherwise have to be asked about twice.
-    let listed = files_under(root, "", &git_ignores(root));
+    let ignored = git_ignores(root);
+    let listed = files_under(root, "", &ignored);
     let main = main_file(&listed, &main).unwrap_or_else(|why| die(why));
-    let stem = Path::new(&main)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let paths = files_under(root, &stem, &git_ignores(root));
+    // The first walk is also the upload walk. Filter only the output beside
+    // the selected main file; a `fig/main.pdf` is an ordinary asset when the
+    // main file is `main.typ`.
+    let output = Path::new(&main).with_file_name(
+        Path::new(&main)
+            .file_stem()
+            .map(|stem| format!("{}.pdf", stem.to_string_lossy()))
+            .unwrap_or_default(),
+    );
+    let paths: Vec<String> = listed
+        .into_iter()
+        .filter(|path| Path::new(path) != output.as_path())
+        .collect();
 
     // Every path checked before anything is read, so a refusal names the file
     // rather than arriving after a megabyte has been sent.
@@ -312,6 +459,11 @@ pub(super) async fn publish_directory(
             _ => String::new(),
         };
     }
+    if !title_explicit {
+        preserve_revision_title(&server, &slug, &mut title)
+            .await
+            .unwrap_or_else(|err| die(err));
+    }
     if title.is_empty() {
         title = title_or("", &main);
     }
@@ -328,7 +480,6 @@ pub(super) async fn publish_directory(
         }
     );
 
-    let server = server_from(&server_flag);
     let uploaded_paths: std::collections::HashSet<String> = files
         .iter()
         .map(|(path, _)| crate::document::paths::normalise(path))
@@ -400,6 +551,8 @@ pub(super) fn report_published(server: &str, document: &Value, path: &str) {
 }
 
 pub(super) async fn publish_file(file: &str, mut title: String, slug: String, server_flag: String) {
+    let title_explicit = !title.is_empty();
+    let server = server_from(&server_flag);
     let path = Path::new(file);
     let base_name = path
         .file_name()
@@ -424,7 +577,10 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
     }
     let raw =
         std::fs::read(path).unwrap_or_else(|err| die(format!("could not read {file}: {err}")));
-    let config = Configuration::default();
+    let config = publish_limits(&server)
+        .await
+        .map(config_with_publish_limits)
+        .unwrap_or_else(|err| die(err));
     if raw.len() > config.max_document {
         die(format!(
             "document exceeds the {} MB limit",
@@ -495,7 +651,6 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
         }
         if siblings.is_empty() {
             typst_pdf = pdf_of(&compiled);
-            let config = Configuration::default();
             typst_inputs = input_digest_for_typst(
                 &canonical_main,
                 &[(canonical_main.clone(), raw.clone())],
@@ -555,18 +710,13 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
         die(format!("{base_name} contains no HTML tags"));
     }
 
-    let server = server_from(&server_flag);
-    if title.is_empty() && !slug.is_empty() {
-        // Publishing a revision: keep the title the document already has
-        // rather than silently renaming it after the file on disk.
-        if let Ok((200, existing)) = get_json(
-            &format!("{server}/api/documents/{slug}"),
-            Duration::from_secs(30),
-        )
-        .await
-        {
-            title = text(&existing, "title");
-        }
+    if !title_explicit {
+        // Publishing a revision keeps the existing title even when the new
+        // source has a heading of its own. The authenticated lookup matters
+        // for private documents, whose metadata is invisible anonymously.
+        preserve_revision_title(&server, &slug, &mut title)
+            .await
+            .unwrap_or_else(|err| die(err));
     }
     if title.is_empty() {
         title = title_or("", file);

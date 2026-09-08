@@ -1,6 +1,12 @@
 //! What `komodoc publish` sends from a directory: what .gitignore excludes,
 //! and what symlinks do.
 
+use serde_json::json;
+
+use crate::auth::{now_unix, sign_device, Identity};
+use crate::config::Configuration;
+use crate::http::{post_directory, post_json};
+
 /// R05: a relative publish root with a root-anchored `.gitignore` pattern
 /// used to be evaluated against the wrong working directory, so
 /// `/private.txt` never matched and the file was published. `git_ignores`
@@ -88,6 +94,192 @@ fn a_symlink_outside_the_root_is_excluded_but_an_inside_one_still_works() {
         found.contains(&"alias/kept.typ".to_string()),
         "an in-root symlink to a real directory was not followed: {found:?}"
     );
+}
+
+#[test]
+fn a_file_symlink_outside_the_root_is_excluded() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("private.txt"), "PRIVATE OUTSIDE ROOT").unwrap();
+    std::fs::write(root.path().join("main.typ"), "= Main\n").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("private.txt"),
+        root.path().join("notes.txt"),
+    )
+    .unwrap();
+
+    let found = crate::cli::files_under(root.path(), "", &|_| false);
+    assert!(found.contains(&"main.typ".to_string()), "{found:?}");
+    assert!(
+        !found.contains(&"notes.txt".to_string()),
+        "an external file symlink was published: {found:?}"
+    );
+}
+
+#[test]
+fn only_the_main_file_sibling_pdf_is_excluded() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("main.typ"), "= Main\n").unwrap();
+    std::fs::create_dir(root.path().join("fig")).unwrap();
+    std::fs::write(root.path().join("main.pdf"), b"main output").unwrap();
+    std::fs::write(root.path().join("fig/main.pdf"), b"a figure").unwrap();
+
+    let found = crate::cli::files_under(root.path(), "main", &|_| false);
+    assert!(!found.contains(&"main.pdf".to_string()), "{found:?}");
+    assert!(
+        found.contains(&"fig/main.pdf".to_string()),
+        "a PDF at another depth was incorrectly excluded: {found:?}"
+    );
+}
+
+#[test]
+fn a_nested_main_only_excludes_its_own_pdf_sibling() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("chapters")).unwrap();
+    std::fs::write(root.path().join("chapters/main.typ"), "= Main\n").unwrap();
+    std::fs::write(root.path().join("chapters/main.pdf"), b"main output").unwrap();
+    std::fs::write(root.path().join("main.pdf"), b"another file").unwrap();
+
+    let found = crate::cli::files_under(root.path(), "chapters/main", &|_| false);
+    assert!(
+        !found.contains(&"chapters/main.pdf".to_string()),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&"main.pdf".to_string()),
+        "a PDF outside the selected main file's directory was incorrectly excluded: {found:?}"
+    );
+}
+
+#[test]
+fn sync_lock_files_are_not_publishable() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("main.md"), "# Main\n").unwrap();
+    std::fs::write(root.path().join("main.md.komodoc-lock"), "1234\n").unwrap();
+
+    let found = crate::cli::files_under(root.path(), "", &|_| false);
+    assert_eq!(found, vec!["main.md".to_string()], "{found:?}");
+}
+
+fn publisher_device_token() -> String {
+    let mut identity = Identity::github(crate::tests::TEST_PUBLISHER, crate::tests::TEST_PUBLISHER);
+    identity.session_generation = "test-session-generation".into();
+    sign_device(crate::tests::TEST_KEY, &identity, now_unix() + 3600)
+}
+
+#[tokio::test]
+async fn an_authenticated_file_revision_keeps_a_private_title() {
+    let server = crate::tests::new_test_server().await;
+    let initial = crate::tests::publish_test_document(&server.url).await;
+    let slug = crate::tests::text(&initial, "slug");
+    let token = publisher_device_token();
+    let mut inferred = "Heading from the replacement file".to_string();
+
+    crate::cli::preserve_revision_title_with_token(&server.url, &slug, &mut inferred, &token)
+        .await
+        .expect("private metadata can be read with the owner's device token");
+    assert_eq!(inferred, "My Paper");
+
+    let (status, replacement) = post_json(
+        &format!("{}/api/documents", server.url),
+        &json!({
+            "title": inferred,
+            "slug": slug,
+            "html": "<!doctype html><p>replacement file</p>"
+        }),
+        &token,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .expect("replacement request");
+    assert_eq!(status, 201, "{replacement}");
+    assert_eq!(crate::tests::text(&replacement, "title"), "My Paper");
+}
+
+#[tokio::test]
+async fn an_authenticated_directory_revision_keeps_a_private_title() {
+    let server = crate::tests::new_test_server().await;
+    let initial = crate::tests::publish_test_document(&server.url).await;
+    let slug = crate::tests::text(&initial, "slug");
+    let token = publisher_device_token();
+    let mut inferred = "A heading in the directory main file".to_string();
+
+    crate::cli::preserve_revision_title_with_token(&server.url, &slug, &mut inferred, &token)
+        .await
+        .expect("private metadata can be read with the owner's device token");
+    assert_eq!(inferred, "My Paper");
+
+    let (status, replacement) = post_directory(
+        &format!("{}/api/documents", server.url),
+        &inferred,
+        &slug,
+        "main.md",
+        vec![("main.md".into(), b"# replacement directory\n".to_vec())],
+        &token,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .expect("directory replacement request");
+    assert_eq!(status, 201, "{replacement}");
+    assert_eq!(crate::tests::text(&replacement, "title"), "My Paper");
+}
+
+#[tokio::test]
+async fn publish_limits_follow_raised_remote_configuration() {
+    let configuration = Configuration {
+        max_document: 8 * 1024 * 1024,
+        max_files: 500,
+        max_path: 300,
+        max_assets: 64 * 1024 * 1024,
+        max_asset: 16 * 1024 * 1024,
+        ..Configuration::default()
+    };
+    let server = crate::tests::test_server_tuned(
+        configuration,
+        crate::auth::Policy::parse(crate::tests::TEST_PUBLISHER),
+        crate::auth::Policy::parse("anyone"),
+        true,
+        true,
+    )
+    .await;
+
+    let limits = crate::cli::publish_limits(&server.url)
+        .await
+        .expect("raised deployment limits");
+    assert_eq!(limits.max_document, 8 * 1024 * 1024);
+    assert_eq!(limits.max_files, 500);
+    assert_eq!(limits.max_path, 300);
+    assert_eq!(limits.max_assets, 64 * 1024 * 1024);
+    assert_eq!(limits.max_asset, 16 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn publish_limits_follow_lowered_remote_configuration() {
+    let configuration = Configuration {
+        max_document: 1024,
+        max_files: 3,
+        max_path: 48,
+        max_assets: 2048,
+        max_asset: 1024,
+        ..Configuration::default()
+    };
+    let server = crate::tests::test_server_tuned(
+        configuration,
+        crate::auth::Policy::parse(crate::tests::TEST_PUBLISHER),
+        crate::auth::Policy::parse("anyone"),
+        true,
+        true,
+    )
+    .await;
+
+    let limits = crate::cli::publish_limits(&server.url)
+        .await
+        .expect("lowered deployment limits");
+    assert_eq!(limits.max_document, 1024);
+    assert_eq!(limits.max_files, 3);
+    assert_eq!(limits.max_path, 48);
+    assert_eq!(limits.max_assets, 2048);
+    assert_eq!(limits.max_asset, 1024);
 }
 
 /// R06: several symlinks to the same directory must publish its content once,
