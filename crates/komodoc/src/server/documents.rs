@@ -143,11 +143,7 @@ impl Server {
                     if who.at_least(Role::Editor) && !current_who.at_least(Role::Editor) {
                         return write_json(403, &json!({"error": "edit access changed"}));
                     }
-                    let by = if current_who.key.is_empty() {
-                        current_who.id.handle.clone()
-                    } else {
-                        current_who.key.clone()
-                    };
+                    let by = current_who.attribution();
                     self.decide_suggestion(
                         &room,
                         &incoming,
@@ -680,7 +676,11 @@ impl Server {
             parsed.title.clone()
         };
         let sha = match room
-            .checkpoint_publication_now_locked("cli", &who.key, &mut publication_token)
+            .checkpoint_publication_now_locked(
+                "cli",
+                crate::room::Attribution::account(&who.id, &who.key),
+                &mut publication_token,
+            )
             .await
         {
             Ok(Some(sha)) => sha,

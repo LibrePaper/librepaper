@@ -40,6 +40,13 @@ pub struct Checkpoint {
     pub at: String,
     #[serde(default)]
     pub by: String,
+    /// The stable account id behind `by`, when the write carried an
+    /// authenticated identity. Deliberately `skip`ped: it is catalogue state
+    /// that erasure must be able to reach, so it never travels to a browser
+    /// and never lands in the immutable manifest object, which nothing
+    /// rewrites. `by` remains the only attribution the wire format has.
+    #[serde(skip)]
+    pub by_account: Option<String>,
     /// One of `quiet`, `left`, `comment`, `cli`, `sync`, `restore`, `label`,
     /// `render` for the moment a browser stored a rendering of, `accept` for
     /// an editor taking a suggestion, and `recovered` for one the manifest
@@ -273,6 +280,7 @@ impl Manifest {
             parent: row.parent,
             at: row.at,
             by: row.by,
+            by_account: row.by_account,
             why: row.why,
             source_format: row.source_format,
             size: row.size,
@@ -318,6 +326,7 @@ impl Manifest {
             parent: point.parent.clone(),
             at: point.at.clone(),
             by: point.by.clone(),
+            by_account: point.by_account.clone(),
             why: point.why.clone(),
             source_format: point.source_format.clone(),
             size: point.size,

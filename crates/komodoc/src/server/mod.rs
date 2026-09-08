@@ -158,6 +158,27 @@ impl Viewer {
     pub fn at_least(&self, wanted: Role) -> bool {
         self.role.at_least(wanted)
     }
+
+    /// What a write by this caller is attributed to. The display string is
+    /// the one the timeline has always shown -- the owner key, or the handle
+    /// for a caller who has no key -- and the account is the stable provider
+    /// id this request authenticated, or none at all for a visitor or a
+    /// link-bounded caller. Automation is included deliberately: its cached
+    /// account is attribution, even though the link is what bounds authority.
+    pub fn attribution(&self) -> crate::room::Attribution {
+        self.attributed_as(if self.key.is_empty() {
+            &self.id.handle
+        } else {
+            &self.key
+        })
+    }
+
+    /// The same account with a display string the caller has already chosen:
+    /// a comment pseudonym, a link label. The display never becomes the
+    /// account id and the account id never becomes the display.
+    pub fn attributed_as(&self, display: &str) -> crate::room::Attribution {
+        crate::room::Attribution::account(&self.id.id, display)
+    }
 }
 
 /// What an authorized write is attributed to: the owner key a document's
@@ -858,7 +879,13 @@ impl Server {
         // has moved on. A checkpoint whose text is already the current one
         // costs nothing and adds no entry.
         if is_comment {
-            if let Err(err) = room.checkpoint("comment", &creator).await {
+            // The checkpoint a comment sits on is the commenter s write. It
+            // carries their stable account when they are signed in, and the
+            // same pseudonym the comment shows as its display string.
+            if let Err(err) = room
+                .checkpoint("comment", who.attributed_as(&creator))
+                .await
+            {
                 // Not a reason to refuse the comment: the comment is the
                 // reader's work, and the checkpoint is bookkeeping about it.
                 eprintln!(
@@ -904,7 +931,7 @@ impl Server {
         room: &Room,
         incoming: &RoomMessage,
         may_edit: bool,
-        by: &str,
+        by: &crate::room::Attribution,
     ) -> (Value, bool) {
         let fail = |text: &str| -> (Value, bool) {
             (

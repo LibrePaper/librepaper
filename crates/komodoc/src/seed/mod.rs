@@ -399,7 +399,13 @@ async fn seed_with_store(
         let text = visible_text(&raw);
         let room = rooms.get(&slug).await;
         room.set_source(&source, &format).await;
-        let sha = match room.checkpoint("cli", "").await {
+        // Seeded and imported documents have no authenticated caller behind
+        // them: the operator ran a command. There is no account to record,
+        // and the empty display name is the one this path has always written.
+        let sha = match room
+            .checkpoint("cli", crate::room::Attribution::system())
+            .await
+        {
             Ok(Some(sha)) => sha,
             Ok(None) => room.tree().await.digest(),
             Err(err) => die(format!("could not store {}: {err}", document.file)),

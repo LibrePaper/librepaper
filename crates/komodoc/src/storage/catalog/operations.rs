@@ -449,6 +449,7 @@ impl Catalog {
                 "git_commit": checkpoint.git_commit,
                 "dirty": checkpoint.dirty,
                 "changed": checkpoint.changed,
+                "by_account": checkpoint.by_account,
             });
             value["new_head"] = serde_json::json!(checkpoint.sha);
             value["durable_coverage"] = serde_json::json!({
@@ -1019,6 +1020,13 @@ impl Catalog {
                     changed: row.get("changed").and_then(|value| {
                         (!value.is_null()).then(|| value.as_str().unwrap_or_default().to_string())
                     }),
+                    // Absent on a receipt staged before this column existed;
+                    // such a replay commits an unattributed row rather than
+                    // guessing an account from the display string.
+                    by_account: row
+                        .get("by_account")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
                 })
             });
             if staged
@@ -1092,11 +1100,17 @@ impl Catalog {
                     } else {
                         checkpoint.seq
                     };
+                    // A publication receipt is prepared before the objects are
+                    // written and committed after them.  Decide the
+                    // attribution here, where the row actually becomes
+                    // durable, so a receipt prepared before an erasure began
+                    // cannot commit the identity back into the catalogue.
+                    let (by, by_account) = Self::attribution_for_insert(tx, &checkpoint)?;
                     tx.execute(
                         "INSERT INTO checkpoints
                          (slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,
-                          size,label,git_commit,dirty,changed)
-                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                          size,label,git_commit,dirty,changed,by_account)
+                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
                         params![
                             checkpoint.slug,
                             checkpoint.sha,
@@ -1105,7 +1119,7 @@ impl Catalog {
                             checkpoint.tree_sha,
                             checkpoint.parent,
                             checkpoint.at,
-                            checkpoint.by,
+                            by,
                             checkpoint.why,
                             checkpoint.source_format,
                             checkpoint.size,
@@ -1113,6 +1127,7 @@ impl Catalog {
                             checkpoint.git_commit,
                             checkpoint.dirty as i64,
                             checkpoint.changed,
+                            by_account,
                         ],
                     )
                     .map_err(CatalogError::from)?;

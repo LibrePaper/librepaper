@@ -196,6 +196,7 @@ fn catalogue_retention_sheds_history_beyond_resident_tail() {
                 git_commit: String::new(),
                 dirty: false,
                 changed: Some("[]".into()),
+                by_account: None,
             })
             .unwrap();
     }
