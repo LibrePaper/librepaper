@@ -489,7 +489,7 @@ async fn failed_accept_broadcasts_a_sequence_a_peer_can_replay() {
     let peer = session::new_doc();
     session::apply_update(&peer, &initial).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    room.attach(99, "peer".into(), tx, false).await;
+    room.attach(99, tx, false).await;
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
         blob::blob_key("probe", &store::digest_of("B")),
@@ -696,7 +696,7 @@ async fn failed_deletion_rollback_converges_for_a_peer() {
     let peer = session::new_doc();
     session::apply_update(&peer, &initial).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    room.attach(99, "peer".into(), tx, false).await;
+    room.attach(99, tx, false).await;
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
         blob::blob_key("probe", &store::digest_of("A ")),

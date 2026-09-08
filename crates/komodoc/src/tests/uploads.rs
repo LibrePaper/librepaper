@@ -457,7 +457,7 @@ async fn failed_replacement_preserves_concurrent_editor_update() {
     let slug = text(&first, "slug").to_string();
     let room = server.rooms.get(&slug).await;
     let (sender, _receiver) = tokio::sync::mpsc::channel(32);
-    room.attach(99, "editor-address".into(), sender, true).await;
+    room.attach(99, sender, true).await;
     gate.armed.store(true, Ordering::SeqCst);
 
     let request = tokio::spawn({

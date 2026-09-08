@@ -365,7 +365,7 @@ async fn accumulated_update_quota(journaled: bool) {
     let sha = room.checkpoint_now("cli", "alice").await.unwrap().unwrap();
     store.commit_publication("quota-edit", &sha).await.unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
-    room.attach(55, "test".into(), tx, true).await;
+    room.attach(55, tx, true).await;
     let remote = session::new_doc();
     session::apply_update(&remote, &room.open_state(None).await.0).unwrap();
     let mut refused = false;

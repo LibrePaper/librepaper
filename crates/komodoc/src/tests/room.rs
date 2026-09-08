@@ -850,7 +850,7 @@ async fn read_only_room_relays_edits() {
     let room = other.get("probe").await;
     assert!(room.read_only());
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    room.attach(1, "test".into(), tx, true).await;
+    room.attach(1, tx, true).await;
     let doc = session::new_doc();
     session::apply_update(&doc, &room.open_state(None).await.0).unwrap();
     let before = session::encode_vector(&doc);
@@ -1328,7 +1328,7 @@ async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
     reopened.attach_store(store.clone());
     let room = reopened.get("probe").await;
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    room.attach(123, "test".into(), tx, true).await;
+    room.attach(123, tx, true).await;
     room.set_source("B", "markdown").await;
     room.state.lock().await.sockets.get_mut(&123).unwrap().sent = 1;
     *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));

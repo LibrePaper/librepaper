@@ -127,12 +127,13 @@ pub enum Outgoing {
 /// nothing is lost by hanging up on it.
 pub type Sender = mpsc::Sender<Outgoing>;
 
-/// One connected reader: where they are, which the rate limiter counts
-/// against, the channel their frames go out on, and -- for an editor -- how
-/// far their updates have got towards being durable.
+/// One connected reader: the channel their frames go out on, and -- for an
+/// editor -- how far their updates have got towards being durable. The
+/// caller's address is used for rate limiting where the socket attaches
+/// (`server::socket`) and is not kept here: nothing in this module reads a
+/// peer's address back, and carrying it would just be a second, staler copy
+/// of what the rate limiter already has.
 pub struct Peer {
-    #[allow(dead_code)]
-    pub address: String,
     pub tx: Sender,
     /// Whether this socket may write the document. A reader receives updates
     /// and sends none.
@@ -516,6 +517,16 @@ impl RoomSet {
     /// Mark this deployment as a local reader when another process already
     /// owns its writer lock.  This is useful to callers that acquire the lock
     /// before building a `RoomSet` and want to retain the failed claim.
+    /// `serve` itself never calls this -- it exits rather than start a second
+    /// writer over the same directory -- but the test harness's `server_over`
+    /// does, to model exactly the second-process-over-one-bucket
+    /// configuration `a_second_process_over_the_same_storage_does_not_write`
+    /// (tests/history.rs) exercises: every room this deployment opens comes
+    /// up read-only, per the `deployment_lock.get()` check below, instead of
+    /// each taking its own per-room fenced lease. Its only caller is
+    /// `#[cfg(test)]` code, so a non-test build of the library sees it as
+    /// unused; the allow below is for that build, not because it is
+    /// unreachable within this crate.
     #[allow(dead_code)]
     pub fn attach_deployment_lock_unavailable(&self) {
         let _ = self.deployment_lock.set(None);
@@ -1695,13 +1706,12 @@ impl Room {
         (state.comments.len(), open)
     }
 
-    pub async fn attach(&self, id: u64, address: String, tx: Sender, may_edit: bool) {
+    pub async fn attach(&self, id: u64, tx: Sender, may_edit: bool) {
         let mut state = self.state.lock().await;
         state.touched = now_unix();
         state.sockets.insert(
             id,
             Peer {
-                address,
                 tx,
                 may_edit,
                 sent: 0,
