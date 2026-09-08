@@ -172,15 +172,15 @@ impl Catalog {
             )?;
             let owner_sql = if let Some(id) = document.owner_id.as_deref() {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents WHERE owner_id = ?1",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents WHERE owner_id = ?1",
                     [id],
                     |r| r.get(0),
                 )
             } else {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents WHERE owner_id IS NULL AND owner_key = ?1",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents WHERE owner_id IS NULL AND owner_key = ?1",
                     [&document.owner_key],
                     |r| r.get(0),
                 )
@@ -188,7 +188,7 @@ impl Catalog {
             let owner_bytes: i64 = owner_sql.map_err(CatalogError::from)?;
             let total_bytes: i64 = tx
                 .query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0) FROM documents",
+                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents",
                     [],
                     |r| r.get(0),
                 )
@@ -255,32 +255,36 @@ impl Catalog {
             }
             Self::admit_upload_in_tx(tx, old_owner_id.as_deref(), &old_owner_key, uploads_limit)?;
             let new_counted = old_counted.max(document.size).max(document.counted_size);
+            let live_bytes: i64 = tx.query_row(
+                "SELECT admission_bytes-counted_size+maintenance_reserved FROM admission_documents WHERE slug=?1",
+                [&document.slug], |row| row.get(0),
+            )?;
             let owner_bytes: i64 = if let Some(owner_id) = old_owner_id.as_deref() {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents WHERE owner_id = ?1 AND slug <> ?2",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents WHERE owner_id = ?1 AND slug <> ?2",
                     params![owner_id, document.slug],
                     |row| row.get::<_, i64>(0),
                 )
             } else {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents WHERE owner_id IS NULL AND owner_key = ?1 AND slug <> ?2",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents WHERE owner_id IS NULL AND owner_key = ?1 AND slug <> ?2",
                     params![old_owner_key, document.slug],
                     |row| row.get::<_, i64>(0),
                 )
             }
             .map_err(CatalogError::from)?
-            .saturating_add(new_counted - maintenance);
+            .saturating_add(new_counted - maintenance).saturating_add(live_bytes);
             let total_bytes: i64 = tx
                 .query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents WHERE slug <> ?1",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents WHERE slug <> ?1",
                     [&document.slug],
                     |row| row.get::<_, i64>(0),
                 )
                 .map_err(CatalogError::from)?
-                .saturating_add(new_counted - maintenance);
+                .saturating_add(new_counted - maintenance).saturating_add(live_bytes);
             if owner_bytes > owner_limit {
                 return Err(CatalogError::Conflict(
                     "owner storage quota exceeded".into(),
@@ -501,14 +505,14 @@ impl Catalog {
             self.validate_owner_in_tx(tx, Some(owner_id))?;
             let (old_owner, owner_key, counted, maintenance): (Option<String>, String, i64, i64) = tx
                 .query_row(
-                    "SELECT owner_id,owner_key,counted_size,maintenance_reserved FROM documents WHERE slug=?1",
+                    "SELECT owner_id,owner_key,admission_bytes,0 FROM admission_documents WHERE slug=?1",
                     [slug], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
             if old_owner.as_deref() == Some(owner_id) && owner_key.is_empty() {
                 return Self::document_in_tx(tx, slug);
             }
             let target: i64 = tx.query_row(
-                "SELECT COALESCE(SUM(counted_size-maintenance_reserved),0) FROM documents WHERE owner_id=?1 AND slug<>?2",
+                "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1 AND slug<>?2",
                 params![owner_id, slug], |r| r.get(0)).map_err(CatalogError::from)?;
             if target.saturating_add(counted - maintenance) > owner_limit {
                 return Err(CatalogError::Conflict("owner storage quota exceeded".into()));
@@ -537,7 +541,7 @@ impl Catalog {
             self.validate_owner_in_tx(tx, Some(new_owner_id))?;
             let (old_owner, owner_key, counted, maintenance, status):
                 (Option<String>, String, i64, i64, String) = tx.query_row(
-                    "SELECT owner_id,owner_key,counted_size,maintenance_reserved,status FROM documents WHERE slug=?1",
+                    "SELECT owner_id,owner_key,admission_bytes,0,status FROM admission_documents WHERE slug=?1",
                     [slug], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
                 ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
             if status != "active" {
@@ -551,7 +555,7 @@ impl Catalog {
                 return Err(CatalogError::NotFound);
             }
             let target: i64 = tx.query_row(
-                "SELECT COALESCE(SUM(counted_size-maintenance_reserved),0) FROM documents WHERE owner_id=?1 AND slug<>?2",
+                "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1 AND slug<>?2",
                 params![new_owner_id, slug], |r| r.get(0),
             ).map_err(CatalogError::from)?;
             if target.saturating_add(counted - maintenance) > owner_limit {

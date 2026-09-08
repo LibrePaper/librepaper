@@ -25,6 +25,7 @@ mod comments;
 mod documents;
 mod journal;
 mod operations;
+mod room_edits;
 
 const LATEST_SCHEMA: i64 = 12;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
@@ -474,6 +475,22 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             tx.commit().map_err(CatalogError::from)?;
         }
+        // Unacknowledged edits live only in this writer process. Their quota
+        // reservations share the catalogue connection/transaction lock, but
+        // must vanish on restart along with the corresponding RAM state.
+        connection
+            .execute_batch(
+                "CREATE TEMP TABLE room_edit_reservations (
+                storage_id TEXT PRIMARY KEY,
+                pending_bytes INTEGER NOT NULL DEFAULT 0,
+                writing_bytes INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TEMP VIEW admission_documents AS
+             SELECT d.*, d.counted_size - d.maintenance_reserved
+                    + COALESCE(e.pending_bytes, 0) + COALESCE(e.writing_bytes, 0) AS admission_bytes
+             FROM main.documents d LEFT JOIN room_edit_reservations e USING(storage_id);",
+            )
+            .map_err(CatalogError::from)?;
         Ok(Self {
             connection: Mutex::new(connection),
             link_sealing_keys: RwLock::new(Vec::new()),

@@ -33,10 +33,83 @@ pub(super) fn rendering_object_key(storage_id: &str, name: &str) -> String {
     }
 }
 
+/// A reservation made before an asset upload leaves the room.  The reservation
+/// is deliberately independent of `RoomState`: the blob write can take an
+/// arbitrary amount of time, while its quota claim must remain visible to
+/// another upload and to the pruning pass.  Dropping the future releases the
+/// claim, including when the storage write is cancelled.
+struct AssetUpload<'a> {
+    room: &'a Room,
+    sha: String,
+    active: bool,
+}
+
+impl AssetUpload<'_> {
+    fn release(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Ok(mut uploads) = self.room.asset_uploads.lock() {
+            if let Some((_, count)) = uploads.get_mut(&self.sha) {
+                if *count <= 1 {
+                    uploads.remove(&self.sha);
+                } else {
+                    *count -= 1;
+                }
+            }
+        }
+        self.active = false;
+    }
+}
+
+impl Drop for AssetUpload<'_> {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 impl Room {
+    async fn catalog_rendering_size(&self, sha: &str, synctex: bool) -> Option<i64> {
+        let catalog = self.catalog.get()?;
+        let row = catalog.rendering(&self.slug, sha).ok().flatten()?;
+        if synctex && !row.synctex {
+            return None;
+        }
+        let size = if synctex {
+            row.synctex_bytes
+        } else {
+            row.bytes
+        };
+        if size <= 0 {
+            return None;
+        }
+        let key = if synctex {
+            crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
+        } else {
+            crate::storage::blob::rendering_key(&self.storage_id, sha)
+        };
+        self.blobs.get(&key).await.ok().map(|_| size)
+    }
+
+    /// Removes a blob whose catalogue object reservation was already
+    /// committed.  Uploads that become stale before their rendering metadata
+    /// is published must retire both sides; deleting only the blob leaves the
+    /// owner charged for bytes that no longer exist.
+    async fn delete_accounted_blob(&self, key: &str) -> bool {
+        let keys = [key.to_string()];
+        if self.blobs.delete(&keys).await.is_err() {
+            return false;
+        }
+        if let Some(catalog) = self.catalog.get() {
+            let _ = catalog.release_object_accounting_key(key);
+        }
+        true
+    }
+
     /// Names a figure in the document, at a path. The bytes are already in the
     /// store; this is what makes them a figure of this document.
     pub async fn name_asset(&self, path: &str, sha: &str) {
+        let _assets_writer = self.assets_write.lock().await;
         if self.read_only() {
             // Another server owns this room; naming a figure in our copy
             // would only diverge from the one being persisted (R23).
@@ -80,33 +153,47 @@ impl Room {
             ));
         }
         let sha = crate::document::store::digest_of_bytes(&body);
-        {
-            let mut state = self.state.lock().await;
+
+        if !self.hold().await {
+            return Err("this room is held by another server".into());
+        }
+
+        // Keep the gate only over the in-memory admission decision.  The
+        // object write can be slow, and holding it there would make a second
+        // upload wait for the first one even when there is room for both.
+        let mut upload = {
+            let _assets_writer = self.assets_write.lock().await;
+            let state = self.state.lock().await;
             if let Some(known) = state.session.asset_sizes.get(&sha) {
                 // Already here. Nothing is written and nothing is charged: the
                 // same bytes under the same name are the same object.
                 return Ok((sha, *known));
             }
-            // Reserved the moment the ceiling is checked, not after the
-            // write: two uploads racing the lease/storage await below would
-            // otherwise both read the same pre-upload total and both pass
-            // the same ceiling (R22). The reservation counts toward the
-            // ceiling exactly like a committed size until it either becomes
-            // one or is released below.
-            let held: i64 = state.session.asset_sizes.values().sum::<i64>()
-                + state.session.asset_reserved.values().sum::<i64>();
-            if held + size > max_assets {
-                return Err(format!(
-                    "this document has reached the {} MB it may keep in figures",
-                    max_assets >> 20
-                ));
+
+            let mut uploads = self
+                .asset_uploads
+                .lock()
+                .map_err(|_| "asset admission is unavailable".to_string())?;
+            if let Some((reserved_size, count)) = uploads.get_mut(&sha) {
+                debug_assert_eq!(*reserved_size, size);
+                *count = count.saturating_add(1);
+            } else {
+                let reserved: i64 = uploads.values().map(|(bytes, _)| *bytes).sum();
+                let held: i64 = state.session.asset_sizes.values().sum();
+                if held.saturating_add(reserved).saturating_add(size) > max_assets {
+                    return Err(format!(
+                        "this document has reached the {} MB it may keep in figures",
+                        max_assets >> 20
+                    ));
+                }
+                uploads.insert(sha.clone(), (size, 1));
             }
-            state.session.asset_reserved.insert(sha.clone(), size);
-        }
-        if !self.hold().await {
-            self.state.lock().await.session.asset_reserved.remove(&sha);
-            return Err("this room is held by another server".into());
-        }
+            AssetUpload {
+                room: self,
+                sha: sha.clone(),
+                active: true,
+            }
+        };
         if let Err(err) = self
             .blobs
             .put(
@@ -116,12 +203,15 @@ impl Room {
             )
             .await
         {
-            self.state.lock().await.session.asset_reserved.remove(&sha);
             return Err(err.to_string());
         }
         let (format, main) = {
+            let _assets_writer = self.assets_write.lock().await;
             let mut state = self.state.lock().await;
-            state.session.asset_reserved.remove(&sha);
+            if let Some(known) = state.session.asset_sizes.get(&sha) {
+                upload.release();
+                return Ok((sha, *known));
+            }
             state.session.asset_sizes.insert(sha.clone(), size);
             state
                 .session
@@ -132,6 +222,7 @@ impl Room {
                 session::main_path(&state.session.doc),
             )
         };
+        upload.release();
         // What the document costs has changed, and the index is what the
         // quota is decided from.
         self.record_size_now(None, &format, &main).await;
@@ -194,7 +285,8 @@ impl Room {
     /// used by rendering objects. Restore events have a unique event SHA but
     /// can reuse the PDF for the tree they restored.
     pub async fn rendering_sha(&self, sha: &str) -> Option<String> {
-        self.state
+        let resident = self
+            .state
             .lock()
             .await
             .manifest
@@ -208,7 +300,22 @@ impl Room {
                 } else {
                     point.tree_sha.clone()
                 }
+            });
+        resident.or_else(|| {
+            self.catalog.get().and_then(|catalog| {
+                catalog
+                    .checkpoint(&self.slug, sha)
+                    .ok()
+                    .flatten()
+                    .map(|point| {
+                        if point.tree_sha.is_empty() {
+                            point.sha
+                        } else {
+                            point.tree_sha
+                        }
+                    })
             })
+        })
     }
 
     /// Stores a rendering the browser compiled, under the SHA of the
@@ -231,6 +338,7 @@ impl Room {
         body: Vec<u8>,
         actor: Option<(&str, &str, &str)>,
     ) -> Result<i64, String> {
+        let _rendering_writer = self.rendering_write.lock().await;
         let size = body.len() as i64;
         if size == 0 {
             return Err("that rendering is empty".into());
@@ -242,6 +350,13 @@ impl Room {
                 // Already here. Nothing is written and nothing is charged.
                 return Ok(*known);
             }
+        }
+        // A failed rendering-size listing must not turn an existing immutable
+        // rendering into an overwrite.  The catalogue row plus the object is
+        // authoritative in that case, and also avoids replacing a rendering
+        // before an authorization failure can be reported.
+        if let Some(known) = self.catalog_rendering_size(sha, synctex).await {
+            return Ok(known);
         }
         if !self.hold().await {
             return Err("this room is held by another server".into());
@@ -255,18 +370,27 @@ impl Room {
         // otherwise the subsequent measured-history reconciliation can reject
         // a rendering that has already become durable.
         self.put_accounted(&key, body, "rendering").await?;
-        if let Some(catalog) = self.catalog.get() {
-            save_catalog_rendering(catalog, &self.slug, sha, synctex, size, actor)?;
-        }
         let (format, main) = {
-            let mut state = self.state.lock().await;
-            state.session.rendering_sizes.insert(name.clone(), size);
-            state.session.rendering_written_at.insert(name, now_unix());
+            let state = self.state.lock().await;
             (
                 state.session.format.clone(),
                 session::main_path(&state.session.doc),
             )
         };
+        if let Some(catalog) = self.catalog.get() {
+            if let Err(error) =
+                save_catalog_rendering(catalog, &self.slug, sha, synctex, size, actor)
+            {
+                let _ = self.delete_accounted_blob(&key).await;
+                self.record_size_now(None, &format, &main).await;
+                return Err(error);
+            }
+        }
+        {
+            let mut state = self.state.lock().await;
+            state.session.rendering_sizes.insert(name.clone(), size);
+            state.session.rendering_written_at.insert(name, now_unix());
+        }
         self.record_size_now(None, &format, &main).await;
         Ok(size)
     }
@@ -296,6 +420,7 @@ impl Room {
         body: Vec<u8>,
         actor: Option<(&str, &str, &str)>,
     ) -> Result<Option<i64>, String> {
+        let _rendering_writer = self.rendering_write.lock().await;
         let size = body.len() as i64;
         if size == 0 {
             return Err("that rendering is empty".into());
@@ -304,8 +429,8 @@ impl Room {
             return Err("this room is held by another server".into());
         }
         let name = rendering_name(sha, synctex);
-        let (format, main) = {
-            let mut state = self.state.lock().await;
+        {
+            let state = self.state.lock().await;
             let current = tree_of(&state.session.doc, &state.session.asset_sizes).0;
             if current.digest() != sha || current.input_digest() != inputs {
                 return Ok(None);
@@ -313,29 +438,81 @@ impl Room {
             if let Some(known) = state.session.rendering_sizes.get(&name) {
                 return Ok(Some(*known));
             }
-            let key = if synctex {
-                crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
-            } else {
-                crate::storage::blob::rendering_key(&self.storage_id, sha)
-            };
-            self.put_accounted(&key, body, "rendering").await?;
-            state.session.rendering_sizes.insert(name.clone(), size);
-            state.session.rendering_written_at.insert(name, now_unix());
-            (
-                state.session.format.clone(),
-                session::main_path(&state.session.doc),
-            )
-        };
-        if let Some(catalog) = self.catalog.get() {
-            save_catalog_rendering(catalog, &self.slug, sha, synctex, size, actor)?;
         }
-        self.record_size_now(None, &format, &main).await;
-        Ok(Some(size))
+        if let Some(known) = self.catalog_rendering_size(sha, synctex).await {
+            return Ok(Some(known));
+        }
+        let key = if synctex {
+            crate::storage::blob::rendering_synctex_key(&self.storage_id, sha)
+        } else {
+            crate::storage::blob::rendering_key(&self.storage_id, sha)
+        };
+        // Do not hold the document state mutex across the PDF upload. The
+        // final identity check and publication below close the race after the
+        // object lands; a source edit during the upload discards this object.
+        self.put_accounted(&key, body, "rendering").await?;
+        // Keep the final identity check and catalogue publication under the
+        // state lock. An edit can run during the upload, but it cannot land
+        // between this check and the metadata write and leave a stale PDF
+        // marked as the current rendering.
+        let (outcome, format, main) = {
+            let mut state = self.state.lock().await;
+            let current = tree_of(&state.session.doc, &state.session.asset_sizes).0;
+            let format = state.session.format.clone();
+            let main = session::main_path(&state.session.doc);
+            if current.digest() != sha || current.input_digest() != inputs {
+                (Ok(false), format, main)
+            } else {
+                let metadata: Result<(), String> = self.catalog.get().map_or(Ok(()), |catalog| {
+                    save_catalog_rendering(catalog, &self.slug, sha, synctex, size, actor)
+                });
+                match metadata {
+                    Ok(()) => {
+                        state.session.rendering_sizes.insert(name.clone(), size);
+                        state.session.rendering_written_at.insert(name, now_unix());
+                        (Ok(true), format, main)
+                    }
+                    Err(error) => (Err(error), format, main),
+                }
+            }
+        };
+        match outcome {
+            Err(error) => {
+                let _ = self.delete_accounted_blob(&key).await;
+                self.record_size_now(None, &format, &main).await;
+                Err(error)
+            }
+            Ok(false) => {
+                let _ = self.delete_accounted_blob(&key).await;
+                self.record_size_now(None, &format, &main).await;
+                Ok(None)
+            }
+            Ok(true) => {
+                self.record_size_now(None, &format, &main).await;
+                Ok(Some(size))
+            }
+        }
     }
 
     /// A rendering's bytes, for whoever may read the document.
     pub async fn read_rendering(&self, sha: &str, synctex: bool) -> Option<Vec<u8>> {
-        if !self.has_rendering(sha, synctex).await {
+        if let Some(catalog) = self.catalog.get() {
+            let registered = catalog
+                .rendering(&self.slug, sha)
+                .ok()
+                .flatten()
+                .is_some_and(|row| !synctex || row.synctex);
+            if !registered {
+                return None;
+            }
+        } else if !self
+            .state
+            .lock()
+            .await
+            .session
+            .rendering_sizes
+            .contains_key(&rendering_name(sha, synctex))
+        {
             return None;
         }
         let key = if synctex {
@@ -353,8 +530,12 @@ impl Room {
     /// what is decided here is only that they are not already held and that
     /// writing them is this server's to do, exactly like `put_rendering`.
     pub async fn put_rendering_provenance(&self, sha: &str, body: Vec<u8>) -> Result<i64, String> {
+        let _rendering_writer = self.rendering_write.lock().await;
         let size = body.len() as i64;
         let name = rendering_provenance_name(sha);
+        if let Some(known) = self.state.lock().await.session.rendering_sizes.get(&name) {
+            return Ok(*known);
+        }
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
@@ -406,42 +587,45 @@ impl Room {
     /// and it is answered here because the manifest and the live tree are both
     /// held here.
     pub async fn newest_rendering(&self) -> Option<(String, String, bool)> {
-        let (sha, at, content_sha) = {
+        // The resident manifest is deliberately only a tail.  A reopened
+        // room must consult the catalogue's complete history or an older
+        // retained PDF becomes invisible after enough newer checkpoints.
+        let points = if let Some(catalog) = self.catalog.get() {
+            load_catalog_history(catalog, &self.slug).ok()?
+        } else {
+            self.state.lock().await.manifest.checkpoints.clone()
+        };
+        let (sha, at, content_sha) = if let Some(catalog) = self.catalog.get() {
+            points.iter().rev().find_map(|point| {
+                let content = if point.tree_sha.is_empty() {
+                    &point.sha
+                } else {
+                    &point.tree_sha
+                };
+                catalog
+                    .rendering(&self.slug, content)
+                    .ok()
+                    .flatten()
+                    .map(|_| (point.sha.clone(), point.at.clone(), content.clone()))
+            })?
+        } else {
             let state = self.state.lock().await;
-            state
-                .manifest
-                .checkpoints
-                .iter()
-                .rev()
-                .find(|point| {
-                    let content = if point.tree_sha.is_empty() {
-                        &point.sha
-                    } else {
-                        &point.tree_sha
-                    };
-                    self.catalog.get().is_some_and(|catalog| {
-                        catalog
-                            .rendering(&self.slug, content)
-                            .ok()
-                            .flatten()
-                            .is_some()
-                    }) || state
+            points.iter().rev().find_map(|point| {
+                let content = if point.tree_sha.is_empty() {
+                    &point.sha
+                } else {
+                    &point.tree_sha
+                };
+                (state
+                    .session
+                    .rendering_sizes
+                    .contains_key(&rendering_name(content, false))
+                    || state
                         .session
                         .rendering_sizes
-                        .contains_key(&rendering_name(content, false))
-                        || state
-                            .session
-                            .rendering_sizes
-                            .contains_key(&rendering_name(content, true))
-                })
-                .map(|point| {
-                    let content = if point.tree_sha.is_empty() {
-                        point.sha.clone()
-                    } else {
-                        point.tree_sha.clone()
-                    };
-                    (point.sha.clone(), point.at.clone(), content)
-                })?
+                        .contains_key(&rendering_name(content, true)))
+                .then(|| (point.sha.clone(), point.at.clone(), content.clone()))
+            })?
         };
         let current = self.tree().await.digest() == content_sha;
         if !self.has_rendering(&content_sha, false).await
@@ -465,6 +649,10 @@ impl Room {
     /// says, because a browser uploads a PDF and its SyncTeX file in two
     /// requests, and a checkpoint can land between them.
     pub(super) async fn prune_renderings(&self) {
+        // Checkpoint and label writers use manifest_write.  Keep that order
+        // before rendering_write to avoid a checkpoint/pruner lock cycle.
+        let _manifest_writer = self.manifest_write.lock().await;
+        let _rendering_writer = self.rendering_write.lock().await;
         let now = now_unix();
         let grace = self.config.asset_grace;
         let catalog_history = if let Some(catalog) = self.catalog.get() {
@@ -674,6 +862,33 @@ impl Room {
                 continue;
             }
             gone.push((object.key.clone(), sha.to_string()));
+        }
+        if gone.is_empty() {
+            return;
+        }
+        // Recheck the live document immediately before deletion.  Do not hold
+        // this gate during the history/tree scans above: it is only the final
+        // short section that must exclude an upload, naming update, restore,
+        // or generic Yjs update from racing the delete.
+        let _assets_writer = self.assets_write.lock().await;
+        let delete_now = now_unix();
+        {
+            let state = self.state.lock().await;
+            let uploads = self.asset_uploads.lock().ok();
+            let live: std::collections::HashSet<String> = session::assets_of(&state.session.doc)
+                .into_values()
+                .collect();
+            gone.retain(|(_, sha)| {
+                !live.contains(sha)
+                    && !uploads
+                        .as_ref()
+                        .is_some_and(|uploads| uploads.contains_key(sha))
+                    && !state
+                        .session
+                        .asset_written_at
+                        .get(sha)
+                        .is_some_and(|at| delete_now - at < grace)
+            });
         }
         if gone.is_empty() {
             return;

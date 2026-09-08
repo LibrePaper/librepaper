@@ -245,12 +245,17 @@ async fn stage_room_publication(
     }
     rooms.attach_store(store);
     let room = rooms.get(slug).await;
-    room.reserve_publication_checkpoint().unwrap();
+    let mut publication_token = room.reserve_publication_checkpoint().unwrap();
     room.set_main_file(source, "markdown", "main.md").await;
-    room.checkpoint_publication_now("cli", "alice")
+    let sha = room
+        .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
         .unwrap()
-        .unwrap()
+        .unwrap();
+    // This helper models the checkpoint staging boundary only; callers test
+    // receipt recovery separately, so keep the admitted token charged.
+    publication_token.commit();
+    sha
 }
 
 /// Production publication receipts hide an admitted row until its staged

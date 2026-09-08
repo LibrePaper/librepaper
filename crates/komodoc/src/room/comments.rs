@@ -321,8 +321,22 @@ pub(super) fn valid_source(
     anchor: Option<&SourceAnchor>,
 ) -> Option<SourceAnchor> {
     let anchor = anchor?;
-    let exact = clean(&anchor.exact, config.caps.exact).trim().to_string();
+    let cleaned: String = anchor
+        .exact
+        .chars()
+        .filter(|&c| {
+            let code = c as u32;
+            !(code < 0x09
+                || (0x0b..=0x0c).contains(&code)
+                || (0x0e..=0x1f).contains(&code)
+                || code == 0x7f)
+        })
+        .collect();
+    let exact = cleaned.trim().to_string();
     if exact.is_empty() {
+        return None;
+    }
+    if exact.chars().count() > config.caps.exact {
         return None;
     }
     let path = anchor.path.trim();
@@ -390,6 +404,18 @@ impl Room {
         budget: Option<i64>,
         is_owner: bool,
     ) -> (Value, bool) {
+        // Suggestions are document operations as well as comment metadata.
+        // Serialize comment decisions with acceptance so a resolve/delete
+        // cannot race the CRDT edit and leave the catalogue outcome detached
+        // from the checkpoint it describes.
+        let _restore_writer = self.restore_write.lock().await;
+        if !self.hold().await {
+            return (
+                json!({"type": "error", "message": "this room is held by another server", "temp_id": incoming.temp_id,
+                    "request_id": incoming.request_id}),
+                false,
+            );
+        }
         let mut state = self.state.lock().await;
         let config = self.config.clone();
 
@@ -451,6 +477,16 @@ impl Room {
             }
         }
 
+        // Reject malformed operation names before charging the caller's rate
+        // budget. Otherwise an unknown frame can consume the same admission
+        // slot as a real comment and make a subsequent valid write fail.
+        if !matches!(
+            incoming.kind.as_str(),
+            "comment" | "reply" | "resolve" | "delete" | "anchor"
+        ) {
+            return fail("unknown message type");
+        }
+
         // What the document says at this moment, by name. The socket takes a
         // checkpoint before a comment reaches here, so for a comment this is
         // the text the reviewer was looking at; for a resolve it is the text
@@ -484,6 +520,18 @@ impl Room {
             // it here would say it is merely unresolved rather than say what
             // actually happened to the text.
             let is_suggestion = state.comments[index].motivation == "editing";
+            if is_suggestion && !is_owner {
+                return fail("only an editor may decide a suggestion");
+            }
+            if is_suggestion {
+                if let Some(catalog) = self.catalog.get() {
+                    match catalog.pending_suggestion_accept(&self.slug, &incoming.comment_id) {
+                        Ok(true) => return fail("a suggestion acceptance is still pending"),
+                        Ok(false) => {}
+                        Err(_) => return fail(UNSAVED),
+                    }
+                }
+            }
             if is_suggestion && !incoming.resolved && state.comments[index].outcome == "accepted" {
                 return fail(
                     "an accepted suggestion cannot be reopened; restore the checkpoint instead",
@@ -536,7 +584,19 @@ impl Room {
                     String::new()
                 };
             }
-            if self.save(&mut state).await.is_err() {
+            let persisted = if let Some(catalog) = self.catalog.get() {
+                catalog_comment_row(&self.slug, &state.comments[index])
+                    .map_err(|error| error.to_string())
+                    .and_then(|row| {
+                        catalog
+                            .update_comment(&row)
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    })
+            } else {
+                self.save(&mut state).await
+            };
+            if persisted.is_err() {
                 state.comments[index].resolved = was_resolved;
                 state.comments[index].resolved_at = was_resolved_at;
                 state.comments[index].resolved_in = was_resolved_in;
@@ -563,6 +623,15 @@ impl Room {
             else {
                 return fail("unknown comment");
             };
+            if state.comments[index].motivation == "editing" {
+                if let Some(catalog) = self.catalog.get() {
+                    match catalog.pending_suggestion_accept(&self.slug, &incoming.comment_id) {
+                        Ok(true) => return fail("a suggestion acceptance is still pending"),
+                        Ok(false) => {}
+                        Err(_) => return fail(UNSAVED),
+                    }
+                }
+            }
             if !deletable(&state.comments[index], author, is_owner) {
                 return fail("you may only delete your own comments");
             }
@@ -613,7 +682,19 @@ impl Room {
                 return fail("that source anchor is not valid");
             };
             state.comments[index].source = Some(anchor.clone());
-            if self.save(&mut state).await.is_err() {
+            let persisted = if let Some(catalog) = self.catalog.get() {
+                catalog_comment_row(&self.slug, &state.comments[index])
+                    .map_err(|error| error.to_string())
+                    .and_then(|row| {
+                        catalog
+                            .update_comment(&row)
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    })
+            } else {
+                self.save(&mut state).await
+            };
+            if persisted.is_err() {
                 state.comments[index].source = None;
                 return fail(UNSAVED);
             }
@@ -723,12 +804,43 @@ impl Room {
                 if motivation == "editing" && incoming.proposed.is_none() {
                     return fail("a suggestion needs a proposal");
                 }
-                let proposed = (motivation == "editing").then(|| {
-                    clean(
-                        incoming.proposed.as_deref().unwrap_or_default(),
-                        config.caps.exact,
-                    )
-                });
+                if motivation == "editing" {
+                    if let Some(source) = incoming.source.as_ref() {
+                        let cleaned: String = source
+                            .exact
+                            .chars()
+                            .filter(|&c| {
+                                let code = c as u32;
+                                !(code < 0x09
+                                    || (0x0b..=0x0c).contains(&code)
+                                    || (0x0e..=0x1f).contains(&code)
+                                    || code == 0x7f)
+                            })
+                            .collect();
+                        if cleaned.trim().chars().count() > config.caps.exact {
+                            return fail("the source anchor is too long");
+                        }
+                    }
+                }
+                let proposed = if motivation == "editing" {
+                    let raw = incoming.proposed.as_deref().unwrap_or_default();
+                    let cleaned: String = raw
+                        .chars()
+                        .filter(|&c| {
+                            let code = c as u32;
+                            !(code < 0x09
+                                || (0x0b..=0x0c).contains(&code)
+                                || (0x0e..=0x1f).contains(&code)
+                                || code == 0x7f)
+                        })
+                        .collect();
+                    if cleaned.chars().count() > config.caps.exact {
+                        return fail("the suggestion is too long");
+                    }
+                    Some(cleaned)
+                } else {
+                    None
+                };
                 state.seq += 1;
                 // The selector is the durable anchor. Offsets are recomputed in
                 // the reader against whatever version of the document is on

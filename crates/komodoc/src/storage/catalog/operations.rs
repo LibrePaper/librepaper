@@ -32,15 +32,15 @@ impl Catalog {
                 .ok_or(CatalogError::NotFound)?;
             let owner_bytes: i64 = if let Some(id) = owner_id {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents WHERE owner_id = ?1",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents WHERE owner_id = ?1",
                     [id],
                     |row| row.get(0),
                 )
             } else {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents WHERE owner_id IS NULL AND owner_key = ?1",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents WHERE owner_id IS NULL AND owner_key = ?1",
                     [owner_key],
                     |row| row.get(0),
                 )
@@ -48,8 +48,8 @@ impl Catalog {
             .map_err(CatalogError::from)?;
             let total_bytes: i64 = tx
                 .query_row(
-                    "SELECT COALESCE(SUM(counted_size - maintenance_reserved), 0)
-                     FROM documents",
+                    "SELECT COALESCE(SUM(admission_bytes),0)
+                     FROM admission_documents",
                     [],
                     |row| row.get(0),
                 )
@@ -547,14 +547,14 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             let owner_bytes: i64 = if let Some(owner_id) = owner_id {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size),0) FROM documents WHERE owner_id=?1",
+                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1",
                     [owner_id],
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?
             } else {
                 tx.query_row(
-                    "SELECT COALESCE(SUM(counted_size),0) FROM documents
+                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents
                      WHERE owner_id IS NULL AND owner_key=?1",
                     [owner_key],
                     |row| row.get(0),
@@ -562,7 +562,7 @@ impl Catalog {
                 .map_err(CatalogError::from)?
             };
             let total: i64 = tx
-                .query_row("SELECT bytes FROM totals WHERE id=1", [], |row| row.get(0))
+                .query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents", [], |row| row.get(0))
                 .map_err(CatalogError::from)?;
             if owner_limit >= 0 && owner_bytes.saturating_add(bytes) > owner_limit {
                 return Err(CatalogError::Conflict("owner byte quota exceeded".into()));
@@ -710,9 +710,16 @@ impl Catalog {
                 return Ok(new_bytes.saturating_sub(old_bytes));
             }
             let delta = new_bytes.saturating_sub(old_bytes);
-            let owner_bytes: i64 = if let Some(id)=owner_id { tx.query_row("SELECT COALESCE(SUM(counted_size-maintenance_reserved),0) FROM documents WHERE owner_id=?1",[id],|r|r.get(0)) } else { tx.query_row("SELECT COALESCE(SUM(counted_size-maintenance_reserved),0) FROM documents WHERE owner_id IS NULL AND owner_key=?1",[owner_key],|r|r.get(0)) }.map_err(CatalogError::from)?;
-            let total:i64=tx.query_row("SELECT COALESCE(SUM(counted_size-maintenance_reserved),0) FROM documents",[],|r|r.get(0)).map_err(CatalogError::from)?;
-            let charge_delta = if pending_publication.is_none() { delta } else { 0 };
+            let owner_bytes: i64 = if let Some(id)=owner_id { tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1",[id],|r|r.get(0)) } else { tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id IS NULL AND owner_key=?1",[owner_key],|r|r.get(0)) }.map_err(CatalogError::from)?;
+            let total:i64=tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents",[],|r|r.get(0)).map_err(CatalogError::from)?;
+            // Session/journal publication spends the quota already held for
+            // this snapshot. Other object writes still include that reservation.
+            let credit: i64 = if kind.starts_with("journal_") || (kind == "mutable" && object_key.starts_with("sessions/")) {
+                tx.query_row("SELECT writing_bytes FROM room_edit_reservations WHERE storage_id=?1", [&storage_id], |row| row.get(0)).optional()?.unwrap_or(0)
+            } else { 0 };
+            let charge_delta = if pending_publication.is_none() { delta.max(0) } else { 0 };
+            let owner_bytes = owner_bytes.saturating_sub(credit);
+            let total = total.saturating_sub(credit);
             if owner_limit>=0 && owner_bytes.saturating_add(charge_delta)>owner_limit { return Err(CatalogError::Conflict("owner byte quota exceeded".into())); }
             if total_limit>=0 && total.saturating_add(charge_delta)>total_limit { return Err(CatalogError::Conflict("deployment byte quota exceeded".into())); }
             tx.execute("INSERT INTO object_reservations(storage_id,operation_id,object_key,old_bytes,new_bytes,created_at) VALUES(?1,?2,?3,?4,?5,unixepoch()) ON CONFLICT(storage_id,operation_id,object_key) DO UPDATE SET new_bytes=excluded.new_bytes",params![storage_id,operation_id,object_key,old_bytes,new_bytes]).map_err(CatalogError::from)?;
@@ -752,7 +759,7 @@ impl Catalog {
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?;
-            if pending.is_none() && new_bytes<old_bytes { let released=old_bytes-new_bytes; tx.execute("UPDATE documents SET counted_size=counted_size-?2 WHERE storage_id=?1",params![storage_id,released]).map_err(CatalogError::from)?; tx.execute("UPDATE totals SET bytes=bytes-?1 WHERE id=1",[released]).map_err(CatalogError::from)?; }
+            if pending.is_none() && new_bytes<old_bytes { let released: i64 = tx.query_row("SELECT MIN(?2,MAX(0,counted_size-size)) FROM documents WHERE storage_id=?1",params![storage_id,old_bytes-new_bytes],|row|row.get(0))?; tx.execute("UPDATE documents SET counted_size=counted_size-?2 WHERE storage_id=?1",params![storage_id,released]).map_err(CatalogError::from)?; tx.execute("UPDATE totals SET bytes=bytes-?1 WHERE id=1",[released]).map_err(CatalogError::from)?; }
             Ok(())
         })
     }

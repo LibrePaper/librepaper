@@ -14,7 +14,9 @@ use yrs::{Map, Transact};
 /// A room already holding one checkpoint of "A", the same fixture the review
 /// used: a store and a `RoomSet` over one temporary directory, seeded and
 /// checkpointed once so every test starts from a known history.
-async fn fixture(config: Configuration) -> (tempfile::TempDir, Arc<store::Store>, room::RoomSet) {
+pub(super) async fn fixture(
+    config: Configuration,
+) -> (tempfile::TempDir, Arc<store::Store>, room::RoomSet) {
     let dir = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path()));
     let config = Arc::new(config);
@@ -83,11 +85,11 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
         .await
         .unwrap();
     let room = rooms.get("catalog-history").await;
-    room.reserve_publication_checkpoint().unwrap();
+    let mut publication_token = room.reserve_publication_checkpoint().unwrap();
     room.set_main_file("revision-0", "markdown", "main.md")
         .await;
     let initial_sha = room
-        .checkpoint_publication_now("cli", "alice")
+        .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
         .unwrap()
         .unwrap();
@@ -95,6 +97,7 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
         .commit_publication("catalog-history", &initial_sha)
         .await
         .unwrap();
+    publication_token.commit();
     for revision in 1..=205 {
         room.set_source(&format!("revision-{revision}"), "markdown")
             .await;
@@ -146,15 +149,15 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
 /// A `BlobStore` wrapper that can pause one specific (op, key) call until told
 /// to resume, and fail every call whose key starts with a given prefix. Lets a
 /// test land an edit or a retry at an exact point inside a checkpoint.
-struct HookStore {
-    inner: Arc<dyn BlobStore>,
-    pause: Mutex<Option<(String, String)>>,
-    fail: Mutex<Option<String>>,
-    reached: tokio::sync::Notify,
-    resume: tokio::sync::Notify,
+pub(super) struct HookStore {
+    pub(super) inner: Arc<dyn BlobStore>,
+    pub(super) pause: Mutex<Option<(String, String)>>,
+    pub(super) fail: Mutex<Option<String>>,
+    pub(super) reached: tokio::sync::Notify,
+    pub(super) resume: tokio::sync::Notify,
 }
 impl HookStore {
-    fn new(inner: Arc<dyn BlobStore>) -> Arc<Self> {
+    pub(super) fn new(inner: Arc<dyn BlobStore>) -> Arc<Self> {
         Arc::new(Self {
             inner,
             pause: Mutex::new(None),
@@ -208,6 +211,7 @@ impl BlobStore for HookStore {
         self.inner.swap(k, b, e).await
     }
     async fn list(&self, p: &str) -> BlobResult<Vec<BlobInfo>> {
+        self.hook("list", p).await?;
         self.inner.list(p).await
     }
     async fn delete(&self, k: &[String]) -> BlobResult<()> {
@@ -987,10 +991,10 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
         .prepare_publication("comment-receipt", "initial-request", "publish", None)
         .await
         .unwrap();
-    room.reserve_publication_checkpoint().unwrap();
+    let mut publication_token = room.reserve_publication_checkpoint().unwrap();
     room.set_main_file("initial", "markdown", "main.md").await;
     let initial_sha = room
-        .checkpoint_publication_now("cli", "alice")
+        .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
         .unwrap()
         .unwrap();
@@ -998,6 +1002,7 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
         .commit_publication("comment-receipt", &initial_sha)
         .await
         .unwrap();
+    publication_token.commit();
     let comment = room::Message {
         kind: "comment".into(),
         body: "please review".into(),
@@ -1120,10 +1125,10 @@ async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
     let rooms = room::RoomSet::new(blobs, config);
     rooms.attach_store(store.clone());
     let room = rooms.get("budgeted").await;
-    room.reserve_publication_checkpoint().unwrap();
+    let mut publication_token = room.reserve_publication_checkpoint().unwrap();
     room.set_main_file("source", "markdown", "main.md").await;
     let initial_sha = room
-        .checkpoint_publication_now("cli", "alice")
+        .checkpoint_publication_now("cli", "alice", &mut publication_token)
         .await
         .unwrap()
         .unwrap();
@@ -1131,6 +1136,7 @@ async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
         .commit_publication("budgeted", &initial_sha)
         .await
         .unwrap();
+    publication_token.commit();
     for _ in 0..300 {
         assert!(catalog
             .admit_checkpoint("budgeted", 7 * 3600, false)

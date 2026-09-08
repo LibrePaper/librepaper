@@ -109,6 +109,29 @@ impl Catalog {
         owner_limit: i64,
         deployment_limit: i64,
     ) -> CatalogResult<bool> {
+        Ok(self
+            .admit_checkpoint_token_with_limits(
+                slug,
+                now,
+                automatic,
+                owner_limit,
+                deployment_limit,
+            )?
+            .is_some())
+    }
+
+    /// Admit a checkpoint and return the immutable identity of the budget
+    /// bucket that was charged. Callers retain this identity while an
+    /// asynchronous publication is in flight; refunds must not recalculate
+    /// it from a document whose owner may have changed meanwhile.
+    pub fn admit_checkpoint_token_with_limits(
+        &self,
+        slug: &str,
+        now: i64,
+        automatic: bool,
+        owner_limit: i64,
+        deployment_limit: i64,
+    ) -> CatalogResult<Option<(String, i64)>> {
         if now < 0 {
             return Err(CatalogError::Invalid("negative checkpoint time".into()));
         }
@@ -150,7 +173,7 @@ impl Catalog {
                 .unwrap_or(0);
             if owner_used >= owner_limit || deployment_used >= deployment_limit {
                 if automatic {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 return Err(CatalogError::Conflict(
                     "checkpoint budget exhausted; retry later".into(),
@@ -170,7 +193,7 @@ impl Catalog {
                 [bucket],
             )
             .map_err(CatalogError::from)?;
-            Ok(true)
+            Ok(Some((owner, bucket)))
         })
     }
 
@@ -249,6 +272,66 @@ impl Catalog {
         })
     }
 
+    /// Shed the complete persisted history, rather than only the bounded
+    /// resident tail held by a room. Metadata is removed in this transaction
+    /// and the returned SHAs can then be deleted from object storage.
+    pub fn shed_checkpoints_to_limits(
+        &self,
+        slug: &str,
+        keep_count: usize,
+        allowance: Option<i64>,
+        protected: &str,
+    ) -> CatalogResult<Vec<String>> {
+        self.immediate(|tx| {
+            let mut rows = {
+                let mut statement = tx
+                    .prepare(
+                        "SELECT sha,size,label FROM checkpoints
+                         WHERE slug=?1 ORDER BY seq",
+                    )
+                    .map_err(CatalogError::from)?;
+                let rows = statement
+                    .query_map([slug], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })
+                    .map_err(CatalogError::from)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(CatalogError::from)?;
+                rows
+            };
+            let mut bytes: i64 = rows.iter().map(|(_, size, _)| *size).sum();
+            let mut removed = Vec::new();
+            let fits = |count: usize, bytes: i64| {
+                (keep_count == 0 || count <= keep_count)
+                    && allowance.is_none_or(|limit| bytes <= limit)
+            };
+            while !fits(rows.len(), bytes) && rows.len() > 1 {
+                let index = rows[..rows.len() - 1]
+                    .iter()
+                    .position(|(sha, _, label)| label.is_empty() && sha != protected)
+                    .or_else(|| {
+                        rows[..rows.len() - 1]
+                            .iter()
+                            .position(|(sha, _, _)| sha != protected)
+                    });
+                let Some(index) = index else { break };
+                let (sha, size, _) = rows.remove(index);
+                tx.execute(
+                    "DELETE FROM checkpoints WHERE slug=?1 AND sha=?2",
+                    params![slug, sha],
+                )
+                .map_err(CatalogError::from)?;
+                bytes = bytes.saturating_sub(size);
+                removed.push(sha);
+            }
+            Ok(removed)
+        })
+    }
+
     /// Documents whose persisted automatic-checkpoint clock is due.  This is
     /// deliberately a bounded keyset query so the scheduler can make progress
     /// over a large catalogue without loading every document into memory.
@@ -319,17 +402,31 @@ impl Catalog {
                 .optional()
                 .map_err(CatalogError::from)?
                 .ok_or(CatalogError::NotFound)?;
-            let bucket = now / 3600;
-            for (scope, owner_key) in [("owner", owner.as_str()), ("deployment", "")] {
-                tx.execute(
-                    "UPDATE checkpoint_budgets SET used=MAX(used-1,0)
-                     WHERE scope=?1 AND bucket=?2 AND owner_key=?3",
-                    params![scope, bucket, owner_key],
-                )
-                .map_err(CatalogError::from)?;
-            }
-            Ok(())
+            Self::refund_checkpoint_in_tx(tx, &owner, now / 3600)
         })
+    }
+
+    /// Refund a previously admitted token using its original owner and
+    /// bucket. This remains valid if ownership or the current wall-clock hour
+    /// changed before the asynchronous operation failed.
+    pub fn refund_checkpoint_token(&self, owner: &str, bucket: i64) -> CatalogResult<()> {
+        self.immediate(|tx| Self::refund_checkpoint_in_tx(tx, owner, bucket))
+    }
+
+    fn refund_checkpoint_in_tx(
+        tx: &Transaction<'_>,
+        owner: &str,
+        bucket: i64,
+    ) -> CatalogResult<()> {
+        for (scope, owner_key) in [("owner", owner), ("deployment", "")] {
+            tx.execute(
+                "UPDATE checkpoint_budgets SET used=MAX(used-1,0)
+                     WHERE scope=?1 AND bucket=?2 AND owner_key=?3",
+                params![scope, bucket, owner_key],
+            )
+            .map_err(CatalogError::from)?;
+        }
+        Ok(())
     }
 
     /// Bound the persisted rolling counters without touching the current or

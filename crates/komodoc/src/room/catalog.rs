@@ -168,13 +168,14 @@ pub(super) fn save_catalog_comments(
     seq: &mut i64,
     comments: &mut [Comment],
 ) -> Result<(), String> {
-    let existing = load_catalog_comments(catalog, slug)
-        .map_err(|err| err.to_string())?
-        .1;
     for item in comments.iter_mut() {
-        let current = existing.iter().find(|old| old.id == item.id);
+        let current = match catalog.comment(slug, &item.id) {
+            Ok(row) => Some(row),
+            Err(crate::storage::catalog::CatalogError::NotFound) => None,
+            Err(err) => return Err(err.to_string()),
+        };
         let mut row = catalog_comment_row(slug, item)?;
-        if let Some(current) = current {
+        if let Some(current) = current.as_ref() {
             row.seq = current.seq;
             catalog
                 .update_comment(&row)
@@ -188,7 +189,18 @@ pub(super) fn save_catalog_comments(
             item.seq = inserted.seq;
             *seq = (*seq).max(inserted.seq);
         }
-        let current_replies = current.map(|item| item.replies.clone()).unwrap_or_default();
+        let current_replies = catalog
+            .replies(slug, &item.id, 100)
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .map(|reply| Reply {
+                id: reply.id,
+                body: reply.body,
+                creator: reply.creator,
+                author: reply.author,
+                created: reply.created,
+            })
+            .collect::<Vec<_>>();
         let desired_reply_ids: std::collections::HashSet<String> =
             item.replies.iter().map(|reply| reply.id.clone()).collect();
         for reply in &item.replies {
