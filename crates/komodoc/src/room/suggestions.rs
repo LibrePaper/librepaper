@@ -220,14 +220,18 @@ impl Room {
         let staged_update = if let (Some(catalog), false) =
             (self.catalog.get(), request_id.is_empty())
         {
-            match catalog.begin_suggestion_accept(
+            match begin_suggestion_accept(
+                catalog,
                 &self.slug,
                 comment_id,
                 request_id,
                 &acceptance_digest,
                 now_unix(),
-            ) {
-                Ok(Some(done)) => {
+            )
+            .await
+            .map_err(AcceptError::Failed)?
+            {
+                Some(done) => {
                     let resolved_at = done.resolved_at.clone().unwrap_or_default();
                     let mut state = self.state.lock().await;
                     if let Some(index) =
@@ -246,26 +250,32 @@ impl Room {
                         resolved_at,
                     });
                 }
-                Ok(None) => {
-                    if let Some((recorded_id, sha, resolved_at)) = catalog
-                        .suggestion_accept_checkpoint(&self.slug, request_id, &acceptance_digest)
-                        .map_err(|error| AcceptError::Failed(error.to_string()))?
+                None => {
+                    if let Some((recorded_id, sha, resolved_at)) = suggestion_accept_checkpoint(
+                        catalog,
+                        &self.slug,
+                        request_id,
+                        &acceptance_digest,
+                    )
+                    .await
+                    .map_err(AcceptError::Failed)?
                     {
                         if recorded_id != comment_id {
                             return Err(AcceptError::Failed(
                                 "suggestion acceptance receipt names another comment".into(),
                             ));
                         }
-                        catalog
-                            .finish_suggestion_accept(
-                                &self.slug,
-                                comment_id,
-                                request_id,
-                                &acceptance_digest,
-                                &sha,
-                                &resolved_at,
-                            )
-                            .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        finish_suggestion_accept(
+                            catalog,
+                            &self.slug,
+                            comment_id,
+                            request_id,
+                            &acceptance_digest,
+                            &sha,
+                            &resolved_at,
+                        )
+                        .await
+                        .map_err(AcceptError::Failed)?;
                         let mut state = self.state.lock().await;
                         if let Some(index) =
                             state.comments.iter().position(|item| item.id == comment_id)
@@ -280,11 +290,10 @@ impl Room {
                         self.broadcast_current_state().await;
                         return Ok(Accepted::Noop { sha, resolved_at });
                     }
-                    catalog
-                        .suggestion_accept_update(&self.slug, request_id, &acceptance_digest)
-                        .map_err(|error| AcceptError::Failed(error.to_string()))?
+                    suggestion_accept_update(catalog, &self.slug, request_id, &acceptance_digest)
+                        .await
+                        .map_err(AcceptError::Failed)?
                 }
-                Err(error) => return Err(AcceptError::Failed(error.to_string())),
             }
         } else {
             None
@@ -330,9 +339,10 @@ impl Room {
                 // into a spurious stale error.
                 if base_point.is_none() {
                     if let Some(catalog) = self.catalog.get() {
-                        let point = catalog
-                            .checkpoint_by_content_sha(&self.slug, &comment.revision)
-                            .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        let point =
+                            read_checkpoint_by_content_sha(catalog, &self.slug, &comment.revision)
+                                .await
+                                .map_err(AcceptError::Failed)?;
                         base_point = point.map(|point| crate::document::history::Checkpoint {
                             sha: point.sha,
                             tree_sha: point.tree_sha,
@@ -460,15 +470,16 @@ impl Room {
                 }
             };
             if let (Some(catalog), false) = (self.catalog.get(), request_id.is_empty()) {
-                catalog
-                    .stage_suggestion_accept_update(
-                        &self.slug,
-                        comment_id,
-                        request_id,
-                        &acceptance_digest,
-                        &update,
-                    )
-                    .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                stage_suggestion_accept_update(
+                    catalog,
+                    &self.slug,
+                    comment_id,
+                    request_id,
+                    &acceptance_digest,
+                    &update,
+                )
+                .await
+                .map_err(AcceptError::Failed)?;
             }
             update
         };
@@ -524,30 +535,26 @@ impl Room {
         let resolved_at = timestamp();
         if let Some(catalog) = self.catalog.get() {
             if !request_id.is_empty() {
-                if let Err(error) = catalog.record_suggestion_accept_checkpoint(
+                // Recording the checkpoint in the receipt and settling the
+                // comment are one job: a caller that goes away between them
+                // used to leave the second unissued, and the service now owns
+                // both once the request is dispatched. On failure the
+                // checkpoint remains valid and the prepared receipt makes the
+                // next identical request resumable, so this does not claim
+                // success while the durable comment outcome lags.
+                if let Err(error) = record_and_finish_suggestion_accept(
+                    catalog,
                     &self.slug,
                     comment_id,
                     request_id,
                     &acceptance_digest,
                     &sha,
                     &resolved_at,
-                ) {
+                )
+                .await
+                {
                     self.broadcast_accept_and_current(&update).await;
-                    return Err(AcceptError::Failed(error.to_string()));
-                }
-                if let Err(error) = catalog.finish_suggestion_accept(
-                    &self.slug,
-                    comment_id,
-                    request_id,
-                    &acceptance_digest,
-                    &sha,
-                    &resolved_at,
-                ) {
-                    // The checkpoint remains valid and the prepared receipt
-                    // makes the next identical request resumable.  Do not
-                    // claim success while the durable comment outcome lags.
-                    self.broadcast_accept_and_current(&update).await;
-                    return Err(AcceptError::Failed(error.to_string()));
+                    return Err(AcceptError::Failed(error));
                 }
             }
         }
@@ -588,7 +595,7 @@ impl Room {
             return Err("this comment is not a suggestion".into());
         }
         if let Some(catalog) = self.catalog.get() {
-            match catalog.pending_suggestion_accept(&self.slug, comment_id) {
+            match pending_suggestion_accept(catalog, &self.slug, comment_id).await {
                 Ok(true) => return Err("a suggestion acceptance is still pending".into()),
                 Ok(false) => {}
                 Err(_) => return Err("could not save that comment; try again".into()),
@@ -610,20 +617,21 @@ impl Room {
             state.comments[index].resolved_in.clone(),
             state.comments[index].outcome.clone(),
         );
-        state.comments[index].resolved = true;
-        state.comments[index].resolved_at = Some(timestamp());
-        state.comments[index].resolved_in = current;
-        state.comments[index].outcome = "rejected".to_string();
+        // Prepared on a copy and applied once the row is durable: a caller
+        // cancelled at the write must not leave this room showing a rejection
+        // that nothing recorded and no peer was told about.
+        let mut rejected = state.comments[index].clone();
+        rejected.resolved = true;
+        rejected.resolved_at = Some(timestamp());
+        rejected.resolved_in = current;
+        rejected.outcome = "rejected".to_string();
         let persisted = if let Some(catalog) = self.catalog.get() {
-            catalog_comment_row(&self.slug, &state.comments[index])
-                .map_err(|error| error.to_string())
-                .and_then(|row| {
-                    catalog
-                        .update_comment(&row)
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                })
+            match catalog_comment_row(&self.slug, &rejected) {
+                Ok(row) => update_comment_row(catalog, row).await,
+                Err(error) => Err(error),
+            }
         } else {
+            state.comments[index] = rejected.clone();
             self.save(&mut state).await
         };
         if persisted.is_err() {
@@ -633,6 +641,7 @@ impl Room {
             state.comments[index].outcome = was_outcome;
             return Err("could not save that comment; try again".into());
         }
+        state.comments[index] = rejected;
         let target = &state.comments[index];
         Ok(json!({
             "type": "reject", "comment_id": target.id,

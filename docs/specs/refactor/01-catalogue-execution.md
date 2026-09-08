@@ -1,9 +1,12 @@
 # 1. Catalogue execution and cancellation
 
-Status: machinery implemented; caller migration outstanding. The execution
-boundary, admission budgets, lifecycle, counters and shutdown are in
-`storage/catalog/execution.rs`; no production caller has been moved onto it
-yet, so the track is not complete. Inherits
+Status: machinery implemented; the room caller group is migrated, the rest of
+the caller migration is outstanding. The execution boundary, admission
+budgets, lifecycle, counters and shutdown are in
+`storage/catalog/execution.rs`; every catalogue call under `room/` now goes
+through it, with the exceptions recorded in the room migration subsection
+below. Callers in `journal/`, `maintenance`, `document/store.rs`, `server/`,
+`seed/` and `cli/` are not migrated, so the track is not complete. Inherits
 [umbrella section 1](../../../SPEC-refactor.md#1-move-catalogue-work-off-tokio-workers).
 
 ## Decision and boundary
@@ -266,6 +269,118 @@ repeated.
 | room/suggestions.rs:220-514 (8) | `Room::accept_suggestion` (async) | `begin_suggestion_accept`, `suggestion_accept_checkpoint`, `finish_suggestion_accept` ×2, `suggestion_accept_update`, `checkpoint`, `stage_suggestion_accept_update`, `record_suggestion_accept_checkpoint` | full receipt: `request_id` + `acceptance_digest` | owns the suggestion-accept staging record | `restore_write`; `state.lock()` released around each call |
 | room/suggestions.rs:567, 598 | `Room::reject_suggestion` (async) | `pending_suggestion_accept`, `update_comment` | none | none | `restore_write` + `state.lock()` |
 
+### room/ migration: job shapes, reconciliation, and gates still held
+
+Every row above is migrated except the four recorded as remaining synchronous
+at the end of this subsection. The room's catalogue calls are now owned jobs
+submitted through the boundary; the helper functions that build them live in
+`room/catalog.rs`, and `room/checkpoint.rs` owns the checkpoint budget token.
+
+One addition to the boundary was required. A job submitted with `execute` or
+`transaction` is given the connection, and the connection mutex is not
+reentrant, so such a job cannot call a catalogue method: the room would have
+had to reimplement forty methods as raw SQL. `CatalogReservation::execute_catalog`
+(and `Catalog::execute_catalog`, `execute_catalog_with_completion`,
+`CatalogServiceCompletion`) submits a job that is handed the catalogue itself
+with the lock free. Each catalogue method inside such a job still opens and
+commits its own `BEGIN IMMEDIATE` transaction exactly as it does today, so the
+migration neither splits an existing transaction nor silently fuses two of
+them; what changes is only that the wait happens on a blocking thread under
+bounded admission. Where a room path made several catalogue calls in a row,
+they are one job — one admission, the same sequence of transactions.
+
+`room_edit_reservations` gained a `generation` column. It is a process-local
+TEMP table recreated at every open, so this is not a persisted-format change.
+Every write to a row advances it, and `Catalog::restore_room_edit` undoes a
+reservation only while the generation it wrote still stands. That is the
+identity the lifecycle rules ask for on an operation that has no receipt: it
+makes cleanup unable to release a newer reservation, and makes a repeated
+rollback a no-op rather than a second release of the same quota.
+
+Reservation lifecycle. Three room reservations are held across an await and so
+need a settlement path for a caller that disappears:
+
+| Reservation | Taken by | Service-owned settlement | Identity it reconciles by |
+| --- | --- | --- | --- |
+| Pending room edit (`reserve_room_edit`) | `Room::receive_update` | `EditReservationCleanup` hook releases it when the caller was already gone as the transaction settled; `PendingEditReservation::drop` releases it when the caller goes away after that, in the window the hook cannot see | the reservation's generation |
+| Object change (`reserve_object_change`) | `Room::write_owned`, `Room::put_accounted` | `ObjectChangeCleanup` hook aborts the operation when its caller is gone; `ObjectChangeGuard::drop` aborts it if the caller is cancelled later, including during the object-store upload | the operation id |
+| Session write (`begin_room_write`) | `Room::write_session_inner` | `RoomWriteCleanup` hook, and `RoomWriteReservation::drop`, settle it as a failed write so the bytes return to the room's pending reservation | the session writer gate serialises the row, so no newer owner can exist |
+| Checkpoint budget token | `Room::checkpoint_impl_locked` | `CheckpointTokenCleanup` hook refunds the admitted bucket when its caller is gone; `PublicationCheckpointToken::drop` refunds it otherwise | the exact owner and hour SQLite admitted |
+
+The handshake is one shared `ReservationSlot`: the job records what it took,
+and exactly one of the completion hook and the guard's `Drop` takes it back
+out. The hook covers `Executing` and `Committed`, because it runs on the
+executing thread before the result is delivered; `Drop` covers everything
+after that, and is the one catalogue call the room still makes synchronously,
+because a `Drop` cannot await. Two windows the previous code did not settle
+at all are now settled: a caller cancelled while `reserve_room_edit` was in
+SQL, and a caller cancelled during the object-store upload between
+`reserve_object_change` and its commit — the latter previously leaked the
+reservation for the life of the process.
+
+Operations with no receipt, and the reconciliation rule each was given:
+
+- Checkpoint labels, rendering publication, comment resolve/reopen/anchor and
+  suggestion rejection are *absolute* writes: the row is set to exactly what
+  the request asked for, so repeating one is the same write and a cancelled
+  caller leaves either the old value or the new one. What they needed was not
+  a receipt but an ordering rule, and they now have it: the room applies the
+  change to its own state only after the write returns, so a cancelled caller
+  can no longer leave this room showing a decision no row records and no peer
+  was told about. Comment insert, reply insert and suggestion acceptance keep
+  their existing `request_id`/digest receipts and need nothing further.
+- Shed-checkpoint deletion reports which rows it actually removed, and only
+  those objects are deleted, exactly as before.
+
+Gates still held across the await, for track 2's map. This delivery
+deliberately did not reorder or shorten any lock; a job runs on a blocking
+thread, so the caller's await no longer parks a Tokio worker, but the gates
+below are still held for the whole call.
+
+| Migrated call | Gates held across the await |
+| --- | --- |
+| `RoomSet::get` → `document` | per-slug `loading` |
+| `RoomSet::sweep` → `documents_due_auto_checkpoint` | none |
+| `RoomSet::sweep` → `touch_auto_checkpoint` | `room.state` |
+| `Room::load`/`load_session` → comments, manifest | none |
+| `Room::save` → `save_catalog_comments` | `room.state` (the caller's `&mut RoomState`), plus the caller's `restore_write` |
+| `Room::write_owned` object reserve/commit/abort | `session_write`, or `publication_write` + `assets_write` via `save` |
+| `Room::put_accounted` object reserve/commit/abort | `rendering_write` or `assets_write` |
+| `Room::receive_update` → `reserve_pending_edit` | `publication_write` + `assets_write` + `room.state` |
+| `Room::write_session_inner` → `begin_room_write` | `session_write` + `room.state` |
+| `Room::write_session_inner` → `finish_room_write` | `session_write` |
+| `Room::checkpoint_impl_locked` → duplicate check, budget admission, stats, staging, shed, delete | `checkpoint_write`; callers add `publication_checkpoint`, `restore_write`, `publication_write`. `room.state` is taken and released around each, as before |
+| `Room::record_size_now` → `checkpoint_stats` | `room.state` |
+| `Room::label_as_authority` → checkpoint read, `label_checkpoint` | `manifest_write` |
+| `Room::write_manifest` → `save_catalog_manifest` | `manifest_write` (+ `checkpoint_write`) |
+| `Room::figures` rendering reads and publication | `rendering_write` or `assets_write`; the publication in `put_rendering_if_current` additionally holds `room.state`, which is deliberate — it is what keeps a stale PDF from being marked current |
+| `Room::prune_renderings` → `retire_rendering` | `manifest_write` + `rendering_write` |
+| `Room::prune_retained` → `load_catalog_history` | `manifest_write` |
+| `Room::apply_command` (seven calls) | `restore_write` + `room.state` |
+| `Room::accept_suggestion` (eight calls) | `restore_write`; `room.state` is released around each |
+| `Room::reject_suggestion` | `restore_write` + `room.state` |
+
+`receive_update` needed one behavioural change to become awaitable at all: a
+parsed `yrs::Update` is not `Send`, so it cannot be held across the
+reservation's await inside a spawned socket task. The parse is therefore
+dropped after the size and file ceilings have decided and repeated once the
+bytes are reserved. Repeating it is cheap beside the full document encode the
+same path already performs to size the reservation, and it is the alternative
+to reserving before those ceilings have decided, which would charge — however
+briefly — for updates the room refuses.
+
+Remaining synchronous catalogue calls in `room/`, and why:
+
+- `Room::reserve_publication_checkpoint` (`admit_checkpoint_token_with_limits`).
+  It is a synchronous `pub fn` called from `document/store.rs` and the CLI;
+  making it asynchronous changes callers outside `room/`, which belongs to the
+  delivery that migrates them. It is on the publication request path.
+- The three `Drop` impls: `PendingEditReservation`, `ObjectChangeGuard`,
+  `RoomWriteReservation` (and `PublicationCheckpointToken`). A `Drop` cannot
+  await. Each runs only on a cancellation or failure path, each is a single
+  conditional statement, and the alternative is leaving quota charged for work
+  that will never happen.
+
 ### server/ — 16 sites
 
 | File | Function (async?) | Catalogue method(s) | Receipt/operation id | Reservation ownership | Lock/gate held |
@@ -439,11 +554,61 @@ and maxima separately. No throughput measurement is recorded because no
 production caller uses the boundary yet; the useful measurement is the
 before/after on a migrated caller group, which belongs to the next delivery.
 
-Limitations: the acceptance criteria that depend on migrated callers — waiting
-SQL retaining neither room state nor the registry, receipts and peer
-convergence asserted across injected cancellation, and the removal of
-synchronous catalogue calls from request paths — are not met and cannot be
-until callers move. `storage/backup.rs` opens its own connection and is
-outside this boundary by construction. `Catalog::shutdown` is implemented and
-tested but is not yet wired into the server's shutdown path, because nothing
-depends on it until callers are migrated.
+### Room caller migration
+
+Before: all 79 room call sites ran synchronous SQL on the Tokio worker that
+reached them, 20 of them while holding a room `tokio::Mutex`. After: 75 of
+them are admitted jobs on blocking threads, and the four listed above remain
+synchronous with their reasons. No lock was reordered or shortened.
+
+Tests, in `crates/komodoc/src/tests/catalogue_room.rs`, all against a real
+catalogue-backed room whose publication receipt was completed the way
+production completes it:
+
+- `an_edit_cancelled_before_dispatch_reserves_nothing`: the executing budget
+  is filled by two parked jobs, the editor's reservation is observed in
+  `queued`, and the task is aborted. Afterwards there is no reservation row,
+  the document still reads `first`, and `queued_bytes` is zero.
+- `an_edit_cancelled_during_sql_is_settled_by_the_completion_hook`: the
+  connection is held, the editor's job is observed `executing`, and the task
+  is aborted while its transaction is in flight. The transaction still
+  commits, the hook releases the reservation, the update is not applied, and
+  the request is counted as completed although nobody was waiting. Removing
+  the hook's body fails this test with the reservation still charged.
+- `an_edit_cancelled_before_room_completion_releases_its_reservation`: a
+  test-only gate keyed by slug parks the caller in the window between its
+  reservation committing and the room taking ownership — the window the hook
+  cannot observe. Aborting there releases the reservation through `Drop`, the
+  update is not applied, and a peer joining afterwards is shown exactly the
+  state every other peer has. Removing the `Drop` body fails this test.
+- `an_applied_edit_keeps_its_reservation`: the ordinary path still charges and
+  keeps the pending snapshot, so the cleanup above is not reachable from it.
+- `a_checkpoint_cancelled_during_admission_refunds_its_budget`: the
+  publication path's gate parks a checkpoint after its budget bucket is
+  charged; aborting there refunds the exact bucket, and the next checkpoint of
+  a document with one admission left still runs.
+- `a_blocked_catalogue_job_stops_neither_the_runtime_nor_a_cached_room`: with
+  SQL parked on a blocking thread, a Tokio task completes 100 ticks and a
+  cached room is still retrievable. The assertion is on the tick count, not on
+  timing.
+
+Measurements. Byte estimates are declared per request from the owned inputs
+themselves: a descriptor request costs `slug.len() + 128`, well under
+`SMALL_REQUEST_BYTES`, so an ordinary edit's reservation may wait for
+admission rather than being shed; a comment or manifest job is sized from the
+rows it carries and capped at `MAX_REQUEST_BYTES`. Job counts per operation
+are unchanged or lower: the room's comment load is now one job rather than
+`1 + n` connection acquisitions, the publication-staging trio in
+`checkpoint_impl_locked` is one job rather than three, the shed-checkpoint
+deletions are one job rather than one per row, the rendering retirement pass
+is one job rather than one per rendering, and recording plus finishing a
+suggestion acceptance is one job rather than two.
+
+Limitations. Cancellation, receipts and peer convergence are now asserted for
+the room caller group, but waiting SQL still retains room state on the paths
+the gate map above lists, because shortening those scopes is track 2's work
+and this delivery deliberately reordered nothing. The caller groups outside
+`room/` are unmigrated, so synchronous catalogue calls remain on their request
+paths. `storage/backup.rs` opens its own connection and is outside this
+boundary by construction. `Catalog::shutdown` is implemented and tested but is
+still not wired into the server's shutdown path.

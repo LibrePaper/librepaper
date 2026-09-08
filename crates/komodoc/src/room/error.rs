@@ -323,6 +323,25 @@ impl From<String> for WriteError {
     }
 }
 
+/// A catalogue job that never ran, or ran and failed. Saturation and
+/// shutdown are this server being unable to admit the write now; a panic or
+/// an oversized request is a storage-side fault worth logging; a catalogue
+/// error keeps the distinctions the catalogue itself drew.
+impl From<crate::storage::catalog::CatalogExecError> for WriteError {
+    fn from(error: crate::storage::catalog::CatalogExecError) -> Self {
+        use crate::storage::catalog::CatalogExecError;
+        match error {
+            CatalogExecError::Saturated | CatalogExecError::ShuttingDown => {
+                Self::Capacity(CapacityRefusal::JournalQueue)
+            }
+            CatalogExecError::TooLarge { .. } | CatalogExecError::Panicked => {
+                Self::Storage(error.to_string())
+            }
+            CatalogExecError::Catalog(error) => Self::from(error),
+        }
+    }
+}
+
 impl From<CatalogError> for WriteError {
     fn from(error: CatalogError) -> Self {
         match error {
