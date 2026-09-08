@@ -166,6 +166,20 @@ pub(super) fn request_digest(value: &Value) -> String {
     crate::document::store::digest_of_bytes(bytes.as_bytes())
 }
 
+/// Reconciles the *entire* in-memory comment list against the catalogue, one
+/// row (and one reply listing) at a time -- an upsert per comment plus a
+/// bounded reply read, for every comment the room currently holds, on every
+/// call. Every request-serving mutation (add/delete/resolve/reply/anchor/
+/// accept/reject in `room/comments.rs` and `room/suggestions.rs`) instead
+/// writes only the one row it changed and never reaches this function; the
+/// only production caller is `seed::seed_annotations`, which uses it to
+/// write a handful of demo annotations once per document when `komodoc seed`
+/// populates an empty deployment. That caller's input is small and bounded
+/// by the fixed example set, so the O(comments²) catalogue traffic (this
+/// runs once per comment added, each time reconciling every comment added so
+/// far) costs nothing worth batching. Do not add a new caller on a request
+/// path: update the one row that changed instead, the way every handler
+/// above already does.
 pub(super) fn save_catalog_comments(
     catalog: &crate::storage::catalog::Catalog,
     slug: &str,

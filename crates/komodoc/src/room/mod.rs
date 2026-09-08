@@ -1618,8 +1618,13 @@ impl Room {
         }
     }
 
-    /// Persist a complete comment snapshot for legacy storage and fixture callers.
-    /// Catalogue operations normally persist just the changed row.
+    /// Persists every comment the room holds: the whole JSON blob for a room
+    /// with no catalogue (there is nothing narrower to write), or, for a
+    /// catalogue-backed room, a full row-by-row reconciliation via
+    /// `save_catalog_comments` -- see that function's documentation for why
+    /// its only production caller is the seeding command and why every
+    /// ordinary comment mutation instead updates its one changed row
+    /// directly and never calls this.
     pub async fn save(&self, state: &mut RoomState) -> Result<(), String> {
         if !self.hold().await {
             return Err("this room is held by another server".into());
