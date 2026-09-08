@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::cli::{link_key, stored_token_for};
+use crate::cli::{link_key, stored_agent_token_for};
 use crate::document::session;
 use crate::http::{detail_of, KEY_HEADER};
 use crate::room::encode_update;
@@ -218,8 +218,8 @@ pub struct Snapshot {
     pub capabilities: Capabilities,
 }
 
-/// The result of a write, retaining the request id so callers can safely
-/// retry after a reconnect without guessing whether the server committed it.
+/// The result of a write, retaining the request id so callers can correlate
+/// an acknowledgement or investigate an unknown post-submission outcome.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OperationResult {
     pub request_id: String,
@@ -228,7 +228,7 @@ pub struct OperationResult {
     pub value: Value,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AutomationPeer {
     link: DocumentLink,
     token: String,
@@ -236,10 +236,22 @@ pub struct AutomationPeer {
     client: reqwest::Client,
 }
 
+impl std::fmt::Debug for AutomationPeer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AutomationPeer")
+            .field("link", &self.link)
+            .field("token", &"[redacted]")
+            .field("capabilities", &self.capabilities)
+            .field("client", &self.client)
+            .finish()
+    }
+}
+
 impl AutomationPeer {
     /// Open a link and report the effective role before any write is attempted.
     pub async fn open(link: DocumentLink) -> Result<Self, String> {
-        let token = stored_token_for(link.server());
+        let token = stored_agent_token_for(link.server());
         let client = new_client()?;
         let mut request = client.get(format!("{}/api/documents/{}", link.server(), link.slug()));
         if !token.is_empty() {
@@ -415,33 +427,55 @@ impl AutomationPeer {
                 .await
             {
                 Ok(response) if response.status().is_success() => {
-                    let value = response
-                        .json()
-                        .await
-                        .map_err(|err| format!("invalid annotation response: {err}"))?;
-                    return Ok(OperationResult {
-                        request_id: request_id.to_string(),
-                        status: 200,
-                        outcome: "success".into(),
-                        value,
-                    });
+                    let status = response.status().as_u16();
+                    match response.bytes().await {
+                        Ok(raw) => match serde_json::from_slice::<Value>(&raw) {
+                            Ok(value) => {
+                                return Ok(OperationResult {
+                                    request_id: request_id.to_string(),
+                                    status,
+                                    outcome: "success".into(),
+                                    value,
+                                });
+                            }
+                            Err(err) => {
+                                last_error = format!("invalid annotation response: {err}");
+                            }
+                        },
+                        Err(err) => {
+                            last_error = format!("could not read annotation response: {err}");
+                        }
+                    }
                 }
                 Ok(response) => {
                     let status = response.status().as_u16();
-                    let value = response.json().await.unwrap_or(Value::Null);
-                    return Ok(OperationResult {
-                        request_id: request_id.to_string(),
-                        status,
-                        outcome: "error".into(),
-                        value,
-                    });
+                    let retryable = (500..=599).contains(&status);
+                    match response.bytes().await {
+                        Ok(raw) => {
+                            let value = serde_json::from_slice::<Value>(&raw).unwrap_or_else(
+                                |_| json!({"error": String::from_utf8_lossy(&raw)}),
+                            );
+                            if !retryable {
+                                return Ok(OperationResult {
+                                    request_id: request_id.to_string(),
+                                    status,
+                                    outcome: "error".into(),
+                                    value,
+                                });
+                            }
+                            last_error = format!("annotation request failed ({status})");
+                        }
+                        Err(err) => {
+                            last_error = format!("could not read annotation response: {err}");
+                        }
+                    }
                 }
                 Err(err) => {
                     last_error = err;
-                    if attempt + 1 < RETRIES {
-                        tokio::time::sleep(Duration::from_millis(50 * (attempt as u64 + 1))).await;
-                    }
                 }
+            }
+            if attempt + 1 < RETRIES {
+                tokio::time::sleep(Duration::from_millis(50 * (attempt as u64 + 1))).await;
             }
         }
         Err(last_error)
@@ -468,6 +502,7 @@ impl AutomationPeer {
         path: &str,
         expected_sha: &str,
     ) -> Result<OperationResult, String> {
+        validate_file_path(path)?;
         if !self.capabilities.can_edit {
             return Err("this link cannot edit source".into());
         }
@@ -502,6 +537,7 @@ impl AutomationPeer {
         use futures_util::{SinkExt, StreamExt};
         let (mut write, mut read) = socket.split();
         let mut submitted = false;
+        let seq = 1_i64;
         tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
             write.send(Message::Text(json!({"type":"y-open", "vector": encode_update(&session::encode_vector(&session::new_doc()))}).to_string().into())),
@@ -510,15 +546,67 @@ impl AutomationPeer {
         .map_err(|_| "timed out opening document".to_string())?
         .map_err(|err| err.to_string())?;
         let doc = session::new_doc();
-        while let Some(frame) = tokio::time::timeout(
-            deadline.saturating_duration_since(Instant::now()),
-            read.next(),
-        )
-        .await
-        .map_err(|_| "timed out waiting for document state".to_string())?
-        {
-            let frame = frame.map_err(|err| err.to_string())?;
-            let Message::Text(raw) = frame else { continue };
+        loop {
+            let frame = match tokio::time::timeout(
+                deadline.saturating_duration_since(Instant::now()),
+                read.next(),
+            )
+            .await
+            {
+                Ok(Some(Ok(frame))) => frame,
+                Ok(Some(Err(err))) => {
+                    if submitted {
+                        return Ok(unknown_edit_result(
+                            &request_id,
+                            expected_sha,
+                            body,
+                            &format!("document session failed after submission: {err}"),
+                        ));
+                    }
+                    return Err(err.to_string());
+                }
+                Ok(None) => {
+                    if submitted {
+                        return Ok(unknown_edit_result(
+                            &request_id,
+                            expected_sha,
+                            body,
+                            "document session closed before edit acknowledgement",
+                        ));
+                    }
+                    return Err("document session closed before document state".into());
+                }
+                Err(_) => {
+                    if submitted {
+                        return Ok(unknown_edit_result(
+                            &request_id,
+                            expected_sha,
+                            body,
+                            "timed out waiting for document persistence acknowledgement",
+                        ));
+                    }
+                    return Err("timed out waiting for document state".into());
+                }
+            };
+            let Message::Text(raw) = frame else {
+                if let Message::Close(reason) = frame {
+                    let reason = reason
+                        .as_ref()
+                        .map(|close| close.reason.to_string())
+                        .filter(|reason| !reason.is_empty())
+                        .unwrap_or_else(|| "document session closed".into());
+                    if submitted {
+                        return Ok(unknown_edit_result(
+                            &request_id,
+                            expected_sha,
+                            body,
+                            &reason,
+                        ));
+                    }
+                    return Err(reason);
+                }
+                continue;
+            };
             let message: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
             match message
                 .get("type")
@@ -592,14 +680,44 @@ impl AutomationPeer {
                             return Err(format!("remote file {path:?} does not exist"));
                         }
                         let update = session::encode_diff(&doc, &before)?;
-                        tokio::time::timeout(
-                            deadline.saturating_duration_since(Instant::now()),
-                            write.send(Message::Text(json!({"type":"y-update", "update":encode_update(&update), "seq":1, "request_id":request_id.clone(), "version":1, "protocol":"komodoc.room.v1"}).to_string().into())),
-                        )
-                        .await
-                        .map_err(|_| "timed out sending document edit".to_string())?
-                        .map_err(|err| err.to_string())?;
-                        submitted = true;
+                        let mut messages = crate::cli::sync::update_messages(&update, seq);
+                        if messages.is_empty() {
+                            return Err("could not frame empty document edit".into());
+                        }
+                        for message in &mut messages {
+                            message["request_id"] = Value::String(request_id.clone());
+                            message["version"] = json!(1);
+                            message["protocol"] = json!("komodoc.room.v1");
+                            submitted = true;
+                            let raw = serde_json::to_string(message)
+                                .map_err(|err| format!("could not encode document edit: {err}"))?;
+                            match tokio::time::timeout(
+                                deadline.saturating_duration_since(Instant::now()),
+                                write.send(Message::Text(raw.into())),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(err)) => {
+                                    return Ok(unknown_edit_result(
+                                        &request_id,
+                                        expected_sha,
+                                        body,
+                                        &format!(
+                                            "document edit send failed after submission: {err}"
+                                        ),
+                                    ));
+                                }
+                                Err(_) => {
+                                    return Ok(unknown_edit_result(
+                                        &request_id,
+                                        expected_sha,
+                                        body,
+                                        "timed out sending document edit after submission",
+                                    ));
+                                }
+                            }
+                        }
                     } else {
                         write.send(Message::Close(None)).await.ok();
                         return Ok(OperationResult {
@@ -618,7 +736,7 @@ impl AutomationPeer {
                         .ok_or("invalid document update")?;
                     session::apply_update(&doc, &bytes)?;
                 }
-                "y-ack" if message.get("seq").and_then(Value::as_i64) == Some(1) => {
+                "y-ack" if message.get("seq").and_then(Value::as_i64) == Some(seq) => {
                     return Ok(OperationResult {
                         request_id: request_id.clone(),
                         status: 200,
@@ -636,7 +754,6 @@ impl AutomationPeer {
                 _ => {}
             }
         }
-        Err("document session closed before edit acknowledgement".into())
     }
 
     fn socket_request(&self) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, String> {
@@ -692,8 +809,18 @@ impl AutomationPeer {
                 .await
                 .map_err(|err| err.to_string())?;
             while let Some(frame) = socket.next().await {
-                let Message::Text(raw) = frame.map_err(|err| err.to_string())? else {
-                    continue;
+                let frame = frame.map_err(|err| err.to_string())?;
+                let raw = match frame {
+                    Message::Text(raw) => raw,
+                    Message::Close(reason) => {
+                        let reason = reason
+                            .as_ref()
+                            .map(|close| close.reason.to_string())
+                            .filter(|reason| !reason.is_empty())
+                            .unwrap_or_else(|| "document session closed".into());
+                        return Err(reason);
+                    }
+                    _ => continue,
                 };
                 let message: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
                 if message["type"] == "error" {
@@ -819,50 +946,18 @@ impl AutomationPeer {
         text: &str,
         request_id: &str,
     ) -> Result<Value, String> {
-        use futures_util::{SinkExt, StreamExt};
         validate_conversation(conversation, token)?;
-        let operation = async {
-            let (mut socket, _) =
-                tokio_tungstenite::connect_async(self.chat_socket_request(conversation)?)
-                    .await
-                    .map_err(|err| format!("could not join chat: {err}"))?;
-            socket
-                .send(Message::Text(
-                    json!({"type":"join","token":token,"role":"agent","receive":false})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .map_err(|err| err.to_string())?;
-            loop {
-                let Some(frame) = socket.next().await else {
-                    return Err("chat closed before it accepted the agent".into());
-                };
-                let Message::Text(raw) = frame.map_err(|err| err.to_string())? else {
-                    continue;
-                };
-                let event: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
-                if event["type"] == "error" {
-                    return Err(event["message"].as_str().unwrap_or("chat rejected").into());
-                }
-                if event["type"] == "ready" {
-                    break;
-                }
-            }
-            let result = self
-                .chat_request(
-                    reqwest::Method::POST,
-                    &format!("/{conversation}"),
-                    token,
-                    Some(json!({"id":request_id,"role":"agent","text":text})),
-                )
-                .await;
-            let _ = socket.close(None).await;
-            result
-        };
-        tokio::time::timeout(REQUEST_TIMEOUT, operation)
-            .await
-            .map_err(|_| "timed out posting chat reply".to_string())?
+        tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            self.chat_request(
+                reqwest::Method::POST,
+                &format!("/{conversation}"),
+                token,
+                Some(json!({"id":request_id,"role":"agent","text":text})),
+            ),
+        )
+        .await
+        .map_err(|_| "timed out posting chat reply".to_string())?
     }
 
     pub async fn chat_watch(
@@ -888,8 +983,18 @@ impl AutomationPeer {
                 .await
                 .map_err(|err| err.to_string())?;
             while let Some(frame) = socket.next().await {
-                let Message::Text(raw) = frame.map_err(|err| err.to_string())? else {
-                    continue;
+                let frame = frame.map_err(|err| err.to_string())?;
+                let raw = match frame {
+                    Message::Text(raw) => raw,
+                    Message::Close(reason) => {
+                        let reason = reason
+                            .as_ref()
+                            .map(|close| close.reason.to_string())
+                            .filter(|reason| !reason.is_empty())
+                            .unwrap_or_else(|| "chat session closed".into());
+                        return Err(reason);
+                    }
+                    _ => continue,
                 };
                 let event: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
                 if event["type"] == "error" {
@@ -991,6 +1096,25 @@ pub fn source_sha(source: &str) -> String {
 
 fn snapshot_text_sha(texts: &Value, path: &str) -> Option<String> {
     texts.get(path).and_then(Value::as_str).map(source_sha)
+}
+
+fn unknown_edit_result(
+    request_id: &str,
+    expected_sha: &str,
+    body: &str,
+    reason: &str,
+) -> OperationResult {
+    OperationResult {
+        request_id: request_id.to_string(),
+        status: 504,
+        outcome: "unknown".into(),
+        value: json!({
+            "reason": reason,
+            "expected_sha": expected_sha,
+            "submitted_sha": source_sha(body),
+            "retry": "inspect the snapshot before deciding whether to retry",
+        }),
+    }
 }
 
 fn payload_set_submission_id(payload: &mut Value, id: String) {
@@ -1103,7 +1227,7 @@ pub enum AgentCommand {
         path: String,
         /// SHA from the snapshot being edited; required for stale-input safety.
         #[arg(long)]
-        expected_sha: Option<String>,
+        expected_sha: String,
     },
     /// Request a durable checkpoint.
     Checkpoint {
@@ -1318,8 +1442,6 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
                     .map_err(|err| format!("could not read {}: {err}", file.display()))?,
                 _ => return Err("provide exactly one of --source or --file".into()),
             };
-            let expected_sha = expected_sha
-                .ok_or_else(|| "--expected-sha is required; read the snapshot first".to_string())?;
             let path = if path.is_empty() {
                 peer.link.path().to_string()
             } else {
@@ -1373,6 +1495,31 @@ mod tests {
         let bytes = awareness_update(4, 1, "agent (sync)", "#3366cc");
         assert!(bytes.len() > 10);
         assert!(String::from_utf8_lossy(&bytes).contains("agent (sync)"));
+    }
+
+    #[test]
+    fn automation_peer_debug_redacts_bearer() {
+        let peer = AutomationPeer {
+            link: DocumentLink::parse("https://docs.example/docs/paper#k=share-key", "")
+                .expect("link"),
+            token: "bearer-that-must-not-leak".into(),
+            capabilities: Capabilities::default(),
+            client: new_client().expect("client"),
+        };
+        let debug = format!("{peer:?}");
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains("bearer-that-must-not-leak"));
+    }
+
+    #[test]
+    fn unknown_edit_result_contains_recovery_identifiers() {
+        let result = unknown_edit_result("edit-1", "expected", "changed", "socket closed");
+        assert_eq!(result.status, 504);
+        assert_eq!(result.outcome, "unknown");
+        assert_eq!(result.request_id, "edit-1");
+        assert_eq!(result.value["expected_sha"], "expected");
+        assert_eq!(result.value["submitted_sha"], source_sha("changed"));
+        assert_eq!(result.value["reason"], "socket closed");
     }
 }
 

@@ -129,6 +129,37 @@ async fn suggest_posts_a_comment_and_prints_its_id() {
     assert_eq!(comments[0]["source"]["exact"], "world");
 }
 
+#[tokio::test]
+async fn suggest_uses_live_text_before_the_next_checkpoint() {
+    let server = new_test_server().await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let room = server.instance.rooms.get(&slug).await;
+    room.set_source("# Paper\n\nA freshly inserted passage.\n", "markdown")
+        .await;
+    suggest_passage(
+        &slug,
+        "freshly inserted",
+        "new",
+        String::new(),
+        String::new(),
+        server.url.clone(),
+        key,
+    )
+    .await;
+    let (_, listing) = get_json_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+    )
+    .await;
+    assert_eq!(
+        listing["comments"][0]["source"]["exact"],
+        "freshly inserted"
+    );
+}
+
 /* --------------------------------------------------------------- decide_suggestion */
 
 #[tokio::test]

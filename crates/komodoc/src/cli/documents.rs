@@ -6,25 +6,9 @@ use super::*;
 
 pub async fn list_documents(server_flag: String) {
     let server = server_from(&server_flag);
-    let (status, payload) = post_json(
-        &format!("{server}/api/list"),
-        &json!({}),
-        &require_token_for(&server),
-        Duration::from_secs(60),
-    )
-    .await
-    .unwrap_or_else(|err| die(err));
-    if status != 200 {
-        die(format!(
-            "listing failed ({status}): {}",
-            detail_of(&payload)
-        ));
-    }
-    let documents = payload
-        .get("documents")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let documents = visible_documents(&server, &require_token_for(&server))
+        .await
+        .unwrap_or_else(|err| die(err.to_string()));
     if documents.is_empty() {
         println!("no documents yet");
         return;
@@ -67,7 +51,7 @@ pub fn short_ids(
     documents: &[Value],
     config: &Configuration,
 ) -> std::collections::HashMap<String, String> {
-    let items: Vec<(String, String)> = documents
+    let mut items: Vec<(String, String)> = documents
         .iter()
         .filter_map(|document| {
             let slug = document.get("slug")?.as_str()?.to_string();
@@ -83,14 +67,27 @@ pub fn short_ids(
         })
         .collect();
 
+    let counts = items.iter().fold(
+        std::collections::HashMap::<String, usize>::new(),
+        |mut counts, (_, key)| {
+            *counts.entry(key.clone()).or_default() += 1;
+            counts
+        },
+    );
+    for (slug, key) in &mut items {
+        if counts[key] > 1 {
+            *key = slug.clone();
+        }
+    }
+
     let mut width = SHORT_ID_MINIMUM;
     for (_, key) in &items {
         let mut needed = key.len();
-        for length in 1..=key.len() {
-            let prefix = &key[..length];
+        for length in 1..=key.chars().count() {
+            let prefix: String = key.chars().take(length).collect();
             if items
                 .iter()
-                .filter(|(_, other)| other.starts_with(prefix))
+                .filter(|(_, other)| other.starts_with(&prefix))
                 .count()
                 == 1
             {
@@ -101,70 +98,182 @@ pub fn short_ids(
         width = width.max(needed);
     }
 
-    items
+    let mut handles: std::collections::HashMap<String, String> = items
         .into_iter()
         .map(|(slug, key)| {
             // A key shorter than the common width is used whole; it is already
             // as distinct as it will ever be.
             let id = if width < key.len() {
-                key[..width].to_string()
+                key.chars().take(width).collect()
             } else {
                 key
             };
             (slug, id)
         })
-        .collect()
+        .collect();
+    loop {
+        let ambiguous: Vec<String> = handles
+            .iter()
+            .filter(|&(slug, handle)| {
+                handles.iter().any(|(other_slug, other_handle)| {
+                    other_slug != slug && (other_handle == handle || other_slug == handle)
+                })
+            })
+            .map(|(slug, _)| slug.clone())
+            .collect();
+        if ambiguous.is_empty() {
+            break;
+        }
+        for slug in ambiguous {
+            handles.insert(slug.clone(), slug);
+        }
+    }
+    handles
 }
 
-/// Turns what the user typed -- a full slug, or one of the short handles
-/// `list` prints -- into the slug the API knows.
+/// Materialize every listing page before assigning handles. Cursor repetition
+/// is an invalid server response, not a reason to loop forever.
+#[derive(Debug)]
+struct ListingError {
+    status: Option<u16>,
+    message: String,
+}
+
+impl std::fmt::Display for ListingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl From<String> for ListingError {
+    fn from(message: String) -> Self {
+        Self {
+            status: None,
+            message,
+        }
+    }
+}
+
+impl From<&str> for ListingError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+async fn visible_documents(server: &str, token: &str) -> Result<Vec<Value>, ListingError> {
+    let mut target =
+        url::Url::parse(&format!("{server}/api/list")).map_err(|err| err.to_string())?;
+    let mut documents = Vec::new();
+    let mut seen_slugs = std::collections::HashSet::new();
+    let mut cursors = std::collections::HashSet::new();
+    loop {
+        let (status, payload) =
+            post_json(target.as_str(), &json!({}), token, Duration::from_secs(60)).await?;
+        if status != 200 {
+            return Err(ListingError {
+                status: Some(status),
+                message: format!("listing failed ({status}): {}", detail_of(&payload)),
+            });
+        }
+        let page = payload
+            .get("documents")
+            .and_then(Value::as_array)
+            .ok_or("invalid document listing: missing documents")?;
+        for document in page {
+            let slug = text(document, "slug");
+            if !slug.is_empty() && seen_slugs.insert(slug) {
+                documents.push(document.clone());
+            }
+        }
+        let Some(cursor) = payload.get("next_cursor").filter(|v| !v.is_null()) else {
+            break;
+        };
+        let updated = cursor
+            .get("after_updated")
+            .and_then(Value::as_str)
+            .ok_or("invalid listing cursor")?;
+        let slug = cursor
+            .get("after_slug")
+            .and_then(Value::as_str)
+            .ok_or("invalid listing cursor")?;
+        if !cursors.insert((updated.to_string(), slug.to_string())) {
+            return Err("server repeated a document listing cursor".into());
+        }
+        target
+            .query_pairs_mut()
+            .clear()
+            .append_pair("after_updated", updated)
+            .append_pair("after_slug", slug);
+    }
+    Ok(documents)
+}
+
+/// Resolve both interpretations before accepting a handle. A readable full
+/// slug outside the listing must not silently shadow a listed handle.
+fn match_identifier(identifier: &str, documents: &[Value], direct: bool) -> Result<String, String> {
+    let ids = short_ids(documents, &Configuration::default());
+    let mut matches = std::collections::HashSet::new();
+    if direct {
+        matches.insert(identifier.to_string());
+    }
+    for (slug, handle) in ids {
+        if identifier == slug || identifier == handle {
+            matches.insert(slug);
+        }
+    }
+    if matches.len() > 1 {
+        return Err(format!(
+            "{identifier:?} matches more than one document; use the complete slug or a share link"
+        ));
+    }
+    matches
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("no visible document matches {identifier:?}"))
+}
+
 pub async fn resolve_identifier(identifier: &str, server: &str, key: &str) -> String {
-    // A full slug needs no listing: this is the path a command run from a
-    // link someone sent takes, with the link's key as its credential, and
-    // the path an owner's own slug takes with their sign-in.
-    if let Ok((200, _)) = get_as(
+    resolve_identifier_with(identifier, server, key, &stored_token_for(server))
+        .await
+        .unwrap_or_else(|err| die(err))
+}
+
+async fn resolve_identifier_with(
+    identifier: &str,
+    server: &str,
+    key: &str,
+    token: &str,
+) -> Result<String, String> {
+    let (status, payload) = get_as(
         &format!("{server}/api/documents/{identifier}"),
-        &Credentials::new(&stored_token_for(server), key),
+        &Credentials::new(token, key),
         Duration::from_secs(30),
     )
-    .await
-    {
-        return identifier.to_string();
-    }
-    let (status, payload) = post_json(
-        &format!("{server}/api/list"),
-        &json!({}),
-        &require_token_for(server),
-        Duration::from_secs(60),
-    )
-    .await
-    .unwrap_or_else(|err| die(err));
-    if status != 200 {
-        die(format!(
-            "listing failed ({status}): {}",
+    .await?;
+    if status != 200 && status != 404 {
+        return Err(format!(
+            "cannot read {identifier:?} ({status}): {}",
             detail_of(&payload)
         ));
     }
-    let documents = payload
-        .get("documents")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let ids = short_ids(&documents, &Configuration::default());
-    let mut found = String::new();
-    for document in &documents {
-        let slug = text(document, "slug");
-        if identifier == slug || ids.get(&slug).is_some_and(|id| id == identifier) {
-            if !found.is_empty() {
-                die(format!("{identifier:?} matches more than one document"));
-            }
-            found = slug;
+    // An explicit link authenticates this document directly. Without an
+    // account no listing exists to interpret as an alternative handle.
+    if status == 200 && (!key.is_empty() || token.is_empty()) {
+        return Ok(identifier.to_string());
+    }
+    if token.is_empty() {
+        return Err(format!("document {identifier:?} was not found or this link cannot access it; short handles require a sign-in"));
+    }
+    let documents = match visible_documents(server, token).await {
+        Ok(documents) => documents,
+        // A named reader can access a document while the deployment denies
+        // publisher-only listing. No short handles are available to them.
+        Err(error) if status == 200 && matches!(error.status, Some(401 | 403)) => {
+            return Ok(identifier.to_string());
         }
-    }
-    if found.is_empty() {
-        die(format!("no visible document matches {identifier:?}"));
-    }
-    found
+        Err(error) => return Err(error.to_string()),
+    };
+    match_identifier(identifier, &documents, status == 200)
 }
 
 pub async fn comment_document(identifier: &str, server_flag: String, key: String) {
@@ -492,4 +601,94 @@ pub async fn destroy_document(identifier: &str, server_flag: String, yes: bool) 
         die(format!("delete failed ({status}): {}", detail_of(&payload)));
     }
     println!("deleted {slug}");
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+
+    #[test]
+    fn complete_slugs_and_duplicate_suffixes_cannot_shadow_handles() {
+        let documents = vec![
+            json!({"slug":"abcdefghij"}),
+            json!({"slug":"paper-abcdefghij"}),
+        ];
+        let handles = short_ids(&documents, &Configuration::default());
+        assert_ne!(handles["abcdefghij"], handles["paper-abcdefghij"]);
+        for (slug, handle) in &handles {
+            assert_eq!(
+                match_identifier(handle, &documents, handle == slug).unwrap(),
+                *slug
+            );
+        }
+        let documents = vec![json!({"slug":"paper-abcdefghij"})];
+        assert!(match_identifier("abc", &documents, true)
+            .unwrap_err()
+            .contains("more than one"));
+    }
+
+    #[tokio::test]
+    async fn listing_follows_cursors_before_resolving_handles() {
+        use axum::{extract::Query, routing::post, Json};
+        let app = axum::Router::new().route("/api/list", post(|Query(query): Query<std::collections::HashMap<String, String>>| async move {
+            if query.get("after_slug").is_some_and(|slug| slug == "first-abcdefghij") {
+                assert_eq!(query["after_updated"], "2026-01-01T00:00:00+00:00");
+                Json(json!({"documents":[{"slug":"second-zyxwvutsrq"}]}))
+            } else {
+                Json(json!({"documents":[{"slug":"first-abcdefghij"}], "next_cursor":{"after_slug":"first-abcdefghij", "after_updated":"2026-01-01T00:00:00+00:00"}}))
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let documents = visible_documents(&server, "fixture").await.unwrap();
+        assert_eq!(documents.len(), 2);
+        assert_eq!(
+            match_identifier("zyx", &documents, false).unwrap(),
+            "second-zyxwvutsrq"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn named_reader_can_resolve_a_full_slug_without_listing_permission() {
+        use axum::{
+            http::StatusCode,
+            routing::{get, post},
+            Json,
+        };
+        let app = axum::Router::new()
+            .route(
+                "/api/documents/paper",
+                get(|| async { Json(json!({"slug":"paper"})) }),
+            )
+            .route("/api/list", post(|| async { StatusCode::FORBIDDEN }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        assert_eq!(
+            resolve_identifier_with("paper", &server, "", "reader")
+                .await
+                .unwrap(),
+            "paper"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_document_read_is_not_reported_as_missing_login() {
+        use axum::{http::StatusCode, routing::get};
+        let app = axum::Router::new().route(
+            "/api/documents/paper",
+            get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let error = resolve_identifier_with("paper", &server, "key", "")
+            .await
+            .unwrap_err();
+        assert!(error.contains("503"), "{error}");
+        task.abort();
+    }
 }

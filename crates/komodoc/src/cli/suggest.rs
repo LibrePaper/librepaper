@@ -62,7 +62,7 @@ pub(crate) fn locate_passage(source: &str, path: &str, find: &str) -> Result<Anc
 }
 
 /// Proposes a replacement for a passage: finds `find` in the named file (the
-/// main file of the newest checkpoint by default), builds a source anchor
+/// main file of the live document by default), builds a source anchor
 /// around it, and posts a suggestion comment. Prints the new comment's id.
 pub async fn suggest_passage(
     identifier: &str,
@@ -78,7 +78,19 @@ pub async fn suggest_passage(
     let slug = resolve_identifier(identifier, &server, &key).await;
     let credentials = Credentials::new(&stored_token_for(&server), &key);
 
-    let checkpoint = newest_checkpoint(&server, &slug, &credentials).await;
+    let (status, checkpoint) = get_as(
+        &format!("{server}/api/documents/{slug}/snapshot"),
+        &credentials,
+        Duration::from_secs(60),
+    )
+    .await
+    .unwrap_or_else(|err| die(err));
+    if status != 200 {
+        die(format!(
+            "snapshot failed ({status}): {}",
+            detail_of(&checkpoint)
+        ));
+    }
     let main = text(&checkpoint, "main");
     let target_path = if path.is_empty() { main } else { path };
     let texts = checkpoint.get("texts").and_then(Value::as_object);

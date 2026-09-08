@@ -18,6 +18,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocketUpgrade};
+use axum::routing::get;
 use serde_json::{json, Value};
 
 use super::*;
@@ -334,7 +336,11 @@ async fn the_file_changing_edits_the_session() {
     // timeline.
     let sent = client.take_outbox();
     let kinds: Vec<String> = sent.iter().map(|one| text(one, "type")).collect();
-    assert!(kinds.contains(&"y-update".to_string()), "{kinds:?}");
+    assert!(
+        kinds.contains(&"y-update-start".to_string())
+            && kinds.contains(&"y-update-end".to_string()),
+        "{kinds:?}"
+    );
 
     client.settle_now().expect("the checkpoint is asked for");
     let asked = client.take_outbox();
@@ -747,7 +753,7 @@ async fn sync_reconnect_keeps_local_only_edits() {
     );
     let sent = client.take_outbox();
     assert!(
-        sent.iter().any(|one| text(one, "type") == "y-update"),
+        sent.iter().any(|one| text(one, "type") == "y-update-start"),
         "the local edit was not sent to the session: {sent:?}"
     );
 }
@@ -828,7 +834,202 @@ async fn sync_first_join_takes_a_diverging_file_whole() {
     );
     let sent = client.take_outbox();
     assert!(
-        sent.iter().any(|one| text(one, "type") == "y-update"),
+        sent.iter().any(|one| text(one, "type") == "y-update-start"),
         "the first join's reconciliation was not sent: {sent:?}"
     );
+}
+
+#[test]
+fn update_messages_are_bounded_and_reassemble() {
+    let update = (0..1_300_001).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+    let messages = crate::cli::sync::update_messages(&update, 41);
+    assert_eq!(text(&messages[0], "type"), "y-update-start");
+    assert_eq!(
+        messages.last().map(|m| text(m, "type")),
+        Some("y-update-end".into())
+    );
+    assert_eq!(messages.len(), 5);
+    let mut assembled = Vec::new();
+    for message in &messages[1..messages.len() - 1] {
+        assert_eq!(text(message, "type"), "y-update-chunk");
+        let part = crate::room::decode_update(&text(message, "update")).expect("base64 chunk");
+        assert!(part.len() <= 600_000);
+        assembled.extend(part);
+    }
+    assert_eq!(assembled, update);
+    assert!(messages
+        .iter()
+        .all(|message| message.to_string().len() < 1_000_000));
+}
+
+#[test]
+fn state_references_are_same_origin_and_safe() {
+    let local = crate::cli::sync::state_reference(
+        "https://komodoc.example/docs/",
+        "/api/documents/a/state",
+    )
+    .expect("same-origin reference");
+    assert_eq!(local, "https://komodoc.example/api/documents/a/state");
+    assert!(crate::cli::sync::state_reference(
+        "https://komodoc.example",
+        "https://evil.example/state"
+    )
+    .is_err());
+    assert!(crate::cli::sync::state_reference(
+        "https://komodoc.example",
+        "https://user:secret@komodoc.example/state"
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn an_undo_to_a_previous_client_write_is_sent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.md");
+    let original = "alpha beta";
+    std::fs::write(&path, original).unwrap();
+    let mut client = client(&path);
+    client
+        .receive(&state_of("main.md", original))
+        .await
+        .unwrap();
+    client.take_outbox();
+
+    std::fs::write(&path, "alpha edited beta").unwrap();
+    client.read_now().unwrap();
+    client.take_outbox();
+    assert_eq!(session::text_of(client.document()), "alpha edited beta");
+
+    // This is a deliberate undo, rather than the watcher echo of the last
+    // write. A permanent `wrote` digest used to suppress it forever.
+    std::fs::write(&path, original).unwrap();
+    client.read_now().unwrap();
+    assert_eq!(session::text_of(client.document()), original);
+    assert!(client
+        .take_outbox()
+        .iter()
+        .any(|message| text(message, "type") == "y-update-start"));
+}
+
+#[tokio::test]
+async fn a_pending_disk_save_blocks_session_file_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.md");
+    std::fs::write(&path, "alpha beta").unwrap();
+    let mut client = client(&path);
+    client
+        .receive(&state_of("main.md", "alpha beta"))
+        .await
+        .unwrap();
+    client.take_outbox();
+
+    // The session has settled, while a just-arrived local save is still in
+    // its debounce window. The session text must not overwrite that save.
+    client.mark_pending_for_test();
+    std::fs::write(&path, "alpha LOCAL beta").unwrap();
+    client.settle_session_now().unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "alpha LOCAL beta");
+    assert!(client.has_pending_disk_for_test());
+}
+
+#[tokio::test]
+async fn sync_sends_a_large_first_join_as_multipart_over_a_real_socket() {
+    let server = test_server_with(
+        crate::config::Configuration::default(),
+        crate::auth::Policy::parse("anyone"),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let published = publish_with_source(&server.url).await;
+    let slug = text(&published, "slug");
+    let (status, link) = post_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}/share"),
+        json!({"link": {"role": "editor", "until": ""}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{link}");
+    let key = text(&link, "key");
+    let large = format!("# My Paper\n\n{}\n", "x".repeat(800_000));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.md");
+    std::fs::write(&path, &large).unwrap();
+    let mut client = Client::new(
+        path,
+        Duration::from_millis(50),
+        server.url.clone(),
+        String::new(),
+    )
+    .with_key(&key);
+    let (_events_tx, mut events_rx) = tokio::sync::mpsc::channel(8);
+    let task = tokio::spawn(async move { client.run(&slug, &mut events_rx).await });
+    let published_slug = text(&published, "slug");
+    let room = server.instance.rooms.get(&published_slug).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while room.source().await != large {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the large first join reached the room");
+    task.abort();
+}
+
+#[tokio::test]
+async fn sync_reconnects_after_a_retryable_close_frame() {
+    async fn close_after_join(upgrade: WebSocketUpgrade) -> impl axum::response::IntoResponse {
+        upgrade.on_upgrade(|mut socket| async move {
+            while let Some(Ok(WsMessage::Text(raw))) = socket.recv().await {
+                let Ok(message) = serde_json::from_str::<Value>(&raw) else {
+                    continue;
+                };
+                if text(&message, "type") == "y-open" {
+                    socket
+                        .send(WsMessage::Text(state_of("main.md", "alpha").into()))
+                        .await
+                        .unwrap();
+                    while let Some(Ok(WsMessage::Text(next))) = socket.recv().await {
+                        let Ok(next) = serde_json::from_str::<Value>(&next) else {
+                            continue;
+                        };
+                        if text(&next, "type") == "y-update-end" {
+                            socket
+                                .send(WsMessage::Close(Some(CloseFrame {
+                                    code: 1000,
+                                    reason: "access changed; reconnect".into(),
+                                })))
+                                .await
+                                .unwrap();
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = axum::Router::new()
+        .route("/ws/slug", get(close_after_join))
+        .with_state(());
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.md");
+    std::fs::write(&path, "alpha").unwrap();
+    let mut client = Client::new(
+        path,
+        Duration::from_millis(50),
+        format!("http://{address}"),
+        String::new(),
+    );
+    let (_events_tx, mut events_rx) = tokio::sync::mpsc::channel(8);
+    let result = tokio::time::timeout(Duration::from_secs(3), client.run("slug", &mut events_rx))
+        .await
+        .expect("the socket close was received")
+        .expect_err("a retryable close must reconnect to the caller");
+    assert!(result.contains("access changed; reconnect"), "{result}");
 }

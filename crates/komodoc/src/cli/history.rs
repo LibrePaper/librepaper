@@ -13,24 +13,13 @@ pub async fn history_document(identifier: &str, server_flag: String, key: String
     let server = server_from(&server_flag);
     let key = link_key(&key);
     let slug = resolve_identifier(identifier, &server, &key).await;
-    let (status, payload) = get_as(
-        &format!("{server}/api/documents/{slug}/history"),
+    let checkpoints = manifest_for(
+        &server,
+        &slug,
         &Credentials::new(&stored_token_for(&server), &key),
-        Duration::from_secs(60),
     )
     .await
     .unwrap_or_else(|err| die(err));
-    if status != 200 {
-        die(format!(
-            "history failed ({status}): {}",
-            detail_of(&payload)
-        ));
-    }
-    let checkpoints = payload
-        .get("checkpoints")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
     if checkpoints.is_empty() {
         println!("no checkpoints yet");
         return;
@@ -64,43 +53,62 @@ pub async fn history_document(identifier: &str, server_flag: String, key: String
     }
 }
 
-/// Fetches a checkpoint after resolving the short digest printed by
-/// `history`. The server still checks read permission on every request.
-pub(super) async fn checkpoint_for(
+/// Read failures must remain failures; an outage is not an empty timeline.
+pub(super) async fn manifest_for(
     server: &str,
     slug: &str,
-    requested: &str,
     credentials: &Credentials,
-) -> Value {
-    let (status, history) = get_as(
+) -> Result<Vec<Value>, String> {
+    let (status, payload) = get_as(
         &format!("{server}/api/documents/{slug}/history"),
         credentials,
         Duration::from_secs(60),
     )
-    .await
-    .unwrap_or_else(|err| die(err));
+    .await?;
     if status != 200 {
-        die(format!(
+        return Err(format!(
             "history failed ({status}): {}",
-            detail_of(&history)
+            detail_of(&payload)
         ));
     }
-    let matching: Vec<String> = history
+    payload
         .get("checkpoints")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+        .cloned()
+        .ok_or_else(|| "invalid history response: missing checkpoints".into())
+}
+
+pub(super) fn checkpoint_sha(
+    checkpoints: &[Value],
+    slug: &str,
+    requested: &str,
+) -> Result<String, String> {
+    if requested.is_empty() {
+        return Err("a checkpoint SHA is required".into());
+    }
+    let matching: std::collections::HashSet<String> = checkpoints
+        .iter()
         .map(|point| text(point, "sha"))
         .filter(|sha| sha.starts_with(requested))
         .collect();
-    let sha = match matching.as_slice() {
-        [sha] => sha,
-        [] => die(format!("no checkpoint of {slug} starts with {requested:?}")),
-        many => die(format!(
-            "{requested:?} names {} checkpoints of {slug}; give more of the digest",
-            many.len()
+    match matching.len() {
+        0 => Err(format!("no checkpoint of {slug} starts with {requested:?}")),
+        1 => Ok(matching
+            .into_iter()
+            .next()
+            .expect("one matching checkpoint")),
+        many => Err(format!(
+            "{requested:?} names {many} checkpoints of {slug}; give more of the digest"
         )),
-    };
+    }
+}
+
+async fn checkpoint_by_sha(
+    server: &str,
+    slug: &str,
+    sha: &str,
+    credentials: &Credentials,
+) -> Value {
     let (status, checkpoint) = get_as(
         &format!("{server}/api/documents/{slug}/history/{sha}"),
         credentials,
@@ -131,8 +139,13 @@ pub async fn diff_document(
     let key = link_key(&key);
     let slug = resolve_identifier(identifier, &server, &key).await;
     let credentials = Credentials::new(&stored_token_for(&server), &key);
-    let old = checkpoint_for(&server, &slug, from, &credentials).await;
-    let new = checkpoint_for(&server, &slug, to, &credentials).await;
+    let manifest = manifest_for(&server, &slug, &credentials)
+        .await
+        .unwrap_or_else(|err| die(err));
+    let from = checkpoint_sha(&manifest, &slug, from).unwrap_or_else(|err| die(err));
+    let to = checkpoint_sha(&manifest, &slug, to).unwrap_or_else(|err| die(err));
+    let old = checkpoint_by_sha(&server, &slug, &from, &credentials).await;
+    let new = checkpoint_by_sha(&server, &slug, &to, &credentials).await;
     let old_files = old.get("texts").and_then(Value::as_object);
     let new_files = new.get("texts").and_then(Value::as_object);
     let old_entries = old.get("files").and_then(Value::as_object);
@@ -469,36 +482,10 @@ pub async fn label_checkpoint(identifier: &str, sha: &str, label: String, server
     let server = server_from(&server_flag);
     let slug = resolve_identifier(identifier, &server, "").await;
     let token = require_token_for(&server);
-    let (status, payload) = get_with_token(
-        &format!("{server}/api/documents/{slug}/history"),
-        &token,
-        Duration::from_secs(60),
-    )
-    .await
-    .unwrap_or_else(|err| die(err));
-    if status != 200 {
-        die(format!(
-            "history failed ({status}): {}",
-            detail_of(&payload)
-        ));
-    }
-    let checkpoints = payload
-        .get("checkpoints")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let matching: Vec<String> = checkpoints
-        .iter()
-        .map(|point| text(point, "sha"))
-        .filter(|known| known.starts_with(sha))
-        .collect();
-    let full = match matching.len() {
-        0 => die(format!("no checkpoint of {slug} starts with {sha:?}")),
-        1 => matching[0].clone(),
-        many => die(format!(
-            "{sha:?} names {many} checkpoints of {slug}; give more of the digest"
-        )),
-    };
+    let checkpoints = manifest_for(&server, &slug, &Credentials::token(&token))
+        .await
+        .unwrap_or_else(|err| die(err));
+    let full = checkpoint_sha(&checkpoints, &slug, sha).unwrap_or_else(|err| die(err));
 
     let (status, payload) = crate::http::patch_json(
         &format!("{server}/api/documents/{slug}/history/{full}"),
@@ -518,52 +505,6 @@ pub async fn label_checkpoint(identifier: &str, sha: &str, label: String, server
     } else {
         println!("{short}  {given}");
     }
-}
-
-/// The newest checkpoint's raw source texts and main file, the same way
-/// `checkpoint_for` reads one named checkpoint -- just for whichever one is
-/// last in the history, rather than one asked for by digest.
-pub(super) async fn newest_checkpoint(
-    server: &str,
-    slug: &str,
-    credentials: &Credentials,
-) -> Value {
-    let (status, history) = get_as(
-        &format!("{server}/api/documents/{slug}/history"),
-        credentials,
-        Duration::from_secs(60),
-    )
-    .await
-    .unwrap_or_else(|err| die(err));
-    if status != 200 {
-        die(format!(
-            "history failed ({status}): {}",
-            detail_of(&history)
-        ));
-    }
-    let checkpoints = history
-        .get("checkpoints")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let Some(newest) = checkpoints.last() else {
-        die(format!("{slug} has no checkpoints yet"));
-    };
-    let sha = text(newest, "sha");
-    let (status, checkpoint) = get_as(
-        &format!("{server}/api/documents/{slug}/history/{sha}"),
-        credentials,
-        Duration::from_secs(60),
-    )
-    .await
-    .unwrap_or_else(|err| die(err));
-    if status != 200 {
-        die(format!(
-            "checkpoint failed ({status}): {}",
-            detail_of(&checkpoint)
-        ));
-    }
-    checkpoint
 }
 
 #[cfg(test)]
@@ -592,5 +533,26 @@ mod diff_tests {
         let added = unified_source_diff("empty.md", "", "", "old", "new", false, true);
         assert!(added.contains("--- /dev/null\n+++ b/empty.md@new\n"));
         assert!(!added.contains("@@"));
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+    #[tokio::test]
+    async fn unavailable_history_is_not_an_empty_manifest() {
+        use axum::{http::StatusCode, routing::get};
+        let app = axum::Router::new().route(
+            "/api/documents/paper/history",
+            get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let error = manifest_for(&server, "paper", &Credentials::default())
+            .await
+            .unwrap_err();
+        assert!(error.contains("503"), "{error}");
+        task.abort();
     }
 }
