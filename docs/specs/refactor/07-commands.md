@@ -14,9 +14,8 @@ adapter creates `Command::{Comment,Reply,Resolve,Delete,Anchor,Accept,Reject}`
 and carries `temp_id` and `request_id` through every error and success path.
 The room and server dispatch paths consume the validated command variants;
 they do not use the adapter as an unused parallel type. Raw fields used in
-request digests are retained when converting back into the existing room
-mutation implementation, so durable receipt identity and successful retries
-remain byte-compatible.
+request digests are carried directly into the typed mutation arms, so durable
+receipt identity and successful retries remain byte-compatible.
 
 Malformed command validation runs after the existing frame-size and socket
 abuse gates and after the existing authorization gate, but before room rate
@@ -44,7 +43,9 @@ format or requiring a client migration.
   twice. Test stored-receipt compatibility where validation changes processing.
 
 Focused adapter tests cover unknown-kind correlation, operation-specific
-required fields, field-preserving retry identity, all internal variants, and
-the guarantee that an unknown command does not consume the next valid
-comment's allowance. Existing room and socket tests remain the compatibility
-suite for persisted receipts, frame limits, and correlation fields.
+required fields, field-preserving retry identity, malformed-anchor rollback
+correlation, and the guarantee that an unknown command does not consume the
+next valid comment's allowance. A retry with an empty reply body also follows
+the established idempotent receipt path. Existing room and socket tests remain
+the compatibility suite for persisted receipts, frame limits, and correlation
+fields.

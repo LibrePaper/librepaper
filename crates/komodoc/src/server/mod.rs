@@ -38,8 +38,8 @@ use crate::document::store::{
     PutError, Role, Store,
 };
 use crate::room::{
-    decode_update, encode_update, AcceptError, Accepted, Applied, Message as RoomMessage, Outgoing,
-    Room, RoomSet, Sender,
+    decode_update, encode_update, AcceptError, Accepted, Applied, Command, Message as RoomMessage,
+    Outgoing, Room, RoomSet, Sender,
 };
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
@@ -838,7 +838,6 @@ impl Server {
             Err(error) => return (error.response(), false),
         };
         let is_comment = command.is_comment();
-        let mut incoming = command.into_message();
         // The client's name is never trusted, for a comment or for a reply to
         // one: a signed-in commenter is named by their account, and anyone
         // else is given the same pseudonym every time they return to this
@@ -846,7 +845,7 @@ impl Server {
         // typed. A caller with no visitor cookie yet (nothing to key a
         // pseudonym on) is "Anonymous", the same fallback the room itself
         // used to apply.
-        incoming.creator = if id.is_signed_in() {
+        let creator = if id.is_signed_in() {
             id.name.clone()
         } else if author.is_empty() {
             "Anonymous".to_string()
@@ -859,7 +858,7 @@ impl Server {
         // has moved on. A checkpoint whose text is already the current one
         // costs nothing and adds no entry.
         if is_comment {
-            if let Err(err) = room.checkpoint("comment", &incoming.creator).await {
+            if let Err(err) = room.checkpoint("comment", &creator).await {
                 // Not a reason to refuse the comment: the comment is the
                 // reader's work, and the checkpoint is bookkeeping about it.
                 eprintln!(
@@ -871,9 +870,7 @@ impl Server {
         // Which link the remark came in on, so an owner can tell reviewer two
         // from reviewer three without either having signed anything. Empty for
         // a commenter by name.
-        let command = incoming
-            .into_command()
-            .expect("server-mutated command remains valid");
+        let command = command.with_creator(creator);
         let (mut result, ok) = room
             .apply_command(
                 command,
@@ -926,63 +923,72 @@ impl Server {
             Ok(command) => command,
             Err(error) => return (error.response(), false),
         };
-        if command.kind() == "accept" {
-            return match room
-                .accept_suggestion(command.comment_id(), command.request_id(), by)
-                .await
-            {
-                Ok(Accepted::Applied {
-                    update,
-                    sha,
-                    resolved_at,
-                }) => {
-                    room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
+        match command {
+            Command::Accept {
+                comment_id,
+                request_id,
+                ..
+            } => {
+                return match room.accept_suggestion(&comment_id, &request_id, by).await {
+                    Ok(Accepted::Applied {
+                        update,
+                        sha,
+                        resolved_at,
+                    }) => {
+                        room.broadcast(
+                            &json!({"type": "y-update", "update": encode_update(&update)}),
+                        )
                         .await;
-                    (
+                        (
+                            json!({
+                                "type": "accept", "comment_id": comment_id,
+                                "resolved_in": sha, "resolved_at": resolved_at,
+                                "request_id": request_id,
+                                "version": 1, "protocol": "komodoc.room.v1",
+                            }),
+                            true,
+                        )
+                    }
+                    Ok(Accepted::Noop { sha, resolved_at }) => (
+                        // Still a success -- `ok` is what the caller's status
+                        // code and the room-wide broadcast key off of, and a
+                        // retry answering with what already happened is exactly
+                        // that, not a refusal.
                         json!({
-                            "type": "accept", "comment_id": command.comment_id(),
+                            "type": "accept", "comment_id": comment_id,
                             "resolved_in": sha, "resolved_at": resolved_at,
-                            "request_id": command.request_id(),
+                            "request_id": request_id, "noop": true,
                             "version": 1, "protocol": "komodoc.room.v1",
                         }),
                         true,
-                    )
-                }
-                Ok(Accepted::Noop { sha, resolved_at }) => (
-                    // Still a success -- `ok` is what the caller's status
-                    // code and the room-wide broadcast key off of, and a
-                    // retry answering with what already happened is exactly
-                    // that, not a refusal.
-                    json!({
-                        "type": "accept", "comment_id": command.comment_id(),
-                        "resolved_in": sha, "resolved_at": resolved_at,
-                        "request_id": command.request_id(), "noop": true,
-                        "version": 1, "protocol": "komodoc.room.v1",
-                    }),
-                    true,
-                ),
-                Err(AcceptError::Refused(text)) => fail(&text),
-                Err(AcceptError::Stale) => (
-                    json!({
-                        "type": "error", "stale": true, "comment_id": command.comment_id(),
-                        "message": "the passage has changed since this was suggested",
-                        "request_id": command.request_id(),
-                        "version": 1, "protocol": "komodoc.room.v1",
-                    }),
-                    false,
-                ),
-                Err(AcceptError::Failed(text)) => fail(&text),
-            };
-        }
-        // "reject"
-        match room.reject_suggestion(command.comment_id()).await {
-            Ok(mut result) => {
-                result["request_id"] = json!(command.request_id());
-                result["version"] = json!(1);
-                result["protocol"] = json!("komodoc.room.v1");
-                (result, true)
+                    ),
+                    Err(AcceptError::Refused(text)) => fail(&text),
+                    Err(AcceptError::Stale) => (
+                        json!({
+                            "type": "error", "stale": true, "comment_id": comment_id,
+                            "message": "the passage has changed since this was suggested",
+                            "request_id": request_id,
+                            "version": 1, "protocol": "komodoc.room.v1",
+                        }),
+                        false,
+                    ),
+                    Err(AcceptError::Failed(text)) => fail(&text),
+                };
             }
-            Err(text) => fail(&text),
+            Command::Reject {
+                comment_id,
+                request_id,
+                ..
+            } => match room.reject_suggestion(&comment_id).await {
+                Ok(mut result) => {
+                    result["request_id"] = json!(request_id);
+                    result["version"] = json!(1);
+                    result["protocol"] = json!("komodoc.room.v1");
+                    (result, true)
+                }
+                Err(text) => fail(&text),
+            },
+            _ => fail("that command is not a suggestion decision"),
         }
     }
 }

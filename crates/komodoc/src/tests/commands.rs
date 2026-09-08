@@ -2,7 +2,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::config::Configuration;
-use crate::room::{Command, Message, RoomSet, SourceAnchor};
+use crate::room::{Command, Message, RoomSet};
 use crate::storage::blob::FsStore;
 
 #[test]
@@ -57,89 +57,23 @@ fn adapter_preserves_fields_used_by_retry_identity() {
         request_id: "request-1".into(),
         ..Message::default()
     };
-    let round_trip = message.clone().into_command().unwrap().into_message();
-    assert_eq!(
-        serde_json::to_value(message).unwrap(),
-        serde_json::to_value(round_trip).unwrap()
-    );
-}
-
-#[test]
-fn every_comment_command_is_a_real_internal_variant() {
-    let cases = [
-        (
-            "comment",
-            Command::Comment {
-                motivation: String::new(),
-                body: "body".into(),
-                creator: String::new(),
-                exact: "text".into(),
-                prefix: String::new(),
-                suffix: String::new(),
-                position: None,
-                region: None,
-                source: None,
-                proposed: None,
-                temp_id: String::new(),
-                request_id: String::new(),
-            },
-        ),
-        (
-            "reply",
-            Command::Reply {
-                comment_id: "c".into(),
-                body: "body".into(),
-                creator: String::new(),
-                temp_id: String::new(),
-                request_id: String::new(),
-            },
-        ),
-        (
-            "resolve",
-            Command::Resolve {
-                comment_id: "c".into(),
-                resolved: true,
-                temp_id: String::new(),
-                request_id: String::new(),
-            },
-        ),
-        (
-            "delete",
-            Command::Delete {
-                comment_id: "c".into(),
-                temp_id: String::new(),
-                request_id: String::new(),
-            },
-        ),
-        (
-            "anchor",
-            Command::Anchor {
-                comment_id: "c".into(),
-                source: SourceAnchor::default(),
-                temp_id: String::new(),
-                request_id: String::new(),
-            },
-        ),
-        (
-            "accept",
-            Command::Accept {
-                comment_id: "c".into(),
-                temp_id: String::new(),
-                request_id: String::new(),
-            },
-        ),
-        (
-            "reject",
-            Command::Reject {
-                comment_id: "c".into(),
-                temp_id: String::new(),
-                request_id: String::new(),
-            },
-        ),
-    ];
-    for (kind, command) in cases {
-        assert_eq!(command.kind(), kind);
-    }
+    let command = message.into_command().unwrap();
+    let Command::Comment {
+        body,
+        exact,
+        proposed,
+        temp_id,
+        request_id,
+        ..
+    } = command
+    else {
+        panic!("comment wire frame did not produce a Comment command");
+    };
+    assert_eq!(body, " note ");
+    assert_eq!(exact, "passage");
+    assert_eq!(proposed, Some(String::new()));
+    assert_eq!(temp_id, "temp-1");
+    assert_eq!(request_id, "request-1");
 }
 
 #[test]
@@ -164,6 +98,19 @@ fn error_response_is_a_protocol_error() {
     );
 }
 
+#[test]
+fn malformed_anchor_error_keeps_the_target_for_optimistic_rollback() {
+    let error = Message {
+        kind: "anchor".into(),
+        comment_id: "comment-7".into(),
+        request_id: "anchor-7".into(),
+        ..Message::default()
+    }
+    .into_command()
+    .unwrap_err();
+    assert_eq!(error.response()["comment_id"], "comment-7");
+}
+
 #[tokio::test]
 async fn unknown_command_does_not_consume_comment_allowance() {
     let dir = tempfile::tempdir().unwrap();
@@ -177,6 +124,7 @@ async fn unknown_command_does_not_consume_comment_allowance() {
         .apply(
             Message {
                 kind: "unknown".into(),
+                temp_id: "123e4567-e89b-12d3-a456-426614174000".into(),
                 ..Message::default()
             },
             "198.51.100.7",
@@ -205,4 +153,41 @@ async fn unknown_command_does_not_consume_comment_allowance() {
         )
         .await;
     assert!(ok, "valid command was charged by unknown command: {result}");
+
+    let comment_id = result["comment"]["id"].as_str().unwrap().to_owned();
+    let reply_id = "123e4567-e89b-12d3-a456-426614174001";
+    let (first_reply, ok) = room
+        .apply(
+            Message {
+                kind: "reply".into(),
+                comment_id: comment_id.clone(),
+                body: "a reply".into(),
+                temp_id: reply_id.into(),
+                ..Message::default()
+            },
+            "198.51.100.7",
+            "visitor:test",
+            "",
+            Some(3),
+            false,
+        )
+        .await;
+    assert!(ok, "reply was refused: {first_reply}");
+    let (retry, ok) = room
+        .apply(
+            Message {
+                kind: "reply".into(),
+                comment_id,
+                temp_id: reply_id.into(),
+                ..Message::default()
+            },
+            "198.51.100.7",
+            "visitor:test",
+            "",
+            Some(3),
+            false,
+        )
+        .await;
+    assert!(ok, "retry with an empty body was not idempotent: {retry}");
+    assert_eq!(retry["reply"]["id"], reply_id);
 }
