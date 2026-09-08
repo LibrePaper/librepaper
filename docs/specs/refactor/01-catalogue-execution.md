@@ -515,6 +515,14 @@ failure re-runs an idempotent step rather than leaving half a page queued.
 The last keeps one transaction per document, as before. What the job removes
 in every case is the runtime worker parked on the connection once per item.
 
+Two read paths are batched for the same reason: a listing page and the rows
+it names are one job rather than `limit + 1` dispatches, and `catalog_entries`
+reads the whole table in one. Both were already single-threaded sequences
+against one connection; a job per row would have multiplied one request into
+hundreds of dispatches without bounding anything. `catalog_entries` and
+`documents()` remain the unbounded reads the inventory flags; this delivery
+does not add the pagination they need.
+
 ### The re-entrancy fix
 
 `load_catalog_entry` called `catalog.open_link_key(..)` from inside a

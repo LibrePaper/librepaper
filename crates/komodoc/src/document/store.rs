@@ -984,29 +984,32 @@ impl Store {
         let account_id = account_id.map(str::to_owned);
         let owner_key = owner_key.map(str::to_owned);
         let cursor = cursor.map(|(a, b)| (a.to_owned(), b.to_owned()));
-        let page = catalog
+        // The page and the rows it names are one job.  A job per row would be
+        // up to two hundred dispatches for one listing request, and the page
+        // is already bounded by `limit`, so there is nothing to gain by
+        // letting other work interleave between its rows.
+        catalog
             .execute_operation(STORE_JOB_BYTES, move |catalog| {
-                catalog.visible_documents_with_examples(
+                let page = catalog.visible_documents_with_examples(
                     account_id.as_deref(),
                     owner_key.as_deref(),
                     cursor.as_ref().map(|(a, b)| (a.as_str(), b.as_str())),
                     limit,
                     include_examples,
-                )
+                )?;
+                let mut entries = Vec::with_capacity(page.len());
+                for document in page {
+                    // Listing rows need grants/guest roles, but never need to
+                    // decrypt and expose link secrets for every document.
+                    entries.push(
+                        load_catalog_entry_sql(catalog, &document.slug, false)?
+                            .ok_or(CatalogError::NotFound)?,
+                    );
+                }
+                Ok(entries)
             })
             .await
-            .map_err(CatalogError::from)?;
-        let mut entries = Vec::with_capacity(page.len());
-        for document in page {
-            // Listing rows need grants/guest roles, but never need to
-            // decrypt and expose link secrets for every document.
-            entries.push(
-                load_catalog_entry(catalog, &document.slug, false)
-                    .await?
-                    .ok_or(CatalogError::NotFound)?,
-            );
-        }
-        Ok(entries)
+            .map_err(CatalogError::from)
     }
 
     pub async fn get_checked(&self, slug: &str) -> Result<Option<IndexEntry>, CatalogError> {
@@ -2512,24 +2515,29 @@ async fn document_row(
         .map_err(CatalogError::from)
 }
 
+/// Every active document as a compatibility entry.  One job: this is the
+/// unbounded whole-table read the inventory flags, and splitting it into a
+/// job per document would multiply one already-expensive call into hundreds
+/// of dispatches without bounding anything.
 async fn catalog_entries(
     catalog: &Arc<Catalog>,
 ) -> Result<HashMap<String, IndexEntry>, CatalogError> {
-    let documents = catalog
-        .execute_operation(STORE_JOB_BYTES, |catalog| catalog.documents())
+    catalog
+        .execute_operation(STORE_JOB_BYTES, |catalog| {
+            let mut entries = HashMap::new();
+            for document in catalog.documents()? {
+                if document.status != "active" {
+                    continue;
+                }
+                let slug = document.slug.clone();
+                if let Some(entry) = load_catalog_entry_sql(catalog, &slug, true)? {
+                    entries.insert(slug, entry);
+                }
+            }
+            Ok(entries)
+        })
         .await
-        .map_err(CatalogError::from)?;
-    let mut entries = HashMap::new();
-    for document in documents {
-        if document.status != "active" {
-            continue;
-        }
-        let slug = document.slug.clone();
-        if let Some(entry) = load_catalog_entry(catalog, &slug, true).await? {
-            entries.insert(slug, entry);
-        }
-    }
-    Ok(entries)
+        .map_err(CatalogError::from)
 }
 
 /// Load one listing/detail entry as a single job.
