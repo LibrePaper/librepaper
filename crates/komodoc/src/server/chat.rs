@@ -127,11 +127,19 @@ impl Server {
                     if value["type"] != "message" { continue; }
                     let request_id = value["id"].as_str().unwrap_or("").to_string();
                     value["role"] = Value::String(role.clone());
-                    // Recheck both peers before every delivery, including expiry.
+                    // Recheck the sender and the channel's other participant
+                    // before every delivery, including expiry.
                     if !self.reauthorize_connection(&slug, socket_id).await { break; }
                     if !self.chat.attached(&id,socket_id).await { break; }
                     let result = match serde_json::from_value::<chat::Post>(value) {
-                        Ok(post) => self.chat.post(&slug,&id,&token,Some(socket_id),post).await,
+                        Ok(post) => {
+                            self.reauthorize_chat_recipient(&slug, &id, &post.role).await;
+                            if !self.chat.attached(&id, socket_id).await {
+                                Err((404, "channel not found"))
+                            } else {
+                                self.chat.post(&slug,&id,&token,Some(socket_id),post).await
+                            }
+                        }
                         Err(_) => Err((400,"invalid message")),
                     };
                     let reply = match result {
@@ -228,6 +236,7 @@ impl Server {
                 {
                     return response;
                 }
+                self.reauthorize_chat_recipient(slug, id, &post.role).await;
                 self.chat.post(slug, id, &token, None, post).await
             }
             ("DELETE", [_]) => {
@@ -251,6 +260,12 @@ impl Server {
         };
         set(&mut response, "cache-control", "no-store");
         response
+    }
+
+    async fn reauthorize_chat_recipient(&self, slug: &str, id: &str, sender_role: &str) {
+        if let Some(socket_id) = self.chat.recipient_socket(id, sender_role).await {
+            let _ = self.reauthorize_connection(slug, socket_id).await;
+        }
     }
 
     /// Re-resolve the HTTP caller immediately before a body-dependent chat
@@ -434,6 +449,21 @@ impl Hub {
             [&channel.browser, &channel.agent]
                 .iter()
                 .any(|peer| peer.as_ref().is_some_and(|peer| peer.socket == socket))
+        })
+    }
+
+    /// Return the socket on the other side of a delivery.  The server uses
+    /// this narrow lookup to reauthorize that one participant immediately
+    /// before a message is sent, rather than rechecking every socket in the
+    /// document's room.
+    pub async fn recipient_socket(&self, id: &str, sender_role: &str) -> Option<u64> {
+        self.channels.lock().await.get(id).and_then(|channel| {
+            let peer = match sender_role {
+                "user" => channel.agent.as_ref(),
+                "agent" => channel.browser.as_ref(),
+                _ => None,
+            }?;
+            peer.receives.then_some(peer.socket)
         })
     }
 

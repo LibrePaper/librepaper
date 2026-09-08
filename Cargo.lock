@@ -1822,6 +1822,7 @@ dependencies = [
  "hex",
  "hmac",
  "html-escape",
+ "http-body",
  "http-body-util",
  "include_dir",
  "komodoc-engine",

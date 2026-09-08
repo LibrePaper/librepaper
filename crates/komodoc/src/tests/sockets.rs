@@ -113,6 +113,106 @@ async fn revoked_socket_is_closed_and_stops_writing() {
     );
 }
 
+/// An inbound frame rechecks only its sender.  A direct catalogue change is
+/// used here so the periodic all-socket sweep cannot be mistaken for the
+/// sender-specific check: Bob is refused on his next frame while Charlie's
+/// still-open connection remains usable.
+#[tokio::test]
+async fn sender_reauthorization_does_not_close_another_connection() {
+    let server = test_server_with(
+        Configuration::default(),
+        crate::auth::Policy::parse("any"),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let (status, entry) = post_as(
+        &session_as("alice"),
+        &server.url,
+        "/api/documents",
+        json!({"title": "Private", "source": "secret", "source_format": "markdown"}),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let slug = text(&entry, "slug");
+    server
+        .instance
+        .store
+        .modify(&slug, |entry| {
+            for (id, login) in [("github:bob", "bob"), ("github:charlie", "charlie")] {
+                entry.editors.push(crate::document::store::Grant {
+                    id: id.into(),
+                    login: login.into(),
+                    since: crate::util::timestamp(),
+                    name: login.into(),
+                });
+            }
+            Ok(())
+        })
+        .await
+        .expect("the grants are recorded");
+    let mut bob = dial_websocket_with(
+        &server.url,
+        &slug,
+        &format!("Cookie: {}\r\n", session_as("bob")),
+    )
+    .await
+    .unwrap();
+    let mut charlie = dial_websocket_with(
+        &server.url,
+        &slug,
+        &format!("Cookie: {}\r\n", session_as("charlie")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(bob.read().await["type"], "hello");
+    assert_eq!(charlie.read().await["type"], "hello");
+
+    server
+        .instance
+        .store
+        .modify(&slug, |entry| {
+            entry.editors.retain(|grant| grant.login == "charlie");
+            Ok(())
+        })
+        .await
+        .expect("Bob's grant is revoked");
+
+    let mut socket_ids: Vec<_> = server
+        .instance
+        .rooms
+        .get(&slug)
+        .await
+        .state
+        .lock()
+        .await
+        .sockets
+        .keys()
+        .copied()
+        .collect();
+    socket_ids.sort_unstable();
+    assert_eq!(socket_ids.len(), 2);
+    assert!(
+        !server
+            .instance
+            .reauthorize_connection(&slug, socket_ids[0])
+            .await
+    );
+    assert!(
+        server
+            .instance
+            .reauthorize_connection(&slug, socket_ids[1])
+            .await
+    );
+    expect_close(&mut bob).await;
+    charlie.write(json!({"type": "y-open"})).await;
+    loop {
+        if charlie.read().await["type"] == "y-state" {
+            break;
+        }
+    }
+}
+
 /// R01: revoking the read link a reader came in on must close their
 /// already-open socket, the same way revoking a named grant does.
 #[tokio::test]

@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use futures_util::stream;
+use http_body_util::StreamBody;
 use serde_json::{json, Value};
 
 use super::*;
@@ -494,6 +496,61 @@ async fn live_agent_channel_requires_access_token_and_presence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 404);
+}
+
+/// The initial chat permission check happens before the body is read.  A
+/// delayed body must be checked again before it can create a message after
+/// the link used by the HTTP caller has been revoked.
+#[tokio::test]
+async fn delayed_http_chat_body_is_rechecked_after_link_revocation() {
+    let server = new_test_server().await;
+    let document = publish_test_document(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    let base = format!("{}/api/documents/{slug}/chat", server.url);
+    let created = client()
+        .post(&base)
+        .header("x-komodoc-client", "1")
+        .header(crate::server::LINK_HEADER, &key)
+        .header(crate::server::AUTOMATION_HEADER, "1")
+        .send()
+        .await
+        .expect("chat channel response");
+    assert_eq!(created.status(), 200);
+    let channel: Value = created.json().await.unwrap();
+    let endpoint = format!("{base}/{}", text(&channel, "id"));
+    let token = text(&channel, "token");
+    let body = reqwest::Body::wrap(StreamBody::new(stream::once(async {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        Ok::<_, std::convert::Infallible>(http_body::Frame::data(axum::body::Bytes::from(
+            json!({"id":"late","text":"this must not arrive"})
+                .to_string()
+                .into_bytes(),
+        )))
+    })));
+    let request = tokio::spawn(async move {
+        client()
+            .post(endpoint)
+            .header("x-komodoc-client", "1")
+            .header(crate::server::LINK_HEADER, key)
+            .header(crate::server::AUTOMATION_HEADER, "1")
+            .header("x-komodoc-chat-token", token)
+            .body(body)
+            .send()
+            .await
+            .expect("delayed chat response")
+            .status()
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let (status, _) = post_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}/share"),
+        json!({"revoke":"reader"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(request.await.unwrap(), 404);
 }
 
 #[tokio::test]

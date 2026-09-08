@@ -8,7 +8,15 @@ use super::*;
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn send_outgoing(tx: &Sender, outgoing: Outgoing) -> Result<(), ()> {
-    tokio::time::timeout(SOCKET_WRITE_TIMEOUT, tx.send(outgoing))
+    send_outgoing_with_timeout(tx, outgoing, SOCKET_WRITE_TIMEOUT).await
+}
+
+async fn send_outgoing_with_timeout(
+    tx: &Sender,
+    outgoing: Outgoing,
+    timeout: Duration,
+) -> Result<(), ()> {
+    tokio::time::timeout(timeout, tx.send(outgoing))
         .await
         .map_err(|_| ())?
         .map_err(|_| ())
@@ -248,7 +256,18 @@ impl Server {
 
         let hello =
             json!({"type": "hello", "comments": room.snapshot_for(&author, is_owner).await});
-        let _ = send_outgoing(&tx, Outgoing::Text(hello.to_string())).await;
+        if send_outgoing(&tx, Outgoing::Text(hello.to_string()))
+            .await
+            .is_err()
+        {
+            writer.abort();
+            let _ = writer.await;
+            self.connections.lock().await.remove(&socket_id);
+            room.detach(socket_id).await;
+            room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
+                .await;
+            return;
+        }
 
         // Whether this socket has any reason left to keep watching the room:
         // whether it may still read the document at all, and whether the
@@ -619,8 +638,20 @@ impl Server {
         room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
             .await;
         if !writer_done {
-            let _ = send_outgoing(&tx, Outgoing::Close("")).await;
-            let _ = writer.await;
+            if send_outgoing(&tx, Outgoing::Close("")).await.is_err() {
+                // The queue may be full while the writer is blocked in a
+                // transport send.  The reader still owns `tx`, so waiting for
+                // the writer after a failed enqueue could otherwise hang
+                // forever.
+                writer.abort();
+                let _ = writer.await;
+            } else if tokio::time::timeout(SOCKET_WRITE_TIMEOUT, &mut writer)
+                .await
+                .is_err()
+            {
+                writer.abort();
+                let _ = writer.await;
+            }
         }
     }
 
@@ -659,6 +690,9 @@ impl Server {
         let Some(connection) = connection else {
             return false;
         };
+        if connection.slug != slug {
+            return false;
+        }
         let allowed = match &entry {
             Some(entry) => {
                 let who = self
@@ -841,5 +875,25 @@ mod multipart_update_tests {
                 .unwrap(),
             Some(b"abab".to_vec())
         );
+    }
+}
+
+#[cfg(test)]
+mod outgoing_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_full_peer_queue_does_not_block_a_critical_send() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.try_send(Outgoing::Text("already queued".into()))
+            .expect("the test queue starts empty");
+        assert!(send_outgoing_with_timeout(
+            &tx,
+            Outgoing::Close("slow peer"),
+            Duration::from_millis(1)
+        )
+        .await
+        .is_err());
+        assert!(matches!(rx.try_recv(), Ok(Outgoing::Text(_))));
     }
 }
