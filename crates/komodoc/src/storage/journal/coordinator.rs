@@ -13,8 +13,17 @@ pub struct CoordinatorLimits {
 
 impl Default for CoordinatorLimits {
     fn default() -> Self {
+        Self::from_persistence(&crate::config::PersistenceLimits::default())
+    }
+}
+
+impl CoordinatorLimits {
+    /// The queue ceilings implied by the deployment's persistence policy, so
+    /// `Q` is set in one place and read here rather than restated as a
+    /// multiple of the segment size.
+    pub fn from_persistence(limits: &crate::config::PersistenceLimits) -> Self {
         Self {
-            max_queued_bytes: 16 * MAX_SEGMENT_BYTES,
+            max_queued_bytes: limits.max_queued_payload_bytes,
             max_queued_records: MAX_RECORDS_PER_SEGMENT * 16,
             max_segment_bytes: MAX_SEGMENT_BYTES,
             max_records_per_segment: MAX_RECORDS_PER_SEGMENT,
@@ -30,6 +39,48 @@ pub struct JournalCoordinator {
     pub(super) limits: CoordinatorLimits,
     pub(super) queued: VecDeque<JournalRecord>,
     pub(super) queued_bytes: usize,
+    /// Payload bytes that have left the queue but whose operation has not
+    /// settled. Sealing used to release a round's bytes before any object was
+    /// written, so `Q` bounded what was waiting rather than what the process
+    /// was actually holding, and a burst of large rooms could queue a second
+    /// full round on top of one still in object I/O. The counter is shared
+    /// with the guards `begin_executing` hands out so that a dropped future
+    /// -- a cancelled append -- releases it without the async lock.
+    pub(super) executing: Arc<AtomicUsize>,
+}
+
+/// Ownership of a sealed round's payload bytes, held against `Q` until the
+/// operation settles. Dropping it is the release, so cancellation and every
+/// early return give the budget back exactly once.
+#[derive(Debug)]
+pub struct ExecutingBytes {
+    executing: Arc<AtomicUsize>,
+    bytes: usize,
+}
+
+impl ExecutingBytes {
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+impl Drop for ExecutingBytes {
+    fn drop(&mut self) {
+        // Saturating rather than `fetch_sub`: an accounting fault must settle
+        // at zero rather than wrap into a budget of four exabytes.
+        let mut held = self.executing.load(Ordering::Relaxed);
+        loop {
+            match self.executing.compare_exchange_weak(
+                held,
+                held.saturating_sub(self.bytes),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => held = actual,
+            }
+        }
+    }
 }
 
 impl JournalCoordinator {
@@ -40,11 +91,37 @@ impl JournalCoordinator {
         {
             return Err(JournalError::Invalid("invalid coordinator limits".into()));
         }
+        // Whether the queue can carry one maximum snapshot is a question about
+        // the deployment's persistence policy rather than about framing, and
+        // `JournalRuntime::new_with_policy` answers it. The coordinator stays
+        // usable with a deliberately tiny queue, which is what its own
+        // queue-full tests need.
         Ok(Self {
             limits,
             queued: VecDeque::new(),
             queued_bytes: 0,
+            executing: Arc::new(AtomicUsize::new(0)),
         })
+    }
+
+    /// Take ownership of a sealed round's payload bytes. Called while the
+    /// seal still holds this mutex, so the bytes never leave `Q` unaccounted
+    /// between leaving the queue and being charged as executing.
+    pub fn begin_executing(&self, segments: &[Segment]) -> ExecutingBytes {
+        let bytes = segments
+            .iter()
+            .flat_map(|segment| segment.records.iter())
+            .map(|record| record.payload.len())
+            .fold(0usize, |total, bytes| total.saturating_add(bytes));
+        self.executing.fetch_add(bytes, Ordering::Relaxed);
+        ExecutingBytes {
+            executing: Arc::clone(&self.executing),
+            bytes,
+        }
+    }
+
+    pub fn executing_bytes(&self) -> usize {
+        self.executing.load(Ordering::Relaxed)
     }
 
     pub fn enqueue(&mut self, record: JournalRecord) -> JournalResult<()> {
@@ -65,10 +142,19 @@ impl JournalCoordinator {
             .collect::<JournalResult<Vec<_>>>()?
             .into_iter()
             .sum::<usize>();
+        // Capacity is held until the operation releases ownership, not merely
+        // until dequeue, so a round still in object I/O still counts.
+        let held = self
+            .queued_bytes
+            .saturating_add(self.executing_bytes())
+            .saturating_add(bytes);
         if self.queued.len().saturating_add(records.len()) > self.limits.max_queued_records
-            || self.queued_bytes.saturating_add(bytes) > self.limits.max_queued_bytes
+            || held > self.limits.max_queued_bytes
         {
-            return Err(JournalError::Limit("journal queue is full".into()));
+            // Temporary: the same record fits once the rounds ahead of it
+            // settle. Reporting this as a limit told a person their document
+            // was too large when the deployment was merely busy.
+            return Err(JournalError::Busy("journal queue is full".into()));
         }
         self.queued_bytes = self.queued_bytes.saturating_add(bytes);
         self.queued.extend(records);

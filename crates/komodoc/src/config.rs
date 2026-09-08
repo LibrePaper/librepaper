@@ -306,6 +306,15 @@ pub struct Configuration {
     /// survives being read aloud or retyped.
     pub suffix_alphabet: String,
     pub suffix_length: usize,
+
+    /// The persistence policy: what a source may be, what its encoded CRDT
+    /// snapshot may be, and the journal payload and memory budgets that have
+    /// to be able to carry one. Not part of the shell configuration -- a
+    /// browser has no use for the server's storage ceilings -- so it is
+    /// skipped rather than injected. `max_source_bytes` follows
+    /// `max_document`; read the pair through [`Configuration::persistence`].
+    #[serde(skip)]
+    pub persistence: PersistenceLimits,
 }
 
 /// Bounds what a deployment will hold. `total` and `per_owner` are bytes;
@@ -378,7 +387,7 @@ pub struct CapLimit {
 impl Default for Configuration {
     fn default() -> Self {
         Configuration {
-            max_document: 4 * 1024 * 1024,
+            max_document: DEFAULT_MAX_SOURCE_BYTES,
             max_files: 200,
             max_path: 200,
             max_assets: 32 * 1024 * 1024,
@@ -483,6 +492,7 @@ impl Default for Configuration {
             slug_max: 80,
             suffix_alphabet: "abcdefghijkmnpqrstuvwxyz23456789".to_string(),
             suffix_length: 10,
+            persistence: PersistenceLimits::default(),
         }
     }
 }
@@ -505,16 +515,40 @@ impl Configuration {
         self.source_formats.iter().any(|known| known == format)
     }
 
+    /// The persistence policy this configuration implies: the source ceiling
+    /// an operator set, and the encoded, queue and memory ceilings the
+    /// journal format supports. One value, so admission, publication, append
+    /// and compaction cannot drift apart.
+    pub fn persistence(&self) -> PersistenceLimits {
+        PersistenceLimits {
+            max_source_bytes: self.max_document,
+            ..self.persistence
+        }
+    }
+
     /// Overrides the document size ceiling, in megabytes. Zero leaves the
     /// default alone.
+    ///
+    /// The ceiling used to run to a hundred megabytes, which was a promise
+    /// this deployment could not keep: the journal queue holds sixty-four and
+    /// a recovery base decodes sixty-four, so a document accepted at the old
+    /// maximum could be admitted and then never durably saved. The supported
+    /// maximum is now whatever [`PersistenceLimits::validate`] accepts.
     pub fn set_max_document(&mut self, megabytes: usize) -> Result<(), String> {
         if megabytes == 0 {
             return Ok(());
         }
-        if !(1..=100).contains(&megabytes) {
-            return Err("--max-size must be between 1 and 100 MB".into());
-        }
-        self.max_document = megabytes * 1024 * 1024;
+        let bytes = megabytes
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| "--max-size is too large".to_string())?;
+        let candidate = PersistenceLimits {
+            max_source_bytes: bytes,
+            ..self.persistence
+        };
+        candidate
+            .validate()
+            .map_err(|why| format!("--max-size: {why}"))?;
+        self.max_document = bytes;
         Ok(())
     }
 
@@ -598,5 +632,251 @@ impl Configuration {
             self.storage.uploads_per_hour = uploads_per_hour as usize;
         }
         Ok(())
+    }
+}
+
+/// The source ceiling a deployment gets without saying otherwise.
+pub const DEFAULT_MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+
+/// The supported source ceiling, in bytes. `--max-size` may not exceed it.
+///
+/// It is a policy, not a theorem: nothing proves that eight megabytes of text
+/// can never encode past [`PersistenceLimits::max_encoded_snapshot_bytes`].
+/// It is the largest source ceiling for which the copy inventory recorded in
+/// `docs/specs/refactor/10-size-limits.md` still leaves room for the CRDT
+/// history and metadata that grow beside the visible text.
+pub const SUPPORTED_MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+
+/// `E`: the largest encoded CRDT snapshot this deployment will write. It has
+/// to be inside the recovery-base payload ceiling and inside the aggregate
+/// journal payload budget, because a snapshot that cannot be replayed or
+/// queued is a snapshot that cannot be acknowledged.
+pub const DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+
+/// `Q`: aggregate queued plus executing journal payload budget, shared by
+/// every room. It matches the coordinator's own queue ceiling; the
+/// coordinator additionally holds a sealed operation's bytes against this
+/// budget until the operation settles, so a burst of large rooms cannot
+/// enqueue a second round while the first is still in object I/O.
+pub const DEFAULT_MAX_QUEUED_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+/// `M`: the memory admission for the transient copies persistence makes
+/// around one snapshot -- construction, staging, encoded segment bodies,
+/// record fragments, and the overlap a compaction adds. It is not a storage
+/// quota: nothing here is billed to an owner, and nothing here survives the
+/// operation.
+pub const DEFAULT_MAX_STAGING_BYTES: usize = 512 * 1024 * 1024;
+
+/// How many live copies of one snapshot persistence may hold at its peak.
+/// The inventory behind this number is recorded in
+/// `docs/specs/refactor/10-size-limits.md`; changing either without the
+/// other makes the memory admission a decoration.
+pub const SNAPSHOT_COPY_FACTOR: usize = 8;
+
+/// The one relationship this deployment supports between what a person may
+/// write, what a CRDT snapshot of it encodes to, and what the journal can
+/// carry to storage.
+///
+/// It exists because the three used to be set independently: `--max-size`
+/// accepted a hundred megabytes of source while the journal queue held
+/// sixty-four and a recovery base could decode sixty-four, so a deployment
+/// could be configured to accept work it could never durably save. Every
+/// caller that admits, appends, or compacts asks this one value instead of
+/// its own constant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistenceLimits {
+    /// `S`: the configured source-byte ceiling, which is `max_document`.
+    pub max_source_bytes: usize,
+    /// `E`: the supported encoded CRDT snapshot ceiling.
+    pub max_encoded_snapshot_bytes: usize,
+    /// `Q`: the aggregate queued plus executing journal payload budget.
+    pub max_queued_payload_bytes: usize,
+    /// `M`: the memory admission for transient persistence copies.
+    pub max_staging_bytes: usize,
+}
+
+impl Default for PersistenceLimits {
+    fn default() -> Self {
+        Self {
+            max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
+            max_encoded_snapshot_bytes: DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES,
+            max_queued_payload_bytes: DEFAULT_MAX_QUEUED_PAYLOAD_BYTES,
+            max_staging_bytes: DEFAULT_MAX_STAGING_BYTES,
+        }
+    }
+}
+
+impl PersistenceLimits {
+    /// The peak transient memory one snapshot of `bytes` is admitted for.
+    /// Saturating rather than checked: an estimate that overflows `usize` is
+    /// past every budget anyway, and the caller compares it against one.
+    pub fn staging_cost(bytes: usize) -> usize {
+        bytes.saturating_mul(SNAPSHOT_COPY_FACTOR)
+    }
+
+    /// Refuse a configuration that cannot durably save the work it advertises.
+    ///
+    /// Every derived bound is checked arithmetic: an operator who sets a
+    /// ceiling near `usize::MAX` gets a configuration error rather than a
+    /// wrapped comparison that silently admits everything.
+    pub fn validate(&self) -> Result<(), String> {
+        use crate::storage::journal::{
+            record_framing_bytes, MAX_JOURNAL_IDENTITY_BYTES, MAX_METADATA_BYTES,
+            MAX_RECORDS_PER_SEGMENT, MAX_RECORD_BYTES, MAX_RECORD_CHUNK_BYTES,
+            MAX_RECOVERY_BASE_PAYLOAD_BYTES, MAX_SEGMENT_BYTES, SEGMENT_HEADER_BYTES,
+        };
+        if self.max_source_bytes == 0 {
+            return Err("the document size ceiling must be positive".into());
+        }
+        if self.max_source_bytes > SUPPORTED_MAX_SOURCE_BYTES {
+            return Err(format!(
+                "a document source ceiling of {} MB is not supported; the maximum is {} MB, \
+                 because a larger source cannot be guaranteed to encode inside the {} MB \
+                 snapshot ceiling this journal format can save",
+                self.max_source_bytes >> 20,
+                SUPPORTED_MAX_SOURCE_BYTES >> 20,
+                self.max_encoded_snapshot_bytes >> 20,
+            ));
+        }
+        if self.max_source_bytes > self.max_encoded_snapshot_bytes {
+            return Err(format!(
+                "the document source ceiling ({} MB) cannot exceed the encoded snapshot \
+                 ceiling ({} MB)",
+                self.max_source_bytes >> 20,
+                self.max_encoded_snapshot_bytes >> 20,
+            ));
+        }
+        if self.max_encoded_snapshot_bytes == 0 {
+            return Err("the encoded snapshot ceiling must be positive".into());
+        }
+        if self.max_encoded_snapshot_bytes > MAX_RECOVERY_BASE_PAYLOAD_BYTES {
+            return Err(format!(
+                "the encoded snapshot ceiling ({} MB) exceeds the recovery base payload \
+                 ceiling ({} MB); such a snapshot could be written and never recovered",
+                self.max_encoded_snapshot_bytes >> 20,
+                MAX_RECOVERY_BASE_PAYLOAD_BYTES >> 20,
+            ));
+        }
+        if self.max_encoded_snapshot_bytes > self.max_queued_payload_bytes {
+            return Err(format!(
+                "the journal payload budget ({} MB) cannot process one maximum snapshot \
+                 ({} MB)",
+                self.max_queued_payload_bytes >> 20,
+                self.max_encoded_snapshot_bytes >> 20,
+            ));
+        }
+        // Framing: one maximum snapshot has to chunk into records that each
+        // fit a record, and one record has to fit a segment beside its header.
+        if MAX_RECORD_CHUNK_BYTES == 0 || MAX_RECORD_CHUNK_BYTES > MAX_RECORD_BYTES {
+            return Err("invalid journal record framing limits".into());
+        }
+        let framed = SEGMENT_HEADER_BYTES
+            .checked_add(MAX_RECORD_CHUNK_BYTES)
+            .and_then(|bytes| bytes.checked_add(record_framing_bytes(MAX_JOURNAL_IDENTITY_BYTES)))
+            .ok_or_else(|| "journal record framing overflows".to_string())?;
+        if framed > MAX_SEGMENT_BYTES {
+            return Err(format!(
+                "a framed journal record ({framed} bytes) does not fit a segment \
+                 ({MAX_SEGMENT_BYTES} bytes)"
+            ));
+        }
+        if MAX_METADATA_BYTES == 0 || MAX_METADATA_BYTES > MAX_SEGMENT_BYTES {
+            return Err("invalid journal metadata limit".into());
+        }
+        let fragments = self
+            .max_encoded_snapshot_bytes
+            .div_ceil(MAX_RECORD_CHUNK_BYTES);
+        if u32::try_from(fragments).is_err() || fragments > MAX_RECORDS_PER_SEGMENT {
+            return Err(format!(
+                "one maximum snapshot needs {fragments} record fragments, more than the \
+                 journal can seal"
+            ));
+        }
+        let peak = self
+            .max_encoded_snapshot_bytes
+            .checked_mul(SNAPSHOT_COPY_FACTOR)
+            .ok_or_else(|| "the snapshot memory estimate overflows".to_string())?;
+        if peak > self.max_staging_bytes {
+            return Err(format!(
+                "the persistence memory budget ({} MB) cannot process one maximum snapshot, \
+                 which peaks at {} MB",
+                self.max_staging_bytes >> 20,
+                peak >> 20,
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Why a proposed write can never be saved as this deployment is configured.
+/// No retry helps; the work itself is past a ceiling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SizeRefusal {
+    /// Past `S`: the visible source of the document.
+    Source { bytes: usize, ceiling: usize },
+    /// Past `E`: the encoded CRDT snapshot, which includes the history and
+    /// metadata that grow independently of the visible source.
+    Encoded { bytes: usize, ceiling: usize },
+}
+
+/// Why a proposed write cannot be saved *now*. The same work may succeed once
+/// another operation settles, which is why this is never reported as a
+/// document that can never fit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapacityRefusal {
+    /// `Q` is exhausted: queued plus executing journal payload.
+    JournalQueue,
+    /// `M` is exhausted: transient persistence memory.
+    StagingMemory,
+    /// The shared compaction maintenance reserve is exhausted.
+    MaintenanceReserve,
+}
+
+/// The narrow typed refusal the size-limit work needs. Track 6 will
+/// generalize write errors; this exists so that permanent and temporary
+/// refusals stop sharing one string today.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteRefusal {
+    Permanent(SizeRefusal),
+    Temporary(CapacityRefusal),
+}
+
+impl WriteRefusal {
+    pub fn is_permanent(&self) -> bool {
+        matches!(self, Self::Permanent(_))
+    }
+
+    /// The wording a socket, a route, or the command line shows. A temporary
+    /// refusal always says to try again; a permanent one never does.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Permanent(SizeRefusal::Source { bytes, ceiling }) => format!(
+                "this document is {} MB of text, past the {} MB this deployment accepts",
+                bytes >> 20,
+                ceiling >> 20
+            ),
+            Self::Permanent(SizeRefusal::Encoded { bytes, ceiling }) => format!(
+                "this document's saved state would be {} MB, past the {} MB this deployment \
+                 can durably save; its edit history and metadata count towards that as well \
+                 as its text",
+                bytes >> 20,
+                ceiling >> 20
+            ),
+            Self::Temporary(CapacityRefusal::JournalQueue) => {
+                "this deployment is saving as much as it can hold; try again in a moment".into()
+            }
+            Self::Temporary(CapacityRefusal::StagingMemory) => {
+                "this deployment has no free memory for another save; try again in a moment".into()
+            }
+            Self::Temporary(CapacityRefusal::MaintenanceReserve) => {
+                "this deployment is compacting as much as it can hold; try again in a moment".into()
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for WriteRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message())
     }
 }

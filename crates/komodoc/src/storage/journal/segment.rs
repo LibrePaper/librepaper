@@ -348,7 +348,25 @@ pub(super) fn put_u16(bytes: &mut Vec<u8>, value: u16) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-const SEGMENT_HEADER_BYTES: usize = 10;
+pub const SEGMENT_HEADER_BYTES: usize = 10;
+
+/// The longest storage identity the journal will frame. Record framing puts
+/// the storage id and a retry id derived from it into every fragment, so a
+/// bound on those is what makes the "a framed record fits a segment" check in
+/// [`crate::config::PersistenceLimits::validate`] arithmetic rather than a
+/// guess. It is far above any identity this deployment mints; a longer one is
+/// refused at append rather than discovered when a segment fails to seal.
+pub const MAX_JOURNAL_IDENTITY_BYTES: usize = 256;
+
+/// The framing one current-format record adds around its payload, for a
+/// storage identity of `identity` bytes. The retry id `append` derives is the
+/// storage id plus a fixed `room-<epoch>-<sequence>` decoration, which is
+/// what the second identity allowance covers. It mirrors
+/// [`encoded_record_len`]; keeping the two together is what stops admission
+/// from drifting when a framing field is added.
+pub const fn record_framing_bytes(identity: usize) -> usize {
+    2 + 2 + identity + 8 + 8 + 8 + 2 + (identity + 64) + 2 + 64 + 2 + 64 + 4
+}
 
 /// Return the exact number of bytes emitted for one record by `encode`.
 /// Keeping this beside the encoder prevents queue admission from drifting

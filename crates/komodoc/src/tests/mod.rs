@@ -46,6 +46,7 @@ mod serve;
 mod session;
 mod share_cli;
 mod sharing;
+mod size_limits;
 mod sockets;
 mod source_anchor;
 mod store;

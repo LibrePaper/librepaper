@@ -70,7 +70,7 @@ pub(crate) struct ServiceFlags {
     /// No public front page: the examples are listed only to their owner
     #[arg(long)]
     no_listing: bool,
-    /// Largest document accepted, in megabytes (default 4)
+    /// Largest document accepted, in megabytes (default 4, maximum 8)
     #[arg(long, value_name = "MB", default_value_t = 0)]
     max_size: usize,
     /// Most the figures of one document may come to, in megabytes (default 32)
@@ -128,6 +128,12 @@ impl ServiceFlags {
             die(err);
         }
         if let Err(err) = config.set_history(self.checkpoint, self.history) {
+            die(err);
+        }
+        // The one place a deployment learns that its ceilings cannot be
+        // durably saved: before anything opens a socket, not at the first
+        // oversized document.
+        if let Err(err) = config.persistence().validate() {
             die(err);
         }
         config

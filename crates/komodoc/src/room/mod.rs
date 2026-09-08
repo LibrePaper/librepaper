@@ -179,6 +179,18 @@ pub struct Session {
     pub generation: u64,
     /// Encoded size for one exact generation; quota checks reuse it until an edit.
     encoded_size: Option<(u64, i64)>,
+    /// An upper bound on `encode_state(doc).len()`, or `None` when nothing has
+    /// established one yet.
+    ///
+    /// A v1 update carries every block it inserts, so the snapshot after
+    /// applying an update is at most the snapshot before plus that update's
+    /// own length; deletions only shrink it. That is the same bound the quota
+    /// reservation has always leaned on. Keeping it here is what lets the
+    /// encoded ceiling be decided on every keystroke without encoding the
+    /// whole document each time. Any mutation that is not a measured update
+    /// clears it through `mark_dirty`, and the next exact encode -- a persist,
+    /// a checkpoint, a resident estimate -- re-establishes it.
+    encoded_bound: Option<usize>,
     /// The generation the newest checkpoint's tree actually covers. Compared
     /// against `generation` to say whether the document has changed since
     /// then, so an idle room is not re-hashed every second to answer that.
@@ -238,6 +250,20 @@ impl Session {
             self.dirty_since = at;
         }
         self.dirty = true;
+        // Every mutation reaches here, so forgetting the bound here is what
+        // makes it safe by default: a caller that grows the document without
+        // saying by how much leaves no stale bound behind, only an unknown
+        // one. `receive_update` re-establishes it explicitly after this, with
+        // the bytes it actually admitted.
+        self.encoded_bound = None;
+    }
+
+    /// The exact encoded length, learned from an encode that just happened.
+    fn note_encoded_len(&mut self, generation: u64, bytes: usize) {
+        self.encoded_size = Some((generation, bytes as i64));
+        if generation == self.generation {
+            self.encoded_bound = Some(bytes);
+        }
     }
 }
 
@@ -338,10 +364,26 @@ pub enum Applied {
     Relay,
     /// The socket may not write here, or sent nothing worth relaying.
     Ignored,
-    /// Close the socket, with this reason. Either it wrote past the document's
-    /// size ceiling or it wrote faster than a person can.
+    /// Close the socket, with this reason. Either it wrote past one of the
+    /// document's ceilings, it wrote faster than a person can, or this server
+    /// momentarily has no capacity to save what it wrote. A person can tell
+    /// those apart from the wording: a capacity refusal always says to try
+    /// again, and a size refusal never does.
     Refuse(&'static str),
 }
+
+/// What a peer is told when the snapshot its update would create is past the
+/// encoded ceiling. Deliberately explicit that the history counts too, so it
+/// does not read as a contradiction of the text ceiling the editor can see.
+pub(crate) const ENCODED_CEILING_REFUSAL: &str =
+    "this document's saved state has reached the largest size this deployment can durably \
+     save; its edit history counts towards that as well as its text";
+
+/// What a peer is told when this server is merely full. It is a separate
+/// message because reporting saturation as a size limit tells a person their
+/// document can never be saved, which is false.
+pub(crate) const BUSY_REFUSAL: &str =
+    "this server has no free capacity to save right now; reconnect to continue editing";
 
 /// What accepting a suggestion did.
 pub enum Accepted {
@@ -793,6 +835,7 @@ impl RoomSet {
                     last_persist_at: 0,
                     generation: 0,
                     encoded_size: None,
+                    encoded_bound: None,
                     checkpoint_generation: 0,
                     updated_at: 0,
                     by: Attribution::system(),
@@ -1879,6 +1922,43 @@ impl Room {
         } else {
             state.session.format.clone()
         };
+        // A publish onto a room that already holds a long history can carry
+        // the snapshot past the encoded ceiling even though the source itself
+        // is inside `max_document`. Rehearsed on a scratch copy first, so a
+        // refusal leaves the live document exactly as it was rather than
+        // wedging the room at its next persist.
+        let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+        let known = match state.session.encoded_bound {
+            Some(bound) => bound,
+            None => {
+                let exact = session::encode_state(&state.session.doc).len();
+                state.session.encoded_bound = Some(exact);
+                exact
+            }
+        };
+        // `replace_text` writes the difference, so it cannot add more than
+        // the new source plus its framing. Only when that bound cannot decide
+        // is the scratch copy worth its allocation.
+        if known.saturating_add(source.len()).saturating_add(1024) > ceiling {
+            let scratch = session::new_doc();
+            if session::apply_update(&scratch, &session::encode_state(&state.session.doc)).is_ok() {
+                session::replace_text(&scratch, source, &main_path_for(named, &implied));
+                let candidate = session::encode_state(&scratch).len();
+                if candidate > ceiling {
+                    eprintln!(
+                        "warning: refusing to write {}: {}",
+                        self.slug,
+                        crate::config::WriteRefusal::Permanent(
+                            crate::config::SizeRefusal::Encoded {
+                                bytes: candidate,
+                                ceiling,
+                            }
+                        )
+                    );
+                    return Vec::new();
+                }
+            }
+        }
         session::replace_text(&state.session.doc, source, &main_path_for(named, &implied));
         if !format.is_empty() {
             state.session.format = format.to_string();
@@ -1998,6 +2078,54 @@ impl Room {
             }
             session::DecodedAdmission::Fits(decoded) => decoded,
         };
+        // `S` bounds what a person can see; `E` bounds what persistence has
+        // to write, and the two move independently -- a document whose text
+        // never grows still accumulates CRDT history and metadata. A
+        // candidate that would carry the snapshot past `E` is refused here,
+        // before it is applied and before it is relayed, because a snapshot
+        // that cannot be journalled could never be acknowledged and relaying
+        // it would show every peer a document this server cannot save.
+        let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+        let admitted_bound = {
+            let known = match state.session.encoded_bound {
+                Some(bound) => bound,
+                None => {
+                    let exact = session::encode_state(&state.session.doc).len();
+                    state.session.encoded_bound = Some(exact);
+                    exact
+                }
+            };
+            let bound = known.saturating_add(update.len());
+            if bound <= ceiling {
+                bound
+            } else {
+                // The cheap bound cannot decide, so buy the exact answer on a
+                // scratch copy. That copy is a large allocation, so it is
+                // admitted against the same memory budget persistence uses.
+                let _staging = match self.journal.get() {
+                    Some(journal) => {
+                        match journal
+                            .memory()
+                            .try_acquire(crate::config::PersistenceLimits::staging_cost(bound))
+                        {
+                            Ok(permit) => Some(permit),
+                            Err(error) if error.is_temporary() => {
+                                return Applied::Refuse(BUSY_REFUSAL)
+                            }
+                            Err(_) => return Applied::Refuse(ENCODED_CEILING_REFUSAL),
+                        }
+                    }
+                    None => None,
+                };
+                let Some(exact) = session::rehearsed_encoded_len(&state.session.doc, update) else {
+                    return Applied::Ignored;
+                };
+                if exact > ceiling {
+                    return Applied::Refuse(ENCODED_CEILING_REFUSAL);
+                }
+                exact
+            }
+        };
         // Reserve the whole next snapshot, not just this message. The SQL
         // admission view includes unsaved work in every live room and keeps a
         // separate reservation for a snapshot already being written.
@@ -2041,8 +2169,10 @@ impl Room {
         // the one that wrote the bad path included -- ends at the same
         // document.
         let put_right = session::repair(&state.session.doc, &self.config.paths());
+        let mut repaired_bytes = 0usize;
         if !put_right.is_empty() {
             if let Ok(correction) = session::encode_diff(&state.session.doc, &before) {
+                repaired_bytes = correction.len();
                 let payload =
                     json!({"type": "y-update", "update": encode_update(&correction)}).to_string();
                 send_to_all(&mut state, None, &payload);
@@ -2069,6 +2199,10 @@ impl Room {
             }
         }
         state.session.mark_dirty(now);
+        // `mark_dirty` forgets the bound, because most mutations cannot say
+        // how much they grew the snapshot by. This one can: what was admitted
+        // above, plus whatever the path repair relayed on top of it.
+        state.session.encoded_bound = Some(admitted_bound.saturating_add(repaired_bytes));
         state.session.generation += 1;
         state.session.updated_at = now;
         state.session.by = by.clone();
@@ -2125,6 +2259,24 @@ impl Room {
         let (body, generation, durable, mut version) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
+            // `E`, at the last gate before anything durable happens. Room
+            // admission refuses an oversized candidate before applying it, so
+            // reaching this means an internal caller grew the document past
+            // the ceiling, or the room was loaded from a snapshot an older,
+            // laxer configuration wrote. Either way the write is refused
+            // explicitly rather than truncated, and the room is fenced so the
+            // once-a-second sweeper does not retry a permanent failure
+            // forever. What is already stored stays readable.
+            let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+            if body.len() > ceiling {
+                self.read_only.store(true, Ordering::Relaxed);
+                let refusal =
+                    crate::config::WriteRefusal::Permanent(crate::config::SizeRefusal::Encoded {
+                        bytes: body.len(),
+                        ceiling,
+                    });
+                return Err(refusal.message());
+            }
             if let Some(catalog) = self.catalog.get() {
                 catalog
                     .begin_room_write(
@@ -2136,7 +2288,7 @@ impl Room {
                     .map_err(|error| error.to_string())?;
             }
             let generation = state.session.generation;
-            state.session.encoded_size = Some((generation, body.len() as i64));
+            state.session.note_encoded_len(generation, body.len());
             let durable: Vec<(u64, i64)> = state
                 .sockets
                 .iter()
@@ -2308,7 +2460,7 @@ impl Room {
             Some((encoded, size)) if encoded == generation => size.max(0) as usize,
             _ => {
                 let size = session::encode_state(&state.session.doc).len();
-                state.session.encoded_size = Some((generation, size as i64));
+                state.session.note_encoded_len(generation, size);
                 size
             }
         };

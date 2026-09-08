@@ -271,10 +271,6 @@ impl Server {
     /// Re-resolve the HTTP caller immediately before a body-dependent chat
     /// mutation.  Reading the request body can await long enough for a session
     /// or link to be revoked, so the handshake-time viewer is insufficient.
-    ///
-    /// The error is a ready HTTP reply, like every other handler helper here;
-    /// boxing it to please the size lint would only move the allocation.
-    #[allow(clippy::result_large_err)]
     async fn recheck_chat_caller(
         &self,
         slug: &str,
