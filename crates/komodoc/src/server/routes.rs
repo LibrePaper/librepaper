@@ -149,7 +149,11 @@ pub(super) async fn handle(
             .authentication_failure(request.headers(), &arrival)
             .await
         {
-            return write_json(status, &json!({"error": message}));
+            let mut response = write_json(status, &json!({"error": message}));
+            if status == 401 {
+                server.clear_dead_session(&mut response, request.headers(), &arrival);
+            }
+            return response;
         }
     }
 
@@ -212,7 +216,11 @@ pub(super) async fn handle(
             .authentication_failure(request.headers(), &arrival)
             .await
         {
-            return write_json(status, &json!({"error": message}));
+            let mut response = write_json(status, &json!({"error": message}));
+            if status == 401 {
+                server.clear_dead_session(&mut response, request.headers(), &arrival);
+            }
+            return response;
         }
         let identity = server.whoami(request.headers(), &arrival).await;
         if !identity.is_signed_in() {

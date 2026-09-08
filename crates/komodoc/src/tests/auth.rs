@@ -1111,3 +1111,85 @@ async fn token_cache_sweeps_expired_entries_on_insert() {
         "expired entries were not swept on the next insert"
     );
 }
+
+/// A session cookie signed by a key this deployment does not hold -- what a
+/// browser carries into a reseeded deployment, or one whose secrets were
+/// rotated -- is not silently anonymous on the document APIs, but it is not
+/// left in the browser to fail forever either. `/api/me` and the 401 both
+/// clear it, so the page's next request is plainly anonymous and an
+/// `anyone` deployment's front page lists its documents again.
+#[tokio::test]
+async fn a_dead_session_cookie_is_cleared_and_the_listing_recovers() {
+    let server = test_server_with(
+        Configuration::default(),
+        Policy::parse("anyone"),
+        Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let other_key = b"ffffffffffffffffffffffffffffffff";
+    let stale = sign_session(
+        other_key,
+        &Identity::github("vincent", "42"),
+        now_unix() + 3600,
+    );
+    let cookie = format!("komodoc_session={stale}");
+    let clears_session = |response: &reqwest::Response| {
+        response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .any(|c| c.starts_with("komodoc_session=;") && c.contains("Max-Age=0"))
+    };
+
+    let me = client()
+        .get(format!("{}/api/me", server.url))
+        .header("X-Komodoc-Client", "shell")
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200);
+    assert!(clears_session(&me), "/api/me left the dead cookie in place");
+    assert_eq!(me.json::<Value>().await.unwrap()["handle"], "");
+
+    let listing = client()
+        .post(format!("{}/api/list", server.url))
+        .header("X-Komodoc-Client", "shell")
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listing.status(), 401);
+    assert!(
+        clears_session(&listing),
+        "the 401 left the dead cookie in place"
+    );
+
+    // A live session is never cleared by the same path.
+    let live = sign_session(
+        &server.instance.key,
+        &Identity::github("vincent", "42"),
+        now_unix() + 3600,
+    );
+    let me = client()
+        .get(format!("{}/api/me", server.url))
+        .header("X-Komodoc-Client", "shell")
+        .header("Cookie", format!("komodoc_session={live}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200);
+    assert!(!clears_session(&me), "a live session was cleared");
+
+    // Without the cookie, which is what the browser sends next, the listing
+    // is the anonymous publisher's to read.
+    let listing = client()
+        .post(format!("{}/api/list", server.url))
+        .header("X-Komodoc-Client", "shell")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listing.status(), 200);
+}

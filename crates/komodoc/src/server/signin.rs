@@ -364,7 +364,7 @@ impl Server {
             }
             "/api/me" => {
                 let id = self.whoami(headers, arrival).await;
-                Some(write_json(
+                let mut response = write_json(
                     200,
                     &json!({
                         "provider": id.provider,
@@ -383,7 +383,11 @@ impl Server {
                         "publishers": self.publishers.describe(),
                         "commenters": self.commenters.describe(),
                     }),
-                ))
+                );
+                if !id.is_signed_in() {
+                    self.clear_dead_session(&mut response, headers, arrival);
+                }
+                Some(response)
             }
             // Kept one release for a CLI from before the terminal flow, which
             // asks for this before starting GitHub's own device flow. Nothing

@@ -532,12 +532,42 @@ impl Server {
             } else {
                 "sign in to publish"
             };
-            return Err(write_json(401, &json!({"error": message})));
+            let mut response = write_json(401, &json!({"error": message}));
+            self.clear_dead_session(&mut response, headers, arrival);
+            return Err(response);
         }
         Err(write_json(
             403,
             &json!({"error": format!("{} may not publish here; this deployment allows {}", id.handle, self.publishers.describe())}),
         ))
+    }
+
+    /// A session cookie that no longer verifies -- signed by a key this
+    /// deployment no longer holds, expired, or of a revoked generation -- is
+    /// cleared on the way out, so the browser's next request is plainly
+    /// anonymous rather than a credential that keeps failing. A stale cookie
+    /// is what a reader who was signed in yesterday carries into a reseeded
+    /// deployment, and without this the front page reads as empty to them.
+    /// A bearer is the terminal's, and the terminal is told rather than
+    /// silently downgraded.
+    pub(super) fn clear_dead_session(
+        &self,
+        response: &mut Reply,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+    ) {
+        if header_of(headers, "authorization").is_some() {
+            return;
+        }
+        let https = arrival.is_https();
+        let name = cookie_name(https, SESSION_COOKIE);
+        let Some(value) = cookie(headers, &name) else {
+            return;
+        };
+        if read_session(&self.key, &value).is_signed_in() {
+            return;
+        }
+        add_cookie(response, &clear_cookie(&name, https));
     }
 
     fn auth_credential_supplied(&self, headers: &HeaderMap, arrival: &Arrival) -> bool {
