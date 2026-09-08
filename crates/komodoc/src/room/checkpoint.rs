@@ -1439,9 +1439,9 @@ impl Room {
             let size = match state.session.encoded_size {
                 Some((encoded, size)) if encoded == generation => size,
                 _ => {
-                    let size = session::encode_state(&state.session.doc).len() as i64;
-                    state.session.encoded_size = Some((generation, size));
-                    size
+                    let size = session::encode_state(&state.session.doc).len();
+                    state.session.note_encoded_len(generation, size);
+                    size as i64
                 }
             };
             let history = match self.catalog.get() {

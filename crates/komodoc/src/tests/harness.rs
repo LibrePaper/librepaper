@@ -203,6 +203,7 @@ async fn build_test_server(
     listing: bool,
 ) -> TestServerParts {
     let dir = tempfile::tempdir().expect("a temporary directory");
+    let persistence = config.persistence();
     let config = Arc::new(config);
     let objects = dir.path().join("objects");
     let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(&objects));
@@ -242,11 +243,14 @@ async fn build_test_server(
     );
     server.accounts = Arc::new(TestAccounts);
     server.listing = listing;
-    let journal = crate::storage::journal::JournalRuntime::new(
+    let journal = crate::storage::journal::JournalRuntime::new_with_policy(
         catalog,
         blobs,
         "test-deployment",
-        crate::storage::journal::CoordinatorLimits::default(),
+        crate::storage::journal::CoordinatorLimits::from_persistence(&persistence),
+        persistence,
+        -1,
+        -1,
     )
     .expect("the test journal runtime opens");
     server.rooms.attach_journal(journal);
@@ -282,6 +286,7 @@ pub async fn serve_instance(instance: Arc<Server>, dir: tempfile::TempDir) -> Te
 /// directory belongs to whoever made it, so this borrows it rather than
 /// holding it.
 pub async fn server_over(path: &std::path::Path, config: Configuration) -> (String, Arc<Server>) {
+    let persistence = config.persistence();
     let blobs: Arc<dyn crate::storage::blob::BlobStore> =
         Arc::new(FsStore::new(path.join("objects")));
     let config = Arc::new(config);
@@ -323,11 +328,14 @@ pub async fn server_over(path: &std::path::Path, config: Configuration) -> (Stri
     );
     instance.accounts = Arc::new(TestAccounts);
     instance.rooms.attach_journal(
-        crate::storage::journal::JournalRuntime::new(
+        crate::storage::journal::JournalRuntime::new_with_policy(
             catalog,
             blobs,
             "test-deployment",
-            crate::storage::journal::CoordinatorLimits::default(),
+            crate::storage::journal::CoordinatorLimits::from_persistence(&persistence),
+            persistence,
+            -1,
+            -1,
         )
         .expect("journal runtime"),
     );

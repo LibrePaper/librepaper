@@ -108,6 +108,32 @@ impl MemoryBudget {
             .waiters
     }
 
+    /// Admit `bytes` if the budget has room right now, and otherwise refuse.
+    ///
+    /// This is what a caller holding a room's state mutex uses: parking there
+    /// would stall every reader of that room behind another room's object
+    /// I/O, so a busy budget refuses temporarily and the peer retries.
+    pub fn try_acquire(self: &Arc<Self>, bytes: usize) -> JournalResult<MemoryPermit> {
+        if bytes > self.capacity {
+            return Err(JournalError::Limit(format!(
+                "a save of {bytes} bytes is past the {} byte persistence memory budget",
+                self.capacity
+            )));
+        }
+        let mut state = self.state.lock().expect("memory budget is poisoned");
+        if state.held.saturating_add(bytes) > self.capacity {
+            return Err(JournalError::Busy(
+                "the persistence memory budget is full".into(),
+            ));
+        }
+        state.held += bytes;
+        state.peak = state.peak.max(state.held);
+        Ok(MemoryPermit {
+            budget: Arc::clone(self),
+            bytes,
+        })
+    }
+
     /// Admit `bytes`, waiting for room if the budget is merely busy.
     ///
     /// A request larger than the whole budget is permanent: no amount of

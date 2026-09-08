@@ -306,6 +306,15 @@ pub struct Configuration {
     /// survives being read aloud or retyped.
     pub suffix_alphabet: String,
     pub suffix_length: usize,
+
+    /// The persistence policy: what a source may be, what its encoded CRDT
+    /// snapshot may be, and the journal payload and memory budgets that have
+    /// to be able to carry one. Not part of the shell configuration -- a
+    /// browser has no use for the server's storage ceilings -- so it is
+    /// skipped rather than injected. `max_source_bytes` follows
+    /// `max_document`; read the pair through [`Configuration::persistence`].
+    #[serde(skip)]
+    pub persistence: PersistenceLimits,
 }
 
 /// Bounds what a deployment will hold. `total` and `per_owner` are bytes;
@@ -378,7 +387,7 @@ pub struct CapLimit {
 impl Default for Configuration {
     fn default() -> Self {
         Configuration {
-            max_document: 4 * 1024 * 1024,
+            max_document: DEFAULT_MAX_SOURCE_BYTES,
             max_files: 200,
             max_path: 200,
             max_assets: 32 * 1024 * 1024,
@@ -483,6 +492,7 @@ impl Default for Configuration {
             slug_max: 80,
             suffix_alphabet: "abcdefghijkmnpqrstuvwxyz23456789".to_string(),
             suffix_length: 10,
+            persistence: PersistenceLimits::default(),
         }
     }
 }
@@ -512,7 +522,7 @@ impl Configuration {
     pub fn persistence(&self) -> PersistenceLimits {
         PersistenceLimits {
             max_source_bytes: self.max_document,
-            ..PersistenceLimits::default()
+            ..self.persistence
         }
     }
 
@@ -533,7 +543,7 @@ impl Configuration {
             .ok_or_else(|| "--max-size is too large".to_string())?;
         let candidate = PersistenceLimits {
             max_source_bytes: bytes,
-            ..PersistenceLimits::default()
+            ..self.persistence
         };
         candidate
             .validate()
@@ -625,6 +635,9 @@ impl Configuration {
     }
 }
 
+/// The source ceiling a deployment gets without saying otherwise.
+pub const DEFAULT_MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+
 /// The supported source ceiling, in bytes. `--max-size` may not exceed it.
 ///
 /// It is a policy, not a theorem: nothing proves that eight megabytes of text
@@ -685,7 +698,7 @@ pub struct PersistenceLimits {
 impl Default for PersistenceLimits {
     fn default() -> Self {
         Self {
-            max_source_bytes: Configuration::default().max_document,
+            max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
             max_encoded_snapshot_bytes: DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES,
             max_queued_payload_bytes: DEFAULT_MAX_QUEUED_PAYLOAD_BYTES,
             max_staging_bytes: DEFAULT_MAX_STAGING_BYTES,

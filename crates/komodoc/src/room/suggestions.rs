@@ -422,6 +422,24 @@ impl Room {
                     .map_err(AcceptError::Failed)?;
                 let planned = session::apply_path_edits(&scratch, &source.path, &edits)
                     .ok_or(AcceptError::Stale)?;
+                // The scratch copy is the candidate state, so the encoded
+                // ceiling is decided here -- before the live document takes
+                // the edit and before any peer is shown it. An acceptance
+                // that could not be journalled would be acknowledged to the
+                // editor and then lost.
+                let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+                let encoded = session::encode_state(&scratch);
+                if encoded.len() > ceiling {
+                    return Err(AcceptError::Refused(
+                        crate::config::WriteRefusal::Permanent(
+                            crate::config::SizeRefusal::Encoded {
+                                bytes: encoded.len(),
+                                ceiling,
+                            },
+                        )
+                        .message(),
+                    ));
+                }
                 // A diff can refer to Yjs structs created by an unsaved
                 // keystroke immediately before accept.  If the process dies
                 // before the checkpoint writes that session, replaying only
@@ -430,7 +448,7 @@ impl Room {
                 // the complete post-accept state, which is itself an
                 // idempotent Yjs update and includes every dependency.
                 if self.catalog.get().is_some() && !request_id.is_empty() {
-                    session::encode_state(&scratch)
+                    encoded
                 } else {
                     planned
                 }

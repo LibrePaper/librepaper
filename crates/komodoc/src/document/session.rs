@@ -1479,3 +1479,20 @@ mod tests {
         );
     }
 }
+
+/// The exact encoded snapshot length after `update` is applied, measured on a
+/// scratch copy so the shared document is never touched by a candidate that
+/// might not fit. `None` says the update does not apply, which the caller
+/// treats the same way it treats a malformed one.
+///
+/// This is the same rehearsal [`admit_decoded_update`] falls back to, asked a
+/// different question: not "how many bytes would the document hold" but "how
+/// large would the snapshot persistence has to write be". The two ceilings
+/// are independent, because CRDT history and metadata grow beside the visible
+/// source rather than with it.
+pub fn rehearsed_encoded_len(doc: &Doc, update: &[u8]) -> Option<usize> {
+    let scratch = new_doc();
+    apply_update(&scratch, &encode_state(doc)).ok()?;
+    apply_update(&scratch, update).ok()?;
+    Some(encode_state(&scratch).len())
+}
