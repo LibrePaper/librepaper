@@ -32,12 +32,14 @@ use crate::util::{now_unix, parse_timestamp, timestamp};
 
 mod catalog;
 mod checkpoint;
+mod command;
 mod comments;
 mod figures;
 mod suggestions;
 mod text;
 
 use catalog::*;
+pub use command::Command;
 pub use comments::*;
 pub use figures::*;
 use text::*;

@@ -395,6 +395,7 @@ impl Room {
     /// sender. `author` is the caller's own author key, and `is_owner` says
     /// whether the caller owns the document this room belongs to; both come
     /// from the caller's identity and are never taken from the message itself.
+    #[allow(dead_code)]
     pub async fn apply(
         &self,
         incoming: Message,
@@ -404,6 +405,28 @@ impl Room {
         budget: Option<i64>,
         is_owner: bool,
     ) -> (Value, bool) {
+        let command = match incoming.into_command() {
+            Ok(command) => command,
+            Err(error) => return (error.response(), false),
+        };
+        self.apply_command(command, address, author, via, budget, is_owner)
+            .await
+    }
+
+    /// Applies a command after the compatible wire adapter has validated its
+    /// discriminator and operation-specific required fields.
+    pub async fn apply_command(
+        &self,
+        command: Command,
+        address: &str,
+        author: &str,
+        via: &str,
+        budget: Option<i64>,
+        is_owner: bool,
+    ) -> (Value, bool) {
+        let temp_id = command.temp_id().to_owned();
+        let request_id = command.request_id().to_owned();
+        let comment_id = command.comment_id().to_owned();
         // Suggestions are document operations as well as comment metadata.
         // Serialize comment decisions with acceptance so a resolve/delete
         // cannot race the CRDT edit and leave the catalogue outcome detached
@@ -411,8 +434,8 @@ impl Room {
         let _restore_writer = self.restore_write.lock().await;
         if !self.hold().await {
             return (
-                json!({"type": "error", "message": "this room is held by another server", "temp_id": incoming.temp_id,
-                    "request_id": incoming.request_id}),
+                json!({"type": "error", "message": "this room is held by another server", "temp_id": temp_id,
+                    "request_id": request_id}),
                 false,
             );
         }
@@ -420,11 +443,11 @@ impl Room {
         let config = self.config.clone();
 
         let fail = |text: &str| -> (Value, bool) {
-            let mut payload = json!({"type": "error", "message": text, "temp_id": incoming.temp_id,
-                    "request_id": incoming.request_id});
+            let mut payload = json!({"type": "error", "message": text, "temp_id": temp_id,
+                    "request_id": request_id});
             // Named so the reader knows which optimistic row to roll back.
-            if !incoming.comment_id.is_empty() {
-                payload["comment_id"] = json!(incoming.comment_id);
+            if !comment_id.is_empty() {
+                payload["comment_id"] = json!(comment_id);
             }
             (payload, false)
         };
@@ -432,25 +455,21 @@ impl Room {
 
         // Retry before counting or writing again. Identity comes from the
         // server, so choosing another person's record ID cannot take it over.
-        let requested_id = submission_id(&incoming.temp_id)
-            .map(str::to_owned)
-            .or_else(|| {
-                (!incoming.request_id.is_empty()).then(|| {
-                    format!(
-                        "request:{}",
-                        crate::document::store::digest_of(&incoming.request_id)
-                    )
-                })
-            });
+        let requested_id = submission_id(&temp_id).map(str::to_owned).or_else(|| {
+            (!request_id.is_empty())
+                .then(|| format!("request:{}", crate::document::store::digest_of(&request_id)))
+        });
         if let Some(id) = requested_id.as_deref() {
-            if incoming.kind == "comment" || incoming.kind == "reply" {
+            if matches!(&command, Command::Comment { .. } | Command::Reply { .. }) {
                 for item in &state.comments {
                     if item.id == id {
-                        if incoming.kind == "comment" && !author.is_empty() && item.author == author
+                        if matches!(&command, Command::Comment { .. })
+                            && !author.is_empty()
+                            && item.author == author
                         {
                             let mut result = json!({"type": "comment", "comment": item, "temp_id": id,
-                                    "request_id": incoming.request_id});
-                            if !incoming.request_id.is_empty() {
+                                    "request_id": request_id});
+                            if !request_id.is_empty() {
                                 result["noop"] = json!(true);
                             }
                             return (result, true);
@@ -458,15 +477,15 @@ impl Room {
                         return fail("that submission ID is already in use");
                     }
                     if let Some(reply) = item.replies.iter().find(|reply| reply.id == id) {
-                        if incoming.kind == "reply"
-                            && item.id == incoming.comment_id
+                        if matches!(&command, Command::Reply { .. })
+                            && item.id == comment_id
                             && !author.is_empty()
                             && reply.author == author
                         {
                             let mut result = json!({"type": "reply", "comment_id": item.id,
                                 "reply": reply, "temp_id": id,
-                                "request_id": incoming.request_id});
-                            if !incoming.request_id.is_empty() {
+                                "request_id": request_id});
+                            if !request_id.is_empty() {
                                 result["noop"] = json!(true);
                             }
                             return (result, true);
@@ -475,16 +494,6 @@ impl Room {
                     }
                 }
             }
-        }
-
-        // Reject malformed operation names before charging the caller's rate
-        // budget. Otherwise an unknown frame can consume the same admission
-        // slot as a real comment and make a subsequent valid write fail.
-        if !matches!(
-            incoming.kind.as_str(),
-            "comment" | "reply" | "resolve" | "delete" | "anchor"
-        ) {
-            return fail("unknown message type");
         }
 
         // What the document says at this moment, by name. The socket takes a
@@ -506,234 +515,228 @@ impl Room {
             return fail(&format!("too many comments from this {source}; try later"));
         }
 
-        if incoming.kind == "resolve" {
-            let Some(index) = state
-                .comments
-                .iter()
-                .position(|item| item.id == incoming.comment_id)
-            else {
-                return fail("unknown comment");
-            };
-            // A suggestion's resolve doubles as its plain-language reject and
-            // reopen, with one refusal an ordinary comment never needs: an
-            // accepted suggestion already changed the document, and reopening
-            // it here would say it is merely unresolved rather than say what
-            // actually happened to the text.
-            let is_suggestion = state.comments[index].motivation == "editing";
-            if is_suggestion && !is_owner {
-                return fail("only an editor may decide a suggestion");
-            }
-            if is_suggestion {
-                if let Some(catalog) = self.catalog.get() {
-                    match catalog.pending_suggestion_accept(&self.slug, &incoming.comment_id) {
-                        Ok(true) => return fail("a suggestion acceptance is still pending"),
-                        Ok(false) => {}
-                        Err(_) => return fail(UNSAVED),
+        match command {
+            Command::Resolve {
+                comment_id,
+                resolved,
+                request_id,
+                ..
+            } => {
+                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
+                else {
+                    return fail("unknown comment");
+                };
+                // A suggestion's resolve doubles as its plain-language reject and
+                // reopen, with one refusal an ordinary comment never needs: an
+                // accepted suggestion already changed the document, and reopening
+                // it here would say it is merely unresolved rather than say what
+                // actually happened to the text.
+                let is_suggestion = state.comments[index].motivation == "editing";
+                if is_suggestion && !is_owner {
+                    return fail("only an editor may decide a suggestion");
+                }
+                if is_suggestion {
+                    if let Some(catalog) = self.catalog.get() {
+                        match catalog.pending_suggestion_accept(&self.slug, &comment_id) {
+                            Ok(true) => return fail("a suggestion acceptance is still pending"),
+                            Ok(false) => {}
+                            Err(_) => return fail(UNSAVED),
+                        }
                     }
                 }
-            }
-            if is_suggestion && !incoming.resolved && state.comments[index].outcome == "accepted" {
-                return fail(
-                    "an accepted suggestion cannot be reopened; restore the checkpoint instead",
+                if is_suggestion && !resolved && state.comments[index].outcome == "accepted" {
+                    return fail(
+                        "an accepted suggestion cannot be reopened; restore the checkpoint instead",
+                    );
+                }
+                if is_suggestion && resolved && state.comments[index].outcome == "accepted" {
+                    // Already settled by acceptance; resolving it again is a
+                    // no-op rather than a second decision.
+                    let target = &state.comments[index];
+                    return (
+                        json!({
+                            "type": "resolve", "comment_id": target.id,
+                            "resolved": target.resolved, "resolved_at": target.resolved_at,
+                            "resolved_in": target.resolved_in,
+                        }),
+                        true,
+                    );
+                }
+                let (was_resolved, was_resolved_at, was_resolved_in, was_outcome) = (
+                    state.comments[index].resolved,
+                    state.comments[index].resolved_at.clone(),
+                    state.comments[index].resolved_in.clone(),
+                    state.comments[index].outcome.clone(),
                 );
-            }
-            if is_suggestion && incoming.resolved && state.comments[index].outcome == "accepted" {
-                // Already settled by acceptance; resolving it again is a
-                // no-op rather than a second decision.
+                if was_resolved == resolved {
+                    let target = &state.comments[index];
+                    let mut result = json!({
+                        "type": "resolve", "comment_id": target.id,
+                        "resolved": target.resolved, "resolved_at": target.resolved_at,
+                        "resolved_in": target.resolved_in, "request_id": request_id,
+                    });
+                    if !request_id.is_empty() {
+                        result["noop"] = json!(true);
+                    }
+                    return (result, true);
+                }
+                state.comments[index].resolved = resolved;
+                state.comments[index].resolved_at = resolved.then(timestamp);
+                // Which text it was resolved against. Cleared when a comment is
+                // reopened, because it is no longer resolved in anything.
+                state.comments[index].resolved_in = if resolved {
+                    current.clone()
+                } else {
+                    String::new()
+                };
+                if is_suggestion {
+                    state.comments[index].outcome = if resolved {
+                        "rejected".to_string()
+                    } else {
+                        String::new()
+                    };
+                }
+                let persisted = if let Some(catalog) = self.catalog.get() {
+                    catalog_comment_row(&self.slug, &state.comments[index])
+                        .map_err(|error| error.to_string())
+                        .and_then(|row| {
+                            catalog
+                                .update_comment(&row)
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        })
+                } else {
+                    self.save(&mut state).await
+                };
+                if persisted.is_err() {
+                    state.comments[index].resolved = was_resolved;
+                    state.comments[index].resolved_at = was_resolved_at;
+                    state.comments[index].resolved_in = was_resolved_in;
+                    state.comments[index].outcome = was_outcome;
+                    return fail(UNSAVED);
+                }
                 let target = &state.comments[index];
-                return (
+                (
                     json!({
                         "type": "resolve", "comment_id": target.id,
                         "resolved": target.resolved, "resolved_at": target.resolved_at,
                         "resolved_in": target.resolved_in,
+                        "request_id": request_id,
                     }),
                     true,
-                );
+                )
             }
-            let (was_resolved, was_resolved_at, was_resolved_in, was_outcome) = (
-                state.comments[index].resolved,
-                state.comments[index].resolved_at.clone(),
-                state.comments[index].resolved_in.clone(),
-                state.comments[index].outcome.clone(),
-            );
-            if was_resolved == incoming.resolved {
-                let target = &state.comments[index];
-                let mut result = json!({
-                    "type": "resolve", "comment_id": target.id,
-                    "resolved": target.resolved, "resolved_at": target.resolved_at,
-                    "resolved_in": target.resolved_in, "request_id": incoming.request_id,
-                });
-                if !incoming.request_id.is_empty() {
-                    result["noop"] = json!(true);
-                }
-                return (result, true);
-            }
-            state.comments[index].resolved = incoming.resolved;
-            state.comments[index].resolved_at = incoming.resolved.then(timestamp);
-            // Which text it was resolved against. Cleared when a comment is
-            // reopened, because it is no longer resolved in anything.
-            state.comments[index].resolved_in = if incoming.resolved {
-                current.clone()
-            } else {
-                String::new()
-            };
-            if is_suggestion {
-                state.comments[index].outcome = if incoming.resolved {
-                    "rejected".to_string()
-                } else {
-                    String::new()
+            Command::Delete {
+                comment_id,
+                request_id,
+                ..
+            } => {
+                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
+                else {
+                    return fail("unknown comment");
                 };
-            }
-            let persisted = if let Some(catalog) = self.catalog.get() {
-                catalog_comment_row(&self.slug, &state.comments[index])
-                    .map_err(|error| error.to_string())
-                    .and_then(|row| {
-                        catalog
-                            .update_comment(&row)
-                            .map(|_| ())
-                            .map_err(|error| error.to_string())
-                    })
-            } else {
-                self.save(&mut state).await
-            };
-            if persisted.is_err() {
-                state.comments[index].resolved = was_resolved;
-                state.comments[index].resolved_at = was_resolved_at;
-                state.comments[index].resolved_in = was_resolved_in;
-                state.comments[index].outcome = was_outcome;
-                return fail(UNSAVED);
-            }
-            let target = &state.comments[index];
-            return (
-                json!({
-                    "type": "resolve", "comment_id": target.id,
-                    "resolved": target.resolved, "resolved_at": target.resolved_at,
-                    "resolved_in": target.resolved_in,
-                    "request_id": incoming.request_id,
-                }),
-                true,
-            );
-        }
-
-        if incoming.kind == "delete" {
-            let Some(index) = state
-                .comments
-                .iter()
-                .position(|item| item.id == incoming.comment_id)
-            else {
-                return fail("unknown comment");
-            };
-            if state.comments[index].motivation == "editing" {
-                if let Some(catalog) = self.catalog.get() {
-                    match catalog.pending_suggestion_accept(&self.slug, &incoming.comment_id) {
-                        Ok(true) => return fail("a suggestion acceptance is still pending"),
-                        Ok(false) => {}
-                        Err(_) => return fail(UNSAVED),
+                if state.comments[index].motivation == "editing" {
+                    if let Some(catalog) = self.catalog.get() {
+                        match catalog.pending_suggestion_accept(&self.slug, &comment_id) {
+                            Ok(true) => return fail("a suggestion acceptance is still pending"),
+                            Ok(false) => {}
+                            Err(_) => return fail(UNSAVED),
+                        }
                     }
                 }
+                if !deletable(&state.comments[index], author, is_owner) {
+                    return fail("you may only delete your own comments");
+                }
+                let removed = state.comments.remove(index);
+                let persisted = if let Some(catalog) = self.catalog.get() {
+                    catalog
+                        .delete_comment(&self.slug, &removed.id)
+                        .map(|_| ())
+                        .map_err(|err| err.to_string())
+                } else {
+                    self.save(&mut state).await
+                };
+                if persisted.is_err() {
+                    state.comments.insert(index, removed);
+                    return fail(UNSAVED);
+                }
+                (
+                    json!({"type": "delete", "comment_id": comment_id,
+                    "request_id": request_id}),
+                    true,
+                )
             }
-            if !deletable(&state.comments[index], author, is_owner) {
-                return fail("you may only delete your own comments");
+            // A backfill on an existing comment, for a passage anchored after the
+            // fact -- a comment made before source anchors existed, or one made
+            // on generated text that a later edit brought back into the source.
+            // Guarded the same way a delete is: the author of the comment, or an
+            // editor, and only once -- a comment that already has an anchor of
+            // record is not overwritten by a second try.
+            Command::Anchor {
+                comment_id,
+                source,
+                request_id,
+                ..
+            } => {
+                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
+                else {
+                    return fail("unknown comment");
+                };
+                if !deletable(&state.comments[index], author, is_owner) {
+                    return fail("you may only anchor your own comments");
+                }
+                if state.comments[index].source.is_some() {
+                    return fail("this comment already has a source anchor");
+                }
+                if state.comments[index].region.is_some() {
+                    return fail("a figure comment cannot take a source anchor");
+                }
+                let Some(anchor) = valid_source(&config, Some(&source)) else {
+                    return fail("that source anchor is not valid");
+                };
+                state.comments[index].source = Some(anchor.clone());
+                let persisted = if let Some(catalog) = self.catalog.get() {
+                    catalog_comment_row(&self.slug, &state.comments[index])
+                        .map_err(|error| error.to_string())
+                        .and_then(|row| {
+                            catalog
+                                .update_comment(&row)
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        })
+                } else {
+                    self.save(&mut state).await
+                };
+                if persisted.is_err() {
+                    state.comments[index].source = None;
+                    return fail(UNSAVED);
+                }
+                (
+                    json!({
+                        "type": "anchor", "comment_id": state.comments[index].id,
+                        "source": anchor,
+                        "request_id": request_id,
+                    }),
+                    true,
+                )
             }
-            let removed = state.comments.remove(index);
-            let persisted = if let Some(catalog) = self.catalog.get() {
-                catalog
-                    .delete_comment(&self.slug, &removed.id)
-                    .map(|_| ())
-                    .map_err(|err| err.to_string())
-            } else {
-                self.save(&mut state).await
-            };
-            if persisted.is_err() {
-                state.comments.insert(index, removed);
-                return fail(UNSAVED);
-            }
-            return (
-                json!({"type": "delete", "comment_id": incoming.comment_id,
-                    "request_id": incoming.request_id}),
-                true,
-            );
-        }
 
-        // A backfill on an existing comment, for a passage anchored after the
-        // fact -- a comment made before source anchors existed, or one made
-        // on generated text that a later edit brought back into the source.
-        // Guarded the same way a delete is: the author of the comment, or an
-        // editor, and only once -- a comment that already has an anchor of
-        // record is not overwritten by a second try.
-        if incoming.kind == "anchor" {
-            let Some(index) = state
-                .comments
-                .iter()
-                .position(|item| item.id == incoming.comment_id)
-            else {
-                return fail("unknown comment");
-            };
-            if !deletable(&state.comments[index], author, is_owner) {
-                return fail("you may only anchor your own comments");
-            }
-            if state.comments[index].source.is_some() {
-                return fail("this comment already has a source anchor");
-            }
-            if state.comments[index].region.is_some() {
-                return fail("a figure comment cannot take a source anchor");
-            }
-            let Some(anchor) = valid_source(&config, incoming.source.as_ref()) else {
-                return fail("that source anchor is not valid");
-            };
-            state.comments[index].source = Some(anchor.clone());
-            let persisted = if let Some(catalog) = self.catalog.get() {
-                catalog_comment_row(&self.slug, &state.comments[index])
-                    .map_err(|error| error.to_string())
-                    .and_then(|row| {
-                        catalog
-                            .update_comment(&row)
-                            .map(|_| ())
-                            .map_err(|error| error.to_string())
-                    })
-            } else {
-                self.save(&mut state).await
-            };
-            if persisted.is_err() {
-                state.comments[index].source = None;
-                return fail(UNSAVED);
-            }
-            return (
-                json!({
-                    "type": "anchor", "comment_id": state.comments[index].id,
-                    "source": anchor,
-                    "request_id": incoming.request_id,
-                }),
-                true,
-            );
-        }
-
-        let body = clean(&incoming.body, config.caps.body).trim().to_string();
-        let motivation = config.allowed_motivation(&incoming.motivation);
-        // A highlight is the passage itself: marking something as worth
-        // returning to needs no words. A suggestion is its proposal: the
-        // words are the replacement, and `body` beside it is an optional
-        // note. Everything else is a remark, and a remark with no words is
-        // nothing.
-        if body.is_empty()
-            && !(incoming.kind == "comment"
-                && matches!(motivation.as_str(), "highlighting" | "editing"))
-        {
-            return fail("comment body is required");
-        }
-        let mut creator = clean(&incoming.creator, config.caps.creator)
-            .trim()
-            .to_string();
-        if creator.is_empty() {
-            creator = "Anonymous".to_string();
-        }
-
-        match incoming.kind.as_str() {
-            "reply" => {
-                let Some(index) = state
-                    .comments
-                    .iter()
-                    .position(|item| item.id == incoming.comment_id)
+            Command::Reply {
+                comment_id,
+                body: raw_body,
+                creator: raw_creator,
+                temp_id,
+                request_id,
+            } => {
+                let body = clean(&raw_body, config.caps.body).trim().to_string();
+                if body.is_empty() {
+                    return fail("reply body is required");
+                }
+                let mut creator = clean(&raw_creator, config.caps.creator).trim().to_string();
+                if creator.is_empty() {
+                    creator = "Anonymous".to_string();
+                }
+                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
                 else {
                     return fail("unknown comment");
                 };
@@ -767,7 +770,7 @@ impl Room {
                         "author": row.author,
                     }));
                     catalog
-                        .insert_reply_request(&row, &incoming.request_id, &digest, now_unix())
+                        .insert_reply_request(&row, &request_id, &digest, now_unix())
                         .map(|_| ())
                         .map_err(|err| err.to_string())
                 } else {
@@ -780,18 +783,45 @@ impl Room {
                 (
                     json!({
                         "type": "reply", "comment_id": state.comments[index].id,
-                        "reply": added, "temp_id": incoming.temp_id,
-                        "request_id": incoming.request_id,
+                        "reply": added, "temp_id": temp_id,
+                        "request_id": request_id,
                     }),
                     true,
                 )
             }
-            "comment" => {
+            Command::Comment {
+                motivation: raw_motivation,
+                body: raw_body,
+                creator: raw_creator,
+                exact: raw_exact,
+                prefix: raw_prefix,
+                suffix: raw_suffix,
+                position,
+                region: raw_region,
+                source: raw_source,
+                proposed: raw_proposed,
+                temp_id,
+                request_id,
+            } => {
+                let body = clean(&raw_body, config.caps.body).trim().to_string();
+                let motivation = config.allowed_motivation(&raw_motivation);
+                // A highlight is the passage itself: marking something as worth
+                // returning to needs no words. A suggestion is its proposal: the
+                // words are the replacement, and `body` beside it is an optional
+                // note. Everything else is a remark, and a remark with no words is
+                // nothing.
+                if body.is_empty() && !matches!(motivation.as_str(), "highlighting" | "editing") {
+                    return fail("comment body is required");
+                }
+                let mut creator = clean(&raw_creator, config.caps.creator).trim().to_string();
+                if creator.is_empty() {
+                    creator = "Anonymous".to_string();
+                }
                 if state.comments.len() >= config.max_comments {
                     return fail("this document has reached its comment limit");
                 }
-                let exact = clean(&incoming.exact, config.caps.exact).trim().to_string();
-                let spot = valid_region(incoming.region.as_ref());
+                let exact = clean(&raw_exact, config.caps.exact).trim().to_string();
+                let spot = valid_region(raw_region.as_ref());
                 // An annotation is anchored to words or to part of a figure;
                 // one or the other, never neither.
                 if exact.is_empty() && spot.is_none() {
@@ -801,11 +831,11 @@ impl Room {
                 // annotation with nothing to act on. `proposed` on any other
                 // motivation is not something a client meant to send, so it
                 // is dropped rather than stored.
-                if motivation == "editing" && incoming.proposed.is_none() {
+                if motivation == "editing" && raw_proposed.is_none() {
                     return fail("a suggestion needs a proposal");
                 }
                 if motivation == "editing" {
-                    if let Some(source) = incoming.source.as_ref() {
+                    if let Some(source) = raw_source.as_ref() {
                         let cleaned: String = source
                             .exact
                             .chars()
@@ -823,7 +853,7 @@ impl Room {
                     }
                 }
                 let proposed = if motivation == "editing" {
-                    let raw = incoming.proposed.as_deref().unwrap_or_default();
+                    let raw = raw_proposed.as_deref().unwrap_or_default();
                     let cleaned: String = raw
                         .chars()
                         .filter(|&c| {
@@ -850,14 +880,14 @@ impl Room {
                     seq: state.seq,
                     motivation,
                     exact,
-                    prefix: clean(&incoming.prefix, config.caps.context),
-                    suffix: clean(&incoming.suffix, config.caps.context),
-                    position: incoming.position.filter(|p| *p >= 0),
+                    prefix: clean(&raw_prefix, config.caps.context),
+                    suffix: clean(&raw_suffix, config.caps.context),
+                    position: position.filter(|p| *p >= 0),
                     // A region comment is anchored to the figure; the source
                     // it might otherwise have carried is not kept.
                     source: spot
                         .is_none()
-                        .then(|| valid_source(&config, incoming.source.as_ref()))
+                        .then(|| valid_source(&config, raw_source.as_ref()))
                         .flatten(),
                     region: spot,
                     proposed,
@@ -899,12 +929,7 @@ impl Room {
                         "author": row.author,
                         "via": row.via,
                     }));
-                    match catalog.insert_comment_request(
-                        &row,
-                        &incoming.request_id,
-                        &digest,
-                        now_unix(),
-                    ) {
+                    match catalog.insert_comment_request(&row, &request_id, &digest, now_unix()) {
                         Ok(inserted) => {
                             state.comments.last_mut().expect("comment was pushed").seq =
                                 inserted.seq;
@@ -925,12 +950,14 @@ impl Room {
                     return fail(UNSAVED);
                 }
                 (
-                    json!({"type": "comment", "comment": added, "temp_id": incoming.temp_id,
-                        "request_id": incoming.request_id}),
+                    json!({"type": "comment", "comment": added, "temp_id": temp_id,
+                        "request_id": request_id}),
                     true,
                 )
             }
-            _ => fail("unknown message type"),
+            Command::Accept { .. } | Command::Reject { .. } => {
+                fail("suggestion decisions use the decision handler")
+            }
         }
     }
 
