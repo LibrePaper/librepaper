@@ -326,7 +326,6 @@ impl RoomWriteReservation {
                 catalog.finish_room_write(&storage_id, true)
             })
             .await
-            
     }
 }
 
