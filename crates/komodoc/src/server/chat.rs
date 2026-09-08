@@ -1,11 +1,234 @@
 //! Live private channels. Only socket handles and bounded request digests are
 //! retained: message bodies are never stored or replayed.
+
+use super::*;
 use crate::room::Outgoing;
 use rand::RngCore;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::{mpsc, Mutex};
+
+impl Server {
+    pub(super) async fn handle_chat_socket(
+        self: Arc<Self>,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+        id: &str,
+    ) -> Reply {
+        if ws_origin_refused(request.headers(), arrival) {
+            return plain(403, "cross-site request refused");
+        }
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return plain(404, "not found"),
+            Err(response) => return response,
+        };
+        let headers = request.headers().clone();
+        let query = request.uri().query().map(str::to_string);
+        let who = self
+            .viewer(&entry, &headers, arrival, query.as_deref())
+            .await;
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let connection = Connection {
+            slug: slug.into(),
+            headers,
+            arrival: arrival.clone(),
+            query,
+            is_owner: who.at_least(Role::Editor),
+            can_comment: who.at_least(Role::Commenter),
+            link: who.link,
+            comment_budget: who.comment_budget,
+            chat: Some(id.into()),
+            tx: mpsc::channel(1).0,
+        };
+        let (mut parts, _) = request.into_parts();
+        let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
+            Ok(upgrade) => upgrade,
+            Err(_) => return plain(400, "expected a websocket upgrade"),
+        };
+        upgrade
+            .max_message_size(64 * 1024)
+            .on_upgrade(move |socket| async move {
+                self.run_chat_socket(socket, connection).await;
+            })
+            .into_response()
+    }
+
+    pub(super) async fn run_chat_socket(&self, mut socket: WebSocket, mut connection: Connection) {
+        // The secret travels inside the encrypted stream, never in a URL.
+        let first = tokio::time::timeout(Duration::from_secs(10), socket.recv()).await;
+        let Ok(Some(Ok(WsMessage::Text(first)))) = first else {
+            return;
+        };
+        let Ok(join) = serde_json::from_str::<Value>(&first) else {
+            return;
+        };
+        if join["type"] != "join" {
+            return;
+        }
+        let token = join["token"].as_str().unwrap_or("").to_string();
+        let role = join["role"].as_str().unwrap_or("").to_string();
+        let after = join["after"].as_u64();
+        let receives = role == "user" || join["receive"].as_bool().unwrap_or(true);
+        let id = connection.chat.clone().unwrap_or_default();
+        let slug = connection.slug.clone();
+        let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
+        let (tx, mut rx) = mpsc::channel(32);
+        connection.tx = tx.clone();
+        // Register before advertising presence so a concurrent delivery can
+        // always recheck this participant's document authorization.
+        self.connections.lock().await.insert(socket_id, connection);
+        let ready = match self
+            .chat
+            .attach(&slug, &id, &token, &role, receives, socket_id, tx.clone())
+            .await
+        {
+            Ok(ready) => ready,
+            Err((status, message)) => {
+                self.connections.lock().await.remove(&socket_id);
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    socket.send(WsMessage::Text(
+                        json!({"type":"error","status":status,"message":message})
+                            .to_string()
+                            .into(),
+                    )),
+                )
+                .await;
+                return;
+            }
+        };
+        // Sharing can change while the handshake is in flight.
+        self.reauthorize(&slug).await;
+        if self.chat.attached(&id, socket_id).await {
+            let _ = tx.try_send(Outgoing::Text(ready.to_string()));
+            let _ = self.chat.drain_pending(&id, &token, socket_id, after).await;
+        }
+        let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
+        let mut last_frame = tokio::time::Instant::now();
+        let mut last_ping = tokio::time::Instant::now();
+        loop {
+            tokio::select! {
+                frame = socket.recv() => {
+                    last_frame = tokio::time::Instant::now();
+                    let raw = match frame {
+                        Some(Ok(WsMessage::Text(text))) => text,
+                        Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
+                        _ => continue,
+                    };
+                    let Ok(mut value) = serde_json::from_str::<Value>(&raw) else { continue; };
+                    if value["type"] != "message" { continue; }
+                    let request_id = value["id"].as_str().unwrap_or("").to_string();
+                    value["role"] = Value::String(role.clone());
+                    // Recheck both peers before every delivery, including expiry.
+                    self.reauthorize(&slug).await;
+                    if !self.chat.attached(&id,socket_id).await { break; }
+                    let result = match serde_json::from_value::<chat::Post>(value) {
+                        Ok(post) => self.chat.post(&slug,&id,&token,Some(socket_id),post).await,
+                        Err(_) => Err((400,"invalid message")),
+                    };
+                    let reply = match result {
+                        Ok(reply) => reply,
+                        Err((status,message)) => json!({"type":"error","id":request_id,"status":status,"message":message}),
+                    };
+                    if tx.try_send(Outgoing::Text(reply.to_string())).is_err() { break; }
+                }
+                outgoing = rx.recv() => {
+                    if !self.chat.attached(&id,socket_id).await { break; }
+                    let (frame,close) = match outgoing {
+                        Some(Outgoing::Text(text)) => (WsMessage::Text(text.into()),false),
+                        Some(Outgoing::Close(reason)) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame{code:1000,reason:reason.into()})),true),
+                        None => break,
+                    };
+                    if !matches!(tokio::time::timeout(Duration::from_secs(5),socket.send(frame)).await,Ok(Ok(()))) || close { break; }
+                }
+                _ = housekeeping.tick() => {
+                    if !self.chat.attached(&id,socket_id).await || last_frame.elapsed() > Duration::from_secs(30) { break; }
+                    let _ = self.chat.drain_pending(&id, &token, socket_id, after).await;
+                    if last_ping.elapsed() >= Duration::from_secs(10) {
+                        if !matches!(tokio::time::timeout(Duration::from_secs(5),socket.send(WsMessage::Ping(Vec::new().into()))).await,Ok(Ok(()))) { break; }
+                        last_ping = tokio::time::Instant::now();
+                    }
+                }
+            }
+        }
+        self.connections.lock().await.remove(&socket_id);
+        self.chat.detach(&id, socket_id).await;
+    }
+
+    pub(super) async fn handle_chat(
+        self: Arc<Self>,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+        tail: &[&str],
+    ) -> Reply {
+        if let [id, "socket"] = tail {
+            return self.handle_chat_socket(request, arrival, slug, id).await;
+        }
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error":"bad slug"}));
+        }
+        if cross_site_refused(request.headers(), arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error":"not found"})),
+            Err(response) => return response,
+        };
+        let who = self
+            .viewer(&entry, request.headers(), arrival, request.uri().query())
+            .await;
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error":"not found"}));
+        }
+        let token = request
+            .headers()
+            .get("x-komodoc-chat-token")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let id = tail.first().copied().unwrap_or("");
+        let result = match (request.method().as_str(), tail) {
+            ("POST", []) => self.chat.create(slug).await,
+            ("POST", [_]) => {
+                let bytes = match to_bytes(request.into_body(), 64 * 1024).await {
+                    Ok(bytes) => bytes,
+                    Err(_) => return write_json(413, &json!({"error":"message too large"})),
+                };
+                let Ok(mut post) = serde_json::from_slice::<chat::Post>(&bytes) else {
+                    return write_json(400, &json!({"error":"invalid message"}));
+                };
+                // The convenience route is used by the CLI for agent replies,
+                // but authenticated clients may also submit a user message
+                // before an agent socket connects. Those messages live in a
+                // bounded, one-shot mailbox and are delivered on watch.
+                if post.role != "user" {
+                    post.role = "agent".into();
+                }
+                self.reauthorize(slug).await;
+                self.chat.post(slug, id, &token, None, post).await
+            }
+            ("DELETE", [_]) => self.chat.delete(slug, id, &token).await,
+            ("GET", [_]) | ("POST", [_, "listen"]) => Err((
+                410,
+                "chat requires a live WebSocket; polling and replay are unavailable",
+            )),
+            _ => return write_json(405, &json!({"error":"unsupported chat operation"})),
+        };
+        let mut response = match result {
+            Ok(result) => write_json(200, &result),
+            Err((status, error)) => write_json(status, &json!({"error":error})),
+        };
+        set(&mut response, "cache-control", "no-store");
+        response
+    }
+}
 
 const CHANNEL_SECONDS: i64 = 60 * 60;
 

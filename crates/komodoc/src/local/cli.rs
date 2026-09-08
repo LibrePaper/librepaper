@@ -17,11 +17,11 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 use crate::cli::config_home;
+use crate::cli::{LocalArgs, LocalCommand};
 use crate::local::pairing::{generate_code, PairingStore, ServiceState};
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::service::{LocalService, NativeRunner, Runner};
 use crate::util::die;
-use crate::{LocalArgs, LocalCommand};
 
 pub async fn run(args: LocalArgs) {
     match args.command {
