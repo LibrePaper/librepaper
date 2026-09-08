@@ -17,9 +17,8 @@ target/
 # The Cargo lockfile is committed: this builds a binary, not a library.
 !Cargo.lock
 
-# Installed by bun from web/bun.lock, which is committed: a lockfile is a
-# build input, the tree it installs is not.
-web/node_modules/
+# Installed dependencies are generated; keep manifests and lockfiles tracked.
+node_modules/
 
 # The LaTeX distributions, mirrored locally by latex/tools/mirror.mjs. Hundreds of
 # megabytes of somebody else's release; a manifest and a script rebuild it.
