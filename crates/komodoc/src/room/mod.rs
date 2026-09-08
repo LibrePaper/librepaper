@@ -37,7 +37,7 @@ mod comments;
 mod figures;
 mod retention;
 mod suggestions;
-mod text;
+pub(crate) mod text;
 
 use catalog::*;
 pub use command::Command;
