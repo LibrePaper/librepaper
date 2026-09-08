@@ -650,19 +650,7 @@ impl Room {
         // manifest that name what is kept are both written. This order is
         // what makes a crash leave an unreferenced object rather than a tree
         // pointing at one that is gone.
-        self.prune_assets().await;
-        // And the renderings the new manifest no longer keeps, on the same
-        // pass and under the same write-order rule.
-        self.prune_renderings().await;
-        // And the text blobs under `history/<slug>/blobs/` that shedding a
-        // checkpoint's tree just now, or some earlier one, left behind (R21).
-        // Only when no other checkpoint of this room is mid-write: one that
-        // has written its blobs and not yet its tree has objects nothing names,
-        // and this pass would take them for garbage. The next lone checkpoint
-        // sweeps instead; nothing is lost by waiting.
-        if self.checkpointing.load(Ordering::Relaxed) == 1 {
-            self.prune_blobs(&tree).await;
-        }
+        self.prune_retained(&tree).await;
         // The migration's one and only cleanup. A document stored the old way
         // has a rendered page and a source under the old keys; both are copies
         // of what is now a checkpoint, and this is the first moment at which
@@ -1363,70 +1351,26 @@ impl Room {
     /// unreferenced -- only that this attempt could not tell -- so nothing at
     /// all is deleted on a pass where that happens, the same rule
     /// `prune_assets` follows for the same reason (R15).
-    pub(super) async fn prune_blobs(&self, written: &crate::document::history::Tree) {
-        let catalog_history = if let Some(catalog) = self.catalog.get() {
-            match load_catalog_history(catalog, &self.slug) {
-                Ok(rows) => Some(rows),
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read checkpoint history of {} while pruning blobs ({error})",
-                        self.slug
-                    );
-                    return;
-                }
-            }
-        } else {
-            None
-        };
-        let (live, trees, path, id) = {
+    pub(super) async fn prune_blobs(
+        &self,
+        written: &history::Tree,
+        references: &retention::RetainedReferences,
+    ) {
+        let mut kept = {
             let state = self.state.lock().await;
-            let live: std::collections::HashSet<String> = session::texts_of(&state.session.doc)
+            session::texts_of(&state.session.doc)
                 .into_values()
                 .map(|body| crate::document::store::digest_of(&body))
-                .collect();
-            (
-                live,
-                catalog_history.unwrap_or_else(|| state.manifest.checkpoints.clone()),
-                session::main_path(&state.session.doc),
-                session::main_id(&state.session.doc),
-            )
+                .collect::<HashSet<_>>()
         };
-        let mut kept = live;
-        for entry in written.files.values() {
-            if entry.kind == "text" {
-                kept.insert(entry.sha.clone());
-            }
-        }
-        for point in &trees {
-            if !point.tree {
-                continue; // a checkpoint from before directories names none
-            }
-            match crate::document::history::load_tree(
-                self.blobs.as_ref(),
-                &self.storage_id,
-                point,
-                &path,
-                &id,
-            )
-            .await
-            {
-                Ok(tree) => {
-                    for entry in tree.files.values() {
-                        if entry.kind == "text" {
-                            kept.insert(entry.sha.clone());
-                        }
-                    }
-                }
-                Err(err) => {
-                    eprintln!(
-                        "warning: could not read checkpoint {} of {} while pruning text blobs \
-                         ({err}); skipping this pass rather than risk a blob it still names",
-                        point.sha, self.slug
-                    );
-                    return;
-                }
-            }
-        }
+        kept.extend(references.texts.iter().cloned());
+        kept.extend(
+            written
+                .files
+                .values()
+                .filter(|entry| entry.kind == "text")
+                .map(|entry| entry.sha.clone()),
+        );
         let Ok(found) = self
             .blobs
             .list(&crate::storage::blob::blob_prefix(&self.storage_id))
@@ -1434,7 +1378,7 @@ impl Room {
         else {
             return;
         };
-        let gone: Vec<String> = found
+        let mut gone: Vec<String> = found
             .into_iter()
             .filter_map(|object| {
                 let digest = object.key.rsplit('/').next()?;
@@ -1445,6 +1389,26 @@ impl Room {
                 }
             })
             .collect();
+        if gone.is_empty() {
+            return;
+        }
+        // A source edit may have arrived while the object list was read.
+        // Refresh live references at the deletion boundary. Text-object
+        // writers remain excluded by this pass's checkpoint_write ownership;
+        // later edits carry their text in the CRDT and a later checkpoint
+        // rewrites any digest removed from blobs_written below.
+        {
+            let state = self.state.lock().await;
+            let live: HashSet<_> = session::texts_of(&state.session.doc)
+                .into_values()
+                .map(|body| crate::document::store::digest_of(&body))
+                .collect();
+            gone.retain(|key| {
+                key.rsplit('/')
+                    .next()
+                    .is_none_or(|digest| !live.contains(digest))
+            });
+        }
         if gone.is_empty() {
             return;
         }
