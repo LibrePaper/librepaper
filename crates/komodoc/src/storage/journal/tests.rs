@@ -127,7 +127,9 @@ fn coordinator_applies_queue_limits_and_seals() {
         coordinator.enqueue(
             JournalRecord::new("storage", 2, "retry-2", 1, b"x".to_vec()).expect("record")
         ),
-        Err(JournalError::Limit(_))
+        // A full queue is capacity, not a size this journal can never carry,
+        // so it is a temporary refusal now rather than a permanent limit.
+        Err(JournalError::Busy(_))
     ));
     assert_eq!(coordinator.seal(true).expect("seal").len(), 1);
     assert_eq!(coordinator.queued_records(), 0);
@@ -944,7 +946,10 @@ async fn seal_limit_failure_releases_publication_and_pending_identity() {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let directory = tempfile::tempdir().expect("blob directory");
     let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
-    let runtime = JournalRuntime::new(
+    // A deliberately tiny segment, with a persistence policy that matches it:
+    // the point is a record that cannot be framed, not one past the encoded
+    // ceiling.
+    let runtime = JournalRuntime::new_with_policy(
         catalog.clone(),
         blobs,
         "deployment",
@@ -954,6 +959,13 @@ async fn seal_limit_failure_releases_publication_and_pending_identity() {
             max_segment_bytes: 64,
             max_records_per_segment: 8,
         },
+        crate::config::PersistenceLimits {
+            max_encoded_snapshot_bytes: MAX_SEGMENT_BYTES,
+            max_queued_payload_bytes: MAX_SEGMENT_BYTES,
+            ..crate::config::PersistenceLimits::default()
+        },
+        -1,
+        -1,
     )
     .expect("runtime");
     JournalStore::new(catalog)

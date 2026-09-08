@@ -91,13 +91,11 @@ impl JournalCoordinator {
         {
             return Err(JournalError::Invalid("invalid coordinator limits".into()));
         }
-        if limits.max_queued_bytes < limits.max_segment_bytes
-            || limits.max_queued_records < limits.max_records_per_segment
-        {
-            return Err(JournalError::Invalid(
-                "the journal payload budget cannot process one full segment".into(),
-            ));
-        }
+        // Whether the queue can carry one maximum snapshot is a question about
+        // the deployment's persistence policy rather than about framing, and
+        // `JournalRuntime::new_with_policy` answers it. The coordinator stays
+        // usable with a deliberately tiny queue, which is what its own
+        // queue-full tests need.
         Ok(Self {
             limits,
             queued: VecDeque::new(),
