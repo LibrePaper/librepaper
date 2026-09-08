@@ -23,6 +23,8 @@ use crate::storage::journal::ManifestShard;
 pub const BACKUP_FORMAT: u16 = 1;
 pub const MAX_BACKUP_OBJECTS: usize = 1_000_000;
 pub const BACKUP_MANIFEST_NAME: &str = "manifest.json";
+/// The blob-key prefix a `BackupOwnership` is exclusive over.
+pub const BACKUP_NAMESPACE: &str = "recovery/";
 pub const LOCAL_BACKUP_FORMAT: u16 = 1;
 pub const LOCAL_BACKUP_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 
@@ -246,7 +248,92 @@ fn backup_prefix(backup_id: &str) -> BackupResult<String> {
     {
         return Err(BackupError::Invalid("invalid backup id".into()));
     }
-    Ok(format!("recovery/{backup_id}/"))
+    Ok(format!("{BACKUP_NAMESPACE}{backup_id}/"))
+}
+
+/// Evidence that this process holds the deployment writer lock, and with it
+/// exclusive authority over the deployment's backup namespace.
+///
+/// The blob API has no transaction spanning a creator's private object writes
+/// and its completion marker, so cleanup is only safe if it cannot run while a
+/// creator is still able to publish. No check made before a delete can
+/// establish that, and no caller-supplied token can assert it: the exclusivity
+/// has to be held. This capability can only be produced by taking the
+/// deployment writer lock, or by adopting a lock the caller already holds; it
+/// is not `Clone`; and `create_backup`/`remove_incomplete_backup` borrow it for
+/// the whole of copying, publication and cleanup.
+///
+/// What the file lock guarantees is exactly what the supported deployment
+/// needs and no more: one process at a time for one deployment directory on one
+/// host, released by the operating system when that process exits. A crashed
+/// owner therefore cannot resume — the process is gone — and the next owner
+/// must acquire the lock before it may reclaim anything the crashed one left
+/// behind. It says nothing about an unrelated process on another host writing
+/// the same bucket, which stays unsupported (see
+/// `docs/specs/refactor/12-backup-ownership.md`).
+pub struct BackupOwnership {
+    /// Held for the lifetime of the capability; dropping it releases the lock.
+    _writer_lock: File,
+    /// Backup ids with an operation in flight in this process. One owner may
+    /// legitimately run several backups at once, but creation and cleanup of
+    /// the same id must not interleave even inside the owning process, and the
+    /// file lock cannot express that because it is already held.
+    in_flight: std::sync::Mutex<HashSet<String>>,
+}
+
+impl BackupOwnership {
+    /// Take the deployment writer lock and with it authority over the backup
+    /// namespace. Fails while any other process holds the lock.
+    pub fn acquire(paths: &DeploymentPaths) -> BackupResult<Self> {
+        Ok(Self::adopt(acquire_offline_lock(paths)?))
+    }
+
+    /// Adopt a deployment writer lock this process already holds, such as the
+    /// one the server takes at startup. The caller is asserting that the file
+    /// is that lock and that it stays locked for the capability's lifetime.
+    pub fn adopt(writer_lock: File) -> Self {
+        Self {
+            _writer_lock: writer_lock,
+            in_flight: std::sync::Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// Reserve a backup id for one operation. Rejecting the second caller,
+    /// rather than queueing it, keeps the exclusion obvious: a create and a
+    /// cleanup of the same id can never be in flight together, and the loser
+    /// sees an error instead of waiting behind work it cannot observe.
+    fn claim(&self, backup_id: &str) -> BackupResult<BackupClaim<'_>> {
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !in_flight.insert(backup_id.to_owned()) {
+            return Err(BackupError::Invalid(format!(
+                "backup {backup_id} already has an operation in progress"
+            )));
+        }
+        Ok(BackupClaim {
+            owner: self,
+            backup_id: backup_id.to_owned(),
+        })
+    }
+}
+
+/// The in-process half of ownership for one backup id, released on drop so a
+/// failed or cancelled attempt does not strand the id.
+struct BackupClaim<'a> {
+    owner: &'a BackupOwnership,
+    backup_id: String,
+}
+
+impl Drop for BackupClaim<'_> {
+    fn drop(&mut self) {
+        self.owner
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.backup_id);
+    }
 }
 
 fn backup_object_key(backup_id: &str, source_key: &str) -> BackupResult<String> {
@@ -280,11 +367,13 @@ pub struct BackupRequest<'a> {
 /// Create a remote backup and publish its completion manifest last.
 ///
 /// The manifest CAS makes publication immutable, but `BlobStore` has no
-/// transaction spanning private objects and the marker. Callers must
-/// serialize create/remove operations for one backup id; otherwise a failed
-/// creator can race another creator's private object cleanup.
+/// transaction spanning private objects and the marker. `ownership` is what
+/// closes that gap: it is held from the first private write through
+/// publication, so no cleanup of this id can be running while this attempt can
+/// still publish.
 pub async fn create_backup(
     blobs: &dyn BlobStore,
+    ownership: &BackupOwnership,
     request: BackupRequest<'_>,
 ) -> BackupResult<BackupManifest> {
     let BackupRequest {
@@ -299,6 +388,7 @@ pub async fn create_backup(
         source_keys,
     } = request;
     let prefix = backup_prefix(backup_id)?;
+    let _claim = ownership.claim(backup_id)?;
     if deployment_id.is_empty()
         || schema_version < 0
         || head_revision < 0
@@ -355,9 +445,10 @@ pub async fn create_backup(
     .await;
     if copy_result.is_err() {
         // Cleanup only objects this attempt created, and only after a fresh
-        // NotFound check. A transient read failure fails closed. Same-ID
-        // create/remove calls still require external serialization because
-        // the blob API has no atomic claim spanning this check and delete.
+        // NotFound check. A transient read failure fails closed. The check is
+        // not what makes this safe -- ownership is, and it is still held here;
+        // the check only avoids deleting behind a marker this attempt itself
+        // managed to publish before failing later.
         if matches!(blobs.get(&manifest_key).await, Err(BlobError::NotFound))
             && !created_objects.is_empty()
         {
@@ -422,14 +513,18 @@ pub async fn restore_backup(
 
 /// Remove a backup that has no completion manifest.
 ///
-/// The completion check is deliberately fail closed, but deletion cannot be
-/// claimed atomically with the subsequent object delete. Callers must
-/// externally serialize this operation with `create_backup` for `backup_id`.
+/// Reclaiming an abandoned attempt is only safe once no creator can still
+/// publish for this id, which is what `ownership` establishes: a crashed
+/// creator's lock was released by the operating system when it exited, and a
+/// live one would still hold it. The completion check remains fail closed, so
+/// a transient read never counts as absence.
 pub async fn remove_incomplete_backup(
     blobs: &dyn BlobStore,
+    ownership: &BackupOwnership,
     backup_id: &str,
 ) -> BackupResult<usize> {
     let prefix = backup_prefix(backup_id)?;
+    let _claim = ownership.claim(backup_id)?;
     let manifest_key = format!("{prefix}{BACKUP_MANIFEST_NAME}");
     match blobs.get(&manifest_key).await {
         Ok(_) => return Err(BackupError::Invalid("completed backup is immutable".into())),
@@ -441,9 +536,9 @@ pub async fn remove_incomplete_backup(
         .into_iter()
         .map(|object| object.key)
         .collect::<Vec<_>>();
-    // A creator may have published the completion marker while the listing
-    // was in flight. Re-check before deleting any private data; callers still
-    // need the serialization promised by this function's contract.
+    // Ownership already excludes a concurrent creator, so this second check
+    // guards only against a completion marker that appeared between the two
+    // reads for some other reason. It is cheap and stays fail closed.
     match blobs.get(&manifest_key).await {
         Ok(_) => return Err(BackupError::Invalid("completed backup is immutable".into())),
         Err(BlobError::NotFound) => {}
@@ -1034,7 +1129,9 @@ pub fn create_local_backup(
             "backup destination must not be inside the live deployment".into(),
         ));
     }
-    let _lock = acquire_offline_lock(paths)?;
+    // The same lock the remote API requires as ownership evidence, held here
+    // for the whole offline copy.
+    let _ownership = BackupOwnership::acquire(paths)?;
     paths.prepare_state().map_err(BackupError::Invalid)?;
     let deployment_id = fs::read_to_string(&paths.deployment_identity)
         .map_err(|error| BackupError::Storage(error.to_string()))?
@@ -1343,6 +1440,7 @@ mod tests {
     use crate::storage::journal::{finalize_manifest_shard, ManifestShard};
     use async_trait::async_trait;
     use tempfile::TempDir;
+    use tokio::sync::oneshot;
 
     struct ManifestReadFailureStore {
         inner: FsStore,
@@ -1395,6 +1493,246 @@ mod tests {
         }
     }
 
+    /// Holds one backup's manifest publication open so a test can drive a
+    /// competing cleanup or creator into exactly the window that no absence
+    /// check made before a delete can cover.
+    struct PublishBarrierStore {
+        inner: FsStore,
+        manifest_key: String,
+        reached: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+        resume: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+    }
+
+    #[async_trait]
+    impl BlobStore for PublishBarrierStore {
+        async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
+            self.inner.get(key).await
+        }
+
+        async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
+            self.inner.put(key, body, content_type).await
+        }
+
+        async fn delete(&self, keys: &[String]) -> BlobResult<()> {
+            self.inner.delete(keys).await
+        }
+
+        async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
+            self.inner.list(prefix).await
+        }
+
+        async fn list_page(
+            &self,
+            prefix: &str,
+            after: Option<&str>,
+            limit: usize,
+        ) -> BlobResult<Vec<BlobInfo>> {
+            self.inner.list_page(prefix, after, limit).await
+        }
+
+        async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
+            if key == self.manifest_key {
+                let reached = self.reached.lock().expect("barrier").take();
+                let resume = self.resume.lock().expect("barrier").take();
+                if let Some(reached) = reached {
+                    reached.send(()).expect("test observes publication");
+                }
+                if let Some(resume) = resume {
+                    resume.await.expect("test releases publication");
+                }
+            }
+            self.inner.swap(key, body, expect).await
+        }
+
+        async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
+            self.inner.get_versioned(key).await
+        }
+
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
+
+        fn is_local(&self) -> bool {
+            self.inner.is_local()
+        }
+    }
+
+    /// Ownership over a fresh deployment directory. The directory is returned
+    /// because it has to outlive the lock file it holds.
+    fn test_ownership() -> (TempDir, BackupOwnership) {
+        let deployment = TempDir::new().expect("deployment directory");
+        let ownership = BackupOwnership::acquire(&DeploymentPaths::local(deployment.path()))
+            .expect("backup ownership");
+        (deployment, ownership)
+    }
+
+    /// The capability must stay unforgeable. The compiler already rejects a
+    /// call to `create_backup` or `remove_incomplete_backup` without a
+    /// `&BackupOwnership`, so the remaining ways to obtain one are acquisition
+    /// and copying. The inherent method below is selected over the trait
+    /// method exactly when `BackupOwnership: Clone`, which makes the assertion
+    /// fail if a `Clone` implementation is ever added.
+    struct CloneProbe<T>(std::marker::PhantomData<T>);
+
+    trait NotCloneable {
+        fn is_cloneable(&self) -> bool {
+            false
+        }
+    }
+
+    impl<T> NotCloneable for CloneProbe<T> {}
+
+    impl<T: Clone> CloneProbe<T> {
+        // Unused precisely because `BackupOwnership` is not `Clone`; the day it
+        // becomes callable is the day the assertion below fails.
+        #[allow(dead_code)]
+        fn is_cloneable(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn backup_ownership_is_unforgeable_and_exclusive() {
+        assert!(!CloneProbe::<BackupOwnership>(std::marker::PhantomData).is_cloneable());
+        let deployment = TempDir::new().expect("deployment directory");
+        let paths = DeploymentPaths::local(deployment.path());
+        let owner = BackupOwnership::acquire(&paths).expect("first owner");
+        assert!(
+            BackupOwnership::acquire(&paths).is_err(),
+            "a second owner cannot exist while the first holds the writer lock"
+        );
+        drop(owner);
+        BackupOwnership::acquire(&paths).expect("the released lock can be taken again");
+    }
+
+    #[tokio::test]
+    async fn ownership_excludes_cleanup_and_competing_creation_at_publication() {
+        let directory = TempDir::new().expect("temporary directory");
+        let inner = FsStore::new(directory.path());
+        inner
+            .put("content/source", b"source".to_vec(), "")
+            .await
+            .expect("source object");
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        let blobs = PublishBarrierStore {
+            inner,
+            manifest_key: "recovery/backup-1/manifest.json".into(),
+            reached: std::sync::Mutex::new(Some(reached_tx)),
+            resume: std::sync::Mutex::new(Some(resume_rx)),
+        };
+        let (_deployment, ownership) = test_ownership();
+        let source_keys = vec!["content/source".to_string()];
+        let request = |created_at| BackupRequest {
+            backup_id: "backup-1",
+            deployment_id: "deployment",
+            schema_version: 1,
+            head_revision: 1,
+            restore_point: "point",
+            secret_versions: Vec::new(),
+            created_at,
+            expires_at: 100,
+            source_keys: &source_keys,
+        };
+        let create = create_backup(&blobs, &ownership, request(1));
+        let compete = async {
+            reached_rx.await.expect("creation reached publication");
+            // The creator is inside the window between its last private write
+            // and its completion marker: precisely where a NotFound check
+            // would report absence and be wrong a moment later.
+            let cleanup = remove_incomplete_backup(&blobs, &ownership, "backup-1").await;
+            let competing = create_backup(&blobs, &ownership, request(2)).await;
+            resume_tx.send(()).expect("release publication");
+            (cleanup, competing)
+        };
+        let (created, (cleanup, competing)) = tokio::join!(create, compete);
+        created.expect("creation completes");
+        assert!(
+            matches!(cleanup, Err(BackupError::Invalid(ref message)) if message.contains("in progress")),
+            "cleanup must be excluded, not merely unlikely: {cleanup:?}"
+        );
+        assert!(
+            matches!(competing, Err(BackupError::Invalid(ref message)) if message.contains("in progress")),
+            "a competing creator must be excluded: {competing:?}"
+        );
+        let manifest = verify_backup(&blobs, "backup-1")
+            .await
+            .expect("completed backup still verifies");
+        assert_eq!(manifest.created_at, 1);
+        assert_eq!(
+            blobs
+                .inner
+                .get(&backup_object_key("backup-1", "content/source").expect("object key"))
+                .await
+                .expect("backup object survives"),
+            b"source"
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_backup_is_unchanged_by_a_cleanup_attempt() {
+        let directory = TempDir::new().expect("temporary directory");
+        let blobs = FsStore::new(directory.path());
+        blobs
+            .put("content/source", b"source".to_vec(), "")
+            .await
+            .expect("source object");
+        let (_deployment, ownership) = test_ownership();
+        let source_keys = vec!["content/source".to_string()];
+        create_backup(
+            &blobs,
+            &ownership,
+            BackupRequest {
+                backup_id: "backup-1",
+                deployment_id: "deployment",
+                schema_version: 1,
+                head_revision: 1,
+                restore_point: "point",
+                secret_versions: Vec::new(),
+                created_at: 1,
+                expires_at: 100,
+                source_keys: &source_keys,
+            },
+        )
+        .await
+        .expect("backup");
+        let removed = remove_incomplete_backup(&blobs, &ownership, "backup-1").await;
+        assert!(
+            matches!(removed, Err(BackupError::Invalid(ref message)) if message.contains("immutable")),
+            "a completed backup is never reclaimed: {removed:?}"
+        );
+        verify_backup(&blobs, "backup-1")
+            .await
+            .expect("completed backup still verifies");
+    }
+
+    #[tokio::test]
+    async fn abandoned_attempt_is_reclaimed_after_ownership_is_reacquired() {
+        let deployment = TempDir::new().expect("deployment directory");
+        let paths = DeploymentPaths::local(deployment.path());
+        let directory = TempDir::new().expect("temporary directory");
+        let blobs = FsStore::new(directory.path());
+        blobs
+            .put("recovery/backup-2/objects/6b6579", b"partial".to_vec(), "")
+            .await
+            .expect("abandoned private object");
+        let crashed = BackupOwnership::acquire(&paths).expect("first owner");
+        assert!(
+            BackupOwnership::acquire(&paths).is_err(),
+            "recovery cannot start while the previous owner is still alive"
+        );
+        // A crash ends the process, and the operating system releases its file
+        // lock; the old writer cannot come back to publish.
+        drop(crashed);
+        let recovered = BackupOwnership::acquire(&paths).expect("recovered owner");
+        assert_eq!(
+            remove_incomplete_backup(&blobs, &recovered, "backup-2")
+                .await
+                .expect("reclaim the abandoned attempt"),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn backup_manifest_is_written_last_and_verifiable() {
         let dir = TempDir::new().expect("tempdir");
@@ -1404,8 +1742,10 @@ mod tests {
             .await
             .expect("put");
         let keys = ["content/sid/trees/a".into()];
+        let (_deployment, ownership) = test_ownership();
         let manifest = create_backup(
             &blobs,
+            &ownership,
             BackupRequest {
                 backup_id: "backup-1",
                 deployment_id: "deployment",
@@ -1449,7 +1789,8 @@ mod tests {
             .await
             .expect("seed incomplete backup");
         let blobs = ManifestReadFailureStore { inner };
-        let result = remove_incomplete_backup(&blobs, "backup-1").await;
+        let (_deployment, ownership) = test_ownership();
+        let result = remove_incomplete_backup(&blobs, &ownership, "backup-1").await;
         assert!(
             matches!(result, Err(BackupError::Storage(message)) if message.contains("temporarily failed"))
         );
@@ -1477,8 +1818,10 @@ mod tests {
             .expect("existing backup bytes");
         let blobs = ManifestReadFailureStore { inner };
         let source_keys = vec!["content/source".to_string()];
+        let (_deployment, ownership) = test_ownership();
         let result = create_backup(
             &blobs,
+            &ownership,
             BackupRequest {
                 backup_id: "backup-1",
                 deployment_id: "deployment",
