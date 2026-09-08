@@ -283,7 +283,7 @@ fn refuse_legacy_deployment(deployment: &std::path::Path) -> Result<(), String> 
 #[derive(Args, Clone, Debug, Default)]
 pub struct StorageFlags {
     /// Local deployment directory (catalog.db, objects/, state/ and secrets/).
-    #[arg(value_name = "DIRECTORY", conflicts_with_all = ["catalog", "s3_bucket", "server_state"])]
+    #[arg(long, value_name = "DIRECTORY", conflicts_with_all = ["catalog", "s3_bucket", "server_state"])]
     pub data: Option<String>,
     /// Turso/libSQL catalogue URL (selects hosted mode).
     #[arg(long, value_name = "URL", conflicts_with = "data")]
