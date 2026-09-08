@@ -4,6 +4,7 @@ use crate::config::Configuration;
 use crate::document::{session, store};
 use crate::room::{self, RoomSet};
 use crate::storage::blob::{self, BlobStore};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -151,6 +152,69 @@ async fn active_request_pins_its_room_until_released() {
     drop(same);
     drop(active);
     assert!(rooms.try_get("another").await.is_ok());
+}
+
+#[tokio::test]
+async fn admission_waiting_for_room_state_does_not_hold_the_registry() {
+    let mut config = Configuration::default();
+    config.session.rooms_max = 3;
+    let (_dir, _store, rooms) = fixture(config).await;
+    let busy = rooms.try_get("probe").await.unwrap();
+    let cached = rooms.try_get("cached").await.unwrap();
+    let state = busy.state.lock().await;
+
+    // Poll admission through its first blocked room estimate. This proves the
+    // competing operation has reached the wait, without a scheduler sleep.
+    let admission = rooms.try_get("cold");
+    tokio::pin!(admission);
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(admission.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    let fetched = tokio::time::timeout(Duration::from_secs(2), rooms.try_get("cached"))
+        .await
+        .expect("a cached lookup must not wait for another room's state")
+        .unwrap();
+    assert!(Arc::ptr_eq(&cached, &fetched));
+    drop(state);
+    assert!(admission.await.is_ok());
+}
+
+#[tokio::test]
+async fn eviction_scan_revalidates_requests_that_pin_a_candidate() {
+    let mut config = Configuration::default();
+    config.session.rooms_max = 2;
+    let (_dir, _store, rooms) = fixture(config).await;
+    let busy = rooms.try_get("probe").await.unwrap();
+    let candidate = rooms.try_get("candidate").await.unwrap();
+    drop(candidate);
+    let state = busy.state.lock().await;
+    let admission = rooms.try_get("cold");
+    tokio::pin!(admission);
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(admission.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    let pinned = tokio::time::timeout(Duration::from_secs(2), rooms.try_get("candidate"))
+        .await
+        .unwrap()
+        .unwrap();
+    drop(state);
+    assert!(
+        admission.await.is_err(),
+        "both cached rooms now have active owners"
+    );
+    let same = rooms.try_get("candidate").await.unwrap();
+    assert!(Arc::ptr_eq(&pinned, &same));
+    drop(same);
+    drop(pinned);
+    drop(busy);
+    assert!(
+        rooms.try_get("cold").await.is_ok(),
+        "scan clones must not pin idle rooms"
+    );
 }
 
 #[tokio::test]

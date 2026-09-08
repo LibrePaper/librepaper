@@ -37,3 +37,27 @@ comment persistence can be a separate change using the same lifecycle rules.
 - Deterministic purge/load and admission races never create two writable rooms,
   evict an actively owned room, or make all candidates busy due to scan clones.
 - Record before/after lock hold measurements and complete the lock-order audit.
+
+## Implementation evidence: registry portion
+
+Capacity scans now use an admission gate separate from cached lookup. They
+clone candidate identities under the rooms registry, estimate outside it, and
+revalidate membership, active ownership, and idle state before removal. Final
+state inspection under the registry uses `try_lock`, never an asynchronous wait.
+One candidate clone plus the registry's owner is the only evictable owner count.
+
+Registry lock order is admission -> rooms -> loading when reserving a load.
+No path may acquire admission while holding rooms or room state. A load releases
+the registries before taking its per-slug slot; it may take admission while
+retaining that slot when publishing. Purge captures the slot under the registries
+and drops them before awaiting it. Room estimates await state only outside both
+registries; the final eviction state check is nonblocking. Cached lookups need
+only rooms and bypass admission entirely.
+
+Two deterministic lifecycle regressions poll cold admission until a held state
+lock blocks it, then prove another cached lookup completes and a newly pinned
+candidate survives eviction. These establish removal of registry hold time from
+the entire blocked interval without a timing-only scheduling assumption.
+
+The legacy-comment and catalogue wait portions, and the complete room operation
+gate audit, remain outstanding. Registry work alone does not complete this track.

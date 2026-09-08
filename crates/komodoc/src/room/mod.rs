@@ -410,6 +410,9 @@ pub struct RoomSet {
     checkpoint_cache: Arc<crate::document::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
+    /// Serialize capacity decisions, not cached lookups. Never acquire this
+    /// while retaining a room state or registry guard.
+    admission: Mutex<()>,
     /// One slot per slug currently being loaded, so a cold room's lease
     /// acquisition and storage reads happen with no lock held on `rooms` --
     /// a slow load must not stall every other document's lookup, only
@@ -491,6 +494,7 @@ impl RoomSet {
             ),
             config,
             rooms: Mutex::new(HashMap::new()),
+            admission: Mutex::new(()),
             loading: Mutex::new(HashMap::new()),
             store: Arc::new(std::sync::OnceLock::new()),
             catalog: Arc::new(std::sync::OnceLock::new()),
@@ -544,24 +548,25 @@ impl RoomSet {
         if let Some(existing) = self.rooms.lock().await.get(slug).cloned() {
             return Ok(existing);
         }
-        // Reserve the per-slug loading slot while holding the room map and
-        // loading-map locks together. A concurrent cold request then counts
-        // this load instead of passing the same capacity check.
+        // Serialize capacity decisions without retaining the registry during
+        // estimates. Cached lookups do not take admission and remain available
+        // even when a candidate's state is busy.
         let slot = {
-            let mut rooms = self.rooms.lock().await;
-            if let Some(existing) = rooms.get(slug).cloned() {
+            let _admission = self.admission.lock().await;
+            if let Some(existing) = self.rooms.lock().await.get(slug).cloned() {
                 return Ok(existing);
             }
-            let mut loading = self.loading.lock().await;
-            loading.retain(|_, slot| Arc::strong_count(slot) > 1);
-            if let Some(slot) = loading.get(slug).cloned() {
+            let (existing, loading_count) = {
+                let mut loading = self.loading.lock().await;
+                loading.retain(|_, slot| Arc::strong_count(slot) > 1);
+                (loading.get(slug).cloned(), loading.len())
+            };
+            if let Some(slot) = existing {
                 slot
             } else {
-                let mut bytes = 0usize;
-                for room in rooms.values() {
-                    bytes = bytes.saturating_add(room.resident_bytes().await);
-                }
-                if rooms.len().saturating_add(loading.len()) >= self.config.session.rooms_max
+                let mut bytes = self.cached_bytes().await;
+                if self.rooms.lock().await.len().saturating_add(loading_count)
+                    >= self.config.session.rooms_max
                     || bytes >= self.config.session.rooms_bytes_max
                 {
                     // A full cache is not a reason to reject a normal cold
@@ -569,24 +574,25 @@ impl RoomSet {
                     // released.  Keep dirty rooms protected; if no such
                     // room exists the caller still gets the retryable
                     // admission error below.
-                    let target = self.config.session.rooms_max.saturating_sub(loading.len());
-                    evict_idle(&mut rooms, target, self.config.session.rooms_bytes_max).await;
-                    bytes = 0;
-                    for room in rooms.values() {
-                        bytes = bytes.saturating_add(room.resident_bytes().await);
-                    }
-                    if rooms.len().saturating_add(loading.len()) >= self.config.session.rooms_max
+                    let target = self.config.session.rooms_max.saturating_sub(loading_count);
+                    self.evict_idle(target, self.config.session.rooms_bytes_max)
+                        .await;
+                    bytes = self.cached_bytes().await;
+                    let count = self.rooms.lock().await.len().saturating_add(loading_count);
+                    if count >= self.config.session.rooms_max
                         || bytes >= self.config.session.rooms_bytes_max
                     {
                         return Err(RoomAdmissionError::AtCapacity {
-                            rooms: rooms.len().saturating_add(loading.len()),
+                            rooms: count,
                             bytes,
                         });
                     }
                 }
+                // Compatibility get() may have reserved this slug during the
+                // scan. Join its slot instead of replacing its load identity.
+                let mut loading = self.loading.lock().await;
                 let slot = Arc::new(Mutex::new(None));
-                loading.insert(slug.to_string(), slot.clone());
-                slot
+                loading.entry(slug.to_string()).or_insert(slot).clone()
             }
         };
         let room = self.get(slug).await;
@@ -594,8 +600,9 @@ impl RoomSet {
         if self.rooms.lock().await.contains_key(slug) {
             return Ok(room);
         }
+        let count = self.rooms.lock().await.len();
         Err(RoomAdmissionError::AtCapacity {
-            rooms: self.rooms.lock().await.len(),
+            rooms: count,
             bytes: room.resident_bytes().await,
         })
     }
@@ -612,6 +619,7 @@ impl RoomSet {
         let slot = {
             // Recheck while reserving the load, in the same lock order as try_get.
             // A loader may have published since the first fast-path lookup.
+            let _admission = self.admission.lock().await;
             let rooms = self.rooms.lock().await;
             if let Some(room) = rooms.get(slug) {
                 return room.clone();
@@ -626,22 +634,6 @@ impl RoomSet {
         let mut loaded = slot.lock().await;
         if let Some(room) = loaded.as_ref() {
             return room.clone();
-        }
-        let loading_count = self.loading.lock().await.len();
-        // A room nobody has open, held past the ceiling, is written out and
-        // let go before another is made. Done under the map lock -- it is
-        // cheap, touching only rooms already in memory -- but no longer holds
-        // that lock across the load below.
-        {
-            let mut rooms = self.rooms.lock().await;
-            if rooms.len().saturating_add(loading_count) >= self.config.session.rooms_max {
-                evict_idle(
-                    &mut rooms,
-                    self.config.session.rooms_max,
-                    self.config.session.rooms_bytes_max,
-                )
-                .await;
-            }
         }
         // Taken before anything is read, so a second server writing the same
         // bucket finds out it is second rather than interleaving its writes
@@ -777,10 +769,9 @@ impl RoomSet {
         });
         room.load().await;
         let room_bytes = room.resident_bytes().await;
-        let mut rooms = self.rooms.lock().await;
+        let _admission = self.admission.lock().await;
         if room_bytes <= self.config.session.rooms_bytes_max {
-            evict_idle(
-                &mut rooms,
+            self.evict_idle(
                 self.config.session.rooms_max,
                 self.config
                     .session
@@ -790,10 +781,8 @@ impl RoomSet {
             )
             .await;
         }
-        let mut cached_bytes = 0usize;
-        for cached in rooms.values() {
-            cached_bytes = cached_bytes.saturating_add(cached.resident_bytes().await);
-        }
+        let cached_bytes = self.cached_bytes().await;
+        let mut rooms = self.rooms.lock().await;
         let can_cache = rooms.len() < self.config.session.rooms_max
             && cached_bytes.saturating_add(room_bytes) <= self.config.session.rooms_bytes_max;
         if can_cache {
@@ -921,25 +910,82 @@ impl RoomSet {
         // Kept for a while after the last socket closes: a reader who
         // reloads the page should not pay for a state transfer from storage.
         // The ceiling in `get` is what bounds the map; this only trims it.
-        let mut rooms = self.rooms.lock().await;
-        if rooms.len() > self.config.session.rooms_max / 2 {
+        let _admission = self.admission.lock().await;
+        if self.rooms.lock().await.len() > self.config.session.rooms_max / 2 {
             let now = now_unix();
             for slug in idle {
-                let stale = match rooms.get(&slug) {
-                    Some(room) => {
-                        let state = room.state.lock().await;
-                        Arc::strong_count(room) == 1
-                            && state.sockets.is_empty()
-                            && !state.session.dirty
-                            && state.session.asked.is_none()
-                            && room.checkpointing.load(Ordering::Relaxed) == 0
-                            && now - state.touched > 60
-                    }
-                    None => false,
-                };
-                if stale {
-                    rooms.remove(&slug);
+                let room = self.rooms.lock().await.get(&slug).cloned();
+                if let Some(room) = room {
+                    self.remove_idle(&slug, &room, Some(now)).await;
                 }
+            }
+        }
+    }
+
+    /// Estimates may await room state, but never own either registry while
+    /// doing so. The admission gate serializes insertions during the scan.
+    async fn cached_bytes(&self) -> usize {
+        let rooms: Vec<_> = self.rooms.lock().await.values().cloned().collect();
+        let mut bytes = 0usize;
+        for room in rooms {
+            bytes = bytes.saturating_add(room.resident_bytes().await);
+        }
+        bytes
+    }
+
+    /// Revalidate under the registry before removal. A nonblocking state lock
+    /// avoids a state-to-registry wait cycle; busy candidates can wait for the
+    /// next admission/sweep. Exactly two owners means the map and this scan's
+    /// candidate, with no active request or checkpoint retaining the instance.
+    async fn remove_idle(&self, slug: &str, candidate: &Arc<Room>, stale_at: Option<i64>) -> bool {
+        let mut rooms = self.rooms.lock().await;
+        let Some(room) = rooms.get(slug) else {
+            return false;
+        };
+        if !Arc::ptr_eq(room, candidate) || Arc::strong_count(room) != 2 {
+            return false;
+        }
+        let Ok(state) = candidate.state.try_lock() else {
+            return false;
+        };
+        if !state.sockets.is_empty()
+            || state.session.dirty
+            || state.session.asked.is_some()
+            || candidate.checkpointing.load(Ordering::Relaxed) != 0
+            || stale_at.is_some_and(|now| now.saturating_sub(state.touched) <= 60)
+        {
+            return false;
+        }
+        rooms.remove(slug);
+        true
+    }
+
+    /// Oldest-first eviction. Snapshot references are accounted for explicitly
+    /// and eligibility is checked again after the scan; a new request can pin
+    /// any candidate while estimates are in progress.
+    async fn evict_idle(&self, ceiling: usize, bytes_ceiling: usize) {
+        let snapshot: Vec<_> = self
+            .rooms
+            .lock()
+            .await
+            .iter()
+            .map(|(slug, room)| (slug.clone(), room.clone()))
+            .collect();
+        let mut candidates = Vec::with_capacity(snapshot.len());
+        let mut bytes = 0usize;
+        for (slug, room) in snapshot {
+            let size = room.resident_bytes().await;
+            bytes = bytes.saturating_add(size);
+            let touched = room.state.lock().await.touched;
+            candidates.push((touched, slug, size, room));
+        }
+        candidates.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+        for (_, slug, size, room) in candidates {
+            if self.rooms.lock().await.len() < ceiling && bytes < bytes_ceiling {
+                break;
+            }
+            if self.remove_idle(&slug, &room, None).await {
+                bytes = bytes.saturating_sub(size);
             }
         }
     }
@@ -2371,36 +2417,6 @@ fn send_to_all(state: &mut RoomState, skip: Option<u64>, message: &str) {
     }
     for id in behind {
         state.sockets.remove(&id);
-    }
-}
-
-/// Lets go of the rooms nobody has open, oldest first, until the map is under
-/// its ceiling again. A room is only let go of once its document is durable;
-/// one with unwritten changes is kept however long it has been idle, because
-/// forgetting it would be losing work.
-async fn evict_idle(rooms: &mut HashMap<String, Arc<Room>>, ceiling: usize, bytes_ceiling: usize) {
-    let mut idle: Vec<(i64, String, usize)> = Vec::new();
-    let mut bytes = 0usize;
-    for (slug, room) in rooms.iter() {
-        let size = room.resident_bytes().await;
-        bytes = bytes.saturating_add(size);
-        let state = room.state.lock().await;
-        if Arc::strong_count(room) == 1
-            && state.sockets.is_empty()
-            && !state.session.dirty
-            && state.session.asked.is_none()
-            && room.checkpointing.load(Ordering::Relaxed) == 0
-        {
-            idle.push((state.touched, slug.clone(), size));
-        }
-    }
-    idle.sort();
-    for (_, slug, size) in idle {
-        if rooms.len() < ceiling && bytes < bytes_ceiling {
-            break;
-        }
-        rooms.remove(&slug);
-        bytes = bytes.saturating_sub(size);
     }
 }
 
