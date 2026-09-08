@@ -1,6 +1,11 @@
 # Deferred room and storage refactors
 
-Status: proposed; implementation is not part of this document.
+Status: proposed umbrella roadmap; implementation is not part of this document.
+
+Implementation contracts and delivery milestones are indexed in
+[the refactor implementation specs](docs/specs/refactor/README.md). Each track
+inherits the guarantees below. A track is complete only when its own acceptance
+criteria are met; completing one does not imply completion of this roadmap.
 
 Baseline: `864dbb8` on `live-markdown-editor` (2026-09-08), incorporating the
 room fixes at `328a45b` and storage fixes at `b87d92b`. Concurrent, uncommitted
@@ -99,9 +104,16 @@ Requirements:
   guards, borrowed SQLite transactions, or live Yjs transactions into it.
 - Bound queued work and define backpressure. An unbounded collection of
   blocking tasks waiting for one connection is not an acceptable replacement.
+  Bound retained input bytes, executing work, and waiting producers as well as
+  request count. Acquire memory admission before constructing or copying large
+  owned inputs; waiting outside a bounded channel must not bypass the budget.
 - Define cancellation explicitly: cancelling a caller does not undo an SQL
   operation that already started. Use the existing operation IDs and receipts
   to recover uncertain outcomes instead of blindly repeating mutations.
+  Assign ownership through queued, executing, committed, and reconciled states.
+  A service-owned completion path must settle temporary edit reservations and
+  other cleanup even when the caller disappears. Inventory operations without
+  receipts and give each a reconciliation rule before migrating it.
 - Keep process-local room edit reservations on the same connection and within
   the same accounting model. A connection pool must not silently fragment the
   temporary reservation table.
@@ -111,8 +123,11 @@ Requirements:
   wait and SQL execution duration separately for diagnosis.
 
 Acceptance: a deliberately blocked catalogue operation does not stop a Tokio
-heartbeat or an unrelated room's in-memory edit/broadcast. Queue saturation is
-bounded. Cancellation, shutdown, and transaction-failure tests preserve quota
+heartbeat or unrelated socket work that does not require catalogue admission.
+An edit requiring a catalogue quota reservation may wait; moving SQL to a worker
+does not remove that dependency or authorize broadcasting an unreserved edit.
+After section 2, that wait must not retain room state or the global registry.
+Queue saturation and producer memory are bounded. Cancellation, shutdown, and transaction-failure tests preserve quota
 and receipt invariants. Audit asynchronous call sites so direct synchronous
 catalogue calls do not remain on request paths.
 
@@ -140,7 +155,7 @@ snapshot. Broadcast and acknowledgement ordering must follow the operation's
 actual persistence semantics.
 
 Document the lock order for `restore_write`, `checkpoint_write`,
-`manifest_write`, `session_write`, `rendering_write`, `assets_write`, room state,
+`manifest_write`, `session_write`, `publication_write`, `rendering_write`, `assets_write`, room state,
 and the rooms/loading registries.
 Changing a lock scope must account for deletion, cancellation, and pruning; it
 is not sufficient to move an `.await` outside braces mechanically.
@@ -359,9 +374,13 @@ accounting. Include CRDT and metadata overhead: a source-byte ceiling is not an
 encoded-state ceiling. Preserve bounded aggregate memory across concurrent
 rooms; raising a global constant alone is insufficient.
 
-Either support the advertised range with bounded chunking/streaming and matching
-admission, or reject unsupported configurations and oversized updates before
-accepting work that cannot be durably saved. Distinguish temporary queue
+For the first delivery, reject unsupported configurations and oversized updates
+before accepting work that cannot be durably saved. Preserve existing record
+chunking and persisted formats; expanding recovery capacity or introducing a
+streaming persistence pipeline is a separate future proposal. The
+[size-limit implementation spec](docs/specs/refactor/10-size-limits.md) defines
+the source and encoded-state limits and the validation needed to set them.
+Distinguish temporary queue
 saturation from a permanently unsupported document size. Propagate the chosen
 limits to startup/configuration validation, CLI/server errors, and documentation.
 Retain existing segment and recovery compatibility or provide a versioned
@@ -438,8 +457,12 @@ severity totals as independently established totals.
 
 ## Delivery and validation
 
-Start with catalogue execution and lock scope changes, in coordinated but
-separately reviewable steps. Follow with shared pruning and rendering lookup,
+First settle the size-limit policy and catalogue execution/cancellation contract
+in their implementation specs. Deliver the size-limit correctness fix as the
+first milestone; stable attribution is an independent early correctness
+milestone and must not wait for the performance work. Catalogue execution and
+lock scope changes follow in coordinated but separately reviewable steps.
+Follow with shared pruning and rendering lookup,
 then memory estimates and API cleanup. Small independent helper extractions can
 land separately. Stable attribution and size-limit work are correctness tracks
 that can proceed independently; neither should wait for performance profiling.
