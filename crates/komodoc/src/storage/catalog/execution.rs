@@ -1316,7 +1316,7 @@ mod tests {
         shutdown.await.unwrap();
         // The executing work committed before SQLite closed, and every path
         // now reports closure.
-        assert!(matches!(store.state(), Err(_)));
+        assert!(store.state().is_err());
         assert!(matches!(
             catalog.reserve_execution(0).await,
             Err(CatalogExecError::ShuttingDown)
