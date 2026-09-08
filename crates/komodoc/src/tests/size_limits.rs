@@ -271,7 +271,7 @@ async fn the_source_ceiling_is_enforced_at_its_boundary() {
     let fixture = room_fixture::open(config).await;
     let room = room_fixture::publish(&fixture, "source-boundary", "start\n").await;
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
-    room.attach(1, "test".into(), tx, true).await;
+    room.attach(1, tx, true).await;
     let peer = Peer::joining(&room).await;
 
     // "main.md" and the metadata keys are charged too, so leave a little room.
@@ -310,7 +310,7 @@ async fn a_small_source_with_a_large_history_is_refused_by_the_encoded_ceiling()
     let fixture = room_fixture::open(config).await;
     let room = room_fixture::publish(&fixture, "long-history", "start\n").await;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-    room.attach(1, "test".into(), tx, true).await;
+    room.attach(1, tx, true).await;
     let mut refusal = None;
     let mut accepted = 0;
     let mut before_refusal = String::new();
@@ -560,7 +560,7 @@ async fn a_boundary_snapshot_appends_acknowledges_compacts_and_recovers() {
     let fixture = room_fixture::open(config).await;
     let room = room_fixture::publish(&fixture, "boundary", "start\n").await;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-    room.attach(1, "test".into(), tx, true).await;
+    room.attach(1, tx, true).await;
     let peer = Peer::joining(&room).await;
 
     // As close to the source ceiling as the paths and metadata leave room for.
@@ -691,7 +691,7 @@ async fn boundary_source_survives_a_restart(config: Configuration, slug: &str, c
     let fixture = room_fixture::open(config).await;
     let room = room_fixture::publish(&fixture, slug, "start\n").await;
     let (tx, _rx) = tokio::sync::mpsc::channel(1024);
-    room.attach(1, "test".into(), tx, true).await;
+    room.attach(1, tx, true).await;
     let peer = Peer::joining(&room).await;
 
     let body = "m".repeat(ceiling - 4096);
