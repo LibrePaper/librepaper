@@ -4,6 +4,97 @@
 use super::*;
 
 impl Room {
+    /// Undo only the acceptance edit in the current document. Restoring the
+    /// complete pre-accept tree would erase keystrokes that arrived while the
+    /// checkpoint was being written. The source context identifies the
+    /// proposal's current occurrence, so the compensating CRDT edit leaves
+    /// unrelated changes in place and is relayed like any other server edit.
+    async fn rollback_accept_edit(
+        &self,
+        source: &SourceAnchor,
+        proposed: &str,
+        accepted_update: &[u8],
+        rollback_position: Option<yrs::StickyIndex>,
+    ) -> Result<(), String> {
+        let compensation = {
+            let mut state = self.state.lock().await;
+            let live = session::texts_of(&state.session.doc)
+                .get(&source.path)
+                .cloned()
+                .unwrap_or_default();
+            let at = if proposed.is_empty() {
+                // An empty proposal deleted the source passage. Do not use
+                // `locate_anchor` as an indication that the edit was not
+                // applied: with repeated passages it can find a later copy
+                // after the accepted copy was deleted. Resolve the CRDT
+                // position captured before the edit instead.
+                rollback_position.as_ref().and_then(|position| {
+                    session::offset_of_sticky_index(&state.session.doc, position)
+                        .map(|at| at as usize)
+                })
+            } else {
+                let proposed_anchor = SourceAnchor {
+                    path: source.path.clone(),
+                    exact: proposed.to_string(),
+                    prefix: source.prefix.clone(),
+                    suffix: source.suffix.clone(),
+                    position: source.position,
+                };
+                locate_anchor(&live, &proposed_anchor)
+            };
+            if let Some(at) = at {
+                match session::apply_path_edits(
+                    &state.session.doc,
+                    &source.path,
+                    &[komodoc_text::Edit {
+                        at,
+                        delete: len16(proposed),
+                        insert: source.exact.clone(),
+                    }],
+                ) {
+                    Some(update) => {
+                        state.session.mark_dirty(now_unix());
+                        state.session.generation += 1;
+                        state.session.updated_at = now_unix();
+                        (Some(update), Vec::new())
+                    }
+                    None => (None, session::encode_state(&state.session.doc)),
+                }
+            } else {
+                (None, session::encode_state(&state.session.doc))
+            }
+        };
+        if let (Some(update), _) = &compensation {
+            self.broadcast(&json!({
+                "type": "y-update",
+                "update": encode_update(accepted_update),
+            }))
+            .await;
+            self.broadcast(&json!({
+                "type": "y-update",
+                "update": encode_update(update),
+            }))
+            .await;
+            // The peers must see both sides of the compensating edit even if
+            // persisting the compensation fails.  A caller can retry the
+            // write, but it cannot reconstruct a broadcast that was skipped
+            // behind the failed storage operation.
+            return self.write_session(false, false).await.map(|_| ());
+        }
+        let full = compensation.1;
+        self.broadcast(&json!({
+            "type": "y-update",
+            "update": encode_update(accepted_update),
+        }))
+        .await;
+        self.broadcast(&json!({
+            "type": "y-update",
+            "update": encode_update(&full),
+        }))
+        .await;
+        Err("could not locate the accepted proposal to roll it back".into())
+    }
+
     /// Accepts a suggestion: applies its proposal to the live source through
     /// the session, exactly as `restore_and_checkpoint` applies a restore,
     /// and records a checkpoint. Held under `restore_write`, the same lock a
@@ -167,11 +258,7 @@ impl Room {
             Some(base_text)
         };
 
-        let (rollback_tree, rollback_bodies, rollback_format) = {
-            let state = self.state.lock().await;
-            let (tree, bodies) = tree_of(&state.session.doc, &state.session.asset_sizes);
-            (tree, bodies, state.session.format.clone())
-        };
+        let mut rollback_position = None;
         let update = {
             let mut state = self.state.lock().await;
             let live_text = session::texts_of(&state.session.doc)
@@ -179,6 +266,14 @@ impl Room {
                 .cloned()
                 .unwrap_or_default();
             let edits = if let Some(at) = locate_anchor(&live_text, &source) {
+                if proposed.is_empty() {
+                    rollback_position = session::sticky_index_at_path(
+                        &state.session.doc,
+                        &source.path,
+                        at as u32,
+                        yrs::Assoc::Before,
+                    );
+                }
                 vec![komodoc_text::Edit {
                     at,
                     delete: len16(&source.exact),
@@ -226,7 +321,7 @@ impl Room {
             Ok(Some(sha)) => sha,
             Ok(None) => {
                 let _ = self
-                    .rollback_publication(&rollback_tree, &rollback_bodies, &rollback_format)
+                    .rollback_accept_edit(&source, &proposed, &update, rollback_position.clone())
                     .await;
                 return Err(AcceptError::Failed(
                     "could not create the accept checkpoint".to_string(),
@@ -234,7 +329,7 @@ impl Room {
             }
             Err(err) => {
                 let _ = self
-                    .rollback_publication(&rollback_tree, &rollback_bodies, &rollback_format)
+                    .rollback_accept_edit(&source, &proposed, &update, rollback_position.clone())
                     .await;
                 return Err(AcceptError::Failed(err));
             }

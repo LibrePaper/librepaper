@@ -52,6 +52,7 @@ use yrs::{
     Array, Doc, GetString, Map, MapRef, OffsetKind, Options, Out, ReadTxn, RootRef, StateVector,
     Text, TextRef, Transact, TransactionMut, Update,
 };
+use yrs::{Assoc, IndexedSequence, StickyIndex};
 
 use crate::document::paths::{self, Rules};
 
@@ -1065,4 +1066,27 @@ fn restore_with(
     if !main.is_empty() {
         meta.insert(&mut txn, MAIN, main);
     }
+}
+
+/// Captures a position in the text at `path` that follows the same CRDT
+/// content when concurrent updates shift its ordinary UTF-16 offset.
+pub fn sticky_index_at_path(
+    doc: &Doc,
+    path: &str,
+    index: u32,
+    assoc: Assoc,
+) -> Option<StickyIndex> {
+    let (files, path_map, _, _) = maps(doc);
+    let txn = doc.transact();
+    let id = path_map.iter(&txn).find_map(|(id, _)| {
+        (string_at(&path_map, &txn, id).as_deref() == Some(path)).then(|| id.to_string())
+    })?;
+    let text = text_at(&files, &txn, &id)?;
+    text.sticky_index(&txn, index, assoc)
+}
+
+/// Resolves a previously captured CRDT position to the current UTF-16 offset.
+pub fn offset_of_sticky_index(doc: &Doc, index: &StickyIndex) -> Option<u32> {
+    let txn = doc.transact();
+    index.get_offset(&txn).map(|offset| offset.index)
 }

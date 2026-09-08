@@ -1499,3 +1499,244 @@ async fn concurrent_checkpoints_commit_in_snapshot_order() {
     .unwrap();
     assert_eq!(session::text_of(&saved), "C");
 }
+
+fn source_anchor(exact: &str) -> room::SourceAnchor {
+    room::SourceAnchor {
+        path: "main.md".into(),
+        exact: exact.into(),
+        prefix: String::new(),
+        suffix: String::new(),
+        position: Some(0),
+    }
+}
+
+async fn add_suggestion(room: &room::Room, proposed: &str) -> String {
+    let (payload, ok) = room
+        .apply(
+            room::Message {
+                kind: "comment".into(),
+                motivation: "editing".into(),
+                exact: "A".into(),
+                proposed: Some(proposed.into()),
+                source: Some(source_anchor("A")),
+                temp_id: crate::util::new_id(),
+                ..Default::default()
+            },
+            "127.0.0.1",
+            "github:reviewer",
+            "",
+            None,
+            false,
+        )
+        .await;
+    assert!(ok, "{payload}");
+    payload["comment"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn review_failed_deletion_accept_restores_repeated_passage() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    rooms.attach_store(store);
+    let room = rooms.get("probe").await;
+    room.set_source("A A", "markdown").await;
+    room.checkpoint_now("cli", "alice").await.unwrap();
+    let id = add_suggestion(&room, "").await;
+    *hooked.fail.lock().unwrap() = Some("content/".into());
+    let result = room
+        .accept_suggestion(&id, "failed-deletion", "alice")
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        room.source().await,
+        "A A",
+        "failed deletion acceptance must restore the original text"
+    );
+}
+
+#[tokio::test]
+async fn failed_deletion_restores_the_later_repeated_passage() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    rooms.attach_store(store);
+    let room = rooms.get("probe").await;
+    room.set_source("A A", "markdown").await;
+    room.checkpoint_now("cli", "alice").await.unwrap();
+    let (payload, ok) = room
+        .apply(
+            room::Message {
+                kind: "comment".into(),
+                motivation: "editing".into(),
+                exact: "A".into(),
+                proposed: Some(String::new()),
+                source: Some(room::SourceAnchor {
+                    path: "main.md".into(),
+                    exact: "A".into(),
+                    prefix: String::new(),
+                    suffix: String::new(),
+                    position: Some(2),
+                }),
+                ..Default::default()
+            },
+            "127.0.0.1",
+            "github:reviewer",
+            "",
+            None,
+            false,
+        )
+        .await;
+    assert!(ok, "{payload}");
+    let id = payload["comment"]["id"].as_str().unwrap();
+    *hooked.fail.lock().unwrap() = Some("content/".into());
+    assert!(room
+        .accept_suggestion(id, "failed-later-deletion", "alice")
+        .await
+        .is_err());
+    assert_eq!(room.source().await, "A A");
+}
+
+#[tokio::test]
+async fn failed_deletion_follows_a_concurrent_insert_before_the_anchor() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    rooms.attach_store(store.clone());
+    let room = rooms.get("probe").await;
+    room.set_source("A A", "markdown").await;
+    room.checkpoint_now("cli", "alice").await.unwrap();
+    let (payload, ok) = room
+        .apply(
+            room::Message {
+                kind: "comment".into(),
+                motivation: "editing".into(),
+                exact: "A".into(),
+                proposed: Some(String::new()),
+                source: Some(room::SourceAnchor {
+                    path: "main.md".into(),
+                    exact: "A".into(),
+                    prefix: String::new(),
+                    suffix: String::new(),
+                    position: Some(2),
+                }),
+                ..Default::default()
+            },
+            "127.0.0.1",
+            "github:reviewer",
+            "",
+            None,
+            false,
+        )
+        .await;
+    assert!(ok, "{payload}");
+    let id = payload["comment"]["id"].as_str().unwrap().to_string();
+    *hooked.pause.lock().unwrap() = Some((
+        "put".into(),
+        blob::blob_key("probe", &store::digest_of("A ")),
+    ));
+    *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
+    let task = tokio::spawn({
+        let room = room.clone();
+        async move { room.accept_suggestion(&id, "failed-insert", "alice").await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    room.set_source("!A ", "markdown").await;
+    hooked.resume.notify_one();
+    assert!(task.await.unwrap().is_err());
+    assert_eq!(room.source().await, "!A A");
+}
+
+#[tokio::test]
+async fn failed_deletion_rollback_converges_for_a_peer() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    store
+        .blobs
+        .delete(&[blob::room_lock_key("probe")])
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    rooms.attach_store(store);
+    let room = rooms.get("probe").await;
+    room.set_source("A A", "markdown").await;
+    room.checkpoint_now("cli", "alice").await.unwrap();
+    let (payload, ok) = room
+        .apply(
+            room::Message {
+                kind: "comment".into(),
+                motivation: "editing".into(),
+                exact: "A".into(),
+                proposed: Some(String::new()),
+                source: Some(room::SourceAnchor {
+                    path: "main.md".into(),
+                    exact: "A".into(),
+                    prefix: String::new(),
+                    suffix: String::new(),
+                    position: Some(2),
+                }),
+                ..Default::default()
+            },
+            "127.0.0.1",
+            "github:reviewer",
+            "",
+            None,
+            false,
+        )
+        .await;
+    assert!(ok, "{payload}");
+    let id = payload["comment"]["id"].as_str().unwrap().to_string();
+    let initial = room.open_state(None).await.0;
+    let peer = session::new_doc();
+    session::apply_update(&peer, &initial).unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    room.attach(99, "peer".into(), tx, false).await;
+    *hooked.pause.lock().unwrap() = Some((
+        "put".into(),
+        blob::blob_key("probe", &store::digest_of("A ")),
+    ));
+    *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
+    let task = tokio::spawn({
+        let room = room.clone();
+        async move {
+            room.accept_suggestion(&id, "failed-peer-deletion", "alice")
+                .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    hooked.resume.notify_one();
+    assert!(task.await.unwrap().is_err());
+    for _ in 0..2 {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if let room::Outgoing::Text(text) = frame {
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if value["type"] == "y-update" {
+                let update = room::decode_update(value["update"].as_str().unwrap()).unwrap();
+                session::apply_update(&peer, &update).unwrap();
+            }
+        }
+    }
+    assert_eq!(session::text_of(&peer), "A A");
+}
