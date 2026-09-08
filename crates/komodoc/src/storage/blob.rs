@@ -85,6 +85,44 @@ impl From<std::io::Error> for BlobError {
 
 pub type BlobResult<T> = Result<T, BlobError>;
 
+/// What became of one key in a removal request.
+///
+/// A store can remove ten objects and fail on the eleventh, and a provider's
+/// batch API reports exactly that inside an otherwise successful response.
+/// Collapsing the whole request to one `Result` loses which objects are gone,
+/// which is the difference between releasing an account's quota for bytes
+/// that no longer exist and releasing it for bytes somebody is still paying
+/// for. Only `Deleted` and `Absent` are evidence that an object is gone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// The store removed the object, or confirmed it had already gone.
+    Deleted,
+    /// The store confirmed there was nothing under that key.
+    Absent,
+    /// The store refused this key. The object is still there.
+    Failed(String),
+    /// The request's fate is unknown: it may or may not have been applied.
+    /// Retiring an object on this would be releasing capacity on a guess.
+    Uncertain(String),
+}
+
+impl DeleteOutcome {
+    /// Whether this outcome is evidence that the object is gone, and so
+    /// permits its retirement and the release of its accounting.
+    pub fn confirmed(&self) -> bool {
+        matches!(self, DeleteOutcome::Deleted | DeleteOutcome::Absent)
+    }
+
+    /// Why an unconfirmed outcome is unconfirmed, for a log line.
+    pub fn why(&self) -> &str {
+        match self {
+            DeleteOutcome::Deleted => "deleted",
+            DeleteOutcome::Absent => "already absent",
+            DeleteOutcome::Failed(why) | DeleteOutcome::Uncertain(why) => why,
+        }
+    }
+}
+
 #[async_trait]
 pub trait BlobStore: Send + Sync {
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>>;
@@ -100,8 +138,31 @@ pub trait BlobStore: Send + Sync {
     }
     async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()>;
     /// Removes keys; ones that are not there are not an error, because the
-    /// outcome asked for is the outcome either way.
+    /// outcome asked for is the outcome either way. Fails if any key's
+    /// removal is not confirmed, which is what the callers that only care
+    /// whether the whole request worked already assumed.
     async fn delete(&self, keys: &[String]) -> BlobResult<()>;
+
+    /// Removes keys and reports each one's outcome, positionally. This is
+    /// what a caller with per-object accounting needs: it may retire the
+    /// objects the store confirmed and must keep the rest queued.
+    ///
+    /// The default performs one removal per key through `delete`, which is
+    /// correct but cannot distinguish a refusal from an unknown fate -- a
+    /// store that only implements `delete` has not told it apart either. The
+    /// remote store overrides this with the provider's batch API, where that
+    /// distinction is available and the request count is not per object.
+    async fn delete_each(&self, keys: &[String]) -> BlobResult<Vec<DeleteOutcome>> {
+        let mut outcomes = Vec::with_capacity(keys.len());
+        for key in keys {
+            outcomes.push(match self.delete(std::slice::from_ref(key)).await {
+                Ok(()) => DeleteOutcome::Deleted,
+                Err(BlobError::NotFound) => DeleteOutcome::Absent,
+                Err(error) => DeleteOutcome::Failed(error.to_string()),
+            });
+        }
+        Ok(outcomes)
+    }
     async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>>;
     /// A deterministic bounded page. Implementations backed by remote APIs
     /// may override this with native cursors; the default preserves the
@@ -287,42 +348,26 @@ impl BlobStore for FsStore {
     }
 
     async fn delete(&self, keys: &[String]) -> BlobResult<()> {
+        let outcomes = self.delete_each(keys).await?;
+        match outcomes.iter().find(|outcome| !outcome.confirmed()) {
+            Some(failed) => Err(BlobError::Other(failed.why().to_string())),
+            None => Ok(()),
+        }
+    }
+
+    async fn delete_each(&self, keys: &[String]) -> BlobResult<Vec<DeleteOutcome>> {
+        // A key this store cannot even name is a caller error rather than a
+        // per-object outcome, and is refused before anything is removed.
         let paths: Vec<PathBuf> = keys
             .iter()
             .map(|key| self.path_for(key))
             .collect::<BlobResult<_>>()?;
         self.blocking(move || {
+            let mut outcomes = Vec::with_capacity(paths.len());
             for name in paths {
-                match std::fs::remove_file(&name) {
-                    Ok(()) => {
-                        if let Some(parent) = name.parent() {
-                            std::fs::File::open(parent)?.sync_all()?;
-                        }
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(err) => return Err(err.into()),
-                }
-                // The directory a key lived in is part of the key, not a thing of
-                // its own: an empty one left behind would show up in a listing as
-                // a document that is not there.
-                if let Some(parent) = name.parent() {
-                    match std::fs::remove_dir(parent) {
-                        Ok(()) => {
-                            if let Some(container) = parent.parent() {
-                                std::fs::File::open(container)?.sync_all()?;
-                            }
-                        }
-                        Err(err)
-                            if matches!(
-                                err.kind(),
-                                std::io::ErrorKind::DirectoryNotEmpty
-                                    | std::io::ErrorKind::NotFound
-                            ) => {}
-                        Err(err) => return Err(err.into()),
-                    }
-                }
+                outcomes.push(remove_one_file(&name));
             }
-            Ok(())
+            Ok(outcomes)
         })
         .await
     }
@@ -394,6 +439,56 @@ impl BlobStore for FsStore {
 
     fn is_local(&self) -> bool {
         true
+    }
+}
+
+/// Removes one file and reports what happened to it. A local filesystem
+/// answers definitively -- the call either unlinked the name or told us why
+/// it could not -- so this never produces an uncertain outcome. One key's
+/// failure no longer abandons the keys after it: each object's accounting is
+/// settled on its own evidence.
+fn remove_one_file(name: &Path) -> DeleteOutcome {
+    let removed = match std::fs::remove_file(name) {
+        Ok(()) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return DeleteOutcome::Failed(err.to_string()),
+    };
+    if removed {
+        if let Some(parent) = name.parent() {
+            if let Err(err) = std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+                // The name is gone from this process's view but the directory
+                // entry may not be on disk yet, so the removal is not durable.
+                return DeleteOutcome::Uncertain(err.to_string());
+            }
+        }
+    }
+    // The directory a key lived in is part of the key, not a thing of its
+    // own: an empty one left behind would show up in a listing as a document
+    // that is not there.
+    if let Some(parent) = name.parent() {
+        match std::fs::remove_dir(parent) {
+            Ok(()) => {
+                if let Some(container) = parent.parent() {
+                    if let Err(err) = std::fs::File::open(container).and_then(|dir| dir.sync_all())
+                    {
+                        return DeleteOutcome::Uncertain(err.to_string());
+                    }
+                }
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
+                ) => {}
+            // The object itself is gone; a directory that could not be tidied
+            // is not a reason to keep charging for it.
+            Err(_) => {}
+        }
+    }
+    if removed {
+        DeleteOutcome::Deleted
+    } else {
+        DeleteOutcome::Absent
     }
 }
 

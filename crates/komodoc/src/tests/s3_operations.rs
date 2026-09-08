@@ -1,5 +1,6 @@
-//! What a bucket does when it is not working: throttling, gateway errors, and
-//! connections that go away mid-request.
+//! What a bucket does when it is not working: throttling, gateway errors,
+//! connections that go away mid-request, and a batch delete that succeeds as
+//! a request while refusing some of the keys in it.
 //!
 //! The mock here speaks HTTP over a raw socket rather than through axum,
 //! because the case that matters most cannot be expressed as a response: a
@@ -16,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::storage::blob::{version_of, BlobError, BlobStore};
+use crate::storage::blob::{version_of, BlobError, BlobStore, DeleteOutcome};
 use crate::storage::retry::{RetryLimits, TestClock};
 use crate::storage::s3::S3Store;
 use crate::storage::StorageOptions;
@@ -43,6 +44,10 @@ struct Bucket {
     /// How many writes actually changed an object. The assertion that a
     /// retried write is not a second mutation.
     applied: usize,
+    /// Scripted `DeleteResult` bodies, one per multi-object delete request.
+    batch_replies: VecDeque<String>,
+    /// A gateway that does not implement multi-object deletion.
+    refuse_batch: bool,
 }
 
 impl Bucket {
@@ -200,13 +205,13 @@ fn apply(
     state: &Shared,
     method: &str,
     path: &str,
-    _query: &str,
+    query: &str,
     body: &[u8],
     if_match: &str,
     if_none_match: &str,
 ) -> Vec<u8> {
-    // Keys travel percent-encoded in the path; the bucket stores the decoded
-    // name, as a real one does.
+    // Keys travel percent-encoded in the path and XML-escaped in a batch
+    // body; the bucket stores the decoded name, as a real one does.
     let key = percent_encoding::percent_decode_str(path.trim_start_matches("/bucket/"))
         .decode_utf8_lossy()
         .to_string();
@@ -236,6 +241,35 @@ fn apply(
         "DELETE" => {
             held.objects.remove(&key);
             reply(204, "", b"", true)
+        }
+        "POST" if query.starts_with("delete") => {
+            if held.refuse_batch {
+                return reply(501, "", b"not implemented", true);
+            }
+            if let Some(scripted) = held.batch_replies.pop_front() {
+                return reply(200, "", scripted.as_bytes(), true);
+            }
+            let text = String::from_utf8_lossy(body).to_string();
+            let mut result = String::from("<DeleteResult>");
+            let mut rest = text.as_str();
+            while let Some(start) = rest.find("<Key>") {
+                let after = &rest[start + 5..];
+                let Some(end) = after.find("</Key>") else {
+                    break;
+                };
+                let escaped = after[..end].to_string();
+                let key = escaped
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&apos;", "'")
+                    .replace("&amp;", "&");
+                held.objects.remove(&key);
+                result.push_str(&format!("<Deleted><Key>{escaped}</Key></Deleted>"));
+                rest = &after[end..];
+            }
+            result.push_str("</DeleteResult>");
+            reply(200, "", result.as_bytes(), true)
         }
         _ => reply(405, "", b"method not allowed", true),
     }
@@ -537,4 +571,189 @@ async fn dropping_an_operation_during_backoff_sends_nothing_more() {
         1,
         "a cancelled operation made another request"
     );
+}
+
+/* ------------------------------------------------------- batch deletion */
+
+// The provider answers 200 and puts the verdicts in the body. Only the keys
+// it named as deleted or absent are confirmed; one it refused for a
+// transient reason goes into the next request; one it refused outright is a
+// failure that keeps its object's charge.
+#[tokio::test]
+async fn a_partial_failure_inside_a_successful_response_is_reported_per_key() {
+    let (endpoint, bucket) = mock_bucket().await;
+    let clock = TestClock::new(0.5);
+    let blobs = store(&endpoint, clock.clone());
+    {
+        let mut held = bucket.lock().expect("bucket");
+        held.batch_replies.push_back(
+            "<DeleteResult>\
+             <Deleted><Key>komodoc/one</Key></Deleted>\
+             <Error><Key>komodoc/two</Key><Code>NoSuchKey</Code><Message>gone</Message></Error>\
+             <Error><Key>komodoc/three</Key><Code>InternalError</Code><Message>later</Message></Error>\
+             <Error><Key>komodoc/four</Key><Code>AccessDenied</Code><Message>no</Message></Error>\
+             </DeleteResult>"
+                .into(),
+        );
+        held.batch_replies.push_back(
+            "<DeleteResult><Deleted><Key>komodoc/three</Key></Deleted></DeleteResult>".into(),
+        );
+    }
+    let keys: Vec<String> = ["one", "two", "three", "four"]
+        .iter()
+        .map(|key| key.to_string())
+        .collect();
+    let outcomes = blobs.delete_each(&keys).await.expect("batch delete");
+    assert_eq!(
+        outcomes,
+        vec![
+            DeleteOutcome::Deleted,
+            DeleteOutcome::Absent,
+            DeleteOutcome::Deleted,
+            DeleteOutcome::Failed("AccessDenied: no".into()),
+        ]
+    );
+    assert!(outcomes[3].why().contains("AccessDenied"));
+    assert_eq!(
+        bucket.lock().expect("bucket").methods(),
+        vec!["POST", "POST"],
+        "only the unresolved key should have been asked for again"
+    );
+    // `delete` keeps its all-or-nothing meaning for the callers that only ask
+    // whether the whole request worked.
+    bucket.lock().expect("bucket").batch_replies.push_back(
+        "<DeleteResult><Error><Key>komodoc/four</Key><Code>AccessDenied</Code><Message>no</Message></Error></DeleteResult>".into(),
+    );
+    assert!(blobs.delete(&["four".to_string()]).await.is_err());
+}
+
+// A batch request that never gets an answer leaves every key in it unknown.
+// Nothing in it may be retired: a repeated DELETE is harmless, but assuming
+// it landed would release capacity for bytes nobody has proved are gone.
+#[tokio::test]
+async fn a_batch_that_never_gets_an_answer_leaves_its_keys_uncertain() {
+    let (endpoint, bucket) = mock_bucket().await;
+    let clock = TestClock::new(1.0);
+    let blobs = store(&endpoint, clock.clone());
+    for _ in 0..10 {
+        bucket.lock().expect("bucket").faults.push_back(Fault::Drop);
+    }
+    let keys = vec!["one".to_string(), "two".to_string()];
+    let outcomes = blobs.delete_each(&keys).await.expect("batch delete");
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, DeleteOutcome::Uncertain(_))),
+        "unanswered deletions reported as {outcomes:?}"
+    );
+    assert!(outcomes.iter().all(|outcome| !outcome.confirmed()));
+    assert_eq!(
+        bucket.lock().expect("bucket").requests(),
+        RetryLimits::IDEMPOTENT.attempts as usize
+    );
+    assert!(clock.waited() <= RetryLimits::IDEMPOTENT.total);
+}
+
+// A gateway that does not implement multi-object deletion keeps working: the
+// store falls back to one DELETE per key and remembers that it must.
+#[tokio::test]
+async fn a_bucket_without_batch_deletion_falls_back_to_one_request_per_key() {
+    let (endpoint, bucket) = mock_bucket().await;
+    let clock = TestClock::new(0.5);
+    let blobs = store(&endpoint, clock.clone());
+    bucket.lock().expect("bucket").refuse_batch = true;
+    for index in 0..3 {
+        blobs
+            .put(&format!("thing/{index}"), vec![b'x'], "text/plain")
+            .await
+            .expect("write");
+    }
+    bucket.lock().expect("bucket").log.clear();
+    let keys: Vec<String> = (0..3).map(|index| format!("thing/{index}")).collect();
+    let outcomes = blobs.delete_each(&keys).await.expect("fallback delete");
+    assert!(outcomes.iter().all(|outcome| outcome.confirmed()));
+    {
+        let held = bucket.lock().expect("bucket");
+        assert_eq!(held.methods(), vec!["POST", "DELETE", "DELETE", "DELETE"]);
+        assert!(held.objects.is_empty());
+    }
+    // The refusal is remembered, so the next sweep does not pay for it again.
+    for index in 0..2 {
+        blobs
+            .put(&format!("more/{index}"), vec![b'x'], "text/plain")
+            .await
+            .expect("write");
+    }
+    bucket.lock().expect("bucket").log.clear();
+    let keys: Vec<String> = (0..2).map(|index| format!("more/{index}")).collect();
+    blobs.delete_each(&keys).await.expect("fallback delete");
+    assert_eq!(
+        bucket.lock().expect("bucket").methods(),
+        vec!["DELETE", "DELETE"]
+    );
+}
+
+// The measurement the spec asks for: what bulk retirement costs before and
+// after. Two hundred and fifty objects took two hundred and fifty requests;
+// they now take one.
+#[tokio::test]
+async fn bulk_retirement_costs_one_request_instead_of_one_per_object() {
+    const OBJECTS: usize = 250;
+    let keys: Vec<String> = (0..OBJECTS)
+        .map(|index| format!("bulk/{index:04}"))
+        .collect();
+
+    let (endpoint, bucket) = mock_bucket().await;
+    let clock = TestClock::new(0.5);
+    let blobs = store(&endpoint, clock.clone());
+    for key in &keys {
+        blobs
+            .put(key, vec![b'x'], "text/plain")
+            .await
+            .expect("write");
+    }
+    bucket.lock().expect("bucket").log.clear();
+    let outcomes = blobs.delete_each(&keys).await.expect("batch delete");
+    assert!(outcomes.iter().all(|outcome| outcome.confirmed()));
+    let batched = bucket.lock().expect("bucket").requests();
+
+    let (endpoint, bucket) = mock_bucket().await;
+    let blobs = store(&endpoint, clock.clone());
+    bucket.lock().expect("bucket").refuse_batch = true;
+    for key in &keys {
+        blobs
+            .put(key, vec![b'x'], "text/plain")
+            .await
+            .expect("write");
+    }
+    bucket.lock().expect("bucket").log.clear();
+    blobs.delete_each(&keys).await.expect("per-key delete");
+    // The refused batch request plus one DELETE per object: what every
+    // deployment paid before this change.
+    let per_key = bucket.lock().expect("bucket").requests() - 1;
+
+    assert_eq!(per_key, OBJECTS, "the fallback is one request per object");
+    assert_eq!(batched, 1, "{OBJECTS} objects should retire in one request");
+}
+
+// Keys with characters XML cares about survive the round trip, because a key
+// that comes back mangled would be reported against the wrong object.
+#[tokio::test]
+async fn batch_deletion_escapes_keys_and_matches_the_answer_back_to_them() {
+    let (endpoint, bucket) = mock_bucket().await;
+    let clock = TestClock::new(0.5);
+    let blobs = store(&endpoint, clock.clone());
+    let keys = vec!["a&b".to_string(), "c<d".to_string()];
+    for key in &keys {
+        blobs
+            .put(key, vec![b'x'], "text/plain")
+            .await
+            .expect("write");
+    }
+    let outcomes = blobs.delete_each(&keys).await.expect("batch delete");
+    assert_eq!(
+        outcomes,
+        vec![DeleteOutcome::Deleted, DeleteOutcome::Deleted]
+    );
+    assert!(bucket.lock().expect("bucket").objects.is_empty());
 }

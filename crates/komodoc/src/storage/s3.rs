@@ -9,23 +9,30 @@
 //! this one, and `reqwest` retries nothing on its own. The bounds in
 //! `storage::retry` are therefore the only bounds: nothing multiplies them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use reqwest::{Method, Response};
 use sha2::{Digest, Sha256};
 
 use crate::http::{client, truncate};
-use crate::storage::blob::{version_of, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion};
+use crate::storage::blob::{
+    version_of, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion, DeleteOutcome,
+};
 use crate::storage::retry::{
     with_retries, Attempt, RetryClock, RetryLimits, RetryWindow, SystemClock,
 };
 use crate::storage::StorageOptions;
 use crate::util::{amz_stamps, now_unix};
+
+/// S3's DeleteObjects accepts at most a thousand keys in one request.
+const DELETE_BATCH: usize = 1000;
 
 pub struct S3Store {
     endpoint: String, // https://host, without the bucket
@@ -38,6 +45,10 @@ pub struct S3Store {
     /// Where retry backoff gets its time and its jitter. Injected so a test
     /// can assert the bounds without waiting for them.
     clock: Arc<dyn RetryClock>,
+    /// Cleared the first time a bucket refuses the multi-object delete, so a
+    /// gateway that only implements the per-object DELETE keeps working
+    /// instead of failing every reclamation pass.
+    batch_delete: AtomicBool,
 }
 
 impl S3Store {
@@ -59,6 +70,7 @@ impl S3Store {
             secret_key: options.secret_key.clone(),
             single_writer: options.single_writer,
             clock,
+            batch_delete: AtomicBool::new(true),
         }
     }
 
@@ -236,6 +248,205 @@ impl S3Store {
                 }
             }
         }
+    }
+
+    /// Removes up to `DELETE_BATCH` keys in one request, reporting each key's
+    /// own outcome.
+    ///
+    /// The provider answers 200 and puts the per-key verdicts in the body, so
+    /// "the request succeeded" and "the object is gone" are different facts.
+    /// Only the keys the provider named as deleted (or as absent) are
+    /// reported confirmed; a key it refused for a transient reason goes into
+    /// the next attempt, and a key that is still unresolved when the bounds
+    /// run out is `Uncertain` -- never confirmed, because releasing an
+    /// object's accounting on an unread answer is releasing it on a guess.
+    async fn delete_chunk(&self, keys: &[String]) -> Vec<DeleteOutcome> {
+        if keys.is_empty() {
+            return Vec::new();
+        }
+        if !self.batch_delete.load(Ordering::Relaxed) {
+            return self.delete_one_by_one(keys).await;
+        }
+        // The body names objects by their stored key, which includes this
+        // deployment's prefix; the answer comes back the same way.
+        let scoped: Vec<String> = keys.iter().map(|key| self.scoped(key)).collect();
+        let mut settled: HashMap<&str, DeleteOutcome> = HashMap::new();
+        let mut pending: Vec<&str> = scoped.iter().map(String::as_str).collect();
+        let mut why = String::new();
+        let mut window = RetryWindow::new(self.clock.as_ref(), RetryLimits::IDEMPOTENT);
+        let address = format!(
+            "{}/{}?{}",
+            self.endpoint,
+            self.bucket,
+            canonical_query(&[("delete".to_string(), String::new())])
+        );
+        while window.begin() && !pending.is_empty() {
+            let (body, checksum) = delete_request(&pending);
+            let headers = [
+                ("content-type", "application/xml".to_string()),
+                ("x-amz-sdk-checksum-algorithm", "CRC32".to_string()),
+                ("x-amz-checksum-crc32", checksum),
+            ];
+            let mut requested_delay = None;
+            match self
+                .once(Method::POST, &address, &headers, body, "POST ?delete")
+                .await
+            {
+                Err(Attempted::Fatal(error)) => why = error.to_string(),
+                Err(Attempted::Transient { why: lost, after }) => {
+                    // A DELETE is idempotent, so a lost answer is simply
+                    // repeated; nothing has to be reconciled first.
+                    why = lost;
+                    requested_delay = after;
+                }
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    // A bucket that does not implement multi-object deletion
+                    // says so by rejecting the request itself. Fall back for
+                    // good rather than failing every reclamation pass.
+                    if matches!(status, 400 | 405 | 501) {
+                        self.batch_delete.store(false, Ordering::Relaxed);
+                        let remaining: Vec<String> = pending
+                            .iter()
+                            .map(|key| unscope(key, &self.prefix))
+                            .collect();
+                        for (key, outcome) in
+                            pending.iter().zip(self.delete_one_by_one(&remaining).await)
+                        {
+                            settled.insert(key, outcome);
+                        }
+                        pending.clear();
+                        break;
+                    }
+                    if status != 200 {
+                        // A refusal that names no key refuses all of them,
+                        // and none of these objects may be retired.
+                        why = problem("POST ?delete", "", response).await.to_string();
+                        for key in &pending {
+                            settled.insert(key, DeleteOutcome::Failed(why.clone()));
+                        }
+                        pending.clear();
+                        break;
+                    }
+                    match response.text().await {
+                        Err(err) => why = format!("POST ?delete: {err}"),
+                        Ok(text) => match parse_delete_result(&text) {
+                            Err(error) => {
+                                why = error.to_string();
+                                for key in &pending {
+                                    settled.insert(key, DeleteOutcome::Failed(why.clone()));
+                                }
+                                pending.clear();
+                                break;
+                            }
+                            Ok(reported) => {
+                                for (key, failure) in reported {
+                                    let Some(known) =
+                                        pending.iter().find(|held| ***held == *key).copied()
+                                    else {
+                                        continue;
+                                    };
+                                    match failure {
+                                        None => {
+                                            settled.insert(known, DeleteOutcome::Deleted);
+                                        }
+                                        Some((code, message)) if code == "NoSuchKey" => {
+                                            let _ = message;
+                                            settled.insert(known, DeleteOutcome::Absent);
+                                        }
+                                        // Left pending: the provider said to
+                                        // come back, not that it refused.
+                                        Some((code, _)) if retryable_delete_code(&code) => {}
+                                        Some((code, message)) => {
+                                            settled.insert(
+                                                known,
+                                                DeleteOutcome::Failed(format!("{code}: {message}")),
+                                            );
+                                        }
+                                    }
+                                }
+                                pending.retain(|key| !settled.contains_key(key));
+                                why = "the provider asked for these keys again".to_string();
+                            }
+                        },
+                    }
+                }
+            }
+            if pending.is_empty() || !window.wait(requested_delay).await {
+                break;
+            }
+        }
+        for key in &pending {
+            settled.insert(
+                key,
+                DeleteOutcome::Uncertain(format!(
+                    "unresolved after {} attempt(s): {why}",
+                    window.attempts()
+                )),
+            );
+        }
+        scoped
+            .iter()
+            .map(|key| {
+                settled
+                    .get(key.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| DeleteOutcome::Uncertain(why.clone()))
+            })
+            .collect()
+    }
+
+    /// The per-object DELETE, for a bucket without multi-object deletion.
+    ///
+    /// S3 answers 204 whether or not the object was there, so this reports
+    /// `Deleted` for both: either way the object is confirmed gone, which is
+    /// what an accounting release needs.
+    async fn delete_one_by_one(&self, keys: &[String]) -> Vec<DeleteOutcome> {
+        let mut outcomes = Vec::with_capacity(keys.len());
+        for key in keys {
+            let url = self.url(key);
+            let what = format!("DELETE {key}");
+            let mut window = RetryWindow::new(self.clock.as_ref(), RetryLimits::IDEMPOTENT);
+            let mut why = String::new();
+            let outcome = loop {
+                if !window.begin() {
+                    // A repeatable request that never got an answer has an
+                    // unknown fate; it is not a refusal and not a removal.
+                    break DeleteOutcome::Uncertain(format!(
+                        "unresolved after {} attempt(s): {why}",
+                        window.attempts()
+                    ));
+                }
+                match self
+                    .once(Method::DELETE, &url, &[], Vec::new(), &what)
+                    .await
+                {
+                    Err(Attempted::Fatal(error)) => break DeleteOutcome::Failed(error.to_string()),
+                    Err(Attempted::Transient { why: lost, after }) => {
+                        why = lost;
+                        if !window.wait(after).await {
+                            break DeleteOutcome::Uncertain(why);
+                        }
+                    }
+                    Ok(response) => {
+                        let status = response.status().as_u16();
+                        // An object that is not there is the outcome asked
+                        // for.
+                        if status == 404 {
+                            break DeleteOutcome::Absent;
+                        }
+                        if status < 300 {
+                            break DeleteOutcome::Deleted;
+                        }
+                        break DeleteOutcome::Failed(
+                            problem("DELETE", key, response).await.to_string(),
+                        );
+                    }
+                }
+            };
+            outcomes.push(outcome);
+        }
+        outcomes
     }
 
     /// One page of a listing, retried on its own.
@@ -657,33 +868,19 @@ impl BlobStore for S3Store {
     }
 
     async fn delete(&self, keys: &[String]) -> BlobResult<()> {
-        for key in keys {
-            let store = self;
-            let url = self.url(key);
-            let what = format!("DELETE {key}");
-            with_retries(self.clock.as_ref(), RetryLimits::IDEMPOTENT, &what, |_| {
-                let (url, what) = (url.as_str(), what.as_str());
-                async move {
-                    match store.once(Method::DELETE, url, &[], Vec::new(), what).await {
-                        Err(Attempted::Fatal(error)) => Attempt::Settled(Err(error)),
-                        Err(Attempted::Transient { why, after }) => {
-                            Attempt::Transient { why, after }
-                        }
-                        Ok(response) => {
-                            let status = response.status().as_u16();
-                            // An object that is not there is the outcome
-                            // asked for.
-                            if status < 300 || status == 404 {
-                                return Attempt::Settled(Ok(()));
-                            }
-                            Attempt::Settled(Err(problem("DELETE", key, response).await))
-                        }
-                    }
-                }
-            })
-            .await?;
+        let outcomes = self.delete_each(keys).await?;
+        match outcomes.iter().find(|outcome| !outcome.confirmed()) {
+            Some(unconfirmed) => Err(BlobError::Other(unconfirmed.why().to_string())),
+            None => Ok(()),
         }
-        Ok(())
+    }
+
+    async fn delete_each(&self, keys: &[String]) -> BlobResult<Vec<DeleteOutcome>> {
+        let mut outcomes = Vec::with_capacity(keys.len());
+        for chunk in keys.chunks(DELETE_BATCH) {
+            outcomes.extend(self.delete_chunk(chunk).await);
+        }
+        Ok(outcomes)
     }
 
     async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
@@ -874,6 +1071,119 @@ fn parse_listing(body: &str) -> BlobResult<Listing> {
     }
     Ok(listing)
 }
+
+/* ---------------------------------------------------- batch deletion */
+
+/// The DeleteObjects body, and the checksum the request must carry with it.
+///
+/// S3 requires an integrity header on this request; CRC32 in the
+/// `x-amz-checksum-*` form is what the current API asks for, and is a great
+/// deal less code than the older Content-MD5. A gateway that accepts only
+/// Content-MD5 rejects the request outright, which is exactly the case
+/// `delete_chunk` falls back to the per-object DELETE for.
+fn delete_request(keys: &[&str]) -> (Vec<u8>, String) {
+    let mut body = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete>");
+    for key in keys {
+        body.push_str("<Object><Key>");
+        body.push_str(&escape_xml(key));
+        body.push_str("</Key></Object>");
+    }
+    body.push_str("<Quiet>false</Quiet></Delete>");
+    let body = body.into_bytes();
+    let checksum = base64::engine::general_purpose::STANDARD.encode(crc32(&body).to_be_bytes());
+    (body, checksum)
+}
+
+/// One key's verdict in a DeleteObjects answer: `None` when the provider
+/// removed it, otherwise the error code and message it gave instead.
+type DeleteVerdict = (String, Option<(String, String)>);
+
+/// Per-key verdicts from a DeleteObjects answer.
+fn parse_delete_result(body: &str) -> BlobResult<Vec<DeleteVerdict>> {
+    if !body.contains("<DeleteResult") || !body.contains("</DeleteResult>") {
+        return Err(BlobError::Other(
+            "malformed S3 multi-object delete result".into(),
+        ));
+    }
+    let mut reported = Vec::new();
+    for (open, close) in [("<Deleted>", "</Deleted>"), ("<Error>", "</Error>")] {
+        let mut rest = body;
+        while let Some(start) = rest.find(open) {
+            let after = &rest[start..];
+            let end = after.find(close).ok_or_else(|| {
+                BlobError::Other("malformed S3 multi-object delete element".into())
+            })?;
+            let block = &after[..end];
+            let key = unescape_xml(
+                &element(block, "Key")
+                    .ok_or_else(|| BlobError::Other("S3 delete result omitted a Key".into()))?,
+            )?;
+            let failure = if open == "<Error>" {
+                let code = element(block, "Code")
+                    .map(|value| unescape_xml(&value))
+                    .transpose()?
+                    .unwrap_or_default();
+                let message = element(block, "Message")
+                    .map(|value| unescape_xml(&value))
+                    .transpose()?
+                    .unwrap_or_default();
+                Some((code, message))
+            } else {
+                None
+            };
+            reported.push((key, failure));
+            rest = &after[end + close.len()..];
+        }
+    }
+    Ok(reported)
+}
+
+/// Per-key error codes that mean "ask again" rather than "no".
+fn retryable_delete_code(code: &str) -> bool {
+    matches!(
+        code,
+        "InternalError" | "SlowDown" | "ServiceUnavailable" | "RequestTimeout"
+    )
+}
+
+/// Removes this deployment's prefix from a key the provider echoed back.
+fn unscope(key: &str, prefix: &str) -> String {
+    key.strip_prefix(prefix).unwrap_or(key).to_string()
+}
+
+fn escape_xml(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// CRC-32 (IEEE, reflected), computed without a table: the body it covers is
+/// at most a thousand keys, so the bit loop costs nothing worth a lookup
+/// table in the binary.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for byte in bytes {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
 fn element(body: &str, name: &str) -> Option<String> {
     let open = format!("<{name}>");
     let close = format!("</{name}>");
