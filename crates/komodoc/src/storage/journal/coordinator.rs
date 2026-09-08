@@ -89,14 +89,21 @@ impl JournalCoordinator {
     }
 
     pub(super) fn remove_identity(&mut self, storage_id: &str, epoch: u64, sequence: u64) -> bool {
-        let Some(index) = self.queued.iter().position(|record| {
-            record.storage_id == storage_id && record.epoch == epoch && record.sequence == sequence
-        }) else {
-            return false;
-        };
-        let record = self.queued.remove(index).expect("identity position exists");
-        self.queued_bytes = self.queued_bytes.saturating_sub(record.payload.len());
-        true
+        let mut removed = false;
+        let mut retained = VecDeque::with_capacity(self.queued.len());
+        while let Some(record) = self.queued.pop_front() {
+            if record.storage_id == storage_id
+                && record.epoch == epoch
+                && record.sequence == sequence
+            {
+                self.queued_bytes = self.queued_bytes.saturating_sub(record.payload.len());
+                removed = true;
+            } else {
+                retained.push_back(record);
+            }
+        }
+        self.queued = retained;
+        removed
     }
 
     /// Return sealed work to the queue when object publication failed before
@@ -122,19 +129,12 @@ impl JournalCoordinator {
             }
             let mut records = Vec::new();
             let mut encoded_size = 10usize;
+            let mut per_document = HashMap::<String, usize>::new();
             while let Some(record) = self.queued.front() {
-                let record_size = 2
-                    + 2
-                    + 8
-                    + 8
-                    + 2
-                    + 2
-                    + 4
-                    + record.storage_id.len()
-                    + record.retry_id.len()
-                    + 64
-                    + record.payload.len();
+                let document_count = per_document.get(&record.storage_id).copied().unwrap_or(0);
+                let record_size = encoded_record_len(record);
                 if records.len() >= self.limits.max_records_per_segment
+                    || document_count >= MAX_RECORDS_PER_DOCUMENT
                     || (records.is_empty()
                         && encoded_size + record_size > self.limits.max_segment_bytes)
                     || (!records.is_empty()
@@ -145,13 +145,20 @@ impl JournalCoordinator {
                 let record = self.queued.pop_front().expect("front exists");
                 encoded_size += record_size;
                 self.queued_bytes = self.queued_bytes.saturating_sub(record.payload.len());
+                *per_document.entry(record.storage_id.clone()).or_default() += 1;
                 records.push(record);
             }
             if records.is_empty() {
                 self.requeue(segments);
                 return Err(JournalError::Limit("record cannot fit in segment".into()));
             }
-            segments.push(Segment::new(records)?);
+            let segment = Segment { records };
+            if let Err(error) = segment.validate() {
+                segments.push(segment);
+                self.requeue(segments);
+                return Err(error);
+            }
+            segments.push(segment);
         }
         Ok(segments)
     }

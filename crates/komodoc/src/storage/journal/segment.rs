@@ -168,32 +168,7 @@ impl Segment {
     }
 
     pub fn encoded_len(&self) -> usize {
-        10 + self
-            .records
-            .iter()
-            .map(|record| {
-                2 + 2
-                    + 8
-                    + 8
-                    + 2
-                    + 2
-                    + if record.format_version == SEGMENT_FORMAT {
-                        8
-                    } else {
-                        0
-                    }
-                    + 4
-                    + record.storage_id.len()
-                    + record.retry_id.len()
-                    + 64
-                    + if record.format_version == SEGMENT_FORMAT {
-                        2 + 64
-                    } else {
-                        0
-                    }
-                    + record.payload.len()
-            })
-            .sum::<usize>()
+        SEGMENT_HEADER_BYTES + self.records.iter().map(encoded_record_len).sum::<usize>()
     }
 
     pub fn validate(&self) -> JournalResult<()> {
@@ -202,6 +177,18 @@ impl Segment {
         }
         if self.records.len() > MAX_RECORDS_PER_SEGMENT {
             return Err(JournalError::Limit("too many records in segment".into()));
+        }
+        let Some(segment_format) = self.records.first().map(|record| record.format_version) else {
+            return Err(JournalError::Invalid("empty segment".into()));
+        };
+        if self
+            .records
+            .iter()
+            .any(|record| record.format_version != segment_format)
+        {
+            return Err(JournalError::Invalid(
+                "legacy and current records cannot share a segment".into(),
+            ));
         }
         if self.encoded_len() > MAX_SEGMENT_BYTES {
             return Err(JournalError::Limit("segment is too large".into()));
@@ -227,14 +214,15 @@ impl Segment {
         self.validate()?;
         let mut bytes = Vec::with_capacity(self.encoded_len());
         bytes.extend_from_slice(SEGMENT_MAGIC);
-        bytes.extend_from_slice(&SEGMENT_FORMAT.to_le_bytes());
+        let segment_format = self.records[0].format_version;
+        bytes.extend_from_slice(&segment_format.to_le_bytes());
         bytes.extend_from_slice(&(self.records.len() as u32).to_le_bytes());
         for record in &self.records {
             put_u16(&mut bytes, record.format_version);
             put_bytes_u16(&mut bytes, record.storage_id.as_bytes())?;
             put_u64(&mut bytes, record.sequence);
             put_u64(&mut bytes, record.epoch);
-            if record.format_version == SEGMENT_FORMAT {
+            if segment_format == SEGMENT_FORMAT {
                 put_u32(&mut bytes, record.fragment_index);
                 put_u32(&mut bytes, record.fragment_count);
             }
@@ -244,7 +232,7 @@ impl Segment {
                 return Err(JournalError::Invalid("digest must be sha256 hex".into()));
             }
             put_bytes_u16(&mut bytes, digest)?;
-            if record.format_version == SEGMENT_FORMAT {
+            if segment_format == SEGMENT_FORMAT {
                 let chunk_digest = record.chunk_digest.as_bytes();
                 if chunk_digest.len() != 64 {
                     return Err(JournalError::Invalid(
@@ -292,6 +280,11 @@ impl Segment {
         let mut records = Vec::with_capacity(count);
         for _ in 0..count {
             let format_version = cursor.u16()?;
+            if format_version != segment_format {
+                return Err(JournalError::Corrupt(
+                    "record format does not match segment format".into(),
+                ));
+            }
             let storage_id = String::from_utf8(cursor.bytes_u16()?)
                 .map_err(|_| JournalError::Corrupt("storage id is not utf-8".into()))?;
             let sequence = cursor.u64()?;
@@ -353,6 +346,34 @@ impl Segment {
 
 pub(super) fn put_u16(bytes: &mut Vec<u8>, value: u16) {
     bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+const SEGMENT_HEADER_BYTES: usize = 10;
+
+/// Return the exact number of bytes emitted for one record by `encode`.
+/// Keeping this beside the encoder prevents queue admission from drifting
+/// when a framing field is added.
+pub(super) fn encoded_record_len(record: &JournalRecord) -> usize {
+    2 + 2
+        + record.storage_id.len()
+        + 8
+        + 8
+        + if record.format_version == SEGMENT_FORMAT {
+            8
+        } else {
+            0
+        }
+        + 2
+        + record.retry_id.len()
+        + 2
+        + 64
+        + if record.format_version == SEGMENT_FORMAT {
+            2 + 64
+        } else {
+            0
+        }
+        + 4
+        + record.payload.len()
 }
 
 pub(super) fn put_u32(bytes: &mut Vec<u8>, value: u32) {

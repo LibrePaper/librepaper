@@ -364,10 +364,17 @@ impl Server {
                 }
             }
         }
+        // Entry presentation hides the catalogue's synthetic owner for
+        // unowned documents. Preserve that identity for the transactional
+        // ownership recheck after the route has authorized this upload.
         let mutation_owner_key = if who.id.id.is_empty() {
-            entry.publisher.as_str()
+            if entry.unowned {
+                format!("example:{slug}")
+            } else {
+                entry.publisher.clone()
+            }
         } else {
-            who.key.as_str()
+            who.key.clone()
         };
         let reply = if current_only {
             match room
@@ -378,7 +385,7 @@ impl Server {
                     body.to_vec(),
                     Some((
                         who.id.id.as_str(),
-                        mutation_owner_key,
+                        &mutation_owner_key,
                         who.id.session_generation.as_str(),
                     )),
                 )
@@ -400,7 +407,7 @@ impl Server {
                 body.to_vec(),
                 Some((
                     who.id.id.as_str(),
-                    mutation_owner_key,
+                    &mutation_owner_key,
                     who.id.session_generation.as_str(),
                 )),
             )

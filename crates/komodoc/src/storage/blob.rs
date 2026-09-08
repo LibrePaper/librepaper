@@ -18,6 +18,7 @@
 //!
 //! There is one interface, and two implementations of it.
 
+use std::fs::OpenOptions;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -185,6 +186,9 @@ impl FsStore {
         }
         if cleaned.as_os_str().is_empty() {
             return Err(BlobError::Other("empty key".into()));
+        }
+        if cleaned.file_name().is_some_and(is_atomic_temporary_name) {
+            return Err(BlobError::Other("reserved temporary object key".into()));
         }
         Ok(self.dir.join(cleaned))
     }
@@ -417,6 +421,13 @@ fn walk(root: &Path, dir: &Path, prefix: &str, found: &mut Vec<BlobInfo>) -> Blo
         if !key.starts_with(prefix) {
             continue;
         }
+        if relative
+            .components()
+            .next_back()
+            .is_some_and(|component| is_atomic_temporary_name(component.as_os_str()))
+        {
+            continue;
+        }
         let Ok(info) = entry.metadata() else { continue };
         found.push(BlobInfo {
             key,
@@ -477,6 +488,13 @@ fn walk_bounded(
         if !key.starts_with(prefix) || after.is_some_and(|cursor| key.as_str() <= cursor) {
             continue;
         }
+        if relative
+            .components()
+            .next_back()
+            .is_some_and(|component| is_atomic_temporary_name(component.as_os_str()))
+        {
+            continue;
+        }
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
@@ -498,6 +516,28 @@ fn walk_bounded(
     Ok(())
 }
 
+/// Temporary names are deliberately a private namespace.  A crashed writer
+/// can leave one behind, and maintenance listings must never treat it as a
+/// blob that is safe to reclaim while another writer is active.
+fn is_atomic_temporary_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let Some(name) = name.strip_prefix('.') else {
+        return false;
+    };
+    let Some((_, suffix)) = name.rsplit_once(".tmp-") else {
+        return false;
+    };
+    let Some((pid, serial)) = suffix.split_once('-') else {
+        return false;
+    };
+    !pid.is_empty()
+        && !serial.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && serial.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// Leaves either the old bytes or the new ones, never a half-written file: a
 /// crash mid-write must not turn the index into something that no longer
 /// parses.
@@ -517,7 +557,7 @@ pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
         .map(|part| part.to_string_lossy())
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("object"));
     let temporary = name.with_file_name(format!(".{basename}.tmp-{}-{serial}", std::process::id()));
-    let result = std::fs::write(&temporary, body)
+    let result = write_private_file(&temporary, body)
         .and_then(|_| {
             let file = std::fs::OpenOptions::new().read(true).open(&temporary)?;
             file.sync_all()
@@ -534,6 +574,24 @@ pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+fn write_private_file(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true).mode(0o600);
+        let mut file = options.open(path)?;
+        std::io::Write::write_all(&mut file, body)?;
+        file.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        std::io::Write::write_all(&mut file, body)?;
+        file.sync_all()
+    }
 }
 
 fn durable_create_dir_all(path: &Path) -> std::io::Result<()> {
@@ -934,5 +992,40 @@ pub async fn take_room_lease(
         // conditional writes on the room's own objects are what actually
         // enforce it.
         Err(_) => lease_on_storage_error(holder, expect_epoch, now),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn atomic_temporary_files_are_private_and_not_listed() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let blobs = FsStore::new(directory.path());
+        blobs
+            .put("nested/object", b"body".to_vec(), "")
+            .await
+            .expect("write object");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(directory.path().join("nested/object"))
+                .expect("object metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        std::fs::write(directory.path().join(".orphan.tmp-123-4"), b"orphan bytes")
+            .expect("orphan temporary");
+        let listed = blobs.list("").await.expect("list objects");
+        assert!(listed.iter().all(|item| !item.key.starts_with(".orphan")));
+        assert!(matches!(
+            blobs.put(".object.tmp-123-4", b"nope".to_vec(), "").await,
+            Err(BlobError::Other(message)) if message.contains("reserved")
+        ));
     }
 }

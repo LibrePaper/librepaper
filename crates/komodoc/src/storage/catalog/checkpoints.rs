@@ -592,7 +592,37 @@ impl Catalog {
         if rendering.tree_sha.is_empty() || rendering.bytes < 0 || rendering.synctex_bytes < 0 {
             return Err(CatalogError::Invalid("invalid rendering".into()));
         }
-        self.immediate(|tx| { tx.execute("INSERT INTO renderings(slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(slug,tree_sha) DO UPDATE SET at=excluded.at,backend=excluded.backend,engine=excluded.engine,release=excluded.release,tools=excluded.tools,bytes=excluded.bytes,synctex=excluded.synctex,synctex_bytes=excluded.synctex_bytes",params![rendering.slug,rendering.tree_sha,rendering.at,rendering.backend,rendering.engine,rendering.release,rendering.tools,rendering.bytes,rendering.synctex as i64,rendering.synctex_bytes]).map_err(CatalogError::from)?; Ok(rendering.clone()) })
+        self.immediate(|tx| { Self::require_rendering_publication(tx, &rendering.slug, &rendering.tree_sha)?; tx.execute("INSERT INTO renderings(slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(slug,tree_sha) DO UPDATE SET at=excluded.at,backend=excluded.backend,engine=excluded.engine,release=excluded.release,tools=excluded.tools,bytes=excluded.bytes,synctex=excluded.synctex,synctex_bytes=excluded.synctex_bytes",params![rendering.slug,rendering.tree_sha,rendering.at,rendering.backend,rendering.engine,rendering.release,rendering.tools,rendering.bytes,rendering.synctex as i64,rendering.synctex_bytes]).map_err(CatalogError::from)?; Ok(rendering.clone()) })
+    }
+
+    fn require_rendering_publication(
+        tx: &Transaction<'_>,
+        slug: &str,
+        tree_sha: &str,
+    ) -> CatalogResult<()> {
+        let live: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE slug=?1 AND status='active')",
+            [slug],
+            |row| row.get(0),
+        )?;
+        if !live {
+            return Err(CatalogError::Conflict("document is not active".into()));
+        }
+        let pending: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pending_deletes p JOIN documents d ON d.slug=p.slug
+             WHERE p.slug=?1 AND p.object_key IN (
+                 'content/'||d.storage_id||'/renderings/'||?2||'/pdf',
+                 'content/'||d.storage_id||'/renderings/'||?2||'/synctex',
+                 'content/'||d.storage_id||'/renderings/'||?2||'/provenance.json'))",
+            params![slug, tree_sha],
+            |row| row.get(0),
+        )?;
+        if pending {
+            return Err(CatalogError::Conflict(
+                "rendering is queued for deletion; retry after cleanup".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Publish rendering metadata only if the actor still has editor rights.
@@ -607,18 +637,21 @@ impl Catalog {
             return Err(CatalogError::Invalid("invalid rendering".into()));
         }
         self.immediate(|tx| {
-            let (account_id, _owner_key, generation) = actor;
+            Self::require_rendering_publication(tx, &rendering.slug, &rendering.tree_sha)?;
+            let (account_id, owner_key, generation) = actor;
             let authorized: bool = if account_id.is_empty() {
                 tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM documents
-                     WHERE slug=?1 AND owner_id IS NULL)",
-                    params![rendering.slug],
+                     WHERE slug=?1 AND status='active' AND owner_id IS NULL
+                       AND owner_key=?2)",
+                    params![rendering.slug, owner_key],
                     |row| row.get(0),
                 )
             } else {
                 tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=?2
-                     WHERE d.slug=?1 AND a.status='active' AND a.session_generation=?3
+                     WHERE d.slug=?1 AND d.status='active'
+                       AND a.status='active' AND a.session_generation=?3
                        AND (d.owner_id=?2 OR EXISTS(SELECT 1 FROM grants g
                            WHERE g.slug=d.slug AND g.account_id=?2 AND g.role='editor')))",
                     params![rendering.slug, account_id, generation],
@@ -647,12 +680,28 @@ impl Catalog {
         queued_at: i64,
         delete_after: i64,
     ) -> CatalogResult<bool> {
+        if queued_at < 0 || delete_after < queued_at {
+            return Err(CatalogError::Invalid(
+                "invalid rendering retirement time".into(),
+            ));
+        }
         self.immediate(|tx| {
             let sizes: Option<(i64, i64, String)> = tx.query_row(
                 "SELECT r.bytes,r.synctex_bytes,d.storage_id FROM renderings r JOIN documents d ON d.slug=r.slug WHERE r.slug=?1 AND r.tree_sha=?2",
                 params![slug,tree_sha], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
             ).optional().map_err(CatalogError::from)?;
             let Some((bytes, sync_bytes, storage_id)) = sizes else { return Ok(false); };
+            let writing: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM object_reservations WHERE storage_id=?1
+                 AND object_key IN (
+                     'content/'||?1||'/renderings/'||?2||'/pdf',
+                     'content/'||?1||'/renderings/'||?2||'/synctex',
+                     'content/'||?1||'/renderings/'||?2||'/provenance.json'))",
+                params![storage_id, tree_sha], |row| row.get(0),
+            )?;
+            if writing {
+                return Err(CatalogError::Conflict("rendering publication is in progress".into()));
+            }
             tx.execute("DELETE FROM renderings WHERE slug=?1 AND tree_sha=?2", params![slug,tree_sha]).map_err(CatalogError::from)?;
             for (suffix, object_bytes) in [("pdf", bytes), ("synctex", sync_bytes), ("provenance.json", 0)] {
                 if object_bytes == 0 && suffix == "synctex" { continue; }

@@ -414,6 +414,9 @@ pub struct JournalSegment {
 /// their primary transaction API.
 pub struct Catalog {
     connection: Mutex<Connection>,
+    // One authority owns publication, recovery, and physical journal reclamation.
+    // Every runtime/worker built from this catalogue shares the same gate.
+    pub(crate) journal_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     // The first key writes new envelopes. Older keys are retained only long
     // enough to support an explicit, transactional reseal.
     link_sealing_keys: RwLock<Vec<(String, [u8; 32])>>,
@@ -493,6 +496,7 @@ impl Catalog {
             .map_err(CatalogError::from)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            journal_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             link_sealing_keys: RwLock::new(Vec::new()),
         })
     }

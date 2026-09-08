@@ -2,6 +2,7 @@ use super::*;
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::catalog::NewDocument;
 use crate::storage::maintenance::JournalRetirementWorker;
+use sha2::Digest;
 
 #[test]
 fn segment_round_trip_and_digest_validation() {
@@ -15,6 +16,99 @@ fn segment_round_trip_and_digest_validation() {
         Segment::decode(&broken),
         Err(JournalError::Corrupt(_))
     ));
+}
+
+#[test]
+fn legacy_segment_reencoding_preserves_legacy_header_layout() {
+    let payload = b"legacy-state".to_vec();
+    let digest = hex::encode(sha2::Sha256::digest(&payload));
+    let record = JournalRecord {
+        format_version: 1,
+        storage_id: "storage".into(),
+        sequence: 1,
+        retry_id: "retry".into(),
+        epoch: 0,
+        fragment_index: 0,
+        fragment_count: 1,
+        payload,
+        digest: digest.clone(),
+        chunk_digest: digest,
+    };
+    let segment = Segment::new(vec![record]).expect("legacy segment");
+    let encoded = segment.encode().expect("legacy encode");
+    assert_eq!(&encoded[4..6], &1u16.to_le_bytes());
+    assert_eq!(Segment::decode(&encoded).expect("legacy decode"), segment);
+}
+
+#[test]
+fn recovery_base_decoder_accepts_legacy_json_payloads() {
+    let payload = b"legacy-base".to_vec();
+    let mut body = RecoveryBaseBody {
+        format_version: SEGMENT_FORMAT,
+        storage_id: "storage".into(),
+        epoch: 0,
+        sequence: 1,
+        digest: hex::encode(sha2::Sha256::digest(&payload)),
+        payload,
+    };
+    let legacy_json = serde_json::to_vec(&body).expect("legacy JSON");
+    assert_eq!(decode_recovery_base(&legacy_json).expect("decode"), body);
+    assert_ne!(
+        encode_recovery_base(&body).expect("binary").as_slice(),
+        legacy_json
+    );
+    body.format_version = LEGACY_SEGMENT_FORMAT;
+    let legacy_json = serde_json::to_vec(&body).expect("format-1 legacy JSON");
+    assert_eq!(
+        decode_recovery_base(&legacy_json).expect("format-1 decode"),
+        body
+    );
+}
+
+#[test]
+fn coordinator_uses_exact_framing_and_splits_per_document_limit() {
+    let first = JournalRecord::new("storage", 1, "retry-1", 0, b"x".to_vec()).expect("record");
+    let second = JournalRecord::new("storage", 2, "retry-2", 0, b"y".to_vec()).expect("record");
+    let limit = Segment::new(vec![first.clone()])
+        .expect("segment")
+        .encoded_len();
+    let mut coordinator = JournalCoordinator::new(CoordinatorLimits {
+        max_queued_bytes: usize::MAX,
+        max_queued_records: 4,
+        max_segment_bytes: limit,
+        max_records_per_segment: 4,
+    })
+    .expect("limits");
+    coordinator.enqueue(first).expect("enqueue first");
+    coordinator.enqueue(second).expect("enqueue second");
+    let segments = coordinator.seal(true).expect("seal");
+    assert_eq!(segments.len(), 2);
+    assert_eq!(coordinator.queued_records(), 0);
+
+    let mut coordinator = JournalCoordinator::new(CoordinatorLimits::default()).expect("limits");
+    for sequence in 1..=(MAX_RECORDS_PER_DOCUMENT as u64 + 1) {
+        coordinator
+            .enqueue(
+                JournalRecord::new(
+                    "one-document",
+                    sequence,
+                    format!("retry-{sequence}"),
+                    0,
+                    vec![1],
+                )
+                .expect("record"),
+            )
+            .expect("enqueue");
+    }
+    let segments = coordinator.seal(true).expect("split at document limit");
+    assert_eq!(
+        segments
+            .iter()
+            .map(|segment| segment.records.len())
+            .sum::<usize>(),
+        MAX_RECORDS_PER_DOCUMENT + 1
+    );
+    assert_eq!(coordinator.queued_records(), 0);
 }
 
 #[test]
@@ -195,6 +289,88 @@ async fn compaction_borrows_maintenance_headroom_at_full_quota() {
         .compact("full-storage", 0, 1, b"full state".to_vec())
         .await
         .expect("compaction borrows reserve");
+    let active_jobs: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM maintenance_jobs WHERE status='active'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .expect("maintenance jobs");
+    assert_eq!(active_jobs, 0);
+}
+
+#[tokio::test]
+async fn recovery_releases_abandoned_compaction_maintenance_borrow() {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+    catalog
+        .create_document(&NewDocument {
+            slug: "crashed".into(),
+            storage_id: "crashed-storage".into(),
+            title: "crashed".into(),
+            sha: String::new(),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            published_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+            example: false,
+            owner_key: "owner".into(),
+            owner_id: None,
+            status: "active".into(),
+            size: 0,
+            counted_size: 0,
+            maintenance_reserved: 0,
+            last_auto_checkpoint_at: 0,
+            source_format: "markdown".into(),
+            main: "README.md".into(),
+        })
+        .expect("document");
+    let directory = tempfile::tempdir().expect("blob directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let store = JournalStore::new(catalog.clone());
+    let state = store
+        .initialize("deployment", "generation")
+        .expect("initialize");
+    let operation_id = "crashed";
+    let plan = JournalPlan {
+        version: 1,
+        output_keys: vec![
+            journal_base_key("deployment", "crashed-storage", "0-1"),
+            journal_manifest_key("deployment", "crashed-0"),
+        ],
+        covered: vec![CoveredRange {
+            storage_id: "crashed-storage".into(),
+            epoch: 0,
+            first_sequence: 1,
+            last_sequence: 1,
+        }],
+        protected_input_keys: Vec::new(),
+    };
+    catalog
+        .reserve_maintenance(
+            "maintenance-crashed",
+            "crashed",
+            128,
+            JOURNAL_MAINTENANCE_RESERVE_BYTES,
+            1,
+        )
+        .expect("maintenance borrow");
+    store
+        .prepare(
+            operation_id,
+            "compact",
+            state.revision,
+            "generation",
+            1,
+            &plan,
+        )
+        .expect("prepare");
+    store
+        .reconcile_pending(blobs.as_ref())
+        .await
+        .expect("known missing outputs abort");
     let active_jobs: i64 = catalog
         .with_connection(|connection| {
             connection
@@ -410,12 +586,14 @@ async fn shared_segment_rewrite_physically_excludes_erased_identity() {
         .retire_storage("three", crate::util::now_unix())
         .expect("retire three");
     let worker = JournalRetirementWorker::new(catalog.clone(), blobs.clone(), 16).expect("worker");
+    // One pass removes the retired derived manifest and rewrites the shared
+    // segment after both erased identities have been removed from coverage.
     assert_eq!(
         worker
             .run_once(crate::util::now_unix())
             .await
             .expect("rewrite"),
-        1
+        2
     );
     assert_eq!(
         runtime.recover_latest("two").await.expect("recover two"),
@@ -440,16 +618,23 @@ async fn shared_segment_rewrite_physically_excludes_erased_identity() {
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
         .expect("manifest state");
-    assert_ne!(current_manifest_key, manifest_key);
-    let current_manifest = blobs
-        .get(&current_manifest_key)
-        .await
-        .expect("rewritten manifest");
-    let current_manifest: ManifestShard =
-        serde_json::from_slice(&current_manifest).expect("manifest json");
-    assert_eq!(current_manifest.digest, current_manifest_digest);
-    assert!(current_manifest.segments.contains(&segments[0].0));
-    assert!(!current_manifest.segments.contains(&segment_key));
+    // The manifest graph is derived from the SQL bases and segments. Retiring
+    // storage invalidates that graph atomically; the next compaction rebuilds
+    // it after the surviving segment has been published.
+    assert!(current_manifest_key.is_empty());
+    assert!(current_manifest_digest.is_empty());
+    assert!(
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT COUNT(*) FROM journal_manifest_shards", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("manifest shards")
+            == 0
+    );
     let counted: i64 = catalog
         .with_connection(|connection| {
             connection
@@ -624,6 +809,164 @@ async fn large_snapshot_is_chunked_and_recovered_at_the_record_boundary() {
         runtime.recover_latest("large").await.expect("recovery"),
         Some(payload)
     );
+}
+
+#[tokio::test]
+async fn large_snapshot_compacts_and_recovers_from_binary_base() {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+    let directory = tempfile::tempdir().expect("blob directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let runtime = JournalRuntime::new(
+        catalog.clone(),
+        blobs,
+        "deployment",
+        CoordinatorLimits::default(),
+    )
+    .expect("runtime");
+    JournalStore::new(catalog)
+        .initialize("deployment", "generation")
+        .expect("initialize");
+    let payload = vec![42; 4 * 1024 * 1024 + 1024];
+    runtime
+        .append("large-base", 1, payload.clone())
+        .await
+        .expect("append");
+    runtime
+        .compact("large-base", 0, 1, payload.clone())
+        .await
+        .expect("compact");
+    assert_eq!(
+        runtime.recover_latest("large-base").await.expect("recover"),
+        Some(payload)
+    );
+}
+
+#[tokio::test]
+async fn retirement_invalidates_manifest_before_removing_last_document() {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+    let directory = tempfile::tempdir().expect("blob directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let runtime = JournalRuntime::new(
+        catalog.clone(),
+        blobs.clone(),
+        "deployment",
+        CoordinatorLimits::default(),
+    )
+    .expect("runtime");
+    JournalStore::new(catalog.clone())
+        .initialize("deployment", "generation")
+        .expect("initialize");
+    runtime
+        .append("retired", 1, b"state".to_vec())
+        .await
+        .expect("append");
+    runtime
+        .compact("retired", 0, 1, b"state".to_vec())
+        .await
+        .expect("compact");
+    let old_manifest = runtime.store.state().expect("state").manifest_key;
+    runtime
+        .retire_storage_with_manifest("retired", crate::util::now_unix())
+        .await
+        .expect("retire");
+    let state = runtime.store.state().expect("state");
+    assert!(state.manifest_key.is_empty());
+    assert!(runtime
+        .recover_latest("retired")
+        .await
+        .expect("recovery")
+        .is_none());
+    assert!(
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM journal_retirements WHERE object_key=?1",
+                        [old_manifest],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("manifest retirement")
+            > 0
+    );
+}
+
+#[tokio::test]
+async fn rejected_quota_append_does_not_block_another_owner() {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+    for (slug, storage_id) in [("one", "one"), ("two", "two")] {
+        catalog
+            .create_document(&NewDocument {
+                slug: slug.into(),
+                storage_id: storage_id.into(),
+                title: slug.into(),
+                sha: String::new(),
+                created_at: "2026-01-01T00:00:00.000Z".into(),
+                published_at: "2026-01-01T00:00:00.000Z".into(),
+                updated_at: "2026-01-01T00:00:00.000Z".into(),
+                example: false,
+                owner_key: "owner".into(),
+                owner_id: None,
+                status: "active".into(),
+                size: 0,
+                counted_size: 0,
+                maintenance_reserved: 0,
+                last_auto_checkpoint_at: 0,
+                source_format: "markdown".into(),
+                main: "README.md".into(),
+            })
+            .expect("document");
+    }
+    let directory = tempfile::tempdir().expect("blob directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let runtime = JournalRuntime::new_with_limits(
+        catalog.clone(),
+        blobs,
+        "deployment",
+        CoordinatorLimits::default(),
+        1024,
+        -1,
+    )
+    .expect("runtime");
+    JournalStore::new(catalog)
+        .initialize("deployment", "generation")
+        .expect("initialize");
+    assert!(runtime.append("one", 1, vec![7; 2048]).await.is_err());
+    runtime
+        .append("two", 1, b"healthy".to_vec())
+        .await
+        .expect("healthy owner append");
+}
+
+#[tokio::test]
+async fn seal_limit_failure_releases_publication_and_pending_identity() {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+    let directory = tempfile::tempdir().expect("blob directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let runtime = JournalRuntime::new(
+        catalog.clone(),
+        blobs,
+        "deployment",
+        CoordinatorLimits {
+            max_queued_bytes: MAX_SEGMENT_BYTES,
+            max_queued_records: 8,
+            max_segment_bytes: 64,
+            max_records_per_segment: 8,
+        },
+    )
+    .expect("runtime");
+    JournalStore::new(catalog)
+        .initialize("deployment", "generation")
+        .expect("initialize");
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        runtime.append("too-large", 1, b"payload".to_vec()),
+    )
+    .await
+    .expect("seal failure must not deadlock")
+    .expect_err("record cannot fit");
+    assert!(result.to_string().contains("fit in segment"));
 }
 
 #[test]

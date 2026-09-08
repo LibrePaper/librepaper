@@ -802,7 +802,7 @@ impl Catalog {
             let measured_size = measured_size.max(ledger_size);
             let new_counted = measured_size
                 .saturating_add(ordinary_reserved)
-                .max(maintenance);
+                .saturating_add(maintenance);
             if new_counted > old_counted {
                 return Err(CatalogError::Conflict(
                     "measured usage exceeds its reservation".into(),

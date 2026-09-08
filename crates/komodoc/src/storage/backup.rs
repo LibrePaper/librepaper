@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::DeploymentPaths;
 use crate::storage::blob::{BlobError, BlobStore};
+use crate::storage::journal::ManifestShard;
 
 pub const BACKUP_FORMAT: u16 = 1;
 pub const MAX_BACKUP_OBJECTS: usize = 1_000_000;
@@ -276,6 +277,12 @@ pub struct BackupRequest<'a> {
     pub source_keys: &'a [String],
 }
 
+/// Create a remote backup and publish its completion manifest last.
+///
+/// The manifest CAS makes publication immutable, but `BlobStore` has no
+/// transaction spanning private objects and the marker. Callers must
+/// serialize create/remove operations for one backup id; otherwise a failed
+/// creator can race another creator's private object cleanup.
 pub async fn create_backup(
     blobs: &dyn BlobStore,
     request: BackupRequest<'_>,
@@ -302,11 +309,14 @@ pub async fn create_backup(
         return Err(BackupError::Invalid("invalid backup metadata".into()));
     }
     let manifest_key = format!("{prefix}{BACKUP_MANIFEST_NAME}");
-    if blobs.get(&manifest_key).await.is_ok() {
-        return Err(BackupError::Invalid("backup id already exists".into()));
+    match blobs.get(&manifest_key).await {
+        Ok(_) => return Err(BackupError::Invalid("backup id already exists".into())),
+        Err(BlobError::NotFound) => {}
+        Err(error) => return Err(error.into()),
     }
     let mut objects = Vec::with_capacity(source_keys.len());
     let mut seen = HashSet::new();
+    let mut created_objects = Vec::with_capacity(source_keys.len());
     let copy_result = async {
         for source_key in source_keys {
             if !seen.insert(source_key) {
@@ -320,9 +330,8 @@ pub async fn create_backup(
                 digest: digest(&body),
                 length: body.len() as u64,
             };
-            blobs
-                .put(&object.backup_key, body, "application/octet-stream")
-                .await?;
+            blobs.swap(&object.backup_key, body, "").await?;
+            created_objects.push(object.backup_key.clone());
             objects.push(object);
         }
         let manifest = BackupManifest {
@@ -340,23 +349,19 @@ pub async fn create_backup(
         };
         // Verify all copied objects before the completion marker is published.
         verify_objects(blobs, &manifest).await?;
-        blobs
-            .put(&manifest_key, manifest.encoded()?, "application/json")
-            .await?;
+        blobs.swap(&manifest_key, manifest.encoded()?, "").await?;
         Ok(manifest)
     }
     .await;
     if copy_result.is_err() {
-        // Cleanup is best effort.  The absence of a completion manifest means
-        // a future janitor may safely remove the private prefix as a unit.
-        if let Ok(objects) = blobs.list(&prefix).await {
-            let keys = objects
-                .into_iter()
-                .map(|object| object.key)
-                .collect::<Vec<_>>();
-            if !keys.is_empty() {
-                let _ = blobs.delete(&keys).await;
-            }
+        // Cleanup only objects this attempt created, and only after a fresh
+        // NotFound check. A transient read failure fails closed. Same-ID
+        // create/remove calls still require external serialization because
+        // the blob API has no atomic claim spanning this check and delete.
+        if matches!(blobs.get(&manifest_key).await, Err(BlobError::NotFound))
+            && !created_objects.is_empty()
+        {
+            let _ = blobs.delete(&created_objects).await;
         }
     }
     copy_result
@@ -415,23 +420,35 @@ pub async fn restore_backup(
     Ok(manifest)
 }
 
+/// Remove a backup that has no completion manifest.
+///
+/// The completion check is deliberately fail closed, but deletion cannot be
+/// claimed atomically with the subsequent object delete. Callers must
+/// externally serialize this operation with `create_backup` for `backup_id`.
 pub async fn remove_incomplete_backup(
     blobs: &dyn BlobStore,
     backup_id: &str,
 ) -> BackupResult<usize> {
     let prefix = backup_prefix(backup_id)?;
-    if blobs
-        .get(&format!("{prefix}{BACKUP_MANIFEST_NAME}"))
-        .await
-        .is_ok()
-    {
-        return Err(BackupError::Invalid("completed backup is immutable".into()));
+    let manifest_key = format!("{prefix}{BACKUP_MANIFEST_NAME}");
+    match blobs.get(&manifest_key).await {
+        Ok(_) => return Err(BackupError::Invalid("completed backup is immutable".into())),
+        Err(BlobError::NotFound) => {}
+        Err(error) => return Err(error.into()),
     }
     let objects = blobs.list(&prefix).await?;
     let keys = objects
         .into_iter()
         .map(|object| object.key)
         .collect::<Vec<_>>();
+    // A creator may have published the completion marker while the listing
+    // was in flight. Re-check before deleting any private data; callers still
+    // need the serialization promised by this function's contract.
+    match blobs.get(&manifest_key).await {
+        Ok(_) => return Err(BackupError::Invalid("completed backup is immutable".into())),
+        Err(BlobError::NotFound) => {}
+        Err(error) => return Err(error.into()),
+    }
     let count = keys.len();
     if !keys.is_empty() {
         blobs.delete(&keys).await?;
@@ -450,9 +467,10 @@ fn durable_write(path: &Path, bytes: &[u8]) -> BackupResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| BackupError::Invalid("backup file has no parent".into()))?;
-    fs::create_dir_all(parent).map_err(|error| BackupError::Storage(error.to_string()))?;
+    create_private_dir_all(parent).map_err(|error| BackupError::Storage(error.to_string()))?;
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temporary, bytes).map_err(|error| BackupError::Storage(error.to_string()))?;
+    write_private_file(&temporary, bytes)
+        .map_err(|error| BackupError::Storage(error.to_string()))?;
     let file = File::open(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
     file.sync_all()
         .map_err(|error| BackupError::Storage(error.to_string()))?;
@@ -462,6 +480,50 @@ fn durable_write(path: &Path, bytes: &[u8]) -> BackupResult<()> {
         .and_then(|file| file.sync_all())
         .map_err(|error| BackupError::Storage(error.to_string()))?;
     Ok(())
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true).mode(0o600);
+        let mut file = options.open(path)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()
+    }
+}
+
+fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
+    if path.as_os_str().is_empty() || path == Path::new(".") {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        builder.mode(0o700);
+        builder.create(path)?;
+        if !path.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "private path is not a directory",
+            ));
+        }
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(path)
+    }
 }
 
 fn protect_tree_directories(root: &Path) -> BackupResult<()> {
@@ -616,7 +678,6 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
                 (SELECT COUNT(*) FROM catalog_operations WHERE status = 'prepared') +
                 (SELECT COUNT(*) FROM journal_preparations WHERE resolved_at IS NULL) +
                 (SELECT COUNT(*) FROM pending_deletes) +
-                (SELECT COUNT(*) FROM journal_retirements) +
                 (SELECT COUNT(*) FROM object_reservations) +
                 (SELECT COUNT(*) FROM accounts WHERE status = 'erasing') +
                 (SELECT COUNT(*) FROM erasure_batches) +
@@ -627,7 +688,7 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
         .map_err(|error| BackupError::Storage(error.to_string()))?;
     if transitions != 0 {
         return Err(BackupError::Invalid(
-            "backup requires a quiescent catalog with no prepared or lifecycle transition".into(),
+            "backup requires a quiescent catalog with no unresolved operation or lifecycle transition".into(),
         ));
     }
 
@@ -661,6 +722,50 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
         {
             return Err(BackupError::Corrupt(format!(
                 "catalog reference digest/length mismatch: {key}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn verify_manifest_object(
+        root: &Path,
+        key: &str,
+        expected_digest: &str,
+        expected_length: i64,
+    ) -> BackupResult<()> {
+        let path = object_path(root, key)?;
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| BackupError::Corrupt(format!("{}: {error}", path.display())))?;
+        if !metadata.file_type().is_file() {
+            return Err(BackupError::Corrupt(format!(
+                "catalog reference is not a regular object: {}",
+                path.display()
+            )));
+        }
+        let body = fs::read(&path)
+            .map_err(|error| BackupError::Corrupt(format!("{}: {error}", path.display())))?;
+        if expected_length < 0 || body.len() as i64 != expected_length {
+            return Err(BackupError::Corrupt(format!(
+                "manifest shard length mismatch: {key}"
+            )));
+        }
+        let shard: ManifestShard = serde_json::from_slice(&body).map_err(|error| {
+            BackupError::Corrupt(format!("invalid manifest shard {key}: {error}"))
+        })?;
+        if shard.object_key != key || shard.encoded_bytes != body.len() as i64 {
+            return Err(BackupError::Corrupt(format!(
+                "manifest shard identity/length mismatch: {key}"
+            )));
+        }
+        let shard_digest = shard.digest.clone();
+        let mut canonical = shard;
+        canonical.digest.clear();
+        let canonical_body = serde_json::to_vec(&canonical).map_err(|error| {
+            BackupError::Corrupt(format!("invalid manifest shard {key}: {error}"))
+        })?;
+        if shard_digest != expected_digest || digest(&canonical_body) != shard_digest {
+            return Err(BackupError::Corrupt(format!(
+                "manifest shard digest mismatch: {key}"
             )));
         }
         Ok(())
@@ -816,9 +921,7 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
         .prepare(
             "SELECT object_key, digest, encoded_bytes FROM journal_segments
              UNION ALL
-             SELECT object_key, digest, encoded_bytes FROM journal_bases
-             UNION ALL
-             SELECT object_key, digest, encoded_bytes FROM journal_manifest_shards",
+             SELECT object_key, digest, encoded_bytes FROM journal_bases",
         )
         .map_err(|error| BackupError::Storage(error.to_string()))?;
     let mut rows = statement
@@ -847,6 +950,30 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
     drop(rows);
     drop(statement);
 
+    let mut statement = connection
+        .prepare("SELECT object_key, digest, encoded_bytes FROM journal_manifest_shards")
+        .map_err(|error| BackupError::Storage(error.to_string()))?;
+    let mut rows = statement
+        .query([])
+        .map_err(|error| BackupError::Storage(error.to_string()))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| BackupError::Storage(error.to_string()))?
+    {
+        let key: String = row
+            .get(0)
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        let expected_digest: String = row
+            .get(1)
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        let expected_length: i64 = row
+            .get(2)
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        verify_manifest_object(objects_path, &key, &expected_digest, expected_length)?;
+    }
+    drop(rows);
+    drop(statement);
+
     let state: (String, String, i64) = connection
         .query_row(
             "SELECT manifest_key, manifest_digest, manifest_length FROM journal_state WHERE id=1",
@@ -855,7 +982,7 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
         )
         .map_err(|error| BackupError::Storage(error.to_string()))?;
     if !state.0.is_empty() {
-        verify_object(objects_path, &state.0, Some(&state.1), Some(state.2))?;
+        verify_manifest_object(objects_path, &state.0, &state.1, state.2)?;
     }
     Ok(())
 }
@@ -944,7 +1071,7 @@ pub fn create_local_backup(
     if temporary.exists() {
         return Err(BackupError::Invalid("partial backup already exists".into()));
     }
-    fs::create_dir_all(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
+    create_private_dir_all(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
     protect_directory(&temporary)?;
     let result = (|| {
         let snapshot_path = temporary.join("catalog.db");
@@ -1132,7 +1259,7 @@ pub fn restore_local_backup(
             "restore temporary path already exists".into(),
         ));
     }
-    fs::create_dir_all(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
+    create_private_dir_all(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
     let result = (|| {
         for file in std::iter::once(&manifest.catalog)
             .chain(std::iter::once(&manifest.identity))
@@ -1211,9 +1338,62 @@ mod tests {
     use super::*;
     use crate::auth::{link_sealing_key_file, session_key_file};
     use crate::config::DeploymentPaths;
-    use crate::storage::blob::FsStore;
+    use crate::storage::blob::{BlobInfo, BlobResult, BlobStore, BlobVersion, FsStore};
     use crate::storage::catalog::{Account, Catalog};
+    use crate::storage::journal::{finalize_manifest_shard, ManifestShard};
+    use async_trait::async_trait;
     use tempfile::TempDir;
+
+    struct ManifestReadFailureStore {
+        inner: FsStore,
+    }
+
+    #[async_trait]
+    impl BlobStore for ManifestReadFailureStore {
+        async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
+            if key.ends_with("/manifest.json") {
+                return Err(BlobError::Other("manifest read temporarily failed".into()));
+            }
+            self.inner.get(key).await
+        }
+
+        async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
+            self.inner.put(key, body, content_type).await
+        }
+
+        async fn delete(&self, keys: &[String]) -> BlobResult<()> {
+            self.inner.delete(keys).await
+        }
+
+        async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
+            self.inner.list(prefix).await
+        }
+
+        async fn list_page(
+            &self,
+            prefix: &str,
+            after: Option<&str>,
+            limit: usize,
+        ) -> BlobResult<Vec<BlobInfo>> {
+            self.inner.list_page(prefix, after, limit).await
+        }
+
+        async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
+            self.inner.swap(key, body, expect).await
+        }
+
+        async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
+            self.inner.get_versioned(key).await
+        }
+
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
+
+        fn is_local(&self) -> bool {
+            self.inner.is_local()
+        }
+    }
 
     #[tokio::test]
     async fn backup_manifest_is_written_last_and_verifiable() {
@@ -1257,6 +1437,71 @@ mod tests {
         assert_eq!(
             blobs.get("content/sid/trees/a").await.expect("restored"),
             b"abc"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_manifest_read_does_not_delete_existing_backup() {
+        let directory = TempDir::new().expect("temporary directory");
+        let inner = FsStore::new(directory.path());
+        inner
+            .put("recovery/backup-1/objects/6b6579", b"keep me".to_vec(), "")
+            .await
+            .expect("seed incomplete backup");
+        let blobs = ManifestReadFailureStore { inner };
+        let result = remove_incomplete_backup(&blobs, "backup-1").await;
+        assert!(
+            matches!(result, Err(BackupError::Storage(message)) if message.contains("temporarily failed"))
+        );
+        assert_eq!(
+            blobs
+                .inner
+                .get("recovery/backup-1/objects/6b6579")
+                .await
+                .expect("existing bytes preserved"),
+            b"keep me"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_manifest_read_aborts_creation_before_copying() {
+        let directory = TempDir::new().expect("temporary directory");
+        let inner = FsStore::new(directory.path());
+        inner
+            .put("content/source", b"source".to_vec(), "")
+            .await
+            .expect("source object");
+        inner
+            .put("recovery/backup-1/objects/6b6579", b"keep me".to_vec(), "")
+            .await
+            .expect("existing backup bytes");
+        let blobs = ManifestReadFailureStore { inner };
+        let source_keys = vec!["content/source".to_string()];
+        let result = create_backup(
+            &blobs,
+            BackupRequest {
+                backup_id: "backup-1",
+                deployment_id: "deployment",
+                schema_version: 1,
+                head_revision: 1,
+                restore_point: "point",
+                secret_versions: Vec::new(),
+                created_at: 1,
+                expires_at: 2,
+                source_keys: &source_keys,
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(BackupError::Storage(message)) if message.contains("temporarily failed"))
+        );
+        assert_eq!(
+            blobs
+                .inner
+                .get("recovery/backup-1/objects/6b6579")
+                .await
+                .expect("existing bytes preserved"),
+            b"keep me"
         );
     }
 
@@ -1322,6 +1567,71 @@ mod tests {
             fs::read(secrets.join("session.key")).expect("source session key")
         );
         Catalog::open(restored.join("catalog.db")).expect("restored catalog");
+    }
+
+    #[tokio::test]
+    async fn local_backup_accepts_canonical_compacted_manifest_digest() {
+        let live = TempDir::new().expect("live tempdir");
+        let backup_root = TempDir::new().expect("backup tempdir");
+        let paths = DeploymentPaths::local(live.path());
+        paths.prepare_state().expect("state");
+        let deployment_id = paths.ensure_deployment_identity(false).expect("identity");
+        let catalog = Catalog::open(paths.catalog.as_ref().expect("catalog")).expect("catalog");
+        let secrets = paths.secrets.as_ref().expect("secrets path");
+        link_sealing_key_file(&secrets.join("links.key"), false).expect("links");
+        session_key_file(&secrets.join("session.key"), false).expect("session");
+
+        let key = crate::storage::blob::journal_manifest_key(&deployment_id, "1-0");
+        let shard = ManifestShard {
+            shard_id: "manifest-1-0".into(),
+            shard_seq: 1,
+            object_key: key.clone(),
+            digest: String::new(),
+            encoded_bytes: 0,
+            committed_at: 1,
+            next_key: None,
+            bases: Vec::new(),
+            segments: Vec::new(),
+        };
+        let (shard, body) = finalize_manifest_shard(shard).expect("finalize shard");
+        let objects = FsStore::new(paths.objects.as_ref().expect("objects path"));
+        objects
+            .put(&key, body.clone(), "application/json")
+            .await
+            .expect("manifest object");
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO journal_manifest_shards
+                         (shard_id,shard_seq,object_key,digest,encoded_bytes,committed_at)
+                         VALUES (?1,?2,?3,?4,?5,?6)",
+                        rusqlite::params![
+                            &shard.shard_id,
+                            shard.shard_seq as i64,
+                            &shard.object_key,
+                            &shard.digest,
+                            body.len() as i64,
+                            shard.committed_at,
+                        ],
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                connection
+                    .execute(
+                        "UPDATE journal_state
+                         SET manifest_key=?1,manifest_digest=?2,manifest_length=?3
+                         WHERE id=1",
+                        rusqlite::params![key, &shard.digest, body.len() as i64],
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                Ok(())
+            })
+            .expect("catalog manifest");
+
+        create_local_backup(&paths, backup_root.path(), "point-compact", 10)
+            .expect("backup with compacted manifest");
+        verify_local_backup(&backup_root.path().join("point-compact"))
+            .expect("verify compacted backup");
     }
 
     #[test]

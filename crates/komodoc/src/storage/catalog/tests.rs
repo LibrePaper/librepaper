@@ -67,6 +67,182 @@ fn document() -> NewDocument {
 }
 
 #[test]
+fn measurement_keeps_maintenance_borrow_releasable() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .reserve_maintenance("compact", "doc", 100, 100, 1)
+        .unwrap();
+    let measured = catalog
+        .record_document_measurement("doc", 10, None, None, "", "")
+        .unwrap();
+    assert_eq!(measured.counted_size, 110);
+    assert_eq!(measured.maintenance_reserved, 100);
+    let released = catalog
+        .release_maintenance("compact", "doc", 100, 2)
+        .unwrap();
+    assert_eq!(
+        (
+            released.size,
+            released.counted_size,
+            released.maintenance_reserved
+        ),
+        (10, 10, 0)
+    );
+    assert_eq!(catalog.totals().unwrap().0, 10);
+
+    catalog
+        .reserve_maintenance("compact-2", "doc", 100, 100, 3)
+        .unwrap();
+    assert_eq!(catalog.reconcile("doc", 10).unwrap().counted_size, 110);
+    catalog
+        .release_maintenance("compact-2", "doc", 100, 4)
+        .unwrap();
+    assert_eq!(catalog.totals().unwrap().0, 10);
+}
+
+#[test]
+fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .prepare_operation(&OperationRequest {
+            storage_id: "storage-1",
+            request_id: "publish",
+            kind: "replace",
+            request_digest: "digest",
+            intent: "{}",
+            created_at: 1,
+            actor: None,
+        })
+        .unwrap();
+    let deleting = catalog.begin_delete("doc").unwrap();
+    assert_eq!(deleting.counted_size, 20);
+    assert!(deleting.pending_publication.is_none());
+    assert_eq!(
+        catalog
+            .operation("storage-1", "publish")
+            .unwrap()
+            .unwrap()
+            .status,
+        "aborted"
+    );
+    assert!(catalog
+        .commit_operation("storage-1", "publish", "result", "head")
+        .is_err());
+    catalog.finish_delete("doc").unwrap();
+    assert_eq!(catalog.totals().unwrap(), (0, 0));
+}
+
+#[test]
+fn rendering_authorization_checks_visitor_owner_key_and_lifecycle() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    let mut input = document();
+    input.owner_id = None;
+    input.owner_key = "visitor-secret".into();
+    catalog.create_document(&input).unwrap();
+    let rendering = Rendering {
+        slug: "doc".into(),
+        tree_sha: "tree".into(),
+        at: "now".into(),
+        backend: "test".into(),
+        engine: String::new(),
+        release: String::new(),
+        tools: String::new(),
+        bytes: 10,
+        synctex: false,
+        synctex_bytes: 0,
+    };
+    assert!(catalog
+        .publish_rendering_authorized(&rendering, ("", "wrong", ""))
+        .is_err());
+    assert!(catalog
+        .publish_rendering_authorized(&rendering, ("", "", ""))
+        .is_err());
+    catalog
+        .publish_rendering_authorized(&rendering, ("", "visitor-secret", ""))
+        .unwrap();
+    catalog.begin_delete("doc").unwrap();
+    assert!(catalog.publish_rendering(&rendering).is_err());
+    assert!(catalog
+        .publish_rendering_authorized(&rendering, ("", "visitor-secret", ""))
+        .is_err());
+}
+
+#[test]
+fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    let mut input = document();
+    input.size = 0;
+    input.counted_size = 0;
+    catalog.create_document(&input).unwrap();
+    let key = "content/storage-1/renderings/tree/pdf";
+    let reservation = || super::ObjectReservationRequest {
+        slug: "doc",
+        operation_id: "render",
+        object_key: key,
+        kind: "rendering",
+        new_bytes: 10,
+        owner_limit: -1,
+        total_limit: -1,
+    };
+    let rendering = Rendering {
+        slug: "doc".into(),
+        tree_sha: "tree".into(),
+        at: "now".into(),
+        backend: "test".into(),
+        engine: String::new(),
+        release: String::new(),
+        tools: String::new(),
+        bytes: 10,
+        synctex: false,
+        synctex_bytes: 0,
+    };
+    catalog.reserve_object_change(reservation()).unwrap();
+    assert_eq!(catalog.reconcile("doc", 0).unwrap().counted_size, 10);
+    catalog.publish_rendering(&rendering).unwrap();
+    assert!(catalog.retire_rendering("doc", "tree", 1, 1).is_err());
+    catalog
+        .commit_object_change("storage-1", "render", key, "rendering", "digest")
+        .unwrap();
+    assert_eq!(catalog.reconcile("doc", 0).unwrap().size, 10);
+    catalog
+        .reserve_maintenance("compact", "doc", 100, 100, 1)
+        .unwrap();
+    catalog.retire_rendering("doc", "tree", 1, 1).unwrap();
+    assert!(catalog.publish_rendering(&rendering).is_err());
+    assert!(catalog.reserve_object_change(reservation()).is_err());
+    catalog.complete_delete_object("doc", key).unwrap();
+    catalog.complete_delete_object("doc", key).unwrap(); // Retried acknowledgement is harmless.
+    let measured = catalog.document("doc").unwrap().unwrap();
+    assert_eq!(
+        (
+            measured.size,
+            measured.counted_size,
+            measured.maintenance_reserved
+        ),
+        (0, 100, 100)
+    );
+    catalog
+        .release_maintenance("compact", "doc", 100, 2)
+        .unwrap();
+    assert_eq!(catalog.totals().unwrap().0, 0);
+    let ledger: i64 = catalog
+        .with_connection(|connection| {
+            Ok(
+                connection.query_row("SELECT COUNT(*) FROM object_accounting", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(ledger, 0);
+}
+
+#[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
     assert_eq!(catalog.schema_version().unwrap(), 12);
@@ -330,7 +506,7 @@ fn deleting_document_cannot_commit_a_prepared_publication() {
             .unwrap()
             .unwrap()
             .status,
-        "prepared"
+        "aborted"
     );
 }
 
