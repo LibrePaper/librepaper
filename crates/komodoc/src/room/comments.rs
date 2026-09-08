@@ -442,10 +442,9 @@ impl Room {
         // configuration. Check its durable count too, since a hot room cache
         // may lag a previous process while the room lease is being acquired.
         let existing_comments = if let Some(catalog) = self.catalog.get() {
-            catalog
-                .comments(&self.slug, None, 500)
-                .map_err(|error| BatchRefusal(error.to_string()))?
-                .len()
+            count_catalog_comments(catalog, &self.slug)
+                .await
+                .map_err(BatchRefusal)?
         } else {
             state.comments.len()
         };
@@ -531,14 +530,10 @@ impl Room {
                 accept_request: String::new(),
             };
             let persisted: Result<i64, String> = if let Some(catalog) = self.catalog.get() {
-                catalog_comment_row(&self.slug, &added)
-                    .map_err(|error| error.to_string())
-                    .and_then(|row| {
-                        catalog
-                            .insert_comment(&row)
-                            .map(|row| row.seq)
-                            .map_err(|error| error.to_string())
-                    })
+                match catalog_comment_row(&self.slug, &added) {
+                    Ok(row) => insert_comment_row(catalog, row).await,
+                    Err(error) => Err(error),
+                }
             } else {
                 Ok(added.seq)
             };
@@ -778,7 +773,7 @@ impl Room {
                 }
                 if is_suggestion {
                     if let Some(catalog) = self.catalog.get() {
-                        match catalog.pending_suggestion_accept(&self.slug, &comment_id) {
+                        match pending_suggestion_accept(catalog, &self.slug, &comment_id).await {
                             Ok(true) => return fail("a suggestion acceptance is still pending"),
                             Ok(false) => {}
                             Err(_) => return fail(UNSAVED),
@@ -821,32 +816,35 @@ impl Room {
                     }
                     return (result, true);
                 }
-                state.comments[index].resolved = resolved;
-                state.comments[index].resolved_at = resolved.then(timestamp);
+                // The decision is prepared on a copy and applied to room state
+                // only once it is durable. The catalogue write is awaited now,
+                // and a caller that disappears at that await must not leave
+                // this room showing a decision no peer was told about and no
+                // row records.
+                let mut decided = state.comments[index].clone();
+                decided.resolved = resolved;
+                decided.resolved_at = resolved.then(timestamp);
                 // Which text it was resolved against. Cleared when a comment is
                 // reopened, because it is no longer resolved in anything.
-                state.comments[index].resolved_in = if resolved {
+                decided.resolved_in = if resolved {
                     current.clone()
                 } else {
                     String::new()
                 };
                 if is_suggestion {
-                    state.comments[index].outcome = if resolved {
+                    decided.outcome = if resolved {
                         "rejected".to_string()
                     } else {
                         String::new()
                     };
                 }
                 let persisted = if let Some(catalog) = self.catalog.get() {
-                    catalog_comment_row(&self.slug, &state.comments[index])
-                        .map_err(|error| error.to_string())
-                        .and_then(|row| {
-                            catalog
-                                .update_comment(&row)
-                                .map(|_| ())
-                                .map_err(|error| error.to_string())
-                        })
+                    match catalog_comment_row(&self.slug, &decided) {
+                        Ok(row) => update_comment_row(catalog, row).await,
+                        Err(error) => Err(error),
+                    }
                 } else {
+                    state.comments[index] = decided.clone();
                     self.save(&mut state).await
                 };
                 if persisted.is_err() {
@@ -856,6 +854,7 @@ impl Room {
                     state.comments[index].outcome = was_outcome;
                     return fail(UNSAVED);
                 }
+                state.comments[index] = decided;
                 let target = &state.comments[index];
                 (
                     json!({
@@ -878,7 +877,7 @@ impl Room {
                 };
                 if state.comments[index].motivation == "editing" {
                     if let Some(catalog) = self.catalog.get() {
-                        match catalog.pending_suggestion_accept(&self.slug, &comment_id) {
+                        match pending_suggestion_accept(catalog, &self.slug, &comment_id).await {
                             Ok(true) => return fail("a suggestion acceptance is still pending"),
                             Ok(false) => {}
                             Err(_) => return fail(UNSAVED),
@@ -888,18 +887,24 @@ impl Room {
                 if !deletable(&state.comments[index], author, is_owner) {
                     return fail("you may only delete your own comments");
                 }
-                let removed = state.comments.remove(index);
+                // Removed from room state only once the row is gone, so a
+                // cancelled caller cannot hide a comment from this room that
+                // every other reader still has.
                 let persisted = if let Some(catalog) = self.catalog.get() {
-                    catalog
-                        .delete_comment(&self.slug, &removed.id)
-                        .map(|_| ())
-                        .map_err(|err| err.to_string())
+                    delete_comment_row(catalog, &self.slug, &comment_id).await
                 } else {
-                    self.save(&mut state).await
+                    let removed = state.comments.remove(index);
+                    let saved = self.save(&mut state).await;
+                    if saved.is_err() {
+                        state.comments.insert(index, removed);
+                    }
+                    saved
                 };
                 if persisted.is_err() {
-                    state.comments.insert(index, removed);
                     return fail(UNSAVED);
+                }
+                if self.catalog.get().is_some() {
+                    state.comments.remove(index);
                 }
                 (
                     json!({"type": "delete", "comment_id": comment_id,
@@ -935,23 +940,24 @@ impl Room {
                 let Some(anchor) = valid_source(&config, Some(&source)) else {
                     return fail("that source anchor is not valid");
                 };
-                state.comments[index].source = Some(anchor.clone());
+                // Prepared on a copy and applied once durable, for the same
+                // reason as a resolve.
+                let mut anchored = state.comments[index].clone();
+                anchored.source = Some(anchor.clone());
                 let persisted = if let Some(catalog) = self.catalog.get() {
-                    catalog_comment_row(&self.slug, &state.comments[index])
-                        .map_err(|error| error.to_string())
-                        .and_then(|row| {
-                            catalog
-                                .update_comment(&row)
-                                .map(|_| ())
-                                .map_err(|error| error.to_string())
-                        })
+                    match catalog_comment_row(&self.slug, &anchored) {
+                        Ok(row) => update_comment_row(catalog, row).await,
+                        Err(error) => Err(error),
+                    }
                 } else {
+                    state.comments[index].source = Some(anchor.clone());
                     self.save(&mut state).await
                 };
                 if persisted.is_err() {
                     state.comments[index].source = None;
                     return fail(UNSAVED);
                 }
+                state.comments[index] = anchored;
                 (
                     json!({
                         "type": "anchor", "comment_id": state.comments[index].id,
@@ -991,7 +997,9 @@ impl Room {
                     created: timestamp(),
                     author: author.to_string(),
                 };
-                state.comments[index].replies.push(added.clone());
+                // The reply joins room state once its receipt is durable. A
+                // retry of the same request id matches that receipt rather
+                // than inserting the reply twice.
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     let row = crate::storage::catalog::Reply {
                         slug: self.slug.clone(),
@@ -1010,16 +1018,20 @@ impl Room {
                         "creator": row.creator,
                         "author": row.author,
                     }));
-                    catalog
-                        .insert_reply_request(&row, &request_id, &digest, now_unix())
-                        .map(|_| ())
-                        .map_err(|err| err.to_string())
+                    insert_reply_request(catalog, row, request_id.clone(), digest, now_unix()).await
                 } else {
-                    self.save(&mut state).await
+                    state.comments[index].replies.push(added.clone());
+                    let saved = self.save(&mut state).await;
+                    if saved.is_err() {
+                        state.comments[index].replies.pop();
+                    }
+                    saved
                 };
                 if persisted.is_err() {
-                    state.comments[index].replies.pop();
                     return fail(UNSAVED);
+                }
+                if self.catalog.get().is_some() {
+                    state.comments[index].replies.push(added.clone());
                 }
                 (
                     json!({
@@ -1168,12 +1180,10 @@ impl Room {
                     via: via.to_string(),
                     accept_request: String::new(),
                 };
-                state.comments.push(added.clone());
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     let row = match catalog_comment_row(&self.slug, &added) {
                         Ok(row) => row,
                         Err(_) => {
-                            state.comments.pop();
                             state.seq -= 1;
                             return fail(UNSAVED);
                         }
@@ -1193,23 +1203,39 @@ impl Room {
                         "author": row.author,
                         "via": row.via,
                     }));
-                    match catalog.insert_comment_request(&row, &request_id, &digest, now_unix()) {
-                        Ok(inserted) => {
-                            state.comments.last_mut().expect("comment was pushed").seq =
-                                inserted.seq;
-                            state.seq = state.seq.max(inserted.seq);
+                    // Pushed into room state only once the receipt is durable,
+                    // so a cancelled caller leaves neither an unbroadcast
+                    // comment here nor a row nobody was told about.
+                    match insert_comment_request(
+                        catalog,
+                        row,
+                        request_id.clone(),
+                        digest,
+                        now_unix(),
+                    )
+                    .await
+                    {
+                        Ok(seq) => {
+                            let mut stored = added.clone();
+                            stored.seq = seq;
+                            state.comments.push(stored);
+                            state.seq = state.seq.max(seq);
                             Ok(())
                         }
-                        Err(err) => {
-                            eprintln!("catalog comment insert failed for {}: {err}", self.slug);
-                            Err(err.to_string())
+                        Err(error) => {
+                            eprintln!("catalog comment insert failed for {}: {error}", self.slug);
+                            Err(error)
                         }
                     }
                 } else {
-                    self.save(&mut state).await
+                    state.comments.push(added.clone());
+                    let saved = self.save(&mut state).await;
+                    if saved.is_err() {
+                        state.comments.pop();
+                    }
+                    saved
                 };
                 if persisted.is_err() {
-                    state.comments.pop();
                     state.seq -= 1;
                     return fail(UNSAVED);
                 }

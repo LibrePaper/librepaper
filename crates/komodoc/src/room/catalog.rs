@@ -1024,6 +1024,341 @@ fn load_catalog_comments_blocking(
     Ok((seq, comments))
 }
 
+/// What one catalogue comment row costs as an owned job input.
+fn comment_row_bytes(row: &crate::storage::catalog::Comment) -> usize {
+    DESCRIPTOR_BYTES
+        + row.slug.len()
+        + row.id.len()
+        + row.body.len()
+        + row.exact.len()
+        + row.prefix.len()
+        + row.suffix.len()
+        + row.proposed.as_ref().map(String::len).unwrap_or_default()
+        + row.region.as_ref().map(String::len).unwrap_or_default()
+}
+
+/// How many comments this document durably has.  Read rather than counted in
+/// memory, because a hot room cache may lag a previous process while the room
+/// lease is being acquired.
+pub(super) async fn count_catalog_comments(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+) -> Result<usize, String> {
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.comments(&slug, None, 500).map(|rows| rows.len())
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Insert one comment with no request receipt.  Only the seeding path uses
+/// this; every request-serving insert carries a receipt.
+pub(super) async fn insert_comment_row(
+    catalog: &Arc<Catalog>,
+    row: crate::storage::catalog::Comment,
+) -> Result<i64, String> {
+    let input_bytes = comment_row_bytes(&row);
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog.insert_comment(&row).map(|row| row.seq)
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Insert one comment under its request receipt, which is what makes a retry
+/// of the same request return the first insert rather than a second comment.
+pub(super) async fn insert_comment_request(
+    catalog: &Arc<Catalog>,
+    row: crate::storage::catalog::Comment,
+    request_id: String,
+    digest: String,
+    at: i64,
+) -> Result<i64, String> {
+    let input_bytes = comment_row_bytes(&row) + request_id.len() + digest.len();
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog
+                .insert_comment_request(&row, &request_id, &digest, at)
+                .map(|row| row.seq)
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Write one comment row back.
+///
+/// There is no receipt for a decision — resolve, reopen, anchor — and it does
+/// not need one: the row is written to exactly the value the request asked
+/// for, so repeating it is the same write. What cancellation must not do is
+/// leave the room's in-memory copy ahead of the row, which is why every
+/// caller here applies its change to room state only after this returns.
+pub(super) async fn update_comment_row(
+    catalog: &Arc<Catalog>,
+    row: crate::storage::catalog::Comment,
+) -> Result<(), String> {
+    let input_bytes = comment_row_bytes(&row);
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog.update_comment(&row).map(|_| ())
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Remove one comment row.
+pub(super) async fn delete_comment_row(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    id: &str,
+) -> Result<(), String> {
+    let slug = slug.to_string();
+    let id = id.to_string();
+    catalog
+        .execute_catalog(slug.len() + id.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.delete_comment(&slug, &id).map(|_| ())
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Insert one reply under its request receipt.
+pub(super) async fn insert_reply_request(
+    catalog: &Arc<Catalog>,
+    row: crate::storage::catalog::Reply,
+    request_id: String,
+    digest: String,
+    at: i64,
+) -> Result<(), String> {
+    let input_bytes = DESCRIPTOR_BYTES
+        + row.slug.len()
+        + row.comment_id.len()
+        + row.id.len()
+        + row.body.len()
+        + request_id.len()
+        + digest.len();
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog
+                .insert_reply_request(&row, &request_id, &digest, at)
+                .map(|_| ())
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// The suggestion-accept cluster, through the boundary.
+///
+/// Every one of these carries the acceptance receipt — the request id and the
+/// digest of what was asked for — so cancellation needs no completion hook
+/// here: a caller that disappears leaves a durable receipt, and the retry
+/// resumes from it rather than applying the proposal a second time. That is
+/// the same reconciliation the crash path already used.
+pub(super) async fn begin_suggestion_accept(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    comment_id: &str,
+    request_id: &str,
+    digest: &str,
+    at: i64,
+) -> Result<Option<crate::storage::catalog::Comment>, String> {
+    let slug = slug.to_string();
+    let comment_id = comment_id.to_string();
+    let request_id = request_id.to_string();
+    let digest = digest.to_string();
+    let input_bytes =
+        slug.len() + comment_id.len() + request_id.len() + digest.len() + DESCRIPTOR_BYTES;
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog.begin_suggestion_accept(&slug, &comment_id, &request_id, &digest, at)
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub(super) async fn suggestion_accept_checkpoint(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    request_id: &str,
+    digest: &str,
+) -> Result<Option<(String, String, String)>, String> {
+    let slug = slug.to_string();
+    let request_id = request_id.to_string();
+    let digest = digest.to_string();
+    let input_bytes = slug.len() + request_id.len() + digest.len() + DESCRIPTOR_BYTES;
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog.suggestion_accept_checkpoint(&slug, &request_id, &digest)
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub(super) async fn suggestion_accept_update(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    request_id: &str,
+    digest: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let slug = slug.to_string();
+    let request_id = request_id.to_string();
+    let digest = digest.to_string();
+    let input_bytes = slug.len() + request_id.len() + digest.len() + DESCRIPTOR_BYTES;
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog.suggestion_accept_update(&slug, &request_id, &digest)
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Stage the exact post-accept state in the receipt.  The update is the large
+/// input here, so capacity is reserved for it before it is copied.
+pub(super) async fn stage_suggestion_accept_update(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    comment_id: &str,
+    request_id: &str,
+    digest: &str,
+    update: &[u8],
+) -> Result<(), String> {
+    let input_bytes = slug.len()
+        + comment_id.len()
+        + request_id.len()
+        + digest.len()
+        + update.len()
+        + DESCRIPTOR_BYTES;
+    let reservation = catalog
+        .reserve_execution(input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES))
+        .await
+        .map_err(|error| error.to_string())?;
+    let slug = slug.to_string();
+    let comment_id = comment_id.to_string();
+    let request_id = request_id.to_string();
+    let digest = digest.to_string();
+    let update = update.to_vec();
+    reservation
+        .execute_catalog(move |catalog| {
+            catalog.stage_suggestion_accept_update(
+                &slug,
+                &comment_id,
+                &request_id,
+                &digest,
+                &update,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Record the accept checkpoint in the receipt and settle the comment, in one
+/// job: they were two transactions and remain two, but a caller that goes
+/// away between them no longer leaves the second unissued.
+pub(super) async fn record_and_finish_suggestion_accept(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    comment_id: &str,
+    request_id: &str,
+    digest: &str,
+    sha: &str,
+    resolved_at: &str,
+) -> Result<(), String> {
+    let slug = slug.to_string();
+    let comment_id = comment_id.to_string();
+    let request_id = request_id.to_string();
+    let digest = digest.to_string();
+    let sha = sha.to_string();
+    let resolved_at = resolved_at.to_string();
+    let input_bytes = slug.len()
+        + comment_id.len()
+        + request_id.len()
+        + digest.len()
+        + sha.len()
+        + resolved_at.len()
+        + DESCRIPTOR_BYTES;
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog.record_suggestion_accept_checkpoint(
+                &slug,
+                &comment_id,
+                &request_id,
+                &digest,
+                &sha,
+                &resolved_at,
+            )?;
+            catalog
+                .finish_suggestion_accept(
+                    &slug,
+                    &comment_id,
+                    &request_id,
+                    &digest,
+                    &sha,
+                    &resolved_at,
+                )
+                .map(|_| ())
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub(super) async fn finish_suggestion_accept(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    comment_id: &str,
+    request_id: &str,
+    digest: &str,
+    sha: &str,
+    resolved_at: &str,
+) -> Result<(), String> {
+    let slug = slug.to_string();
+    let comment_id = comment_id.to_string();
+    let request_id = request_id.to_string();
+    let digest = digest.to_string();
+    let sha = sha.to_string();
+    let resolved_at = resolved_at.to_string();
+    let input_bytes = slug.len()
+        + comment_id.len()
+        + request_id.len()
+        + digest.len()
+        + sha.len()
+        + resolved_at.len()
+        + DESCRIPTOR_BYTES;
+    catalog
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog
+                .finish_suggestion_accept(
+                    &slug,
+                    &comment_id,
+                    &request_id,
+                    &digest,
+                    &sha,
+                    &resolved_at,
+                )
+                .map(|_| ())
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Whether a suggestion acceptance is still staged for this comment.
+pub(super) async fn pending_suggestion_accept(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    comment_id: &str,
+) -> Result<bool, String> {
+    let slug = slug.to_string();
+    let comment_id = comment_id.to_string();
+    catalog
+        .execute_catalog(
+            slug.len() + comment_id.len() + DESCRIPTOR_BYTES,
+            move |catalog| catalog.pending_suggestion_accept(&slug, &comment_id),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
 pub(super) fn catalog_comment_row(
     slug: &str,
     item: &Comment,

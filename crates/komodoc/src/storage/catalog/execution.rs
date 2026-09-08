@@ -1175,7 +1175,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(seen, 42);
-        assert_eq!(catalog.reserve_room_edit("doc", 43, -1, -1).unwrap(), 42);
+        assert_eq!(
+            catalog
+                .reserve_room_edit("doc", 43, -1, -1)
+                .unwrap()
+                .previous_bytes,
+            42
+        );
 
         let snapshot = catalog.execution_snapshot();
         assert_eq!(snapshot.panicked, 2);
