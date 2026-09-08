@@ -11,6 +11,7 @@ pub mod blob;
 pub mod catalog;
 pub mod journal;
 pub mod maintenance;
+pub mod retry;
 pub mod s3;
 
 use std::sync::Arc;

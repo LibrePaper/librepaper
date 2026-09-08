@@ -4,8 +4,13 @@
 //! canonical request plus a digest of the body, which is the code below; the
 //! alternative is pulling a dependency tree the size of the rest of this
 //! program into a binary that has almost none.
+//!
+//! Because there is no SDK, there is also no SDK retry policy underneath
+//! this one, and `reqwest` retries nothing on its own. The bounds in
+//! `storage::retry` are therefore the only bounds: nothing multiplies them.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -16,6 +21,9 @@ use sha2::{Digest, Sha256};
 
 use crate::http::{client, truncate};
 use crate::storage::blob::{version_of, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion};
+use crate::storage::retry::{
+    with_retries, Attempt, RetryClock, RetryLimits, RetryWindow, SystemClock,
+};
 use crate::storage::StorageOptions;
 use crate::util::{amz_stamps, now_unix};
 
@@ -27,10 +35,17 @@ pub struct S3Store {
     access_key: String,
     secret_key: String,
     single_writer: bool,
+    /// Where retry backoff gets its time and its jitter. Injected so a test
+    /// can assert the bounds without waiting for them.
+    clock: Arc<dyn RetryClock>,
 }
 
 impl S3Store {
     pub fn new(options: &StorageOptions) -> S3Store {
+        S3Store::with_clock(options, Arc::new(SystemClock::default()))
+    }
+
+    pub fn with_clock(options: &StorageOptions, clock: Arc<dyn RetryClock>) -> S3Store {
         let mut prefix = options.prefix.clone();
         if !prefix.is_empty() && !prefix.ends_with('/') {
             prefix.push('/');
@@ -43,6 +58,7 @@ impl S3Store {
             access_key: options.access_key.clone(),
             secret_key: options.secret_key.clone(),
             single_writer: options.single_writer,
+            clock,
         }
     }
 
@@ -67,6 +83,22 @@ impl S3Store {
         )
     }
 
+    /// Writes an object, reconciling rather than repeating when an attempt
+    /// loses its answer.
+    ///
+    /// A `PUT` that fails without a status -- the connection went away, a
+    /// gateway answered 502 -- may still have been applied. Sending it again
+    /// is safe only when the bytes are the same and the condition is the
+    /// same, and even then a create-only write that already landed would come
+    /// back as 412 and be reported as somebody else's object. So every retry
+    /// is preceded by reading the object back and comparing *bytes*: the ETag
+    /// is derived however the provider likes and cannot be predicted from
+    /// what we sent, but the body is exactly what we know.
+    ///
+    /// The condition never changes across attempts. A conditional write is
+    /// never downgraded to an unconditional one, and a write whose fate is
+    /// still unknown when the bounds run out is reported as unresolved rather
+    /// than as a conflict or a success.
     async fn write(
         &self,
         key: &str,
@@ -81,22 +113,218 @@ impl S3Store {
         for (name, value) in conditions {
             headers.push((name, value.clone()));
         }
-        let tag = version_of(&body);
-        let response = self
-            .send(Method::PUT, &self.url(key), &headers, body)
-            .await?;
-        let status = response.status().as_u16();
-        // 412 is the conditional write refusing: the object moved. 409 is
-        // what some implementations answer to a lost If-None-Match race.
-        if status == 412 || status == 409 {
-            return Err(BlobError::Conflict);
+        let create_only = conditions
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("if-none-match") && value == "*");
+        let expect = conditions
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("if-match"))
+            .map(|(_, value)| value.clone());
+
+        let url = self.url(key);
+        let what = format!("PUT {key}");
+        let mut window = RetryWindow::new(self.clock.as_ref(), RetryLimits::WRITE);
+        // Alternates between sending the write and, once an attempt has lost
+        // its answer, reading the object back. Each pass through the loop is
+        // one request, so both bounds cover the reconciliation too.
+        let mut reconciling = false;
+        let mut why = String::new();
+        while window.begin() {
+            if reconciling {
+                match self.observe(key).await {
+                    Observed::Unknown(read_why) => {
+                        why = format!("{why}; reading it back failed: {read_why}");
+                        if !window.wait(None).await {
+                            break;
+                        }
+                    }
+                    Observed::Present {
+                        version,
+                        body: held,
+                    } => {
+                        if held == body {
+                            // The object holds exactly what we sent: the
+                            // write landed, and repeating it would be a
+                            // second mutation of a product object.
+                            return Ok(if version.is_empty() {
+                                version_of(&body)
+                            } else {
+                                version
+                            });
+                        }
+                        match &expect {
+                            _ if create_only => return Err(BlobError::Conflict),
+                            // The object still holds what we conditioned on,
+                            // so nothing was applied: the same conditional
+                            // write may go out again unchanged.
+                            Some(wanted) if &version == wanted => reconciling = false,
+                            Some(_) => return Err(BlobError::Conflict),
+                            None => reconciling = false,
+                        }
+                    }
+                    Observed::Absent => {
+                        if expect.is_some() {
+                            // If-Match cannot hold against an object that is
+                            // not there; somebody removed what we were
+                            // writing over.
+                            return Err(BlobError::Conflict);
+                        }
+                        reconciling = false;
+                    }
+                }
+                continue;
+            }
+            match self
+                .once(Method::PUT, &url, &headers, body.clone(), &what)
+                .await
+            {
+                Err(Attempted::Fatal(error)) => return Err(error),
+                Err(Attempted::Transient { why: lost, after }) => {
+                    why = lost;
+                    reconciling = true;
+                    if !window.wait(after).await {
+                        break;
+                    }
+                }
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    // 412 is the conditional write refusing: the object
+                    // moved. 409 is what some implementations answer to a
+                    // lost If-None-Match race.
+                    if status == 412 || status == 409 {
+                        return Err(BlobError::Conflict);
+                    }
+                    if status >= 300 {
+                        return Err(problem("PUT", key, response).await);
+                    }
+                    // Some implementations do not return an ETag on PUT; the
+                    // digest is the same answer, and matches what a later GET
+                    // will report.
+                    return Ok(etag(&response).unwrap_or_else(|| version_of(&body)));
+                }
+            }
         }
-        if status >= 300 {
-            return Err(problem("PUT", key, response).await);
+        Err(BlobError::Other(format!(
+            "{what} is unresolved after {} attempt(s) and may or may not have been applied: {why}",
+            window.attempts()
+        )))
+    }
+
+    /// Reads an object back so a lost write can be told apart from an applied
+    /// one. A single request: the caller's own window bounds the repetition.
+    async fn observe(&self, key: &str) -> Observed {
+        let url = self.url(key);
+        let what = format!("GET {key} (reconciling a write)");
+        match self.once(Method::GET, &url, &[], Vec::new(), &what).await {
+            Err(Attempted::Fatal(error)) => Observed::Unknown(error.to_string()),
+            Err(Attempted::Transient { why, .. }) => Observed::Unknown(why),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if status == 404 {
+                    return Observed::Absent;
+                }
+                if status != 200 {
+                    return Observed::Unknown(problem("GET", key, response).await.to_string());
+                }
+                let version = etag(&response).unwrap_or_default();
+                match response.bytes().await {
+                    Ok(body) => Observed::Present {
+                        version,
+                        body: body.to_vec(),
+                    },
+                    Err(err) => Observed::Unknown(err.to_string()),
+                }
+            }
         }
-        // Some implementations do not return an ETag on PUT; the digest is the
-        // same answer, and matches what a later GET will report.
-        Ok(etag(&response).unwrap_or(tag))
+    }
+
+    /// One page of a listing, retried on its own.
+    ///
+    /// A retry repeats the same continuation token, so cursor semantics are
+    /// exactly what they were: a page is never skipped and never advanced by
+    /// a request that failed.
+    async fn listing_page(&self, prefix: &str, query: &[(String, String)]) -> BlobResult<Listing> {
+        let store = self;
+        let address = format!(
+            "{}/{}?{}",
+            self.endpoint,
+            self.bucket,
+            canonical_query(query)
+        );
+        let what = format!("LIST {prefix}");
+        with_retries(self.clock.as_ref(), RetryLimits::IDEMPOTENT, &what, |_| {
+            let (address, what) = (address.as_str(), what.as_str());
+            async move {
+                let response = match store
+                    .once(Method::GET, address, &[], Vec::new(), what)
+                    .await
+                {
+                    Err(Attempted::Fatal(error)) => return Attempt::Settled(Err(error)),
+                    Err(Attempted::Transient { why, after }) => {
+                        return Attempt::Transient { why, after }
+                    }
+                    Ok(response) => response,
+                };
+                let status = response.status().as_u16();
+                let body = match response.bytes().await {
+                    Ok(body) => body,
+                    Err(err) => {
+                        return Attempt::Transient {
+                            why: format!("{what}: {err}"),
+                            after: None,
+                        }
+                    }
+                };
+                let body = match String::from_utf8(body.to_vec()) {
+                    Ok(body) => body,
+                    Err(err) => {
+                        return Attempt::Settled(Err(BlobError::Other(format!(
+                            "listing {prefix} is not UTF-8: {err}"
+                        ))))
+                    }
+                };
+                if status != 200 {
+                    return Attempt::Settled(Err(BlobError::Other(format!(
+                        "listing {prefix} failed ({status}): {}",
+                        truncate(&body, 200)
+                    ))));
+                }
+                Attempt::Settled(parse_listing(&body))
+            }
+        })
+        .await
+    }
+
+    /// One signed request, with the answer already sorted into "this is an
+    /// answer" and "this is not now". Each operation still decides what its
+    /// own statuses mean, because only it knows whether a 404 is a failure.
+    async fn once(
+        &self,
+        method: Method,
+        target: &str,
+        headers: &[(&str, String)],
+        body: Vec<u8>,
+        what: &str,
+    ) -> Result<Response, Attempted> {
+        match self.send(method, target, headers, body).await {
+            Err(SendError::Fatal(error)) => Err(Attempted::Fatal(error)),
+            Err(SendError::Lost(lost)) => Err(Attempted::Transient {
+                why: format!("{what}: {lost}"),
+                after: None,
+            }),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if transient_status(status) {
+                    let after = retry_after(&response);
+                    let detail = response.text().await.unwrap_or_default();
+                    return Err(Attempted::Transient {
+                        why: format!("{what} answered {status}: {}", truncate(&detail, 200)),
+                        after,
+                    });
+                }
+                Ok(response)
+            }
+        }
     }
 
     /// Signs a request and performs it.
@@ -106,8 +334,9 @@ impl S3Store {
         target: &str,
         headers: &[(&str, String)],
         body: Vec<u8>,
-    ) -> BlobResult<Response> {
-        let parsed = url::Url::parse(target).map_err(|err| BlobError::Other(err.to_string()))?;
+    ) -> Result<Response, SendError> {
+        let parsed = url::Url::parse(target)
+            .map_err(|err| SendError::Fatal(BlobError::Other(err.to_string())))?;
         let host = parsed.host_str().unwrap_or_default().to_string();
         let host = match parsed.port() {
             Some(port) => format!("{host}:{port}"),
@@ -178,7 +407,7 @@ impl S3Store {
         request
             .send()
             .await
-            .map_err(|err| BlobError::Other(err.to_string()))
+            .map_err(|err| SendError::Lost(err.to_string()))
     }
 
     fn signing_key(&self, day: &str) -> Vec<u8> {
@@ -287,6 +516,57 @@ impl ProbeReport {
     }
 }
 
+/// Why a request produced no response at all.
+enum SendError {
+    /// The request could not be built. Repeating it changes nothing.
+    Fatal(BlobError),
+    /// It went out, or may have, and no answer came back.
+    Lost(String),
+}
+
+/// What a single request's answer means for making another one.
+enum Attempted {
+    Fatal(BlobError),
+    Transient {
+        why: String,
+        after: Option<Duration>,
+    },
+}
+
+/// What an object looked like when a lost write was reconciled against it.
+enum Observed {
+    Absent,
+    Present { version: BlobVersion, body: Vec<u8> },
+    Unknown(String),
+}
+
+/// Statuses that mean "not now" rather than "no".
+///
+/// Everything else keeps its own meaning and is never retried: 401 and 403
+/// are credentials that will not improve, 400 and 405 are requests this
+/// program built wrong, 404 is an absence, and 412/409 are a conditional
+/// write losing -- retrying any of them would turn a definite answer into a
+/// slower definite answer, and retrying a conditional conflict would risk
+/// reporting somebody else's object as ours.
+fn transient_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500 | 502 | 503 | 504 | 509)
+}
+
+/// The delay a provider asked for, if it asked in seconds.
+///
+/// Only the delta-seconds form is honoured. The HTTP-date form needs our
+/// clock to agree with the provider's, and a disagreement there would either
+/// stall an operation for hours or ignore the request entirely; falling back
+/// to our own bounded backoff is the safer of the two mistakes.
+fn retry_after(response: &Response) -> Option<Duration> {
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
 fn etag(response: &Response) -> Option<String> {
     response
         .headers()
@@ -312,14 +592,24 @@ async fn problem(method: &str, key: &str, response: Response) -> BlobError {
 #[async_trait]
 impl BlobStore for S3Store {
     async fn exists(&self, key: &str) -> BlobResult<bool> {
-        let response = self
-            .send(Method::HEAD, &self.url(key), &[], Vec::new())
-            .await?;
-        match response.status().as_u16() {
-            200 => Ok(true),
-            404 => Ok(false),
-            _ => Err(problem("HEAD", key, response).await),
-        }
+        let store = self;
+        let url = self.url(key);
+        let what = format!("HEAD {key}");
+        with_retries(self.clock.as_ref(), RetryLimits::IDEMPOTENT, &what, |_| {
+            let (url, what) = (url.as_str(), what.as_str());
+            async move {
+                match store.once(Method::HEAD, url, &[], Vec::new(), what).await {
+                    Err(Attempted::Fatal(error)) => Attempt::Settled(Err(error)),
+                    Err(Attempted::Transient { why, after }) => Attempt::Transient { why, after },
+                    Ok(response) => Attempt::Settled(match response.status().as_u16() {
+                        200 => Ok(true),
+                        404 => Ok(false),
+                        _ => Err(problem("HEAD", key, response).await),
+                    }),
+                }
+            }
+        })
+        .await
     }
 
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
@@ -327,22 +617,39 @@ impl BlobStore for S3Store {
     }
 
     async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
-        let response = self
-            .send(Method::GET, &self.url(key), &[], Vec::new())
-            .await?;
-        let status = response.status().as_u16();
-        if status == 404 {
-            return Err(BlobError::NotFound);
-        }
-        if status != 200 {
-            return Err(problem("GET", key, response).await);
-        }
-        let version = etag(&response).unwrap_or_default();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|err| BlobError::Other(err.to_string()))?;
-        Ok((body.to_vec(), version))
+        let store = self;
+        let url = self.url(key);
+        let what = format!("GET {key}");
+        with_retries(self.clock.as_ref(), RetryLimits::IDEMPOTENT, &what, |_| {
+            let (url, what) = (url.as_str(), what.as_str());
+            async move {
+                let response = match store.once(Method::GET, url, &[], Vec::new(), what).await {
+                    Err(Attempted::Fatal(error)) => return Attempt::Settled(Err(error)),
+                    Err(Attempted::Transient { why, after }) => {
+                        return Attempt::Transient { why, after }
+                    }
+                    Ok(response) => response,
+                };
+                let status = response.status().as_u16();
+                if status == 404 {
+                    return Attempt::Settled(Err(BlobError::NotFound));
+                }
+                if status != 200 {
+                    return Attempt::Settled(Err(problem("GET", key, response).await));
+                }
+                let version = etag(&response).unwrap_or_default();
+                match response.bytes().await {
+                    Ok(body) => Attempt::Settled(Ok((body.to_vec(), version))),
+                    // The headers arrived and the body did not. The object is
+                    // there; asking for it again is worth one more request.
+                    Err(err) => Attempt::Transient {
+                        why: format!("{what}: {err}"),
+                        after: None,
+                    },
+                }
+            }
+        })
+        .await
     }
 
     async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
@@ -351,14 +658,30 @@ impl BlobStore for S3Store {
 
     async fn delete(&self, keys: &[String]) -> BlobResult<()> {
         for key in keys {
-            let response = self
-                .send(Method::DELETE, &self.url(key), &[], Vec::new())
-                .await?;
-            let status = response.status().as_u16();
-            // An object that is not there is the outcome asked for.
-            if status >= 300 && status != 404 {
-                return Err(problem("DELETE", key, response).await);
-            }
+            let store = self;
+            let url = self.url(key);
+            let what = format!("DELETE {key}");
+            with_retries(self.clock.as_ref(), RetryLimits::IDEMPOTENT, &what, |_| {
+                let (url, what) = (url.as_str(), what.as_str());
+                async move {
+                    match store.once(Method::DELETE, url, &[], Vec::new(), what).await {
+                        Err(Attempted::Fatal(error)) => Attempt::Settled(Err(error)),
+                        Err(Attempted::Transient { why, after }) => {
+                            Attempt::Transient { why, after }
+                        }
+                        Ok(response) => {
+                            let status = response.status().as_u16();
+                            // An object that is not there is the outcome
+                            // asked for.
+                            if status < 300 || status == 404 {
+                                return Attempt::Settled(Ok(()));
+                            }
+                            Attempt::Settled(Err(problem("DELETE", key, response).await))
+                        }
+                    }
+                }
+            })
+            .await?;
         }
         Ok(())
     }
@@ -374,27 +697,7 @@ impl BlobStore for S3Store {
             if !token.is_empty() {
                 query.push(("continuation-token".to_string(), token.clone()));
             }
-            let address = format!(
-                "{}/{}?{}",
-                self.endpoint,
-                self.bucket,
-                canonical_query(&query)
-            );
-            let response = self.send(Method::GET, &address, &[], Vec::new()).await?;
-            let status = response.status().as_u16();
-            let body = response
-                .bytes()
-                .await
-                .map_err(|err| BlobError::Other(err.to_string()))?;
-            let body = String::from_utf8(body.to_vec())
-                .map_err(|err| BlobError::Other(format!("listing {prefix} is not UTF-8: {err}")))?;
-            if status != 200 {
-                return Err(BlobError::Other(format!(
-                    "listing {prefix} failed ({status}): {}",
-                    truncate(&body, 200)
-                )));
-            }
-            let page = parse_listing(&body)?;
+            let page = self.listing_page(prefix, &query).await?;
             for (key, size, version) in page.contents {
                 // Keys come back scoped; callers speak in unscoped keys.
                 let key = key
@@ -445,27 +748,7 @@ impl BlobStore for S3Store {
             if let Some(token) = &token {
                 query.push(("continuation-token".to_string(), token.clone()));
             }
-            let address = format!(
-                "{}/{}?{}",
-                self.endpoint,
-                self.bucket,
-                canonical_query(&query)
-            );
-            let response = self.send(Method::GET, &address, &[], Vec::new()).await?;
-            let status = response.status().as_u16();
-            let body = response
-                .bytes()
-                .await
-                .map_err(|err| BlobError::Other(err.to_string()))?;
-            let body = String::from_utf8(body.to_vec())
-                .map_err(|err| BlobError::Other(format!("listing {prefix} is not UTF-8: {err}")))?;
-            if status != 200 {
-                return Err(BlobError::Other(format!(
-                    "listing {prefix} failed ({status}): {}",
-                    truncate(&body, 200)
-                )));
-            }
-            let page = parse_listing(&body)?;
+            let page = self.listing_page(prefix, &query).await?;
             for (key, size, version) in page.contents {
                 let key = key
                     .strip_prefix(&self.prefix)
@@ -591,7 +874,6 @@ fn parse_listing(body: &str) -> BlobResult<Listing> {
     }
     Ok(listing)
 }
-
 fn element(body: &str, name: &str) -> Option<String> {
     let open = format!("<{name}>");
     let close = format!("</{name}>");
