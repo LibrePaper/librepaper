@@ -1,7 +1,10 @@
 //! Publishing a directory: an upload is taken whole or refused whole, and a
 //! later publish of one file keeps the rest.
 
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 use serde_json::json;
 
@@ -312,4 +315,197 @@ async fn a_one_file_publish_over_a_directory_keeps_the_other_files() {
         Some("# Main, revised")
     );
     assert_eq!(texts.get("chapter.txt").map(String::as_str), Some("kept"));
+}
+
+/// A replacement's quota preflight measures the resulting tree.  An old
+/// sibling omitted by a directory upload is deleted, so it must not make the
+/// replacement fail the document ceiling.
+#[tokio::test]
+async fn directory_replacement_does_not_count_deleted_siblings() {
+    let config = Configuration {
+        max_document: 100,
+        ..Configuration::default()
+    };
+    let server = test_server_with(
+        config,
+        crate::auth::Policy::parse(TEST_PUBLISHER),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let (status, first) = directory(&server, "", vec![("old.txt", vec![b'x'; 60])]).await;
+    assert_eq!(status, 201, "{first}");
+    let slug = text(&first, "slug");
+    let (status, replacement) = directory(&server, &slug, vec![("new.txt", vec![b'y'; 60])]).await;
+    assert_eq!(status, 201, "a deleted sibling was counted: {replacement}");
+}
+
+/// The checkpoint budget is admitted after the publication receipt and peak
+/// reservation.  A refusal there must clear both, leaving the document ready
+/// for a later retry rather than a permanently pending operation.
+#[tokio::test]
+async fn failed_replacement_checkpoint_admission_clears_receipt() {
+    let mut config = Configuration::default();
+    config.session.checkpoint_owner_per_hour = 1;
+    let server = test_server_with(
+        config,
+        crate::auth::Policy::parse(TEST_PUBLISHER),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let first = publish_test_document(&server.url).await;
+    let slug = text(&first, "slug");
+    let (status, body) = post(
+        &server.url,
+        "/api/documents",
+        json!({"slug": slug, "title": "Paper", "html": "<p>replacement</p>"}),
+    )
+    .await;
+    assert_eq!(status, 429, "{body}");
+    let pending = server
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .expect("catalogue")
+        .document(&slug)
+        .expect("document lookup")
+        .expect("document")
+        .pending_publication;
+    assert!(pending.is_none(), "failed admission stranded {pending:?}");
+}
+
+/// Chat channels are purged only after deletion admission succeeds.  A stale
+/// or missing document must not make an unrelated live channel disappear.
+#[tokio::test]
+async fn failed_delete_does_not_purge_chat_channel() {
+    let server = new_test_server().await;
+    let channel = server
+        .instance
+        .chat
+        .create("missing-document")
+        .await
+        .expect("channel");
+    let id = text(&channel, "id").to_string();
+    let token = text(&channel, "token").to_string();
+    assert!(server
+        .instance
+        .delete_document("missing-document")
+        .await
+        .is_err());
+    let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+    assert!(server
+        .instance
+        .chat
+        .attach("missing-document", &id, &token, "user", true, 1, sender,)
+        .await
+        .is_ok());
+}
+
+struct PublicationGate {
+    inner: Arc<dyn BlobStore>,
+    armed: AtomicBool,
+    started: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl BlobStore for PublicationGate {
+    async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
+        self.inner.get(key).await
+    }
+    async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
+        self.inner.get_versioned(key).await
+    }
+    async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
+        if key.contains("/blobs/") && self.armed.swap(false, Ordering::SeqCst) {
+            self.started.notify_one();
+            self.resume.notified().await;
+            return Err(BlobError::Other("injected publication failure".into()));
+        }
+        self.inner.put(key, body, content_type).await
+    }
+    async fn swap(&self, key: &str, body: Vec<u8>, expected: &str) -> BlobResult<BlobVersion> {
+        self.inner.swap(key, body, expected).await
+    }
+    async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
+        self.inner.list(prefix).await
+    }
+    async fn delete(&self, keys: &[String]) -> BlobResult<()> {
+        self.inner.delete(keys).await
+    }
+    fn describe(&self) -> String {
+        self.inner.describe()
+    }
+}
+
+/// A failed checkpoint rollback must not erase an editor update that was
+/// concurrent with publication.  The publication gate makes the editor wait
+/// until rollback completes, then its update is applied to the restored tree.
+#[tokio::test]
+async fn failed_replacement_preserves_concurrent_editor_update() {
+    let dir = tempfile::tempdir().expect("temporary store");
+    let gate = Arc::new(PublicationGate {
+        inner: Arc::new(FsStore::new(dir.path())),
+        armed: AtomicBool::new(false),
+        started: tokio::sync::Notify::new(),
+        resume: tokio::sync::Notify::new(),
+    });
+    let (url, server) = server_over_blobs_legacy(gate.clone(), Configuration::default()).await;
+    let first = publish_test_document(&url).await;
+    let slug = text(&first, "slug").to_string();
+    let room = server.rooms.get(&slug).await;
+    let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+    room.attach(99, "editor-address".into(), sender, true).await;
+    gate.armed.store(true, Ordering::SeqCst);
+
+    let request = tokio::spawn({
+        let url = url.clone();
+        let slug = slug.clone();
+        async move {
+            post(
+                &url,
+                "/api/documents",
+                json!({"slug": slug, "title": "Paper", "html": "<p>published</p>"}),
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), gate.started.notified())
+        .await
+        .expect("publication reached injected failure");
+
+    let update = {
+        let state = room.state.lock().await;
+        let peer = crate::document::session::new_doc();
+        crate::document::session::apply_update(
+            &peer,
+            &crate::document::session::encode_state(&state.session.doc),
+        )
+        .expect("copy live state");
+        let vector = crate::document::session::encode_vector(&peer);
+        crate::document::session::put_text(&peer, "notes.txt", "concurrent editor work");
+        crate::document::session::encode_diff(&peer, &vector).expect("encode editor update")
+    };
+    let editor = tokio::spawn({
+        let room = room.clone();
+        async move { room.receive_update(99, &update, 1, "editor").await }
+    });
+    // The publication owns the mutation gate while the injected checkpoint
+    // is paused.  Let it finish and roll back before the queued editor edit
+    // runs against the restored state.
+    gate.resume.notify_one();
+    assert_eq!(request.await.expect("request task").0, 500);
+    assert!(matches!(
+        editor.await.expect("editor task"),
+        crate::room::Applied::Relay
+    ));
+
+    let state = room.state.lock().await;
+    let texts = crate::document::session::texts_of(&state.session.doc);
+    assert_eq!(
+        texts.get("notes.txt").map(String::as_str),
+        Some("concurrent editor work")
+    );
 }

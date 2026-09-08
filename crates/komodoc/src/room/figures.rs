@@ -37,6 +37,7 @@ impl Room {
     /// Names a figure in the document, at a path. The bytes are already in the
     /// store; this is what makes them a figure of this document.
     pub async fn name_asset(&self, path: &str, sha: &str) {
+        let _publication_writer = self.publication_write.lock().await;
         if self.read_only() {
             // Another server owns this room; naming a figure in our copy
             // would only diverge from the one being persisted (R23).
@@ -64,6 +65,17 @@ impl Room {
     /// Bytes the document already has are not written again: the same figure
     /// uploaded twice is one object, and the second upload costs a hash.
     pub async fn put_asset(
+        &self,
+        body: Vec<u8>,
+        ceilings: (i64, i64),
+    ) -> Result<(String, i64), String> {
+        self.put_asset_unlocked(body, ceilings).await
+    }
+
+    /// Asset staging used by a publication that already owns the mutation
+    /// gate.  The public route wrapper above keeps standalone asset writes
+    /// serialized with publications without deadlocking the replacement path.
+    pub(crate) async fn put_asset_unlocked(
         &self,
         body: Vec<u8>,
         ceilings: (i64, i64),

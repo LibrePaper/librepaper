@@ -53,19 +53,9 @@ impl Room {
         why: &str,
         by: &str,
     ) -> Result<Option<String>, String> {
-        self.checkpoint_impl(why, by, false, false, None, true)
-            .await
-    }
-
-    /// The same immediate checkpoint while retaining one older checkpoint
-    /// long enough for a restore to read its assets after quota shedding.
-    pub(super) async fn checkpoint_now_protected(
-        &self,
-        why: &str,
-        by: &str,
-        protected: &str,
-    ) -> Result<Option<String>, String> {
-        self.checkpoint_impl(why, by, false, false, Some(protected), false)
+        // The caller holds `publication_write` across the CRDT mutation and
+        // this checkpoint. A second lock here would deadlock the publication.
+        self.checkpoint_impl_locked(why, by, false, false, None, true)
             .await
     }
 
@@ -80,6 +70,22 @@ impl Room {
     }
 
     pub(super) async fn checkpoint_impl(
+        &self,
+        why: &str,
+        by: &str,
+        defer: bool,
+        force_event: bool,
+        protected: Option<&str>,
+        budget_reserved: bool,
+    ) -> Result<Option<String>, String> {
+        let _publication_checkpoint = self.publication_checkpoint.read().await;
+        self.checkpoint_impl_locked(why, by, defer, force_event, protected, budget_reserved)
+            .await
+    }
+
+    /// Checkpoint implementation for callers that already hold the room's
+    /// publication mutation gate.
+    async fn checkpoint_impl_locked(
         &self,
         why: &str,
         by: &str,
@@ -954,7 +960,7 @@ impl Room {
         let base_sha = match base_sha {
             Some(sha) if !sha.is_empty() => sha,
             _ => self
-                .checkpoint_now_protected("quiet", by, &point.sha)
+                .checkpoint_impl("quiet", by, false, false, Some(&point.sha), false)
                 .await?
                 .ok_or_else(|| "could not create a restore base checkpoint".to_string())?,
         };
@@ -1150,29 +1156,38 @@ impl Room {
     /// a test asks when it wants to know the name the next checkpoint will
     /// have.
     pub async fn tree(&self) -> crate::document::history::Tree {
+        let _publication_writer = self.publication_write.lock().await;
         let state = self.state.lock().await;
         tree_of(&state.session.doc, &state.session.asset_sizes).0
     }
 
-    /// Restore the exact pre-publication tree after staging or catalogue
-    /// commit fails. This is a compensating CRDT mutation, persisted before
-    /// the failed request returns, and is never broadcast as an accepted
-    /// publication.
-    pub async fn rollback_publication(
+    /// The caller already holds `publication_write`.  Keeping the actual
+    /// compensating write separate avoids trying to take a non-reentrant
+    /// mutex while a failed publication or suggestion is being unwound.
+    pub(crate) async fn rollback_publication_inner(
         &self,
         tree: &crate::document::history::Tree,
         bodies: &HashMap<String, String>,
         format: &str,
+        staged_assets: &[String],
     ) -> Result<(), String> {
         {
             let mut state = self.state.lock().await;
             session::restore(&state.session.doc, tree, bodies);
-            state.session.asset_sizes = tree
-                .files
-                .values()
-                .filter(|entry| entry.kind == "asset")
-                .map(|entry| (entry.sha.clone(), entry.size))
-                .collect();
+            // Asset uploads are deliberately allowed to overlap the storage
+            // portion of a publication so an independent upload cannot block
+            // on a paused object write.  Remove only this publication's
+            // staged digests; preserve any asset another request committed in
+            // the meantime.
+            for sha in staged_assets {
+                state.session.asset_sizes.remove(sha);
+            }
+            for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
+                state
+                    .session
+                    .asset_sizes
+                    .insert(entry.sha.clone(), entry.size);
+            }
             state.session.format = format.to_string();
             state.session.generation += 1;
             state.session.mark_dirty(now_unix());
@@ -1184,6 +1199,7 @@ impl Room {
     /// Puts a text at a path in the document, beside whatever is already
     /// there. What a directory publish adds each of its chapters with.
     pub async fn add_text(&self, path: &str, body: &str) {
+        let _publication_writer = self.publication_write.lock().await;
         if self.read_only() {
             // Another server owns this room; adding to our copy would only
             // diverge from the one being persisted (R23).

@@ -18,7 +18,7 @@ use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::config::{Configuration, CHECKPOINT_DEFER_SECONDS};
 use crate::document::history::{self, Checkpoint, Manifest};
@@ -304,13 +304,23 @@ pub struct Room {
     journal: Arc<std::sync::OnceLock<Arc<crate::storage::journal::JournalRuntime>>>,
     /// Serializes session snapshots and conditional writes without blocking edits.
     session_write: Mutex<()>,
+    /// Serializes mutations that must remain one publication operation from
+    /// live CRDT apply through checkpoint/commit (or rollback).  Socket edits
+    /// and route-driven CRDT writes use the same gate, so a failed publication
+    /// cannot restore over an editor update that arrived halfway through it.
+    pub(crate) publication_write: Mutex<()>,
+    /// Prevents an ordinary checkpoint from snapshotting a publication's
+    /// transient CRDT state. Ordinary checkpoints hold a read permit while
+    /// doing their normal storage work; a publication holds the write permit
+    /// for its mutation and compensating rollback.
+    pub(crate) publication_checkpoint: RwLock<()>,
     /// Keep checkpoint snapshots and their commits in the same order.
     checkpoint_write: Mutex<()>,
     /// A restore spans several storage reads and two checkpoints. Serializing
     /// that whole operation keeps a later restore from choosing the first
     /// restore's intermediate state as its merge base, while ordinary edits
     /// continue to use the session lock independently.
-    restore_write: Mutex<()>,
+    pub(crate) restore_write: Mutex<()>,
     /// Manifest writers serialize independently of edits and session persistence.
     manifest_write: Mutex<()>,
     pub state: Mutex<RoomState>,
@@ -712,6 +722,8 @@ impl RoomSet {
             catalog: self.catalog.clone(),
             journal: self.journal.clone(),
             session_write: Mutex::new(()),
+            publication_write: Mutex::new(()),
+            publication_checkpoint: RwLock::new(()),
             checkpoint_write: Mutex::new(()),
             restore_write: Mutex::new(()),
             manifest_write: Mutex::new(()),
@@ -1571,6 +1583,7 @@ impl Room {
         std::collections::BTreeMap<String, String>,
         Vec<CommentView>,
     ) {
+        let _publication_writer = self.publication_write.lock().await;
         let state = self.state.lock().await;
         let source = session::text_of(&state.session.doc);
         let format = state.session.format.clone();
@@ -1696,11 +1709,13 @@ impl Room {
     /// The source as it stands, which is what a checkpoint is made of and what
     /// the command line reads.
     pub async fn source(&self) -> String {
+        let _publication_writer = self.publication_write.lock().await;
         let state = self.state.lock().await;
         session::text_of(&state.session.doc)
     }
 
     pub async fn format(&self) -> String {
+        let _publication_writer = self.publication_write.lock().await;
         self.state.lock().await.session.format.clone()
     }
 
@@ -1719,6 +1734,7 @@ impl Room {
     /// document is called; a one-file publish does not and takes the name its
     /// format implies.
     pub async fn set_main_file(&self, source: &str, format: &str, named: &str) -> Vec<u8> {
+        let _publication_writer = self.publication_write.lock().await;
         if self.read_only() {
             // Another server owns this room; writing our copy would only
             // diverge from the one that is actually being persisted, and
@@ -1777,6 +1793,7 @@ impl Room {
     /// The response and server vector describe the same locked snapshot.
     /// Browsers use this vector to upload only state the server is missing.
     pub async fn open_state_with_vector(&self, vector: Option<&[u8]>) -> (Vec<u8>, usize, Vec<u8>) {
+        let _publication_writer = self.publication_write.lock().await;
         let state = self.state.lock().await;
         let update = match vector {
             Some(raw) => session::encode_diff(&state.session.doc, raw)
@@ -1804,6 +1821,7 @@ impl Room {
     /// concurrent writers can talk their way past the quota between them and
     /// the ordinary path measures the document but avoids cloning its CRDT.
     pub async fn receive_update(&self, socket: u64, update: &[u8], seq: i64, by: &str) -> Applied {
+        let _publication_writer = self.publication_write.lock().await;
         if self.read_only() {
             // Another server holds this room's lease. Applying and relaying
             // the update anyway would show every other peer a document this

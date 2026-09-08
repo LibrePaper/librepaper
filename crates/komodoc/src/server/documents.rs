@@ -31,8 +31,11 @@ pub(super) fn upload_digest(upload: &Upload) -> String {
 
 impl Server {
     pub async fn delete_document(&self, slug: &str) -> Result<usize, String> {
-        self.chat.purge(slug).await;
         let storage_id = self.store.begin_delete(slug)?;
+        // Chat is part of the document's durable lifecycle.  Purging before
+        // admission would erase comments when begin_delete rejects a missing,
+        // already-retired, or otherwise ineligible row.
+        self.chat.purge(slug).await;
         self.rooms
             .purge_with_identity(slug, storage_id.as_deref())
             .await;
@@ -463,6 +466,13 @@ impl Server {
         who: &Caller,
         existing: &IndexEntry,
     ) -> Result<IndexEntry, Reply> {
+        // Restore and suggestion acceptance use this gate already. Take it
+        // first so a publication cannot mutate the live CRDT between their
+        // merge-base read and their checkpoint; ordinary socket edits remain
+        // free to proceed while either operation is in storage I/O.
+        let _restore_writer = room.restore_write.lock().await;
+        let _publication_writer = room.publication_write.lock().await;
+        let _publication_checkpoint = room.publication_checkpoint.write().await;
         let (current, rollback_bodies, rollback_format) = {
             let state = room.state.lock().await;
             let (tree, bodies) =
@@ -510,8 +520,10 @@ impl Server {
                 return Err(write_json(507, &json!({"error": error})));
             }
         }
-        room.reserve_publication_checkpoint()
-            .map_err(|error| write_json(429, &json!({"error": error, "retryable": true})))?;
+        if let Err(error) = room.reserve_publication_checkpoint() {
+            let _ = self.store.abort_publication(&existing.slug, &error).await;
+            return Err(write_json(429, &json!({"error": error, "retryable": true})));
+        }
 
         let mut wanted: std::collections::HashSet<String> =
             parsed.files.iter().map(|(path, _)| path.clone()).collect();
@@ -528,7 +540,10 @@ impl Server {
                 crate::document::paths::check(&self.config.paths(), path)
             {
                 let (sha, size) = match room
-                    .put_asset(raw.clone(), (self.config.max_asset, self.config.max_assets))
+                    .put_asset_unlocked(
+                        raw.clone(),
+                        (self.config.max_asset, self.config.max_assets),
+                    )
                     .await
                 {
                     Ok(result) => result,
@@ -658,6 +673,8 @@ impl Server {
         } else {
             parsed.title.clone()
         };
+        let staged_assets: Vec<String> =
+            new_assets.values().map(|entry| entry.sha.clone()).collect();
         let sha = match room.checkpoint_publication_now("cli", &who.key).await {
             Ok(Some(sha)) => sha,
             // Deferred: the text is in the session and durable at the next
@@ -665,7 +682,12 @@ impl Server {
             Ok(None) => existing.sha.clone(),
             Err(_) => {
                 if let Err(error) = room
-                    .rollback_publication(&current, &rollback_bodies, &rollback_format)
+                    .rollback_publication_inner(
+                        &current,
+                        &rollback_bodies,
+                        &rollback_format,
+                        &staged_assets,
+                    )
                     .await
                 {
                     eprintln!("warning: could not roll back {}: {error}", existing.slug);
@@ -683,7 +705,12 @@ impl Server {
         if self.store.catalog.is_some() {
             if let Err(error) = self.store.commit_publication(&existing.slug, &sha).await {
                 if let Err(rollback) = room
-                    .rollback_publication(&current, &rollback_bodies, &rollback_format)
+                    .rollback_publication_inner(
+                        &current,
+                        &rollback_bodies,
+                        &rollback_format,
+                        &staged_assets,
+                    )
                     .await
                 {
                     eprintln!("warning: could not roll back {}: {rollback}", existing.slug);
@@ -1024,26 +1051,51 @@ impl Server {
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             }
         }
-        // What survives this upload: the main file and every path it names.
-        // A file the document already has under one of these paths is being
-        // replaced, so its old bytes do not count against the ceilings below.
-        let mut wanted: std::collections::HashSet<&str> =
-            parsed.files.iter().map(|(path, _)| path.as_str()).collect();
-        wanted.insert(main_path);
-        let mut by_sha: HashMap<String, i64> = HashMap::new();
+        // Build the resulting tree's retained payload.  A directory upload
+        // replaces the directory, so absent old files are deleted and must
+        // not be counted; paths that survive but are not part of this upload
+        // (or are replaced by it) retain their old/new entry respectively.
+        let directory = !parsed.main.is_empty();
+        let mut resulting: HashMap<String, (String, String, i64)> = HashMap::new();
         for (path, entry) in &current.files {
-            if entry.kind == "asset" && !wanted.contains(path.as_str()) {
-                by_sha.entry(entry.sha.clone()).or_insert(entry.size);
-            }
-        }
-        for (path, bytes) in &parsed.files {
-            if let Ok(crate::document::paths::Kind::Asset) =
-                crate::document::paths::check(&self.config.paths(), path)
+            if directory && !parsed.files.iter().any(|(sent, _)| sent == path) && path != main_path
             {
-                by_sha.insert(
+                continue;
+            }
+            resulting.insert(
+                path.clone(),
+                (entry.kind.clone(), entry.sha.clone(), entry.size),
+            );
+        }
+        resulting.insert(
+            main_path.to_string(),
+            (
+                "text".to_string(),
+                crate::document::store::digest_of(&parsed.source),
+                parsed.source.len() as i64,
+            ),
+        );
+        for (path, bytes) in &parsed.files {
+            let kind = crate::document::paths::check(&self.config.paths(), path)
+                .expect("validated directory path");
+            let (kind, sha) = match kind {
+                crate::document::paths::Kind::Text => (
+                    "text".to_string(),
+                    crate::document::store::digest_of(
+                        std::str::from_utf8(bytes).expect("validated UTF-8 text"),
+                    ),
+                ),
+                crate::document::paths::Kind::Asset => (
+                    "asset".to_string(),
                     crate::document::store::digest_of_bytes(bytes),
-                    bytes.len() as i64,
-                );
+                ),
+            };
+            resulting.insert(path.clone(), (kind, sha, bytes.len() as i64));
+        }
+        let mut by_sha: HashMap<String, i64> = HashMap::new();
+        for (kind, sha, size) in resulting.values() {
+            if kind == "asset" {
+                by_sha.entry(sha.clone()).or_insert(*size);
             }
         }
         let assets_total: i64 = by_sha.values().sum();
@@ -1056,19 +1108,11 @@ impl Server {
                 )}),
             ));
         }
-        let mut text_total = parsed.source.len();
-        for (path, entry) in &current.files {
-            if entry.kind == "text" && !wanted.contains(path.as_str()) {
-                text_total += entry.size as usize;
-            }
-        }
-        for (path, bytes) in &parsed.files {
-            if let Ok(crate::document::paths::Kind::Text) =
-                crate::document::paths::check(&self.config.paths(), path)
-            {
-                text_total += bytes.len();
-            }
-        }
+        let text_total: usize = resulting
+            .values()
+            .filter(|(kind, _, _)| kind == "text")
+            .map(|(_, _, size)| *size as usize)
+            .sum();
         if text_total > self.config.max_document {
             return Err(write_json(413, &json!({"error": "document too large"})));
         }

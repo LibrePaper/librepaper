@@ -226,7 +226,12 @@ impl Room {
             Ok(Some(sha)) => sha,
             Ok(None) => {
                 let _ = self
-                    .rollback_publication(&rollback_tree, &rollback_bodies, &rollback_format)
+                    .rollback_publication_inner(
+                        &rollback_tree,
+                        &rollback_bodies,
+                        &rollback_format,
+                        &[],
+                    )
                     .await;
                 return Err(AcceptError::Failed(
                     "could not create the accept checkpoint".to_string(),
@@ -234,7 +239,12 @@ impl Room {
             }
             Err(err) => {
                 let _ = self
-                    .rollback_publication(&rollback_tree, &rollback_bodies, &rollback_format)
+                    .rollback_publication_inner(
+                        &rollback_tree,
+                        &rollback_bodies,
+                        &rollback_format,
+                        &[],
+                    )
                     .await;
                 return Err(AcceptError::Failed(err));
             }
