@@ -11,6 +11,7 @@ use chacha20poly1305::{
 };
 use std::collections::HashSet;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, RwLock};
 
@@ -23,9 +24,16 @@ mod chat;
 mod checkpoints;
 mod comments;
 mod documents;
+mod execution;
 mod journal;
 mod operations;
 mod room_edits;
+
+pub use execution::{
+    CatalogCompletion, CatalogExecError, CatalogExecutionSnapshot, CatalogOutcome,
+    CatalogReservation, MAX_ADMITTED_REQUESTS, MAX_EXECUTING, MAX_QUEUED_BYTES, MAX_REQUEST_BYTES,
+    MAX_WAITING_PRODUCERS, SMALL_REQUEST_BYTES,
+};
 
 const LATEST_SCHEMA: i64 = 14;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
@@ -96,6 +104,8 @@ pub enum CatalogError {
     Conflict(String),
     NotFound,
     Busy,
+    /// The catalogue connection has been closed by shutdown.
+    Closed,
 }
 
 impl fmt::Display for CatalogError {
@@ -106,6 +116,7 @@ impl fmt::Display for CatalogError {
             Self::Conflict(err) => write!(f, "catalogue conflict: {err}"),
             Self::NotFound => f.write_str("catalogue record not found"),
             Self::Busy => f.write_str("catalogue is busy"),
+            Self::Closed => f.write_str("catalogue is closed"),
         }
     }
 }
@@ -475,7 +486,11 @@ pub struct JournalSegment {
 pub struct Catalog {
     #[cfg(test)]
     pub(crate) connection_operations: std::sync::atomic::AtomicUsize,
-    connection: Mutex<Connection>,
+    connection: Mutex<Option<Connection>>,
+    // Bounded admission and lifecycle for the asynchronous execution
+    // boundary.  It shares this connection, so `execute` and the synchronous
+    // API observe the same TEMP reservation table.
+    execution: execution::CatalogExecution,
     // One authority owns publication, recovery, and physical journal reclamation.
     // Every runtime/worker built from this catalogue shares the same gate.
     pub(crate) journal_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
@@ -557,7 +572,8 @@ impl Catalog {
             )
             .map_err(CatalogError::from)?;
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: Mutex::new(Some(connection)),
+            execution: execution::CatalogExecution::new(),
             journal_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             connection_operations: std::sync::atomic::AtomicUsize::new(0),
@@ -587,8 +603,36 @@ impl Catalog {
         operation(&mut connection)
     }
 
-    fn lock_connection(&self) -> CatalogResult<MutexGuard<'_, Connection>> {
-        self.connection.lock().map_err(|_| CatalogError::Busy)
+    /// Lock the one connection.
+    ///
+    /// A job that panics while holding this lock poisons it.  The connection
+    /// itself survives that panic: an open `Transaction` rolls back through
+    /// its own guard as the stack unwinds, and no other catalogue state lives
+    /// behind the lock.  Refusing the lock afterwards would instead destroy
+    /// the TEMP `room_edit_reservations` table for the rest of the process,
+    /// silently dropping live edit quota, so the poison is recovered rather
+    /// than reported.
+    fn lock_connection(&self) -> CatalogResult<ConnectionGuard<'_>> {
+        let guard = match self.connection.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard.is_none() {
+            return Err(CatalogError::Closed);
+        }
+        Ok(ConnectionGuard(guard))
+    }
+
+    /// Close SQLite.  Only the execution boundary's shutdown calls this, and
+    /// only once every accepted job and completion hook has settled.
+    fn close_connection(&self) {
+        let mut guard = match self.connection.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(connection) = guard.take() {
+            let _ = connection.close();
+        }
     }
 
     fn immediate<T>(
@@ -602,6 +646,25 @@ impl Catalog {
         let value = operation(&transaction)?;
         transaction.commit().map_err(CatalogError::from)?;
         Ok(value)
+    }
+}
+
+/// The locked catalogue connection.  The `Option` behind the mutex exists so
+/// shutdown can close SQLite; every other path sees an open connection or a
+/// `Closed` error.
+pub(crate) struct ConnectionGuard<'a>(MutexGuard<'a, Option<Connection>>);
+
+impl Deref for ConnectionGuard<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.0.as_ref().expect("connection checked when locked")
+    }
+}
+
+impl DerefMut for ConnectionGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.0.as_mut().expect("connection checked when locked")
     }
 }
 

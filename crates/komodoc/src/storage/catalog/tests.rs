@@ -4,7 +4,7 @@ use super::{
 };
 use sha2::Digest;
 
-fn account() -> Account {
+pub(super) fn account() -> Account {
     Account {
         id: "acct-1".into(),
         provider: "github".into(),
@@ -119,7 +119,7 @@ fn new_account_examples_resume_without_reenrolling_on_profile_refresh() {
         .is_empty());
 }
 
-fn document() -> NewDocument {
+pub(super) fn document() -> NewDocument {
     NewDocument {
         slug: "doc".into(),
         storage_id: "storage-1".into(),
