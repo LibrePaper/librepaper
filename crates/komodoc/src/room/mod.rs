@@ -36,6 +36,7 @@ mod command;
 mod comments;
 pub(crate) mod error;
 mod figures;
+mod resident;
 mod retention;
 mod suggestions;
 pub(crate) mod text;
@@ -2564,29 +2565,7 @@ impl Room {
     /// manifest metadata, so a room cannot bypass the deployment budget by
     /// keeping those structures outside the session byte count.
     async fn resident_bytes(&self) -> usize {
-        let mut state = self.state.lock().await;
-        let generation = state.session.generation;
-        let session = match state.session.encoded_size {
-            Some((encoded, size)) if encoded == generation => size.max(0) as usize,
-            _ => {
-                let size = session::encode_state(&state.session.doc).len();
-                state.session.note_encoded_len(generation, size);
-                size
-            }
-        };
-        let comments = serde_json::to_vec(&state.comments)
-            .map(|bytes| bytes.len())
-            .unwrap_or(usize::MAX);
-        let manifest = serde_json::to_vec(&state.manifest)
-            .map(|bytes| bytes.len())
-            .unwrap_or(usize::MAX);
-        session
-            .saturating_add(comments)
-            .saturating_add(manifest)
-            .saturating_add(state.session.asset_sizes.len() * std::mem::size_of::<(String, i64)>())
-            .saturating_add(
-                state.session.rendering_sizes.len() * std::mem::size_of::<(String, i64)>(),
-            )
+        self.state.lock().await.resident_estimate()
     }
 }
 
