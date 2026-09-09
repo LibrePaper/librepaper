@@ -43,7 +43,7 @@ pub(super) async fn fixture(
     (dir, store, rooms)
 }
 
-/// A catalogue history is paged at 200 rows.  Reopening and changing one
+/// A catalogue history is read a page at a time.  Reopening and changing one
 /// checkpoint must not treat the first page as the complete manifest and
 /// delete the newer rows.
 #[tokio::test]
@@ -99,14 +99,22 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
         .await
         .unwrap();
     publication_token.commit();
-    for revision in 1..=205 {
+    // One more checkpoint than a page holds, so the listing below has to ask
+    // for a second page and carry its cursor across. The page size is this
+    // case's own argument, so the boundary is crossed at seven checkpoints
+    // just as faithfully as at two hundred and six -- and each checkpoint is
+    // a publication receipt, object writes and a SQL commit, which is why the
+    // count is what this case used to spend all its time on.
+    const PAGE: u32 = 5;
+    const CHECKPOINTS: usize = PAGE as usize + 2;
+    for revision in 1..CHECKPOINTS {
         room.set_source(&format!("revision-{revision}"), "markdown")
             .await
             .unwrap();
         room.checkpoint_now("cli", "alice").await.unwrap();
     }
     let before = room.manifest().await;
-    assert_eq!(before.checkpoints.len(), 206);
+    assert_eq!(before.checkpoints.len(), CHECKPOINTS);
     let newest = before.latest().unwrap().sha.clone();
     rooms.flush().await;
     blobs
@@ -118,7 +126,7 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
     reopened.attach_store(store);
     let reopened_room = reopened.get("catalog-history").await;
     let loaded = reopened_room.manifest().await;
-    assert_eq!(loaded.checkpoints.len(), 206);
+    assert_eq!(loaded.checkpoints.len(), CHECKPOINTS);
     assert_eq!(loaded.latest().unwrap().sha, newest);
     let (old_tree, old_bodies) = reopened_room
         .checkpoint_texts(&loaded.checkpoints[0])
@@ -130,22 +138,25 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
         .label(&loaded.checkpoints[0].sha, "keep")
         .await
         .unwrap());
-    assert_eq!(reopened_room.manifest().await.checkpoints.len(), 206);
+    assert_eq!(
+        reopened_room.manifest().await.checkpoints.len(),
+        CHECKPOINTS
+    );
 
     let mut seen = 0;
     let mut after = None;
     loop {
-        let page = catalog.checkpoints("catalog-history", after, 200).unwrap();
+        let page = catalog.checkpoints("catalog-history", after, PAGE).unwrap();
         if page.is_empty() {
             break;
         }
         seen += page.len();
         after = page.last().map(|row| row.seq);
-        if page.len() < 200 {
+        if page.len() < PAGE as usize {
             break;
         }
     }
-    assert_eq!(seen, 206);
+    assert_eq!(seen, CHECKPOINTS);
 }
 
 /// A `BlobStore` wrapper that can pause one specific (op, key) call until told

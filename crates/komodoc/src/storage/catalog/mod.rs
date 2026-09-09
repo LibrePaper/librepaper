@@ -566,13 +566,22 @@ impl Catalog {
     }
 
     fn from_connection(mut connection: Connection) -> CatalogResult<Self> {
+        // `FULL` fsyncs the WAL on every commit, which is what a deployment
+        // wants and what makes a file-backed test spend its time waiting on
+        // the disk. Under the relaxed policy -- tests, and nothing else --
+        // `OFF` keeps the same SQL semantics without the sync.
+        let synchronous = if crate::storage::blob::durable() {
+            "FULL"
+        } else {
+            "OFF"
+        };
         connection
-            .execute_batch(
+            .execute_batch(&format!(
                 "PRAGMA foreign_keys = ON;
                  PRAGMA busy_timeout = 5000;
-                 PRAGMA synchronous = FULL;
-                 PRAGMA journal_mode = WAL;",
-            )
+                 PRAGMA synchronous = {synchronous};
+                 PRAGMA journal_mode = WAL;"
+            ))
             .map_err(CatalogError::from)?;
         let foreign_keys: i64 = connection
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
