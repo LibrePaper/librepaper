@@ -766,7 +766,7 @@ fn durable_create_dir_all(path: &Path) -> std::io::Result<()> {
     match std::fs::create_dir(path) {
         Ok(()) => {
             if let Some(parent) = path.parent() {
-                std::fs::File::open(parent)?.sync_all()?;
+                sync_directory(parent)?;
             }
             Ok(())
         }
