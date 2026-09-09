@@ -7,6 +7,7 @@
 
 pub mod checkpoint_cache;
 pub mod history;
+pub mod html;
 pub mod paths;
 pub mod render;
 pub mod retention;

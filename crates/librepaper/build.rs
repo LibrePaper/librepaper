@@ -24,6 +24,7 @@ fn main() {
         ("wasm/markdown.wasm", "make wasm"),
         ("wasm/bibliography.wasm", "make wasm"),
         ("wasm/citations.wasm", "make wasm"),
+        ("wasm/typst.wasm", "make wasm"),
     ] {
         if !shell.join(file).exists() {
             println!(
@@ -31,12 +32,6 @@ fn main() {
             );
             std::process::exit(1);
         }
-    }
-    // The typst module is optional: a build without it simply does not offer
-    // typst editing, and says so where a reader would otherwise be offered an
-    // editor that could not save.
-    if !shell.join("wasm/typst.wasm").exists() {
-        println!("cargo:warning=no typst renderer in this build; `make typst` adds one");
     }
 }
 

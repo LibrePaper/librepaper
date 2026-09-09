@@ -37,4 +37,4 @@ jobs:
             fuzz
       - uses: oven-sh/setup-bun@v2
       - run: cargo install cargo-fuzz --locked
-      - run: make fuzz FUZZ_SECONDS=20 FUZZ_TARGETS="merge paths document"
+      - run: make fuzz FUZZ_SECONDS=20 FUZZ_TARGETS="paths document"

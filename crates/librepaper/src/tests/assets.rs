@@ -185,25 +185,15 @@ fn the_reader_is_told_where_the_renderers_are() {
     }
 }
 
-// Typst is optional: `make typst` builds its renderer, and a build without one
-// simply does not offer typst editing. So this describes both states rather
-// than requiring the artifact, which needs a longer build to produce.
 #[test]
-fn typst_is_offered_only_when_it_is_built() {
+fn typst_is_offered_and_is_webassembly() {
     let list = renderers();
     assert_eq!(
         list.first().map(String::as_str),
         Some("markdown"),
         "renderers are {list:?}, want markdown first"
     );
-    let Some(module) = typst_module() else {
-        assert!(
-            !list.contains(&"typst".to_string()),
-            "typst is offered without a module"
-        );
-        eprintln!("no typst renderer in this build; run `make typst`");
-        return;
-    };
+    let module = typst_module().expect("the required typst module is missing; run `make wasm`");
     assert!(
         list.contains(&"typst".to_string()),
         "the typst module is built but serve does not offer it"

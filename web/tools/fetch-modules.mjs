@@ -30,6 +30,16 @@ const entries = (await readFile(lock, "utf8"))
     return { module, repo, tag, sha256 };
   });
 
+const expected = new Map([
+  ["markdown.wasm", "wasm-markdown"],
+  ["bibliography.wasm", "wasm-bibliography"],
+  ["citations.wasm", "wasm-bibliography"],
+  ["typst.wasm", "wasm-typst"],
+]);
+if (entries.length !== expected.size || new Set(entries.map(({ module }) => module)).size !== expected.size || entries.some(({ module, repo }) => expected.get(module) !== repo)) {
+  throw new Error("wasm-modules.lock must contain exactly the four required renderer modules");
+}
+
 await mkdir(out, { recursive: true });
 let fetched = 0;
 

@@ -353,9 +353,8 @@ no `typst` binary on your PATH, because the compiler is inside LibrePaper, and i
 is the same one the editor runs â so a document cannot render one way when it
 is published and another way when it is edited.
 
-The Typst module contains the compiler and embedded fonts. It is optional at
-build time and downloaded automatically when an editor needs it. Renderer URLs include their content digest and are
-cached for a year. A deployment without Typst WASM can still serve stored PDFs.
+The Typst module contains the compiler and embedded fonts. Renderer URLs include
+their content digest and are cached for a year.
 
 Typst uses its paged PDF exporter, preserving page layout, columns, headers,
 footers, and typography. The shared PDF viewer supplies selectable text for
@@ -370,9 +369,8 @@ the source API, and older Typst documents without a stored PDF, show "Not yet
 rendered" until an editor compiles them. Native Typst publishing uploads its
 PDF when the compiled inputs match the published project.
 
-The typst renderer is built by `make typst`, which needs a Rust toolchain and
-is deliberately not part of `make build`. Without it LibrePaper builds and runs
-exactly as before, and simply does not offer typst editing.
+The Typst renderer is fetched with the other pinned browser modules as part of
+`make build`, so every deployment serves the same four renderer interfaces.
 
 A document published as HTML is its own source, and its renderer is the
 identity: it is shown as it was published, which it always was, and it opens in
@@ -1017,31 +1015,31 @@ Flags take precedence over their corresponding environment variables.
 
 ## Building from source
 
-Three builds go into one binary.
+The application embeds the web build and four prebuilt browser renderers.
 
 | | What it is | Built by |
 | --- | --- | --- |
-| `crates/engine/` | markdown and typst, rendered | cargo, natively and to WebAssembly |
 | `web/` | the pages: Svelte, Skeleton, CodeMirror 6, Yjs | bun and vite |
 | `crates/librepaper/` | the server and the command line | cargo |
 
-The engine is built twice â natively into the binary, and to WebAssembly for
-the browser â so the editor's preview and the command line's output come from
-the same code. The web build writes into `web/dist`, which the binary embeds;
+Renderer implementations live in the `wasm-*` repositories. Cargo links their
+pinned native libraries, and the browser uses WASM artifacts from the same
+release tags. The web build writes into `web/dist`, which the binary embeds;
 nothing under that directory is edited by hand.
 
 ```sh
 make web      # the pages, from web/
-make wasm     # Markdown, bibliography parsing, and citation formatting
-make typst    # the typst renderer, ~30 MB (slow, and optional)
+make wasm     # all four pinned browser renderers
 make build    # dist/librepaper, with the pages and renderers embedded
 make test     # rustfmt, clippy and the test suite
 ```
 
-`make build` needs [bun](https://bun.sh) and the `wasm32-unknown-unknown` target
-(`rustup target add wasm32-unknown-unknown`). `make typst` is deliberately
-separate: it takes a few minutes and adds thirty megabytes to the binary, and a
-build without it works exactly as described above, minus typst editing.
+`make build` needs [bun](https://bun.sh) and Node.js. The four browser
+renderers are fetched from the exact tags and SHA256 digests in
+`wasm-modules.lock`; `make wasm-check` verifies that those tags also match the
+native renderer dependencies without network access. To update one renderer,
+name both values explicitly, for example `make wasm-update REPO=wasm-markdown
+TAG=v0.2.0`, then review the resulting Cargo and lockfile diff.
 
 `make deploy` runs the normal application locally. Configure an OAuth app in
 `.env` (see `.env.example`), then sign in: every new account receives four
