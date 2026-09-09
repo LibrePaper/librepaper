@@ -1868,7 +1868,7 @@ impl Room {
             save_catalog_comments(catalog, &self.slug, &mut seq, &mut comments).await?;
             let mut state = self.state.lock().await;
             state.seq = state.seq.max(seq);
-            state.comments = comments;
+            *state.comments = comments;
             return Ok(());
         }
         let expected = self.state.lock().await.comments_version.clone();
@@ -1886,7 +1886,7 @@ impl Room {
             return Err("this room's comments were reloaded during that write".into());
         }
         state.comments_version = version;
-        state.comments = comments;
+        *state.comments = comments;
         state.seq = state.seq.max(seq);
         Ok(())
     }
