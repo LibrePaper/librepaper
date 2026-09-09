@@ -2120,118 +2120,144 @@ impl Room {
                 return Applied::Refuse(WriteError::RateLimited);
             }
         }
-        let decoded = match session::decode_update(update) {
-            Ok(decoded) => decoded,
-            Err(_) => return Applied::Ignored,
-        };
-        let decoded = match session::admit_decoded_update(
-            &state.session.doc,
-            decoded,
-            update,
-            self.config.max_document,
-            self.config.max_files,
-        ) {
-            session::DecodedAdmission::Malformed => return Applied::Ignored,
-            session::DecodedAdmission::TooLarge => {
-                return Applied::Refuse(WriteError::Document(
-                    crate::room::error::DocumentLimit::Size,
-                ))
-            }
-            session::DecodedAdmission::TooMany => {
-                return Applied::Refuse(WriteError::Document(
-                    crate::room::error::DocumentLimit::Files,
-                ))
-            }
-            session::DecodedAdmission::Fits(decoded) => decoded,
-        };
-        // The quota reservation below is awaited, and a parsed `yrs::Update`
-        // is not `Send`, so it cannot be held across that await: the socket
-        // task's future has to stay spawnable. The parse is therefore dropped
-        // here and repeated once the bytes are reserved. Repeating it is
-        // cheap beside the full document encode this same path already does
-        // to size the reservation, and it is the alternative to reserving
-        // before the size and file ceilings have decided -- which would
-        // charge, however briefly, for updates this room refuses.
-        drop(decoded);
-        // `S` bounds what a person can see; `E` bounds what persistence has
-        // to write, and the two move independently -- a document whose text
-        // never grows still accumulates CRDT history and metadata. A
-        // candidate that would carry the snapshot past `E` is refused here,
-        // before it is applied and before it is relayed, because a snapshot
-        // that cannot be journalled could never be acknowledged and relaying
-        // it would show every peer a document this server cannot save.
-        let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-        let admitted_bound = {
-            let known = match state.session.encoded_bound {
-                Some(bound) => bound,
-                None => {
-                    let exact = session::encode_state(&state.session.doc).len();
-                    state.session.encoded_bound = Some(exact);
+        // Admission, the quota reservation, and the apply are three phases,
+        // and only the first and the last need room state. The reservation is
+        // taken with state released so that a document's readers, its socket
+        // attachments and its checkpoints are not stalled for the length of a
+        // SQLite quota decision; what the release costs is that the document
+        // can move underneath us, so the generation observed during admission
+        // is checked before the update is applied and a reservation that no
+        // longer describes the snapshot it was sized for is given back and
+        // taken again. An unreserved update is still never applied or
+        // relayed: nothing below this loop touches the document until a
+        // reservation matching the current generation is in hand.
+        //
+        // Only `restore_and_checkpoint` and suggestion acceptance can move
+        // the generation here -- every other CRDT mutation takes
+        // `publication_write`, which this call holds -- so the retry is rare
+        // and bounded. Exhausting it is reported as saturation rather than as
+        // a size refusal, because the document is fine and reconnecting works.
+        const RESERVATION_ATTEMPTS: usize = 8;
+        let mut attempts = 0usize;
+        let (pending_edit, admitted_bound) = loop {
+            let decoded = match session::decode_update(update) {
+                Ok(decoded) => decoded,
+                Err(_) => return Applied::Ignored,
+            };
+            let decoded = match session::admit_decoded_update(
+                &state.session.doc,
+                decoded,
+                update,
+                self.config.max_document,
+                self.config.max_files,
+            ) {
+                session::DecodedAdmission::Malformed => return Applied::Ignored,
+                session::DecodedAdmission::TooLarge => {
+                    return Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Size,
+                    ))
+                }
+                session::DecodedAdmission::TooMany => {
+                    return Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Files,
+                    ))
+                }
+                session::DecodedAdmission::Fits(decoded) => decoded,
+            };
+            // The quota reservation below is awaited, and a parsed `yrs::Update`
+            // is not `Send`, so it cannot be held across that await: the socket
+            // task's future has to stay spawnable. The parse is therefore dropped
+            // here and repeated once the bytes are reserved. Repeating it is
+            // cheap beside the full document encode this same path already does
+            // to size the reservation, and it is the alternative to reserving
+            // before the size and file ceilings have decided -- which would
+            // charge, however briefly, for updates this room refuses.
+            drop(decoded);
+            // `S` bounds what a person can see; `E` bounds what persistence has
+            // to write, and the two move independently -- a document whose text
+            // never grows still accumulates CRDT history and metadata. A
+            // candidate that would carry the snapshot past `E` is refused here,
+            // before it is applied and before it is relayed, because a snapshot
+            // that cannot be journalled could never be acknowledged and relaying
+            // it would show every peer a document this server cannot save.
+            let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+            let admitted_bound = {
+                let known = match state.session.encoded_bound {
+                    Some(bound) => bound,
+                    None => {
+                        let exact = session::encode_state(&state.session.doc).len();
+                        state.session.encoded_bound = Some(exact);
+                        exact
+                    }
+                };
+                let bound = known.saturating_add(update.len());
+                if bound <= ceiling {
+                    bound
+                } else {
+                    // The cheap bound cannot decide, so buy the exact answer on a
+                    // scratch copy. That copy is a large allocation, so it is
+                    // admitted against the same memory budget persistence uses.
+                    let _staging = match self.journal.get() {
+                        Some(journal) => {
+                            match journal
+                                .memory()
+                                .try_acquire(crate::config::PersistenceLimits::staging_cost(bound))
+                            {
+                                Ok(permit) => Some(permit),
+                                Err(error) if error.is_temporary() => {
+                                    return Applied::Refuse(WriteError::ServerBusy)
+                                }
+                                Err(_) => {
+                                    return Applied::Refuse(WriteError::Document(
+                                        crate::room::error::DocumentLimit::Encoded,
+                                    ))
+                                }
+                            }
+                        }
+                        None => None,
+                    };
+                    let Some(exact) = session::rehearsed_encoded_len(&state.session.doc, update)
+                    else {
+                        return Applied::Ignored;
+                    };
+                    if exact > ceiling {
+                        return Applied::Refuse(WriteError::Document(
+                            crate::room::error::DocumentLimit::Encoded,
+                        ));
+                    }
                     exact
                 }
             };
-            let bound = known.saturating_add(update.len());
-            if bound <= ceiling {
-                bound
-            } else {
-                // The cheap bound cannot decide, so buy the exact answer on a
-                // scratch copy. That copy is a large allocation, so it is
-                // admitted against the same memory budget persistence uses.
-                let _staging = match self.journal.get() {
-                    Some(journal) => {
-                        match journal
-                            .memory()
-                            .try_acquire(crate::config::PersistenceLimits::staging_cost(bound))
-                        {
-                            Ok(permit) => Some(permit),
-                            Err(error) if error.is_temporary() => {
-                                return Applied::Refuse(WriteError::ServerBusy)
-                            }
-                            Err(_) => {
-                                return Applied::Refuse(WriteError::Document(
-                                    crate::room::error::DocumentLimit::Encoded,
-                                ))
-                            }
-                        }
-                    }
-                    None => None,
-                };
-                let Some(exact) = session::rehearsed_encoded_len(&state.session.doc, update) else {
-                    return Applied::Ignored;
-                };
-                if exact > ceiling {
-                    return Applied::Refuse(WriteError::Document(
-                        crate::room::error::DocumentLimit::Encoded,
-                    ));
-                }
-                exact
-            }
-        };
-        // Reserve the whole next snapshot, not just this message. The SQL
-        // admission view includes unsaved work in every live room and keeps a
-        // separate reservation for a snapshot already being written.
-        //
-        // The reservation is taken through the catalogue's execution
-        // boundary, so the quota decision waits on a blocking thread instead
-        // of parking a Tokio worker on the connection.  What it returns is a
-        // guard rather than a number: a caller cancelled between that
-        // transaction committing and this room accounting for the bytes must
-        // not leave them charged, and only the guard and its completion hook
-        // between them cover both halves of that window.
-        let pending_edit = if let Some(catalog) = self.catalog.get() {
+            // Reserve the whole next snapshot, not just this message. The SQL
+            // admission view includes unsaved work in every live room and keeps a
+            // separate reservation for a snapshot already being written.
+            //
+            // The reservation is taken through the catalogue's execution
+            // boundary, so the quota decision waits on a blocking thread instead
+            // of parking a Tokio worker on the connection.  What it returns is a
+            // guard rather than a number: a caller cancelled between that
+            // transaction committing and this room accounting for the bytes must
+            // not leave them charged, and only the guard and its completion hook
+            // between them cover both halves of that window.
+            let Some(catalog) = self.catalog.get() else {
+                break (None, admitted_bound);
+            };
+            let generation = state.session.generation;
             let bound = session::encode_state(&state.session.doc)
                 .len()
                 .saturating_add(update.len());
-            match reserve_pending_edit(
+            let budget = self.snapshot_budget(bound);
+            drop(state);
+            let reservation = match reserve_pending_edit(
                 catalog,
                 &self.slug,
-                self.snapshot_budget(bound),
+                budget,
                 self.config.storage.per_owner,
                 self.config.storage.total,
             )
             .await
             {
-                Ok(reservation) => Some(reservation),
+                Ok(reservation) => reservation,
                 Err(error) => {
                     // The catalogue said no. Which allowance it was is in the
                     // error; what the peer is told is that this document has
@@ -2241,12 +2267,41 @@ impl Room {
                         crate::room::error::DocumentLimit::Quota,
                     ));
                 }
+            };
+            // The window between the reservation committing and the room taking
+            // it on. Room state is deliberately not held here.
+            #[cfg(test)]
+            pause_after_edit_reservation(&self.slug).await;
+            state = self.state.lock().await;
+            if self.read_only() {
+                drop(state);
+                reservation.rollback().await;
+                return Applied::Refuse(self.fenced());
             }
-        } else {
-            None
+            // The socket may have closed, or lost its right to write, while the
+            // reservation was in SQL. Neither of those may be relayed, and the
+            // bytes go back rather than staying charged to a document that is
+            // not going to grow by them.
+            if !state.sockets.get(&socket).is_some_and(|peer| peer.may_edit) {
+                drop(state);
+                reservation.rollback().await;
+                return Applied::Ignored;
+            }
+            if state.session.generation == generation {
+                break (Some(reservation), admitted_bound);
+            }
+            // The document moved while the quota decision was in flight, so the
+            // ceilings above decided against a document that no longer exists and
+            // the reservation is sized for the wrong snapshot. Give it back and
+            // decide again against what the room now holds.
+            drop(state);
+            reservation.rollback().await;
+            attempts += 1;
+            state = self.state.lock().await;
+            if attempts >= RESERVATION_ATTEMPTS {
+                return Applied::Refuse(WriteError::ServerBusy);
+            }
         };
-        #[cfg(test)]
-        pause_after_edit_reservation(&self.slug).await;
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
         // with this main file.
