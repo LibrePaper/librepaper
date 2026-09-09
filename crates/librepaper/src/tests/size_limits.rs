@@ -22,7 +22,7 @@ fn the_default_policy_can_process_one_maximum_snapshot() {
 fn the_supported_maximum_source_ceiling_is_accepted() {
     let mut config = Configuration::default();
     config
-        .set_max_document(SUPPORTED_MAX_SOURCE_BYTES / MIB)
+        .set_max_document(Some(SUPPORTED_MAX_SOURCE_BYTES / MIB))
         .expect("the supported maximum must be configurable");
     assert_eq!(config.max_document, SUPPORTED_MAX_SOURCE_BYTES);
     config.persistence().validate().expect("and must validate");
@@ -32,7 +32,7 @@ fn the_supported_maximum_source_ceiling_is_accepted() {
 fn the_formerly_accepted_hundred_megabyte_configuration_is_refused() {
     let mut config = Configuration::default();
     let error = config
-        .set_max_document(100)
+        .set_max_document(Some(100))
         .expect_err("100 MB used to be accepted and could never be durably saved");
     assert!(error.contains("--max-size"), "{error}");
     assert!(error.contains("not supported"), "{error}");
@@ -45,7 +45,7 @@ fn the_formerly_accepted_hundred_megabyte_configuration_is_refused() {
 fn one_megabyte_over_the_supported_maximum_is_refused() {
     let mut config = Configuration::default();
     assert!(config
-        .set_max_document(SUPPORTED_MAX_SOURCE_BYTES / MIB + 1)
+        .set_max_document(Some(SUPPORTED_MAX_SOURCE_BYTES / MIB + 1))
         .is_err());
 }
 
@@ -701,7 +701,7 @@ async fn the_shipped_four_megabyte_default_survives_a_restart() {
 async fn the_supported_maximum_source_survives_a_restart() {
     let mut config = Configuration::default();
     config
-        .set_max_document(SUPPORTED_MAX_SOURCE_BYTES / MIB)
+        .set_max_document(Some(SUPPORTED_MAX_SOURCE_BYTES / MIB))
         .expect("the supported maximum is configurable");
     boundary_source_survives_a_restart(config, "eight-mib", SUPPORTED_MAX_SOURCE_BYTES).await;
 }

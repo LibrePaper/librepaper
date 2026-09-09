@@ -6,7 +6,7 @@ use serde_json::json;
 #[tokio::test]
 async fn account_examples_resume_after_admission_failure() {
     let mut config = Configuration::default();
-    config.set_counts(3, 30).unwrap();
+    config.set_counts(Some(3), Some(30)).unwrap();
     let server = test_server_with(
         config,
         Policy::parse("anyone"),

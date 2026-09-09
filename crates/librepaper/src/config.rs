@@ -526,7 +526,7 @@ impl Configuration {
         }
     }
 
-    /// Overrides the document size ceiling, in megabytes. Zero leaves the
+    /// Overrides the document size ceiling, in megabytes. `None` leaves the
     /// default alone.
     ///
     /// The ceiling used to run to a hundred megabytes, which was a promise
@@ -534,10 +534,10 @@ impl Configuration {
     /// a recovery base decodes sixty-four, so a document accepted at the old
     /// maximum could be admitted and then never durably saved. The supported
     /// maximum is now whatever [`PersistenceLimits::validate`] accepts.
-    pub fn set_max_document(&mut self, megabytes: usize) -> Result<(), String> {
-        if megabytes == 0 {
+    pub fn set_max_document(&mut self, megabytes: Option<usize>) -> Result<(), String> {
+        let Some(megabytes) = megabytes else {
             return Ok(());
-        }
+        };
         let bytes = megabytes
             .checked_mul(1024 * 1024)
             .ok_or_else(|| "--max-size is too large".to_string())?;
@@ -553,20 +553,20 @@ impl Configuration {
     }
 
     /// Overrides what the figures of one document may come to, in megabytes.
-    /// Zero leaves the default alone.
+    /// `None` leaves the default alone.
     ///
     /// Worth setting low on a deployment anybody may publish to. Figures are
     /// where the bytes of a paper actually go, and while they count against
     /// `--quota` like everything else, this is what stops one document from
     /// spending a publisher's whole allowance on images.
-    pub fn set_max_assets(&mut self, megabytes: i64) -> Result<(), String> {
-        if megabytes == 0 {
+    pub fn set_max_assets(&mut self, megabytes: Option<usize>) -> Result<(), String> {
+        let Some(megabytes) = megabytes else {
             return Ok(());
-        }
+        };
         if !(1..=1024).contains(&megabytes) {
             return Err("--max-assets must be between 1 and 1024 MB".into());
         }
-        self.max_assets = megabytes * 1024 * 1024;
+        self.max_assets = (megabytes * 1024 * 1024) as i64;
         // One figure may never be more than all of them.
         self.max_asset = self.max_asset.min(self.max_assets);
         Ok(())
@@ -574,16 +574,17 @@ impl Configuration {
 
     /// Overrides the storage ceilings, in megabytes: how much one publisher may
     /// hold across all their documents, and how much the whole deployment will
-    /// hold. Zero leaves a default alone.
-    pub fn set_storage(&mut self, quota_mb: i64, total_mb: i64) -> Result<(), String> {
-        if quota_mb < 0 || total_mb < 0 {
-            return Err("--quota and --storage must be positive".into());
+    /// hold. `None` leaves a default alone.
+    pub fn set_storage(
+        &mut self,
+        quota_mb: Option<usize>,
+        total_mb: Option<usize>,
+    ) -> Result<(), String> {
+        if let Some(quota_mb) = quota_mb {
+            self.storage.per_owner = (quota_mb * 1024 * 1024) as i64;
         }
-        if quota_mb > 0 {
-            self.storage.per_owner = quota_mb * 1024 * 1024;
-        }
-        if total_mb > 0 {
-            self.storage.total = total_mb * 1024 * 1024;
+        if let Some(total_mb) = total_mb {
+            self.storage.total = (total_mb * 1024 * 1024) as i64;
         }
         if self.storage.per_owner > self.storage.total {
             return Err(format!(
@@ -597,20 +598,17 @@ impl Configuration {
 
     /// Overrides the history settings an operator has a reason to change: how
     /// long a document has to be quiet before a checkpoint is taken, in
-    /// minutes, and how many checkpoints one document keeps. Zero leaves a
+    /// minutes, and how many checkpoints one document keeps. `None` leaves a
     /// default alone; `--history 0` is "no history beyond the session state",
     /// which is expressed as a cap of one, since the newest checkpoint is
     /// never shed.
     pub fn set_history(
         &mut self,
-        checkpoint_minutes: i64,
+        checkpoint_minutes: Option<usize>,
         keep: Option<usize>,
     ) -> Result<(), String> {
-        if checkpoint_minutes < 0 {
-            return Err("--checkpoint must be positive".into());
-        }
-        if checkpoint_minutes > 0 {
-            self.session.checkpoint_seconds = checkpoint_minutes * 60;
+        if let Some(checkpoint_minutes) = checkpoint_minutes {
+            self.session.checkpoint_seconds = (checkpoint_minutes * 60) as i64;
         }
         if let Some(keep) = keep {
             self.session.history_max = keep.max(1);
@@ -619,17 +617,18 @@ impl Configuration {
     }
 
     /// Overrides the per-publisher counts: how many documents one publisher may
-    /// hold, and how many uploads they may make in an hour. Zero leaves a
+    /// hold, and how many uploads they may make in an hour. `None` leaves a
     /// default alone.
-    pub fn set_counts(&mut self, documents: i64, uploads_per_hour: i64) -> Result<(), String> {
-        if documents < 0 || uploads_per_hour < 0 {
-            return Err("--max-documents and --uploads-per-hour must be positive".into());
+    pub fn set_counts(
+        &mut self,
+        documents: Option<usize>,
+        uploads_per_hour: Option<usize>,
+    ) -> Result<(), String> {
+        if let Some(documents) = documents {
+            self.storage.documents_per_owner = documents;
         }
-        if documents > 0 {
-            self.storage.documents_per_owner = documents as usize;
-        }
-        if uploads_per_hour > 0 {
-            self.storage.uploads_per_hour = uploads_per_hour as usize;
+        if let Some(uploads_per_hour) = uploads_per_hour {
+            self.storage.uploads_per_hour = uploads_per_hour;
         }
         Ok(())
     }
