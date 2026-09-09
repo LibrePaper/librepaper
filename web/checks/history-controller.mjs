@@ -242,4 +242,85 @@ for (const outcome of ["current", "closed", "revoked", "disposed", "baseline"]) 
   assert.equal(controller.target, null);
 }
 
-console.log("history-controller: compiled state, baseline/target/file races, lazy merge ownership and disposal passed");
+// The timeline's click: the row becomes the compare end, and the baseline
+// steps back before it when it would otherwise not be before it.
+{
+  const controller = createHistoryController({
+    slug: "doc",
+    history: {
+      load: async () => [{ sha: "A" }, { sha: "B" }, { sha: "C" }],
+      checkpoint: async (_slug, sha) => point(sha),
+      wordDiff: async () => [],
+      hunks,
+    },
+    passages: { textAt: async () => "same" },
+    live: () => ({ session: liveSession(), text: "same" }),
+    readBaseline: () => "B",
+    rememberBaseline: () => {},
+  });
+  await controller.load();
+  assert.equal(controller.baseline.sha, "B");
+  await controller.compareTo("C");
+  assert.equal(controller.baseline.sha, "B");
+  assert.equal(controller.target.sha, "C");
+  // An older row than the baseline: what that checkpoint itself changed.
+  await controller.compareTo("A");
+  assert.equal(controller.baseline.sha, "A", "the first checkpoint compares with itself");
+  assert.equal(controller.target.sha, "A");
+  await controller.compareTo("B");
+  assert.equal(controller.baseline.sha, "A");
+  assert.equal(controller.target.sha, "B");
+  // Moving the baseline past the compare end runs the range to the live document.
+  await controller.chooseBaseline("C");
+  assert.equal(controller.target, null);
+  await controller.compareTo("");
+  assert.equal(controller.target, null);
+  assert.equal(controller.redlines, true, "the changes are painted from the start");
+}
+
+// Chained attribution: two checkpoints in the range, each by a different
+// author, editing different offsets -- the range-level hunks end up with a
+// `who` each, matching the author of the step that made them, not just the
+// single range-level name `attribution()` would give both.
+{
+  // vincent inserts "AAA" at base-text offset 10; sam separately inserts
+  // "BBB" at offset 20 of the text vincent's edit produced ("one"), which is
+  // offset 17 of the original base text once vincent's 3 inserted
+  // characters before it are accounted for -- exactly what the combined
+  // base-to-"two" diff below says.
+  const texts = { base: "TEXT_BASE", one: "TEXT_ONE", two: "TEXT_TWO" };
+  const wordDiffOf = {
+    "base|one": [{ at: 10, delete: 0, insert: "AAA" }],
+    "one|two": [{ at: 20, delete: 0, insert: "BBB" }],
+    "base|two": [{ at: 10, delete: 0, insert: "AAA" }, { at: 17, delete: 0, insert: "BBB" }],
+  };
+  const api = {
+    load: async () => [
+      { sha: "base", by: "nobody" },
+      { sha: "one", by: "vincent" },
+      { sha: "two", by: "sam" },
+    ],
+    checkpoint: async (_slug, sha) => point(sha, texts[sha]),
+    wordDiff: async (oldText, newText) => {
+      const key = `${Object.keys(texts).find((k) => texts[k] === oldText)}|${Object.keys(texts).find((k) => texts[k] === newText)}`;
+      return wordDiffOf[key] || [];
+    },
+    hunks,
+  };
+  const session = liveSession(texts.two);
+  const controller = createHistoryController({
+    slug: "doc",
+    history: api,
+    passages: { textAt: async (_slug, sha) => texts[sha] },
+    live: () => ({ session, text: texts.two }),
+    readBaseline: () => "base",
+    rememberBaseline: () => {},
+  });
+  await controller.load();
+  await controller.chooseTarget("two");
+  assert.equal(controller.changes.length, 2);
+  assert.equal(controller.changes[0].who, "vincent");
+  assert.equal(controller.changes[1].who, "sam");
+}
+
+console.log("history-controller: compiled state, baseline/target/file races, compareTo, lazy merge ownership and disposal passed");

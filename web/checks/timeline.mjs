@@ -7,7 +7,7 @@
 // checked here, because they are what a careless change would break silently:
 // the panel would still render, and the history would just be harder to read.
 
-import { timeline } from "../src/lib/history.js";
+import { coalesce, sizeDelta, timeline } from "../src/lib/history.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -80,6 +80,59 @@ const shas = (rows) =>
   check("a labelled checkpoint is never folded away", named.length === 1);
   check("a label breaks the run around it", rows.length === 3);
   check("nothing is lost around a label", shas(rows).length === 9);
+}
+
+/* ------------------------------------------------------- one change, read */
+
+{
+  // "Meet the Model That not shown" became "Meet the Model That Survived the
+  // Auditions": two word edits a person reads as one rewritten heading.
+  const heading = [
+    { position: 20, old: "not", insert: "Survived", currentBefore: "Meet the Model That ", currentAfter: " the Auditions Every table is one", path: "main.md" },
+    { position: 29, old: "shown", insert: "the Auditions", currentBefore: "Model That Survived ", currentAfter: " Every table is one column of", path: "main.md" },
+  ];
+  const far = { position: 400, old: "On", insert: "Four", currentBefore: "artefact of pooling. ", currentAfter: " Decimal Places in a", path: "main.md" };
+  const groups = coalesce([...heading, far]);
+  check("adjacent edits are one change", groups.length === 2);
+  check("the words between them are kept", groups[0].parts.length === 3 && groups[0].parts[1].keep === " ");
+  check("the change begins where the first edit did", groups[0].position === 20);
+  check("and spans to the end of the last insertion", groups[0].length === 29 + "the Auditions".length - 20);
+  check("the context is the first's before and the last's after", groups[0].before === heading[0].currentBefore && groups[0].after === heading[1].currentAfter);
+  check("a distant edit is its own change", groups[1].hunks.length === 1 && groups[1].position === 400);
+  check("nothing to read is nothing", coalesce([]).length === 0);
+}
+
+/* ------------------------------------------------------------- size bars */
+
+{
+  const checkpoints = [
+    { sha: "a".padEnd(64, "0"), size: 1000 },
+    { sha: "b".padEnd(64, "0"), size: 1312, parent: "a".padEnd(64, "0") },
+    { sha: "c".padEnd(64, "0"), size: 900, parent: "b".padEnd(64, "0") },
+  ];
+  const grew = sizeDelta(checkpoints[1], checkpoints);
+  check("a checkpoint that grew reports it grew", grew && grew.grew === true);
+  check("its title says how much", grew?.title === "+312 bytes");
+  check("its width is within the drawn range", grew.width >= 2 && grew.width <= 48);
+
+  const shrank = sizeDelta(checkpoints[2], checkpoints);
+  check("a checkpoint that shrank reports it shrank", shrank && shrank.grew === false);
+  check("its title uses the minus sign", shrank?.title === "−412 bytes");
+
+  check("no parent means no bar", sizeDelta(checkpoints[0], checkpoints) === null);
+  check(
+    "an unknown parent means no bar",
+    sizeDelta({ sha: "d".padEnd(64, "0"), size: 5, parent: "missing" }, checkpoints) === null,
+  );
+  check(
+    "no size on either end means no bar",
+    sizeDelta({ sha: "e".padEnd(64, "0"), parent: "a".padEnd(64, "0") }, checkpoints) === null,
+  );
+
+  const small = sizeDelta({ sha: "f".padEnd(64, "0"), size: 1005, parent: "a".padEnd(64, "0") }, checkpoints);
+  const large = sizeDelta({ sha: "g".padEnd(64, "0"), size: 6000, parent: "a".padEnd(64, "0") }, checkpoints);
+  check("a small edit still draws a bar", small.width >= 2);
+  check("a large paste draws a wider one", large.width > small.width);
 }
 
 if (failures) process.exit(1);

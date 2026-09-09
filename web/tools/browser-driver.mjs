@@ -67,6 +67,10 @@ export async function browser(name, directory, port) {
       };
       return {
         close, evaluate,
+        // A wide enough viewport so the reader's split layout (source beside
+        // the document) is what renders -- a narrow one falls back to a
+        // single pane, same as a real browser window this size would.
+        resize: (width, height) => send("browsingContext.setViewport", { context, viewport: { width, height } }),
         navigate: (url) => send("browsingContext.navigate", { context, url, wait: "complete" }),
         text: async () => {
           const tree = await send("browsingContext.getTree", { root: context });
@@ -95,7 +99,7 @@ export async function browser(name, directory, port) {
     };
     const frames = new Map();
     return {
-      close, evaluate,
+      close, evaluate, command,
       resize: (width, height) => command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }),
       navigate: (url) => command("Page.navigate", { url }),
       text: async () => {

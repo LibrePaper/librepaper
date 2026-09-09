@@ -205,17 +205,25 @@ suggestion is painted like a resolved comment.
 
 ## Browser: redlines
 
-In the History panel, beside "What changed since", a toggle "Show in
-document". While on, the reader sends the frame
-`{"type":"redlines","items":[...]}` with one item per hunk of the diff it
-already computes for the panel: `{start, end, kind:"insert", who}` for text
-present now, and `{at, kind:"delete", text, who}` for text no longer there.
-`who` is the `by` of the checkpoints after the baseline when they agree and
-"several people" otherwise. The frame paints inserts as underlined marks
-through the same segment machinery `highlight` uses and deletes as an empty
-mark at `at` whose `::before` content is the deleted text, struck through.
-`title` carries `who`. Turning the toggle off, leaving the panel, or changing
-the baseline clears them. Redlines and comment highlights coexist.
+The History panel is a timeline with the live document as its top row.
+Clicking a row shows the document as it was then and makes it the compare
+end of the range; a row's "Compare since this checkpoint" action makes it
+the start. The range is drawn as a bracket down the timeline's gutter, and
+the head of the panel says how many changes are in it, with arrows that
+step through them by asking the frame to `locate` each change's offset.
+The changes are painted into the document: a toggle "Show in document", on
+by default, sends the frame `{"type":"redlines","items":[...]}` with one
+item per hunk of the diff the panel computes: `{start, end, kind:"insert",
+who}` for text present now, and `{at, kind:"delete", text, who}` for text no
+longer there. `who` is the `by` of the checkpoints after the baseline when
+they agree and "several people" otherwise. The frame paints inserts as
+underlined marks through the same segment machinery `highlight` uses and
+deletes as an empty mark at `at` whose `::before` content is the deleted
+text, struck through. `title` carries `who`. Turning the toggle off, leaving
+the panel, or changing the baseline clears them. Redlines and comment
+highlights coexist. The panel also lists the changes as prose, folded away,
+with adjacent word edits merged into one change (`coalesce` in
+`web/src/lib/history.js`).
 
 The toggle also works for Typst and LaTeX through the PDF viewer's selectable
 text layer. Insertions are underlined over the canvas. Deletions and pending

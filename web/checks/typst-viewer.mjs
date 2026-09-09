@@ -368,6 +368,24 @@ async function run() {
   const region = await tab.eval("return window.seen.regions.at(-1) || null");
   check("legacy HTML figure regions are explicitly unplaceable in a Typst PDF", region?.reason === "pdf" && region.ids.includes("legacy-figure"), JSON.stringify(region));
 
+  // The history panel's prev/next steps send `locate` at the offset of a
+  // change, the same offset `redlines` painted at. The frame is still showing
+  // the multi-page "long" PDF from the pageForOffset check above, so this
+  // exercises a scroll to a passage well past the first page.
+  const located = await tab.eval(`
+    const win = frame.contentWindow;
+    const text = window.text();
+    const at = text.indexOf('Section 3');
+    win.scrollTo(0, 0);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const before = win.scrollY;
+    win.postMessage({ librepaper: true, type: 'locate', start: at, length: 'Section 3'.length }, '*');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const after = win.scrollY;
+    return { at, before, after };
+  `);
+  check("locate scrolls the PDF viewer to a passage offset", located?.at > 0 && located.after > located.before, JSON.stringify(located));
+
   await root.send("Target.closeTarget", { targetId });
 }
 

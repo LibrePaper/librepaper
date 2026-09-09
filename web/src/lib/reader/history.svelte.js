@@ -7,6 +7,7 @@
 import * as historyApi from "../history.js";
 import * as passagesApi from "../passages.js";
 import { read, write } from "../storage.js";
+import { attribution, attributeChain } from "../redlines.js";
 
 const emptyLive = () => ({ session: null, text: null });
 
@@ -34,7 +35,9 @@ export function createHistoryController({
     target: null,
     changes: null,
     changedPaths: [],
-    redlines: false,
+    // Painted in the document from the start: the document is where the
+    // changes are, and the panel only says which range is being shown.
+    redlines: true,
     fileDiff: null,
   });
 
@@ -74,6 +77,8 @@ export function createHistoryController({
     return state.checkpoints.find((point) => point.sha === sha) || null;
   }
 
+  const indexOf = (sha) => state.checkpoints.findIndex((point) => point.sha === sha);
+
   async function load() {
     if (disposed) return;
     const generation = ++loadGeneration;
@@ -107,7 +112,10 @@ export function createHistoryController({
       const point = listed.texts ? listed : await history.checkpoint(slug, sha, headers());
       if (!current(generation, "baseline") || manifestGeneration !== loadGeneration) return;
       state.baseline = point;
-      if (state.target?.sha === sha) state.target = null;
+      // The range reads forward from the baseline. A compare point at or
+      // before it is no longer one, so the comparison runs to the live
+      // document instead.
+      if (state.target && indexOf(state.target.sha) <= indexOf(sha)) state.target = null;
       onMerge(null);
       clearComparison();
       state.problem = "";
@@ -144,6 +152,29 @@ export function createHistoryController({
     } catch (error) {
       if (current(generation, "baseline") && manifestGeneration === loadGeneration) state.problem = error.message || "that checkpoint could not be read";
     }
+  }
+
+  // What changed up to a checkpoint, as the timeline asks it: the checkpoint
+  // becomes the compare point, and when it is not after the baseline -- the
+  // reader clicked an older row -- the baseline moves to the checkpoint just
+  // before it, so the range shows what that checkpoint itself changed. The
+  // first checkpoint has nothing before it and compares with itself, which
+  // is an empty change list rather than an error.
+  async function compareTo(sha) {
+    if (disposed) return;
+    if (!sha) {
+      await chooseTarget("");
+      return;
+    }
+    const at = indexOf(sha);
+    if (at < 0) return;
+    const baselineAt = state.baseline ? indexOf(state.baseline.sha) : -1;
+    if (baselineAt < 0 || baselineAt >= at) {
+      const before = state.checkpoints[Math.max(0, at - 1)];
+      await chooseBaseline(before.sha);
+      if (!alive() || state.baseline?.sha !== before.sha) return;
+    }
+    await chooseTarget(sha);
   }
 
   async function computeChanges(point = state.baseline) {
@@ -214,6 +245,58 @@ export function createHistoryController({
       state.changedPaths = [...paths].sort();
       state.problem = "";
       notifyRedlines();
+
+      // Per-author colouring needs the diff of each step between
+      // checkpoints, not just the range as a whole -- otherwise a paragraph
+      // two people edited in turn reads as one person's work. Chaining more
+      // than a dozen diffs to colour a redline is not worth the requests;
+      // beyond that, hunks carry no `who` and `itemsFor` falls back to the
+      // range-level name from `attribution()`. This runs after the redlines
+      // above are already painted and published, as a refinement: a late
+      // result here only ever upgrades a still-current comparison's hunks
+      // with a `who`, never anything else, so it is safe to just skip when
+      // the comparison has moved on rather than unwind the whole function.
+      const baselineAt = indexOf(point.sha);
+      const endAt = target ? indexOf(target.sha) : state.checkpoints.length - 1;
+      const rangeCheckpoints = endAt >= baselineAt ? state.checkpoints.slice(baselineAt + 1, endAt + 1) : [];
+      if (rangeCheckpoints.length && rangeCheckpoints.length <= 12) {
+        try {
+          const stepTexts = await Promise.all(
+            rangeCheckpoints.map((checkpoint) => passages.textAt(slug, checkpoint.sha, headers())),
+          );
+          const points = [oldVisible, ...stepTexts];
+          const authorsChain = rangeCheckpoints.map((checkpoint) => checkpoint.by || "");
+          if (!target) {
+            // The range runs to the live document, which has no checkpoint
+            // of its own yet -- its author is unattributed, same as
+            // `attribution()`'s existing treatment of uncommitted edits.
+            points.push(targetVisible);
+            authorsChain.push("");
+          }
+          const steps = [];
+          for (let index = 0; index < points.length - 1; index += 1) {
+            const stepEdits = await history.wordDiff(points[index], points[index + 1], sourceFormat());
+            steps.push({ by: authorsChain[index], hunks: history.hunks(points[index], points[index + 1], stepEdits) });
+          }
+          const stillCurrent = current(request, "diff") && baselineGenerationAtStart === baselineGeneration
+            && target === state.target && live().session === session && (target || live().text === liveText);
+          if (stillCurrent && Array.isArray(state.changes)) {
+            const attributed = attributeChain(
+              steps,
+              state.changes,
+              attribution(state.checkpoints, point.sha, target?.sha || null),
+            );
+            // Written onto the hunks in place: a new array would tell the
+            // panel the comparison changed and reset the reader's place in it.
+            for (const [index, hunk] of attributed.entries()) {
+              if (state.changes[index]) state.changes[index].who = hunk.who;
+            }
+            notifyRedlines();
+          }
+        } catch {
+          // Leave hunks without `who`; itemsFor falls back to the range-level name.
+        }
+      }
     } catch (error) {
       if (current(request, "diff") && baselineGenerationAtStart === baselineGeneration) {
         state.changes = [];
@@ -317,6 +400,7 @@ export function createHistoryController({
     load,
     chooseBaseline,
     chooseTarget,
+    compareTo,
     computeChanges,
     openCheckpointFile,
     openFileDiff,

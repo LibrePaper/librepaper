@@ -19,14 +19,12 @@ import { spawn } from "node:child_process";
 import {
   mkdtempSync,
   readdirSync,
-  readFileSync,
   rmSync,
   writeFileSync,
   existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHmac } from "node:crypto";
 
 const binary = process.argv[2] || "dist/librepaper";
 if (!existsSync(binary)) {
@@ -188,6 +186,9 @@ async function openTab(url, cookies = [], { ownProfile = false } = {}) {
   await tab.send("Runtime.enable");
   await tab.send("Log.enable");
   await tab.send("Network.enable");
+  // Wide enough that the reader's split layout renders the source pane
+  // rather than collapsing to a single narrow-window pane.
+  await tab.send("Emulation.setDeviceMetricsOverride", { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
   for (const cookie of cookies) await tab.send("Network.setCookie", cookie);
   await tab.send("Page.navigate", { url });
   return tab;
@@ -197,20 +198,26 @@ let root = null;
 
 /* ------------------------------------------------------------- the session */
 
-/// The cookie a real sign-in produces, minted here with the deployment's own
-/// key so a test can be somebody. The scheme is `auth.rs`: base64url of
-/// "login|id|expiry", a dot, and base64url of its HMAC.
-function sessionCookie(login) {
-  const key = Buffer.from(readFileSync(join(data, "session.key"), "utf8").trim(), "hex");
-  const payload = Buffer.from(`${login}|${login}|${Math.floor(Date.now() / 1000) + 3600}`)
-    .toString("base64url");
-  const signature = createHmac("sha256", key).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
+/// This deployment's real anonymous-owner identity: a throwaway, isolated
+/// visit is enough for the shell to mint the browser's own visitor cookie
+/// (`issue_visitor` in `signin.rs`), extracted via CDP so node-side requests
+/// and other tabs can present the very same cookie a real browser would --
+/// ownership of an anonymous upload is keyed on it (`owner()` in
+/// `server/mod.rs`). A forged session cookie no longer verifies: sessions
+/// are `v1.<payload>.<sig>` with a purpose-separated MAC, and the account
+/// must exist in the catalogue, which only the Rust test harness can
+/// arrange.
+async function mintVisitor() {
+  const tab = await openTab(`${BASE}/`, [], { ownProfile: true });
+  return until("a visitor cookie", async () => {
+    const { cookies } = await tab.send("Network.getCookies", { urls: [BASE] });
+    return cookies.find((c) => c.name === "librepaper_visitor")?.value || null;
+  });
 }
 
 async function publish(body, cookie = "") {
   const headers = { "content-type": "application/json", "x-librepaper-client": "1" };
-  if (cookie) headers.cookie = `librepaper_session=${cookie}`;
+  if (cookie) headers.cookie = `librepaper_visitor=${cookie}`;
   const response = await fetch(`${BASE}/api/documents`, {
     method: "POST",
     headers,
@@ -329,23 +336,26 @@ async function run() {
 
   /* --- A. suggest through the reader, accept from the card ---------------- */
 
-  const owner = sessionCookie("vincent");
+  const owner = await mintVisitor();
   const doc = await publish({ title: "A Paper", source: MARKDOWN, source_format: "markdown" }, owner);
   const readKey = (doc.share_url || "").split("#k=")[1] || "";
   const api = (path) => fetch(`${BASE}${path}`, { headers: { "x-librepaper-client": "1", "x-librepaper-key": readKey } }).then((r) => r.json());
-  const minted = await fetch(`${BASE}/api/documents/${slug0(doc)}/share`, { method: "POST", headers: { "content-type": "application/json", "x-librepaper-client": "1", cookie: `librepaper_session=${owner}` }, body: JSON.stringify({ link: { role: "editor", until: "" } }) }).then((r) => r.json());
+  const minted = await fetch(`${BASE}/api/documents/${slug0(doc)}/share`, { method: "POST", headers: { "content-type": "application/json", "x-librepaper-client": "1", cookie: `librepaper_visitor=${owner}` }, body: JSON.stringify({ link: { role: "editor", until: "" } }) }).then((r) => r.json());
   const editKey = minted.key || (minted.link || "").split("#k=")[1] || "";
   const slug = doc.slug;
-  const editor = await openTab(`${BASE}/docs/${slug}`, [{ name: "librepaper_session", value: owner, url: BASE }]);
+  const editor = await openTab(`${BASE}/docs/${slug}`, [{ name: "librepaper_visitor", value: owner, url: BASE }]);
   const painted = await until("the frame is painted", async () =>
     (await editor.evalInFrame("return document.body.innerText", slug))?.includes("The first paragraph."),
   );
   check("the frame is painted", painted, painted ? "" : `console: ${editor.console.slice(-3).join(" | ")}`);
 
   // The comments panel, then the Suggest tool.
-  await editor.eval(`const el = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("Comments")); if (!el) throw new Error("no Comments tab among " + [...document.querySelectorAll("button, a")].map((b) => b.getAttribute("aria-label") || b.title || b.textContent.trim()).join(",")); el.click(); return true;`);
-  await until("the suggest tool", () => editor.eval(`return Boolean(document.querySelector('[aria-label="Suggest"]'))`));
-  await editor.eval(`document.querySelector('[aria-label="Suggest"]').click(); return true;`);
+  await editor.eval(`const el = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("Changes")); if (!el) throw new Error("no Changes tab among " + [...document.querySelectorAll("button, a")].map((b) => b.getAttribute("aria-label") || b.title || b.textContent.trim()).join(",")); el.click(); return true;`);
+  // The Changes tab's tool selector is a plain radio-style button carrying
+  // its label as text, not an aria-label (Comments.svelte, filter ===
+  // "suggestions" branch).
+  await until("the suggest tool", () => editor.eval(`return Boolean([...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Suggest a change"))`));
+  await editor.eval(`[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Suggest a change").click(); return true;`);
 
   await editor.evalInFrame(`
     parent.postMessage({ librepaper: true, type: "selection",
@@ -358,7 +368,10 @@ async function run() {
   check("the selection bar offers Suggest", barText === "Suggest", barText);
   await editor.eval(`document.querySelector("#selectionbar").click(); return true;`);
   await until("the suggest form", () => editor.eval(`return document.querySelectorAll("#commentForm textarea").length === 2`));
-  const prefill = await editor.eval(`return document.querySelector("#commentForm textarea").value`);
+  const prefill = await until(
+    "the proposal textarea is prefilled",
+    () => editor.eval(`return document.querySelector("#commentForm textarea").value`),
+  );
   check("the proposal is prefilled with the passage", prefill === "The first paragraph.", prefill);
   await editor.eval(`
     const [proposed, note] = document.querySelectorAll("#commentForm textarea");
@@ -411,19 +424,20 @@ async function run() {
   /* --- B. redlines since the first checkpoint ----------------------------- */
 
   await editor.eval(`[...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("History")).click(); return true;`);
-  await until("the history panel", () => editor.eval(`return Boolean(document.querySelector("select.select"))`));
+  await until("the history panel", () => editor.eval(`return Boolean(document.querySelector(".timeline-list"))`));
   const first = checkpoints[0].sha;
   await editor.eval(`
-    const select = document.querySelector("select.select");
-    select.value = ${JSON.stringify(first)};
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-    return select.value;
+    const button = document.querySelector('li[data-sha=${JSON.stringify(first)}] button[aria-label="Compare since this checkpoint"]');
+    if (!button) throw new Error("no compare control");
+    button.click();
+    return true;
   `);
   await until("the change list", () => editor.eval(`return document.body.innerText.includes("opening")`));
+  // Painted from the start; the toggle is checked only if something unchecked it.
   await editor.eval(`
     const box = [...document.querySelectorAll("input[type=checkbox]")].find((b) => b.closest("label")?.textContent.includes("Show in document"));
     if (!box) throw new Error("no toggle");
-    box.click();
+    if (!box.checked) box.click();
     return box.checked;
   `);
   const redlined = await until("redlines in the frame", () => editor.evalInFrame(`
@@ -434,7 +448,7 @@ async function run() {
   check("insertions and deletions are painted inline", redlined?.ins === "opening" && redlined?.del === "first", JSON.stringify(redlined).slice(0, 200));
   check("redlines add no text to the document", !(redlined?.text || "").includes("first"), redlined?.text);
 
-  await editor.eval(`const el = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("Comments")); if (!el) throw new Error("no Comments tab among " + [...document.querySelectorAll("button, a")].map((b) => b.getAttribute("aria-label") || b.title || b.textContent.trim()).join(",")); el.click(); return true;`);
+  await editor.eval(`const el = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("Changes")); if (!el) throw new Error("no Changes tab among " + [...document.querySelectorAll("button, a")].map((b) => b.getAttribute("aria-label") || b.title || b.textContent.trim()).join(",")); el.click(); return true;`);
   const cleared = await until("redlines cleared", async () => !(await editor.evalInFrame(`return Boolean(document.querySelector("mark.librepaper-ins, mark.librepaper-del"))`, slug)));
   check("leaving the history panel clears the redlines", cleared);
 

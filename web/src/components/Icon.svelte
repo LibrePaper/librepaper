@@ -25,6 +25,9 @@
       ["circle", { cx: 9, cy: 7, r: 4 }],
     ],
     "chevron-down": [["path", "m6 9 6 6 6-6"]],
+    "chevron-up": [["path", "m18 15-6-6-6 6"]],
+    // Lucide's diff, for "compare since this checkpoint" in the timeline.
+    diff: [["path", "M12 3v14"], ["path", "M5 10h14"], ["path", "M5 21h14"]],
     "chevron-right": [["path", "m9 6 6 6-6 6"]],
     x: [["path", "M18 6 6 18"], ["path", "m6 6 12 12"]],
     "folder-plus": [["path", "M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2"], ["path", "M12 10v6"], ["path", "M9 13h6"]],

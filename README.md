@@ -706,17 +706,19 @@ librepaper label c9k 4f2a91c "sent to the journal"
 librepaper label c9k 4f2a91c            # and to take the name off again
 ```
 
-In the reader, the history button opens the same list beside the document.
-Picking a moment shows the document as it was at that moment, with a bar
-saying which one; "Back to now" returns to the live document. Copying a
+In the reader, the history button opens the same list beside the document,
+newest first, with the live document as the top row. Picking a moment shows
+the document as it was then, with what changed since the baseline struck
+through and underlined in place, the way a version history does it; the head
+of the panel counts the changes and steps through them. A row's compare
+action makes that checkpoint the baseline, and a bracket down the timeline
+shows the range. "Back to now" returns to the live document. Copying a
 checkpoint's link preserves the share key that gave you access. Editors can
 name checkpoints and restore earlier versions.
 
-"What changed since" compares an earlier checkpoint with the current visible
-text. Click an inserted or replaced passage to find it in the document;
-deleted passages retain surrounding words in the list. Changed file paths
-open source comparisons, and editors can compare two checkpoints and bring
-individual changes into the live source.
+The changes are also listed as prose, folded away under the count, and the
+files that changed open source comparisons; editors can compare two
+checkpoints and bring individual changes into the live source.
 
 The same comparisons and whole-version restore are available in the terminal:
 

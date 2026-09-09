@@ -102,6 +102,53 @@ export function hunks(oldText, newText, edits = [], context = 6) {
   });
 }
 
+/// Hunks that belong to one passage, read as one change. The word diff
+/// reports "not" -> "Survived" and "shown" -> "the Auditions" as two edits;
+/// a person reading a heading that was rewritten sees one. Two hunks are one
+/// change when the second begins inside the first's trailing context -- that
+/// is, within a few words -- and the unchanged words between them are then
+/// known, because the window holds them.
+///
+/// Each group carries the pieces to draw it as a line of prose: `before`, the
+/// `parts` (an alternating list of `{ keep }` and `{ old, insert }`), and
+/// `after`, plus the `position` and `length` of the whole span in the new
+/// text, which is where the frame is asked to scroll. The hunks are expected
+/// in text order with `position` stamped on each, as `Reader` stamps them.
+export function coalesce(hunks = []) {
+  const groups = [];
+  for (const hunk of hunks) {
+    const position = Number(hunk.position) || 0;
+    const insert = hunk.insert || "";
+    const window = hunk.currentAfter || hunk.suffix || "";
+    const last = groups[groups.length - 1];
+    if (last) {
+      const gap = position - last.end;
+      if (gap >= 0 && gap <= last.window.length) {
+        if (gap > 0) last.parts.push({ keep: last.window.slice(0, gap) });
+        last.parts.push({ old: hunk.old || "", insert });
+        last.hunks.push(hunk);
+        last.end = position + insert.length;
+        last.window = window;
+        last.after = window;
+        last.length = last.end - last.position;
+        continue;
+      }
+    }
+    groups.push({
+      path: hunk.path,
+      position,
+      end: position + insert.length,
+      length: insert.length,
+      before: hunk.currentBefore || hunk.prefix || "",
+      after: window,
+      window,
+      parts: [{ old: hunk.old || "", insert }],
+      hunks: [hunk],
+    });
+  }
+  return groups.map(({ window, end, ...group }) => group);
+}
+
 // The new-text offset of an edit is its old offset plus all prior insertions
 // and deletions. Edits from librepaper-text are sorted and non-overlapping.
 function newOffset(edits, edit) {
@@ -130,6 +177,38 @@ function windowAround(text, start, end, context) {
     value: text.slice(start, end),
     before: text.slice(from, start),
     after: text.slice(end, to),
+  };
+}
+
+/// How much a checkpoint changed the document's size relative to its parent,
+/// for the density bar beside its row. `null` when there is nothing to draw:
+/// no parent, an unlisted parent, or either end missing its `size`. The width
+/// is scaled by the logarithm of the change, not the change itself, because a
+/// five-byte fix and a five-kilobyte paste are both worth a bar and neither
+/// should swallow the other -- the log keeps a small edit visible and a large
+/// one from running off the sidebar. `grew` says which theme colour the bar
+/// takes; the width is already rounded to a whole pixel, and the label reads
+/// the way a diff stat does.
+const SIZE_BAR_MIN = 2;
+const SIZE_BAR_MAX = 48;
+// Where the log scale saturates: a checkpoint that changed the document by
+// this many bytes or more draws the widest bar. Fifty kilobytes is a lot of
+// prose to add or remove in one sitting.
+const SIZE_BAR_SATURATION = Math.log2(50_000);
+export function sizeDelta(point, checkpoints) {
+  if (!point?.parent || typeof point.size !== "number") return null;
+  const parent = (checkpoints || []).find((candidate) => candidate.sha === point.parent);
+  if (!parent || typeof parent.size !== "number") return null;
+  const delta = point.size - parent.size;
+  if (!delta) return null;
+  const magnitude = Math.log2(Math.abs(delta) + 1);
+  const width = Math.round(
+    Math.max(SIZE_BAR_MIN, Math.min(SIZE_BAR_MAX, (magnitude / SIZE_BAR_SATURATION) * SIZE_BAR_MAX)),
+  );
+  return {
+    grew: delta > 0,
+    width,
+    title: `${delta > 0 ? "+" : "−"}${Math.abs(delta)} byte${Math.abs(delta) === 1 ? "" : "s"}`,
   };
 }
 

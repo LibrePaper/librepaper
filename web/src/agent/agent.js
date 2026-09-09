@@ -100,6 +100,26 @@ import { createMathTypesetter } from "../lib/math.js";
   // never see it as a character of real content.
   const redlineStyle = document.createElement("style");
   redlineStyle.dataset.librepaperRedlines = "1";
+  // A colour per author, the way Google Docs paints its own redlines: five
+  // hues, `mark[data-author="0..4"]`, matching -- but not sharing code with,
+  // this frame has no access to the sidebar's theme tokens -- the literal
+  // hex values `theme.css` gives `--color-primary-500`, `--color-warning-
+  // -500`, `--color-error-500`, `--color-tertiary-500` and `--color-surface-
+  // 500`. `Reader.svelte`'s `applyRedlines` assigns the index the same way
+  // `History.svelte`'s timeline dot does: first appearance in the manifest,
+  // oldest first, mod 5. An item with no author (attribution fell back to
+  // "several people" or nobody at all) keeps the plain default below.
+  const authorHues = ["#2b5748", "#b07d3a", "#a33f3f", "#9cb080", "#273338"];
+  const authorRules = authorHues.map((hue, index) => `
+    mark.librepaper-ins[data-author="${index}"] {
+      background: color-mix(in srgb, ${hue} 22%, white);
+      text-decoration-color: ${hue};
+    }
+    mark.librepaper-del[data-author="${index}"]::before {
+      background: color-mix(in srgb, ${hue} 16%, white);
+      color: ${hue};
+    }
+  `).join("\n");
   redlineStyle.textContent = `
     mark.librepaper-ins {
       background: hsl(145 45% 88%);
@@ -117,6 +137,7 @@ import { createMathTypesetter } from "../lib/math.js";
       color: hsl(0 55% 40%);
       text-decoration: line-through;
     }
+    ${authorRules}
   `;
   document.head.appendChild(redlineStyle);
   function adoptStyles(parsed) {
@@ -406,6 +427,7 @@ import { createMathTypesetter } from "../lib/math.js";
         const mark = document.createElement("mark");
         mark.className = "librepaper-del";
         mark.dataset.deleted = item.text || "";
+        if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
         mark.title = [item.who, item.text].filter(Boolean).join(": ");
         range.insertNode(mark);
       }
@@ -424,6 +446,7 @@ import { createMathTypesetter } from "../lib/math.js";
           const mark = document.createElement("mark");
           mark.className = "librepaper-ins";
           if (item.who) mark.title = item.who;
+          if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
           range.surroundContents(mark);
         }
       }

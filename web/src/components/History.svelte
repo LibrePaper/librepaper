@@ -2,16 +2,25 @@
   // The timeline, as a column beside the document.
   //
   // A history is read backwards -- what happened, then what happened before
-  // that -- so the newest day is at the top and the newest mark within it. A
-  // labelled checkpoint is what somebody came here to find, so it is the one
-  // thing in the column that is not grey; a working afternoon of quiet marks
-  // by one author is folded to its first and last, because thirty rows of the
-  // same name say less than three do.
+  // that -- so the newest day is at the top and the newest mark within it,
+  // with the live document above them all. A labelled checkpoint is what
+  // somebody came here to find, so it is the one thing in the column that is
+  // not grey; a working afternoon of quiet marks by one author is folded to
+  // its first and last, because thirty rows of the same name say less than
+  // three do.
+  //
+  // The changes themselves are not listed here. They are painted into the
+  // document, the way a version history does it: clicking a row shows the
+  // document as it was then, with what changed since the baseline struck
+  // through and underlined in place, and the head of the column says how
+  // many changes there are and steps through them. A bracket down the gutter
+  // joins the two ends of the range. The list of changes as prose, and the
+  // files they touched, are there for whoever wants them, folded away.
   //
   // Nothing here fetches. The panel is given the checkpoints and reports what
   // was clicked; the page it sits in owns the requests, as it owns every other
   // one.
-  import { shortSha, timeline } from "../lib/history.js";
+  import { coalesce, shortSha, sizeDelta, timeline } from "../lib/history.js";
   import IconButton from "./IconButton.svelte";
   import PanelHeader from "./PanelHeader.svelte";
   import CopyLink from "./CopyLink.svelte";
@@ -21,24 +30,21 @@
     viewing = null,
     canEdit = false,
     baseline = null,
-    currentLabel = "now",
     target = null,
-    ontarget,
     changes = null,
     changedPaths = [],
-    redlines = false,
+    redlines = true,
     onredlines,
-    redlinesDisabledReason = "",
     fileDiff = null,
     onclosefilediff,
-    onbaseline,
-    onreveal,
+    onview,
+    oncompare,
+    onstep,
     onfilediff,
     oncheckpointfile,
     onrestore,
     oncopy,
     problem = "",
-    onshow,
     onback,
     onname,
   } = $props();
@@ -55,6 +61,42 @@
   let field = $state(null);
 
   const days = $derived(timeline(checkpoints));
+
+  // Where each checkpoint stands in the manifest, oldest first, so that the
+  // range can be drawn: every row strictly after the baseline and up to the
+  // compare point -- or up to the live document, when there is none.
+  const order = $derived(new Map(checkpoints.map((point, at) => [point.sha, at])));
+  const baselineAt = $derived(baseline ? (order.get(baseline.sha) ?? -1) : -1);
+  const targetAt = $derived(target ? (order.get(target.sha) ?? -1) : checkpoints.length);
+  const inRange = (sha) => {
+    const at = order.get(sha);
+    return baselineAt >= 0 && at !== undefined && at > baselineAt && at <= targetAt;
+  };
+  // Whether the bracket runs through a day heading: it does when the start
+  // of the range is on or below the heading and the end is above it.
+  const throughDay = (rows) => {
+    const first = rows[0];
+    const sha = first?.kind === "point" ? first.point.sha : first?.first.sha;
+    const at = order.get(sha);
+    return baselineAt >= 0 && at !== undefined && at >= baselineAt && at < targetAt;
+  };
+
+  // A colour per author, in the order they first appear, so that the dot
+  // beside a row says who without a word. Five is more people than a
+  // document usually has; a sixth shares the first's colour.
+  const authors = $derived.by(() => {
+    const seen = new Map();
+    for (const point of checkpoints) {
+      if (point.by && !seen.has(point.by)) seen.set(point.by, seen.size % 5);
+    }
+    return seen;
+  });
+  const swatch = (by) => `author-${authors.get(by) ?? 0}`;
+
+  // How much a checkpoint changed the document's size, for the density bar
+  // beside its row. Looked up against the manifest passed in, the same as
+  // every other relation between checkpoints in this panel.
+  const delta = (point) => sizeDelta(point, checkpoints);
 
   function unfold(row) {
     const next = new Set(opened);
@@ -74,19 +116,23 @@
   // What a checkpoint was taken for, in words rather than in the manifest's
   // own vocabulary. `quiet` and `left` are the two nobody asked for, and
   // calling them "autosaved" would say the wrong thing about who was there:
-  // what they have in common is that the author stopped.
+  // what they have in common is that the author stopped. They are the common
+  // case, so the row does not say them; the tooltip does.
   const WHY = {
     quiet: "paused",
     left: "closed the tab",
-    comment: "someone commented",
+    comment: "commented",
     cli: "published",
     sync: "synced",
     restore: "restored",
     label: "named",
     recovered: "recovered",
     accept: "accepted a suggestion",
+    render: "rendered",
   };
+  const QUIET = new Set(["quiet", "left", "render"]);
   const reason = (why) => WHY[why] || why;
+  const said = (point) => (QUIET.has(point.why) ? "" : reason(point.why));
 
   async function startNaming(point) {
     naming = point.sha;
@@ -103,16 +149,56 @@
   }
 
   // The caller obtains these from the shared WASM word-diff service. Keeping
-  // the component presentation-only ensures its hunk labels and anchors are
-  // identical to the response export and the sync merge implementation.
+  // the component presentation-only ensures the offsets it steps through are
+  // the offsets the frame painted the redlines at.
   const visibleChanges = $derived(Array.isArray(changes) ? changes : []);
+  const groups = $derived(coalesce(visibleChanges));
   const paths = $derived([...new Set([...(changedPaths || []), ...visibleChanges.map((hunk) => hunk.path).filter(Boolean)])]);
-  const baselineName = $derived(baseline?.label || (baseline ? shortSha(baseline.sha) : ""));
+  const name = (point) => (point ? point.label || shortSha(point.sha) : "");
 
-  function showHunk(hunk) {
-    const quote = String(hunk.new || "");
-    if (quote) onreveal?.({ ...hunk, exact: quote });
+  // The words around a change, a few of them: the diff keeps six on each
+  // side so that a deletion still has a place, but a row in a narrow column
+  // reads best with three.
+  const clip = (text, fromEnd) => {
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    const kept = fromEnd ? words.slice(-3) : words.slice(0, 3);
+    const trimmed = kept.length < words.length;
+    return fromEnd
+      ? `${trimmed ? "… " : ""}${kept.join(" ")} `
+      : ` ${kept.join(" ")}${trimmed ? " …" : ""}`;
+  };
+
+  // Which change the reader is at, stepping with the arrows. A new
+  // comparison starts over: the old position meant nothing in it.
+  let step = $state(-1);
+  $effect(() => {
+    void changes;
+    step = -1;
+  });
+  function goTo(index) {
+    if (!groups.length) return;
+    step = ((index % groups.length) + groups.length) % groups.length;
+    onstep?.(groups[step]);
   }
+  const count = $derived(
+    groups.length === 1 ? "1 change" : `${groups.length} changes`,
+  );
+
+  // `]` and `[` step the same as the two arrow buttons, for whoever would
+  // rather keep a hand on the keyboard. They are ignored while the target is
+  // somewhere a bracket means something else: a field, or the editor.
+  function stepKey(event) {
+    if (event.key !== "]" && event.key !== "[") return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const target = event.target;
+    if (target?.closest?.("input, textarea, select, [contenteditable], .cm-content")) return;
+    event.preventDefault();
+    goTo(step + (event.key === "]" ? 1 : -1));
+  }
+  $effect(() => {
+    window.addEventListener("keydown", stepKey);
+    return () => window.removeEventListener("keydown", stepKey);
+  });
 </script>
 
 <!-- One of the column's panels: the column itself, with the tabs that choose
@@ -131,93 +217,74 @@
         Nothing yet. A checkpoint is taken when the typing stops, when the last
         editor leaves, and whenever the document is published to.
       </p>
-    {:else if viewing}
-      <p class="panel-muted">
-        Showing an earlier version. The document pane is what it said then.
-      </p>
     {/if}
   </PanelHeader>
 
   {#if checkpoints.length > 0}
-    <section class="history-changes border-surface-200-800 border-b px-3 py-3">
-      <div class="mb-2 flex items-center justify-between gap-2">
-        <h3 class="panel-section-title m-0">What changed since</h3>
-        {#if baseline}
-          <small class="panel-meta">{baselineName} → {currentLabel}</small>
-        {/if}
-      </div>
-      <label class="label mb-2 flex items-center gap-2" title={redlinesDisabledReason || undefined}>
-        <input
-          type="checkbox"
-          class="checkbox"
-          checked={redlines}
-          disabled={Boolean(redlinesDisabledReason)}
-          onchange={(event) => onredlines?.(event.currentTarget.checked)}
-        />
-        <span class="label-text text-xs">Show in document</span>
-      </label>
-      {#if redlinesDisabledReason}
-        <p class="panel-muted text-xs mb-2">{redlinesDisabledReason}</p>
-      {/if}
-      <label class="label mb-2">
-        <span class="label-text text-xs">Compare with</span>
-        <select class="select select-sm" value={baseline?.sha || ""} onchange={(event) => onbaseline?.(event.currentTarget.value)}>
-          <option value="" disabled>Choose a checkpoint</option>
-          {#each checkpoints as point (point.sha)}
-            <option value={point.sha}>{point.label || shortSha(point.sha)} · {clock(point.at)}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="label mb-2">
-        <span class="label-text text-xs">Compare to</span>
-        <select class="select select-sm" value={target?.sha || ""} onchange={(event) => ontarget?.(event.currentTarget.value)}>
-          <option value="">Live document (now)</option>
-          {#each checkpoints as point (point.sha)}
-            {#if point.sha !== baseline?.sha}
-              <option value={point.sha}>{point.label || shortSha(point.sha)} · {clock(point.at)}</option>
-            {/if}
-          {/each}
-        </select>
-      </label>
+    <section class="history-range border-surface-200-800 border-b" aria-label="Changes">
       {#if !baseline}
         <p class="panel-muted text-sm">Choose a checkpoint to see the words that changed.</p>
-      {:else if problem}
-        <p class="panel-muted text-sm">The passage comparison is unavailable.</p>
-      {:else if viewing && !target}
-        <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onback?.()}>Back to now to compare changes</button>
-      {:else if changes === null}
-        <p class="panel-muted text-sm" role="status">Loading changes…</p>
-      {:else if !visibleChanges.length}
-        <p class="panel-muted text-sm">No text changed after this checkpoint.</p>
       {:else}
-        <ol class="history-hunks flex flex-col gap-2">
-          {#each visibleChanges as hunk, index (`${hunk.path || ""}-${index}`)}
-            <li class="history-hunk card preset-outlined-surface-200-800 p-2">
-              <div class="mb-1 flex items-center justify-between gap-2">
-                <span class="truncate text-xs">{hunk.path || "document"}</span>
-                {#if hunk.old && hunk.new}<span class="badge preset-tonal-tertiary">changed</span>
-                {:else if hunk.new}<span class="badge preset-tonal-secondary">inserted</span>
-                {:else}<span class="badge preset-tonal-warning">deleted</span>{/if}
-              </div>
-              {#if hunk.old}<div class="history-old text-xs">− {hunk.old}</div>{/if}
-              {#if hunk.new}<div class="history-new text-xs">+ {hunk.new}</div>{/if}
-              {#if hunk.before || hunk.after}
-                <div class="panel-muted mt-1 text-xs">… {hunk.contextBefore ?? hunk.before ?? ""} <strong>{hunk.new || hunk.old || ""}</strong> {hunk.contextAfter ?? hunk.after ?? ""} …</div>
-              {/if}
-              {#if hunk.new}
-                <button type="button" class="btn btn-sm preset-tonal-primary mt-2" onclick={() => showHunk(hunk)}>Reveal in document</button>
-              {/if}
-            </li>
-          {/each}
-        </ol>
-      {/if}
-      {#if paths.length}
-        <div class="mt-3 flex flex-col gap-1">
-          <span class="panel-meta">Changed files</span>
-          {#each paths as path (path)}
-            <button type="button" class="btn btn-sm preset-outlined-surface-300-700 justify-start" onclick={() => onfilediff?.(path)}>{path}</button>
-          {/each}
+        <p class="history-span panel-meta">
+          {#if target}Changes from <strong>{name(baseline)}</strong> to <strong>{name(target)}</strong>
+          {:else}Changes since <strong>{name(baseline)}</strong>{/if}
+        </p>
+        <div class="history-nav">
+          {#if problem}
+            <span class="panel-muted text-sm">The passage comparison is unavailable.</span>
+          {:else if viewing && !target}
+            <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onback?.()}>Back to now to see changes</button>
+          {:else if changes === null}
+            <span class="panel-muted text-sm" role="status">Loading changes…</span>
+          {:else if !groups.length}
+            <span class="panel-muted text-sm">No text changed.</span>
+          {:else}
+            <span class="history-count text-sm">{count}</span>
+            <span class="history-steps">
+              <IconButton icon="chevron-up" tone="plain" size="btn-icon-sm" label="Previous change ([)" onclick={() => goTo(step - 1)} />
+              <IconButton icon="chevron-down" tone="plain" size="btn-icon-sm" label="Next change (])" onclick={() => goTo(step + 1)} />
+            </span>
+          {/if}
+          <label class="history-switch label">
+            <input
+              type="checkbox"
+              class="checkbox"
+              checked={redlines}
+              onchange={(event) => onredlines?.(event.currentTarget.checked)}
+            />
+            <span class="label-text text-xs">Show in document</span>
+          </label>
         </div>
+        {#if groups.length}
+          <details class="history-changes">
+            <summary class="panel-meta">List changes</summary>
+            <ol class="history-hunks">
+              {#each groups as group, index (`${group.path || ""}-${group.position}-${index}`)}
+                <li>
+                  <button
+                    type="button"
+                    class="history-hunk"
+                    class:history-hunk-here={index === step}
+                    onclick={() => goTo(index)}
+                    title="Find this change in the document"
+                  >
+                    <span class="history-context">{clip(group.before, true)}</span>{#each group.parts as part, at (at)}{#if part.keep !== undefined}<span class="history-context">{part.keep}</span>{:else}{#if part.old}<del>{part.old}</del>{/if}{#if part.old && part.insert}{" "}{/if}{#if part.insert}<ins>{part.insert}</ins>{/if}{/if}{/each}<span class="history-context">{clip(group.after, false)}</span>
+                  </button>
+                </li>
+              {/each}
+            </ol>
+          </details>
+        {/if}
+        {#if paths.length}
+          <details class="history-files">
+            <summary class="panel-meta">{paths.length === 1 ? "1 file changed" : `${paths.length} files changed`}</summary>
+            <div class="history-paths">
+              {#each paths as path (path)}
+                <button type="button" class="btn btn-sm preset-outlined-surface-300-700 justify-start" onclick={() => onfilediff?.(path)}>{path}</button>
+              {/each}
+            </div>
+          </details>
+        {/if}
       {/if}
       {#if fileDiff}
         <section class="history-file-diff mt-3" aria-label="File diff">
@@ -237,7 +304,7 @@
             <div class="history-file-diff-body rounded bg-surface-100-900 p-2 text-xs">
               {#each fileDiff.hunks as hunk}
                 <div class="mb-3 whitespace-pre-wrap">
-                  <span class="panel-muted">{hunk.before}</span>{#if hunk.old}<del class="history-old">{hunk.old}</del>{/if}{#if hunk.insert}<ins class="history-new">{hunk.insert}</ins>{/if}<span class="panel-muted">{hunk.after}</span>
+                  <span class="panel-muted">{hunk.before}</span>{#if hunk.old}<del>{hunk.old}</del>{/if}{#if hunk.insert}<ins>{hunk.insert}</ins>{/if}<span class="panel-muted">{hunk.after}</span>
                 </div>
               {/each}
             </div>
@@ -245,36 +312,64 @@
         </section>
       {/if}
     </section>
-  {/if}
 
-  {#each days as { day, rows } (day)}
-    <h4 class="panel-section-title timeline-day sticky top-0 z-1 py-2">{day}</h4>
-    <ol class="mb-3 flex flex-col gap-1">
-      {#each rows as row (row.kind === "point" ? row.point.sha : row.first.sha)}
-        {#if row.kind === "point"}
-          {@render mark(row.point)}
-        {:else if opened.has(row.first.sha)}
-          {@render mark(row.first)}
-          {#each row.hidden as point (point.sha)}
-            {@render mark(point)}
-          {/each}
-          {@render mark(row.last)}
-        {:else}
-          {@render mark(row.first)}
-          <li>
-            <button type="button" class="timeline-folded" onclick={() => unfold(row)}>
-              {row.hidden.length} more by {row.first.by || "somebody"}
-            </button>
-          </li>
-          {@render mark(row.last)}
-        {/if}
+    <ol class="timeline-list">
+      <!-- The live document is a row like the others, hollow because it is
+           not a checkpoint yet. -->
+      <li
+        class="timeline-row timeline-now"
+        class:in-range={!target && baselineAt >= 0}
+        class:range-end={!target && baselineAt >= 0}
+      >
+        <button
+          type="button"
+          class="timeline-point"
+          class:timeline-here={!viewing}
+          aria-current={!viewing ? "true" : undefined}
+          title="Show the live document"
+          onclick={() => onview?.("")}
+        >
+          <span class="timeline-dot timeline-dot-now"></span>
+          <span class="timeline-when panel-meta">now</span>
+          <span class="timeline-what"><span class="timeline-who">Live document</span></span>
+        </button>
+      </li>
+      {#each days as { day, rows } (day)}
+        <li class="timeline-day-row" class:in-range={throughDay(rows)}>
+          <h4 class="panel-section-title timeline-day sticky top-0 z-1">{day}</h4>
+        </li>
+        {#each rows as row (row.kind === "point" ? row.point.sha : row.first.sha)}
+          {#if row.kind === "point"}
+            {@render mark(row.point)}
+          {:else if opened.has(row.first.sha)}
+            {@render mark(row.first)}
+            {#each row.hidden as point (point.sha)}
+              {@render mark(point)}
+            {/each}
+            {@render mark(row.last)}
+          {:else}
+            {@render mark(row.first)}
+            <li class="timeline-row timeline-fold" class:in-range={inRange(row.hidden[0].sha)}>
+              <button type="button" class="timeline-folded" onclick={() => unfold(row)}>
+                {row.hidden.length} more by {row.first.by || "somebody"}
+              </button>
+            </li>
+            {@render mark(row.last)}
+          {/if}
+        {/each}
       {/each}
     </ol>
-  {/each}
+  {/if}
 </div>
 
 {#snippet mark(point)}
-  <li>
+  <li
+    class="timeline-row"
+    class:in-range={inRange(point.sha)}
+    class:range-start={baseline?.sha === point.sha}
+    class:range-end={target?.sha === point.sha}
+    data-sha={point.sha}
+  >
     {#if naming === point.sha}
       <!-- Naming happens where the name will appear, rather than in a dialog
            over the list: what is being named is the row under the cursor. -->
@@ -297,32 +392,56 @@
         class:timeline-named={Boolean(point.label)}
         class:timeline-here={viewing === point.sha}
         aria-current={viewing === point.sha ? "true" : undefined}
-        title="Show the document as it was at {shortSha(point.sha)}"
-        onclick={() => (viewing === point.sha ? onback?.() : onshow?.(point.sha))}
+        title="Show the document as it was at {shortSha(point.sha)} ({point.by || "somebody"} {reason(point.why)})"
+        onclick={() => onview?.(point.sha)}
       >
+        <span class="timeline-dot {swatch(point.by)}"></span>
         <span class="timeline-when panel-meta">{clock(point.at)}</span>
         <span class="timeline-what">
-          {#if point.label}<strong>{point.label}</strong><br />{/if}
-          {point.by || "somebody"} · {reason(point.why)}
+          {#if point.label}<strong>{point.label}</strong>{/if}
+          <span class="timeline-who">{point.by || "somebody"}</span>
+          {#if said(point)}<span class="timeline-why panel-meta">{said(point)}</span>{/if}
         </span>
       </button>
-      {#if canEdit}
-        <IconButton
-          icon="pencil"
-          tone="plain"
-          size="btn-icon-sm"
-          label={point.label ? "Rename this point" : "Name this point"}
-          onclick={() => startNaming(point)}
-        />
-        <IconButton icon="history" tone="plain" size="btn-icon-sm" label="Restore this checkpoint" onclick={() => onrestore?.(point.sha)} />
+      {@const size = delta(point)}
+      {#if size}
+        <span
+          class="timeline-size"
+          class:timeline-size-grew={size.grew}
+          class:timeline-size-shrank={!size.grew}
+          style="width: {size.width}px"
+          title={size.title}
+        ></span>
       {/if}
-      <CopyLink href={oncopy?.(point.sha) || undefined} label="Copy the link to this checkpoint" />
+      <span class="timeline-actions">
+        <IconButton
+          icon="diff"
+          tone={baseline?.sha === point.sha ? "tonal" : "plain"}
+          size="btn-icon-sm"
+          label="Compare since this checkpoint"
+          pressed={baseline?.sha === point.sha}
+          onclick={() => oncompare?.(point.sha)}
+        />
+        {#if canEdit}
+          <IconButton
+            icon="pencil"
+            tone="plain"
+            size="btn-icon-sm"
+            label={point.label ? "Rename this point" : "Name this point"}
+            onclick={() => startNaming(point)}
+          />
+          <IconButton icon="history" tone="plain" size="btn-icon-sm" label="Restore this checkpoint" onclick={() => onrestore?.(point.sha)} />
+        {/if}
+        <CopyLink href={oncopy?.(point.sha) || undefined} label="Copy the link to this checkpoint" tone="plain" />
+      </span>
     {/if}
   </li>
-  {#if point.parent && point.changed?.length}
-    <li class="flex flex-wrap gap-1 px-3 pb-2">
+  {#if viewing === point.sha && point.parent && point.changed?.length}
+    <!-- The files this checkpoint touched, under the row being looked at and
+         no other: each opens against the checkpoint before. -->
+    <li class="timeline-row timeline-files" class:in-range={inRange(point.sha)}>
       {#each point.changed as path (path)}
-        <button type="button" class="btn btn-sm preset-tonal-surface" onclick={() => oncheckpointfile?.(point, path)} title="Compare this file with the previous checkpoint">{path}</button>
+        <button type="button" class="timeline-file" onclick={() => oncheckpointfile?.(point, path)} title="Compare this file with the previous checkpoint">{path}</button>
       {/each}
     </li>
   {/if}

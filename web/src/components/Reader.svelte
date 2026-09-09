@@ -1,7 +1,7 @@
 <script>
   // One document: the source beside it, the page itself, and everything said
   // about it.
-  import { anchorAll, anchorAllSources, anchorOne, flatten } from "../lib/anchor.js";
+  import { anchorAll, anchorAllSources, flatten } from "../lib/anchor.js";
   import * as sync from "../lib/sync.js";
   import * as renderers from "../lib/renderers.js";
   import * as diagnosticsRule from "../lib/diagnostics.js";
@@ -12,7 +12,7 @@
   import * as suggestions from "../lib/suggestions.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
   import { capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
-  import { attribution, itemsFor } from "../lib/redlines.js";
+  import { attribution, authorIndex, itemsFor } from "../lib/redlines.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
@@ -213,8 +213,20 @@
     if (!frameReady) return;
     const showable = historyRedlines && panel === "history" && !redlinesDisabledReason &&
       historyBaseline && Array.isArray(historyChanges);
+    // Each hunk already carries its own author in `who` when the history
+    // controller's chained attribution ran (`hunk.who`, read by `itemsFor`
+    // in preference to the range-level fallback below); `author` turns that
+    // name into the colour index the frame paints with, the same index
+    // `History.svelte`'s timeline dot uses for the same author.
     const items = showable
-      ? itemsFor(historyChanges, attribution(checkpoints, historyBaseline.sha, historyComparePoint?.sha || null))
+      ? (() => {
+          const fallback = attribution(checkpoints, historyBaseline.sha, historyComparePoint?.sha || null);
+          const authors = authorIndex(checkpoints);
+          return itemsFor(historyChanges, fallback).map((item) => ({
+            ...item,
+            author: authors.has(item.who) ? authors.get(item.who) : undefined,
+          }));
+        })()
       : [];
     const payload = JSON.stringify(items);
     if (payload !== lastRedlines) {
@@ -911,14 +923,12 @@
   function revealPendingHistory() {
     const pending = pendingHistoryReveal;
     if (!pending || docText === null || (viewing?.sha || "") !== pending.sha) return;
-    const found = anchorOne(docText, pending.hunk, docView);
-    if (!found) return;
     pendingHistoryReveal = null;
-    tell({ type: "locate", start: found.start, length: found.end - found.start });
+    tell({ type: "locate", start: pending.hunk.position, length: pending.hunk.length || (pending.hunk.insert || "").length });
   }
 
   async function revealHistoryHunk(hunk) {
-    if (!hunk.exact) return;
+    if (!hunk || typeof hunk.position !== "number") return;
     const sha = historyComparePoint?.sha || "";
     pendingHistoryReveal = { hunk, sha };
     if ((viewing?.sha || "") !== sha) {
@@ -927,6 +937,31 @@
     } else {
       revealPendingHistory();
     }
+  }
+
+  // The timeline's two gestures. Clicking a row shows the document as it was
+  // then, with the changes since the baseline painted into it: the row is
+  // the compare end of the range. The row's "compare since" action makes it
+  // the start instead. Either way the document pane and the range agree,
+  // which is what lets the painted offsets be trusted.
+  async function viewPoint(sha) {
+    showMobileView("document");
+    if (!sha) {
+      backToNow();
+      await chooseHistoryTarget("");
+      return;
+    }
+    await showCheckpoint(sha);
+    if ((viewing?.sha || "") !== sha) return;
+    historyNavigationProblem = "";
+    await historyController.compareTo(sha);
+  }
+
+  async function compareSince(sha) {
+    await chooseHistoryBaseline(sha);
+    // The baseline moved past the compare end, so the range now runs to the
+    // live document, and the pane has to show the live document too.
+    if (viewing && !historyComparePoint) backToNow();
   }
 
   async function restoreCheckpoint(sha) {
@@ -2329,7 +2364,7 @@
       showPanel("history", false).then(() => {
         // The history request may outlive the panel. Do not enter a
         // checkpoint after the reader has explicitly left history.
-        if (panel === "history") void showCheckpoint(ARRIVED_AT);
+        if (panel === "history") void viewPoint(ARRIVED_AT);
       });
     } else if (panel === "history") {
       // The column reopened where it was left, and this panel has to fetch
@@ -2608,15 +2643,12 @@
                  baseline={historyBaseline} changes={historyChanges}
                  changedPaths={historyChangedPaths}
                  redlines={historyRedlines} onredlines={setHistoryRedlines}
-                 {redlinesDisabledReason}
                  {fileDiff}
-                 currentLabel={historyComparePoint?.label || (historyComparePoint ? history.shortSha(historyComparePoint.sha) : "now")}
                  target={historyComparePoint}
-                 onbaseline={chooseHistoryBaseline}
-                 ontarget={chooseHistoryTarget}
-                 onshow={(sha) => { showMobileView("document"); return showCheckpoint(sha); }} onback={backToNow} onname={nameCheckpoint}
+                 onview={viewPoint} oncompare={compareSince}
+                 onback={() => viewPoint("")} onname={nameCheckpoint}
                  onrestore={restoreCheckpoint} oncopy={checkpointLink}
-                 onreveal={revealHistoryHunk}
+                 onstep={revealHistoryHunk}
                  oncheckpointfile={openCheckpointFile}
                  onfilediff={openFileDiff} onclosefilediff={historyController.closeFileDiff} />
       {:else}
