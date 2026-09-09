@@ -107,7 +107,7 @@ It prints an address and an eight-character code:
 ```
 
 Open that page in any browser, on any machine, and sign in there with whichever
-provider the deployment offers — GitHub, Google, or both. The page names the
+provider the deployment offers: GitHub, Google, or both. The page names the
 code and the account it would sign in, and nothing happens until you press
 *Approve*, so a link somebody else sends you cannot put your account on their
 terminal.
@@ -145,7 +145,7 @@ librepaper publish paper/ --title "My Paper"
 ```
 
 Everything in it goes: the chapters, the `.bib`, the figures. Three things are
-left behind — names beginning with a dot, the main file's own `.pdf`, and
+left behind: names beginning with a dot, the main file's own `.pdf`, and
 whatever git ignores, since a `.gitignore` is the author's own statement of
 what is derived. Which file is the document is the one text at the top level
 that LibrePaper renders, or `main.*`; when neither settles it, `--main` does:
@@ -155,7 +155,7 @@ librepaper publish paper/ --main chapters/thesis.typ
 ```
 
 Publishing a single file that reads its neighbours says so rather than
-publishing a document that compiles here and nowhere else — a reader renders
+publishing a document that compiles here and nowhere else. A reader renders
 it themselves, and would get the error you never saw:
 
 ```
@@ -307,7 +307,7 @@ until another file is made the main file.
 
 The editor is offered to whoever may replace the document, and the document
 opens ready to work on. There is nothing to save: what is typed is the
-document, readers see it a moment later, and the comments survive it — as you
+document, readers see it a moment later, and the comments survive it. As you
 type, they re-anchor against the edited text. A comment records its passage in
 the source file as well as on the page, so it can be found in any version and
 in the editor, and one whose passage is gone from both is marked as such
@@ -350,7 +350,7 @@ The formats, and they are not available in the same places:
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
 no `typst` binary on your PATH, because the compiler is inside LibrePaper, and it
-is the same one the editor runs — so a document cannot render one way when it
+is the same one the editor runs, so a document cannot render one way when it
 is published and another way when it is edited.
 
 The Typst module contains the compiler and embedded fonts. Renderer URLs include
@@ -387,12 +387,12 @@ fix that cannot wait for a render.
 #### LaTeX
 
 `librepaper publish paper.tex` stores a `.tex` file as `latex`, and
-`librepaper publish paper/` takes the whole directory — the chapters, the `.bib`,
+`librepaper publish paper/` takes the whole directory: the chapters, the `.bib`,
 the figures. Nothing is compiled on the way: LibrePaper carries no TeX, no build
 embeds one, and there is no `make latex`.
 
 LaTeX is compiled in the browser, by LibrePaper's own pinned release of the
-[WasmTex](https://github.com/corca-ai/wasmtex) engines — pdfTeX, XeTeX,
+[WasmTex](https://github.com/corca-ai/wasmtex) engines: pdfTeX, XeTeX,
 LuaTeX and BibTeX built for WebAssembly, with the formats generated for those
 exact binaries and a pinned TeX Live package snapshot. An editor's browser
 loads the engine the project needs the first time it opens a LaTeX document
@@ -403,7 +403,7 @@ so the next document costs nothing to fetch. The engines are GPL works of
 their own, fetched at run time rather than linked into LibrePaper; their notices
 travel with the mirror.
 
-The project engine — Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX — and the pinned
+The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) and the pinned
 browser release are project settings in the Settings panel. Automatic honours
 a `% !TEX program = xelatex` line in the main file, then looks for packages
 that only a Unicode engine can load, and otherwise uses pdfLaTeX.
@@ -412,7 +412,7 @@ BibTeX runs in the browser. Biber does not, and two things stand in for it.
 If LibrePaper's local app is running on your machine, the reader hands it the
 `.bcf` and the `.bib` files, runs your own Biber, and continues typesetting
 in the browser. Without the app, the reader boots a small Linux guest in a
-worker — a Debian image holding Biber and nothing else, run by v86 — and runs
+worker (a Debian image holding Biber and nothing else, run by v86) and runs
 the real Biber there; slower, but nothing to install.
 
 The local app is the same binary:
@@ -425,8 +425,8 @@ librepaper local disconnect --all
 ```
 
 Enter the code once in the document's Settings panel and later fallbacks are
-automatic. When browser compilation fails outright — an engine that will not
-start, a package the mirror lacks, a crash, a TeX error — the reader asks the
+automatic. When browser compilation fails outright (an engine that will not
+start, a package the mirror lacks, a crash, a TeX error), the reader asks the
 app to compile the whole project natively with your installed TeX, once per
 version of the source, and shows the result as an ordinary preview that says
 it was made locally. The app accepts structured jobs rather than commands,
@@ -458,7 +458,7 @@ own to check a mirror without publishing it.
 Without `--latex` a deployment stores and shows `.tex` files and offers no
 LaTeX editor: `/api/config` says so, and the reader offers the source rather
 than a compiler. Whichever you pass, browsers only ever fetch `/latex/` on
-your own origin — the server reads from the bucket, the browser never does,
+your own origin: the server reads from the bucket, the browser never does,
 because the list of packages a document asks for is a description of the
 document and should go no further than the deployment that already has the
 source. An `http:` mirror is refused at startup, since the page a document is
@@ -521,7 +521,7 @@ a directory. In the source editor, type `@` (or `\cite{` in LaTeX) to search by
 citation key, author, title, or year. Selecting a result inserts its key.
 
 Markdown accepts Pandoc citations such as `[@smith2020]`, `@smith2020`,
-and `[see @smith2020, pp. 3–4; @jones2021]`. Choose resources and a built-in
+and `[see @smith2020, pp. 3-4; @jones2021]`. Choose resources and a built-in
 citation style in front matter:
 
 ```yaml
@@ -557,11 +557,11 @@ That works for Claude Code, opencode, Cursor, and the other agents
 `--agent claude-code` to pick one. You can also copy the directories under
 [`skills/`](skills) into your agent's skill directory by hand.
 
-- [`librepaper-document`](skills/librepaper-document/SKILL.md) — read, comment on,
+- [`librepaper-document`](skills/librepaper-document/SKILL.md): read, comment on,
   and edit a document from its link.
-- [`librepaper-pair`](skills/librepaper-pair/SKILL.md) — pair live in the sidebar
+- [`librepaper-pair`](skills/librepaper-pair/SKILL.md): pair live in the sidebar
   chat.
-- [`librepaper-write`](skills/librepaper-write/SKILL.md) — proofread, tighten, rewrite,
+- [`librepaper-write`](skills/librepaper-write/SKILL.md): proofread, tighten, rewrite,
   and explain with anchored suggestions an editor reviews.
 
 Each explains how to install the single LibrePaper binary locally and use its
@@ -925,7 +925,7 @@ own, GitHub's or Google's. A server where both `--publishers` and
 `--commenters` are `anyone` never asks, and runs without either.
 
 Create the app at [github.com/settings/developers](https://github.com/settings/developers)
-(New OAuth App). Point its two URLs at the server's own address — the
+(New OAuth App). Point its two URLs at the server's own address: the
 public HTTPS address it sits behind, with the same `/auth/callback` path:
 
 ```text
@@ -941,7 +941,7 @@ export LIBREPAPER_GITHUB_CLIENT_ID="..."
 export LIBREPAPER_GITHUB_CLIENT_SECRET="..."
 ```
 
-Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review — but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
+Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review, but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
 
 `librepaper logout` deletes the terminal's local token. It does not revoke a
 copy held elsewhere. Rotating the server's session key invalidates issued
