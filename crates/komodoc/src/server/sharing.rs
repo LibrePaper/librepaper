@@ -489,7 +489,8 @@ impl Server {
                     401,
                     &json!({"error": "authentication expired or was revoked"}),
                 );
-                self.clear_dead_session(&mut response, request.headers(), arrival);
+                self.clear_dead_session(&mut response, request.headers(), arrival)
+                    .await;
                 return response;
             }
             Err(AuthenticationFailure::Unavailable) => {
@@ -556,23 +557,28 @@ impl Server {
         // this request therefore have a single winner.
         if let Some(catalog) = &self.store.catalog {
             let now = crate::util::timestamp();
-            if let Err(error) = catalog.upsert_account(&crate::storage::catalog::Account {
-                id: account.id.clone(),
-                provider: account.provider.clone(),
-                handle: account.handle.clone(),
-                name: account.name.clone(),
-                email: String::new(),
-                first_seen: now.clone(),
-                last_seen: now,
-                plan: "default".into(),
-                status: "active".into(),
-                session_generation: if cfg!(test) {
-                    "test-session-generation".into()
-                } else {
-                    random_token()
+            if let Err(error) = crate::server::upsert_account_job(
+                catalog,
+                crate::storage::catalog::Account {
+                    id: account.id.clone(),
+                    provider: account.provider.clone(),
+                    handle: account.handle.clone(),
+                    name: account.name.clone(),
+                    email: String::new(),
+                    first_seen: now.clone(),
+                    last_seen: now,
+                    plan: "default".into(),
+                    status: "active".into(),
+                    session_generation: if cfg!(test) {
+                        "test-session-generation".into()
+                    } else {
+                        random_token()
+                    },
+                    erasure_cursor: None,
                 },
-                erasure_cursor: None,
-            }) {
+            )
+            .await
+            {
                 eprintln!("could not record transfer target: {error}");
                 return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
             }
@@ -580,17 +586,37 @@ impl Server {
                 .id
                 .is_signed_in()
                 .then_some(current_who.id.id.as_str());
-            if let Err(error) = catalog.transfer_ownership_authorized_with_generation(
-                slug,
-                caller_id,
-                &current_who.key,
-                current_who
-                    .id
-                    .is_signed_in()
-                    .then_some(current_who.id.session_generation.as_str()),
-                &account.id,
-                self.config.storage.per_owner,
-            ) {
+            // The transfer re-checks the caller id and session generation
+            // inside its own write, so a caller cancelled after dispatch
+            // either transferred the document under the authority it proved
+            // or did not transfer it at all; there is no partial state and
+            // nothing to undo.
+            let transfer_slug = slug.to_string();
+            let caller_id = caller_id.map(str::to_owned);
+            let caller_key = current_who.key.clone();
+            let caller_generation = current_who
+                .id
+                .is_signed_in()
+                .then(|| current_who.id.session_generation.clone());
+            let new_owner = account.id.clone();
+            let per_owner = self.config.storage.per_owner;
+            if let Err(error) = catalog
+                .execute_catalog(
+                    crate::server::SERVER_JOB_BYTES + transfer_slug.len(),
+                    move |catalog| {
+                        catalog.transfer_ownership_authorized_with_generation(
+                            &transfer_slug,
+                            caller_id.as_deref(),
+                            &caller_key,
+                            caller_generation.as_deref(),
+                            &new_owner,
+                            per_owner,
+                        )
+                    },
+                )
+                .await
+                .map_err(crate::storage::catalog::CatalogError::from)
+            {
                 return match error {
                     crate::storage::catalog::CatalogError::NotFound => {
                         write_json(404, &json!({"error": "not found"}))

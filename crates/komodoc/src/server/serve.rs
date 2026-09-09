@@ -412,13 +412,19 @@ pub async fn serve(options: ServeOptions) {
                     }
                 }
                 if let Some(catalog) = &erasure_catalog {
-                    let _ = catalog.prune_checkpoint_budgets(crate::util::now_unix(), 1_000);
-                    if let Err(error) = crate::storage::maintenance::run_erasure_pass(
+                    let _ = catalog
+                        .execute_catalog(512, |catalog| {
+                            catalog.prune_checkpoint_budgets(crate::util::now_unix(), 1_000)
+                        })
+                        .await;
+                    if let Err(error) = crate::storage::maintenance::run_erasure_pass_async(
                         catalog,
                         crate::util::now_unix(),
                         25,
                         250,
-                    ) {
+                    )
+                    .await
+                    {
                         eprintln!("warning: local account erasure failed: {error}");
                     }
                 }
@@ -448,14 +454,26 @@ pub async fn serve(options: ServeOptions) {
         }
     };
 
+    let closing_catalog = instance.store.catalog.clone();
     let router = instance.router();
-    if let Err(err) = axum::serve(
+    let serve_result = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown)
-    .await
-    {
+    .await;
+    // Only now: the graceful shutdown above stops accepting and then drains
+    // the requests already in flight, and those requests still submit
+    // catalogue jobs. Closing admission any earlier would fail a request that
+    // was accepted before the signal. By this point the room set has been
+    // flushed and the deletion and journal workers have run their final pass,
+    // so what remains is whatever is still queued or executing: this rejects
+    // the queue, lets the executing transaction and its completion hook
+    // finish, and only then closes SQLite.
+    if let Some(catalog) = closing_catalog.as_ref() {
+        catalog.shutdown().await;
+    }
+    if let Err(err) = serve_result {
         die(err);
     }
 }

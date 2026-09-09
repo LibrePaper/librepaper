@@ -226,6 +226,51 @@ enum AuthenticationFailure {
     Unavailable,
 }
 
+/// Declared input for a server-side catalogue job: an account id or a slug
+/// and no payload.
+pub(crate) const SERVER_JOB_BYTES: usize = 512;
+
+/// Read one account row off the runtime worker.
+pub(crate) async fn account_row(
+    catalog: &Arc<crate::storage::catalog::Catalog>,
+    id: &str,
+) -> Result<Option<crate::storage::catalog::Account>, crate::storage::catalog::CatalogError> {
+    let id = id.to_string();
+    catalog
+        .execute_catalog(SERVER_JOB_BYTES + id.len(), move |catalog| {
+            catalog.account(&id)
+        })
+        .await
+        .map_err(crate::storage::catalog::CatalogError::from)
+}
+
+/// Establish or refresh one account row off the runtime worker.
+///
+/// `upsert_account` is idempotent on identity: a caller cancelled after
+/// dispatch leaves exactly the row it would have left, and the next request
+/// reads it. Nothing is reserved here, so there is nothing to refund.
+pub(crate) async fn upsert_account_job(
+    catalog: &Arc<crate::storage::catalog::Catalog>,
+    account: crate::storage::catalog::Account,
+) -> Result<crate::storage::catalog::Account, crate::storage::catalog::CatalogError> {
+    catalog
+        .execute_catalog(SERVER_JOB_BYTES + account.id.len(), move |catalog| {
+            catalog.upsert_account(&account)
+        })
+        .await
+        .map_err(crate::storage::catalog::CatalogError::from)
+}
+
+fn authentication_failure_of(
+    error: crate::storage::catalog::CatalogError,
+) -> AuthenticationFailure {
+    if matches!(error, crate::storage::catalog::CatalogError::Conflict(_)) {
+        AuthenticationFailure::Invalid
+    } else {
+        AuthenticationFailure::Unavailable
+    }
+}
+
 impl Server {
     /// Read a document through the authoritative catalogue when one is
     /// configured.  A catalogue failure is never treated as a missing
@@ -389,7 +434,7 @@ impl Server {
                 session_generation: random_token(),
                 erasure_cursor: None,
             };
-            let account = match catalog.account(&identity.id) {
+            let account = match account_row(catalog, &identity.id).await {
                 Err(_) => return Err(AuthenticationFailure::Unavailable),
                 Ok(Some(account)) if account.status != "active" => {
                     return Err(AuthenticationFailure::Invalid)
@@ -404,49 +449,45 @@ impl Server {
                         || account.name != profile.name
                         || account.email != profile.email
                     {
-                        catalog.upsert_account(&profile).map_err(|error| {
-                            if matches!(error, crate::storage::catalog::CatalogError::Conflict(_)) {
-                                AuthenticationFailure::Invalid
-                            } else {
-                                AuthenticationFailure::Unavailable
-                            }
-                        })?
+                        upsert_account_job(catalog, profile)
+                            .await
+                            .map_err(authentication_failure_of)?
                     } else {
                         account
                     }
                 }
-                Ok(None) => catalog.upsert_account(&profile).map_err(|error| {
-                    if matches!(error, crate::storage::catalog::CatalogError::Conflict(_)) {
-                        AuthenticationFailure::Invalid
-                    } else {
-                        AuthenticationFailure::Unavailable
-                    }
-                })?,
+                Ok(None) => upsert_account_job(catalog, profile)
+                    .await
+                    .map_err(authentication_failure_of)?,
             };
             identity.session_generation = account.session_generation;
             return Ok(identity);
         }
 
         #[cfg(test)]
-        if matches!(catalog.account(&identity.id), Ok(None))
+        if matches!(account_row(catalog, &identity.id).await, Ok(None))
             && identity.session_generation == "test-session-generation"
         {
             let now = crate::util::timestamp();
-            let _ = catalog.upsert_account(&crate::storage::catalog::Account {
-                id: identity.id.clone(),
-                provider: identity.provider.clone(),
-                handle: identity.handle.clone(),
-                name: identity.name.clone(),
-                email: String::new(),
-                first_seen: now.clone(),
-                last_seen: now,
-                plan: "test".into(),
-                status: "active".into(),
-                session_generation: identity.session_generation.clone(),
-                erasure_cursor: None,
-            });
+            let _ = upsert_account_job(
+                catalog,
+                crate::storage::catalog::Account {
+                    id: identity.id.clone(),
+                    provider: identity.provider.clone(),
+                    handle: identity.handle.clone(),
+                    name: identity.name.clone(),
+                    email: String::new(),
+                    first_seen: now.clone(),
+                    last_seen: now,
+                    plan: "test".into(),
+                    status: "active".into(),
+                    session_generation: identity.session_generation.clone(),
+                    erasure_cursor: None,
+                },
+            )
+            .await;
         }
-        match catalog.account(&identity.id) {
+        match account_row(catalog, &identity.id).await {
             Ok(Some(account))
                 if account.status == "active"
                     && needs_generation
@@ -646,7 +687,8 @@ impl Server {
                         "error": "authentication expired or was revoked"
                     }),
                 );
-                self.clear_dead_session(&mut response, headers, arrival);
+                self.clear_dead_session(&mut response, headers, arrival)
+                    .await;
                 return Err(response);
             }
             Err(AuthenticationFailure::Unavailable) => {
@@ -673,7 +715,8 @@ impl Server {
                 "sign in to publish"
             };
             let mut response = write_json(401, &json!({"error": message}));
-            self.clear_dead_session(&mut response, headers, arrival);
+            self.clear_dead_session(&mut response, headers, arrival)
+                .await;
             return Err(response);
         }
         Err(write_json(
@@ -690,7 +733,7 @@ impl Server {
     /// deployment, and without this the front page reads as empty to them.
     /// A bearer is the terminal's, and the terminal is told rather than
     /// silently downgraded.
-    pub(super) fn clear_dead_session(
+    pub(super) async fn clear_dead_session(
         &self,
         response: &mut Reply,
         headers: &HeaderMap,
@@ -713,8 +756,8 @@ impl Server {
         // generation was revoked. This helper is called only after the
         // fallible authentication gate has confirmed a 401, so an unavailable
         // catalogue never causes a live credential to be cleared.
-        let revoked = self.store.catalog.as_ref().is_some_and(|catalog| {
-            match catalog.account(&identity.id) {
+        let revoked = match self.store.catalog.as_ref() {
+            Some(catalog) => match account_row(catalog, &identity.id).await {
                 Ok(Some(account)) => {
                     account.status != "active"
                         || identity.session_generation.is_empty()
@@ -722,8 +765,9 @@ impl Server {
                 }
                 Ok(None) => true,
                 Err(_) => false,
-            }
-        });
+            },
+            None => false,
+        };
         if revoked {
             add_cookie(response, &clear_cookie(&name, https));
         }

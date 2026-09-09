@@ -31,7 +31,7 @@ pub(super) fn upload_digest(upload: &Upload) -> String {
 
 impl Server {
     pub async fn delete_document(&self, slug: &str) -> Result<usize, String> {
-        let storage_id = self.store.begin_delete(slug)?;
+        let storage_id = self.store.begin_delete(slug).await?;
         // Tear down the document's live chat channels only after deletion is
         // admitted; a refused delete must leave those conversations running.
         self.chat.purge(slug).await;
@@ -200,7 +200,7 @@ impl Server {
         let existing = match self.store.get_result(&base).await {
             Ok(existing) => match existing {
                 Some(existing) => Some(existing),
-                None => match self.store.pending_publication_result(&base) {
+                None => match self.store.pending_publication_result(&base).await {
                     Ok(pending) => pending,
                     Err(error) => {
                         return write_json(
@@ -235,7 +235,7 @@ impl Server {
         // at that moment keeps their words and sees the rest change under
         // them, and the write is marked with a checkpoint.
         if mine {
-            if let Err(error) = self.store.admit_replacement_upload(&key) {
+            if let Err(error) = self.store.admit_replacement_upload(&key).await {
                 return match error {
                     PutError::Quota { status, message } => {
                         write_json(status, &json!({"error": message}))
@@ -531,10 +531,14 @@ impl Server {
                 .prepare_publication(&existing.slug, &request_digest, "replace", Some(&actor))
                 .await
                 .map_err(|error| write_json(409, &json!({"error": error})))?;
-            if let Err(error) = self.store.reserve_publication_peak(
-                &existing.slug,
-                self.exact_publication_peak(parsed, &main_path),
-            ) {
+            if let Err(error) = self
+                .store
+                .reserve_publication_peak(
+                    &existing.slug,
+                    self.exact_publication_peak(parsed, &main_path),
+                )
+                .await
+            {
                 let _ = self.store.abort_publication(&existing.slug, &error).await;
                 return Err(write_json(507, &json!({"error": error})));
             }

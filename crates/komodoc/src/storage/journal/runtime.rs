@@ -45,15 +45,17 @@ pub(super) struct MaintenanceBorrow {
 }
 
 impl MaintenanceBorrow {
-    pub(super) fn release(&mut self) -> JournalResult<()> {
+    pub(super) async fn release(&mut self) -> JournalResult<()> {
         if !self.released {
-            self.catalog
-                .release_maintenance(
-                    &self.job_id,
-                    &self.slug,
-                    self.bytes,
-                    crate::util::now_unix(),
-                )
+            let catalog = self.catalog.clone();
+            let job_id = self.job_id.clone();
+            let slug = self.slug.clone();
+            let bytes = self.bytes;
+            catalog
+                .execute_catalog(job_id.len() + slug.len() + 64, move |catalog| {
+                    catalog.release_maintenance(&job_id, &slug, bytes, crate::util::now_unix())
+                })
+                .await
                 .map_err(JournalError::from)?;
             self.released = true;
         }
@@ -63,13 +65,29 @@ impl MaintenanceBorrow {
 
 impl Drop for MaintenanceBorrow {
     fn drop(&mut self) {
-        if !self.released {
-            let _ = self.catalog.release_maintenance(
-                &self.job_id,
-                &self.slug,
-                self.bytes,
-                crate::util::now_unix(),
-            );
+        if self.released {
+            return;
+        }
+        // Every error and cancellation path out of `compact` reaches this
+        // refund, and a `Drop` has nowhere to await, so the release is handed
+        // to a blocking thread instead of taking the connection on a runtime
+        // worker.  It is service-owned from that point: the borrow is keyed by
+        // its own job id and the release is conditional on that row, so it can
+        // never refund a later compaction's headroom, and a release lost to
+        // process exit leaves only a durable `maintenance_jobs` row that the
+        // next reconciliation clears by the same id.
+        let catalog = self.catalog.clone();
+        let job_id = std::mem::take(&mut self.job_id);
+        let slug = std::mem::take(&mut self.slug);
+        let bytes = self.bytes;
+        let release = move || {
+            let _ = catalog.release_maintenance(&job_id, &slug, bytes, crate::util::now_unix());
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(release);
+            }
+            Err(_) => release(),
         }
     }
 }
@@ -182,6 +200,25 @@ impl JournalRuntime {
         self.store.compaction_due(storage_id, epoch, sequence)
     }
 
+    pub async fn compaction_due_async(
+        &self,
+        storage_id: String,
+        epoch: u64,
+        sequence: u64,
+    ) -> JournalResult<bool> {
+        self.store
+            .compaction_due_async(storage_id, epoch, sequence)
+            .await
+    }
+
+    pub async fn latest_sequence_async(
+        &self,
+        storage_id: String,
+        epoch: u64,
+    ) -> JournalResult<u64> {
+        self.store.latest_sequence_async(storage_id, epoch).await
+    }
+
     pub fn retire_storage(&self, storage_id: &str, retired_at: i64) -> JournalResult<()> {
         self.store.retire_storage(storage_id, retired_at)
     }
@@ -194,7 +231,9 @@ impl JournalRuntime {
         retired_at: i64,
     ) -> JournalResult<()> {
         let _publication = self.publication.lock().await;
-        self.store.retire_storage(storage_id, retired_at)
+        self.store
+            .retire_storage_async(storage_id.to_owned(), retired_at)
+            .await
     }
 
     pub fn acquire_reader(
@@ -339,7 +378,7 @@ impl JournalRuntime {
         // next seal (or the current one if the coordinator has not sealed
         // yet) instead of every room producing a one-record segment.
         let _publication = self.publication.lock().await;
-        match self.store.unresolved_preparation() {
+        match self.store.unresolved_preparation_async().await {
             Ok(Some(_)) => {
                 if let Err(error) = self.store.reconcile_pending(self.blobs.as_ref()).await {
                     self.coordinator.lock().await.remove_identity(
@@ -431,7 +470,7 @@ impl JournalRuntime {
             crate::util::now_unix(),
             self.next_operation.fetch_add(1, Ordering::Relaxed)
         );
-        let state = match self.store.state() {
+        let state = match self.store.state_async().await {
             Ok(state) => state,
             Err(error) => {
                 self.coordinator.lock().await.requeue(segments);
@@ -450,14 +489,18 @@ impl JournalRuntime {
             covered: covered_ranges(&segments),
             protected_input_keys: Vec::new(),
         };
-        if let Err(error) = self.store.prepare(
-            &operation_id,
-            "flush",
-            state.revision,
-            &state.writer_generation,
-            crate::util::now_unix(),
-            &plan,
-        ) {
+        if let Err(error) = self
+            .store
+            .prepare_async(
+                operation_id.clone(),
+                "flush",
+                state.revision,
+                state.writer_generation.clone(),
+                crate::util::now_unix(),
+                &plan,
+            )
+            .await
+        {
             self.coordinator.lock().await.requeue(segments);
             self.finish_pending(identities.into_iter()).await;
             return Err(error);
@@ -474,7 +517,12 @@ impl JournalRuntime {
         };
         let result = self
             .store
-            .commit_segments(&operation_id, &written, crate::util::now_unix());
+            .commit_segments_async(
+                operation_id.clone(),
+                written.clone(),
+                crate::util::now_unix(),
+            )
+            .await;
         let (_, sequences) = match result {
             Ok(value) => value,
             Err(error) => {
@@ -490,13 +538,17 @@ impl JournalRuntime {
         };
         for (segment, written_segment) in segments.iter().zip(&written) {
             if let Some(record) = segment.records.first() {
-                if let Err(error) = self.store.commit_object(
-                    &record.storage_id,
-                    &operation_id,
-                    &written_segment.object_key,
-                    "journal_segment",
-                    &written_segment.digest,
-                ) {
+                if let Err(error) = self
+                    .store
+                    .commit_object_async(
+                        record.storage_id.clone(),
+                        operation_id.clone(),
+                        written_segment.object_key.clone(),
+                        "journal_segment".to_string(),
+                        written_segment.digest.clone(),
+                    )
+                    .await
+                {
                     // The SQL head is already durable. Keep reservations in
                     // place and let the object-accounting reconciler finish
                     // them after a transient catalogue failure.
@@ -540,10 +592,21 @@ impl JournalRuntime {
         {
             return None;
         }
-        if self.store.unresolved_preparation().ok().flatten().is_some() {
+        if self
+            .store
+            .unresolved_preparation_async()
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {
             return None;
         }
-        let sequences = self.store.operation_sequences(operation_id).ok()?;
+        let sequences = self
+            .store
+            .operation_sequences(operation_id.to_owned())
+            .await
+            .ok()?;
         if !sequences.is_empty() {
             return Some(sequences);
         }
@@ -565,19 +628,24 @@ impl JournalRuntime {
         sequence: u64,
         payload: &[u8],
     ) -> JournalResult<Option<bool>> {
-        if !self.store.sequence_committed(storage_id, epoch, sequence)? {
+        if !self
+            .store
+            .sequence_committed(storage_id.to_owned(), epoch, sequence)
+            .await?
+        {
             return Ok(None);
         }
         let expected_digest = hex::encode(Sha256::digest(payload));
-        let candidates =
-            self.store
-                .committed_segments_for(storage_id, epoch, sequence.saturating_sub(1))?;
+        let candidates = self
+            .store
+            .committed_segments_for(storage_id.to_owned(), epoch, sequence.saturating_sub(1))
+            .await?;
         if candidates.is_empty() {
             // The record has already been folded into a recovery base. Keep
             // the exact payload check for the base cursor itself; older
             // cursors are closed by compaction and must not silently accept a
             // different payload merely because the sequence is covered.
-            let Some(base) = self.store.recovery_base(storage_id)? else {
+            let Some(base) = self.store.recovery_base(storage_id.to_owned()).await? else {
                 return Err(JournalError::Corrupt(format!(
                     "journal sequence {storage_id}/{epoch}/{sequence} is covered without a base"
                 )));
@@ -655,15 +723,17 @@ impl JournalRuntime {
                 .ok_or_else(|| JournalError::Invalid("empty journal segment".into()))?;
             // Earlier segments may already be durable. Keep reservations
             // until reconciliation checks the output set and queues cleanup.
-            self.store.reserve_object(
-                owner,
-                operation_id,
-                &key,
-                "journal_segment",
-                body.len() as i64,
-                self.owner_limit,
-                self.total_limit,
-            )?;
+            self.store
+                .reserve_object_async(
+                    owner.to_owned(),
+                    operation_id.to_owned(),
+                    key.clone(),
+                    "journal_segment",
+                    body.len() as i64,
+                    self.owner_limit,
+                    self.total_limit,
+                )
+                .await?;
             if let Err(error) = self
                 .blobs
                 .put(&key, body.clone(), "application/octet-stream")
@@ -722,11 +792,11 @@ impl JournalRuntime {
             ))
             .await?;
         let _publication = self.publication.lock().await;
-        if self.store.unresolved_preparation()?.is_some() {
+        if self.store.unresolved_preparation_async().await?.is_some() {
             self.store.reconcile_pending(self.blobs.as_ref()).await?;
             self.reconcile_object_reservations().await?;
         }
-        let state = self.store.state()?;
+        let state = self.store.state_async().await?;
         let operation_id = format!(
             "compact-{}-{}-{}-{}",
             storage_id,
@@ -762,7 +832,8 @@ impl JournalRuntime {
         };
         let descriptors = self
             .store
-            .committed_segments_through(storage_id, epoch, sequence)?;
+            .committed_segments_through(storage_id.to_owned(), epoch, sequence)
+            .await?;
         let retire_segments: Vec<(String, i64)> = descriptors
             .iter()
             .map(|(key, _, encoded_bytes)| (key.clone(), *encoded_bytes))
@@ -771,12 +842,13 @@ impl JournalRuntime {
             .iter()
             .map(|(key, _)| key.as_str())
             .collect();
-        let mut bases = self.store.recovery_bases()?;
+        let mut bases = self.store.recovery_bases().await?;
         bases.retain(|existing| existing.storage_id != storage_id);
         bases.push(base.clone());
         let tail: Vec<String> = self
             .store
-            .committed_segments()?
+            .committed_segments_async()
+            .await?
             .into_iter()
             .map(|(key, _)| key)
             .filter(|key| !retired_keys.contains(key.as_str()))
@@ -824,19 +896,31 @@ impl JournalRuntime {
             if let Some(slug) = self
                 .store
                 .catalog
-                .slug_by_storage_id(storage_id)
+                .execute_catalog(storage_id.len() + 64, {
+                    let storage_id = storage_id.to_owned();
+                    move |catalog| catalog.slug_by_storage_id(&storage_id)
+                })
+                .await
                 .map_err(JournalError::from)?
             {
                 let job_id = format!("maintenance-{operation_id}");
                 self.store
                     .catalog
-                    .reserve_maintenance(
-                        &job_id,
-                        &slug,
-                        maintenance_bytes,
-                        JOURNAL_MAINTENANCE_RESERVE_BYTES,
-                        base.committed_at,
-                    )
+                    .execute_catalog(job_id.len() + slug.len() + 64, {
+                        let job_id = job_id.clone();
+                        let slug = slug.clone();
+                        let committed_at = base.committed_at;
+                        move |catalog| {
+                            catalog.reserve_maintenance(
+                                &job_id,
+                                &slug,
+                                maintenance_bytes,
+                                JOURNAL_MAINTENANCE_RESERVE_BYTES,
+                                committed_at,
+                            )
+                        }
+                    })
+                    .await
                     // The reserve is shared with every other compaction, so
                     // being turned away by it is capacity, not a document
                     // that can never be compacted.
@@ -861,14 +945,18 @@ impl JournalRuntime {
         // Reserve temporary maintenance headroom before creating the durable
         // preparation. A quota rejection therefore cannot strand a global
         // unresolved operation.
-        let preparation = match self.store.prepare(
-            &operation_id,
-            "compact",
-            state.revision,
-            &state.writer_generation,
-            base.committed_at,
-            &plan,
-        ) {
+        let preparation = match self
+            .store
+            .prepare_async(
+                operation_id.clone(),
+                "compact",
+                state.revision,
+                state.writer_generation.clone(),
+                base.committed_at,
+                &plan,
+            )
+            .await
+        {
             Ok(preparation) => preparation,
             Err(error) => {
                 drop(maintenance_borrow);
@@ -884,19 +972,31 @@ impl JournalRuntime {
             (self.owner_limit, self.total_limit)
         };
         let mut accounting_keys = vec![(base_key.clone(), base_bytes.len() as i64)];
-        if let Err(error) = self.store.reserve_object(
-            storage_id,
-            &operation_id,
-            &base_key,
-            "journal_base",
-            base_bytes.len() as i64,
-            compaction_owner_limit,
-            compaction_total_limit,
-        ) {
+        if let Err(error) = self
+            .store
+            .reserve_object_async(
+                storage_id.to_owned(),
+                operation_id.clone(),
+                base_key.clone(),
+                "journal_base",
+                base_bytes.len() as i64,
+                compaction_owner_limit,
+                compaction_total_limit,
+            )
+            .await
+        {
             let _ = self
                 .store
-                .abort_object(storage_id, &operation_id, &base_key);
-            let _ = self.store.abort_preparation(&preparation, &plan, &[]);
+                .abort_object_async(
+                    storage_id.to_owned(),
+                    operation_id.clone(),
+                    base_key.clone(),
+                )
+                .await;
+            let _ = self
+                .store
+                .abort_preparation(preparation.clone(), plan.clone(), Vec::new())
+                .await;
             return Err(error);
         }
         if let Err(error) = self
@@ -911,18 +1011,23 @@ impl JournalRuntime {
         let mut finalized = Vec::with_capacity(shards.len());
         for shard in shards {
             let (shard, shard_bytes) = finalize_manifest_shard(shard)?;
-            if let Err(error) = self.store.reserve_object(
-                storage_id,
-                &operation_id,
-                &shard.object_key,
-                "journal_manifest",
-                shard_bytes.len() as i64,
-                compaction_owner_limit,
-                compaction_total_limit,
-            ) {
+            if let Err(error) = self
+                .store
+                .reserve_object_async(
+                    storage_id.to_owned(),
+                    operation_id.clone(),
+                    shard.object_key.clone(),
+                    "journal_manifest",
+                    shard_bytes.len() as i64,
+                    compaction_owner_limit,
+                    compaction_total_limit,
+                )
+                .await
+            {
                 let _ = self
                     .store
-                    .abort_preparation(&preparation, &plan, &accounting_keys);
+                    .abort_preparation(preparation.clone(), plan.clone(), accounting_keys.clone())
+                    .await;
                 return Err(error);
             }
             accounting_keys.push((shard.object_key.clone(), shard_bytes.len() as i64));
@@ -937,12 +1042,16 @@ impl JournalRuntime {
             }
             finalized.push(shard);
         }
-        let committed = match self.store.commit_compaction_shards(
-            &operation_id,
-            &base,
-            &finalized,
-            &retire_segments,
-        ) {
+        let committed = match self
+            .store
+            .commit_compaction_shards(
+                operation_id.clone(),
+                base.clone(),
+                finalized,
+                retire_segments.clone(),
+            )
+            .await
+        {
             Ok(state) => state,
             Err(error) => {
                 let _ = self.store.reconcile_pending(self.blobs.as_ref()).await;
@@ -951,23 +1060,27 @@ impl JournalRuntime {
             }
         };
         for (key, _) in &accounting_keys {
-            if let Err(error) = self.store.commit_object(
-                storage_id,
-                &operation_id,
-                key,
-                if key == &base_key {
-                    "journal_base"
-                } else {
-                    "journal_manifest"
-                },
-                "",
-            ) {
+            if let Err(error) = self
+                .store
+                .commit_object_async(
+                    storage_id.to_owned(),
+                    operation_id.clone(),
+                    key.clone(),
+                    if key == &base_key {
+                        "journal_base".to_string()
+                    } else {
+                        "journal_manifest".to_string()
+                    },
+                    String::new(),
+                )
+                .await
+            {
                 let _ = self.reconcile_object_reservations().await;
                 return Err(error);
             }
         }
         if let Some(borrow) = maintenance_borrow.as_mut() {
-            borrow.release()?;
+            borrow.release().await?;
         }
         Ok(committed)
     }

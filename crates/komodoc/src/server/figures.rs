@@ -109,6 +109,7 @@ impl Server {
         if let Err(error) = self
             .store
             .reserve_object_bytes(slug, size, Some(&mutation_actor))
+            .await
         {
             return match error {
                 PutError::Quota { status, message }
@@ -133,7 +134,7 @@ impl Server {
             // hold: an object that did land is the object ledger's to
             // reconcile, and keeping the reservation as well would charge the
             // owner twice for it.
-            self.store.release_object_bytes(slug, size);
+            self.store.release_object_bytes(slug, size).await;
             debug_assert!(error.refused() || error.log_context().is_some());
         }
         match stored {

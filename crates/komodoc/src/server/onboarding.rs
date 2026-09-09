@@ -44,16 +44,16 @@ impl Server {
         let Some(catalog) = &self.store.catalog else {
             return Ok(());
         };
-        if catalog
-            .pending_account_examples(&who.id)
+        if pending_account_examples(catalog, &who.id)
+            .await
             .map_err(|e| e.to_string())?
             .is_empty()
         {
             return Ok(());
         }
         let _guard = self.onboarding.lock().await;
-        for (position, slug) in catalog
-            .pending_account_examples(&who.id)
+        for (position, slug) in pending_account_examples(catalog, &who.id)
+            .await
             .map_err(|e| e.to_string())?
         {
             let starter = STARTERS
@@ -121,10 +121,33 @@ impl Server {
                     .await
                     .map_err(|e| e.to_string())?;
             }
+            // The starter document, its checkpoint and its rendering are all
+            // durable before this runs, so a caller cancelled after dispatch
+            // still marks the example complete and the retry above finds
+            // nothing left to provision.
+            let account_id = who.id.clone();
             catalog
-                .complete_account_example(&who.id, position)
+                .execute_catalog(
+                    crate::server::SERVER_JOB_BYTES + account_id.len(),
+                    move |catalog| catalog.complete_account_example(&account_id, position),
+                )
+                .await
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
+}
+
+async fn pending_account_examples(
+    catalog: &std::sync::Arc<crate::storage::catalog::Catalog>,
+    account_id: &str,
+) -> Result<Vec<(usize, String)>, crate::storage::catalog::CatalogError> {
+    let account_id = account_id.to_string();
+    catalog
+        .execute_catalog(
+            crate::server::SERVER_JOB_BYTES + account_id.len(),
+            move |catalog| catalog.pending_account_examples(&account_id),
+        )
+        .await
+        .map_err(crate::storage::catalog::CatalogError::from)
 }

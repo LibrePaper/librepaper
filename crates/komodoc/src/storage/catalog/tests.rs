@@ -1107,7 +1107,7 @@ async fn checked_production_lookup_propagates_corrupt_authorization_rows() {
     .await
     .unwrap();
     assert!(
-        store.get_checked("doc").is_err(),
+        store.get_checked("doc").await.is_err(),
         "lookup must not collapse corrupt authorization rows into not-found"
     );
 }
@@ -1138,6 +1138,7 @@ async fn bounded_listing_propagates_catalog_failure() {
     assert!(
         store
             .visible_page_with_options(Some("acct-1"), None, None, 20, true)
+            .await
             .is_err(),
         "listing must fail closed when catalogue authorization data is unreadable"
     );

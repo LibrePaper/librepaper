@@ -80,6 +80,16 @@ impl From<CatalogError> for MaintenanceError {
     }
 }
 
+impl From<crate::storage::catalog::CatalogExecError> for MaintenanceError {
+    fn from(error: crate::storage::catalog::CatalogExecError) -> Self {
+        Self::Catalog(CatalogError::from(error))
+    }
+}
+
+/// Declared input for a maintenance job.  Every one of them carries a slug or
+/// an object key and nothing else; the pass limits bound the result.
+const MAINTENANCE_JOB_BYTES: usize = 512;
+
 pub type MaintenanceResult<T> = Result<T, MaintenanceError>;
 
 /// Advance account erasure without ever loading an account's whole history.
@@ -91,11 +101,49 @@ pub fn run_erasure_pass(
     accounts: u32,
     rows: u32,
 ) -> MaintenanceResult<u32> {
+    validate_erasure_limits(now, accounts, rows)?;
+    erasure_pass_sql(catalog, now, accounts, rows).map_err(MaintenanceError::from)
+}
+
+/// The asynchronous counterpart of [`run_erasure_pass`].
+///
+/// The whole bounded pass is one job rather than one job per stage: it is
+/// already limited to `accounts` accounts and `rows` rows per batch, its
+/// stages must run in order against the same connection, and its durable
+/// resume token is the erasure cursor.  A caller cancelled after dispatch
+/// therefore loses only the returned count; the pass completes and the cursor
+/// records exactly how far it got, which is the same state a crash mid-pass
+/// would leave.
+pub async fn run_erasure_pass_async(
+    catalog: &Arc<Catalog>,
+    now: i64,
+    accounts: u32,
+    rows: u32,
+) -> MaintenanceResult<u32> {
+    validate_erasure_limits(now, accounts, rows)?;
+    catalog
+        .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+            erasure_pass_sql(catalog, now, accounts, rows)
+        })
+        .await
+        .map_err(MaintenanceError::from)
+}
+
+fn validate_erasure_limits(now: i64, accounts: u32, rows: u32) -> MaintenanceResult<()> {
     if now < 0 || accounts == 0 || rows == 0 || rows > 1000 {
         return Err(MaintenanceError::Invalid(
             "invalid erasure pass limits".into(),
         ));
     }
+    Ok(())
+}
+
+fn erasure_pass_sql(
+    catalog: &Catalog,
+    now: i64,
+    accounts: u32,
+    rows: u32,
+) -> Result<u32, CatalogError> {
     let mut touched = 0;
     for id in catalog.erasing_accounts(None, accounts)? {
         touched += 1;
@@ -126,7 +174,7 @@ pub fn run_erasure_pass(
             if index == stages.len() {
                 match catalog.finish_erasure(&id) {
                     Ok(()) | Err(CatalogError::Conflict(_)) => {}
-                    Err(error) => return Err(error.into()),
+                    Err(error) => return Err(error),
                 }
                 break;
             }
@@ -202,37 +250,99 @@ pub fn enqueue_deletion(
     queued_at: i64,
     delete_after: i64,
 ) -> MaintenanceResult<()> {
+    validate_deletion_job(slug, bytes, queued_at, delete_after)?;
+    catalog
+        .with_connection(|connection| {
+            enqueue_deletions_sql(
+                connection,
+                slug,
+                &[(object_key.to_string(), bytes)],
+                queued_at,
+                delete_after,
+            )
+        })
+        .map_err(MaintenanceError::from)
+}
+
+/// Queue a batch of one document's objects as one job.
+///
+/// The keys belong to the same document and the same discovery step, so
+/// committing them together is safe and strictly more atomic than the
+/// per-key transactions this replaces: a failure re-runs the whole
+/// idempotent step instead of leaving part of a page queued.  A caller
+/// cancelled after dispatch still gets the rows, which is what the worker
+/// needs; nothing is charged or refunded here.
+pub async fn enqueue_deletions_async(
+    catalog: &Arc<Catalog>,
+    slug: String,
+    objects: Vec<(String, i64)>,
+    queued_at: i64,
+    delete_after: i64,
+) -> MaintenanceResult<()> {
+    for (_, bytes) in &objects {
+        validate_deletion_job(&slug, *bytes, queued_at, delete_after)?;
+    }
+    if objects.is_empty() {
+        return Ok(());
+    }
+    let input_bytes = MAINTENANCE_JOB_BYTES
+        + slug.len()
+        + objects.iter().map(|(key, _)| key.len() + 16).sum::<usize>();
+    catalog
+        .execute(input_bytes, move |connection| {
+            enqueue_deletions_sql(connection, &slug, &objects, queued_at, delete_after)
+        })
+        .await
+        .map_err(MaintenanceError::from)
+}
+
+fn validate_deletion_job(
+    slug: &str,
+    bytes: i64,
+    queued_at: i64,
+    delete_after: i64,
+) -> MaintenanceResult<()> {
     if slug.is_empty() || bytes < 0 || queued_at < 0 || delete_after < queued_at {
         return Err(MaintenanceError::Invalid("invalid deletion job".into()));
     }
-    catalog
-        .with_connection(|connection| {
-            let storage_id: String = connection
-                .query_row(
-                    "SELECT storage_id FROM documents WHERE slug = ?1 AND status = 'deleting'",
-                    [slug],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if !document_object_key_for(slug, &storage_id, object_key) {
-                return Err(CatalogError::Invalid(
-                    "pending deletion is not a document-owned object".into(),
-                ));
-            }
-            connection
-                .execute(
-                    "INSERT INTO pending_deletes
+    Ok(())
+}
+
+fn enqueue_deletions_sql(
+    connection: &mut rusqlite::Connection,
+    slug: &str,
+    objects: &[(String, i64)],
+    queued_at: i64,
+    delete_after: i64,
+) -> Result<(), CatalogError> {
+    let storage_id: String = connection
+        .query_row(
+            "SELECT storage_id FROM documents WHERE slug = ?1 AND status = 'deleting'",
+            [slug],
+            |row| row.get(0),
+        )
+        .map_err(CatalogError::from)?;
+    let tx = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(CatalogError::from)?;
+    for (object_key, bytes) in objects {
+        if !document_object_key_for(slug, &storage_id, object_key) {
+            return Err(CatalogError::Invalid(
+                "pending deletion is not a document-owned object".into(),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO pending_deletes
                      (slug, object_key, bytes, queued_at, delete_after)
                      VALUES (?1, ?2, ?3, ?4, ?5)
                      ON CONFLICT(slug, object_key) DO UPDATE SET
                        bytes = excluded.bytes,
                        delete_after = MIN(pending_deletes.delete_after, excluded.delete_after)",
-                    params![slug, object_key, bytes, queued_at, delete_after],
-                )
-                .map_err(CatalogError::from)?;
-            Ok(())
-        })
-        .map_err(MaintenanceError::from)
+            params![slug, object_key, bytes, queued_at, delete_after],
+        )
+        .map_err(CatalogError::from)?;
+    }
+    tx.commit().map_err(CatalogError::from)
 }
 
 pub struct DeletionWorker {
@@ -259,9 +369,10 @@ impl DeletionWorker {
         })
     }
 
-    fn due(&self, now: i64) -> MaintenanceResult<Vec<PendingDeletion>> {
+    async fn due(&self, now: i64) -> MaintenanceResult<Vec<PendingDeletion>> {
+        let max_jobs = self.limits.max_jobs;
         self.catalog
-            .with_connection(|connection| {
+            .execute(MAINTENANCE_JOB_BYTES, move |connection| {
                 let mut statement = connection
                     .prepare(
                         "SELECT p.slug, d.storage_id, p.object_key, p.bytes,
@@ -289,7 +400,7 @@ impl DeletionWorker {
                     )
                     .map_err(CatalogError::from)?;
                 let rows = statement
-                    .query_map(params![now, self.limits.max_jobs as i64], |row| {
+                    .query_map(params![now, max_jobs as i64], |row| {
                         Ok(PendingDeletion {
                             slug: row.get(0)?,
                             storage_id: row.get(1)?,
@@ -303,6 +414,7 @@ impl DeletionWorker {
                 rows.collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(CatalogError::from)
             })
+            .await
             .map_err(MaintenanceError::from)
     }
 
@@ -319,22 +431,25 @@ impl DeletionWorker {
         // the same restartable queue. Discovery has its own SQL cursor, so a
         // document with more than one bounded object-store page is not
         // mistaken for a complete deletion.
-        let deleting: Vec<(String, String)> = self.catalog.with_connection(|connection| {
-            let mut statement = connection
-                .prepare(
-                    "SELECT d.slug,d.storage_id FROM documents d
+        let max_jobs = self.limits.max_jobs;
+        let deleting: Vec<(String, String)> = self
+            .catalog
+            .execute(MAINTENANCE_JOB_BYTES, move |connection| {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT d.slug,d.storage_id FROM documents d
                      WHERE d.status='deleting'
                      ORDER BY d.slug LIMIT ?1",
-                )
-                .map_err(CatalogError::from)?;
-            let rows = statement
-                .query_map([self.limits.max_jobs as i64], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })
-                .map_err(CatalogError::from)?;
-            let collected = rows.collect::<Result<_, _>>().map_err(CatalogError::from)?;
-            Ok(collected)
-        })?;
+                    )
+                    .map_err(CatalogError::from)?;
+                let rows = statement
+                    .query_map([max_jobs as i64], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(CatalogError::from)?;
+                let collected = rows.collect::<Result<_, _>>().map_err(CatalogError::from)?;
+                Ok(collected)
+            })
+            .await
+            .map_err(MaintenanceError::from)?;
         let mut discovered_slugs = Vec::new();
         for (slug, storage_id) in deleting {
             discovered_slugs.push(slug.clone());
@@ -351,48 +466,59 @@ impl DeletionWorker {
                 format!("chat/{slug}.json"),
                 format!("documents/{slug}"),
             ];
-            for key in fixed {
-                enqueue_deletion(&self.catalog, &slug, &key, 0, now, now)?;
-            }
+            enqueue_deletions_async(
+                &self.catalog,
+                slug.clone(),
+                fixed.into_iter().map(|key| (key, 0)).collect(),
+                now,
+                now,
+            )
+            .await?;
             let prefixes = [
                 content_prefix(&storage_id),
                 source_prefix(&slug),
                 format!("history/{slug}/"),
                 format!("documents/{slug}/"),
             ];
+            let discovery_slug = slug.clone();
             self.catalog
-                .with_connection(|connection| {
+                .execute(MAINTENANCE_JOB_BYTES, move |connection| {
+                    let tx = connection
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(CatalogError::from)?;
                     for prefix in &prefixes {
-                        connection
-                            .execute(
-                                "INSERT OR IGNORE INTO deletion_discovery
+                        tx.execute(
+                            "INSERT OR IGNORE INTO deletion_discovery
                                  (slug,prefix,cursor,done,updated_at)
                                  VALUES (?1,?2,NULL,0,?3)",
-                                params![slug, prefix, now],
-                            )
-                            .map_err(CatalogError::from)?;
+                            params![discovery_slug, prefix, now],
+                        )
+                        .map_err(CatalogError::from)?;
                     }
-                    Ok(())
+                    tx.commit().map_err(CatalogError::from)
                 })
+                .await
                 .map_err(MaintenanceError::from)?;
         }
 
         let mut discovery_budget = self.limits.max_object_requests;
         for slug in &discovered_slugs {
             while discovery_budget > 0 {
+                let pending_slug = slug.clone();
                 let row: Option<(String, Option<String>)> = self
                     .catalog
-                    .with_connection(|connection| {
+                    .execute(MAINTENANCE_JOB_BYTES + slug.len(), move |connection| {
                         connection
                             .query_row(
                                 "SELECT prefix,cursor FROM deletion_discovery
                                  WHERE slug=?1 AND done=0 ORDER BY prefix LIMIT 1",
-                                [slug],
+                                [&pending_slug],
                                 |row| Ok((row.get(0)?, row.get(1)?)),
                             )
                             .optional()
                             .map_err(CatalogError::from)
                     })
+                    .await
                     .map_err(MaintenanceError::from)?;
                 let Some((prefix, cursor)) = row else { break };
                 let page_limit = discovery_budget.min(self.limits.max_object_requests);
@@ -401,23 +527,33 @@ impl DeletionWorker {
                     .list_page(&prefix, cursor.as_deref(), page_limit)
                     .await
                     .map_err(|error| MaintenanceError::Storage(error.to_string()))?;
-                for object in &objects {
-                    enqueue_deletion(&self.catalog, slug, &object.key, object.size, now, now)?;
-                    discovery_budget = discovery_budget.saturating_sub(1);
-                }
+                enqueue_deletions_async(
+                    &self.catalog,
+                    slug.clone(),
+                    objects
+                        .iter()
+                        .map(|object| (object.key.clone(), object.size))
+                        .collect(),
+                    now,
+                    now,
+                )
+                .await?;
+                discovery_budget = discovery_budget.saturating_sub(objects.len());
                 let done = objects.len() < page_limit;
                 let next_cursor = objects.last().map(|object| object.key.clone()).or(cursor);
+                let cursor_slug = slug.clone();
                 self.catalog
-                    .with_connection(|connection| {
+                    .execute(MAINTENANCE_JOB_BYTES + slug.len(), move |connection| {
                         connection
                             .execute(
                                 "UPDATE deletion_discovery SET cursor=?3,done=?4,updated_at=?5
                                  WHERE slug=?1 AND prefix=?2",
-                                params![slug, prefix, next_cursor, done as i64, now],
+                                params![cursor_slug, prefix, next_cursor, done as i64, now],
                             )
                             .map_err(CatalogError::from)?;
                         Ok(())
                     })
+                    .await
                     .map_err(MaintenanceError::from)?;
                 if objects.is_empty() || done {
                     // Advance to the next prefix in this same bounded pass;
@@ -427,7 +563,7 @@ impl DeletionWorker {
                 }
             }
         }
-        let jobs = self.due(now)?;
+        let jobs = self.due(now).await?;
         let mut report = DeletionReport {
             jobs_seen: jobs.len(),
             ..DeletionReport::default()
@@ -489,9 +625,30 @@ impl DeletionWorker {
         // Removing a queue row is separate from object I/O.  If this process
         // stops between these two operations, retrying the idempotent delete
         // is safe; if SQL fails, accounting remains reserved.
-        for job in &touched {
+        if !touched.is_empty() {
+            let completed: Vec<(String, String)> = touched
+                .iter()
+                .map(|job| (job.slug.clone(), job.object_key.clone()))
+                .collect();
+            let input_bytes = MAINTENANCE_JOB_BYTES
+                + completed
+                    .iter()
+                    .map(|(slug, key)| slug.len() + key.len())
+                    .sum::<usize>();
+            // Each `complete_delete_object` is its own transaction, exactly as
+            // before; the job only stops the loop from taking the connection
+            // once per confirmed object from a runtime worker.  A caller
+            // cancelled after dispatch still removes every queue row it was
+            // given, and the objects are already gone, so no charge is
+            // released for anything still present.
             self.catalog
-                .complete_delete_object(&job.slug, &job.object_key)
+                .execute_catalog(input_bytes, move |catalog| {
+                    for (slug, object_key) in &completed {
+                        catalog.complete_delete_object(slug, object_key)?;
+                    }
+                    Ok(())
+                })
+                .await
                 .map_err(MaintenanceError::from)?;
         }
 
@@ -500,55 +657,65 @@ impl DeletionWorker {
         slugs.sort();
         slugs.dedup();
         for slug in slugs {
-            let remaining: i64 = self
-                .catalog
-                .with_connection(|connection| {
-                    connection
-                        .query_row(
-                            "SELECT COUNT(*) FROM pending_deletes WHERE slug = ?1",
-                            [&slug],
-                            |row| row.get(0),
-                        )
-                        .map_err(CatalogError::from)
-                })
-                .map_err(MaintenanceError::from)?;
-            let discovery_remaining: i64 = self
-                .catalog
-                .with_connection(|connection| {
-                    connection
-                        .query_row(
-                            "SELECT COUNT(*) FROM deletion_discovery
+            // The two counts and the document row are one read: they were
+            // three separate takes of the connection, and reading them
+            // together is also what the decision below needs to be consistent.
+            let status_slug = slug.clone();
+            let (remaining, discovery_remaining, deleting_storage): (i64, i64, Option<String>) =
+                self.catalog
+                    .execute(MAINTENANCE_JOB_BYTES + slug.len(), move |connection| {
+                        let remaining: i64 = connection
+                            .query_row(
+                                "SELECT COUNT(*) FROM pending_deletes WHERE slug = ?1",
+                                [&status_slug],
+                                |row| row.get(0),
+                            )
+                            .map_err(CatalogError::from)?;
+                        let discovery_remaining: i64 = connection
+                            .query_row(
+                                "SELECT COUNT(*) FROM deletion_discovery
                              WHERE slug=?1 AND done=0",
-                            [&slug],
-                            |row| row.get(0),
-                        )
-                        .map_err(CatalogError::from)
-                })
-                .map_err(MaintenanceError::from)?;
-            if remaining == 0
-                && discovery_remaining == 0
-                && self
-                    .catalog
-                    .document(&slug)
-                    .map_err(MaintenanceError::from)?
-                    .is_some_and(|document| document.status == "deleting")
-            {
-                if let Some(document) = self
-                    .catalog
-                    .document(&slug)
-                    .map_err(MaintenanceError::from)?
-                {
-                    let _journal_gate = self.journal_gate.lock().await;
-                    crate::storage::journal::JournalStore::new(self.catalog.clone())
-                        .retire_storage(&document.storage_id, now)
-                        .map_err(|error| MaintenanceError::Invalid(error.to_string()))?;
-                }
-                // Journal retirement is deliberately a separate durable
-                // phase. finish_delete rejects bases/coverage/retirement
-                // rows, so capacity cannot be released before the worker has
-                // reclaimed the shared journal objects.
-                if self.catalog.finish_delete(&slug).is_ok() {
-                    report.documents_finished += 1;
+                                [&status_slug],
+                                |row| row.get(0),
+                            )
+                            .map_err(CatalogError::from)?;
+                        let deleting_storage: Option<String> = connection
+                            .query_row(
+                                "SELECT storage_id FROM documents
+                                 WHERE slug=?1 AND status='deleting'",
+                                [&status_slug],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(CatalogError::from)?;
+                        Ok((remaining, discovery_remaining, deleting_storage))
+                    })
+                    .await
+                    .map_err(MaintenanceError::from)?;
+            if remaining == 0 && discovery_remaining == 0 {
+                if let Some(storage_id) = deleting_storage {
+                    {
+                        let _journal_gate = self.journal_gate.lock().await;
+                        crate::storage::journal::JournalStore::new(self.catalog.clone())
+                            .retire_storage_async(storage_id, now)
+                            .await
+                            .map_err(|error| MaintenanceError::Invalid(error.to_string()))?;
+                    }
+                    // Journal retirement is deliberately a separate durable
+                    // phase. finish_delete rejects bases/coverage/retirement
+                    // rows, so capacity cannot be released before the worker
+                    // has reclaimed the shared journal objects.
+                    let finish_slug = slug.clone();
+                    let finished = self
+                        .catalog
+                        .execute_catalog(MAINTENANCE_JOB_BYTES + slug.len(), move |catalog| {
+                            Ok(catalog.finish_delete(&finish_slug).is_ok())
+                        })
+                        .await
+                        .map_err(MaintenanceError::from)?;
+                    if finished {
+                        report.documents_finished += 1;
+                    }
                 }
             }
         }
@@ -630,14 +797,16 @@ impl JournalRetirementWorker {
         erased_storage_id: &str,
         now: i64,
     ) -> MaintenanceResult<bool> {
-        let Some((segment_id, expected_digest, old_bytes)) = self
+        let owned_key = key.to_owned();
+        let owned_erased = erased_storage_id.to_owned();
+        let Some((segment_id, expected_digest, old_bytes, surviving)) = self
             .catalog
-            .with_connection(|connection| {
-                connection
+            .execute(MAINTENANCE_JOB_BYTES + key.len(), move |connection| {
+                let Some((segment_id, digest, encoded_bytes)) = connection
                     .query_row(
                         "SELECT segment_id,digest,encoded_bytes FROM journal_segments
                          WHERE object_key=?1",
-                        [key],
+                        [&owned_key],
                         |row| {
                             Ok((
                                 row.get::<_, String>(0)?,
@@ -647,15 +816,10 @@ impl JournalRetirementWorker {
                         },
                     )
                     .optional()
-                    .map_err(CatalogError::from)
-            })
-            .map_err(MaintenanceError::from)?
-        else {
-            return Ok(false);
-        };
-        let surviving: Vec<(String, String)> = self
-            .catalog
-            .with_connection(|connection| {
+                    .map_err(CatalogError::from)?
+                else {
+                    return Ok(None);
+                };
                 let mut statement = connection
                     .prepare(
                         "SELECT c.storage_id,d.slug
@@ -667,14 +831,20 @@ impl JournalRetirementWorker {
                     )
                     .map_err(CatalogError::from)?;
                 let rows = statement
-                    .query_map(params![segment_id, erased_storage_id], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
+                    .query_map(params![segment_id, owned_erased], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                     })
                     .map_err(CatalogError::from)?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(CatalogError::from)
+                let surviving = rows
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(CatalogError::from)?;
+                Ok(Some((segment_id, digest, encoded_bytes, surviving)))
             })
-            .map_err(MaintenanceError::from)?;
+            .await
+            .map_err(MaintenanceError::from)?
+        else {
+            return Ok(false);
+        };
         let Some((remaining_storage, slug)) = surviving.first().cloned() else {
             // The surviving coverage may itself be deleting. Leave the
             // durable row in place until that identity retires the segment.
@@ -712,13 +882,18 @@ impl JournalRetirementWorker {
             )));
         }
         if kept.len() == original_len {
+            let owned_key = key.to_owned();
             self.catalog
-                .with_connection(|connection| {
+                .execute(MAINTENANCE_JOB_BYTES + key.len(), move |connection| {
                     connection
-                        .execute("DELETE FROM journal_retirements WHERE object_key=?1", [key])
+                        .execute(
+                            "DELETE FROM journal_retirements WHERE object_key=?1",
+                            [&owned_key],
+                        )
                         .map_err(CatalogError::from)?;
                     Ok(())
                 })
+                .await
                 .map_err(MaintenanceError::from)?;
             return Ok(true);
         }
@@ -740,7 +915,7 @@ impl JournalRetirementWorker {
         let operation_id = format!("rewrite-{}", &suffix[..32]);
         let manifest_rows: Vec<(String, String, String, i64)> = self
             .catalog
-            .with_connection(|connection| {
+            .execute(MAINTENANCE_JOB_BYTES, |connection| {
                 let mut statement = connection
                     .prepare(
                         "SELECT shard_id,object_key,digest,encoded_bytes
@@ -760,6 +935,7 @@ impl JournalRetirementWorker {
                 rows.collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(CatalogError::from)
             })
+            .await
             .map_err(MaintenanceError::from)?;
         let mut manifest_rewrites = Vec::new();
         if !manifest_rows.is_empty() {
@@ -833,60 +1009,74 @@ impl JournalRetirementWorker {
         // the crash boundary for staged output: an interrupted rewrite leaves
         // the reservation and retirement row for reconciliation, rather than
         // an untracked object that a later pass cannot reclaim.
-        self.catalog
-            .with_connection(|connection| {
-                let tx = connection
-                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                    .map_err(CatalogError::from)?;
-                tx.execute(
-                    "INSERT INTO journal_retirements
+        let staged: Vec<(String, i64)> = std::iter::once((rewritten_key.clone(), rewritten_bytes))
+            .chain(
+                manifest_rewrites
+                    .iter()
+                    .map(|(_, shard, body)| (shard.object_key.clone(), body.len() as i64)),
+            )
+            .collect();
+        {
+            let staged = staged.clone();
+            let remaining_storage = remaining_storage.clone();
+            self.catalog
+                .execute(
+                    MAINTENANCE_JOB_BYTES
+                        + staged.iter().map(|(key, _)| key.len() + 16).sum::<usize>(),
+                    move |connection| {
+                        let tx = connection
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                            .map_err(CatalogError::from)?;
+                        for (object_key, bytes) in &staged {
+                            tx.execute(
+                                "INSERT INTO journal_retirements
                      (object_key,storage_id,kind,encoded_bytes,payload_bytes,
                       maintenance_bytes,retired_revision,modified_at,
                       first_unreferenced_at,delete_after)
                      VALUES (?1,?2,'rewrite-output',?3,0,0,
                              (SELECT revision FROM journal_state),?4,?4,?4)
                      ON CONFLICT(object_key) DO NOTHING",
-                    params![rewritten_key, remaining_storage, rewritten_bytes, now],
+                                params![object_key, remaining_storage, bytes, now],
+                            )
+                            .map_err(CatalogError::from)?;
+                        }
+                        tx.commit().map_err(CatalogError::from)
+                    },
                 )
-                .map_err(CatalogError::from)?;
-                for (_, shard, body) in &manifest_rewrites {
-                    tx.execute(
-                        "INSERT INTO journal_retirements
-                         (object_key,storage_id,kind,encoded_bytes,payload_bytes,
-                          maintenance_bytes,retired_revision,modified_at,
-                          first_unreferenced_at,delete_after)
-                         VALUES (?1,?2,'rewrite-output',?3,0,0,
-                                 (SELECT revision FROM journal_state),?4,?4,?4)
-                         ON CONFLICT(object_key) DO NOTHING",
-                        params![shard.object_key, remaining_storage, body.len() as i64, now],
-                    )
-                    .map_err(CatalogError::from)?;
-                }
-                tx.commit().map_err(CatalogError::from)
-            })
-            .map_err(MaintenanceError::from)?;
-        self.catalog
-            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-                slug: &slug,
-                operation_id: &operation_id,
-                object_key: &rewritten_key,
-                kind: "journal_segment",
-                new_bytes: rewritten_bytes,
-                owner_limit: -1,
-                total_limit: -1,
-            })
-            .map_err(MaintenanceError::from)?;
-        for (_, shard, body) in &manifest_rewrites {
+                .await
+                .map_err(MaintenanceError::from)?;
+        }
+        {
+            let staged = staged.clone();
+            let slug = slug.clone();
+            let operation_id = operation_id.clone();
+            let segment_key = rewritten_key.clone();
             self.catalog
-                .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-                    slug: &slug,
-                    operation_id: &operation_id,
-                    object_key: &shard.object_key,
-                    kind: "journal_manifest",
-                    new_bytes: body.len() as i64,
-                    owner_limit: -1,
-                    total_limit: -1,
-                })
+                .execute_catalog(
+                    MAINTENANCE_JOB_BYTES
+                        + staged.iter().map(|(key, _)| key.len() + 16).sum::<usize>(),
+                    move |catalog| {
+                        for (object_key, bytes) in &staged {
+                            catalog.reserve_object_change(
+                                crate::storage::catalog::ObjectReservationRequest {
+                                    slug: &slug,
+                                    operation_id: &operation_id,
+                                    object_key,
+                                    kind: if object_key == &segment_key {
+                                        "journal_segment"
+                                    } else {
+                                        "journal_manifest"
+                                    },
+                                    new_bytes: *bytes,
+                                    owner_limit: -1,
+                                    total_limit: -1,
+                                },
+                            )?;
+                        }
+                        Ok(())
+                    },
+                )
+                .await
                 .map_err(MaintenanceError::from)?;
         }
         if let Err(error) = self
@@ -911,29 +1101,55 @@ impl JournalRetirementWorker {
                 return Err(MaintenanceError::Storage(error.to_string()));
             }
         }
-        self.catalog
-            .commit_object_change(
-                &remaining_storage,
-                &operation_id,
-                &rewritten_key,
+        {
+            let committed: Vec<(String, &'static str, String)> = std::iter::once((
+                rewritten_key.clone(),
                 "journal_segment",
-                &rewritten_digest,
-            )
-            .map_err(MaintenanceError::from)?;
-        for (_, shard, body) in &manifest_rewrites {
-            self.catalog
-                .commit_object_change(
-                    &remaining_storage,
-                    &operation_id,
-                    &shard.object_key,
+                rewritten_digest.clone(),
+            ))
+            .chain(manifest_rewrites.iter().map(|(_, shard, body)| {
+                (
+                    shard.object_key.clone(),
                     "journal_manifest",
-                    &hex::encode(Sha256::digest(body)),
+                    hex::encode(Sha256::digest(body)),
                 )
+            }))
+            .collect();
+            let remaining_storage = remaining_storage.clone();
+            let operation_id = operation_id.clone();
+            self.catalog
+                .execute_catalog(
+                    MAINTENANCE_JOB_BYTES
+                        + committed
+                            .iter()
+                            .map(|(key, _, digest)| key.len() + digest.len())
+                            .sum::<usize>(),
+                    move |catalog| {
+                        for (object_key, kind, version) in &committed {
+                            catalog.commit_object_change(
+                                &remaining_storage,
+                                &operation_id,
+                                object_key,
+                                kind,
+                                version,
+                            )?;
+                        }
+                        Ok(())
+                    },
+                )
+                .await
                 .map_err(MaintenanceError::from)?;
         }
-        let changed = self
-            .catalog
-            .with_connection(|connection| {
+        let pointer_move = {
+            let segment_id = segment_id.clone();
+            let rewritten_key = rewritten_key.clone();
+            let rewritten_digest = rewritten_digest.clone();
+            let key = key.to_owned();
+            let remaining_storage = remaining_storage.clone();
+            let erased_storage_id = erased_storage_id.to_owned();
+            let manifest_rewrites = manifest_rewrites.clone();
+            let manifest_rows = manifest_rows.clone();
+            move |connection: &mut rusqlite::Connection| {
                 let tx = connection
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(CatalogError::from)?;
@@ -1018,7 +1234,12 @@ impl JournalRetirementWorker {
                 }
                 tx.commit().map_err(CatalogError::from)?;
                 Ok(changed)
-            })
+            }
+        };
+        let changed = self
+            .catalog
+            .execute(MAINTENANCE_JOB_BYTES + key.len(), pointer_move)
+            .await
             .map_err(MaintenanceError::from)?;
         if changed != 1 {
             return Err(MaintenanceError::Invalid(
@@ -1033,10 +1254,10 @@ impl JournalRetirementWorker {
         Ok(true)
     }
 
-    fn defer_failed_retirement(&self, key: &str, now: i64) -> MaintenanceResult<()> {
+    async fn defer_failed_retirement(&self, key: String, now: i64) -> MaintenanceResult<()> {
         let retry_at = now.saturating_add(60);
         self.catalog
-            .with_connection(|connection| {
+            .execute(MAINTENANCE_JOB_BYTES + key.len(), move |connection| {
                 connection
                     .execute(
                         "UPDATE journal_retirements
@@ -1047,17 +1268,22 @@ impl JournalRetirementWorker {
                     .map_err(CatalogError::from)?;
                 Ok(())
             })
+            .await
             .map_err(MaintenanceError::from)
     }
 
     pub async fn run_once(&self, now: i64) -> MaintenanceResult<usize> {
         let _retirement_gate = self.retirement_gate.lock().await;
+        let limit = self.limit;
         self.catalog
-            .prune_journal_readers(now, self.limit as u32)
+            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+                catalog.prune_journal_readers(now, limit as u32)
+            })
+            .await
             .map_err(MaintenanceError::from)?;
         let candidates = self
             .catalog
-            .with_connection(|connection| {
+            .execute(MAINTENANCE_JOB_BYTES, move |connection| {
                 let mut statement = connection
                     .prepare(
                         "SELECT object_key, storage_id, kind FROM journal_retirements
@@ -1066,7 +1292,7 @@ impl JournalRetirementWorker {
                     )
                     .map_err(CatalogError::from)?;
                 let rows = statement
-                    .query_map(params![now, self.limit as i64], |row| {
+                    .query_map(params![now, limit as i64], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -1077,6 +1303,7 @@ impl JournalRetirementWorker {
                 rows.collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(CatalogError::from)
             })
+            .await
             .map_err(MaintenanceError::from)?;
         let mut deleted = 0;
         for (key, retirement_storage, kind) in candidates {
@@ -1092,7 +1319,7 @@ impl JournalRetirementWorker {
                 if kind == "rewrite" {
                     let unresolved: bool = self
                         .catalog
-                        .with_connection(|connection| {
+                        .execute(MAINTENANCE_JOB_BYTES, |connection| {
                             connection
                                 .query_row(
                                     "SELECT EXISTS(
@@ -1105,6 +1332,7 @@ impl JournalRetirementWorker {
                                 .map(|value| value != 0)
                                 .map_err(CatalogError::from)
                         })
+                        .await
                         .map_err(MaintenanceError::from)?;
                     if unresolved {
                         // An unresolved publication may still name the old
@@ -1118,9 +1346,11 @@ impl JournalRetirementWorker {
                         .rewrite_shared_segment(&key, &retirement_storage, now)
                         .await;
                 }
+                let reference_key = key.clone();
                 let (mut referenced, prepared_plans, manifest_keys) = self
                     .catalog
-                    .with_connection(|connection| {
+                    .execute(MAINTENANCE_JOB_BYTES + key.len(), move |connection| {
+                        let key = &reference_key;
                         let segment: Option<i64> = connection
                             .query_row(
                                 "SELECT 1 FROM journal_segments WHERE object_key = ?1
@@ -1180,6 +1410,7 @@ impl JournalRetirementWorker {
                             manifest_keys,
                         ))
                     })
+                    .await
                     .map_err(MaintenanceError::from)?;
                 if !referenced {
                     // The SQL shard rows are authoritative references, but the
@@ -1248,19 +1479,28 @@ impl JournalRetirementWorker {
                         ))
                     }
                 }
+                // The object is confirmed gone, so the charge is released and
+                // the retirement row removed in the same job.  Both were
+                // already separate transactions; running them under one
+                // dispatch means a caller that goes away after this point
+                // cannot leave the accounting released with the row still
+                // queued, which would make a later pass delete a key that no
+                // longer carries any charge.
+                let released_key = key.clone();
                 self.catalog
-                    .release_object_accounting_key(&key)
-                    .map_err(MaintenanceError::from)?;
-                self.catalog
-                    .with_connection(|connection| {
-                        connection
-                            .execute(
-                                "DELETE FROM journal_retirements WHERE object_key = ?1",
-                                [&key],
-                            )
-                            .map_err(CatalogError::from)?;
-                        Ok(())
+                    .execute_catalog(MAINTENANCE_JOB_BYTES + key.len(), move |catalog| {
+                        catalog.release_object_accounting_key(&released_key)?;
+                        catalog.with_connection(|connection| {
+                            connection
+                                .execute(
+                                    "DELETE FROM journal_retirements WHERE object_key = ?1",
+                                    [&released_key],
+                                )
+                                .map_err(CatalogError::from)?;
+                            Ok(())
+                        })
                     })
+                    .await
                     .map_err(MaintenanceError::from)?;
                 Ok(true)
             }
@@ -1270,7 +1510,7 @@ impl JournalRetirementWorker {
                 Ok(false) => {}
                 Err(error) => {
                     eprintln!("warning: journal retirement {key} deferred: {error}");
-                    if let Err(defer_error) = self.defer_failed_retirement(&key, now) {
+                    if let Err(defer_error) = self.defer_failed_retirement(key.clone(), now).await {
                         eprintln!(
                             "warning: could not defer journal retirement {key}: {defer_error}"
                         );
@@ -2154,5 +2394,214 @@ mod tests {
             .expect("reconcile reservation");
         assert_eq!(worker.run_once(3).await.expect("cleanup pass"), 1);
         assert!(blobs.get(key).await.is_err());
+    }
+    /// A store that reports one key deleted and then parks, so a maintenance
+    /// pass can be cancelled at the exact point between the object going away
+    /// and the catalogue learning about it.
+    struct PausingStore {
+        inner: Arc<dyn BlobStore>,
+        reached: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: tokio::sync::Semaphore,
+    }
+
+    #[async_trait::async_trait]
+    impl BlobStore for PausingStore {
+        async fn get(&self, key: &str) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            self.inner.get(key).await
+        }
+        async fn exists(&self, key: &str) -> crate::storage::blob::BlobResult<bool> {
+            self.inner.exists(key).await
+        }
+        async fn put(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
+            self.inner.put(key, body, content_type).await
+        }
+        async fn delete(&self, keys: &[String]) -> crate::storage::blob::BlobResult<()> {
+            self.inner.delete(keys).await
+        }
+        async fn delete_each(
+            &self,
+            keys: &[String],
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::DeleteOutcome>> {
+            let outcomes = self.inner.delete_each(keys).await?;
+            let reached = self.reached.lock().expect("reached").take();
+            if let Some(reached) = reached {
+                let _ = reached.send(());
+                // The object is gone and the catalogue has not been told.
+                // Hold here until the test decides what happens next.
+                let _ = self.release.acquire().await;
+            }
+            Ok(outcomes)
+        }
+        async fn list(
+            &self,
+            prefix: &str,
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+            self.inner.list(prefix).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            after: Option<&str>,
+            limit: usize,
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+            self.inner.list_page(prefix, after, limit).await
+        }
+        async fn swap(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            expect: &str,
+        ) -> crate::storage::blob::BlobResult<crate::storage::blob::BlobVersion> {
+            self.inner.swap(key, body, expect).await
+        }
+        async fn get_versioned(
+            &self,
+            key: &str,
+        ) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)>
+        {
+            self.inner.get_versioned(key).await
+        }
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
+    }
+
+    /// Cancelling a retirement pass at its most dangerous point -- the object
+    /// is gone, the catalogue has not been told -- must never leave the
+    /// charge released while the queue row still names the key, or the row
+    /// removed while the charge stands. Both moves are one job, so the pass
+    /// is either exactly where it was or exactly finished, and a later pass
+    /// converges either way.
+    #[tokio::test]
+    async fn a_cancelled_retirement_pass_leaves_accounting_and_queue_consistent() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+        catalog
+            .create_document(&NewDocument {
+                slug: "shared".into(),
+                storage_id: "storage-shared".into(),
+                title: "Shared".into(),
+                sha: String::new(),
+                created_at: "2026-01-01T00:00:00.000Z".into(),
+                published_at: "2026-01-01T00:00:00.000Z".into(),
+                updated_at: "2026-01-01T00:00:00.000Z".into(),
+                example: false,
+                owner_key: "owner".into(),
+                owner_id: None,
+                status: "active".into(),
+                size: 0,
+                counted_size: 64,
+                maintenance_reserved: 0,
+                last_auto_checkpoint_at: 0,
+                source_format: "markdown".into(),
+                main: "README.md".into(),
+            })
+            .expect("document");
+        let key = "journal/deployment/segments/cancelled";
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO object_accounting(storage_id,object_key,kind,bytes)
+                         VALUES ('storage-shared',?1,'journal_segment',64)",
+                        [key],
+                    )
+                    .map_err(CatalogError::from)?;
+                connection
+                    .execute("UPDATE totals SET bytes=64 WHERE id=1", [])
+                    .map_err(CatalogError::from)?;
+                connection
+                    .execute(
+                        "INSERT INTO journal_retirements
+                         (object_key,storage_id,kind,encoded_bytes,modified_at,
+                          first_unreferenced_at,delete_after)
+                         VALUES (?1,'storage-shared','segment',64,1,1,1)",
+                        [key],
+                    )
+                    .map_err(CatalogError::from)?;
+                Ok(())
+            })
+            .expect("fixture");
+
+        let directory = tempfile::tempdir().expect("blob directory");
+        let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        inner
+            .put(key, vec![0u8; 64], "application/octet-stream")
+            .await
+            .expect("segment");
+        let (reached, deleted) = tokio::sync::oneshot::channel();
+        let blobs = Arc::new(PausingStore {
+            inner: inner.clone(),
+            reached: std::sync::Mutex::new(Some(reached)),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        let worker =
+            JournalRetirementWorker::new(catalog.clone(), blobs.clone(), 16).expect("worker");
+        let pass = tokio::spawn(async move { worker.run_once(2).await });
+        deleted.await.expect("the object was removed");
+        pass.abort();
+        blobs.release.add_permits(1);
+        assert!(pass.await.unwrap_err().is_cancelled());
+
+        // Whatever the cancellation caught, the two must agree.
+        let (charged, queued) = catalog
+            .with_connection(|connection| {
+                let charged: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM object_accounting WHERE object_key=?1",
+                        [key],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                let queued: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM journal_retirements WHERE object_key=?1",
+                        [key],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                Ok((charged, queued))
+            })
+            .expect("state");
+        assert_eq!(
+            charged, queued,
+            "the charge and the queue row must be released together"
+        );
+
+        // And a later pass converges to released, exactly once: the totals
+        // never go negative and the row is gone.
+        let plain_worker =
+            JournalRetirementWorker::new(catalog.clone(), inner, 16).expect("worker");
+        plain_worker.run_once(3).await.expect("second pass");
+        plain_worker.run_once(4).await.expect("third pass");
+        catalog
+            .with_connection(|connection| {
+                let rows: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM journal_retirements WHERE object_key=?1",
+                        [key],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                assert_eq!(rows, 0);
+                let charged: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM object_accounting WHERE object_key=?1",
+                        [key],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                assert_eq!(charged, 0);
+                let total: i64 = connection
+                    .query_row("SELECT bytes FROM totals WHERE id=1", [], |row| row.get(0))
+                    .map_err(CatalogError::from)?;
+                assert_eq!(total, 0);
+                Ok(())
+            })
+            .expect("converged");
     }
 }

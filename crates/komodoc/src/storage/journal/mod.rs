@@ -19,7 +19,7 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 use crate::storage::blob::{
     journal_base_key, journal_manifest_key, journal_segment_key, BlobError, BlobStore,
 };
-use crate::storage::catalog::{Catalog, CatalogError};
+use crate::storage::catalog::{Catalog, CatalogError, CatalogResult};
 
 mod budget;
 mod coordinator;
@@ -81,6 +81,20 @@ impl std::error::Error for JournalError {}
 impl From<CatalogError> for JournalError {
     fn from(error: CatalogError) -> Self {
         Self::Catalog(error)
+    }
+}
+
+/// Admission saturation is capacity, not a permanent refusal: reporting it as
+/// a catalogue error would tell a caller its work can never succeed, when the
+/// same request will be admitted once another catalogue job settles.
+impl From<crate::storage::catalog::CatalogExecError> for JournalError {
+    fn from(error: crate::storage::catalog::CatalogExecError) -> Self {
+        match error {
+            crate::storage::catalog::CatalogExecError::Saturated => {
+                Self::Busy("the catalogue execution boundary is saturated".into())
+            }
+            other => Self::Catalog(CatalogError::from(other)),
+        }
     }
 }
 

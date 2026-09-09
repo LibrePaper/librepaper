@@ -1,12 +1,11 @@
 # 1. Catalogue execution and cancellation
 
-Status: machinery implemented; the room caller group is migrated, the rest of
-the caller migration is outstanding. The execution boundary, admission
+Status: machinery implemented and every asynchronous production caller
+migrated, in `room/` and outside it. The execution boundary, admission
 budgets, lifecycle, counters and shutdown are in
-`storage/catalog/execution.rs`; every catalogue call under `room/` now goes
-through it, with the exceptions recorded in the room migration subsection
-below. Callers in `journal/`, `maintenance`, `document/store.rs`, `server/`,
-`seed/` and `cli/` are not migrated, so the track is not complete. Inherits
+`storage/catalog/execution.rs`, and `Catalog::shutdown` is wired into the
+server. The synchronous exceptions are recorded in the two migration
+subsections below; the lock scopes those calls still hold are track 2's work. Inherits
 [umbrella section 1](../../../SPEC-refactor.md#1-move-catalogue-work-off-tokio-workers).
 
 ## Decision and boundary
@@ -607,8 +606,192 @@ suggestion acceptance is one job rather than two.
 Limitations. Cancellation, receipts and peer convergence are now asserted for
 the room caller group, but waiting SQL still retains room state on the paths
 the gate map above lists, because shortening those scopes is track 2's work
-and this delivery deliberately reordered nothing. The caller groups outside
-`room/` are unmigrated, so synchronous catalogue calls remain on their request
-paths. `storage/backup.rs` opens its own connection and is outside this
-boundary by construction. `Catalog::shutdown` is implemented and tested but is
-still not wired into the server's shutdown path.
+and this delivery deliberately reordered nothing. `storage/backup.rs` opens
+its own connection and is outside this boundary by construction.
+
+## Storage-side caller migration
+
+The second delivery of this track. It moves every asynchronous production
+caller **outside `room/`** onto the boundary; the `room/` rows of the
+inventory above are unchanged and belong to the concurrent room-side
+delivery.
+
+### One addition to the boundary: `execute_catalog`
+
+`execute`/`transaction` hand the job the connection. That is the right shape
+for the 46 ad-hoc `with_connection` closures, and those all became jobs
+directly. It is the wrong shape for the other 100-odd sites, which call a
+named `Catalog` method — `commit_object_change`, `document`, `finish_delete`,
+`upsert_account` — because such a method opens and commits its own
+`IMMEDIATE` transaction: a job holding the connection that then called one
+would deadlock on the same non-reentrant mutex. That is exactly the hazard
+recorded at `document/store.rs:2307`.
+
+`CatalogReservation::execute_catalog` / `Catalog::execute_catalog` submit
+`FnOnce(&Catalog)` instead. The job runs on a blocking thread under the same
+admission budgets, lifecycle, counters and shutdown, and takes the connection
+itself. Two properties make this safe rather than a loophole:
+
+- A catalogue method *is* one `IMMEDIATE` transaction, so "one existing
+  transaction becomes one request" holds by construction. Nothing atomic is
+  split.
+- A closure that calls several methods gets several transactions, exactly as
+  the synchronous caller did. It is never used to make a sequence atomic that
+  was not atomic before, and the places that do call several methods in one
+  job say so in a comment.
+
+The alternative — splitting each of the 142 catalogue methods into an
+`&Transaction` body plus two wrappers — would run the same SQL in the same
+one transaction per job, rewrite the whole catalogue module, and collide with
+the room-side delivery in the same files. It buys nothing this migration
+needs.
+
+`impl From<CatalogExecError> for CatalogError` collapses the boundary's errors
+into the ones existing callers already handle: `Saturated` is `Busy`
+(temporary, every retry path treats it that way), `ShuttingDown` is `Closed`
+(what the synchronous API returns after shutdown), `TooLarge` and `Panicked`
+are `Invalid`. `JournalError` converts `Saturated` to its own `Busy` variant
+first, so journal capacity refusals stay distinguishable from permanent ones.
+
+### What migrated
+
+| Area | Sites | How |
+| --- | --- | --- |
+| `storage/journal/store.rs` | 38 | Each SQL body is a private associated `fn` taking `&mut Connection`; a synchronous wrapper (startup, tests) and an asynchronous wrapper (`JournalRuntime`, recovery) both call it. `reconcile_object_reservations`, `reconcile_pending`, `abort_preparation`, `commit_segments`, `commit_compaction_shards`, `segment_lengths`, `replay_descriptors`, `recovery_base(s)`, `sequence_committed`, `committed_segments_for/_through`, `operation_sequences`, `resolve_preparation`, `resolve_committed_preparation` are now asynchronous only, because no synchronous caller remained. `segment_lengths` became one job for the whole key set instead of one per key. |
+| `storage/journal/runtime.rs` | 8 | `append`, `compact`, `write_segments`, `committed_payload_status`, `recover_failed_flush` use the asynchronous wrappers. `MaintenanceBorrow::release` is asynchronous. |
+| `storage/journal/recovery.rs` | 3 | `recover_latest` and `verify_manifest_chain` use them too (these were not in the inventory count and are corrected here). |
+| `storage/maintenance.rs` | 35 | `DeletionWorker::run_once`, `JournalRetirementWorker::run_once`, `rewrite_shared_segment`, `defer_failed_retirement` and the erasure pass. |
+| `document/store.rs` | 50 | All of them, including the `open_with_catalog` startup roll-forward. |
+| `server/` request paths | 12 | `authenticated_identity`, `clear_dead_session`, `initialize_account_examples`, `/api/account/erase`, `handle_transfer`, `sign_in`, and the maintenance ticker's `prune_checkpoint_budgets` and erasure pass. |
+
+Batching, and why it is not a split. Four loops now run as one job instead of
+one job per item: queueing a document's fixed sidecars and each discovery
+page (`enqueue_deletions_async`), removing the queue rows of one pass's
+confirmed deletions, staging a rewrite's replacement outputs, and adoption's
+per-document ownership transfers. The first three commit in one transaction —
+strictly more atomic than the per-key transactions they replace, because a
+failure re-runs an idempotent step rather than leaving half a page queued.
+The last keeps one transaction per document, as before. What the job removes
+in every case is the runtime worker parked on the connection once per item.
+
+Two read paths are batched for the same reason: a listing page and the rows
+it names are one job rather than `limit + 1` dispatches, and `catalog_entries`
+reads the whole table in one. Both were already single-threaded sequences
+against one connection; a job per row would have multiplied one request into
+hundreds of dispatches without bounding anything. `catalog_entries` and
+`documents()` remain the unbounded reads the inventory flags; this delivery
+does not add the pagination they need.
+
+### The re-entrancy fix
+
+`load_catalog_entry` called `catalog.open_link_key(..)` from inside a
+`with_connection` closure. It did not deadlock only because `open_link_key`
+happens to read the sealing keyring rather than the connection; as a job it
+would have been a catalogue call made from inside the boundary, which is
+forbidden for exactly that reason. The sealed envelopes now come out of SQL
+as rows and are opened after the closure returns, still on the same blocking
+thread and still inside one job.
+`storage/maintenance.rs:501` is unchanged: `finish_delete` still runs outside
+the one-statement `journal_gate` block. Changing that lock scope is a
+behaviour change this delivery does not make.
+
+### What stays synchronous, and why
+
+Nothing on a request or worker path. What remains is the set of paths where
+no socket exists to stall:
+
+- **`server/serve.rs` startup** (`totals`, `set_link_sealing_key`,
+  `add_link_decryption_key`, `initialize_local`, `reconcile_pending`'s
+  synchronous entry, `require_recovered`): runs under the deployment writer
+  lock before the listener is bound, so there is no concurrent work on the
+  runtime to stall.
+- **`seed/` (6 sites) and `cli/` `RotateLinkKey` (4 sites)**: single-purpose
+  administrative commands holding the deployment writer lock. Their bodies
+  are straight-line synchronous code inside an `async fn` and nothing else
+  runs on the runtime; making them asynchronous would add awaits without
+  removing any contention.
+- **The synchronous `JournalStore` wrappers** (`initialize`,
+  `initialize_local`, `retire_storage`, `compaction_due`, `state`, `prepare`,
+  `commit_segment(s)`, `unresolved_preparation`, `committed_segments`,
+  `latest_sequence`, `require_recovered`) and the synchronous
+  `run_erasure_pass` / `enqueue_deletion`: kept for the startup paths above
+  and for the transaction-focused tests the acceptance criteria ask to
+  preserve. Each shares its SQL body with the asynchronous wrapper; there is
+  no second copy of any statement.
+- **`JournalRuntime::latest_sequence` / `::compaction_due` / the reader-lease
+  helpers**: their only callers are in `room/`, so the asynchronous
+  counterparts (`latest_sequence_async`, `compaction_due_async`) are added
+  here and the room-side delivery adopts them.
+- **`storage/backup.rs`**: unchanged, and still outside the boundary by
+  construction. It opens `catalog.db` with its own `rusqlite::Connection` at
+  backup.rs:1049, 1197, 1225 and 1272 for integrity and reference checks. It
+  never goes through `Catalog`, so `Catalog::shutdown` does not close its
+  connection and the admission budgets do not bound it. Its callers are
+  administrative commands, not request paths. Bringing it inside would mean
+  giving `Catalog` a snapshot/verify API, which is a separate change.
+
+**Before and after, synchronous catalogue calls reachable from asynchronous
+code in these files: 149 → 10.** The ten are the `seed/` (6) and `cli/` (4)
+administrative sites above; the `serve.rs` startup calls are counted as
+reached from `async fn serve`, and are 6 more if that is counted as reachable
+rather than as startup. Room's 79 sites are not in either number.
+
+### Shutdown wiring
+
+`Catalog::shutdown` is called in `server/serve.rs` after `axum::serve` returns,
+not inside the graceful-shutdown future. The ordering matters in both
+directions: the graceful-shutdown future stops accepting and then drains the
+requests already in flight, and those requests still submit catalogue jobs, so
+closing admission any earlier would fail a request accepted before the signal;
+and by the time `serve` returns the room set has been flushed and the deletion
+and journal retirement workers have run their final pass, so what shutdown
+settles is only what is still queued or executing. It then rejects the queue,
+lets the executing transaction and its completion hook finish, and closes
+SQLite last.
+
+### Tests
+
+- `storage/catalog/execution.rs::a_blocked_journal_job_does_not_stop_unrelated_tasks`:
+  a journal job parked inside an open transaction while a second journal
+  caller waits for the same connection; an unrelated task completes 100 ticks
+  first. The assertion is the tick count, not elapsed time.
+- `storage/catalog/execution.rs::shutdown_settles_executing_journal_work_and_rejects_the_queue`:
+  one journal job executing and one queued behind a narrowed executing budget.
+  The drain does not finish while the transaction holds the connection, the
+  queued `retire_storage_async` gets `Closed`, the executing job commits, and
+  afterwards both admission and the synchronous API report closure.
+- `storage/maintenance.rs::a_cancelled_retirement_pass_leaves_accounting_and_queue_consistent`:
+  the pass is aborted at its most dangerous point — the object is gone and the
+  catalogue has not been told — using a store that parks inside `delete_each`.
+  Whatever the cancellation caught, the released charge and the queue row
+  agree, and two later passes converge to released exactly once with totals at
+  zero.
+- `tests/store.rs::a_sealed_link_is_opened_outside_the_connection_closure`:
+  the re-entrancy fix. A sealed link comes back decrypted through the boundary,
+  and the listing path, which asks for the same rows without decrypting,
+  answers with no secret in it.
+- The synchronous transaction-focused suites are preserved unchanged
+  (`journal_head_and_preparation_commit_together` and the rest of
+  `storage/journal/tests.rs`, `storage/catalog/tests.rs`).
+
+The shutdown ordering in `serve.rs` is covered by the boundary unit test
+rather than by the in-process harness: the harness builds a `Server` and calls
+its router directly and never runs `serve`'s listener loop, so it has no
+`axum::serve` return to hang the assertion on.
+
+### Remaining limitations
+
+- The room-side migration above shares this boundary; the two halves landed
+  as one delivery, with `execute_catalog` as the single name for the job form
+  both needed.
+- The completion hook is not used by any migrated caller. Every mutation on
+  this side either has no caller-side cleanup after the SQL returns, or its
+  cleanup is now inside the same job (the confirmed-reclamation pair in
+  `JournalRetirementWorker`, the compaction borrow's release). The one place
+  that needed a service-owned refund from a `Drop` — `MaintenanceBorrow` —
+  cannot use the hook, because a `Drop` has no request to attach one to; it
+  hands the refund to a blocking thread instead, keyed by its own job id and
+  conditional on that row, so it can never refund a later compaction's
+  headroom.
+- No throughput measurement is recorded. The budgets remain the declared
+  bounds and `CatalogExecutionSnapshot` remains the exposure.

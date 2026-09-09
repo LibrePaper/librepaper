@@ -289,7 +289,7 @@ async fn catalog_publication_receipt_retries_and_commits_after_reopen() {
         .await
         .unwrap();
     assert!(store.get("receipt").await.is_none());
-    assert!(store.pending_publication("receipt").is_some());
+    assert!(store.pending_publication("receipt").await.is_some());
     let staged_sha = stage_room_publication(
         store.clone(),
         blobs.clone(),
@@ -371,6 +371,7 @@ async fn catalog_replacement_receipt_hides_old_head_until_commit() {
         .unwrap();
     store
         .reserve_publication_peak("replace-receipt", 2 << 20)
+        .await
         .unwrap();
     assert!(store.get("replace-receipt").await.is_none());
     let new_head =
@@ -583,4 +584,63 @@ async fn room_for_charges_uncached_catalog_documents() {
         .expect("first is a document the catalogue actually has");
     // Only "second"'s six bytes are charged against the ceiling.
     assert_eq!(room, 1000 - 6);
+}
+
+/// A listing entry with a sealed link: the link key is unsealed after the
+/// connection closure returns, not from inside it.
+///
+/// Before this change `load_catalog_entry` called `open_link_key` from within
+/// a `with_connection` closure. Submitting that closure to the execution
+/// boundary would have re-entered the catalogue while the single connection
+/// was held; the entry now comes back with its key decrypted through the
+/// boundary, which is what proves the inner call was hoisted out.
+#[tokio::test]
+async fn a_sealed_link_is_opened_outside_the_connection_closure() {
+    let dir = tempfile::tempdir().unwrap();
+    let objects = dir.path().join("objects");
+    std::fs::create_dir_all(&objects).unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
+    let catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    catalog.set_link_sealing_key(&[7u8; 32]).unwrap();
+    let store =
+        store::Store::open_with_catalog(blobs, Arc::new(Configuration::default()), catalog.clone())
+            .await
+            .unwrap();
+    publish(&store, "linked", "Linked").await;
+    let secret = "the-secret-link-key";
+    // The hash is the link secret's own digest; the seal checks it.
+    let hash = {
+        use sha2::Digest;
+        hex::encode(sha2::Sha256::digest(secret.as_bytes()))
+    };
+    store
+        .modify("linked", |entry| {
+            entry.set_link(store::LinkGrant {
+                role: "editor".into(),
+                hash: hash.clone(),
+                key: secret.into(),
+                label: String::new(),
+                budget: None,
+                since: String::new(),
+                until: String::new(),
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let entry = store.get_checked("linked").await.unwrap().unwrap();
+    assert_eq!(entry.links.len(), 1);
+    assert_eq!(entry.links[0].key, secret);
+
+    // The listing path asks for the same rows without decrypting them; it
+    // must still answer, and answer with no secret in it.
+    let listed = store
+        .visible_page_with_options(None, Some("alice"), None, 20, true)
+        .await
+        .unwrap();
+    let listed = listed.iter().find(|e| e.slug == "linked").unwrap();
+    assert_eq!(listed.links.len(), 1);
+    assert!(listed.links[0].key.is_empty());
 }
