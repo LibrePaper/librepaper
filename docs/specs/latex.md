@@ -87,8 +87,12 @@ XeTeX and LuaTeX documents compile in the browser.
   (about 17 MB); measuring real documents should trim it. With a bundled
   release it is replaced by the `core` bundle, 32 MB, which the same
   measurement should trim.
-- The XeTeX, LuaTeX and dvipdfm workers do not resolve through bundles yet,
-  and a bundled release is not yet imported into the shipped mirror.
+- A XeLaTeX document has not yet been compiled in a browser against a
+  bundled release -- only in the Node harness on the engine side. The
+  LuaTeX worker does not resolve through bundles yet (it will once its
+  release ships `wasmtex-kpse-resolve.js`/`wasmtex-bundle-mode.js` like the
+  others), and a bundled release is not yet imported into the shipped
+  mirror.
 - Detaching `librepaper local start` from its terminal and registering the
   `librepaper://` protocol on each desktop platform.
 - The acceptance matrices on Firefox and Safari and on memory-constrained

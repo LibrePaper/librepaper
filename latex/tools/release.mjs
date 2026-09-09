@@ -5,6 +5,17 @@ import { join } from "node:path";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
+// Every worker now importScripts() both `wasmtex-kpse-resolve.js` (the
+// resolver core) and `wasmtex-bundle-mode.js` (the `loadbundleindex`/
+// `preloadbundle` handlers) unconditionally, so an engine missing either
+// fails at importScripts before it can even answer `configure`. Listing both
+// in every engine's `files` here means the availability check below
+// (`spec.files.every(file => artifacts.has(file))`) stops advertising an
+// engine from an older wasm-latex release that does not ship them -- that is
+// the intended behaviour, not a regression: a release built before the
+// bundle-mode controller shipped is not compatible with this host's worker
+// protocol, and should disappear from `engines` rather than be offered and
+// fail at runtime.
 const ENGINE_FILE_SETS = {
   pdftex: {
     worker: "wasmtex-pdftex.worker.js",
@@ -15,23 +26,39 @@ const ENGINE_FILE_SETS = {
       "wasmtex-pdftex.wasm",
       "wasmtex-pdftex-resolver-evidence.js",
       "wasmtex-kpse-resolve.js",
+      "wasmtex-bundle-mode.js",
       "wasmtex-pdftex.fmt",
     ],
   },
   xetex: {
     worker: "wasmtex-xetex.worker.js",
     format: "wasmtex-xetex.fmt.gz",
+    // XeTeX also needs its ICU data table decompressed and sent over
+    // `loadicudata` before a bundled compile (see worker.js's `ensureEngine`):
+    // without it, in bundle mode, the worker would try to fetch
+    // `icudt68l.dat` by name from the endpoint and fail, and font-by-name
+    // lookups would fail too.
+    icu: "icudt68l.dat.gz",
     files: [
       "wasmtex-xetex.worker.js",
       "wasmtex-xetex.js",
       "wasmtex-xetex.wasm",
       "wasmtex-xetex-resolver-evidence.js",
+      "wasmtex-kpse-resolve.js",
+      "wasmtex-bundle-mode.js",
       "wasmtex-xetex.fmt.gz",
+      "icudt68l.dat.gz",
     ],
   },
   dvipdfm: {
     worker: "wasmtex-dvipdfm.worker.js",
-    files: ["wasmtex-dvipdfm.worker.js", "wasmtex-dvipdfm.js", "wasmtex-dvipdfm.wasm"],
+    files: [
+      "wasmtex-dvipdfm.worker.js",
+      "wasmtex-dvipdfm.js",
+      "wasmtex-dvipdfm.wasm",
+      "wasmtex-kpse-resolve.js",
+      "wasmtex-bundle-mode.js",
+    ],
   },
   luatex: {
     worker: "wasmtex-luatex.worker.js",
@@ -41,20 +68,40 @@ const ENGINE_FILE_SETS = {
       "wasmtex-luatex.js",
       "wasmtex-luatex.wasm",
       "wasmtex-luatex-resolver-evidence.js",
+      "wasmtex-kpse-resolve.js",
+      "wasmtex-bundle-mode.js",
       "wasmtex-luatex.fmt.gz",
     ],
   },
   bibtex: {
     worker: "wasmtex-bibtex.worker.js",
-    files: ["wasmtex-bibtex.worker.js", "wasmtex-bibtex.js", "wasmtex-bibtex.wasm"],
+    files: [
+      "wasmtex-bibtex.worker.js",
+      "wasmtex-bibtex.js",
+      "wasmtex-bibtex.wasm",
+      "wasmtex-kpse-resolve.js",
+      "wasmtex-bundle-mode.js",
+    ],
   },
   bibtex8: {
     worker: "wasmtex-bibtex8.worker.js",
-    files: ["wasmtex-bibtex8.worker.js", "wasmtex-bibtex8.js", "wasmtex-bibtex8.wasm"],
+    files: [
+      "wasmtex-bibtex8.worker.js",
+      "wasmtex-bibtex8.js",
+      "wasmtex-bibtex8.wasm",
+      "wasmtex-kpse-resolve.js",
+      "wasmtex-bundle-mode.js",
+    ],
   },
   makeindex: {
     worker: "wasmtex-makeindex.worker.js",
-    files: ["wasmtex-makeindex.worker.js", "wasmtex-makeindex.js", "wasmtex-makeindex.wasm"],
+    files: [
+      "wasmtex-makeindex.worker.js",
+      "wasmtex-makeindex.js",
+      "wasmtex-makeindex.wasm",
+      "wasmtex-kpse-resolve.js",
+      "wasmtex-bundle-mode.js",
+    ],
   },
 };
 

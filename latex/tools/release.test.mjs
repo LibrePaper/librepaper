@@ -9,7 +9,8 @@ const directory = mkdtempSync(join(tmpdir(), "librepaper-release-"));
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const names = [
   "wasmtex-pdftex.worker.js", "wasmtex-pdftex.js", "wasmtex-pdftex.wasm",
-  "wasmtex-pdftex-resolver-evidence.js", "wasmtex-kpse-resolve.js", "wasmtex-pdftex.fmt",
+  "wasmtex-pdftex-resolver-evidence.js", "wasmtex-kpse-resolve.js", "wasmtex-bundle-mode.js",
+  "wasmtex-pdftex.fmt",
   "wasmtex-bibtex.worker.js", "wasmtex-bibtex.js", "wasmtex-bibtex.wasm",
   "LICENSE", "THIRD_PARTY_NOTICES.md", "SOURCE.md", "SOURCE-RECEIPT.json", "RELINK.md",
   "LICENSES/GPL-2.0.txt",
@@ -88,6 +89,15 @@ try {
   assert.throws(() => readRelease(directory, pin(manifest)), /invalid or duplicate/);
   manifest = fixture();
   manifest.artifacts = manifest.artifacts.filter(({ name }) => !name.endsWith(".fmt"));
+  assert.throws(() => readRelease(directory, pin(manifest)), /complete pdfTeX/);
+
+  // A release built before the bundle-mode controller shipped (no
+  // `wasmtex-bundle-mode.js` in its verified payload) is not advertised as
+  // pdfTeX-capable at all -- intended behaviour, since this host's worker
+  // protocol unconditionally importScripts()s it and an old release cannot
+  // answer `loadbundleindex`.
+  manifest = fixture();
+  manifest.artifacts = manifest.artifacts.filter(({ name }) => name !== "wasmtex-bundle-mode.js");
   assert.throws(() => readRelease(directory, pin(manifest)), /complete pdfTeX/);
   manifest = fixture();
   manifest.correspondingSource.sha256 = null;

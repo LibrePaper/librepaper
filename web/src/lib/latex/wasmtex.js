@@ -61,6 +61,11 @@ const FMT_FILENAME = { xetex: "wasmtex-xetex.fmt", luatex: "wasmtex-luatex.fmt" 
 /// intent visible instead of relying on that silent ignore.
 const RESOLVES_TEXLIVE = new Set(["pdftex", "xetex", "luatex", "dvipdfm"]);
 
+/// Kinds whose controller answers `loadbundleindex`/`preloadbundle` (the
+/// engine repository's `wasmtex-bundle-mode.js`, imported by every worker
+/// but LuaTeX today). Kept in sync with `worker.js`'s own `BUNDLE_CAPABLE`.
+const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex"]);
+
 export function createEngine({ kind, url, texliveUrl, format, release, onProgress, onDownload }) {
   return new WasmTexEngine(kind, url, texliveUrl, format, release, onProgress, onDownload);
 }
@@ -334,11 +339,24 @@ class WasmTexEngine {
   /// (fire-and-forget), this command answers -- the controller awaits it so
   /// a first compile never races the worker's own Cache Storage preload.
   async loadBundleIndex(bytes) {
-    // pdfTeX only: the other workers' resolvers have no bundle mode yet and
-    // never reply to this command.
-    if (this.kind !== "pdftex") return null;
+    // Every worker but LuaTeX now importScripts()s `wasmtex-bundle-mode.js`
+    // and answers this command; a kind that does not is a no-op here so a
+    // caller need not special-case it (worker.js's `ensureEngine` already
+    // gates the call on `BUNDLE_CAPABLE`, but this stays defensive on its
+    // own since nothing else enforces that from this side).
+    if (!BUNDLE_CAPABLE.has(this.kind)) return null;
     const copy = bytes.slice().buffer;
     return this._ask({ cmd: "loadbundleindex", data: copy }, "loadbundleindex", [copy]);
+  }
+
+  /// XeTeX only: sends the inflated `icudt68l.dat` bytes (the release ships
+  /// them gzipped) so ICU-backed lookups -- font-by-name resolution, Unicode
+  /// data the engine core needs -- work in bundle mode, where nothing named
+  /// `icudt68l.dat` exists on the endpoint for the worker to fetch by name.
+  async loadIcuData(bytes) {
+    if (this.kind !== "xetex") return null;
+    const copy = bytes.slice().buffer;
+    return this._ask({ cmd: "loadicudata", data: copy }, "loadicudata", [copy]);
   }
 
   preload404(entries) {

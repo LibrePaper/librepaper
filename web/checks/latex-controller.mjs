@@ -5,6 +5,7 @@
 // VM anywhere in reach. `latex.js`'s `_testing.inject` hook is what makes
 // that possible; see its doc comment in `src/lib/latex.js`.
 import assert from "node:assert/strict";
+import { gzipSync } from "node:zlib";
 
 const enc = new TextEncoder();
 const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // "%PDF"
@@ -600,6 +601,168 @@ function nextProject() {
   assert.match(result.failure.message, /no default WasmTex release/);
   assert.match(result.failure.message, /make latex-mirror/);
   assert.doesNotMatch(result.failure.message, /undefined/);
+}
+
+// ============================================================================
+// 15. `worker.js`'s `ensureEngine`, driven directly (not through the
+// `FakeWorker` above, which stands in for the whole of `worker.js` and so
+// never exercises it): a fake nested engine `Worker` stands in for a real
+// WasmTex engine controller, and this drives worker.js's own section 2.4
+// protocol by id, the same way `latex-wasmtex-browser.mjs`'s in-page driver
+// does against the real thing. Checks SPEC-latex.md's bundle-mode fan-out --
+// every bundle-capable kind receives `loadbundleindex`, and XeTeX alone also
+// receives `loadicudata` with the release's ICU table inflated from the
+// gzip it ships.
+// ============================================================================
+{
+  const icuPlain = enc.encode("ICU-DATA-FIXTURE");
+  const icuGz = new Uint8Array(gzipSync(Buffer.from(icuPlain)));
+  const fmtPlain = enc.encode("XETEX-FORMAT-FIXTURE");
+  const fmtGz = new Uint8Array(gzipSync(Buffer.from(fmtPlain)));
+
+  async function sha256Hex(bytes) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  const BASE = "https://mirror.example/mirror/";
+  const bundlesIndexBytes = enc.encode(JSON.stringify({ bundles: {}, files: {} }));
+
+  const files = {
+    "wasmtex-xetex.fmt.gz": { url: "wasmtex/rel1/wasmtex-xetex.fmt.gz", sha256: await sha256Hex(fmtGz), size: fmtGz.length },
+    "icudt68l.dat.gz": { url: "wasmtex/rel1/icudt68l.dat.gz", sha256: await sha256Hex(icuGz), size: icuGz.length },
+  };
+  const release = {
+    id: "rel1",
+    digest: "c".repeat(64),
+    base: "wasmtex/rel1/",
+    texlive_base: "texlive/snap1/",
+    bundles: { index: "wasmtex/rel1/bundles/bundles.json" }, // no `sha256`: digest check is skipped, exercised elsewhere
+    engines: {
+      xetex: { worker: "wasmtex-xetex.worker.js", format: "wasmtex-xetex.fmt.gz", icu: "icudt68l.dat.gz" },
+      dvipdfm: { worker: "wasmtex-dvipdfm.worker.js" },
+      bibtex: { worker: "wasmtex-bibtex.worker.js" },
+      pdftex: { worker: "wasmtex-pdftex.worker.js" },
+    },
+    files,
+  };
+
+  const engineWorkers = [];
+  class FakeEngineWorker {
+    constructor(url) {
+      this.url = String(url);
+      this.messages = [];
+      this.onmessage = null;
+      this.onerror = null;
+      this.dead = false;
+      engineWorkers.push(this);
+      // Emscripten's postRun: the one reply every real controller sends with
+      // no `cmd`, meaning the engine finished starting (wasmtex.js's own
+      // header note). Queued so it fires only after `worker.onmessage` is
+      // assigned, matching a real Worker's genuine asynchrony.
+      queueMicrotask(() => this.onmessage?.({ data: { result: "ok" } }));
+    }
+    postMessage(message) {
+      if (this.dead) throw new Error("posted to a terminated fake engine worker");
+      this.messages.push(message);
+      queueMicrotask(() => {
+        if (this.dead) return;
+        const reply = (extra) => this.onmessage?.({ data: extra });
+        if (typeof message.cmd === "string" && message.cmd.startsWith("compile")) {
+          return reply({ cmd: "compile", result: "ok" });
+        }
+        switch (message.cmd) {
+          case "settexliveurl":
+            return; // no controller replies to this one
+          case "readfile":
+            return reply({
+              cmd: "readfile",
+              result: "ok",
+              data: message.url && message.url.endsWith(".aux") ? "\\relax\n" : null,
+            });
+          default:
+            return reply({ cmd: message.cmd, result: "ok" });
+        }
+      });
+    }
+    terminate() {
+      this.dead = true;
+    }
+  }
+
+  const previousSelf = globalThis.self;
+  const previousWorker = globalThis.Worker;
+  const previousFetch = globalThis.fetch;
+  globalThis.self = globalThis;
+  globalThis.Worker = FakeEngineWorker;
+  globalThis.fetch = async (url) => {
+    const key = typeof url === "string" ? url : url.toString();
+    if (key === new URL(release.bundles.index, BASE).href) return new Response(bundlesIndexBytes, { status: 200 });
+    if (key === new URL(files["wasmtex-xetex.fmt.gz"].url, BASE).href) return new Response(fmtGz, { status: 200 });
+    if (key === new URL(files["icudt68l.dat.gz"].url, BASE).href) return new Response(icuGz, { status: 200 });
+    return new Response(null, { status: 404 });
+  };
+
+  await import("../src/lib/latex/worker.js?ensure-engine-check"); // registers self.onmessage as a side effect
+
+  let seq = 0;
+  const pending = new Map();
+  const outerOnMessage = globalThis.self.onmessage;
+  globalThis.self.postMessage = (msg) => {
+    if (!msg || msg.id === undefined) return; // unsolicited progress/downloading, not awaited here
+    const waiter = pending.get(msg.id);
+    if (!waiter) return;
+    pending.delete(msg.id);
+    msg.failed ? waiter.reject(new Error(msg.failed)) : waiter.resolve(msg);
+  };
+  function send(cmd, extra) {
+    const id = ++seq;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      outerOnMessage({ data: Object.assign({ id, cmd }, extra || {}) });
+    });
+  }
+
+  try {
+    await send("configure", { base: BASE, release, texlive: null });
+    await send("stage", { engine: "xelatex", tree: { main: "main.tex", texts: { "main.tex": "x" } }, generated: {} });
+
+    const xetexWorker = engineWorkers.find((w) => w.url === new URL("wasmtex/rel1/wasmtex-xetex.worker.js", BASE).href);
+    const dvipdfmWorker = engineWorkers.find((w) => w.url === new URL("wasmtex/rel1/wasmtex-dvipdfm.worker.js", BASE).href);
+    assert.ok(xetexWorker, "a fake xetex engine worker was created");
+    assert.ok(dvipdfmWorker, "a fake dvipdfm engine worker was created");
+
+    const xetexCmds = xetexWorker.messages.map((m) => m.cmd);
+    assert.ok(xetexCmds.includes("loadbundleindex"), "the bundled xetex worker received loadbundleindex");
+    assert.ok(xetexCmds.includes("loadicudata"), "the bundled xetex worker also received loadicudata");
+    const icuMessage = xetexWorker.messages.find((m) => m.cmd === "loadicudata");
+    assert.deepEqual(
+      new Uint8Array(icuMessage.data),
+      icuPlain,
+      "the ICU bytes sent to the worker were inflated from the release's icudt68l.dat.gz fixture",
+    );
+
+    const dvipdfmCmds = dvipdfmWorker.messages.map((m) => m.cmd);
+    assert.ok(dvipdfmCmds.includes("loadbundleindex"), "the bundled dvipdfm worker received loadbundleindex too");
+    assert.ok(!dvipdfmCmds.includes("loadicudata"), "loadicudata is XeTeX-only");
+
+    // BibTeX, through worker.js's own `bibtex` command: reads the primary
+    // (xetex) engine's staged .aux, then lazily creates the bibtex engine.
+    await send("bibtex", { stem: "main", eight: false });
+    const bibtexWorker = engineWorkers.find((w) => w.url === new URL("wasmtex/rel1/wasmtex-bibtex.worker.js", BASE).href);
+    assert.ok(bibtexWorker, "a fake bibtex engine worker was created");
+    assert.ok(
+      bibtexWorker.messages.map((m) => m.cmd).includes("loadbundleindex"),
+      "the bundled bibtex worker received loadbundleindex",
+    );
+
+    await send("retire", {});
+  } finally {
+    globalThis.self = previousSelf;
+    globalThis.Worker = previousWorker;
+    globalThis.fetch = previousFetch;
+  }
+  console.log("latex worker/ensureEngine: bundle-mode fan-out and XeTeX ICU data checked");
 }
 
 latex._testing.reset();

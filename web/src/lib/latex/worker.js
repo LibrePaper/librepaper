@@ -43,6 +43,11 @@ const KINDS = {
   lualatex: ["luatex"],
 };
 
+/// Engine kinds whose worker answers `loadbundleindex` (see the engine
+/// repository's `wasmtex-bundle-mode.js`). LuaTeX is left out until its
+/// release ships that file too (`release.mjs`'s `ENGINE_FILE_SETS` comment).
+const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex"]);
+
 const GZIP_MAGIC = [0x1f, 0x8b];
 
 async function sha256Hex(bytes) {
@@ -217,10 +222,11 @@ class Worker2 {
     // in the index are relative paths ("b/<sha256>/<slug>.tar") written by
     // `tools/build-bundles.mjs` alongside it, matching the mirror layout
     // `latex/tools/wasmtex.mjs` writes them under.
-    // Only the pdfTeX worker speaks `loadbundleindex` today; the XeTeX,
-    // LuaTeX and dvipdfm controllers still resolve one file at a time and
-    // would wait forever on a reply, so they keep the per-file snapshot.
-    const bundled = !!this.release.bundles && kind === "pdftex";
+    // Every worker but LuaTeX speaks `loadbundleindex` now (it imports
+    // `wasmtex-kpse-resolve.js`/`wasmtex-bundle-mode.js` just like the rest,
+    // per the engine repository); LuaTeX will join this set once its release
+    // ships those files too.
+    const bundled = !!this.release.bundles && BUNDLE_CAPABLE.has(kind);
     const texliveUrl = bundled
       ? resolve(this.base, this.release.bundles.index.slice(0, this.release.bundles.index.lastIndexOf("/") + 1))
       : resolve(this.base, this.release.texlive_base);
@@ -261,6 +267,29 @@ class Worker2 {
     // here either.
     if (this.bundleIndexBytes && bundled) {
       await engine.loadBundleIndex(this.bundleIndexBytes);
+      // XeTeX alone needs its ICU data table: without it, in bundle mode,
+      // the worker would try to fetch `icudt68l.dat` by name from the
+      // endpoint (which does not exist for a bundled release) and fail, and
+      // font-by-name lookups would fail too. Fetched and verified through
+      // the same digest-checked path as the format bytes, then inflated
+      // client-side since the release ships it gzipped (`icudt68l.dat.gz`,
+      // 11 MiB, versus 27 MiB raw -- over the static-asset limit).
+      if (kind === "xetex" && spec.icu) {
+        const info = this.release.files?.[spec.icu];
+        if (info) {
+          const response = await fetchVerified(this.release, resolve(this.base, info.url), {
+            sha256: info.sha256,
+            size: info.size,
+          });
+          const gz = new Uint8Array(await response.arrayBuffer());
+          if (typeof DecompressionStream === "undefined") {
+            throw new Error("this browser has no DecompressionStream, needed to inflate the bundled XeTeX ICU data");
+          }
+          const stream = new Response(gz).body.pipeThrough(new DecompressionStream("gzip"));
+          const icuBytes = new Uint8Array(await new Response(stream).arrayBuffer());
+          await engine.loadIcuData(icuBytes);
+        }
+      }
       return engine;
     }
     // Inject the compact initial set and the bloom filter before this

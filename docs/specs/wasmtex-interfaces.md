@@ -21,8 +21,9 @@ latex/mirror/
   wasmtex/<engineRelease>/                 engine files from a staged wasm-latex release
     wasmtex-pdftex.worker.js wasmtex-pdftex.js wasmtex-pdftex.wasm
     wasmtex-pdftex.fmt wasmtex-pdftex-resolver-evidence.js ...
+    wasmtex-kpse-resolve.js wasmtex-bundle-mode.js   -- imported by every worker
     wasmtex-bibtex.* wasmtex-bibtex8.* wasmtex-makeindex.*
-    wasmtex-xetex.* wasmtex-xetex.fmt.gz wasmtex-dvipdfm.*
+    wasmtex-xetex.* wasmtex-xetex.fmt.gz icudt68l.dat.gz wasmtex-dvipdfm.*
     wasmtex-luatex.* wasmtex-luatex.fmt.gz
     BUILD-RECEIPT.*.json LICENSE-MANIFEST.json
     NOTICES/LICENSE NOTICES/THIRD_PARTY_NOTICES.md NOTICES/licensing.md
@@ -56,8 +57,8 @@ Manifest additions:
       "base": "wasmtex/2026-8b7946970153c52e/",
       "texlive_base": "texlive/2026-ba38749b8714505a/",
       "engines": {
-        "pdftex":  { "worker": "wasmtex-pdftex.worker.js", "format": "wasmtex-pdftex.fmt", "files": ["wasmtex-pdftex.worker.js", "wasmtex-pdftex.js", "wasmtex-pdftex.wasm", "wasmtex-pdftex-resolver-evidence.js", "wasmtex-pdftex.fmt"] },
-        "xetex":   { "worker": "wasmtex-xetex.worker.js",  "format": "wasmtex-xetex.fmt.gz",  "files": [...] },
+        "pdftex":  { "worker": "wasmtex-pdftex.worker.js", "format": "wasmtex-pdftex.fmt", "files": ["wasmtex-pdftex.worker.js", "wasmtex-pdftex.js", "wasmtex-pdftex.wasm", "wasmtex-pdftex-resolver-evidence.js", "wasmtex-kpse-resolve.js", "wasmtex-bundle-mode.js", "wasmtex-pdftex.fmt"] },
+        "xetex":   { "worker": "wasmtex-xetex.worker.js",  "format": "wasmtex-xetex.fmt.gz", "icu": "icudt68l.dat.gz", "files": [...] },
         "dvipdfm": { "worker": "wasmtex-dvipdfm.worker.js", "files": [...] },
         "luatex":  { "worker": "wasmtex-luatex.worker.js", "format": "wasmtex-luatex.fmt.gz", "files": [...] },
         "bibtex":  { "worker": "wasmtex-bibtex.worker.js", "files": [...] },
@@ -295,9 +296,24 @@ Rules: a `tex` reply's `pdf` is null unless the engine exited 0 or 1 and wrote
 a PDF in this pass; the worker deletes `<stem>.pdf`/`<stem>.xdv` before each
 pass so a stale output can never turn a failed run into success. The format
 is preloaded from the release (`loadformat`). For a release with `bundles`,
-pdfTeX receives `loadbundleindex` with the index bytes and is awaited before
-the first pass; `downloading` then carries `bundle` and `size`, and the
-bloom filter, negative-cache seed and initial set are not sent. Otherwise
+every engine but LuaTeX (pdfTeX, XeTeX, dvipdfm, BibTeX, BibTeX8,
+makeindex -- LuaTeX joins this set once its release ships the same files)
+receives `loadbundleindex` with the index bytes and is awaited before the
+first pass; `downloading` then carries `bundle` and `size`, and the bloom
+filter, negative-cache seed and initial set are not sent. XeTeX additionally
+receives `loadicudata` right after `loadbundleindex`: the release's
+`icudt68l.dat.gz` (gzip; the release payload also lists the plain
+`wasmtex-xetex.fmt.gz`/`wasmtex-xetex.fmt`), fetched through the same
+digest-verified path as the format, inflated in the browser with
+`DecompressionStream("gzip")` and sent as one ArrayBuffer -- without it, in
+bundle mode, XeTeX would try to fetch `icudt68l.dat` by name from the
+endpoint and fail, and font-by-name lookups would fail too. Every worker's
+file set now also includes `wasmtex-kpse-resolve.js` and
+`wasmtex-bundle-mode.js` (`latex/tools/release.mjs`'s `ENGINE_FILE_SETS`),
+which every worker `importScripts()`s unconditionally; a release built
+before they existed is simply not advertised as having that engine at all,
+by the same `spec.files.every(file => artifacts.has(file))` check that
+already gates every other engine. Otherwise
 the compact initial set (`texlive.initial`) is prefetched through
 `resources.js` and injected with `preloadtexlive` before the first pass, and
 the bloom filter is loaded when the manifest has one. `preamble snapshots` are disabled (`setpreamblesnapshot
