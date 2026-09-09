@@ -46,16 +46,23 @@ To sign in from this terminal:
     librepaper login"
 )]
 pub(crate) struct Cli {
-    /// Deployment to talk to; or $LIBREPAPER_SERVER
-    #[arg(long, global = true, env = "LIBREPAPER_SERVER", value_name = "URL")]
+    /// Deployment to talk to
+    #[arg(
+        long,
+        global = true,
+        env = "LIBREPAPER_SERVER",
+        value_name = "URL",
+        help_heading = "Deployment"
+    )]
     server: Option<String>,
-    /// A credential to use instead of the one `login` stored; or $LIBREPAPER_TOKEN
+    /// A credential to use instead of the one `login` stored
     #[arg(
         long,
         global = true,
         env = "LIBREPAPER_TOKEN",
         value_name = "TOKEN",
-        hide_env_values = true
+        hide_env_values = true,
+        help_heading = "Deployment"
     )]
     token: Option<String>,
     #[command(subcommand)]
@@ -208,7 +215,8 @@ pub(crate) enum Command {
             long,
             env = "LIBREPAPER_PORT",
             value_name = "PORT",
-            default_value_t = 0
+            default_value_t = 0,
+            hide_default_value = true
         )]
         port: u16,
         #[command(flatten)]
@@ -465,6 +473,7 @@ pub enum LocalCommand {
             long,
             value_name = "PORT",
             default_value_t = 0,
+            hide_default_value = true,
             env = "LIBREPAPER_LOCAL_PORT"
         )]
         port: u16,
@@ -780,7 +789,7 @@ pub async fn main() {
             let documents = crate::seed::examples::seed_documents();
             match server {
                 Some(server) if !server.is_empty() => {
-                    crate::seed::seed_remote(server, &documents).await
+                    crate::seed::seed_remote(server, token.as_deref(), &documents).await
                 }
                 _ => match backup {
                     Some(backup) => {

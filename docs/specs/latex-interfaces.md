@@ -476,7 +476,7 @@ librepaper local disconnect [--origin URL] [--all]     # revoke pairings
 librepaper local rescan                                # refresh discovery cache
 ```
 
-State lives under `<config home>/librepaper/local/` (`service.json`: port,
+State lives under `<state home>/librepaper/local/` (`service.json`: port,
 instance, code, pid; `pairings.json`; `tools.json` discovery cache) and
 workspaces under `<cache home>/librepaper/local/jobs/`. Never under the
 project directory. `librepaper serve` never starts the local service.

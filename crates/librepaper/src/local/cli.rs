@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use tokio::net::TcpListener;
 
-use crate::cli::config_home;
+use crate::cli::state_home;
 use crate::cli::{LocalArgs, LocalCommand};
 use crate::local::pairing::{generate_code, PairingStore, ServiceState};
 use crate::local::protocol::{self, DEFAULT_PORT};
@@ -40,10 +40,10 @@ pub async fn run(args: LocalArgs) {
 
 /// The cache-home base directory a job workspace lives under:
 /// `<cache_home>/librepaper/local/jobs/<id>/`, never under a project directory
-/// and never under the config home the tokens live in. Read here, not in
+/// and never under the state home the tokens live in. Read here, not in
 /// `service.rs`, so the service itself stays free of environment reads and
 /// testable with an explicit directory -- the same reasoning
-/// `crate::cli::config_home` gives for the token cache.
+/// `crate::cli::state_home` gives for the token cache.
 fn cache_home() -> PathBuf {
     match std::env::var("XDG_CACHE_HOME") {
         Ok(base) if !base.is_empty() => PathBuf::from(base),
@@ -85,8 +85,8 @@ async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<
         );
     }
 
-    let config_home = config_home();
-    let pairing = PairingStore::new(&config_home, code.clone());
+    let state_home = state_home();
+    let pairing = PairingStore::new(&state_home, code.clone());
     let port = if port == 0 { DEFAULT_PORT } else { port };
 
     if let Some(existing) = pairing.read_service() {
@@ -130,7 +130,7 @@ async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<
     let service = LocalService::new(
         port,
         instance,
-        &config_home,
+        &state_home,
         &cache_home(),
         runner,
         Some(code.clone()),
@@ -170,7 +170,7 @@ async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<
 }
 
 async fn status() {
-    let pairing = PairingStore::new(&config_home(), None);
+    let pairing = PairingStore::new(&state_home(), None);
     let Some(state) = pairing.read_service() else {
         println!("librepaper local is not running");
         return;
@@ -274,7 +274,7 @@ fn disconnect(origin: Option<String>, all: bool) {
     if !all && origin.is_none() {
         die("pass --origin <URL> or --all");
     }
-    let pairing = PairingStore::new(&config_home(), None);
+    let pairing = PairingStore::new(&state_home(), None);
     let target = if all { None } else { origin.as_deref() };
     let removed = pairing.revoke(target);
     if removed == 0 {
@@ -286,7 +286,7 @@ fn disconnect(origin: Option<String>, all: bool) {
 
 async fn rescan(tex_path: Vec<PathBuf>) {
     // This refreshes the on-disk cache `discovery.rs` keeps under
-    // `<config_home>/librepaper/local/tools.json`, which a running service
+    // `<state_home>/librepaper/local/tools.json`, which a running service
     // picks up on its own next capability check since it consults the same
     // cache file. A future version could additionally ping a running
     // service's `capabilities/rescan` route so the change is visible sooner

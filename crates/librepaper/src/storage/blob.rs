@@ -1,5 +1,5 @@
-//! The bytes LibrePaper keeps, addressed by key, wherever they live: a
-//! directory, or an S3 bucket somebody else pays for.
+//! The bytes LibrePaper keeps, addressed by key, in a directory on this
+//! machine.
 //!
 //! Keys are one layout, whichever store holds them:
 //!

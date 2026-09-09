@@ -9,7 +9,7 @@
 //! `discover` returns `Capabilities` (paths omitted), `tool_paths` returns
 //! the paths for `native.rs`'s own use.
 //!
-//! Results are cached under `<config home>/librepaper/local/tools.json` and
+//! Results are cached under `<state home>/librepaper/local/tools.json` and
 //! reused until an explicit rescan, a changed configured search path, or a
 //! cached tool's executable going missing or changing on disk.
 
@@ -97,7 +97,7 @@ struct Cache {
 }
 
 fn cache_path() -> PathBuf {
-    crate::cli::config_home()
+    crate::cli::state_home()
         .join("librepaper")
         .join("local")
         .join("tools.json")

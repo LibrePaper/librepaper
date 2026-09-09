@@ -28,6 +28,7 @@ mod hardening;
 mod history;
 mod latex;
 mod local;
+mod mirror_server;
 mod onboarding;
 mod ownership;
 mod pseudonym;
@@ -58,7 +59,6 @@ mod tokens;
 mod typst_needs;
 mod uploads;
 mod visitor;
-mod mirror_server;
 mod write_errors;
 pub mod yjs;
 

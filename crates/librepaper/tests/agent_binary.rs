@@ -58,10 +58,6 @@ impl LiveServer {
                 "anyone",
             ])
             .env_remove("LIBREPAPER_DATA")
-            .env_remove("LIBREPAPER_S3_BUCKET")
-            .env_remove("LIBREPAPER_S3_ENDPOINT")
-            .env_remove("LIBREPAPER_S3_ACCESS_KEY")
-            .env_remove("LIBREPAPER_S3_SECRET_KEY")
             .env_remove("LIBREPAPER_LATEX")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -131,7 +127,7 @@ async fn cli(args: &[&str]) -> CliOutput {
         .env_remove("LIBREPAPER_TOKEN")
         .env_remove("LIBREPAPER_SERVER")
         .env_remove("LIBREPAPER_CHAT_TOKEN")
-        .env("XDG_CONFIG_HOME", config_home.path())
+        .env("XDG_STATE_HOME", config_home.path())
         .stdin(Stdio::null())
         .output()
         .await
@@ -668,7 +664,7 @@ async fn cli_posts_chat_reply_while_watch_is_connected() {
         .env_remove("LIBREPAPER_TOKEN")
         .env_remove("LIBREPAPER_SERVER")
         .env_remove("LIBREPAPER_CHAT_TOKEN")
-        .env("XDG_CONFIG_HOME", config_home.path())
+        .env("XDG_STATE_HOME", config_home.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

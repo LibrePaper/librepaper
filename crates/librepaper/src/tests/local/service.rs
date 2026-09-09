@@ -2,7 +2,7 @@
 //! to an ephemeral port, a `FakeRunner` standing in for native TeX so these
 //! tests need no TeX installation, and a `reqwest` client playing the
 //! browser's part. Every test gets its own temporary config/cache home, so
-//! nothing here races another test over `$XDG_CONFIG_HOME`.
+//! nothing here races another test over `$XDG_STATE_HOME`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,12 +19,12 @@ const ORIGIN: &str = "https://librepaper.example";
 
 struct LocalTest {
     base: String,
-    config_home: tempfile::TempDir,
+    state_home: tempfile::TempDir,
     client: reqwest::Client,
 }
 
 async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
-    let config_home = tempfile::tempdir().expect("config tempdir");
+    let state_home = tempfile::tempdir().expect("config tempdir");
     let cache_home = tempfile::tempdir().expect("cache tempdir");
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -33,7 +33,7 @@ async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
     let service = LocalService::new(
         addr.port(),
         "test-instance".to_string(),
-        config_home.path(),
+        state_home.path(),
         cache_home.path(),
         runner,
         None,
@@ -48,7 +48,7 @@ async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
     });
     LocalTest {
         base: format!("http://127.0.0.1:{}{}", addr.port(), protocol::BASE_PATH),
-        config_home,
+        state_home,
         client: reqwest::Client::new(),
     }
 }
@@ -58,7 +58,7 @@ async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
 /// `start_test_service` never passes one, so the service falls back to
 /// whatever `service.json` holds.
 fn set_code(test: &LocalTest, code: &str) {
-    let pairing = PairingStore::new(test.config_home.path(), None);
+    let pairing = PairingStore::new(test.state_home.path(), None);
     pairing
         .write_service(&ServiceState {
             port: 0,
@@ -277,7 +277,7 @@ async fn connect_with_the_right_code_returns_a_working_token_stored_hashed() {
     assert_eq!(caps.status(), 200);
 
     let raw = std::fs::read_to_string(
-        test.config_home
+        test.state_home
             .path()
             .join("librepaper")
             .join("local")
@@ -452,7 +452,7 @@ async fn expired_tokens_are_rejected() {
     let token = connected_token(&test, ORIGIN, "proj", "131313").await;
 
     let path = test
-        .config_home
+        .state_home
         .path()
         .join("librepaper")
         .join("local")

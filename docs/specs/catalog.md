@@ -43,9 +43,9 @@ cleanup is not supported. Shared journal objects have journal-owned retirement
 metadata and are never deleted by a per-document prefix sweep.
 
 This layout removes `index.json`, room and mailbox JSON, history JSON manifests,
-`sessions/<slug>`, bucket writer leases and `--single-writer`. Session signing
-keys also leave the bucket; see Secrets and recovery. Legacy source/document
-prefix readers and compatibility defaults are removed. The initial migration
+and `sessions/<slug>`. Session signing keys live under `secrets/`; see Secrets
+and recovery. Legacy source/document prefix readers and compatibility defaults
+are removed. The initial migration
 creates a fresh catalogue; automatic import of the old layout is outside this
 work. Detect an existing legacy deployment and refuse startup with an explicit
 export/republication instruction. Never silently treat it as an empty store.
@@ -54,14 +54,13 @@ export/republication instruction. Never silently treat it as an empty store.
 
 `serve --data <directory>` (default `librepaper-data`) selects the deployment
 directory. It creates `catalog.db`, `objects/`, `state/` and `secrets/` below
-that directory. Its server-state path is always `<directory>/state`.
-Credentials and secret-file locations come from the environment and are never
-printed with their contents.
+that directory. Its state path is always `<directory>/state`, and its secrets
+are files under `<directory>/secrets`, never printed with their contents.
 
 The state directory is mode `0700`; files are mode `0600`.
 
 Each deployment permits one active server. Hold an exclusive OS lock at
-`<server-state>/writer.lock` for the process lifetime. Administrative commands
+`<directory>/state/writer.lock` for the process lifetime. Administrative commands
 use the same configured path. Online mutations go through the running server,
 including operator erasure. Offline maintenance requires the writer to stop
 and the same lock to be held.

@@ -1334,7 +1334,7 @@ pub enum ChatCommand {
         link: String,
         #[arg(long)]
         conversation: String,
-        /// Conversation credential; or $LIBREPAPER_CHAT_TOKEN
+        /// Conversation credential
         #[arg(
             long = "chat-token",
             env = "LIBREPAPER_CHAT_TOKEN",
@@ -1351,7 +1351,7 @@ pub enum ChatCommand {
         link: String,
         #[arg(long)]
         conversation: String,
-        /// Conversation credential; or $LIBREPAPER_CHAT_TOKEN
+        /// Conversation credential
         #[arg(
             long = "chat-token",
             env = "LIBREPAPER_CHAT_TOKEN",

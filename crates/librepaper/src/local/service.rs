@@ -268,8 +268,8 @@ pub struct LocalService {
 }
 
 impl LocalService {
-    /// `config_home` and `cache_home` are XDG bases -- production passes
-    /// `crate::cli::config_home()` and the real cache directory; a test
+    /// `state_home` and `cache_home` are XDG bases -- production passes
+    /// `crate::cli::state_home()` and the real cache directory; a test
     /// passes two temporary directories so it never races another test over
     /// process-wide environment state. Orphaned workspaces from a previous
     /// run are removed here: nothing in this fresh process can own them, so
@@ -277,7 +277,7 @@ impl LocalService {
     pub fn new(
         port: u16,
         instance: String,
-        config_home: &std::path::Path,
+        state_home: &std::path::Path,
         cache_home: &std::path::Path,
         runner: Arc<dyn Runner>,
         fixed_code: Option<String>,
@@ -288,7 +288,7 @@ impl LocalService {
         let inner = Arc::new(Inner {
             instance,
             port,
-            pairing: PairingStore::new(config_home, fixed_code),
+            pairing: PairingStore::new(state_home, fixed_code),
             runner,
             jobs: Mutex::new(HashMap::new()),
             queue: Mutex::new(VecDeque::new()),

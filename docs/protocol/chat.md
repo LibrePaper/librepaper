@@ -90,8 +90,8 @@ after one hour, reclaimed during creation; a restart forgets every channel.
 ## CLI loop
 
 ```sh
-librepaper agent chat watch "$LIBREPAPER_DOCUMENT" --conversation ID --token TOKEN --timeout 25
-librepaper agent chat post "$LIBREPAPER_DOCUMENT" --conversation ID --token TOKEN --message "Done."
+librepaper agent chat watch "$LIBREPAPER_DOCUMENT" --conversation ID --chat-token TOKEN --timeout 25
+librepaper agent chat post "$LIBREPAPER_DOCUMENT" --conversation ID --chat-token TOKEN --message "Done."
 ```
 
 `watch` connects an agent socket and waits for a new user message or timeout.

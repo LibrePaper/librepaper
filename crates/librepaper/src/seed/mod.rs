@@ -134,7 +134,7 @@ pub async fn seed_with_backup(
         .unwrap_or_else(|err| die(err));
     let catalog_path = &paths.catalog;
     let catalog = Arc::new(
-        crate::storage::catalog::Catalog::open(catalog_path)
+        crate::storage::catalog::Catalog::open_with(catalog_path, options.fsync)
             .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
     );
     let catalog_nonempty = catalog
@@ -422,9 +422,9 @@ async fn seed_with_store(
 /// Gives a deployment the same curated titles and annotations as the local
 /// seed. It deliberately replaces everything already there: a seed is a known
 /// demonstration state, not an additive publishing operation.
-pub async fn seed_remote(server_flag: String, documents: &[SeedDocument]) {
+pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[SeedDocument]) {
     let server = server_or_die(Some(server_flag));
-    let token = stored_token_for(&server, None);
+    let token = stored_token_for(&server, token);
     let examples_enabled =
         match get_json(&format!("{server}/api/me"), Duration::from_secs(30)).await {
             Ok((200, capabilities)) => capabilities

@@ -462,8 +462,7 @@ impl Role {
 }
 
 pub struct Store {
-    /// Where the bytes are: a directory, or somebody else's S3. The store does
-    /// not care which.
+    /// Where the bytes are. The store does not care what holds them.
     pub blobs: Arc<dyn BlobStore>,
     pub config: Arc<Configuration>,
     pub state: Mutex<StoreState>,

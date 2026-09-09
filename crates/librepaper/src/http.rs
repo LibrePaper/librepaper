@@ -1,5 +1,5 @@
 //! One HTTP client for everything this binary asks of other servers: GitHub,
-//! S3, and the deployment the command line publishes to.
+//! and the deployment the command line publishes to.
 
 use std::sync::OnceLock;
 use std::time::Duration;

@@ -1,9 +1,9 @@
 //! Who is allowed to ask this machine to compile: the pairing store the
 //! loopback service consults on every authenticated request.
 //!
-//! State lives under `<config_home>/librepaper/local/` -- a sibling of, not
+//! State lives under `<state_home>/librepaper/local/` -- a sibling of, not
 //! inside, the deployment token cache `crate::cli` keeps under
-//! `<config_home>/librepaper/` -- as two small JSON files:
+//! `<state_home>/librepaper/` -- as two small JSON files:
 //!
 //! - `service.json`: what the running `librepaper local start` printed, so
 //!   `status`/`doctor`/`disconnect` and a second `start` can find it without
@@ -14,9 +14,9 @@
 //!   not hand out live access.
 //!
 //! Every function here takes the config-home base directory as an explicit
-//! argument rather than reading `$XDG_CONFIG_HOME` itself, so a test can hand
+//! argument rather than reading `$XDG_STATE_HOME` itself, so a test can hand
 //! it a temporary directory and never race another test over process-wide
-//! environment state. `crate::cli::config_home()` is what production passes.
+//! environment state. `crate::cli::state_home()` is what production passes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -72,14 +72,14 @@ pub struct PairingStore {
 }
 
 impl PairingStore {
-    /// `config_home` is an XDG config base, e.g. `crate::cli::config_home()`
+    /// `state_home` is an XDG state base, e.g. `crate::cli::state_home()`
     /// in production or a temporary directory standing in for
-    /// `$XDG_CONFIG_HOME` in a test. `fixed_code` is the resolved `--code`
+    /// `$XDG_STATE_HOME` in a test. `fixed_code` is the resolved `--code`
     /// value, flag or its matching environment variable, when `librepaper
     /// local start` was given one; pass `None` everywhere else.
-    pub fn new(config_home: &Path, fixed_code: Option<String>) -> Self {
+    pub fn new(state_home: &Path, fixed_code: Option<String>) -> Self {
         PairingStore {
-            dir: config_home.join("librepaper").join("local"),
+            dir: state_home.join("librepaper").join("local"),
             fixed_code: fixed_code.filter(|c| !c.trim().is_empty()),
         }
     }

@@ -126,7 +126,7 @@ async fn publish_file(server: &MockServer, path: &std::path::Path) -> std::proce
         ])
         .env("LIBREPAPER_TOKEN", TOKEN)
         .env_remove("LIBREPAPER_SERVER")
-        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_STATE_HOME")
         .stdin(Stdio::null())
         .output()
         .await

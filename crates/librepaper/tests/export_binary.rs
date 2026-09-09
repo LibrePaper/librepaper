@@ -15,7 +15,7 @@ async fn cli(server: &str, args: &[&str]) -> Output {
             .args(["--server", server, "--key", "test-key"])
             .env_remove("LIBREPAPER_TOKEN")
             .env_remove("LIBREPAPER_SERVER")
-            .env("XDG_CONFIG_HOME", config.path())
+            .env("XDG_STATE_HOME", config.path())
             .stdin(Stdio::null())
             .kill_on_drop(true)
             .output(),

@@ -1,27 +1,30 @@
 //! Signing in from a terminal, and where the sign-in is kept: the token cache
-//! under the config home, the device flow that fills it, and `logout`.
+//! under the state home, the device flow that fills it, and `logout`.
 
 use super::*;
 
-/// The config directory to read and write under, following XDG. This is the
-/// only place any of the token helpers below touches the environment, so
-/// everything else can be pure and tested by handing it a base directory
-/// directly rather than mutating `$HOME` or `$XDG_CONFIG_HOME` for the whole
-/// process.
-pub(crate) fn config_home() -> PathBuf {
-    match std::env::var("XDG_CONFIG_HOME") {
+/// The state directory to read and write under, following XDG. What lives
+/// here is written by the program, not by a person: the token cache, and the
+/// local service's pairings and tool cache. That is state, not
+/// configuration, so it goes under `$XDG_STATE_HOME` (or `~/.local/state`),
+/// not the config home. This is the only place any of the token helpers below
+/// touches the environment, so everything else can be pure and tested by
+/// handing it a base directory directly rather than mutating `$HOME` or
+/// `$XDG_STATE_HOME` for the whole process.
+pub(crate) fn state_home() -> PathBuf {
+    match std::env::var("XDG_STATE_HOME") {
         Ok(base) if !base.is_empty() => PathBuf::from(base),
         _ => {
             let home = std::env::var("HOME")
                 .ok()
                 .filter(|h| !h.is_empty())
                 .unwrap_or_else(|| die("no home directory to store the token in"));
-            Path::new(&home).join(".config")
+            Path::new(&home).join(".local").join("state")
         }
     }
 }
 
-/// Where every librepaper file lives under the config directory.
+/// Where every librepaper file lives under the state directory.
 pub(super) fn librepaper_dir(base: &Path) -> PathBuf {
     base.join("librepaper")
 }
@@ -117,7 +120,7 @@ pub(crate) fn store_token_at(base: &Path, server: &str, token: &str) -> Result<(
 /// works: the server tells the two apart by the `lp_` prefix and verifies
 /// each its own way.
 pub fn stored_token_for(server: &str, token: Option<&str>) -> String {
-    stored_token_with(&config_home(), server, token)
+    stored_token_with(&state_home(), server, token)
 }
 
 /// Pasted automation links cannot select the destination of an ambient
@@ -130,7 +133,7 @@ pub(crate) fn stored_agent_token_for(
     token: Option<&str>,
 ) -> String {
     stored_agent_token_with(
-        &config_home(),
+        &state_home(),
         server,
         configured_server.unwrap_or(""),
         token,
@@ -148,7 +151,7 @@ fn stored_agent_token_with(
 }
 
 /// The pure core of `stored_token_for`: everything above it does is read the
-/// config directory, which is factored out here so the precedence between an
+/// state directory, which is factored out here so the precedence between an
 /// explicit token and the scoped cache can be tested by passing values in,
 /// rather than by mutating the process environment a test binary's threads
 /// share.
@@ -193,7 +196,7 @@ pub async fn login(server: Option<String>) {
             _ => String::new(),
         };
 
-    let base = config_home();
+    let base = state_home();
     store_token_at(&base, &server, &token).unwrap_or_else(|err| die(err));
     if who.is_empty() {
         println!("signed in");
@@ -259,7 +262,7 @@ pub fn write_token(path: &Path, token: &str) -> Result<(), String> {
 /// Signs out of every cached deployment at once: `logout` takes no `--server`
 /// of its own, so there is no single origin to clear selectively.
 pub fn logout() {
-    let base = config_home();
+    let base = state_home();
     if logout_at(&base).unwrap_or_else(|err| die(err)) {
         println!("signed out");
     } else {

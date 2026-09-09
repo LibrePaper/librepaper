@@ -104,13 +104,14 @@ pub struct StorageFlags {
         value_name = "DIR"
     )]
     pub data: PathBuf,
-    /// Whether object writes are synced to disk before being acknowledged.
-    /// False only for throwaway test deployments.
+    /// Whether writes, to the object store and the catalogue alike, are
+    /// synced to disk before they are acknowledged. False only for throwaway
+    /// test deployments.
     #[arg(
         long,
         env = "LIBREPAPER_FSYNC",
         default_value_t = true,
-        value_parser = clap::value_parser!(bool),
+        action = clap::ArgAction::Set,
         value_name = "BOOL"
     )]
     pub fsync: bool,

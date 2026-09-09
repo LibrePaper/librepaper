@@ -165,6 +165,7 @@ pub fn sign_in_advice(
 
 pub async fn serve(options: ServeOptions) {
     let storage = options.storage.clone();
+    let durable = storage.fsync;
     let deployment_paths = storage.paths().unwrap_or_else(|err| die(err));
     let retention = parse_retention(options.expire_after.as_deref().unwrap_or(""))
         .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
@@ -254,7 +255,7 @@ pub async fn serve(options: ServeOptions) {
     let shell = load_shell(&config).unwrap_or_else(|err| die(err));
     let catalog_path = &deployment_paths.catalog;
     let catalog = Arc::new(
-        crate::storage::catalog::Catalog::open(catalog_path)
+        crate::storage::catalog::Catalog::open_with(catalog_path, durable)
             .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
     );
     crate::config::DeploymentPaths::protect_file(catalog_path).unwrap_or_else(|err| die(err));

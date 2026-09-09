@@ -551,25 +551,36 @@ impl fmt::Debug for Catalog {
 }
 
 impl Catalog {
-    /// Open or create a file-backed catalogue and apply missing migrations.
+    /// Open or create a file-backed catalogue and apply missing migrations,
+    /// with the durability a deployment wants: the WAL is fsynced on every
+    /// commit. Tests compiled with `cfg(test)` get the relaxed policy, since
+    /// a temporary directory deleted when the case ends has no crash to
+    /// survive.
     pub fn open(path: impl AsRef<Path>) -> CatalogResult<Self> {
+        Self::open_with(path, !cfg!(test))
+    }
+
+    /// `open`, with durability chosen by the caller: `durable` is the
+    /// deployment's `--fsync`, which the object store honours the same way.
+    pub fn open_with(path: impl AsRef<Path>, durable: bool) -> CatalogResult<Self> {
         let connection = Connection::open(path).map_err(CatalogError::from)?;
-        Self::from_connection(connection)
+        Self::from_connection(connection, durable)
     }
 
     /// Open an isolated in-memory catalogue.  This is useful for contract
     /// tests; file-backed tests should still cover WAL and reopening.
     pub fn open_in_memory() -> CatalogResult<Self> {
-        Self::from_connection(Connection::open_in_memory().map_err(CatalogError::from)?)
+        Self::from_connection(
+            Connection::open_in_memory().map_err(CatalogError::from)?,
+            false,
+        )
     }
 
-    fn from_connection(mut connection: Connection) -> CatalogResult<Self> {
+    fn from_connection(mut connection: Connection, durable: bool) -> CatalogResult<Self> {
         // `FULL` fsyncs the WAL on every commit, which is what a deployment
         // wants and what makes a file-backed test spend its time waiting on
-        // the disk. Under the relaxed policy, tests compiled with `cfg(test)`
-        // and nothing else, `OFF` keeps the same SQL semantics without the
-        // sync.
-        let synchronous = if cfg!(test) { "OFF" } else { "FULL" };
+        // the disk. `OFF` keeps the same SQL semantics without the sync.
+        let synchronous = if durable { "FULL" } else { "OFF" };
         connection
             .execute_batch(&format!(
                 "PRAGMA foreign_keys = ON;
