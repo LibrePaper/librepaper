@@ -78,11 +78,11 @@ async fn unreadable_index_is_not_treated_as_empty() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("index.json"), "{not json").unwrap();
     assert!(
-        load_index(&FsStore::new(dir.path())).await.is_err(),
+        load_index(&FsStore::new(dir.path(), true)).await.is_err(),
         "a corrupt index was accepted as an empty store"
     );
     let empty = tempfile::tempdir().unwrap();
-    let (entries, at) = load_index(&FsStore::new(empty.path())).await.unwrap();
+    let (entries, at) = load_index(&FsStore::new(empty.path(), true)).await.unwrap();
     assert!(entries.is_empty() && at.is_empty());
 }
 
@@ -483,7 +483,7 @@ async fn comment_author_is_persisted_but_never_sent_to_clients() {
     let dir = tempfile::tempdir().unwrap();
     let config = std::sync::Arc::new(Configuration::default());
     let rooms = RoomSet::new(
-        std::sync::Arc::new(FsStore::new(dir.path())),
+        std::sync::Arc::new(FsStore::new(dir.path(), true)),
         config.clone(),
     );
     let current = rooms.get("doc-1").await;
@@ -505,7 +505,7 @@ async fn comment_author_is_persisted_but_never_sent_to_clients() {
     );
 
     // A fresh room, as a restart would see, still knows who wrote it.
-    let reloaded = RoomSet::new(std::sync::Arc::new(FsStore::new(dir.path())), config)
+    let reloaded = RoomSet::new(std::sync::Arc::new(FsStore::new(dir.path(), true)), config)
         .get("doc-1")
         .await;
     let snapshot = reloaded.snapshot().await;

@@ -18,7 +18,7 @@ pub(super) async fn fixture(
     config: Configuration,
 ) -> (tempfile::TempDir, Arc<store::Store>, room::RoomSet) {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
     let config = Arc::new(config);
     let store = Arc::new(
         store::Store::open(blobs.clone(), config.clone())
@@ -49,7 +49,7 @@ pub(super) async fn fixture(
 #[tokio::test]
 async fn catalog_history_pagination_preserves_newer_checkpoints() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let mut config = Configuration::default();
@@ -926,7 +926,7 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
     let dir = tempfile::tempdir().unwrap();
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());
@@ -1004,7 +1004,7 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
     let dir = tempfile::tempdir().unwrap();
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());
@@ -1141,7 +1141,7 @@ async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects, true));
     let catalog_path = dir.path().join("catalog.db");
     let catalog = Arc::new(crate::storage::catalog::Catalog::open(&catalog_path).unwrap());
     let config = Arc::new(Configuration::default());
@@ -1202,7 +1202,7 @@ async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
 #[tokio::test]
 async fn room_opens_read_only_when_catalogue_authorization_read_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let catalog = Arc::new(
         crate::storage::catalog::Catalog::open(dir.path().join("catalog.sqlite")).unwrap(),
     );
@@ -1277,7 +1277,8 @@ async fn room_try_get_refuses_hard_count_limit() {
 #[tokio::test]
 async fn lease_error_reports_held() {
     let dir = tempfile::tempdir().unwrap();
-    let hooked = HookStore::new(Arc::new(blob::FsStore::new(dir.path())) as Arc<dyn BlobStore>);
+    let hooked =
+        HookStore::new(Arc::new(blob::FsStore::new(dir.path(), true)) as Arc<dyn BlobStore>);
     *hooked.fail.lock().unwrap() = Some(blob::room_lock_key("probe"));
     let first = blob::take_room_lease(hooked.as_ref(), "probe", "server-b", None).await;
     assert!(
@@ -1303,7 +1304,7 @@ async fn lease_error_reports_held() {
 #[tokio::test]
 async fn get_does_not_block_on_a_cold_room() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
     let config = Arc::new(Configuration::default());
     let store = Arc::new(
         store::Store::open(blobs.clone(), config.clone())

@@ -109,14 +109,3 @@ pub fn parse_timestamp(value: &str) -> Option<i64> {
         .ok()
         .map(|at| at.unix_timestamp())
 }
-
-/// The date and time SigV4 wants: "20260904T120000Z" and "20260904".
-pub fn amz_stamps(unix: i64) -> (String, String) {
-    let stamp = format_description!("[year][month][day]T[hour][minute][second]Z");
-    let day = format_description!("[year][month][day]");
-    let at = OffsetDateTime::from_unix_timestamp(unix).unwrap_or(OffsetDateTime::UNIX_EPOCH);
-    (
-        at.format(&stamp).unwrap_or_default(),
-        at.format(&day).unwrap_or_default(),
-    )
-}

@@ -249,7 +249,7 @@ async fn a_cancelled_comment_write_leaves_the_room_untouched() {
 #[tokio::test]
 async fn the_edit_reservation_wait_does_not_hold_room_state() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());

@@ -82,7 +82,7 @@ async fn an_empty_update_is_not_a_refusal() {
 #[tokio::test]
 async fn a_storage_failure_is_told_apart_from_a_refusal() {
     let dir = tempfile::tempdir().unwrap();
-    let hooked = HookStore::new(Arc::new(blob::FsStore::new(dir.path())));
+    let hooked = HookStore::new(Arc::new(blob::FsStore::new(dir.path(), true)));
     let config = Arc::new(Configuration::default());
     let store = Arc::new(
         store::Store::open(hooked.clone() as Arc<dyn BlobStore>, config.clone())

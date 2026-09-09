@@ -1695,7 +1695,7 @@ mod tests {
             .expect("accounting");
 
         let directory = tempfile::tempdir().expect("blob directory");
-        let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         for key in [&refused, &confirmed] {
             inner
                 .put(key, vec![0; 100], "application/pdf")
@@ -1935,7 +1935,7 @@ mod tests {
             .expect("document");
         catalog.begin_delete("large").expect("begin delete");
         let directory = tempfile::tempdir().expect("blob directory");
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         // What is under test is that discovery resumes where the previous
         // page stopped, which is a property of the cursor and not of the page
         // size. Twenty-five objects against a ten-object budget crosses the
@@ -2032,7 +2032,7 @@ mod tests {
             })
             .expect("current rendering");
         let directory = tempfile::tempdir().expect("blob directory");
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         let old_key = "content/storage-rendered/renderings/old-tree/pdf";
         let new_key = "content/storage-rendered/renderings/new-tree/pdf";
         blobs
@@ -2091,7 +2091,7 @@ mod tests {
                 .expect("document");
         }
         let directory = tempfile::tempdir().expect("blob directory");
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         let runtime = JournalRuntime::new(
             catalog.clone(),
             blobs.clone(),
@@ -2190,7 +2190,7 @@ mod tests {
             })
             .expect("document");
         let directory = tempfile::tempdir().expect("blob directory");
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         let key = "journal/deployment/segments/reader";
         let body = b"immutable segment".to_vec();
         blobs
@@ -2252,7 +2252,7 @@ mod tests {
     async fn malformed_retirement_does_not_block_independent_jobs() {
         let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
         let directory = tempfile::tempdir().expect("blob directory");
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         let valid = "journal/deployment/segments/independent";
         blobs
             .put(valid, vec![1, 2, 3], "application/octet-stream")
@@ -2296,7 +2296,7 @@ mod tests {
     async fn failed_retirement_is_backed_off_before_the_next_bounded_pass() {
         let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
         let directory = tempfile::tempdir().expect("blob directory");
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         let valid = "journal/deployment/segments/after-failure";
         blobs
             .put(valid, vec![1], "application/octet-stream")
@@ -2357,7 +2357,7 @@ mod tests {
             })
             .expect("document");
         let directory = tempfile::tempdir().expect("blob directory");
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         let key = "journal/deployment/segments/staged-rewrite";
         let body = vec![1, 2, 3];
         blobs
@@ -2538,7 +2538,7 @@ mod tests {
             .expect("fixture");
 
         let directory = tempfile::tempdir().expect("blob directory");
-        let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let inner: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         inner
             .put(key, vec![0u8; 64], "application/octet-stream")
             .await

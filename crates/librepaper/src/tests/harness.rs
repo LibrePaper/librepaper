@@ -221,7 +221,7 @@ async fn build_test_server(
     let persistence = config.persistence();
     let config = Arc::new(config);
     let objects = dir.path().join("objects");
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(&objects));
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(&objects, true));
     let catalog = Arc::new(
         crate::storage::catalog::Catalog::open(dir.path().join("catalog.sqlite"))
             .expect("the file-backed test catalogue opens"),
@@ -303,7 +303,7 @@ pub async fn serve_instance(instance: Arc<Server>, dir: tempfile::TempDir) -> Te
 pub async fn server_over(path: &std::path::Path, config: Configuration) -> (String, Arc<Server>) {
     let persistence = config.persistence();
     let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-        Arc::new(FsStore::new(path.join("objects")));
+        Arc::new(FsStore::new(path.join("objects"), true));
     let config = Arc::new(config);
     let catalog = Arc::new(
         crate::storage::catalog::Catalog::open(path.join("catalog.sqlite"))

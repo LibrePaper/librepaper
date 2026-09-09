@@ -171,7 +171,7 @@ mod tests {
     async fn a_pass_reads_each_unique_tree_once_and_missing_trees_preserve_dependents() {
         let directory = tempfile::tempdir().unwrap();
         let blobs = Arc::new(CountedStore {
-            inner: FsStore::new(directory.path()),
+            inner: FsStore::new(directory.path(), true),
             reads: AtomicUsize::new(0),
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),

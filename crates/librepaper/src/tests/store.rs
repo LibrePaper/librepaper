@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// server instances behind shared storage would each open their own.
 fn shared_blobs() -> (tempfile::TempDir, Arc<dyn BlobStore>, Arc<Configuration>) {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
     (dir, blobs, Arc::new(Configuration::default()))
 }
 
@@ -116,7 +116,7 @@ async fn put_on_first_store_visible_on_second() {
 #[tokio::test]
 async fn catalog_store_round_trips_documents_without_index_json() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     std::fs::create_dir_all(dir.path().join("objects")).unwrap();
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
@@ -150,7 +150,7 @@ async fn catalog_account_owner_is_never_owned_by_anonymous_callers() {
     let dir = tempfile::tempdir().unwrap();
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let store = store::Store::open_with_catalog(blobs, Arc::new(Configuration::default()), catalog)
@@ -213,7 +213,7 @@ fn local_catalog_store(
 ) -> (Arc<dyn BlobStore>, Arc<crate::storage::catalog::Catalog>) {
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     (blobs, catalog)
@@ -525,7 +525,7 @@ async fn catalog_removal_queue_resumes_after_reopen() {
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].object_key, key);
     let reopened_blobs: Arc<dyn BlobStore> =
-        Arc::new(blob::FsStore::new(dir.path().join("objects")));
+        Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     reopened_blobs
         .delete(std::slice::from_ref(&key))
         .await
@@ -599,7 +599,7 @@ async fn a_sealed_link_is_opened_outside_the_connection_closure() {
     let dir = tempfile::tempdir().unwrap();
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     catalog.set_link_sealing_key(&[7u8; 32]).unwrap();

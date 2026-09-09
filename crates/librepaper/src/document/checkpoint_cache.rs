@@ -420,7 +420,7 @@ mod tests {
     async fn coalesces_reads_and_evicts_by_bytes() {
         let dir = tempdir().unwrap();
         let store = CountingStore {
-            inner: FsStore::new(dir.path()),
+            inner: FsStore::new(dir.path(), true),
             gets: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
             gate: None,
@@ -453,7 +453,7 @@ mod tests {
             wake: Notify::new(),
         });
         let store = Arc::new(CountingStore {
-            inner: FsStore::new(dir.path()),
+            inner: FsStore::new(dir.path(), true),
             gets: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
             gate: Some(gate.clone()),
@@ -496,7 +496,7 @@ mod tests {
             wake: Notify::new(),
         });
         let store = Arc::new(CountingStore {
-            inner: FsStore::new(dir.path()),
+            inner: FsStore::new(dir.path(), true),
             gets: AtomicUsize::new(0),
             fail: AtomicBool::new(true),
             gate: Some(gate.clone()),
@@ -536,7 +536,7 @@ mod tests {
     async fn legacy_load_reads_the_checkpoint_once() {
         let dir = tempdir().unwrap();
         let store = CountingStore {
-            inner: FsStore::new(dir.path()),
+            inner: FsStore::new(dir.path(), true),
             gets: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
             gate: None,
@@ -574,7 +574,7 @@ mod tests {
             wake: Notify::new(),
         });
         let store = Arc::new(CountingStore {
-            inner: FsStore::new(dir.path()),
+            inner: FsStore::new(dir.path(), true),
             gets: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
             gate: Some(gate.clone()),
@@ -623,7 +623,7 @@ mod tests {
             wake: Notify::new(),
         });
         let store = Arc::new(CountingStore {
-            inner: FsStore::new(dir.path()),
+            inner: FsStore::new(dir.path(), true),
             gets: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
             gate: Some(gate.clone()),
@@ -654,7 +654,7 @@ mod tests {
     async fn modern_checkpoints_reuse_shared_texts_and_cached_trees() {
         let dir = tempdir().unwrap();
         let store = CountingStore {
-            inner: FsStore::new(dir.path()),
+            inner: FsStore::new(dir.path(), true),
             gets: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
             gate: None,

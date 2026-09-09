@@ -172,7 +172,7 @@ fn journal_head_and_preparation_commit_together() {
 async fn compaction_replays_base_and_retires_segments() {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let runtime = JournalRuntime::new(
         catalog.clone(),
         blobs.clone(),
@@ -275,7 +275,7 @@ async fn compaction_borrows_maintenance_headroom_at_full_quota() {
         })
         .expect("document");
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let runtime = JournalRuntime::new_with_limits(
         catalog.clone(),
         blobs,
@@ -331,7 +331,7 @@ async fn recovery_releases_abandoned_compaction_maintenance_borrow() {
         })
         .expect("document");
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let store = JournalStore::new(catalog.clone());
     let state = store
         .initialize("deployment", "generation")
@@ -392,7 +392,7 @@ async fn recovery_releases_abandoned_compaction_maintenance_borrow() {
 async fn concurrent_deployment_appends_preserve_per_document_coverage() {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let runtime = JournalRuntime::new(
         catalog.clone(),
         blobs,
@@ -487,7 +487,7 @@ async fn shared_segment_rewrite_physically_excludes_erased_identity() {
             .expect("document");
     }
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let runtime = JournalRuntime::new(
         catalog.clone(),
         blobs.clone(),
@@ -668,7 +668,7 @@ async fn shared_segment_rewrite_physically_excludes_erased_identity() {
 #[tokio::test]
 async fn restart_reconciles_complete_and_aborted_preparations() {
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let store = JournalStore::new(catalog.clone());
     store
@@ -747,7 +747,7 @@ async fn restart_reconciles_complete_and_aborted_preparations() {
 async fn restarted_cursor_rejects_conflicting_payload_and_accepts_next_sequence() {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let runtime = JournalRuntime::new(
         catalog.clone(),
         blobs.clone(),
@@ -790,7 +790,7 @@ async fn restarted_cursor_rejects_conflicting_payload_and_accepts_next_sequence(
 async fn large_snapshot_is_chunked_and_recovered_at_the_record_boundary() {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let runtime = JournalRuntime::new(
         catalog.clone(),
         blobs,
@@ -818,7 +818,7 @@ async fn large_snapshot_is_chunked_and_recovered_at_the_record_boundary() {
 async fn large_snapshot_compacts_and_recovers_from_binary_base() {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let runtime = JournalRuntime::new(
         catalog.clone(),
         blobs,
@@ -848,7 +848,7 @@ async fn large_snapshot_compacts_and_recovers_from_binary_base() {
 async fn retirement_invalidates_manifest_before_removing_last_document() {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let runtime = JournalRuntime::new(
         catalog.clone(),
         blobs.clone(),
@@ -922,7 +922,7 @@ async fn rejected_quota_append_does_not_block_another_owner() {
             .expect("document");
     }
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     let runtime = JournalRuntime::new_with_limits(
         catalog.clone(),
         blobs,
@@ -946,7 +946,7 @@ async fn rejected_quota_append_does_not_block_another_owner() {
 async fn seal_limit_failure_releases_publication_and_pending_identity() {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
     // A deliberately tiny segment, with a persistence policy that matches it:
     // the point is a record that cannot be framed, not one past the encoded
     // ceiling.

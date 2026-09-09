@@ -2,21 +2,17 @@
 
 ## Decision
 
-LibrePaper has one storage design with two deployment profiles:
-
-- **Local:** SQLite is authoritative and immutable objects live in the same
-  private deployment directory. This is the simple self-hosted profile.
-- **Hosted:** Turso is authoritative and immutable objects live in R2. This is
-  the durable, scalable profile for production services.
+LibrePaper has one storage design and one deployment shape: SQLite is
+authoritative and immutable objects live beside it, both in the same private
+deployment directory.
 
 This replaces the whole-file JSON indexes and per-room snapshot objects.
 [persistence.md](persistence.md) defines the edit journal and “saved.”
-[failover.md](failover.md) defines recovery and future takeover.
 
-Both profiles use the same schema, batching coordinator, segment format,
-publication state machine, recovery rules and contract tests. Product code
-depends on `Catalog` and `ObjectStore` interfaces; it does not branch on the
-profile. Only the drivers and the durability statement differ.
+The catalogue's schema, batching coordinator, segment format, publication
+state machine, recovery rules and contract tests are one design. Product code
+depends on `Catalog` and `ObjectStore` interfaces; it does not branch on
+deployment.
 
 The first release includes migrations, indexed reads, atomic admission, stable
 document identities, guarded batch publication, bounded replay, compaction and
@@ -31,9 +27,7 @@ The object store holds checkpoint trees and blobs, assets, renderings, recovery
 bases and shared journal segments. Presence, listening leases and rate counters
 stay in memory.
 
-Local deployments use `<deployment>/catalog.db` and
-`<deployment>/objects/`. Hosted deployments use Turso and R2; their optional
-embedded catalogue replica is private and disposable.
+A deployment uses `<deployment>/catalog.db` and `<deployment>/objects/`.
 
 Every document receives a random immutable `storage_id`. Document-owned objects
 use `content/<storage_id>/trees/<sha>`, `blobs/<sha>`, `assets/<sha>` and
@@ -58,34 +52,19 @@ export/republication instruction. Never silently treat it as an empty store.
 
 ## Configuration and connections
 
-`serve <directory>` selects the local profile. It creates `catalog.db`,
-`objects/`, `state/` and `secrets/` below that directory. Its server-state path
-is always `<directory>/state`.
+`serve --data <directory>` (default `librepaper-data`) selects the deployment
+directory. It creates `catalog.db`, `objects/`, `state/` and `secrets/` below
+that directory. Its server-state path is always `<directory>/state`.
+Credentials and secret-file locations come from the environment and are never
+printed with their contents.
 
-`serve --catalog <libsql-url> --bucket <r2-bucket>` selects the hosted profile
-and requires `LIBREPAPER_CATALOG_TOKEN` plus R2 credentials. Hosted mode also
-requires an absolute `--server-state <path>` for its private disposable state.
-Reject partial or mixed configurations. Credentials and secret-file locations
-come from the environment and are never printed with their contents.
-
-Hosted `--catalog-reads replica|primary` defaults to `replica` for the pure reads
-permitted under Authorization and reads.
-`--catalog-sync` defaults to five seconds. The replica defaults to
-`<server-state>/catalog-replica.db`. The state directory is mode `0700`; files
-are mode `0600`. Decommissioning removes the replica and its sidecars because
-they contain private catalogue data.
+The state directory is mode `0700`; files are mode `0600`.
 
 Each deployment permits one active server. Hold an exclusive OS lock at
 `<server-state>/writer.lock` for the process lifetime. Administrative commands
-use the same configured path; choosing another replica path cannot bypass it.
-Online mutations go through the running server, including operator erasure.
-Offline maintenance requires the writer to stop and the same lock to be held.
-Replacing a hosted server additionally requires fencing the old host before
-the replacement receives Turso or R2 access. A different state directory does
-not establish a second writer's authority.
-Hosted journal publication checks a durable writer generation at the Turso
-primary. Automatic takeover remains disabled until
-[failover.md](failover.md) passes its gates.
+use the same configured path. Online mutations go through the running server,
+including operator erasure. Offline maintenance requires the writer to stop
+and the same lock to be held.
 
 All user values use bound parameters. Dynamic identifiers and sort choices use
 fixed allowlists. Enable and verify foreign keys outside a transaction on every
@@ -96,11 +75,11 @@ authoritative `BEGIN IMMEDIATE` transaction. Multi-statement pure reads use one
 read transaction. No object-store request occurs inside a SQL transaction.
 Busy waits, requests and result sets are bounded.
 
-Hosted drivers use libSQL primary write transactions and embedded replicas with
-read-your-writes enabled, or explicit primary reads. Local-first offline writes
-are not an admission mechanism. Local SQLite uses WAL and `synchronous=FULL`;
-the driver verifies its durability settings before accepting writes. File-backed
-tests cover committed WAL recovery as well as the in-memory SQL contract.
+SQLite uses WAL and `synchronous=FULL`; the driver verifies its durability
+settings before accepting writes. `--fsync false` relaxes durability for
+object writes only, for a throwaway test deployment; it does not change the
+catalogue's own `synchronous` setting. File-backed tests cover committed WAL
+recovery as well as the in-memory SQL contract.
 
 ## Schema
 
@@ -426,20 +405,18 @@ budget and durable revision before its row becomes visible.
 
 ## Secrets and recovery
 
-Session signing and link sealing use separate random 256-bit keys. Local mode
-stores them as `<deployment>/secrets/session.key` and `links.key` in a `0700`
-directory with `0600` files. Create them durably only for a verified empty
-deployment. Hosted mode requires `LIBREPAPER_SESSION_KEY_FILE` and
-`LIBREPAPER_LINK_SEALING_KEY_FILE`, provisioned from protected external storage or
-a secret manager; the disposable state directory is not their recovery source.
-A nonempty catalogue with a missing or unreadable key refuses startup.
+Session signing and link sealing use separate random 256-bit keys, stored as
+`<deployment>/secrets/session.key` and `links.key` in a `0700` directory with
+`0600` files. Create them durably only for a verified empty deployment. A
+nonempty catalogue with a missing or unreadable key refuses startup.
 
 Link keys are random, stored by digest for lookup and sealed at rest with
 XChaCha20-Poly1305. Store a versioned envelope containing a key id, random nonce
 and authenticated ciphertext. Associated data binds the format, `storage_id`,
 role and digest using an unambiguous encoding; verify the decrypted key's digest.
-Neither signing nor sealing secrets belong in the catalogue or R2. Copying a
-link requires owner authorization, separate from ordinary metadata reads.
+Neither signing nor sealing secrets belong in the catalogue or the object
+store. Copying a link requires owner authorization, separate from ordinary
+metadata reads.
 
 Key rotation is an explicit maintenance operation under the writer lock. Keep
 the old and new sealing keys recoverable while resealing rows in resumable
@@ -449,26 +426,24 @@ Rotating the signing key invalidates signed credentials. Resealing alone does
 not revoke bearer links; compromise recovery explicitly rotates/revokes those
 links and their pins. Schema migration never silently changes either key.
 
-Both profiles recover a matched catalogue, immutable object graph, deployment
+A backup recovers a matched catalogue, immutable object graph, deployment
 identity and both secret versions. Initial backup support uses independently
 retained object copies. Pause new admissions, drain/reconcile admitted and
-prepared work, and pause cleanup under the deployment lock. Then take the SQLite
-backup or named Turso restore point and copy every reachable object, including
-journal manifests, bases and tails. Never advertise a backup of unresolved state.
-Verify digests and availability of the matching secrets, then durably publish
-a completion manifest before resuming writers or cleanup. The manifest records
-the schema/head, restore-point id, object inventory, secret version identifiers
-and expiry; it never contains the secrets themselves. Local backups keep secret
-files in a separately protected part of the backup. Hosted backups rely on
-externally retained secret versions.
+prepared work, and pause cleanup under the deployment lock. Then take the
+SQLite backup and copy every reachable object, including journal manifests,
+bases and tails. Never advertise a backup of unresolved state. Verify digests
+and availability of the matching secrets, then durably publish a completion
+manifest before resuming writers or cleanup. The manifest records the
+schema/head, object inventory, secret version identifiers and expiry; it
+never contains the secrets themselves. Backups keep secret files in a
+separately protected part of the backup.
 
 Backup objects use a private `recovery/<backup-id>/` namespace or a separate
 backup destination. Normal reclamation never visits that namespace. Partial
 backups are not advertised as recovery points and have their own resumable
 cleanup; completed backups expire as units under an explicit storage budget.
-Only named points with verified complete copies are supported. Turso's other
-point-in-time restore positions are not automatically application recovery
-points. Thus a zero document recovery window does not shorten backup retention.
+Only named points with verified complete copies are supported. A zero
+document recovery window does not shorten backup retention.
 
 ## Migrations
 
@@ -477,47 +452,33 @@ Migrations are embedded, numbered, forward-only files under
 updates `PRAGMA user_version`. Startup applies missing versions, accepts an
 exact match and rejects a database newer than the binary.
 
-Before migration, stop and fence the writer and verify a complete recovery
-point under Secrets and recovery. Restore preparation and cleanup must finish
-before affected documents are served. Rebuild a hosted disposable replica
-afterwards. Tests create the previous schema with representative rows, apply
-each migration and also build the latest schema from empty. The hosted contract
-explicitly verifies transactional DDL, `PRAGMA user_version`, rollback on a
-mid-migration failure and reopening through the replica. There are no down
-migrations; rollback restores the complete verified recovery point.
+Before migration, stop the writer and verify a complete recovery point under
+Secrets and recovery. Restore preparation and cleanup must finish before
+affected documents are served. Tests create the previous schema with
+representative rows, apply each migration and also build the latest schema
+from empty, verifying transactional DDL, `PRAGMA user_version`, and rollback
+on a mid-migration failure. There are no down migrations; rollback restores
+the complete verified recovery point.
 
 ## Authorization and reads
 
-Local reads use SQLite. Hosted pure reads may use the embedded replica;
-admission and every mutation use the Turso primary. A successful authoritative
-write must be visible to its caller immediately. Authorization changes have a
-stronger contract: every affected local authorization path must observe the
-committed change before it can serve another protected operation. Hold the
-affected gates, invalidate caches and suspend sockets, and advance the shared
-replica through that commit before releasing them. Primary mode reads the
-committed primary state directly. If synchronization or the commit outcome is
-uncertain, keep the affected access suspended until primary reconciliation and
-catch-up succeed. Clearing a memory cache cannot permit repopulating it with
-an older authorization row.
-
-Before the first protected replica read after startup, complete a primary sync
-and verify the schema. Measure successful sync age with a monotonic clock.
-`--catalog-auth-max-age` defaults to 60 seconds: this permits a brief sync outage
-while keeping a one-minute upper bound on using an unsynchronized replica. It
-does not delay known local revocations. When stale, protected HTTP requests
-return a retryable `503` and protected sockets suspend. Public content requiring
-no identity or link may continue to be served. Expiry is always checked against
-current server time; an unavailable account lookup never downgrades a signed-in
-caller to anonymous or clears their credential.
+All reads and every mutation use the same local SQLite connection pool. A
+successful authoritative write must be visible to its caller immediately.
+Authorization changes have a stronger contract: every affected authorization
+path must observe the committed change before it can serve another protected
+operation. Hold the affected gates and invalidate caches and suspend sockets
+before releasing them. Clearing a memory cache cannot permit repopulating it
+with an older authorization row.
 
 Every authenticated request verifies that the account row exists, is active
 and has the cookie's generation. A brief memory cache is allowed only with
-immediate local invalidation. In hosted mode it never extends validity past the
-replica-age bound.
+immediate local invalidation. Expiry is always checked against current server
+time; an unavailable account lookup never downgrades a signed-in caller to
+anonymous or clears their credential.
 
-Check current room authorization on each incoming mutation and before protected
-broadcasts. Revalidate idle sockets at least once per second for expiry and
-replica freshness. Already admitted edits may finish persistence within their
+Check current room authorization on each incoming mutation and before
+protected broadcasts. Revalidate idle sockets at least once per second for
+expiry. Already admitted edits may finish persistence within their
 reservations after access is revoked; new edits are refused. Deletion and
 erasure drain these admitted edits through their lifecycle gates.
 
@@ -636,8 +597,8 @@ reference scans or unreadable retained trees forbid deleting the candidate.
 than this and continuously recorded as unreferenced for this long. Object-store
 listings expose modification time; a missing timestamp prevents orphan deletion.
 A long-running preparation remains protected regardless of its age. Track
-orphans under unknown identities in journal/maintenance metadata, with measured
-charges, before reclaiming them; a replica miss never authorizes deletion.
+orphans under unknown identities in journal/maintenance metadata, with
+measured charges, before reclaiming them.
 
 `recovery_window` is the document undelete window and is fixed at zero for the
 initial release. A future positive value retains deleted objects and their
@@ -690,10 +651,11 @@ before its side effects. The default `history_max = 0` imposes no checkpoint
 count cap; storage, metadata-memory and rate limits still apply.
 
 The request model and release workload are defined once in
-[persistence.md](persistence.md#cost-and-release-checks). Measure provider-reported
-operations and replication bytes rather than inferring them from logical rows.
-Include admission aggregates, receipts, activity updates, checkpoints by reason,
-assets, renderings, cleanup and complete backup copies in that workload.
+[persistence.md](persistence.md#cost-and-release-checks). Measure actual
+filesystem operations and bytes written rather than inferring them from
+logical rows. Include admission aggregates, receipts, activity updates,
+checkpoints by reason, assets, renderings, cleanup and complete backup
+copies in that workload.
 
 ## Erasure
 
@@ -727,10 +689,7 @@ primary authorization and the existing cross-site request protections.
 ## Verification and deployment
 
 The release job runs the same catalogue and persistence contract against a
-temporary file-backed local deployment and an isolated Turso database with an
-R2 bucket. Hosted tests exercise primary reads and embedded replicas; missing
-credentials fail the release job rather than silently skipping it. Required
-cases include:
+temporary file-backed local deployment. Required cases include:
 
 - Foreign keys on newly created/reconnected connections, cascades, transactional
   DDL/version updates, migration rollback, WAL recovery and complete restore.
@@ -741,8 +700,7 @@ cases include:
   receipts surviving later mutations.
 - Live replacement and suggestion acceptance interrupted between journal and
   metadata preparation/publication, including connected and offline clients.
-- Immediate revocation on every device, primary-to-replica read-your-writes,
-  refusal before initial sync, prolonged sync failure and idle socket expiry.
+- Immediate revocation on every device and idle socket expiry.
 - Concurrent rotation and guest insertion, multiple live pins for one account,
   expiry-filtered listings and bounded sharing/history/comment queries.
 - Byte limits before count limits, annotation caps and hourly history for
@@ -752,23 +710,19 @@ cases include:
 - Rendering retirement while its checkpoint survives, separate PDF/SyncTeX
   availability, interrupted erasure and invalidation of other users' room caches.
 - Local directory-entry durability, missing secrets, resumable resealing,
-  restored sealed links, zero-window deletion after backup, and fresh-host
-  recovery without the original state directory.
+  restored sealed links, and zero-window deletion after backup.
 
 Offline `seed` is an explicit destructive reset under the deployment writer
 lock, after a verified backup. Clear data in foreign-key-safe order and publish
 examples through the normal lifecycle with new storage identities and the
 existing deterministic example slugs. Keep the server offline until a partial
-reset is reconciled; retain backups and secrets. Remote seeding uses the running
-server's authorized delete/publication paths and observes pending deletion.
+reset is reconciled; retain backups and secrets.
 
-Hosted deployment provisions scoped runtime credentials. Both profiles create
-a private state directory and writer lock and require a tested backup. Stop and
-drain the old server for migrations. Monitor reserved and measured bytes,
-maintenance borrowing, receipt/catalogue overhead, queued deletion, replica
-freshness, save/history queues, admission refusals, provider operations and sync
-traffic. Alert before configured allowances or maintenance headroom are exhausted.
+A deployment creates a private state directory and writer lock and requires a
+tested backup. Stop and drain the old server for migrations. Monitor reserved
+and measured bytes, maintenance borrowing, receipt/catalogue overhead, queued
+deletion, save/history queues and admission refusals. Alert before configured
+allowances or maintenance headroom are exhausted.
 
 Simultaneous application writers, billing, organisations and search are out of
-scope. Automatic failover is a planned stage governed by
-[failover.md](failover.md).
+scope.

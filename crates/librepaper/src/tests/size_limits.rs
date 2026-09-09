@@ -146,7 +146,8 @@ mod room_fixture {
 
     pub async fn open(config: Configuration) -> Fixture {
         let dir = tempfile::tempdir().expect("a temporary directory");
-        let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+        let blobs: Arc<dyn BlobStore> =
+            Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
         let catalog = Arc::new(
             crate::storage::catalog::Catalog::open(dir.path().join("catalog.db"))
                 .expect("the catalogue opens"),

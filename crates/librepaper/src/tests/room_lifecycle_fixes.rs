@@ -84,7 +84,7 @@ fn process_local_edit_reservations_do_not_leak_across_restart() {
 #[tokio::test]
 async fn fenced_publication_refunds_its_reserved_checkpoint() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
     let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
     catalog.create_document(&quota_document("one")).unwrap();
     let mut config = Configuration::default();
@@ -116,7 +116,7 @@ async fn fenced_publication_refunds_its_reserved_checkpoint() {
 #[tokio::test]
 async fn recently_checkpointed_due_row_advances_the_automatic_clock() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
     let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
     catalog.create_document(&quota_document("one")).unwrap();
     let config = Arc::new(Configuration::default());
@@ -222,7 +222,10 @@ async fn uncached_compatibility_room_cannot_accept_edits() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Configuration::default();
     config.session.rooms_bytes_max = 1;
-    let rooms = RoomSet::new(Arc::new(blob::FsStore::new(dir.path())), Arc::new(config));
+    let rooms = RoomSet::new(
+        Arc::new(blob::FsStore::new(dir.path(), true)),
+        Arc::new(config),
+    );
     let room = rooms.get("oversized").await;
     assert!(room.read_only());
     assert!(
@@ -240,7 +243,7 @@ async fn uncached_compatibility_room_cannot_accept_edits() {
 #[tokio::test]
 async fn canceled_load_releases_admission_slot() {
     let dir = tempfile::tempdir().unwrap();
-    let hooked = HookStore::new(Arc::new(blob::FsStore::new(dir.path())));
+    let hooked = HookStore::new(Arc::new(blob::FsStore::new(dir.path(), true)));
     let mut config = Configuration::default();
     config.session.rooms_max = 1;
     let rooms = Arc::new(RoomSet::new(hooked.clone(), Arc::new(config)));
@@ -322,7 +325,7 @@ async fn journaled_updates_are_refused_before_they_exhaust_storage() {
 
 async fn accumulated_update_quota(journaled: bool) {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let mut config = Configuration::default();

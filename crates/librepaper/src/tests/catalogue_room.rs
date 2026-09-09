@@ -30,7 +30,7 @@ async fn fixture(
     Arc<room::Room>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let catalog = Arc::new(Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(config);
     let store = Arc::new(

@@ -6,61 +6,17 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// Which catalogue driver backs a deployment.
-///
-/// The product code should not branch on this value; it is configuration for
-/// selecting the driver at startup. Keeping it typed prevents a partially
-/// filled hosted configuration from being mistaken for a local deployment.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DeploymentProfile {
-    Local,
-    Hosted,
-}
-
-/// Where pure catalogue reads are served from in a hosted deployment.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum CatalogReads {
-    #[default]
-    Replica,
-    Primary,
-}
-
-impl std::str::FromStr for CatalogReads {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "replica" => Ok(Self::Replica),
-            "primary" => Ok(Self::Primary),
-            _ => Err(format!(
-                "--catalog-reads must be either replica or primary, not {value:?}"
-            )),
-        }
-    }
-}
-
-impl std::fmt::Display for CatalogReads {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Replica => "replica",
-            Self::Primary => "primary",
-        })
-    }
-}
-
-/// Private disposable state used by the server process. Hosted deployments
-/// must supply this explicitly and with an absolute path; local deployments
-/// derive it from their deployment directory.
+/// Private disposable state used by the server process, and the fixed
+/// filesystem layout of a local deployment directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeploymentPaths {
-    pub deployment: Option<PathBuf>,
-    pub catalog: Option<PathBuf>,
-    pub objects: Option<PathBuf>,
+    pub deployment: PathBuf,
+    pub catalog: PathBuf,
+    pub objects: PathBuf,
     pub state: PathBuf,
-    pub secrets: Option<PathBuf>,
+    pub secrets: PathBuf,
     pub writer_lock: PathBuf,
     pub deployment_identity: PathBuf,
-    pub replica: Option<PathBuf>,
 }
 
 impl DeploymentPaths {
@@ -68,67 +24,25 @@ impl DeploymentPaths {
         let deployment = deployment.into();
         let state = deployment.join("state");
         Self {
-            catalog: Some(deployment.join("catalog.db")),
-            objects: Some(deployment.join("objects")),
-            secrets: Some(deployment.join("secrets")),
+            catalog: deployment.join("catalog.db"),
+            objects: deployment.join("objects"),
+            secrets: deployment.join("secrets"),
             writer_lock: state.join("writer.lock"),
             deployment_identity: state.join("deployment.id"),
             state,
-            deployment: Some(deployment),
-            replica: None,
-        }
-    }
-
-    pub fn hosted(state: impl Into<PathBuf>) -> Self {
-        let state = state.into();
-        Self {
-            replica: Some(state.join("catalog-replica.db")),
-            writer_lock: state.join("writer.lock"),
-            deployment_identity: state.join("deployment.id"),
-            state,
-            deployment: None,
-            catalog: None,
-            objects: None,
-            secrets: None,
+            deployment,
         }
     }
 
     /// Validate the private-state boundary before any driver opens a file.
-    pub fn validate(&self, profile: DeploymentProfile) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if !self.state.is_absolute() {
             return Err(format!(
                 "server state path must be absolute: {}",
                 self.state.display()
             ));
         }
-        if profile == DeploymentProfile::Local && self.deployment.is_none() {
-            return Err("local deployments need a deployment directory".into());
-        }
-        if profile == DeploymentProfile::Hosted && self.deployment.is_some() {
-            return Err("hosted deployments cannot use a local deployment directory".into());
-        }
         Ok(())
-    }
-
-    /// The hosted replica may be overridden only inside the private state
-    /// directory. This prevents selecting a second path to evade the writer
-    /// lock or accidentally putting catalogue data in a shared location.
-    pub fn replica_path(&self, override_path: Option<&Path>) -> Result<PathBuf, String> {
-        let Some(default) = self.replica.as_ref() else {
-            return Err("catalogue replicas are only available in hosted mode".into());
-        };
-        let Some(path) = override_path else {
-            return Ok(default.clone());
-        };
-        let path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            return Err("catalogue replica path must be absolute".into());
-        };
-        if !path.starts_with(&self.state) {
-            return Err("catalogue replica must be below --server-state".into());
-        }
-        Ok(path)
     }
 
     /// Apply the private state-directory boundary before opening a catalogue
