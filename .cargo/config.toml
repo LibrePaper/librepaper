@@ -1,0 +1,11 @@
+# Rebuilding this workspace is dominated by one link, not by codegen: the
+# komodoc test binary is a single crate with the whole suite inside it, and
+# relinking it after a one-line edit is the slowest thing in the edit-test
+# loop. The default `ld` does that work on one thread. `mold` does it on all
+# of them, which is most of the wait.
+#
+# This is a developer convenience, not a requirement: a machine without mold
+# should still build. Cargo has no "use it if present" switch, so the setting
+# lives here; drop the two lines below if you would rather not install it.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

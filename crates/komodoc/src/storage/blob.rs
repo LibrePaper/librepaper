@@ -455,7 +455,7 @@ fn remove_one_file(name: &Path) -> DeleteOutcome {
     };
     if removed {
         if let Some(parent) = name.parent() {
-            if let Err(err) = std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+            if let Err(err) = sync_directory(parent) {
                 // The name is gone from this process's view but the directory
                 // entry may not be on disk yet, so the removal is not durable.
                 return DeleteOutcome::Uncertain(err.to_string());
@@ -469,8 +469,7 @@ fn remove_one_file(name: &Path) -> DeleteOutcome {
         match std::fs::remove_dir(parent) {
             Ok(()) => {
                 if let Some(container) = parent.parent() {
-                    if let Err(err) = std::fs::File::open(container).and_then(|dir| dir.sync_all())
-                    {
+                    if let Err(err) = sync_directory(container) {
                         return DeleteOutcome::Uncertain(err.to_string());
                     }
                 }
@@ -669,7 +668,7 @@ fn is_atomic_temporary_name(name: &std::ffi::OsStr) -> bool {
 /// otherwise, and relaxed by default when this crate is compiled under test.
 /// The environment variable is what an integration case sets, because those
 /// spawn the real binary, which is not built with `cfg(test)`.
-fn durable() -> bool {
+pub(crate) fn durable() -> bool {
     #[cfg(test)]
     const DEFAULT: bool = false;
     #[cfg(not(test))]

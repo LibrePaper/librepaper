@@ -1,0 +1,29 @@
+# How `cargo nextest run` behaves. nextest gives each test its own process,
+# which buys three things `cargo test` does not: a failure in one crate does
+# not abandon the crates after it, a test that hangs is killed and named
+# instead of stalling the run, and the slow ones are reported so they can be
+# fixed rather than tolerated.
+
+[profile.default]
+# A failure elsewhere is not a reason to stop reporting: an agent running the
+# suite wants the whole picture from one run, not one crate at a time.
+fail-fast = false
+
+# Say which tests are slow, and kill one that has plainly hung. Nothing in
+# this suite has any business running for a minute; the two cases that used to
+# were both brute-forcing a pagination boundary.
+slow-timeout = { period = "20s", terminate-after = 6 }
+
+# The room and sync suites drive real tokio timeouts, so a test can lose its
+# window when the machine is loaded and fail for a reason that is not the code
+# under test. Retrying gives the flake a second chance without hiding it: the
+# run still reports the test as flaky.
+retries = { backoff = "fixed", count = 2, delay = "1s" }
+
+[profile.ci]
+fail-fast = false
+retries = 1
+slow-timeout = { period = "60s", terminate-after = 4 }
+failure-output = "immediate-final"
+status-level = "retry"
+

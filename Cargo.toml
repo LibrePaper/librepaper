@@ -23,3 +23,13 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# The edit-test loop rebuilds one very large test binary, and full debuginfo
+# is the bulk of what it writes and links. Line tables keep backtraces
+# pointing at file and line -- which is all a failing assertion needs -- and
+# leave out the variable and type descriptions only a debugger reads.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"

@@ -1936,7 +1936,12 @@ mod tests {
         catalog.begin_delete("large").expect("begin delete");
         let directory = tempfile::tempdir().expect("blob directory");
         let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
-        for index in 0..1_005 {
+        // What is under test is that discovery resumes where the previous
+        // page stopped, which is a property of the cursor and not of the page
+        // size. Twenty-five objects against a ten-object budget crosses the
+        // page boundary exactly as a thousand and one against a thousand
+        // would, in milliseconds rather than a minute and a half.
+        for index in 0..25 {
             blobs
                 .put(
                     &format!("content/storage-large/trees/{index:04}"),
@@ -1951,17 +1956,22 @@ mod tests {
             blobs.clone(),
             DeletionLimits {
                 max_jobs: 1_000,
-                max_object_requests: 1_000,
+                max_object_requests: 10,
                 max_read_bytes: 2_000_000,
             },
         )
         .expect("worker");
         worker.run_once(1).await.expect("first page");
+        // One page cannot finish it. That is the point: the cursor has to
+        // survive the gap between passes.
         assert!(catalog.document("large").expect("document").is_some());
-        worker.run_once(2).await.expect("second page");
-        worker.run_once(3).await.expect("finish page");
-        worker.run_once(4).await.expect("finalize page");
-        assert!(catalog.document("large").expect("document").is_none());
+        let mut pages = 1;
+        while catalog.document("large").expect("document").is_some() {
+            pages += 1;
+            assert!(pages < 40, "deletion did not converge in {pages} pages");
+            worker.run_once(pages as i64).await.expect("later page");
+        }
+        assert!(pages > 2, "the queue was drained without resuming a cursor");
         assert!(blobs
             .list("content/storage-large/")
             .await

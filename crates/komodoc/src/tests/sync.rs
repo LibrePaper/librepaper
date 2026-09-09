@@ -31,9 +31,14 @@ use crate::tests::edit::publish_with_source;
 /// outbox rather than to a socket, which is what lets the merge be driven
 /// here with no server in it at all.
 fn client(at: &std::path::Path) -> Client {
+    client_every(at, Duration::from_millis(50))
+}
+
+/// A client whose debounce interval is named, for the cases that turn on it.
+fn client_every(at: &std::path::Path, every: Duration) -> Client {
     Client::new(
         at.to_path_buf(),
-        Duration::from_millis(50),
+        every,
         "http://localhost".to_string(),
         String::new(),
     )
@@ -917,7 +922,13 @@ async fn a_pending_disk_save_blocks_session_file_replacement() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("main.md");
     std::fs::write(&path, "alpha beta").unwrap();
-    let mut client = client(&path);
+    // A long debounce, because this case is about a disk save that has *not*
+    // yet aged out of its window. `settle_session_now` ages the session side
+    // by hand, so the interval only governs the disk side -- and with the
+    // usual fifty milliseconds a thread descheduled between the mark and the
+    // settle ages that side out too, failing the case for a reason that has
+    // nothing to do with what it tests.
+    let mut client = client_every(&path, Duration::from_secs(30));
     client
         .receive(&state_of("main.md", "alpha beta"))
         .await
