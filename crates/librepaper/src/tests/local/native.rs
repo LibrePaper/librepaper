@@ -153,9 +153,11 @@ async fn discovery_finds_tex_live_and_parses_versions() {
     assert!(caps.tools.makeindex.available);
 
     assert!(caps.tools.biber.available, "{:?}", caps.tools.biber);
-    assert_eq!(
-        caps.tools.biber.version.as_deref(),
-        Some("2.21"),
+    // The bare number out of Biber's "biber version: 2.21 (beta)" banner,
+    // whichever release this machine has: 2.21 here, 2.19 on the runner.
+    let biber_version = caps.tools.biber.version.as_deref().unwrap_or_default();
+    assert!(
+        regex::Regex::new(r"^\d+\.\d+$").unwrap().is_match(biber_version),
         "{:?}",
         caps.tools.biber
     );
