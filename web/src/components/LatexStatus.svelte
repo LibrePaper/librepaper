@@ -73,7 +73,9 @@
     {#if status.progress}
       <span
         class="latex-progress"
-        title="{status.progress.scope}: {status.progress.done}/{status.progress.total}"
+        title={status.progress.total
+          ? `${status.progress.scope}: ${status.progress.done}/${status.progress.total}`
+          : status.progress.scope}
       >
         <span class="bar" style:width="{share}%"></span>
       </span>

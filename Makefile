@@ -235,7 +235,11 @@ latex-push: latex-smoke  ## Verify and push the LaTeX mirror to Cloudflare (run 
 	@# The three distributions the card does not show, and the download cache
 	@# mirror.mjs keeps beside them, which holds the release archives whole.
 	@printf '.cache/\nbusytex/\ntexlyre-busytex/\nswiftlatex-xetex/\nswiftlatex-pdftex/\npackages/\n' > $(MIRROR)/.assetsignore
-	@printf '/*\n  Cache-Control: public, max-age=31536000, immutable\n/manifest.json\n  Cache-Control: no-store\n' > $(MIRROR)/_headers
+	@# Bundle tars are digest-named and cached forever like every engine
+	@# asset (the `/*` default below); `bundles.json` is the one bundling
+	@# file fetched by a bare name, so it gets `manifest.json`'s treatment
+	@# -- see SPEC-latex.md "The index".
+	@printf '/*\n  Cache-Control: public, max-age=31536000, immutable\n/manifest.json\n  Cache-Control: no-store\n/wasmtex/*/bundles/bundles.json\n  Cache-Control: no-cache\n' > $(MIRROR)/_headers
 	@cd deploy/latex && bunx wrangler deploy --assets "$(abspath $(MIRROR))"
 	@echo "serve with: librepaper serve --latex https://librepaper-latex.<account>.workers.dev/"
 

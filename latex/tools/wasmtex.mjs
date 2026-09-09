@@ -137,6 +137,7 @@ export async function mirrorRelease(directory, expectedDigest) {
     files[name] = { url, sha256: sha256(bytes), size: bytes.length };
   }
   const bibliography = await bibliographyIdentity();
+  const bundles = bundlesEntry(staged, files);
   const entry = {
     id: releaseId,
     engine_release: engineRelease,
@@ -148,6 +149,7 @@ export async function mirrorRelease(directory, expectedDigest) {
     engines,
     files,
     bibliography,
+    bundles,
     vm: null,
     source: {
       corresponding_source: staged.correspondingSource,
@@ -180,6 +182,31 @@ export async function mirrorRelease(directory, expectedDigest) {
 
 function sizeOf(files, names) {
   return names.reduce((sum, name) => sum + (files[name]?.size || 0), 0);
+}
+
+/// SPEC-latex.md "The index": a staged release may carry `bundles.json` (the
+/// whole-mirror bundle index) alongside its engines. `staged.bundles` is
+/// `{ index, sha256, snapshot, count, bytes, receipt } | null` on the
+/// manifest wasm-latex just verified byte-for-byte (every name in
+/// `manifest.files`, this one included, was already hashed in `readRelease`
+/// above); this only reshapes it into what the mirror manifest keeps per
+/// release -- the index's own mirror-relative URL rather than its payload
+/// name, so `worker.js` can resolve it against `base` the same way it
+/// resolves every other release file.
+function bundlesEntry(staged, files) {
+  if (staged.bundles == null) return null;
+  const { index, sha256: digest, snapshot, count, bytes } = staged.bundles;
+  const fileEntry = typeof index === "string" ? files[index] : null;
+  if (!fileEntry) throw new Error("wasmtex: release names manifest.bundles.index but it is not in its files");
+  if (fileEntry.sha256 !== digest) {
+    throw new Error("wasmtex: manifest.bundles.sha256 does not match the hashed bundles.json payload");
+  }
+  if (typeof snapshot !== "string" || !snapshot ||
+      !Number.isInteger(count) || count < 0 ||
+      !Number.isInteger(bytes) || bytes < 0) {
+    throw new Error("wasmtex: release manifest.bundles has the wrong shape");
+  }
+  return { index: fileEntry.url, sha256: digest, snapshot, count, bytes };
 }
 
 /// Reads bibliography version identity out of the snapshot's own

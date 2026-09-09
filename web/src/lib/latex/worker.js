@@ -45,6 +45,11 @@ const KINDS = {
 
 const GZIP_MAGIC = [0x1f, 0x8b];
 
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function ensureGzip(bytes) {
   if (!bytes || !bytes.length) return null;
   if (bytes[0] === GZIP_MAGIC[0] && bytes[1] === GZIP_MAGIC[1]) return bytes; // already gzip
@@ -76,6 +81,12 @@ class Worker2 {
     this.initialFiles = []; // [{format, name, bytes}]
     this.absentEntries = []; // [{format, filename}]
     this.bloomBytes = null;
+    // SPEC-latex.md "The index": a release that ships `bundles.json` (see
+    // `configure` below) fetches it once here instead of the bloom filter
+    // and the initial per-file set -- the index alone tells the resolver
+    // what exists, so those never get populated in that mode and every
+    // engine below sends this to its worker in place of them.
+    this.bundleIndexBytes = null;
     // The most recently staged snapshot: bibtex/makeindex need the project's
     // .bib/.bst/.idx-adjacent files and the engine name to know which
     // primary engine holds the .aux they run against, and neither travels on
@@ -122,6 +133,29 @@ class Worker2 {
     this.initialFiles = [];
     this.absentEntries = [];
     this.bloomBytes = null;
+    this.bundleIndexBytes = null;
+
+    // SPEC-latex.md "The index": a release that ships `bundles.json` fetches
+    // it once here, revalidated (`no-cache`) since it is the one bundling
+    // file named without a digest, then verified against the digest the
+    // release entry pins -- the same trust boundary `fetchVerified` gives
+    // every digested file, just without Cache Storage, since this file is
+    // small and expected to change release to release. With an index
+    // loaded, the bloom filter, the negative-cache seed and the initial
+    // per-file prefetch below are all TeX-Live-package-file warmups the
+    // index makes redundant (SPEC: "the bloom filter is redundant and is
+    // retired"), so none of them run in this mode.
+    if (release?.bundles) {
+      const url = resolve(this.base, release.bundles.index);
+      const response = await fetch(url, { cache: "no-cache" });
+      if (!response.ok) throw new Error(`bundles.json fetch failed: ${url}: ${response.status}`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (release.bundles.sha256 && (await sha256Hex(bytes)) !== release.bundles.sha256) {
+        throw new Error("bundles.json digest mismatch");
+      }
+      this.bundleIndexBytes = bytes;
+      return { ok: true, engines: Object.keys(this.release?.engines ?? {}) };
+    }
 
     if (this.texlive?.bloom) {
       try {
@@ -176,7 +210,20 @@ class Worker2 {
     const spec = this.release?.engines?.[kind];
     if (!spec) throw new Error(`release ${this.release?.id} has no ${kind} engine`);
     const workerUrl = resolve(this.base, `${this.release.base}${spec.worker}`);
-    const texliveUrl = resolve(this.base, this.release.texlive_base);
+    // A release with `bundles` has no separate TeX Live snapshot mirror to
+    // point the resolver at (SPEC-latex.md "The unit": the bundle tree is
+    // now part of the release payload) -- `settexliveurl` gets the
+    // directory `bundles.json` itself lives in instead, since bundle URLs
+    // in the index are relative paths ("b/<sha256>/<slug>.tar") written by
+    // `tools/build-bundles.mjs` alongside it, matching the mirror layout
+    // `latex/tools/wasmtex.mjs` writes them under.
+    // Only the pdfTeX worker speaks `loadbundleindex` today; the XeTeX,
+    // LuaTeX and dvipdfm controllers still resolve one file at a time and
+    // would wait forever on a reply, so they keep the per-file snapshot.
+    const bundled = !!this.release.bundles && kind === "pdftex";
+    const texliveUrl = bundled
+      ? resolve(this.base, this.release.bundles.index.slice(0, this.release.bundles.index.lastIndexOf("/") + 1))
+      : resolve(this.base, this.release.texlive_base);
     let format = null;
     if (spec.format) {
       const info = this.release.files?.[spec.format];
@@ -196,7 +243,7 @@ class Worker2 {
       format,
       release: this.release,
       onProgress: (progress) => this.emit("progress", progress),
-      onDownload: (file) => this.emit("downloading", { file }),
+      onDownload: (info) => this.emit("downloading", info),
     });
     this.engines.set(kind, engine);
     try {
@@ -204,6 +251,17 @@ class Worker2 {
     } catch (error) {
       this.engines.delete(kind);
       throw error;
+    }
+    // A release with a bundle index sends only that (the worker itself
+    // preloads from Cache Storage and unpacks bundles on demand -- see
+    // SPEC-latex.md "The resolver"/"Browser cache"); the bloom filter, the
+    // negative-cache seed and the initial per-file prefetch below are
+    // TeX-Live-package-file warmups it makes redundant, so none of the
+    // three ever ran for this release (see `configure` above) and none run
+    // here either.
+    if (this.bundleIndexBytes && bundled) {
+      await engine.loadBundleIndex(this.bundleIndexBytes);
+      return engine;
     }
     // Inject the compact initial set and the bloom filter before this
     // engine's first pass -- never fetched per-engine beyond what
@@ -272,6 +330,12 @@ class Worker2 {
     let log = pass.log;
     let status = pass.status;
     let ok = pass.ok;
+    // Package files (`.sty`/`.cls`) the bundle index itself says are absent
+    // from the mirror -- see wasmtex.js's `run()` and docs/specs' "Precise
+    // failure messages" -- surfaced back to the controller alongside the
+    // ordinary failure so it can name the package instead of "the document
+    // failed to compile".
+    let mirrorAbsent = pass.mirrorAbsent || [];
 
     if (engineName === "xelatex") {
       // XeTeX's own controller hands back the .xdv content in the same
@@ -289,6 +353,7 @@ class Worker2 {
         pdf = made.ok && made.pdf && made.pdf.length ? made.pdf : null;
         ok = made.ok && !!pdf;
         status = made.status;
+        mirrorAbsent = [...mirrorAbsent, ...(made.mirrorAbsent || [])];
       } else {
         ok = false;
       }
@@ -325,6 +390,7 @@ class Worker2 {
       log,
       inputs: pass.inputs,
       outputs: outputBuffers,
+      mirrorAbsent,
       __transfer: transfer,
     };
   }

@@ -444,6 +444,15 @@ export async function capabilities({ rescan = false } = {}) {
   return data;
 }
 
+/// The one-line pairing instruction, unchanged from what `openApp()` and the
+/// status line already show for an unpaired local app -- reused verbatim by
+/// `latex.js`'s "a package the bundle index says the mirror does not have"
+/// failure message so a reader sees the exact same call to action wherever
+/// it appears.
+export function pairingInstruction() {
+  return instructionsFor("unauthorized");
+}
+
 export function openApp() {
   try {
     if (typeof window !== "undefined" && window.document?.body) {

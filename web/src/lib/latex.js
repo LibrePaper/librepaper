@@ -271,6 +271,14 @@ export function resolveEngine(tree, settingsArg = currentSettings) {
 
 // --- The worker RPC (section 2.4) ------------------------------------------
 
+/// "amsmath, 1.2 MB" -- the one place a byte count is put in front of a
+/// reader (SPEC-latex.md "The resolver"), so it stays a plain decimal
+/// megabyte figure rather than binary units a document author has no reason
+/// to know.
+function formatBytes(bytes) {
+  return `${(bytes / 1e6).toFixed(1)} MB`;
+}
+
 function attachHandlers(target) {
   target.onmessage = (event) => {
     const message = event.data;
@@ -279,7 +287,17 @@ function attachHandlers(target) {
       statusStore.set({ progress: { done: message.done, total: message.total, scope: message.scope } });
       return;
     }
-    if (message.cmd === "downloading") return; // informational only
+    if (message.cmd === "downloading") {
+      // SPEC-latex.md "The resolver": "the host's progress indicator reports
+      // 'amsmath, 1.2 MB' instead of a stream of file names" -- only present
+      // once a release ships a bundle index; legacy per-file mode sends
+      // `file` alone and stays silent here, as before.
+      if (message.bundle) {
+        const scope = typeof message.size === "number" ? `${message.bundle}, ${formatBytes(message.size)}` : message.bundle;
+        statusStore.set({ progress: { done: 0, total: 0, scope } });
+      }
+      return;
+    }
     const call = pendingCalls.get(message.id);
     if (!call) return;
     pendingCalls.delete(message.id);
@@ -687,6 +705,25 @@ async function runNative({ job, tree, engine, releaseId, attempts, startedAt }) 
   });
 }
 
+/// SPEC-latex.md "Precise failure messages": when the bundle index itself
+/// says a `.sty`/`.cls` a document asked for is not in the browser mirror
+/// (`worker.js`'s `tex()` reads this off the resolver evidence, see
+/// wasmtex.js), name it instead of the generic "the document failed to
+/// compile", and show the same one-line pairing instruction the rest of the
+/// interface already uses for "get the local app involved" -- see
+/// `latex/local.js`'s `pairingInstruction()`. `null` when nothing was
+/// reported absent, so the caller's ordinary message stands.
+async function mirrorAbsentMessage(mirrorAbsent) {
+  const names = [...new Set(Array.isArray(mirrorAbsent) ? mirrorAbsent : [])];
+  if (!names.length) return null;
+  const local = await getLocal();
+  const instruction = local?.pairingInstruction
+    ? local.pairingInstruction()
+    : "Run `librepaper local start` on this computer and enter the pairing code it prints.";
+  const named = names.length === 1 ? `"${names[0]}"` : `"${names[0]}" and ${names.length - 1} more`;
+  return `Package ${named} is not available in the browser mirror. ${instruction}`;
+}
+
 async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, kind, message }) {
   routeState = { ...routeState, snapshot: job.snapshot };
   // The failure's own words are the reason; the log is the engine's, from
@@ -883,7 +920,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         attempts,
         startedAt,
         kind: "tex",
-        message: "The document failed to compile.",
+        message: (await mirrorAbsentMessage(reply.mirrorAbsent)) || "The document failed to compile.",
       });
     }
 

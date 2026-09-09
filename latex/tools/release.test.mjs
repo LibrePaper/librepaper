@@ -14,18 +14,51 @@ const names = [
   "LICENSE", "THIRD_PARTY_NOTICES.md", "SOURCE.md", "SOURCE-RECEIPT.json", "RELINK.md",
   "LICENSES/GPL-2.0.txt",
 ];
-function fixture() {
-  const files = names.map((name) => {
-    const bytes = Buffer.from(`fixture ${name}`);
-    mkdirSync(dirname(join(directory, name)), { recursive: true });
-    writeFileSync(join(directory, name), bytes);
-    return { name, bytes: bytes.length, sha256: sha(bytes) };
+
+// SPEC-latex.md "The index": a release may carry `bundles/bundles.json` plus
+// digest-named bundle tars under `bundles/b/<sha256>/<slug>.tar`, all listed
+// generically in `manifest.files` like every other payload file -- these two
+// tiny "tars" are just bytes for hashing purposes here, since `readRelease`
+// never opens them, only verifies size and digest.
+const bundleTars = {
+  core: Buffer.from("fixture core.tar bytes"),
+  tikz: Buffer.from("fixture tex-latex-tikz.tar bytes"),
+};
+function bundlesIndex() {
+  return JSON.stringify({
+    schemaVersion: 1,
+    snapshot: "texlive-20260301",
+    sourceDateEpoch: 1,
+    bundles: {
+      core: { url: `b/${sha(bundleTars.core)}/core.tar`, size: bundleTars.core.length, sha256: sha(bundleTars.core), files: 1 },
+      "tex/latex/tikz": { url: `b/${sha(bundleTars.tikz)}/tex-latex-tikz.tar`, size: bundleTars.tikz.length, sha256: sha(bundleTars.tikz), files: 1 },
+    },
+    files: { "tex/latex/base/article.cls": "core", "tex/generic/pgf/basiclayer/pgfcore.code.tex": "tex/latex/tikz" },
   });
+}
+function fixture({ bundles = false } = {}) {
+  const extra = [];
+  if (bundles) {
+    const index = bundlesIndex();
+    extra.push({ name: "bundles/bundles.json", bytes: Buffer.byteLength(index), content: Buffer.from(index) });
+    extra.push({ name: `bundles/b/${sha(bundleTars.core)}/core.tar`, content: bundleTars.core });
+    extra.push({ name: `bundles/b/${sha(bundleTars.tikz)}/tex-latex-tikz.tar`, content: bundleTars.tikz });
+  }
+  const files = [...names.map((name) => ({ name, content: Buffer.from(`fixture ${name}`) })), ...extra].map(
+    ({ name, content }) => {
+      mkdirSync(dirname(join(directory, name)), { recursive: true });
+      writeFileSync(join(directory, name), content);
+      return { name, bytes: content.length, sha256: sha(content) };
+    },
+  );
   return {
     schemaVersion: 1, releaseGate: "passed", files,
     artifacts: files.filter(({ name }) => name.startsWith("wasmtex-")),
     families: [{ family: "pdftex", combinedTerms: "GPL-2.0-only" }],
     correspondingSource: { url: "https://example.org/source.tar.xz", sha256: "a".repeat(64) },
+    bundles: bundles
+      ? { index: "bundles/bundles.json", sha256: sha(Buffer.from(bundlesIndex())), snapshot: "texlive-20260301", count: 2, bytes: bundleTars.core.length + bundleTars.tikz.length, receipt: "bundles/RECEIPT-FILES.json" }
+      : null,
   };
 }
 function pin(manifest) {
@@ -59,7 +92,26 @@ try {
   manifest = fixture();
   manifest.correspondingSource.sha256 = null;
   assert.throws(() => readRelease(directory, pin(manifest)), /corresponding source/);
-  console.log("wasm-latex release: pinned payload, notices, engine availability and invalid releases checked");
+
+  // A release carrying bundles: the two tars and their index verify and
+  // read back byte-for-byte through the same generic payload check as every
+  // other file, and `manifest.bundles` (wasmtex.mjs's job to interpret, not
+  // readRelease's) passes through unexamined.
+  manifest = fixture({ bundles: true });
+  digest = pin(manifest);
+  const bundled = readRelease(directory, digest);
+  assert.ok(bundled.files.has("bundles/bundles.json"));
+  assert.equal(bundled.manifest.bundles.snapshot, "texlive-20260301");
+  assert.equal(bundled.manifest.bundles.count, 2);
+  const coreTarName = `bundles/b/${sha(bundleTars.core)}/core.tar`;
+  assert.deepEqual(bundled.files.get(coreTarName), bundleTars.core);
+  // A bundle tar whose bytes were tampered with after staging is rejected
+  // exactly like any other payload file (SPEC-latex.md: "the same thing on
+  // the other side, as it does for engines today").
+  writeFileSync(join(directory, coreTarName), "corrupted");
+  assert.throws(() => readRelease(directory, digest), new RegExp(`digest mismatch: ${coreTarName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+
+  console.log("wasm-latex release: pinned payload, notices, engine availability, bundles and invalid releases checked");
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }

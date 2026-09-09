@@ -80,6 +80,15 @@ class WasmTexEngine {
     // never enqueues here.
     this.pending = new Map();
     this.madeDirs = new Set();
+    // Resolver evidence for a package file (kpathsea format 26, `.sty`/
+    // `.cls`) the bundle index itself says is not in the mirror -- SPEC-latex.md
+    // "The resolver": with an index loaded, "absent" is a lookup, not a 404,
+    // so a compile can fail with nothing in the log but a LaTeX
+    // "File not found" for a name a reader cannot map to a package by
+    // themselves. Collected between `run()` calls (see `run()` below) so the
+    // failure this pass actually produced is what gets reported, not a
+    // scrap left over from an earlier pass that happened to recover.
+    this.mirrorAbsent = [];
   }
 
   /// Every command below waits on this queue, so a caller awaiting `run()`
@@ -189,13 +198,30 @@ class WasmTexEngine {
       return;
     }
     if (message.cmd === "downloading") {
-      this.onDownload?.(message.file);
+      // `bundle`/`size` are only present once a release ships a bundle
+      // index (SPEC-latex.md "The resolver": "the worker's downloading
+      // message gains the bundle name and size"); legacy per-file mode
+      // sends `file` alone, as before.
+      this.onDownload?.({ file: message.file, bundle: message.bundle, size: message.size });
       return;
     }
-    if (message.cmd === "resolverready" || message.cmd === "resolver") {
-      // Resolver telemetry from `*-resolver-evidence.js`; nothing here reads
-      // it (that file feeds wasmtex's own diagnostics, which this driver
-      // does not reproduce), but it must not be mistaken for a compile reply.
+    if (message.cmd === "resolverready") return;
+    if (message.cmd === "resolver") {
+      // Resolver telemetry from `*-resolver-evidence.js`. Nothing here reads
+      // most of it (that file feeds wasmtex's own diagnostics, which this
+      // driver does not reproduce), except the one case a failed compile
+      // needs named: a `.sty`/`.cls` (format 26) the bundle index itself
+      // says is absent, per docs/specs "Precise failure messages".
+      const evidence = message.evidence;
+      if (
+        evidence &&
+        evidence.outcome === "mirror-absent" &&
+        evidence.format === 26 &&
+        Array.isArray(evidence.attempts) &&
+        evidence.attempts.some((attempt) => attempt?.source === "bundle-index")
+      ) {
+        this.mirrorAbsent.push(evidence.requestedName);
+      }
       return;
     }
     if (message.cmd === "workererror") {
@@ -262,6 +288,7 @@ class WasmTexEngine {
   /// need (the job stem) since they take it on the request rather than via
   /// a prior `setmainfile`.
   async run(cmd, extra = {}) {
+    this.mirrorAbsent = [];
     const reply = await this._ask({ cmd, ...extra }, "compile");
     // pdfTeX/XeTeX/dvipdfm/LuaTeX: result "ok"/"failed" plus a numeric exit
     // status (0 and 1 both "compiled", 1 meaning warnings). BibTeX/makeindex:
@@ -274,6 +301,7 @@ class WasmTexEngine {
       synctex: reply.synctex ? new Uint8Array(reply.synctex) : null,
       log: reply.log || "",
       inputs: Array.isArray(reply.inputFiles) ? reply.inputFiles : null,
+      mirrorAbsent: this.mirrorAbsent.slice(),
     };
   }
 
@@ -298,6 +326,19 @@ class WasmTexEngine {
   loadBloom(bytes) {
     if (!RESOLVES_TEXLIVE.has(this.kind)) return;
     this._tell({ cmd: "loadbloom", data: bytes.slice().buffer });
+  }
+
+  /// SPEC-latex.md "The index": loads the whole-mirror bundle index once,
+  /// replacing the bloom filter and the per-name 404/preload warmups for a
+  /// release that ships one. Unlike `loadBloom`/`preload404`
+  /// (fire-and-forget), this command answers -- the controller awaits it so
+  /// a first compile never races the worker's own Cache Storage preload.
+  async loadBundleIndex(bytes) {
+    // pdfTeX only: the other workers' resolvers have no bundle mode yet and
+    // never reply to this command.
+    if (this.kind !== "pdftex") return null;
+    const copy = bytes.slice().buffer;
+    return this._ask({ cmd: "loadbundleindex", data: copy }, "loadbundleindex", [copy]);
   }
 
   preload404(entries) {

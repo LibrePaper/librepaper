@@ -51,6 +51,45 @@ try {
     for (const key of snapshot.initial || []) {
       if (!snapshot.files[key]) throw new Error(`initial package ${key} is absent from the manifest`);
     }
+    // SPEC-latex.md "The index": a release's `bundles.json` is verified twice
+    // -- its own bytes against the digest the release entry pins, and every
+    // bundle path it names against the mirror on disk. `release.files` above
+    // already hashed every payload file the importer copied, bundle tars
+    // included, but that only proves the files that landed are correct; it
+    // says nothing about whether `bundles.json`'s own `files`/`bundles` map
+    // still agrees with them. This check is cheap (bundle counts are in the
+    // thousands, not millions) so it is a full check, not a spot check.
+    if (release.bundles) {
+      const indexPath = resolve(base, release.bundles.index);
+      const indexBytes = await readFile(indexPath);
+      if (createHash("sha256").update(indexBytes).digest("hex") !== release.bundles.sha256) {
+        throw new Error("bundles.json digest does not match the release's bundles entry");
+      }
+      const index = JSON.parse(indexBytes.toString("utf8"));
+      // Bundle URLs are relative to the directory bundles.json itself lives
+      // in (see web/src/lib/latex/worker.js), not to the release root.
+      const bundleDir = release.bundles.index.slice(0, release.bundles.index.lastIndexOf("/") + 1);
+      const bundleEntries = Object.entries(index.bundles || {});
+      for (let i = 0; i < bundleEntries.length; i += 32) {
+        await Promise.all(bundleEntries.slice(i, i + 32).map(async ([name, bundle]) => {
+          const path = resolve(base, bundleDir + bundle.url);
+          if (!path.startsWith(resolve(base) + "/")) throw new Error(`bundle path escapes the mirror: ${bundle.url}`);
+          let bytes;
+          try {
+            bytes = await readFile(path);
+          } catch {
+            throw new Error(`bundle "${name}" (${bundle.url}) is missing from the mirror`);
+          }
+          if (bytes.length !== bundle.size || createHash("sha256").update(bytes).digest("hex") !== bundle.sha256) {
+            throw new Error(`bundle asset size or digest mismatch: ${bundle.url}`);
+          }
+        }));
+      }
+      const fileTargets = new Set(Object.values(index.files || {}));
+      for (const bundleName of fileTargets) {
+        if (!index.bundles?.[bundleName]) throw new Error(`bundles.json names unknown bundle "${bundleName}" in its files map`);
+      }
+    }
   }
   console.log(`LaTeX mirror ready: ${base} (${manifest.default_release})`);
 } catch (error) {

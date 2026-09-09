@@ -301,10 +301,15 @@ const server = createServer(async (request, response) => {
       "content-type": typeOf(path),
       "access-control-allow-origin": "*",
       // The digest is in the path for everything under /mirror/, so a year is
-      // safe there. Everything else is a developer's working copy.
-      "cache-control": url.startsWith("/mirror/")
-        ? "public, max-age=31536000, immutable"
-        : "no-store",
+      // safe there -- except `bundles.json` itself, the one bundling file
+      // fetched by a bare name (SPEC-latex.md "The index"), which gets the
+      // same treatment as `manifest.json`. Everything else is a developer's
+      // working copy.
+      "cache-control": url.endsWith("/bundles.json")
+        ? "no-cache"
+        : url.startsWith("/mirror/")
+          ? "public, max-age=31536000, immutable"
+          : "no-store",
     });
     response.end(bytes);
   } catch (error) {
