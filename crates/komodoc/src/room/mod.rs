@@ -1001,16 +1001,23 @@ impl RoomSet {
                 for document in due {
                     if let Ok(room) = self.try_get(&document.slug).await {
                         let _ = room.tick().await;
-                        let state = room.state.lock().await;
-                        if !state.session.dirty
-                            && state.session.generation == state.session.checkpoint_generation
-                        {
-                            // A manual checkpoint can leave this scheduler clock
-                            // stale. Advance examined, unchanged rows so the next
-                            // page of due documents gets its turn.  The room's
-                            // state guard is still held across this await, as
-                            // it was across the synchronous call it replaces;
-                            // shortening that scope belongs to track 2.
+                        let settled = {
+                            let state = room.state.lock().await;
+                            !state.session.dirty
+                                && state.session.generation == state.session.checkpoint_generation
+                        };
+                        if settled {
+                            // A manual checkpoint can leave this scheduler
+                            // clock stale. Advance examined, unchanged rows so
+                            // the next page of due documents gets its turn.
+                            // The observation above is taken under state and
+                            // the write is made without it: an edit that
+                            // arrives in between only defers this document's
+                            // *automatic* interval by one period, and its own
+                            // quiet-period checkpoint -- a far shorter timer --
+                            // is what actually covers it. Holding state here
+                            // would stall every editor of a document the
+                            // sweeper touches once an interval.
                             let slug = document.slug.clone();
                             let _ = catalog
                                 .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
@@ -2359,7 +2366,7 @@ impl Room {
         if !self.hold().await {
             return Err(self.fenced());
         }
-        let (body, generation, durable, mut version, quota) = {
+        let (body, generation, durable, mut version) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
             // `E`, at the last gate before anything durable happens. Room
@@ -2378,26 +2385,6 @@ impl Room {
                     ceiling,
                 }));
             }
-            // The reservation comes back as a guard rather than as a bare
-            // success, so the window between this transaction committing and
-            // the room owning the reservation cannot leak it; the session
-            // writer gate is still held across the await, which is what
-            // serialises the row.
-            let quota = match self.catalog.get() {
-                Some(catalog) => Some(
-                    begin_room_write(
-                        catalog,
-                        &self.slug,
-                        &self.storage_id,
-                        self.snapshot_budget(body.len()),
-                        self.config.storage.per_owner,
-                        self.config.storage.total,
-                    )
-                    .await
-                    .map_err(WriteError::from)?,
-                ),
-                None => None,
-            };
             let generation = state.session.generation;
             state.session.note_encoded_len(generation, body.len());
             let durable: Vec<(u64, i64)> = state
@@ -2405,13 +2392,33 @@ impl Room {
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            (
-                body,
-                generation,
-                durable,
-                state.session_version.clone(),
-                quota,
-            )
+            (body, generation, durable, state.session_version.clone())
+        };
+        // The reservation comes back as a guard rather than as a bare
+        // success, so the window between this transaction committing and
+        // the room owning the reservation cannot leak it. It is taken with
+        // room state released: the session writer gate is what serialises
+        // the reservation row, and holding state as well only stalled every
+        // reader and editor of this document for the length of the quota
+        // decision. Nothing between the encode above and here can invalidate
+        // the reservation -- an edit that lands meanwhile leaves the snapshot
+        // this call writes merely older than the room, which the generation
+        // comparison at the end already accounts for, and the next write
+        // reserves for the newer snapshot.
+        let quota = match self.catalog.get() {
+            Some(catalog) => Some(
+                begin_room_write(
+                    catalog,
+                    &self.slug,
+                    &self.storage_id,
+                    self.snapshot_budget(body.len()),
+                    self.config.storage.per_owner,
+                    self.config.storage.total,
+                )
+                .await
+                .map_err(WriteError::from)?,
+            ),
+            None => None,
         };
         let size = body.len() as i64;
         // `generation` is normally advanced by every mediated CRDT mutation.

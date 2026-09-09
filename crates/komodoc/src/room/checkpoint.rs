@@ -1606,7 +1606,7 @@ impl Room {
     /// old tree's content moves the index head to (R17), without pretending a
     /// new checkpoint was taken.
     pub(super) async fn record_size_now(&self, sha: Option<&str>, format: &str, main: &str) {
-        let (session_size, history) = {
+        let (session_size, resident_history) = {
             let mut state = self.state.lock().await;
             let generation = state.session.generation;
             let size = match state.session.encoded_size {
@@ -1617,24 +1617,26 @@ impl Room {
                     size as i64
                 }
             };
-            // The room state guard is still held across this await, as it was
-            // across the synchronous call it replaces; track 2 owns
-            // shortening that scope.
-            let history = match self.catalog.get() {
-                Some(catalog) => match read_checkpoint_stats(catalog, &self.slug).await {
-                    Ok((_, bytes)) => bytes,
-                    Err(error) => {
-                        eprintln!(
-                            "warning: could not read checkpoint accounting for {}: {error}",
-                            self.slug
-                        );
-                        self.fence(FenceReason::UnreadableState);
-                        return;
-                    }
-                },
-                None => state.manifest.bytes(),
-            };
-            (size, history)
+            (size, state.manifest.bytes())
+        };
+        // Read with room state released. This is an accounting figure, not a
+        // fence: the catalogue is the authority for history bytes and the
+        // number it returns is whatever was durable when it was asked, so
+        // stalling every editor of the document for the length of the query
+        // bought nothing.
+        let history = match self.catalog.get() {
+            Some(catalog) => match read_checkpoint_stats(catalog, &self.slug).await {
+                Ok((_, bytes)) => bytes,
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not read checkpoint accounting for {}: {error}",
+                        self.slug
+                    );
+                    self.fence(FenceReason::UnreadableState);
+                    return;
+                }
+            },
+            None => resident_history,
         };
         let assets = self.assets_bytes().await;
         let renderings = self.renderings_bytes().await;
