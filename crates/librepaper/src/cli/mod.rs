@@ -55,76 +55,75 @@ pub(crate) struct Cli {
 /// documents expire.
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct ServiceFlags {
-    /// GitHub OAuth app client id; or $LIBREPAPER_GITHUB_CLIENT_ID
-    #[arg(long, value_name = "ID")]
-    client_id: Option<String>,
-    /// GitHub OAuth app client secret; or $LIBREPAPER_GITHUB_CLIENT_SECRET
-    #[arg(long, value_name = "SECRET")]
-    client_secret: Option<String>,
+    /// GitHub OAuth app client id
+    #[arg(long, env = "LIBREPAPER_GITHUB_CLIENT_ID", value_name = "ID")]
+    github_client_id: Option<String>,
+    /// Google OAuth client id
+    #[arg(long, env = "LIBREPAPER_GOOGLE_CLIENT_ID", value_name = "ID")]
+    google_client_id: Option<String>,
     /// Who may publish: a GitHub login, a comma-separated list, 'any', or 'anyone'
-    #[arg(long, value_name = "WHO")]
+    #[arg(long, env = "LIBREPAPER_PUBLISHERS", value_name = "WHO")]
     publishers: Option<String>,
     /// Who may comment: 'anyone' (default), 'any' signed-in account, or a list of accounts
-    #[arg(long, value_name = "WHO")]
+    #[arg(long, env = "LIBREPAPER_COMMENTERS", value_name = "WHO")]
     commenters: Option<String>,
     /// No public front page: the examples are listed only to their owner
-    #[arg(long)]
+    #[arg(long, env = "LIBREPAPER_NO_LISTING")]
     no_listing: bool,
     /// Largest document accepted, in megabytes (default 4, maximum 8)
-    #[arg(long, value_name = "MB", default_value_t = 0)]
-    max_size: usize,
+    #[arg(long, env = "LIBREPAPER_MAX_SIZE", value_name = "MB")]
+    max_size: Option<usize>,
     /// Most the figures of one document may come to, in megabytes (default 32)
-    #[arg(long, value_name = "MB", default_value_t = 0)]
-    max_assets: i64,
+    #[arg(long, env = "LIBREPAPER_MAX_ASSETS", value_name = "MB")]
+    max_assets: Option<usize>,
     /// Most one publisher may store across their documents, in megabytes (default 100)
-    #[arg(long, value_name = "MB", default_value_t = 0)]
-    quota: i64,
+    #[arg(long, env = "LIBREPAPER_QUOTA", value_name = "MB")]
+    quota: Option<usize>,
     /// Most the whole deployment will store, in megabytes (default 5120)
-    #[arg(long, value_name = "MB", default_value_t = 0)]
-    storage: i64,
+    #[arg(long, env = "LIBREPAPER_STORAGE", value_name = "MB")]
+    storage: Option<usize>,
     /// Most documents one publisher may hold (default 50)
-    #[arg(long, value_name = "N", default_value_t = 0)]
-    max_documents: i64,
+    #[arg(long, env = "LIBREPAPER_MAX_DOCUMENTS", value_name = "N")]
+    max_documents: Option<usize>,
     /// Most uploads one publisher may make in an hour (default 30)
-    #[arg(long, value_name = "N", default_value_t = 0)]
-    uploads_per_hour: i64,
+    #[arg(long, env = "LIBREPAPER_UPLOADS_PER_HOUR", value_name = "N")]
+    uploads_per_hour: Option<usize>,
     /// Minutes of quiet before a document is checkpointed (default 5)
-    #[arg(long, value_name = "MINUTES", default_value_t = 0)]
-    checkpoint: i64,
+    #[arg(long, env = "LIBREPAPER_CHECKPOINT", value_name = "MINUTES")]
+    checkpoint: Option<usize>,
     /// Most checkpoints one document keeps; 0 keeps only the current text
-    #[arg(long, value_name = "N")]
+    #[arg(long, env = "LIBREPAPER_HISTORY", value_name = "N")]
     history: Option<usize>,
     /// Delete documents after this duration, for example 24h or 30d (default never)
-    #[arg(long, value_name = "DURATION")]
+    #[arg(long, env = "LIBREPAPER_EXPIRE_AFTER", value_name = "DURATION")]
     expire_after: Option<String>,
     /// Start expiry at 'updated' (default; last publication) or 'created'
-    #[arg(long, value_name = "FROM")]
+    #[arg(long, env = "LIBREPAPER_EXPIRE_FROM", value_name = "FROM")]
     expire_from: Option<String>,
     /// Serve LaTeX distributions from this https bucket or directory.
-    /// LibrePaper always serves LaTeX: with no --latex (or bare --latex),
-    /// this defaults to the project's own mirror. LIBREPAPER_LATEX
-    /// overrides too.
+    /// LibrePaper always serves LaTeX: without this, it uses the project's
+    /// own mirror.
     #[arg(
         long,
+        env = "LIBREPAPER_LATEX",
         value_name = "URL-OR-DIR",
-        num_args = 0..=1,
-        default_missing_value = crate::server::latex::DEFAULT_MIRROR
+        default_value = crate::server::latex::DEFAULT_MIRROR
     )]
-    latex: Option<String>,
+    latex: String,
     /// Serve the font files in this directory to typst documents that name a
     /// family the compiler does not embed; `publish` fetches the same fonts.
     /// Without it, such a document is set in the compiler's default faces.
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, env = "LIBREPAPER_FONTS", value_name = "DIR")]
     fonts: Option<String>,
     /// The browser bibliography VM's descriptor (vm.json), as
     /// <url>#<sha256-of-vm.json>: the LaTeX mirror carries no VM image of its
     /// own any more, so this is the only way a deployment offers one. The
-    /// sha256 is required -- it is what `vm.js` verifies vm.json against
-    /// before trusting anything it names -- and is checked to be 64 hex
+    /// sha256 is required, since it is what `vm.js` verifies vm.json against
+    /// before trusting anything it names, and is checked to be 64 hex
     /// characters at startup. Without this flag, a document that needs Biber
     /// and has no local LibrePaper reachable simply stops with "no
     /// bibliography VM is configured" once browser TeX itself has run.
-    #[arg(long, value_name = "URL#SHA256")]
+    #[arg(long, env = "LIBREPAPER_BIBER_VM", value_name = "URL#SHA256")]
     biber_vm: Option<String>,
 }
 
@@ -192,10 +191,20 @@ pub(crate) enum Command {
     /// Run the service on this machine
     Serve {
         /// Interface address; use 127.0.0.1 to accept only local connections
-        #[arg(long, value_name = "ADDRESS", default_value = "0.0.0.0")]
+        #[arg(
+            long,
+            env = "LIBREPAPER_BIND",
+            value_name = "ADDRESS",
+            default_value = "0.0.0.0"
+        )]
         bind: std::net::IpAddr,
         /// Port to listen on; default is the first free one from 8080 to 8099
-        #[arg(long, value_name = "PORT", default_value_t = 0)]
+        #[arg(
+            long,
+            env = "LIBREPAPER_PORT",
+            value_name = "PORT",
+            default_value_t = 0
+        )]
         port: u16,
         #[command(flatten)]
         service: ServiceFlags,
@@ -543,16 +552,16 @@ pub async fn main() {
                 bind,
                 port,
                 storage: storage.options(),
-                client_id: service.client_id.unwrap_or_default(),
-                client_secret: service.client_secret.unwrap_or_default(),
-                publishers: service.publishers.unwrap_or_default(),
-                commenters: service.commenters.unwrap_or_default(),
+                github_client_id: service.github_client_id,
+                google_client_id: service.google_client_id,
+                publishers: service.publishers,
+                commenters: service.commenters,
                 no_listing: service.no_listing,
-                expire_after: service.expire_after.unwrap_or_default(),
-                expire_from: service.expire_from.unwrap_or_default(),
-                latex: service.latex.unwrap_or_default(),
-                fonts: service.fonts.unwrap_or_default(),
-                biber_vm: service.biber_vm.unwrap_or_default(),
+                expire_after: service.expire_after,
+                expire_from: service.expire_from,
+                latex: service.latex,
+                fonts: service.fonts,
+                biber_vm: service.biber_vm,
                 config,
             })
             .await

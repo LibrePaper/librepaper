@@ -327,7 +327,7 @@ async fn listing_and_delete() {
 async fn legacy_listing_pages_without_repeating_documents() {
     let dir = tempfile::tempdir().unwrap();
     let (url, instance) = server_over_blobs_legacy(
-        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path())),
+        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path(), true)),
         Configuration::default(),
     )
     .await;
@@ -718,10 +718,8 @@ async fn browser_submission_retries_are_idempotent_and_author_scoped() {
 
 #[test]
 fn latex_flag_defaults_to_the_project_mirror_when_absent() {
-    // LibrePaper always serves LaTeX: an absent --latex (and an absent
-    // LIBREPAPER_LATEX, both merged into this blank flag by `first_of`
-    // before reaching `resolve_latex_flag`) falls back to the project's own
-    // mirror rather than turning compilation off.
+    // LibrePaper always serves LaTeX: a blank --latex falls back to the
+    // project's own mirror rather than turning compilation off.
     assert_eq!(
         crate::server::serve::resolve_latex_flag(""),
         crate::server::latex::DEFAULT_MIRROR

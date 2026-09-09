@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::auth::{link_sealing_keyring_file, session_key_file, GithubApp, GoogleApp, Policy};
-use crate::config::{Configuration, DeploymentProfile};
+use crate::config::Configuration;
 use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::document::store::Store;
 use crate::room::RoomSet;
@@ -16,7 +16,7 @@ use crate::server::Server;
 use crate::storage::journal::JournalStore;
 use crate::storage::maintenance::{DeletionLimits, DeletionWorker, JournalRetirementWorker};
 use crate::storage::{migrate_legacy_source, open_storage, StorageOptions};
-use crate::util::{die, first_of};
+use crate::util::die;
 
 /// With no --port, serve takes the first free port in this range, so a second
 /// deployment on the same machine, or a port something else has already
@@ -28,36 +28,55 @@ pub struct ServeOptions {
     pub bind: std::net::IpAddr,
     pub port: u16,
     pub storage: StorageOptions,
-    pub client_id: String,
-    pub client_secret: String,
-    pub publishers: String,
-    pub commenters: String,
+    /// The GitHub OAuth app's client id. Resolved by clap from `--github-client-id`
+    /// or `LIBREPAPER_GITHUB_CLIENT_ID`; the client secret is never a flag, and
+    /// is read straight from the environment by `secrets_from_environment`.
+    pub github_client_id: Option<String>,
+    /// The Google OAuth client's id, resolved the same way as the GitHub one.
+    pub google_client_id: Option<String>,
+    pub publishers: Option<String>,
+    pub commenters: Option<String>,
     pub no_listing: bool,
-    pub expire_after: String,
-    pub expire_from: String,
+    pub expire_after: Option<String>,
+    pub expire_from: Option<String>,
     /// Where this deployment reads LaTeX distributions from: an https bucket
-    /// or a directory on this machine. Empty falls back to the project's
-    /// own default mirror -- LibrePaper always serves LaTeX. See
+    /// or a directory on this machine. Blank falls back to the project's
+    /// own default mirror: LibrePaper always serves LaTeX. See
     /// `crate::server::latex`.
     pub latex: String,
-    /// A directory of font files served to typst documents, or empty. See
+    /// A directory of font files served to typst documents, or nothing. See
     /// `crate::server::fonts`.
-    pub fonts: String,
+    pub fonts: Option<String>,
     /// The browser bibliography VM's descriptor, as `<url>#<sha256>`, or
-    /// empty for a deployment that offers none. See `crate::server::latex::BiberVm`.
-    pub biber_vm: String,
+    /// nothing for a deployment that offers none. See `crate::server::latex::BiberVm`.
+    pub biber_vm: Option<String>,
     pub config: Configuration,
 }
 
-/// The LaTeX mirror flag LibrePaper actually uses: `flag` is `--latex`/
-/// `LIBREPAPER_LATEX`, already merged by `first_of` and not yet trimmed.
-/// LibrePaper always serves LaTeX, so a blank flag (the value `first_of`
-/// returns when neither was set) falls back to the project's own mirror --
-/// there is no "LaTeX off" mode any more.
+/// The LaTeX mirror flag LibrePaper actually uses. LibrePaper always serves
+/// LaTeX, so a blank `--latex` falls back to the project's own mirror: there
+/// is no "LaTeX off" mode.
 pub(crate) fn resolve_latex_flag(flag: &str) -> &str {
     match flag.trim() {
         "" => crate::server::latex::DEFAULT_MIRROR,
         flag => flag,
+    }
+}
+
+/// The GitHub and Google OAuth app client secrets. Secrets never travel as
+/// flags: a flag lands in the process table, where every other process on the
+/// machine can read it, and in the shell history of whoever typed it. This is
+/// the only place the server reads configuration straight out of the
+/// environment; every other option is resolved by clap before it gets here.
+struct Secrets {
+    github_client_secret: String,
+    google_client_secret: String,
+}
+
+fn secrets_from_environment() -> Secrets {
+    Secrets {
+        github_client_secret: std::env::var("LIBREPAPER_GITHUB_CLIENT_SECRET").unwrap_or_default(),
+        google_client_secret: std::env::var("LIBREPAPER_GOOGLE_CLIENT_SECRET").unwrap_or_default(),
     }
 }
 
@@ -145,44 +164,31 @@ pub fn sign_in_advice(
 }
 
 pub async fn serve(options: ServeOptions) {
-    let mut storage = options.storage.clone();
-    storage.fill_from_environment();
-    let (profile, deployment_paths) = storage.profile().unwrap_or_else(|err| die(err));
-    if profile == DeploymentProfile::Hosted {
-        die("hosted catalogue support is not available in this build; refusing to fall back to a bucket JSON index");
-    }
-    let env = |name: &str| std::env::var(name).unwrap_or_default();
-    let retention = parse_retention(&first_of(&[
-        &options.expire_after,
-        &env("LIBREPAPER_EXPIRE_AFTER"),
-    ]))
-    .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
+    let storage = options.storage.clone();
+    let deployment_paths = storage.paths().unwrap_or_else(|err| die(err));
+    let retention = parse_retention(options.expire_after.as_deref().unwrap_or(""))
+        .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
     // Read before anything is opened or a port is claimed: a mirror flag that
     // cannot work is a typo the operator is still standing in front of, and a
     // plain HTTP one would fail invisibly in every browser rather than here.
-    // LibrePaper always serves LaTeX: an absent --latex and an absent
-    // LIBREPAPER_LATEX both fall back to the project's own mirror -- there
-    // is no "LaTeX off" mode.
-    let latex_flag = first_of(&[&options.latex, &env("LIBREPAPER_LATEX")]);
-    let latex_flag = resolve_latex_flag(&latex_flag);
+    // LibrePaper always serves LaTeX: an absent --latex falls back to the
+    // project's own mirror, so there is no "LaTeX off" mode.
+    let latex_flag = resolve_latex_flag(&options.latex);
     let latex = Some(crate::server::latex::Mirror::open(latex_flag).unwrap_or_else(|err| die(err)));
     // The font library likewise: a directory that is not there is a typo,
     // and every file in one that is gets read now, for the families it holds.
-    let fonts = match first_of(&[&options.fonts, &env("LIBREPAPER_FONTS")]).trim() {
+    let fonts = match options.fonts.as_deref().unwrap_or("").trim() {
         "" => None,
         flag => Some(crate::server::fonts::Library::open(flag).unwrap_or_else(|err| die(err))),
     };
     // Same startup-time refusal as --latex/--fonts: a malformed flag is a
     // typo the operator is still standing in front of.
-    let biber_vm = match first_of(&[&options.biber_vm, &env("LIBREPAPER_BIBER_VM")]).trim() {
+    let biber_vm = match options.biber_vm.as_deref().unwrap_or("").trim() {
         "" => None,
         flag => Some(crate::server::latex::BiberVm::parse(flag).unwrap_or_else(|err| die(err))),
     };
-    let expire_from = parse_expire_from(&first_of(&[
-        &options.expire_from,
-        &env("LIBREPAPER_EXPIRE_FROM"),
-    ]))
-    .unwrap_or_else(|err| die(err));
+    let expire_from = parse_expire_from(options.expire_from.as_deref().unwrap_or(""))
+        .unwrap_or_else(|err| die(err));
     let blobs = open_storage(storage).await.unwrap_or_else(|err| die(err));
     let writer_lock =
         acquire_writer_lock(&deployment_paths.writer_lock).unwrap_or_else(|err| die(err));
@@ -208,25 +214,18 @@ pub async fn serve(options: ServeOptions) {
         .unwrap_or(options.port);
     let address = format!(":{port}");
 
+    let oauth_secrets = secrets_from_environment();
     let app = GithubApp {
-        client_id: first_of(&[&options.client_id, &env("LIBREPAPER_GITHUB_CLIENT_ID")]),
-        client_secret: first_of(&[
-            &options.client_secret,
-            &env("LIBREPAPER_GITHUB_CLIENT_SECRET"),
-        ]),
+        client_id: options.github_client_id.unwrap_or_default(),
+        client_secret: oauth_secrets.github_client_secret,
         ..GithubApp::default()
     };
-    // Google has no flags: a client secret belongs in the environment, and the
-    // README already tells operators to keep it there.
     let google = GoogleApp {
-        client_id: first_of(&[&env("LIBREPAPER_GOOGLE_CLIENT_ID")]),
-        client_secret: first_of(&[&env("LIBREPAPER_GOOGLE_CLIENT_SECRET")]),
+        client_id: options.google_client_id.unwrap_or_default(),
+        client_secret: oauth_secrets.google_client_secret,
         ..GoogleApp::default()
     };
-    let publishers = Policy::parse(&first_of(&[
-        &options.publishers,
-        &env("LIBREPAPER_PUBLISHERS"),
-    ]));
+    let publishers = Policy::parse(options.publishers.as_deref().unwrap_or(""));
     if !publishers.is_configured() {
         die("say who may publish, with --publishers.\n\n    \
              --publishers your-github-login      only you\n    \
@@ -234,11 +233,7 @@ pub async fn serve(options: ServeOptions) {
              --publishers any                    any GitHub account\n    \
              --publishers anyone                 no sign-in at all");
     }
-    let commenters = Policy::parse(&first_of(&[
-        &options.commenters,
-        &env("LIBREPAPER_COMMENTERS"),
-        "anyone",
-    ]));
+    let commenters = Policy::parse(options.commenters.as_deref().unwrap_or("anyone"));
 
     let advice = sign_in_advice(
         app.configured(),
@@ -257,10 +252,7 @@ pub async fn serve(options: ServeOptions) {
 
     let config = Arc::new(options.config);
     let shell = load_shell(&config).unwrap_or_else(|err| die(err));
-    let catalog_path = deployment_paths
-        .catalog
-        .as_ref()
-        .unwrap_or_else(|| die("local deployment has no catalogue path"));
+    let catalog_path = &deployment_paths.catalog;
     let catalog = Arc::new(
         crate::storage::catalog::Catalog::open(catalog_path)
             .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
@@ -273,10 +265,7 @@ pub async fn serve(options: ServeOptions) {
     let deployment_id = deployment_paths
         .ensure_deployment_identity(catalog_nonempty)
         .unwrap_or_else(|err| die(err));
-    let secrets = deployment_paths
-        .secrets
-        .as_ref()
-        .unwrap_or_else(|| die("local deployment has no secrets directory"));
+    let secrets = &deployment_paths.secrets;
     let key = session_key_file(&secrets.join("session.key"), catalog_nonempty)
         .unwrap_or_else(|err| die(err));
     let link_sealing_keys = link_sealing_keyring_file(&secrets.join("links.key"), catalog_nonempty)

@@ -8,7 +8,6 @@ use crate::auth::{
     now_unix, read_session, sign, sign_session, Identity, Policy, TokenCache, TOKEN_CACHE_CAP,
 };
 use crate::config::Configuration;
-use crate::util::first_of;
 
 #[test]
 fn policies() {
@@ -866,24 +865,6 @@ async fn region_annotations() {
         .await;
         assert_eq!(status, 400, "{name}: got {status} {payload}");
     }
-}
-
-#[test]
-fn settings_may_be_quoted() {
-    // A .env read by make keeps the quotes a shell would strip, and a client id
-    // wearing quotation marks is one GitHub has never heard of.
-    for (value, want) in [
-        ("\"Ov23li\"", "Ov23li"),
-        ("'Ov23li'", "Ov23li"),
-        ("  Ov23li ", "Ov23li"),
-        ("Ov23li", "Ov23li"),
-        ("\"", "\""),
-        ("", ""),
-    ] {
-        assert_eq!(first_of(&[value]), want, "first_of({value:?})");
-    }
-    // The first value that is not empty still wins.
-    assert_eq!(first_of(&["", "\"second\"", "third"]), "second");
 }
 
 // The share dialog is read by everyone named on a document, and a Google

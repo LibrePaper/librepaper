@@ -4,32 +4,6 @@
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::OffsetDateTime;
-/// The first value that is not empty once unquoted.
-pub fn first_of(values: &[&str]) -> String {
-    for value in values {
-        let cleaned = unquote(value);
-        if !cleaned.is_empty() {
-            return cleaned;
-        }
-    }
-    String::new()
-}
-
-/// Drops surrounding quotes. A .env read by make keeps them, unlike a shell,
-/// and a client id wearing quotation marks is one GitHub has never heard of.
-/// Every other .env convention allows them, so accept them here.
-pub fn unquote(value: &str) -> String {
-    let trimmed = value.trim();
-    let bytes = trimmed.as_bytes();
-    if bytes.len() >= 2 {
-        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return trimmed[1..trimmed.len() - 1].trim().to_string();
-        }
-    }
-    trimmed.to_string()
-}
-
 /// Strips control characters and trims to a length in characters, matching
 /// what every backend has always stored.
 pub fn clean(value: &str, limit: usize) -> String {
