@@ -59,6 +59,35 @@
         everything, so the wash is visible over the canvas beneath.
       */
       .textLayer mark[data-librepaper] { color: transparent; border-radius: 2px; }
+      /* PDF glyphs are already on the canvas. Keep annotations translucent
+         and generated text out of the measured runs: inserting a proposal or
+         deletion inline would displace the selectable text over the glyphs. */
+      .textLayer mark.librepaper-ins { background: rgb(90 180 120 / 0.28); }
+      .textLayer mark[data-proposed], .textLayer mark.librepaper-del { position: relative; }
+      .textLayer mark[data-proposed]::after,
+      .textLayer mark.librepaper-del::before {
+        position: absolute;
+        z-index: 2;
+        left: 0;
+        top: 1em;
+        margin: 0;
+        padding: 2px 4px;
+        font: 12px/1.3 system-ui, sans-serif;
+        white-space: normal;
+        width: max-content;
+        max-width: 240px;
+        border-radius: 2px;
+        box-shadow: 0 1px 3px #0003;
+      }
+      .textLayer mark[data-proposed]::after {
+        content: "+";
+        left: 100%;
+        background: #edf8ef;
+      }
+      .textLayer mark.librepaper-del::before { content: "−"; }
+      .textLayer mark[data-proposed]:hover::after { content: attr(data-proposed); }
+      .textLayer mark[data-proposed=""]::after { display: none; }
+      .textLayer mark.librepaper-del:hover::before { content: attr(data-deleted); }
       /* pdf.js measures its fonts with a canvas it keeps on the body. */
       canvas.hiddenCanvasElement { display: none; }
       ::selection { background: rgb(0 100 255 / 0.3); }

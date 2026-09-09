@@ -220,7 +220,7 @@ import { createMathTypesetter } from "../lib/math.js";
       if (nodeEnd <= start) continue;
       const from = Math.max(start, nodeStart) - nodeStart;
       const to = Math.min(end, nodeEnd) - nodeStart;
-      if (to > from) pieces.push({ node: table.nodes[i], from, to });
+      if (to > from) pieces.push({ node: table.nodes[i], from, to, end: nodeStart + to });
     }
     return pieces;
   }
@@ -289,11 +289,11 @@ import { createMathTypesetter } from "../lib/math.js";
       for (const item of active) if (item.end <= start) active.delete(item);
       if (!active.size) continue;
       const covering = [...active];
-      for (const piece of piecesFor(start, end)) plan.push({ piece, covering, end });
+      for (const piece of piecesFor(start, end)) plan.push({ piece, covering });
     }
 
     quietly(() => {
-      for (const { piece, covering, end } of plan.reverse()) {
+      for (const { piece, covering } of plan.reverse()) {
         const range = document.createRange();
         range.setStart(piece.node, piece.from);
         range.setEnd(piece.node, piece.to);
@@ -320,7 +320,8 @@ import { createMathTypesetter } from "../lib/math.js";
         const suggestion = live.find((item) => item.motivation === "editing");
         if (suggestion) {
           mark.style.textDecoration = "line-through";
-          if (end === suggestion.end) {
+          mark.style.textDecorationColor = edge(tintOf("editing"));
+          if (piece.end === suggestion.end) {
             mark.dataset.proposed = suggestion.proposed || "";
             mark.style.setProperty("--librepaper-proposed-color", edge(tintOf("editing")));
           }
@@ -405,7 +406,7 @@ import { createMathTypesetter } from "../lib/math.js";
         const mark = document.createElement("mark");
         mark.className = "librepaper-del";
         mark.dataset.deleted = item.text || "";
-        if (item.who) mark.title = item.who;
+        mark.title = [item.who, item.text].filter(Boolean).join(": ");
         range.insertNode(mark);
       }
     });

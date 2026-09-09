@@ -830,14 +830,8 @@
   let historyChanges = $derived(historyController.changes);
   let historyChangedPaths = $derived(historyController.changedPaths);
   let historyRedlines = $derived(historyController.redlines);
-  // Typst and LaTeX render to a PDF drawn by a browser VM -- the frame has
-  // no text there for a mark to land on, so the toggle stays off and says
-  // why rather than silently doing nothing.
-  const redlinesDisabledReason = $derived(
-    sourceFormat === "typst" || sourceFormat === "latex"
-      ? "Redlines cannot be shown in a document rendered to PDF."
-      : "",
-  );
+  // The PDF viewer exposes the same text offsets as the HTML frame.
+  const redlinesDisabledReason = "";
   function setHistoryRedlines(on) {
     historyController.setRedlines(Boolean(on) && !redlinesDisabledReason);
   }

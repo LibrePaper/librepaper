@@ -217,8 +217,10 @@ mark at `at` whose `::before` content is the deleted text, struck through.
 `title` carries `who`. Turning the toggle off, leaving the panel, or changing
 the baseline clears them. Redlines and comment highlights coexist.
 
-The toggle is disabled with an explanation for a document rendered to PDF
-(typst, latex), where the frame has no text to paint.
+The toggle also works for Typst and LaTeX through the PDF viewer's selectable
+text layer. Insertions are underlined over the canvas. Deletions and pending
+proposals use small minus/plus badges that show their text on hover, keeping
+generated text out of the PDF's fixed layout. The sidebar retains the full diff.
 
 ## Tests
 

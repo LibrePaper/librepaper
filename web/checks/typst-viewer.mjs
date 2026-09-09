@@ -240,6 +240,49 @@ async function run() {
   `);
   check("a ligature-safe Typst text anchor paints", ligature?.marks > 0 && ligature.text === "fixture", JSON.stringify(ligature));
 
+  const tracked = await tab.eval(`
+    const doc = window.doc();
+    const at = window.anchor({ exact: 'Typst PDF fixture', prefix: '', suffix: '' });
+    if (!at) return null;
+    const spans = [...doc.querySelectorAll('.textLayer span:not(.gap)')];
+    const bounds = () => spans.map(span => {
+      const r = doc.createRange(); r.selectNodeContents(span);
+      const b = r.getBoundingClientRect();
+      return [b.x, b.y, b.width, b.height];
+    });
+    const before = JSON.stringify(bounds());
+    const text = doc.body.textContent;
+    window.paint([{ id: 'tracked', start: at.start, end: at.end, motivation: 'editing', proposed: 'A revised title' }]);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const proposals = doc.querySelectorAll('mark[data-proposed]');
+    const strike = doc.querySelector('mark[data-librepaper~="tracked"]');
+    const style = doc.defaultView.getComputedStyle(strike);
+    const proposalCount = proposals.length;
+    const proposalPosition = doc.defaultView.getComputedStyle(proposals[0], '::after').position;
+    window.paint([]);
+    window.frames[0].postMessage({ librepaper: true, type: 'redlines', items: [
+      { kind: 'insert', start: at.start, end: at.end, who: 'Editor' },
+      { kind: 'delete', at: at.start, text: 'Previous title', who: 'Editor' },
+    ] }, '*');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const insertion = doc.querySelector('mark.librepaper-ins');
+    const deletion = doc.querySelector('mark.librepaper-del');
+    const result = { proposalCount, proposalPosition,
+      visibleStrike: style.textDecorationColor !== 'rgba(0, 0, 0, 0)',
+      inserted: [...doc.querySelectorAll('mark.librepaper-ins')].map(m => m.textContent).join(''),
+      deletionPosition: doc.defaultView.getComputedStyle(deletion, '::before').position,
+      underline: doc.defaultView.getComputedStyle(insertion).textDecorationLine,
+      sameText: doc.body.textContent === text,
+      sameBounds: JSON.stringify(bounds()) === before };
+    window.frames[0].postMessage({ librepaper: true, type: 'redlines', items: [] }, '*');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    result.cleared = !doc.querySelector('mark.librepaper-ins, mark.librepaper-del');
+    return result;
+  `);
+  check("PDF suggestions paint one proposal with a visible strike", tracked?.proposalCount === 1 && tracked.visibleStrike && tracked.proposalPosition === 'absolute', JSON.stringify(tracked));
+  check("PDF redlines underline insertions without moving selectable text", tracked?.inserted === 'Typst PDF fixture' && tracked.underline.includes('underline') && tracked.sameText && tracked.sameBounds && tracked.deletionPosition === 'absolute', JSON.stringify(tracked));
+  check("PDF redlines clear cleanly", tracked?.cleared, JSON.stringify(tracked));
+
   // Empty PDF end-of-line items must leave a separator in the live DOM.
   // Without it, this highlight becomes "parameteris fixed", fails to anchor,
   // and sorts after the comments instead of between them in the sidebar.
@@ -294,15 +337,16 @@ async function run() {
     const found = await tab.eval(`
       const at = window.anchor(${JSON.stringify(boundary.selector)});
       if (!at) return null;
-      window.paint([{ id: 'typst-cross-page', start: at.start, end: at.end, motivation: 'commenting' }]);
+      window.paint([{ id: 'typst-cross-page', start: at.start, end: at.end, motivation: 'editing', proposed: 'A replacement across pages' }]);
       await new Promise((resolve) => setTimeout(resolve, 120));
       const viewer = frame.contentWindow.librepaperViewer;
       const marks = [...window.doc().querySelectorAll('mark[data-librepaper]')].filter((m) => !m.closest('span.gap'));
       const markPages = [...new Set(marks.map((mark) => mark.closest('.page')?.dataset.page).filter(Boolean))];
-      return { at, startPage: viewer.pageForOffset(at.start), endPage: viewer.pageForOffset(at.end - 1), markPages, marks: marks.length };
+      return { at, startPage: viewer.pageForOffset(at.start), endPage: viewer.pageForOffset(at.end - 1), markPages, marks: marks.length, proposals: window.doc().querySelectorAll('mark[data-proposed]').length };
     `);
     check("the cross-page text anchor paints in the PDF text layer", found?.marks > 0, JSON.stringify(found));
     check("the cross-page highlight reaches both pages", found?.markPages?.length > 1, JSON.stringify(found));
+    check("a suggestion spanning PDF pages shows its proposal only once", found?.proposals === 1, JSON.stringify(found));
     check("PDF pageForOffset follows the highlighted page break", found?.endPage > found?.startPage, JSON.stringify(found));
   }
 
