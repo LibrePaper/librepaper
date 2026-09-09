@@ -365,6 +365,20 @@ pub struct Room {
     pub(crate) restore_write: Mutex<()>,
     /// Manifest writers serialize independently of edits and session persistence.
     manifest_write: Mutex<()>,
+    /// Serializes writers of the room's comment list.
+    ///
+    /// A room with no catalogue has nothing narrower to persist than the whole
+    /// list, so a comment mutation prepares the list it wants under state,
+    /// writes it with state released, and installs it afterwards. Two writers
+    /// overlapping in that window would each write a list missing the other's
+    /// change, and the loser's conditional write would fence the room instead
+    /// of merging. This gate is what keeps them apart.
+    ///
+    /// It is deliberately not `restore_write`: source edits and socket traffic
+    /// never take it, and a comment should not wait behind a whole restore.
+    /// It is also what `Room::save` needs and did not have -- the seeding
+    /// command wrote the same object with no gate at all.
+    comment_write: Mutex<()>,
     pub state: Mutex<RoomState>,
 }
 
@@ -838,6 +852,7 @@ impl RoomSet {
             checkpoint_write: Mutex::new(()),
             restore_write: Mutex::new(()),
             manifest_write: Mutex::new(()),
+            comment_write: Mutex::new(()),
             state: Mutex::new(RoomState {
                 seq: 0,
                 comments: Vec::new(),
@@ -1764,29 +1779,73 @@ impl Room {
         }
     }
 
-    /// Persists every comment the room holds: the whole JSON blob for a room
-    /// with no catalogue (there is nothing narrower to write), or, for a
-    /// catalogue-backed room, a full row-by-row reconciliation via
-    /// `save_catalog_comments` -- see that function's documentation for why
-    /// its only production caller is the seeding command and why every
-    /// ordinary comment mutation instead updates its one changed row
-    /// directly and never calls this.
-    pub async fn save(&self, state: &mut RoomState) -> Result<(), String> {
+    /// Adds one prepared comment to the room and persists the list, for the
+    /// seeding command -- the one comment writer outside `room/`, and until
+    /// now the one that took no gate at all while writing the same object
+    /// every comment mutation writes.
+    pub async fn append_comment(&self, mut comment: Comment) -> Result<(), String> {
+        let _comment_writer = self.comment_write.lock().await;
+        let (seq, comments) = {
+            let state = self.state.lock().await;
+            let seq = state.seq.saturating_add(1);
+            comment.seq = seq;
+            let mut comments = state.comments.clone();
+            comments.push(comment);
+            (seq, comments)
+        };
+        self.persist_comments(seq, comments).await
+    }
+
+    /// Persists one prepared comment list with room state released, and
+    /// installs it only once storage has taken it: the whole JSON blob for a
+    /// room with no catalogue (there is nothing narrower to write), or a
+    /// row-by-row reconciliation via `save_catalog_comments` for a
+    /// catalogue-backed one -- every ordinary comment mutation on a
+    /// catalogue-backed room instead updates its one changed row directly and
+    /// never comes here.
+    ///
+    /// The caller holds `comment_write` and prepared `comments` from the list
+    /// the room held under state, so what is written differs from that list by
+    /// exactly the caller's own change and by nothing else. The legacy blob is
+    /// written conditionally on the version observed under state; losing that
+    /// compare-and-swap is proof another process owns the room, which fences
+    /// it here as everywhere else. On any failure nothing is installed, so a
+    /// failed write leaves room state as it was rather than putting an older
+    /// snapshot back over somebody else's change.
+    pub(super) async fn persist_comments(
+        &self,
+        seq: i64,
+        mut comments: Vec<Comment>,
+    ) -> Result<(), String> {
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
         if let Some(catalog) = self.catalog.get() {
-            save_catalog_comments(catalog, &self.slug, &mut state.seq, &mut state.comments).await?;
+            let mut seq = seq;
+            save_catalog_comments(catalog, &self.slug, &mut seq, &mut comments).await?;
+            let mut state = self.state.lock().await;
+            state.seq = state.seq.max(seq);
+            state.comments = comments;
             return Ok(());
         }
-        let raw = json!({"seq": state.seq, "comments": to_stored(&state.comments)});
+        let expected = self.state.lock().await.comments_version.clone();
+        let raw = json!({"seq": seq, "comments": to_stored(&comments)});
         let body = serde_json::to_vec(&raw).map_err(|err| err.to_string())?;
-        let mut version = std::mem::take(&mut state.comments_version);
-        let result = self
-            .write_owned(&room_key(&self.slug), body, &mut version)
-            .await;
+        let mut version = expected.clone();
+        self.write_owned(&room_key(&self.slug), body, &mut version)
+            .await?;
+        let mut state = self.state.lock().await;
+        if state.comments_version != expected {
+            // The gate keeps other comment writers out of this window, so the
+            // only way the fence moves is a reload, and what a reload installed
+            // is the durable list. Report the write rather than putting a list
+            // assembled before it back over the top.
+            return Err("this room's comments were reloaded during that write".into());
+        }
         state.comments_version = version;
-        result
+        state.comments = comments;
+        state.seq = state.seq.max(seq);
+        Ok(())
     }
 
     /// Every comment, for seeding and for the tests that read a room back.

@@ -410,7 +410,48 @@ pub(super) fn valid_source(
     })
 }
 
+/// Installs a comment the durable write has already accepted.
+///
+/// The comment is found again by identity rather than by the index the
+/// preparation used, because room state was released for the write. Under the
+/// comment gate nothing can have moved it, so this is a fence rather than a
+/// merge: a comment that is no longer here is one a reload replaced with the
+/// durable list, and that list is the one to keep.
+pub(super) fn install_comment(state: &mut RoomState, updated: Comment) {
+    if let Some(index) = state.comments.iter().position(|item| item.id == updated.id) {
+        state.comments[index] = updated;
+    }
+}
+
 impl Room {
+    /// The comment list this room should hold after one comment is replaced,
+    /// for a room with no catalogue -- which has nothing narrower to write
+    /// than the whole list. Empty for a catalogue-backed room, which writes
+    /// the one changed row and never needs the copy.
+    pub(super) fn legacy_list_with(
+        &self,
+        state: &RoomState,
+        index: usize,
+        updated: &Comment,
+    ) -> Vec<Comment> {
+        if self.catalog.get().is_some() {
+            return Vec::new();
+        }
+        let mut list = state.comments.clone();
+        list[index] = updated.clone();
+        list
+    }
+
+    /// The same, for a comment being removed.
+    pub(super) fn legacy_list_without(&self, state: &RoomState, index: usize) -> Vec<Comment> {
+        if self.catalog.get().is_some() {
+            return Vec::new();
+        }
+        let mut list = state.comments.clone();
+        list.remove(index);
+        list
+    }
+
     /// Adds assistant suggestions against one immutable text snapshot. Bad or
     /// stale anchors are item results; admission and rate-limit failures are
     /// whole-pass refusals so a caller cannot use a batch to bypass caps.
@@ -432,22 +473,26 @@ impl Room {
             return Err(BatchRefusal("that revision is not valid".into()));
         }
         let _restore_writer = self.restore_write.lock().await;
+        let _comment_writer = self.comment_write.lock().await;
         if !self.hold().await {
             return Err(BatchRefusal("this room is held by another server".into()));
         }
-        let mut state = self.state.lock().await;
-        let initial_seq = state.seq;
         let config = self.config.clone();
         // The SQLite catalogue has the same hard ceiling as the default
         // configuration. Check its durable count too, since a hot room cache
         // may lag a previous process while the room lease is being acquired.
-        let existing_comments = if let Some(catalog) = self.catalog.get() {
-            count_catalog_comments(catalog, &self.slug)
-                .await
-                .map_err(BatchRefusal)?
-        } else {
-            state.comments.len()
+        // Asked before room state is taken: it is the catalogue's answer and
+        // needs nothing of this room's.
+        let durable_comments = match self.catalog.get() {
+            Some(catalog) => Some(
+                count_catalog_comments(catalog, &self.slug)
+                    .await
+                    .map_err(BatchRefusal)?,
+            ),
+            None => None,
         };
+        let mut state = self.state.lock().await;
+        let existing_comments = durable_comments.unwrap_or_else(|| state.comments.len());
         let max_comments = config.max_comments.min(500);
         if existing_comments.saturating_add(items.len()) > max_comments {
             return Err(BatchRefusal(
@@ -467,9 +512,13 @@ impl Room {
         }
         let texts = session::texts_of(&state.session.doc);
         let pass = new_id();
-        let mut results = Vec::with_capacity(items.len());
+        let mut results: Vec<Value> = Vec::with_capacity(items.len());
         let mut events = Vec::new();
-        let mut legacy_added = Vec::new();
+        // The whole pass is prepared under state and persisted without it.
+        // Each entry remembers which slot in `results` its outcome belongs to,
+        // so an item refused during preparation keeps its place in the reply.
+        let mut prepared: Vec<(usize, Comment)> = Vec::new();
+        let mut next_seq = state.seq;
         for item in items {
             let Some(source) = valid_source(&config, Some(&item.source)) else {
                 results.push(json!({"status":"refused","reason":"invalid anchor"}));
@@ -503,10 +552,10 @@ impl Room {
                 continue;
             }
             let body = clean(&item.body, config.caps.body).trim().to_string();
-            state.seq += 1;
+            next_seq = next_seq.saturating_add(1);
             let added = Comment {
                 id: new_id(),
-                seq: state.seq,
+                seq: next_seq,
                 motivation: "editing".into(),
                 exact: source.exact.clone(),
                 prefix: source.prefix.clone(),
@@ -529,41 +578,62 @@ impl Room {
                 via: caller.via.to_string(),
                 accept_request: String::new(),
             };
-            let persisted: Result<i64, String> = if let Some(catalog) = self.catalog.get() {
-                match catalog_comment_row(&self.slug, &added) {
+            results.push(Value::Null);
+            prepared.push((results.len() - 1, added));
+        }
+        // The list the room would hold if the whole pass lands, for a room
+        // with no catalogue. A catalogue-backed room inserts one row per item
+        // and never needs the copy.
+        let mut legacy_list = if self.catalog.get().is_some() {
+            Vec::new()
+        } else {
+            let mut list = state.comments.clone();
+            list.extend(prepared.iter().map(|(_, added)| added.clone()));
+            list
+        };
+        drop(state);
+        if let Some(catalog) = self.catalog.get() {
+            // Row by row, each acknowledged individually, with room state
+            // released for the whole pass: a hundred inserts used to hold the
+            // document's lock from the first to the last.
+            let mut stored_rows = Vec::new();
+            for (slot, added) in prepared {
+                let persisted = match catalog_comment_row(&self.slug, &added) {
                     Ok(row) => insert_comment_row(catalog, row).await,
                     Err(error) => Err(error),
-                }
-            } else {
-                Ok(added.seq)
-            };
-            match persisted {
-                Ok(seq) => {
-                    let mut stored = added;
-                    stored.seq = seq;
-                    state.seq = state.seq.max(seq);
-                    state.comments.push(stored.clone());
-                    let id = stored.id.clone();
-                    events.push(json!({"type":"comment","comment":stored}));
-                    results.push(json!({"status":"created","id":id}));
-                    legacy_added.push(stored);
-                }
-                Err(error) => {
-                    state.seq -= 1;
-                    results.push(json!({"status":"refused","reason":error}));
+                };
+                match persisted {
+                    Ok(seq) => {
+                        let mut stored = added;
+                        stored.seq = seq;
+                        results[slot] = json!({"status":"created","id":stored.id});
+                        events.push(json!({"type":"comment","comment":stored.clone()}));
+                        stored_rows.push(stored);
+                    }
+                    Err(error) => results[slot] = json!({"status":"refused","reason":error}),
                 }
             }
-        }
-        if self.catalog.get().is_none() && !legacy_added.is_empty() {
-            if let Err(error) = self.save(&mut state).await {
-                for added in &legacy_added {
-                    state.comments.retain(|item| item.id != added.id);
-                }
-                state.seq = initial_seq;
+            let mut state = self.state.lock().await;
+            for stored in stored_rows {
+                state.seq = state.seq.max(stored.seq);
+                state.comments.push(stored);
+            }
+        } else if !prepared.is_empty() {
+            // One conditional write for the whole pass, as before. It either
+            // takes every prepared suggestion or none of them, and a failure
+            // installs nothing, so an unrelated change made meanwhile is not
+            // overwritten by a snapshot assembled before it.
+            if let Err(error) = self
+                .persist_comments(next_seq, std::mem::take(&mut legacy_list))
+                .await
+            {
                 return Err(BatchRefusal(error));
             }
+            for (slot, added) in prepared {
+                results[slot] = json!({"status":"created","id":added.id});
+                events.push(json!({"type":"comment","comment":added}));
+            }
         }
-        drop(state);
         for event in events {
             let shared = self.comment_event_for(&event, "", false).await;
             self.broadcast(&shared).await;
@@ -668,6 +738,12 @@ impl Room {
         // cannot race the CRDT edit and leave the catalogue outcome detached
         // from the checkpoint it describes.
         let _restore_writer = self.restore_write.lock().await;
+        // Every comment mutation below prepares its change under state,
+        // persists it with state released, and installs it only once storage
+        // has taken it. This gate is what makes the middle phase safe: it is
+        // the only thing that keeps a second comment writer from preparing
+        // against the list this one is about to replace.
+        let _comment_writer = self.comment_write.lock().await;
         if !self.hold().await {
             return (
                 json!({"type": "error", "message": "this room is held by another server", "temp_id": temp_id,
@@ -751,6 +827,35 @@ impl Room {
             return fail(&format!("too many comments from this {source}; try later"));
         }
 
+        // A decision on a suggestion is refused while its acceptance is still
+        // staged. That answer is the catalogue's, so it is asked for with room
+        // state released -- an editor's keystrokes must not queue behind it.
+        // It is asked here rather than inside the branches so that the state
+        // release happens once, before any preparation; the branches keep
+        // their own authorization refusals, which still come first for the
+        // caller who is not allowed to decide at all.
+        let deciding = match &command {
+            Command::Resolve { .. } => is_owner,
+            Command::Delete { .. } => true,
+            _ => false,
+        };
+        if let (Some(catalog), true) = (self.catalog.get(), deciding) {
+            let is_suggestion = state
+                .comments
+                .iter()
+                .any(|item| item.id == comment_id && item.motivation == "editing");
+            if is_suggestion {
+                drop(state);
+                let pending = pending_suggestion_accept(catalog, &self.slug, &comment_id).await;
+                state = self.state.lock().await;
+                match pending {
+                    Ok(true) => return fail("a suggestion acceptance is still pending"),
+                    Ok(false) => {}
+                    Err(_) => return fail(UNSAVED),
+                }
+            }
+        }
+
         match command {
             Command::Resolve {
                 comment_id,
@@ -771,15 +876,6 @@ impl Room {
                 if is_suggestion && !is_owner {
                     return fail("only an editor may decide a suggestion");
                 }
-                if is_suggestion {
-                    if let Some(catalog) = self.catalog.get() {
-                        match pending_suggestion_accept(catalog, &self.slug, &comment_id).await {
-                            Ok(true) => return fail("a suggestion acceptance is still pending"),
-                            Ok(false) => {}
-                            Err(_) => return fail(UNSAVED),
-                        }
-                    }
-                }
                 if is_suggestion && !resolved && state.comments[index].outcome == "accepted" {
                     return fail(
                         "an accepted suggestion cannot be reopened; restore the checkpoint instead",
@@ -798,12 +894,7 @@ impl Room {
                         true,
                     );
                 }
-                let (was_resolved, was_resolved_at, was_resolved_in, was_outcome) = (
-                    state.comments[index].resolved,
-                    state.comments[index].resolved_at.clone(),
-                    state.comments[index].resolved_in.clone(),
-                    state.comments[index].outcome.clone(),
-                );
+                let was_resolved = state.comments[index].resolved;
                 if was_resolved == resolved {
                     let target = &state.comments[index];
                     let mut result = json!({
@@ -838,29 +929,29 @@ impl Room {
                         String::new()
                     };
                 }
+                let prepared = self.legacy_list_with(&state, index, &decided);
+                let seq = state.seq;
+                drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &decided) {
                         Ok(row) => update_comment_row(catalog, row).await,
                         Err(error) => Err(error),
                     }
                 } else {
-                    state.comments[index] = decided.clone();
-                    self.save(&mut state).await
+                    self.persist_comments(seq, prepared).await
                 };
+                state = self.state.lock().await;
                 if persisted.is_err() {
-                    state.comments[index].resolved = was_resolved;
-                    state.comments[index].resolved_at = was_resolved_at;
-                    state.comments[index].resolved_in = was_resolved_in;
-                    state.comments[index].outcome = was_outcome;
                     return fail(UNSAVED);
                 }
-                state.comments[index] = decided;
-                let target = &state.comments[index];
+                if self.catalog.get().is_some() {
+                    install_comment(&mut state, decided.clone());
+                }
                 (
                     json!({
-                        "type": "resolve", "comment_id": target.id,
-                        "resolved": target.resolved, "resolved_at": target.resolved_at,
-                        "resolved_in": target.resolved_in,
+                        "type": "resolve", "comment_id": decided.id,
+                        "resolved": decided.resolved, "resolved_at": decided.resolved_at,
+                        "resolved_in": decided.resolved_in,
                         "request_id": request_id,
                     }),
                     true,
@@ -875,36 +966,26 @@ impl Room {
                 else {
                     return fail("unknown comment");
                 };
-                if state.comments[index].motivation == "editing" {
-                    if let Some(catalog) = self.catalog.get() {
-                        match pending_suggestion_accept(catalog, &self.slug, &comment_id).await {
-                            Ok(true) => return fail("a suggestion acceptance is still pending"),
-                            Ok(false) => {}
-                            Err(_) => return fail(UNSAVED),
-                        }
-                    }
-                }
                 if !deletable(&state.comments[index], author, is_owner) {
                     return fail("you may only delete your own comments");
                 }
                 // Removed from room state only once the row is gone, so a
                 // cancelled caller cannot hide a comment from this room that
                 // every other reader still has.
+                let prepared = self.legacy_list_without(&state, index);
+                let seq = state.seq;
+                drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     delete_comment_row(catalog, &self.slug, &comment_id).await
                 } else {
-                    let removed = state.comments.remove(index);
-                    let saved = self.save(&mut state).await;
-                    if saved.is_err() {
-                        state.comments.insert(index, removed);
-                    }
-                    saved
+                    self.persist_comments(seq, prepared).await
                 };
+                state = self.state.lock().await;
                 if persisted.is_err() {
                     return fail(UNSAVED);
                 }
                 if self.catalog.get().is_some() {
-                    state.comments.remove(index);
+                    state.comments.retain(|item| item.id != comment_id);
                 }
                 (
                     json!({"type": "delete", "comment_id": comment_id,
@@ -944,23 +1025,28 @@ impl Room {
                 // reason as a resolve.
                 let mut anchored = state.comments[index].clone();
                 anchored.source = Some(anchor.clone());
+                let prepared = self.legacy_list_with(&state, index, &anchored);
+                let seq = state.seq;
+                drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &anchored) {
                         Ok(row) => update_comment_row(catalog, row).await,
                         Err(error) => Err(error),
                     }
                 } else {
-                    state.comments[index].source = Some(anchor.clone());
-                    self.save(&mut state).await
+                    self.persist_comments(seq, prepared).await
                 };
+                state = self.state.lock().await;
                 if persisted.is_err() {
-                    state.comments[index].source = None;
                     return fail(UNSAVED);
                 }
-                state.comments[index] = anchored;
+                let anchored_id = anchored.id.clone();
+                if self.catalog.get().is_some() {
+                    install_comment(&mut state, anchored);
+                }
                 (
                     json!({
-                        "type": "anchor", "comment_id": state.comments[index].id,
+                        "type": "anchor", "comment_id": anchored_id,
                         "source": anchor,
                         "request_id": request_id,
                     }),
@@ -1000,10 +1086,20 @@ impl Room {
                 // The reply joins room state once its receipt is durable. A
                 // retry of the same request id matches that receipt rather
                 // than inserting the reply twice.
+                let target_id = state.comments[index].id.clone();
+                let prepared = if self.catalog.get().is_some() {
+                    Vec::new()
+                } else {
+                    let mut list = state.comments.clone();
+                    list[index].replies.push(added.clone());
+                    list
+                };
+                let seq = state.seq;
+                drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     let row = crate::storage::catalog::Reply {
                         slug: self.slug.clone(),
-                        comment_id: state.comments[index].id.clone(),
+                        comment_id: target_id.clone(),
                         id: added.id.clone(),
                         body: added.body.clone(),
                         creator: added.creator.clone(),
@@ -1020,22 +1116,22 @@ impl Room {
                     }));
                     insert_reply_request(catalog, row, request_id.clone(), digest, now_unix()).await
                 } else {
-                    state.comments[index].replies.push(added.clone());
-                    let saved = self.save(&mut state).await;
-                    if saved.is_err() {
-                        state.comments[index].replies.pop();
-                    }
-                    saved
+                    self.persist_comments(seq, prepared).await
                 };
+                state = self.state.lock().await;
                 if persisted.is_err() {
                     return fail(UNSAVED);
                 }
                 if self.catalog.get().is_some() {
-                    state.comments[index].replies.push(added.clone());
+                    if let Some(target) =
+                        state.comments.iter_mut().find(|item| item.id == target_id)
+                    {
+                        target.replies.push(added.clone());
+                    }
                 }
                 (
                     json!({
-                        "type": "reply", "comment_id": state.comments[index].id,
+                        "type": "reply", "comment_id": target_id,
                         "reply": added, "temp_id": temp_id,
                         "request_id": request_id,
                     }),
@@ -1149,13 +1245,13 @@ impl Room {
                 } else {
                     current.clone()
                 };
-                state.seq += 1;
+                let next_seq = state.seq.saturating_add(1);
                 // The selector is the durable anchor. Offsets are recomputed in
                 // the reader against whatever version of the document is on
                 // screen, so replacing a document needs no migration pass here.
                 let added = Comment {
                     id: requested_id.clone().unwrap_or_else(new_id),
-                    seq: state.seq,
+                    seq: next_seq,
                     motivation,
                     exact,
                     prefix: clean(&raw_prefix, config.caps.context),
@@ -1180,13 +1276,18 @@ impl Room {
                     via: via.to_string(),
                     accept_request: String::new(),
                 };
+                let prepared = if self.catalog.get().is_some() {
+                    Vec::new()
+                } else {
+                    let mut list = state.comments.clone();
+                    list.push(added.clone());
+                    list
+                };
+                drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     let row = match catalog_comment_row(&self.slug, &added) {
                         Ok(row) => row,
-                        Err(_) => {
-                            state.seq -= 1;
-                            return fail(UNSAVED);
-                        }
+                        Err(_) => return fail(UNSAVED),
                     };
                     let digest = request_digest(&json!({
                         "kind": "comment",
@@ -1218,8 +1319,9 @@ impl Room {
                         Ok(seq) => {
                             let mut stored = added.clone();
                             stored.seq = seq;
-                            state.comments.push(stored);
+                            let mut state = self.state.lock().await;
                             state.seq = state.seq.max(seq);
+                            state.comments.push(stored);
                             Ok(())
                         }
                         Err(error) => {
@@ -1228,15 +1330,9 @@ impl Room {
                         }
                     }
                 } else {
-                    state.comments.push(added.clone());
-                    let saved = self.save(&mut state).await;
-                    if saved.is_err() {
-                        state.comments.pop();
-                    }
-                    saved
+                    self.persist_comments(next_seq, prepared).await
                 };
                 if persisted.is_err() {
-                    state.seq -= 1;
                     return fail(UNSAVED);
                 }
                 (

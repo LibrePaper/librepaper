@@ -791,11 +791,7 @@ pub async fn seed_annotations(
                 author: String::new(),
             });
         }
-        let mut state = room.state.lock().await;
-        state.seq += 1;
-        written.seq = state.seq;
-        state.comments.push(written);
-        if let Err(err) = room.save(&mut state).await {
+        if let Err(err) = room.append_comment(written).await {
             die(format!(
                 "could not write the seeded comments for {}: {err}",
                 room.slug
