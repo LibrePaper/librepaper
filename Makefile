@@ -64,7 +64,6 @@ test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cd web && bun run check
 	@cargo fmt --check
 	@node web/tools/pin-tools.test.mjs
-	@node latex/tools/release.test.mjs
 	@node latex/tools/check-mirror.test.mjs
 	@cargo clippy --workspace --all-targets -- -D warnings
 # nextest runs each case in its own process, so one crate's failure does not
@@ -137,10 +136,6 @@ OWNER      ?= $(if $(filter any anyone,$(PUBLISHERS)),,$(if $(findstring $(comma
 # mirror; `LATEX=` names another for either target.
 LATEX      ?=
 LATEX_FLAG ?= $(if $(LATEX),--latex $(LATEX))
-# The release input and its reviewed manifest digest are explicit so a mirror
-# build cannot silently pick up a different WasmTex artifact.
-LATEX_RELEASE ?= ../wasm-latex/staged
-LATEX_RELEASE_SHA256 ?=
 
 serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, PUBLISHERS=, COMMENTERS=, LATEX=)
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
@@ -177,13 +172,13 @@ kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
 	@pkill -f '[d]ist/librepaper serve' && echo "stopped" || echo "nothing to stop"
 
-.PHONY: deploy latex-check latex-mirror latex-smoke
+.PHONY: deploy latex-check latex-smoke
 
-latex-mirror:  ## Build the pinned WasmTex release and its TeX package set (requires network)
-	@test -n "$(LATEX_RELEASE_SHA256)" || { echo 'LATEX_RELEASE_SHA256 is required (review the release manifest first)' >&2; exit 2; }
-	@node latex/tools/wasmtex.mjs --release "$(LATEX_RELEASE)" --sha256 "$(LATEX_RELEASE_SHA256)"
-	@node latex/tools/wasmtex.mjs --scheme
-	@node latex/tools/check-mirror.mjs latex/mirror
+# The mirror itself -- WasmTex engines and the TeX Live bundles -- is built
+# and pushed from the wasm-latex repository (`make mirror`, `make push`
+# there; layout and manifest in wasm-latex/docs/mirror.md). MIRROR= below
+# points at that build's output.
+MIRROR ?= ../wasm-latex/mirror
 
 latex-check:
 	@node latex/tools/check-mirror.mjs $(LATEX)
@@ -205,7 +200,7 @@ deploy: latex-check $(BIN)  ## Serve locally; sign in for your four examples and
 #
 #     sops exec-env deploy/keys.yaml 'wrangler deploy'
 KEYS ?= deploy/keys.yaml
-.PHONY: secrets latex-push
+.PHONY: secrets
 
 secrets:  ## Open an interactive shell with the sops-encrypted deployment keys in its environment
 	@test -f $(KEYS) || { echo "no $(KEYS)"; exit 1; }
@@ -213,35 +208,8 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 	@echo "$(KEYS) is loaded in this shell; exit to drop it"
 	@sops exec-env $(KEYS) "$${SHELL:-/bin/sh}"
 
-# The LaTeX mirror, on Cloudflare. It is served as a worker made of static
-# files, deploy/latex/wrangler.toml, so the only credential it needs is the
-# CLOUDFLARE_API_TOKEN that `make secrets` provides. What goes up is the
-# WasmTex release, its TeX Live snapshot files and the Biber VM image -- see
-# latex/tools/README.md -- and not the legacy distributions an older mirror
-# directory may still hold. A file named by its digest is cached forever; the
-# manifest is not cached at all. Build the mirror first:
-#
-#     node latex/tools/wasmtex.mjs --release <staged> --sha256 <digest>   # the engine release
-#     node latex/tools/wasmtex-record.mjs --lib <wasmtex checkout>/lib       # the package set the corpus asks for
-#     node latex/tools/wasmtex.mjs --texlive-root icudt68l.dat
-#     node latex/tools/biber-vm/build.mjs               # the Biber VM (needs Docker)
-#
-# Deploys upload only files whose content changed, so updating is cheap.
-MIRROR ?= latex/mirror
-
-latex-push: latex-smoke  ## Verify and push the LaTeX mirror to Cloudflare (run inside make secrets)
-	@node latex/tools/check-mirror.mjs $(MIRROR)
-	@test -n "$$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN is not set; run this inside make secrets"; exit 1; }
-	@# The three distributions the card does not show, and the download cache
-	@# mirror.mjs keeps beside them, which holds the release archives whole.
-	@printf '.cache/\nbusytex/\ntexlyre-busytex/\nswiftlatex-xetex/\nswiftlatex-pdftex/\npackages/\n' > $(MIRROR)/.assetsignore
-	@# Bundle tars are digest-named and cached forever like every engine
-	@# asset (the `/*` default below); `bundles.json` is the one bundling
-	@# file fetched by a bare name, so it gets `manifest.json`'s treatment
-	@# -- see SPEC-latex.md "The index".
-	@printf '/*\n  Cache-Control: public, max-age=31536000, immutable\n/manifest.json\n  Cache-Control: no-store\n/wasmtex/*/bundles/bundles.json\n  Cache-Control: no-cache\n' > $(MIRROR)/_headers
-	@cd deploy/latex && bunx wrangler deploy --assets "$(abspath $(MIRROR))"
-	@echo "serve with: librepaper serve --latex https://librepaper-latex.<account>.workers.dev/"
+# Pushing the LaTeX mirror to its hosting is wasm-latex's `make push` now
+# (see the MIRROR= comment above latex-smoke); nothing here uploads it.
 
 # --- the web app -----------------------------------------------------------
 #

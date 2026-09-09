@@ -114,9 +114,6 @@ let newestResolvedGeneration = -1;
 let routeState = route.initialState({});
 const bibCache = new Map(); // identity -> BiberResult
 let lastStaged = null; // { project, inputs, bibIdentity, generated }
-// The manifest entry of the release the running job compiles under, for
-// the backends that need more than its id (the VM image hangs off it).
-let currentReleaseEntry = null;
 
 /// Routing decisions, on the console, when `localStorage["librepaper-latex-debug"]`
 /// is set: the one way to see why a compile went where it went without a
@@ -189,6 +186,34 @@ async function loadManifest() {
     // A failed fetch must not poison the module: the next compile tries
     // again rather than repeating a network error forever from cache.
     if (!manifest) manifestPromise = null;
+  }
+}
+
+let deploymentConfig = null;
+let deploymentConfigPromise = null;
+
+/// `/api/config`'s `biberVm` field: the browser bibliography VM's own
+/// descriptor URL and the sha256 `vm.js` verifies it against, or `null` when
+/// this deployment offers none (`--biber-vm` was not passed). The VM is
+/// LibrePaper's own artefact, hosted separately from the LaTeX mirror, so it
+/// is no longer named by `release.vm` -- fetched at most once per page load,
+/// and only from the one path that ever reaches for it (`runBibliography`'s
+/// "try-vm" branch), so a document that never needs Biber never causes this
+/// request either.
+async function loadBiberVm() {
+  if (deploymentConfig) return deploymentConfig.biberVm ?? null;
+  if (!deploymentConfigPromise) {
+    deploymentConfigPromise = fetchImpl("/api/config").then(async (response) => {
+      if (!response.ok) throw new Error(`/api/config fetch failed: ${response.status}`);
+      deploymentConfig = await response.json();
+      return deploymentConfig;
+    });
+  }
+  try {
+    const config = await deploymentConfigPromise;
+    return config.biberVm ?? null;
+  } finally {
+    if (!deploymentConfig) deploymentConfigPromise = null;
   }
 }
 
@@ -352,7 +377,7 @@ function call(target, cmd, payload, { timeoutMs = 0 } = {}) {
   });
 }
 
-async function ensureWorker(releaseEntry, texliveEntry) {
+async function ensureWorker(releaseEntry, manifestFormat) {
   if (worker && configuredRelease === releaseEntry.id) return worker;
   if (worker) {
     try {
@@ -378,7 +403,7 @@ async function ensureWorker(releaseEntry, texliveEntry) {
   // The worker resolves every engine and package URL against this, and a
   // worker has no page to resolve a relative "/latex/" from: it gets the
   // absolute form, as the mirror check hands it one.
-  await call(target, "configure", { base: absoluteBase(), release: releaseEntry, texlive: texliveEntry || {} });
+  await call(target, "configure", { base: absoluteBase(), release: releaseEntry, format: manifestFormat });
   configuredRelease = releaseEntry.id;
   return target;
 }
@@ -606,7 +631,17 @@ async function runBibliography({ request, attempts, engine }) {
       }
       let outcome;
       try {
-        await vm.prepare({ ...currentReleaseEntry, mirror: absoluteBase() }, (progress) => statusStore.set({ progress }));
+        // The VM is LibrePaper's own artefact, hosted separately from the
+        // LaTeX mirror -- `release.vm` no longer names it -- so where it is
+        // comes from this deployment's own `/api/config` rather than the
+        // manifest.
+        const biberVm = await loadBiberVm();
+        if (!biberVm) {
+          decision = route.decide({ type: "vm-unavailable", message: "no bibliography VM is configured" }, routeState);
+          routeState = decision.state;
+          continue;
+        }
+        await vm.prepare(biberVm, (progress) => statusStore.set({ progress }));
         statusStore.set({ phase: "vm-biber", message: "Updating bibliography in browser", backend: "vm", progress: null });
         outcome = await vm.runBiber(request, {});
       } catch (error) {
@@ -793,7 +828,6 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   routeState = { ...routeState, snapshot: job.snapshot };
 
   const releaseEntry = manifestData.releases?.[releaseId];
-  currentReleaseEntry = releaseEntry || null;
   if (!releaseEntry) {
     const retained = Object.keys(manifestData.releases || {}).join(", ") || "none retained";
     return buildResult({
@@ -811,8 +845,6 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       provenance: baseProvenance(engine, releaseId),
     });
   }
-  const texliveEntry = manifestData.texlive?.[releaseEntry.snapshot] || {};
-
   // "Keep that project on the native route for the current editing session."
   if (routeState.route === "native") {
     return runNative({ job, tree, engine, releaseId, attempts, startedAt });
@@ -822,7 +854,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   let target;
   try {
-    target = await ensureWorker(releaseEntry, texliveEntry);
+    target = await ensureWorker(releaseEntry, manifestData.format);
   } catch (error) {
     checkpoint();
     return handleBrowserFailure({
@@ -1203,7 +1235,17 @@ export const _testing = {
     if (localModule !== undefined) localOverride = localModule;
     if (vmModule !== undefined) vmOverride = vmModule;
     if (resourcesModule !== undefined) resourcesOverride = resourcesModule;
-    if (fetchOverride !== undefined) fetchImpl = fetchOverride;
+    if (fetchOverride !== undefined) {
+      fetchImpl = fetchOverride;
+      // A new fetch means a check is simulating a different deployment;
+      // `manifest.json` and `/api/config` are cached for the module's whole
+      // lifetime otherwise (SPEC: fetched at most once per page load), which
+      // would leak one scenario's manifest or `biberVm` into the next.
+      manifest = null;
+      manifestPromise = null;
+      deploymentConfig = null;
+      deploymentConfigPromise = null;
+    }
     if (now !== undefined) nowImpl = now;
   },
   reset() {
@@ -1213,5 +1255,9 @@ export const _testing = {
     resourcesOverride = undefined;
     fetchImpl = (...args) => fetch(...args);
     nowImpl = () => Date.now();
+    manifest = null;
+    manifestPromise = null;
+    deploymentConfig = null;
+    deploymentConfigPromise = null;
   },
 };

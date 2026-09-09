@@ -17,9 +17,7 @@ one tar per package directory, indexed by `bundles.json`; the pdfTeX worker
 fetches a whole package the first time any file in it is asked for, verifies
 its digest, and keeps it in Cache Storage, so a warm session makes no
 requests. The rule for what is bundled, and why, is wasm-latex's
-`SPEC-latex.md`. Releases without bundles, and the other engines, still
-receive packages one file at a time, with the ones every document needs
-arriving together before the first pass.
+`SPEC-latex.md`.
 
 BibTeX runs in the browser. Biber does not: when a document asks for it, the
 reader checks for a local LibrePaper app on this machine, runs a compatible
@@ -83,10 +81,8 @@ XeTeX and LuaTeX documents compile in the browser.
   pdfTeX and BibTeX byte-for-byte from pinned TeX Live sources; XeTeX,
   LuaTeX, bibtex8 and makeindex are still the mirrored upstream build, and
   the manifest says `reproduced: false` until all of them are.
-- The compact initial resource set is the union of what the corpus needed
-  (about 17 MB); measuring real documents should trim it. With a bundled
-  release it is replaced by the `core` bundle, 32 MB, which the same
-  measurement should trim.
+- The `core` bundle every document loads up front is 32 MB; measuring real
+  documents should trim it.
 - A XeLaTeX document has not yet been compiled in a browser against a
   bundled release -- only in the Node harness on the engine side. The
   LuaTeX worker does not resolve through bundles yet (it will once its

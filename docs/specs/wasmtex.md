@@ -1,13 +1,15 @@
 # SPEC: WasmTex compilation with local and Biber VM fallbacks
 
-Status: implemented, with three exceptions. Milestone 1's independent
+Status: implemented, with two exceptions. Milestone 1's independent
 reproduction covers pdfTeX and BibTeX only (in the wasm-latex repository);
 XeTeX, LuaTeX, bibtex8 and makeindex are still mirrored builds and the
 manifest says `reproduced: false`. Milestone 7's Firefox, Safari and
 memory-constrained matrix has not been run. The legacy SwiftLaTeX package
-route and its mirror tools have not been removed. The rest of this page is
-the design the code in `web/src/lib/latex/`, `crates/librepaper/src/local/`
-and `latex/tools/` cites.
+route and its mirror tools have been removed; the mirror itself now builds
+and deploys from the wasm-latex repository (`make mirror`, `make push`
+there; `wasm-latex/docs/mirror.md`). The rest of this page is the design the
+code in `web/src/lib/latex/`, `crates/librepaper/src/local/` and
+`latex/tools/` cites.
 
 Date: 2026-09-07.
 
@@ -184,11 +186,10 @@ an existing project does not silently change its typesetting environment.
 ### Loading and caching
 
 Load only the selected engine and necessary helpers. Packages arrive as
-one bundle per package directory from a release that ships them, with a
-merged `core` bundle for what every document loads (wasm-latex's
-`SPEC-latex.md`); otherwise prepare a compact initial resource set using the
-corpus and fetch the remaining files as needed. Build-time work should
-remove serial network round trips for common documents.
+one bundle per package directory from the release, with a merged `core`
+bundle for what every document loads (wasm-latex's `SPEC-latex.md`).
+Build-time work should remove serial network round trips for common
+documents.
 
 The resource catalog must resolve bare filenames, supported extensions,
 package dependencies and font files while preserving TeX's relevant lookup

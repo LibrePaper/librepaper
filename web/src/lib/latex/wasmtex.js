@@ -52,15 +52,6 @@ async function gunzip(bytes) {
 /// this specific name via kpathsea.
 const FMT_FILENAME = { xetex: "wasmtex-xetex.fmt", luatex: "wasmtex-luatex.fmt" };
 
-/// Kinds whose controller understands the TeX-Live-resolution commands
-/// (`preloadtexlive`, `loadbloom`, `preload404`, `flushcache`). BibTeX and
-/// makeindex fetch nothing from TeX Live on their own (they only read the
-/// files the host already staged) and their controllers do not implement
-/// these commands at all -- sending them would just be ignored silently by
-/// `onmessage`'s final `else`, but treating it as unsupported here keeps the
-/// intent visible instead of relying on that silent ignore.
-const RESOLVES_TEXLIVE = new Set(["pdftex", "xetex", "luatex", "dvipdfm"]);
-
 /// Kinds whose controller answers `loadbundleindex`/`preloadbundle` (the
 /// engine repository's `wasmtex-bundle-mode.js`, imported by every worker
 /// but LuaTeX today). Kept in sync with `worker.js`'s own `BUNDLE_CAPABLE`.
@@ -310,34 +301,10 @@ class WasmTexEngine {
     };
   }
 
-  /// `format`/`name` are the kpathsea format code and bare filename from a
-  /// `texlive.files` key (`pdftex/26/amsmath.sty` -> `format: 26, name:
-  /// "amsmath.sty"`), exactly how the controllers key their own cache.
-  ///
-  /// Fire-and-forget, deliberately: only pdfTeX's controller answers this
-  /// command (`{result:"ok", cmd:"preloadtexlive", msgId}`) -- XeTeX's and
-  /// dvipdfm's `onmessage` handle it (write the file, update their cache)
-  /// but never `postMessage` afterwards, confirmed by reading both. Awaiting
-  /// a reply here hung `ensureEngine` forever on those two kinds, on the
-  /// very first entry of the initial resource set. Message order to one
-  /// worker is preserved regardless of whether the host awaits a reply, so
-  /// not waiting costs nothing even for pdfTeX.
-  preloadTexlive(format, name, bytes) {
-    if (!RESOLVES_TEXLIVE.has(this.kind)) return;
-    const copy = bytes.slice().buffer;
-    this._tell({ cmd: "preloadtexlive", format, filename: name, data: copy }, [copy]);
-  }
-
-  loadBloom(bytes) {
-    if (!RESOLVES_TEXLIVE.has(this.kind)) return;
-    this._tell({ cmd: "loadbloom", data: bytes.slice().buffer });
-  }
-
-  /// SPEC-latex.md "The index": loads the whole-mirror bundle index once,
-  /// replacing the bloom filter and the per-name 404/preload warmups for a
-  /// release that ships one. Unlike `loadBloom`/`preload404`
-  /// (fire-and-forget), this command answers -- the controller awaits it so
-  /// a first compile never races the worker's own Cache Storage preload.
+  /// SPEC-latex.md "The index": loads the whole-mirror bundle index once --
+  /// every release ships one now, so this runs for every kind this file
+  /// serves. This command answers -- the controller awaits it so a first
+  /// compile never races the worker's own Cache Storage preload.
   async loadBundleIndex(bytes) {
     // Every worker but LuaTeX now importScripts()s `wasmtex-bundle-mode.js`
     // and answers this command; a kind that does not is a no-op here so a
@@ -357,16 +324,6 @@ class WasmTexEngine {
     if (this.kind !== "xetex") return null;
     const copy = bytes.slice().buffer;
     return this._ask({ cmd: "loadicudata", data: copy }, "loadicudata", [copy]);
-  }
-
-  preload404(entries) {
-    // Fire-and-forget, deliberately: pdfTeX's controller answers this
-    // command (`cmd: "preload404"`), but XeTeX's and dvipdfm's do not reply
-    // to it at all (confirmed by reading their `onmessage` -- the loop that
-    // populates their negative cache has no `postMessage` after it), so
-    // awaiting a reply here would hang forever on those two kinds.
-    if (!RESOLVES_TEXLIVE.has(this.kind) || !entries?.length) return;
-    this._tell({ cmd: "preload404", entries });
   }
 
   /// A fresh `/work` for the next snapshot. BibTeX and makeindex have no

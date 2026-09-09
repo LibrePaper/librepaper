@@ -5,7 +5,6 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildBloom } from "./bloom.mjs";
 
 const directory = mkdtempSync(join(tmpdir(), "librepaper-mirror-test-"));
 const checker = fileURLToPath(new URL("./check-mirror.mjs", import.meta.url));
@@ -44,14 +43,17 @@ function bundlesFixture(dir = "r1") {
 }
 
 function complete() {
-  const files = {
-    "pdftex/26/article.cls": asset("article.cls", "class"),
-    "pdftex/11/pdftex.map": asset("pdftex.map", "fonts"),
-  };
   return {
+    format: 1,
     default_release: "r1",
-    releases: { r1: { snapshot: "s1", engines: { pdftex: { worker: "worker.js", files: ["worker.js"] } }, files: { "worker.js": asset("worker.js", "worker") }, bundles: bundlesFixture() } },
-    texlive: { s1: { files, initial: Object.keys(files), bloom: asset("bloom.bin", buildBloom(Object.keys(files))) } },
+    releases: {
+      r1: {
+        id: "r1",
+        engines: { pdftex: { worker: "worker.js", files: ["worker.js"] } },
+        files: { "worker.js": asset("worker.js", "worker") },
+        bundles: bundlesFixture(),
+      },
+    },
   };
 }
 function check(manifest, expected, message) {
@@ -63,32 +65,22 @@ function check(manifest, expected, message) {
 }
 try {
   check(complete(), 0);
-  check({ version: 1, distributions: {} }, 1, /no default WasmTex/);
+  check({ version: 1, distributions: {} }, 1, /unsupported manifest format/);
   let manifest = complete();
-  delete manifest.texlive.s1.files["pdftex/11/pdftex.map"];
-  // With bundles the per-file set is optional, but a stale initial entry is
-  // still a lie about what the mirror holds.
-  check(manifest, 1, /initial package .* is absent/);
+  manifest.format = 2;
+  check(manifest, 1, /unsupported manifest format/);
   manifest = complete();
-  manifest.releases[manifest.default_release].bundles = null;
-  delete manifest.texlive.s1.files["pdftex/11/pdftex.map"];
-  check(manifest, 1, /package set is missing/);
-  // A bundled release needs no per-file snapshot at all.
+  delete manifest.releases.r1.engines.pdftex;
+  check(manifest, 1, /no default release with a complete pdfTeX/);
   manifest = complete();
-  delete manifest.texlive;
-  check(manifest, 0);
+  manifest.releases.r1.bundles = null;
+  check(manifest, 1, /has no bundles/);
   manifest = complete();
   rmSync(join(directory, "worker.js"));
-  check(manifest, 1, /ENOENT/);
+  check(manifest, 1, /file missing on disk|ENOENT/);
   manifest = complete();
   writeFileSync(join(directory, "worker.js"), "broken");
-  check(manifest, 1, /digest mismatch/);
-  manifest = complete();
-  manifest.texlive.s1.bloom = asset("bloom.bin", buildBloom([]));
-  check(manifest, 1, /lookup filter hides/);
-  manifest = complete();
-  manifest.texlive.s1.initial.push("pdftex/26/missing.sty");
-  check(manifest, 1, /initial package.*absent/);
+  check(manifest, 1, /digest or size mismatch/);
 
   // SPEC-latex.md "The index": bundles.json's own digest must match what
   // the release entry pins, and every bundle path it names must actually be
@@ -99,7 +91,7 @@ try {
   check(manifest, 0);
   manifest = complete();
   writeFileSync(join(directory, "r1", "bundles", "bundles.json"), "tampered");
-  check(manifest, 1, /bundles\.json digest does not match/);
+  check(manifest, 1, /bundle index digest mismatch/);
   manifest = complete();
   const [coreName, coreBundle] = Object.entries(JSON.parse(readFileSync(join(directory, "r1", "bundles", "bundles.json"), "utf8")).bundles)[0];
   writeFileSync(join(directory, "r1", "bundles", coreBundle.url), "corrupted bundle bytes");
@@ -108,7 +100,7 @@ try {
   rmSync(join(directory, "r1", "bundles", coreBundle.url));
   check(manifest, 1, new RegExp(`bundle "${coreName}".*is missing from the mirror`));
 
-  console.log("mirror preflight: legacy, missing assets, corruption, stale filters, invalid prefetch entries and bundle index/tar mismatches rejected");
+  console.log("mirror preflight: legacy format, missing engines, missing bundles, missing assets, corruption and bundle index/tar mismatches rejected");
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }

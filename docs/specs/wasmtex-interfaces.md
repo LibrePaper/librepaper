@@ -10,127 +10,34 @@ formats, package snapshot, VM image identity). A **snapshot** is one immutable
 document tree plus compile settings. A **job** is one attempt to compile a
 snapshot on one backend. A **backend** is `browser`, `local` or `vm`.
 
-## 1. Mirror layout and manifest (package A)
+## 1. Mirror layout and manifest
 
-`latex/tools/wasmtex.mjs` builds the WasmTex half of `latex/mirror`. The
-existing `manifest.json` gains two top-level keys and keeps `version: 1`.
+The mirror -- WasmTex engines and the TeX Live package bundles -- is built
+and pushed from the wasm-latex repository (`make mirror`, `make push` there).
+Its layout and `manifest.json` shape (format 1, bundled releases only, no
+per-file TeX Live snapshot, no bloom filter, `vm: null` until package F fills
+it) are documented in `wasm-latex/docs/mirror.md`, not here.
 
-```
-latex/mirror/
-  manifest.json
-  wasmtex/<engineRelease>/                 engine files from a staged wasm-latex release
-    wasmtex-pdftex.worker.js wasmtex-pdftex.js wasmtex-pdftex.wasm
-    wasmtex-pdftex.fmt wasmtex-pdftex-resolver-evidence.js ...
-    wasmtex-kpse-resolve.js wasmtex-bundle-mode.js   -- imported by every worker
-    wasmtex-bibtex.* wasmtex-bibtex8.* wasmtex-makeindex.*
-    wasmtex-xetex.* wasmtex-xetex.fmt.gz icudt68l.dat.gz wasmtex-dvipdfm.*
-    wasmtex-luatex.* wasmtex-luatex.fmt.gz
-    BUILD-RECEIPT.*.json LICENSE-MANIFEST.json
-    NOTICES/LICENSE NOTICES/THIRD_PARTY_NOTICES.md NOTICES/licensing.md
-  wasmtex/<engineRelease>/bundles/bundles.json     package index, when the release ships one
-  wasmtex/<engineRelease>/bundles/b/<sha256>/<slug>.tar   one tar per package directory
-  texlive/<snapshot>/<2hex>/<16hex>-<name>   package files, digest-named (releases without bundles)
-  texlive/<snapshot>/bloom-filter.v2.bin      generated over the index below
-  biber-vm/<vmRelease>/...                    package F, see section 6
-```
+What this repository still owns:
 
-`<engineRelease>` is `librepaper-<sha256 of the staged MANIFEST.json>` for a
-release imported from wasm-latex (the first mirrored release used the
-upstream `releaseId`, `2026-8b7946970153c52e`); `<snapshot>` is the
-upstream package snapshot id (`2026-ba38749b8714505a`). Directories are
-immutable; a new id is a new directory.
+- **The URL.** `librepaper serve --latex <url>` (default
+  `crates/librepaper/src/server/latex.rs::DEFAULT_MIRROR`) points at a
+  deployed mirror; a self-hoster may point at their own.
+- **A consumer-side check.** `latex/tools/check-mirror.mjs` rejects a mirror
+  before a deployment uses it: `manifest.json` parses, `manifest.format ===
+  1`, the default release has a complete pdfTeX engine, `bundles` is present
+  on it, and (given a directory rather than a URL) every engine file and
+  bundle tar is on disk with a matching digest and size against
+  `bundles.json`.
+- **The Biber VM.** `latex/tools/biber-vm/build.mjs` builds it and registers
+  it into the mirror's manifest with `latex/tools/wasmtex.mjs --vm <dir>`
+  (section 6 below) -- deployed separately from the WasmTex mirror itself.
 
-Manifest additions:
-
-```json
-{
-  "version": 1,
-  "default_release": "2026-8b7946970153c52e+2026-ba38749b8714505a",
-  "releases": {
-    "2026-8b7946970153c52e+2026-ba38749b8714505a": {
-      "id": "2026-8b7946970153c52e+2026-ba38749b8714505a",
-      "digest": "<sha256 hex of the canonical JSON of this entry without `digest`>",
-      "engine_release": "2026-8b7946970153c52e",
-      "snapshot": "2026-ba38749b8714505a",
-      "texlive": "2026",
-      "kernel": "LaTeX2e 2026-06-01",
-      "base": "wasmtex/2026-8b7946970153c52e/",
-      "texlive_base": "texlive/2026-ba38749b8714505a/",
-      "engines": {
-        "pdftex":  { "worker": "wasmtex-pdftex.worker.js", "format": "wasmtex-pdftex.fmt", "files": ["wasmtex-pdftex.worker.js", "wasmtex-pdftex.js", "wasmtex-pdftex.wasm", "wasmtex-pdftex-resolver-evidence.js", "wasmtex-kpse-resolve.js", "wasmtex-bundle-mode.js", "wasmtex-pdftex.fmt"] },
-        "xetex":   { "worker": "wasmtex-xetex.worker.js",  "format": "wasmtex-xetex.fmt.gz", "icu": "icudt68l.dat.gz", "files": [...] },
-        "dvipdfm": { "worker": "wasmtex-dvipdfm.worker.js", "files": [...] },
-        "luatex":  { "worker": "wasmtex-luatex.worker.js", "format": "wasmtex-luatex.fmt.gz", "files": [...] },
-        "bibtex":  { "worker": "wasmtex-bibtex.worker.js", "files": [...] },
-        "bibtex8": { "worker": "wasmtex-bibtex8.worker.js", "files": [...] },
-        "makeindex": { "worker": "wasmtex-makeindex.worker.js", "files": [...] }
-      },
-      "files": { "<name>": { "url": "wasmtex/2026-8b7946970153c52e/<name>", "sha256": "...", "size": 123 } },
-      "bibliography": {
-        "bibtex": "0.99e",
-        "biblatex": "3.21",
-        "control_file": "3.11",
-        "biber": { "compatible": ["2.21"], "incompatible_hint": "biblatex 3.21 needs Biber 2.21" }
-      },
-      "vm": null,
-      "source": {
-        "wrapper_revision": "44c5861fcdf729838205b00b96ac9509bc7fb677",
-        "corresponding_source": { "url": "...", "sha256": "..." },
-        "build_receipts": ["BUILD-RECEIPT.pdftex.json", "..."],
-        "reproduced": false
-      },
-      "licences": { "wrapper": "MIT", "pdftex": "GPL-2.0-only", "xetex": "GPL-2.0-only AND LicenseRef-XeTeX", "luatex": "GPL-2.0-only", "bibtex": "LicenseRef-BibTeX-Web2C-Notices AND LGPL-2.1-or-later", "notices": "wasmtex/2026-8b7946970153c52e/NOTICES/" },
-      "sizes": { "pdftex": 5807474, "xetex": 0, "luatex": 0, "texlive_initial": 6785176 }
-    }
-  },
-  "texlive": {
-    "2026-ba38749b8714505a": {
-      "upstream": "https://texlive.corca.ai/snapshots/2026-ba38749b8714505a/2026/",
-      "bloom": { "url": "texlive/2026-ba38749b8714505a/bloom-filter.v2.bin", "sha256": "...", "size": 0 },
-      "files": { "pdftex/26/amsmath.sty": { "url": "texlive/2026-ba38749b8714505a/8c/8c1f...-amsmath.sty", "sha256": "...", "size": 0 } },
-      "absent": { "pdftex/26/nothere.sty": true },
-      "initial": ["pdftex/26/article.cls", "..."]
-    }
-  }
-}
-```
-
-`bibliography.control_file`/`biblatex` are read from the snapshot's
-`biblatex.sty` (`\blx@bcfversion`, `\ProvidesPackage` date/version). `vm` is
-filled by package F. `initial` lists the keys every corpus document needed:
-the compact initial resource set the browser prefetches in parallel.
-
-A release whose staged manifest carried `bundles` also has
-`bundles: { index, sha256, snapshot, count, bytes }` on its entry, `index`
-being the mirror-relative URL of `bundles.json`. The index and every tar are
-payload files, verified on import like the engines; `check-mirror.mjs`
-re-verifies each tar against the index. For such a release the pdfTeX
-worker's `settexliveurl` is the directory the index lives in, and
-`texlive.<snapshot>` is not consulted by pdfTeX at all.
-
-`default_release` names the validated default; `releases` retains older ones.
-`texlive.<snapshot>.files` keys are `<engine>/<kpathsea format code>/<name>`
-exactly as the WasmTex workers build them (`pdftex/26/amsmath.sty`; the XeTeX
-and LuaTeX workers also use the `pdftex/` prefix, see their controllers).
-
-### Serving (package A, Rust and dev server)
-
-The browser fetches everything from `<base>/latex/` on its own origin. Both
-`crates/librepaper/src/server/latex.rs` and `latex/tools/serve.mjs` must answer:
-
-| Request | Answer |
-| --- | --- |
-| `texlive/<snapshot>/<engine>/<format>/<name>` (5 parts, `<name>` not digest-shaped) | Look `<engine>/<format>/<name>` up in `manifest.texlive[<snapshot>].files`; serve the digested file with header `fileid: <16hex>` and `Cache-Control: no-cache`; **404** when absent (WasmTex reads any status >= 400 as absent; it is not SwiftLaTeX). |
-| `texlive/<snapshot>/bloom-filter.v2.bin` and any digest-shaped path | Static, immutable. |
-| `wasmtex/<engineRelease>/bundles/bundles.json` | `no-cache`; the one bundle file named without a digest. |
-| `wasmtex/<engineRelease>/<file>` | Static, immutable. |
-| `manifest.json` | `no-cache`. |
-| `packages/...` (legacy SwiftLaTeX protocol) | Kept working until package G removes it. |
-
-The dev server's `--record` mode fetches an unknown `texlive/...` name from
-`manifest.texlive[<snapshot>].upstream + <engine>/<format>/<name>` once,
-verifies it is a 200, stores it digest-named, and records absent names in
-`absent`. Recording is never on in a check.
+Serving: the browser fetches everything from `<base>/latex/` on its own
+origin; `crates/librepaper/src/server/latex.rs` proxies a configured mirror
+URL or directory. There is no per-file TeX Live lookup route any more -- a
+bundled release's pdfTeX worker resolves packages against `bundles.json`
+beside the engine files, and `manifest.json` itself is served `no-cache`.
 
 ## 2. Browser modules (packages B1, B2, B3)
 
@@ -299,8 +206,7 @@ is preloaded from the release (`loadformat`). For a release with `bundles`,
 every engine but LuaTeX (pdfTeX, XeTeX, dvipdfm, BibTeX, BibTeX8,
 makeindex -- LuaTeX joins this set once its release ships the same files)
 receives `loadbundleindex` with the index bytes and is awaited before the
-first pass; `downloading` then carries `bundle` and `size`, and the bloom
-filter, negative-cache seed and initial set are not sent. XeTeX additionally
+first pass; `downloading` then carries `bundle` and `size`. XeTeX additionally
 receives `loadicudata` right after `loadbundleindex`: the release's
 `icudt68l.dat.gz` (gzip; the release payload also lists the plain
 `wasmtex-xetex.fmt.gz`/`wasmtex-xetex.fmt`), fetched through the same
@@ -309,15 +215,14 @@ digest-verified path as the format, inflated in the browser with
 bundle mode, XeTeX would try to fetch `icudt68l.dat` by name from the
 endpoint and fail, and font-by-name lookups would fail too. Every worker's
 file set now also includes `wasmtex-kpse-resolve.js` and
-`wasmtex-bundle-mode.js` (`latex/tools/release.mjs`'s `ENGINE_FILE_SETS`),
-which every worker `importScripts()`s unconditionally; a release built
-before they existed is simply not advertised as having that engine at all,
-by the same `spec.files.every(file => artifacts.has(file))` check that
-already gates every other engine. Otherwise
-the compact initial set (`texlive.initial`) is prefetched through
-`resources.js` and injected with `preloadtexlive` before the first pass, and
-the bloom filter is loaded when the manifest has one. `preamble snapshots` are disabled (`setpreamblesnapshot
-false`). Raw bytes cross the boundary as ArrayBuffers, never strings.
+`wasmtex-bundle-mode.js`, which every worker `importScripts()`s
+unconditionally; a release built before they existed is simply not
+advertised as having that engine at all, by the same `spec.files.every(file
+=> artifacts.has(file))` check that already gates every other engine (see
+`wasm-latex/tools/build-mirror.mjs`, which now owns that check --
+`latex/tools/release.mjs`, which used to, is gone). `preamble snapshots` are
+disabled (`setpreamblesnapshot false`). Raw bytes cross the boundary as
+ArrayBuffers, never strings.
 
 `wasmtex.js` is the host-side driver class the worker uses for each nested
 engine (message queue with ids, init, format preload, write/mkdir/read,

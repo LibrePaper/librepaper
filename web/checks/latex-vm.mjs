@@ -105,15 +105,18 @@ function fakeResources({ prefetchProgress = [] } = {}) {
       return { json: async () => ({
         memory_mb: 256,
         biber: "2.21",
-        objects: "biber-vm/rel1/objects/",
+        // Bare names, beside the descriptor -- the VM is hosted separately
+        // from the LaTeX mirror now, so every path `vm.json` names is
+        // relative to its own location rather than to a mirror root.
+        objects: "objects/",
         boot: { ready: "LIBREPAPER_VM_READY" },
         files: {
-          "libv86.js": { url: "biber-vm/rel1/libv86.js", sha256: "a", size: 1 },
-          "v86.wasm": { url: "biber-vm/rel1/v86.wasm", sha256: "b", size: 1 },
-          "seabios.bin": { url: "biber-vm/rel1/seabios.bin", sha256: "c", size: 1 },
-          "vgabios.bin": { url: "biber-vm/rel1/vgabios.bin", sha256: "d", size: 1 },
-          "bzimage": { url: "biber-vm/rel1/bzimage", sha256: "e", size: 1 },
-          "fs.json": { url: "biber-vm/rel1/fs.json", sha256: "f", size: 1 },
+          "libv86.js": { url: "libv86.js", sha256: "a", size: 1 },
+          "v86.wasm": { url: "v86.wasm", sha256: "b", size: 1 },
+          "seabios.bin": { url: "seabios.bin", sha256: "c", size: 1 },
+          "vgabios.bin": { url: "vgabios.bin", sha256: "d", size: 1 },
+          "bzimage": { url: "bzimage", sha256: "e", size: 1 },
+          "fs.json": { url: "fs.json", sha256: "f", size: 1 },
         },
       }) };
     },
@@ -124,7 +127,10 @@ function fakeResources({ prefetchProgress = [] } = {}) {
   };
 }
 
-const RELEASE = { id: "rel1", digest: "0123456789abcdef", vm: { id: "vm1", url: "biber-vm/rel1/vm.json", sha256: "z", size: 1 } };
+// `/api/config`'s `biberVm` field: the descriptor's own location and the
+// digest `vm.js` verifies it against, hosted separately from any LaTeX
+// mirror -- see `latex.js`'s `loadBiberVm`.
+const VM_CONFIG = { url: "https://vm.example/biber-vm/rel1/vm.json", sha256: "z", size: 1 };
 
 function setupVm({ resources } = {}) {
   vm._testing.reset();
@@ -149,7 +155,7 @@ async function prepareReady(opts) {
     if (msg.type === "boot") worker.emit({ type: "status", status: "ready" });
   };
   const progress = [];
-  await vm.prepare(RELEASE, (p) => progress.push(p));
+  await vm.prepare(VM_CONFIG, (p) => progress.push(p));
   return progress;
 }
 
@@ -161,26 +167,31 @@ async function testPrepareProgress() {
   check("progress reports the bibliography-support scope", progress.length > 0 && progress.every((p) => p.scope === "bibliography support"));
   check("prepare() boots exactly one worker", FakeWorker.current.posted.some((m) => m.type === "boot"));
   const config = FakeWorker.current.posted.find((m) => m.type === "boot").config;
-  check("boot config carries the runtime file URLs", config.libv86Url === "biber-vm/rel1/libv86.js" && config.wasmPath === "biber-vm/rel1/v86.wasm");
+  check(
+    "boot config carries the runtime file URLs, resolved beside the descriptor",
+    config.libv86Url === "https://vm.example/biber-vm/rel1/libv86.js" && config.wasmPath === "https://vm.example/biber-vm/rel1/v86.wasm",
+    JSON.stringify(config),
+  );
   check("boot config carries the guest's memory size", config.memoryBytes === 256 * 1024 * 1024);
 }
 
 async function testPrepareIdempotent() {
   await prepareReady();
   const postedBefore = FakeWorker.current.posted.length;
-  await vm.prepare(RELEASE, () => {});
-  check("a second prepare() for the same release does not reboot", FakeWorker.current.posted.length === postedBefore);
+  await vm.prepare(VM_CONFIG, () => {});
+  check("a second prepare() for the same VM does not reboot", FakeWorker.current.posted.length === postedBefore);
 }
 
 async function testPrepareUnsupported() {
   vm._testing.reset();
   vm._testing.inject({ hasWebAssembly: () => false });
-  await rejects(vm.prepare(RELEASE, () => {}), "VmUnsupported", "prepare() rejects on an unsupported browser");
+  await rejects(vm.prepare(VM_CONFIG, () => {}), "VmUnsupported", "prepare() rejects on an unsupported browser");
 }
 
 async function testPrepareNoVmImage() {
   setupVm();
-  await rejects(vm.prepare({ id: "rel1" }, () => {}), "VmUnavailable", "prepare() rejects a release with no VM image");
+  await rejects(vm.prepare(null, () => {}), "VmUnavailable", "prepare() rejects with no bibliography VM configured");
+  await rejects(vm.prepare({ url: "https://vm.example/vm.json" }, () => {}), "VmUnavailable", "prepare() rejects a config with no sha256");
 }
 
 /* --------------------------------------------------------- jobs */
@@ -281,7 +292,7 @@ async function testIdleTeardown() {
     if (msg.type === "boot") worker.emit({ type: "status", status: "ready" });
     if (msg.type === "job") respondJob(worker, { id: msg.id });
   };
-  await vm.prepare(RELEASE, () => {});
+  await vm.prepare(VM_CONFIG, () => {});
   await vm.runBiber({ job: {}, stem: "main", bcf: new Uint8Array([1]), files: {}, identity: "i" });
   const idle = timers.find((t) => t.ms === 5 * 60 * 1000 && !t.canceled);
   check("an idle-teardown timer is scheduled after a job finishes", idle != null);

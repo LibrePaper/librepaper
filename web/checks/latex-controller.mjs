@@ -90,12 +90,37 @@ FakeWorker.onCreate = (instance) => {
 };
 const worker = () => liveWorker;
 
+// Format 1: `releases[id]` carries `engines`/`files`/`bundles`/
+// `bibliography`/`source` and no per-file TeX Live snapshot -- there is no
+// `texlive`/`bloom`/`initial` section any more, and every release resolves
+// through its `bundles` index. `FakeWorker` above answers `configure`
+// unconditionally, so these fields are for realism against `latex.js`'s own
+// reads of the manifest rather than exercised by `worker.js` itself here;
+// section 15 below drives the real `worker.js` and its `format`/`bundles`
+// checks directly.
 const MANIFEST = {
+  format: 1,
   default_release: "r1",
-  releases: { r1: { id: "r1", snapshot: "snap1", base: "wasmtex/r1/", texlive_base: "texlive/snap1/", engines: {} } },
-  texlive: { snap1: {} },
+  releases: { r1: { id: "r1", base: "wasmtex/r1/", engines: {}, bundles: { index: "wasmtex/r1/bundles/bundles.json" } } },
 };
-const fakeFetch = async () => new Response(JSON.stringify(MANIFEST), { status: 200, headers: { "content-type": "application/json" } });
+// `/api/config`'s `biberVm` field: the browser bibliography VM's own
+// descriptor URL and the sha256 to verify it against, no longer named by
+// `release.vm` (see `latex.js`'s `loadBiberVm`). The scenarios below that
+// reach the VM inject their own fake `vm` module and never actually read
+// this object's contents, but `latex.js` still fetches it before calling
+// `vm.prepare`, so it has to be there for those scenarios to reach the VM at
+// all rather than stopping at "no bibliography VM is configured".
+const DEPLOYMENT_CONFIG = { biberVm: { url: "https://vm.example/biber-vm/vm.json", sha256: "z".repeat(64) } };
+
+function jsonResponse(body) {
+  return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+const fakeFetch = async (url) => {
+  const key = typeof url === "string" ? url : url.toString();
+  if (key.endsWith("/api/config")) return jsonResponse(DEPLOYMENT_CONFIG);
+  return jsonResponse(MANIFEST);
+};
 
 const latex = await import("../src/lib/latex.js?latex-controller-check");
 
@@ -328,6 +353,56 @@ function nextProject() {
   assert.equal(result.provenance.bibliography, "vm-biber");
   assert.equal(result.provenance.backend, "browser");
   assert.ok(result.attempts.some((a) => a.stage === "vm-biber" && a.backend === "vm" && a.ok));
+}
+
+// ============================================================================
+// 7b. Biber -> local unreachable -> no bibliography VM configured
+// (`/api/config`'s `biberVm` is null, e.g. no `--biber-vm` flag): the VM
+// module is never asked to `prepare()` at all, and the compile stops with a
+// "vm" failure naming that nothing is configured.
+// ============================================================================
+{
+  const project = nextProject();
+  const bcf = () => enc.encode('<bcf:controlfile><bcf:datasource type="file">refs.bib</bcf:datasource></bcf:controlfile>');
+  const localUnreachable = {
+    async runBiber() {
+      const error = new Error("could not reach local LibrePaper");
+      error.name = "Unreachable";
+      throw error;
+    },
+    async capabilities() {
+      throw new Error("unreachable");
+    },
+  };
+  let prepareCalled = false;
+  const vmModule = {
+    supported() {
+      return { ok: true };
+    },
+    async prepare() {
+      prepareCalled = true;
+    },
+    async runBiber() {
+      throw new Error("must not be reached");
+    },
+  };
+  const noBiberVmFetch = async (url) => {
+    const key = typeof url === "string" ? url : url.toString();
+    if (key.endsWith("/api/config")) return new Response(JSON.stringify({ biberVm: null }), { status: 200 });
+    return new Response(JSON.stringify(MANIFEST), { status: 200 });
+  };
+  latex._testing.inject({ worker: FakeWorker, fetch: noBiberVmFetch, local: localUnreachable, vm: vmModule });
+  latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
+
+  worker().texReplies = [
+    { status: 0, pdf: PDF, synctex: null, log: "Package biblatex Warning: Please (re)run Biber on the file: main\n", outputs: { "main.aux": enc.encode("\\relax\n"), "main.bcf": bcf() } },
+  ];
+
+  const result = await latex.compile(tree("main.tex", "\\cite{a}", { "refs.bib": enc.encode("@book{a,}") }));
+  assert.equal(result.ok, false);
+  assert.equal(result.failure.kind, "vm");
+  assert.match(result.failure.message, /no bibliography VM is configured/);
+  assert.equal(prepareCalled, false, "vm.prepare() is never reached when no VM is configured");
 }
 
 // ============================================================================
@@ -636,7 +711,6 @@ function nextProject() {
     id: "rel1",
     digest: "c".repeat(64),
     base: "wasmtex/rel1/",
-    texlive_base: "texlive/snap1/",
     bundles: { index: "wasmtex/rel1/bundles/bundles.json" }, // no `sha256`: digest check is skipped, exercised elsewhere
     engines: {
       xetex: { worker: "wasmtex-xetex.worker.js", format: "wasmtex-xetex.fmt.gz", icu: "icudt68l.dat.gz" },
@@ -724,7 +798,7 @@ function nextProject() {
   }
 
   try {
-    await send("configure", { base: BASE, release, texlive: null });
+    await send("configure", { base: BASE, release, format: 1 });
     await send("stage", { engine: "xelatex", tree: { main: "main.tex", texts: { "main.tex": "x" } }, generated: {} });
 
     const xetexWorker = engineWorkers.find((w) => w.url === new URL("wasmtex/rel1/wasmtex-xetex.worker.js", BASE).href);
@@ -756,13 +830,76 @@ function nextProject() {
       "the bundled bibtex worker received loadbundleindex",
     );
 
+    // LuaTeX is not shipped and has no bundle mode: selecting it must fail
+    // cleanly with "not available in this release" rather than reaching for
+    // a per-file `settexliveurl` target that no longer exists.
+    const luatexFailure = await send("stage", {
+      engine: "lualatex",
+      tree: { main: "main.tex", texts: { "main.tex": "x" } },
+      generated: {},
+    }).catch((error) => error);
+    assert.ok(luatexFailure instanceof Error, "selecting LuaTeX rejects rather than succeeding");
+    assert.match(luatexFailure.message, /not available in this release/);
+
     await send("retire", {});
   } finally {
     globalThis.self = previousSelf;
     globalThis.Worker = previousWorker;
     globalThis.fetch = previousFetch;
   }
-  console.log("latex worker/ensureEngine: bundle-mode fan-out and XeTeX ICU data checked");
+  console.log("latex worker/ensureEngine: bundle-mode fan-out, XeTeX ICU data and LuaTeX rejection checked");
+}
+
+// ============================================================================
+// 16. `worker.js`'s `configure` refuses a manifest release this build cannot
+// compile against, rather than silently falling to a per-file path that no
+// longer exists: a release with no `bundles` at all ("this mirror predates
+// bundled releases"), and a manifest whose `format` is not 1 (naming the
+// format it got).
+// ============================================================================
+{
+  const previousSelf = globalThis.self;
+  globalThis.self = globalThis;
+  await import("../src/lib/latex/worker.js?configure-reject-check");
+  let seq = 0;
+  const pending = new Map();
+  const outerOnMessage = globalThis.self.onmessage;
+  globalThis.self.postMessage = (msg) => {
+    if (!msg || msg.id === undefined) return;
+    const waiter = pending.get(msg.id);
+    if (!waiter) return;
+    pending.delete(msg.id);
+    msg.failed ? waiter.reject(new Error(msg.failed)) : waiter.resolve(msg);
+  };
+  function send(cmd, extra) {
+    const id = ++seq;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      outerOnMessage({ data: Object.assign({ id, cmd }, extra || {}) });
+    });
+  }
+
+  try {
+    const noBundles = await send("configure", {
+      base: "https://mirror.example/mirror/",
+      release: { id: "rel-old", base: "wasmtex/rel-old/", engines: {} },
+      format: 1,
+    }).catch((error) => error);
+    assert.ok(noBundles instanceof Error, "a release with no bundles is refused");
+    assert.match(noBundles.message, /predates bundled releases/);
+
+    const wrongFormat = await send("configure", {
+      base: "https://mirror.example/mirror/",
+      release: { id: "rel1", base: "wasmtex/rel1/", engines: {}, bundles: { index: "wasmtex/rel1/bundles/bundles.json" } },
+      format: 2,
+    }).catch((error) => error);
+    assert.ok(wrongFormat instanceof Error, "an unsupported manifest format is refused");
+    assert.match(wrongFormat.message, /format 1/);
+    assert.match(wrongFormat.message, /format 2/);
+  } finally {
+    globalThis.self = previousSelf;
+  }
+  console.log("latex worker/configure: a bundle-less release and a wrong manifest format are both refused");
 }
 
 latex._testing.reset();

@@ -108,6 +108,12 @@ pub struct Server {
     /// family the compiler does not embed, or nothing. See
     /// `crate::server::fonts`.
     pub fonts: Option<crate::server::fonts::Library>,
+    /// The browser bibliography VM's descriptor, or nothing. The VM is
+    /// LibrePaper's own artefact, hosted separately from the LaTeX mirror --
+    /// `/api/config` reports it as `biberVm` so `vm.js` knows where to fetch
+    /// `vm.json` from and what to verify it against. See
+    /// `crate::server::latex::BiberVm`.
+    pub biber_vm: Option<crate::server::latex::BiberVm>,
     sockets: AtomicU64,
     /// How many figures each owner has uploaded this hour, and which hour that
     /// is. Uploading a figure is an upload and counts against
@@ -329,6 +335,7 @@ impl Server {
             chat: chat::Hub::default(),
             latex: None,
             fonts: None,
+            biber_vm: None,
             sockets: AtomicU64::new(1),
             asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
             connections: tokio::sync::Mutex::new(HashMap::new()),

@@ -1,11 +1,13 @@
 // The browser Biber VM, as a client of its worker.
 //
 // This is the last bibliography fallback (SPEC "Browser Biber VM"): a small
-// v86 guest, booted from the release's pinned image, that runs the real
-// `biber` binary on a BCF a successful WasmTex pass already produced. It
-// never runs TeX, never touches the network beyond fetching its own pinned
-// image, and is only ever started when local LibrePaper is unavailable and
-// bibliography work remains.
+// v86 guest, booted from this deployment's own pinned image (`/api/config`'s
+// `biberVm`, set by `--biber-vm`; the VM is LibrePaper's own artefact, hosted
+// separately from the LaTeX mirror and no longer named by a release), that
+// runs the real `biber` binary on a BCF a successful WasmTex pass already
+// produced. It never runs TeX, never touches the network beyond fetching its
+// own pinned image, and is only ever started when local LibrePaper is
+// unavailable and bibliography work remains.
 //
 // `vm-worker.js` owns the emulator; this file owns *when* to talk to it --
 // one job at a time, a bounded boot, a bounded job, idle teardown, and a
@@ -140,17 +142,22 @@ function unavailableError(reason) {
   return error;
 }
 
-export async function prepare(release, onProgress) {
+/// `vmConfig` is `/api/config`'s `biberVm` field: `{url, sha256}`, the
+/// descriptor's own location and the digest to verify it against. The VM is
+/// LibrePaper's own artefact, hosted separately from the LaTeX mirror -- it
+/// is no longer named by `release.vm` -- so this is the whole of what a
+/// caller needs to hand over; see `latex.js`'s `loadBiberVm`.
+export async function prepare(vmConfig, onProgress) {
   const check = supported();
   if (!check.ok) throw unsupportedError(check.reason);
-  if (!release?.vm) throw unavailableError("This browser release has no bibliography VM image.");
-  if (workerState === "ready" && preparedFor === release.vm.id) return;
+  if (!vmConfig?.url || !vmConfig?.sha256) throw unavailableError("no bibliography VM is configured");
+  if (workerState === "ready" && preparedFor === vmConfig.url) return;
   if (preparing) return preparing;
   workerState = "loading";
-  preparing = boot(release, onProgress)
+  preparing = boot(vmConfig, onProgress)
     .then(() => {
       workerState = "ready";
-      preparedFor = release.vm.id;
+      preparedFor = vmConfig.url;
       preparing = null;
       scheduleIdleTeardown();
     })
@@ -162,31 +169,25 @@ export async function prepare(release, onProgress) {
   return preparing;
 }
 
-async function boot(release, onProgress) {
+async function boot(vmConfig, onProgress) {
   const resources = await loadResources();
-  // Every URL in the manifest and in `vm.json` is mirror-relative; the
-  // controller says where the mirror is (`release.mirror`), and nothing
-  // here fetches from anywhere else.
-  const at = (url) => (release.mirror ? new URL(url, release.mirror).href : url);
-  // `resources.fetchVerified`/`prefetch` (package B1) cache under the
-  // engine release's own digest, and this VM image is one component of that
-  // release -- so the VM's cache entries share the same release namespace
-  // rather than getting one keyed off the (unversioned) VM id alone.
-  const vmJsonResponse = await resources.fetchVerified(release, at(release.vm.url), {
-    sha256: release.vm.sha256, size: release.vm.size,
+  const descriptorUrl = typeof location !== "undefined" ? new URL(vmConfig.url, location.href).href : vmConfig.url;
+  // `resources.fetchVerified`/`prefetch` (package B1) cache under a
+  // release's own digest; the VM is hosted separately from the LaTeX
+  // mirror now, so it gets its own namespace, keyed off its own sha256
+  // rather than an engine release's.
+  const vmRelease = { digest: vmConfig.sha256 };
+  const vmJsonResponse = await resources.fetchVerified(vmRelease, descriptorUrl, {
+    sha256: vmConfig.sha256, size: vmConfig.size,
   });
   const vmJson = await vmJsonResponse.json();
-  // The descriptor names its own files by bare name, beside itself in the
-  // release directory; `objects` is the one mirror-relative path in it.
-  // A bare name lives beside the descriptor; a path with a directory in it
-  // is mirror-relative like every other manifest URL.
-  const descriptorUrl = at(release.vm.url);
-  const beside = (url) => {
-    if (url.includes("/")) return at(url);
-    return descriptorUrl.slice(0, descriptorUrl.lastIndexOf("/") + 1) + url;
-  };
+  // Every URL `vm.json` names -- `objects`, and each file's own `url` -- is
+  // relative to the descriptor's own location, the one place this VM is
+  // hosted; `new URL` resolves a bare name and a deeper relative path the
+  // same way.
+  const beside = (url) => new URL(url, descriptorUrl).href;
   const entries = Object.entries(vmJson.files || {}).map(([name, meta]) => ({ name, url: beside(meta.url), sha256: meta.sha256, size: meta.size }));
-  await resources.prefetch(release, entries, (progress) => onProgress?.({ ...progress, scope: "bibliography support" }));
+  await resources.prefetch(vmRelease, entries, (progress) => onProgress?.({ ...progress, scope: "bibliography support" }));
   const byName = Object.fromEntries(entries.map((entry) => [entry.name, entry.url]));
 
   const worker = new deps.Worker(workerUrl());
@@ -210,7 +211,7 @@ async function boot(release, onProgress) {
         vgaBiosUrl: byName["vgabios.bin"],
         bzimageUrl: byName["bzimage"],
         basefsUrl: byName["fs.json"],
-        baseurl: at(vmJson.objects),
+        baseurl: beside(vmJson.objects),
         memoryBytes: (vmJson.memory_mb || 256) * 1024 * 1024,
         ready: vmJson.boot?.ready || "LIBREPAPER_VM_READY",
         failed: vmJson.boot?.failed || "LIBREPAPER_VM_FAILED",

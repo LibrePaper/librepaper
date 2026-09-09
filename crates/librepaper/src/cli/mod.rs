@@ -115,6 +115,16 @@ pub(crate) struct ServiceFlags {
     /// Without it, such a document is set in the compiler's default faces.
     #[arg(long, value_name = "DIR")]
     fonts: Option<String>,
+    /// The browser bibliography VM's descriptor (vm.json), as
+    /// <url>#<sha256-of-vm.json>: the LaTeX mirror carries no VM image of its
+    /// own any more, so this is the only way a deployment offers one. The
+    /// sha256 is required -- it is what `vm.js` verifies vm.json against
+    /// before trusting anything it names -- and is checked to be 64 hex
+    /// characters at startup. Without this flag, a document that needs Biber
+    /// and has no local LibrePaper reachable simply stops with "no
+    /// bibliography VM is configured" once browser TeX itself has run.
+    #[arg(long, value_name = "URL#SHA256")]
+    biber_vm: Option<String>,
 }
 
 impl ServiceFlags {
@@ -541,6 +551,7 @@ pub async fn main() {
                 expire_from: service.expire_from.unwrap_or_default(),
                 latex: service.latex.unwrap_or_default(),
                 fonts: service.fonts.unwrap_or_default(),
+                biber_vm: service.biber_vm.unwrap_or_default(),
                 config,
             })
             .await

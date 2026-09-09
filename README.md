@@ -437,23 +437,23 @@ never installs packages or changes your TeX installation.
 A self-hoster says where the browser distribution comes from:
 
 ```sh
-make latex-mirror                                # compiler and TeX packages
-make deploy LATEX=latex/mirror                    # use that mirror locally
+# in the wasm-latex repository: build and push the mirror
+make mirror
+make push
+# back here: use that mirror
+make deploy LATEX=../wasm-latex/mirror              # use that mirror locally
 librepaper serve --latex /srv/librepaper/latex          # or a copied mirror
 librepaper serve --latex https://mirror.example.com  # or a bucket serving one
 librepaper serve --latex                             # or the project's own
 ```
 
 `make deploy` checks that the selected mirror contains a default WasmTex
-release and its package set. Older mirrors containing only SwiftLaTeX or
-BusyTeX must be rebuilt with `make latex-mirror` and uploaded with
-`make latex-push` before the default hosted mirror can serve the current app.
-The builder includes generated font maps as well as package-owned files.
-`make latex-push` runs `make latex-smoke` first: it checks asset digests and
-the package lookup filter, then compiles `examples/standard-errors.tex` in
-a fresh Chromium profile and requires visible PDF pages and selectable text.
-A failed compile or viewer blocks the upload. Run `make latex-smoke` on its
-own to check a mirror without publishing it.
+release with its TeX Live bundles (`latex/tools/check-mirror.mjs`; see
+`make latex-check` and `make latex-smoke`, MIRROR=). Older mirrors -- a
+per-file TeX Live snapshot, a bloom filter, or SwiftLaTeX/BusyTeX -- are
+rejected as legacy. `make latex-smoke` compiles `examples/standard-errors.tex`
+in a fresh Chromium profile against MIRROR= and requires visible PDF pages
+and selectable text before you point a deployment at it.
 
 Without `--latex` a deployment stores and shows `.tex` files and offers no
 LaTeX editor: `/api/config` says so, and the reader offers the source rather

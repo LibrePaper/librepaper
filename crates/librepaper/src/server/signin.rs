@@ -456,6 +456,20 @@ impl Server {
                     // operator's business, and the browser has no use for it --
                     // it fetches `/latex/`, on this origin, and nothing else.
                     fields.insert("latex".to_string(), json!(self.latex.is_some()));
+                    // Where the browser bibliography VM's descriptor lives,
+                    // or null when this deployment offers none: the VM is
+                    // LibrePaper's own artefact and is no longer named by the
+                    // LaTeX mirror's release entries, so this is the only
+                    // way `vm.js` learns where to fetch `vm.json` from and
+                    // what to verify it against (see
+                    // `crate::server::latex::BiberVm`).
+                    fields.insert(
+                        "biberVm".to_string(),
+                        match &self.biber_vm {
+                            Some(vm) => json!({"url": vm.url, "sha256": vm.sha256}),
+                            None => Value::Null,
+                        },
+                    );
                     // Where the local bridge listens, so the browser knows
                     // what to probe without guessing a port. The address is
                     // fixed; the local app's own pairing decides whether this

@@ -7,7 +7,7 @@
 // makeindex), replacing the old two-message SwiftLaTeX protocol with the one
 // in `docs/specs/wasmtex-interfaces.md` section 2.4:
 //
-//   in  { id, cmd: "configure", base, release, texlive }
+//   in  { id, cmd: "configure", base, release, format }
 //   in  { id, cmd: "stage", engine, tree, generated }
 //   in  { id, cmd: "tex", engine, main }
 //   in  { id, cmd: "bibtex", stem, eight }
@@ -29,7 +29,7 @@
 // now (`wasmtex.js`), selected by engine kind, not by distribution name.
 
 import { createEngine } from "./wasmtex.js";
-import { prefetch, fetchVerified } from "./resources.js";
+import { fetchVerified } from "./resources.js";
 
 /// Which underlying engine kinds a project engine name needs, in the order
 /// their controllers should be driven: the first is the one that runs LaTeX
@@ -44,8 +44,10 @@ const KINDS = {
 };
 
 /// Engine kinds whose worker answers `loadbundleindex` (see the engine
-/// repository's `wasmtex-bundle-mode.js`). LuaTeX is left out until its
-/// release ships that file too (`release.mjs`'s `ENGINE_FILE_SETS` comment).
+/// repository's `wasmtex-bundle-mode.js`) -- every engine the mirror ships.
+/// LuaTeX is left out because it is not shipped at all: `ensureEngine` below
+/// fails a request for it with "not available in this release" rather than
+/// reaching for a per-file path that no longer exists in this worker.
 const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex"]);
 
 const GZIP_MAGIC = [0x1f, 0x8b];
@@ -81,16 +83,11 @@ class Worker2 {
   constructor() {
     this.base = null;
     this.release = null;
-    this.texlive = null;
     this.engines = new Map(); // kind -> wasmtex engine
-    this.initialFiles = []; // [{format, name, bytes}]
-    this.absentEntries = []; // [{format, filename}]
-    this.bloomBytes = null;
-    // SPEC-latex.md "The index": a release that ships `bundles.json` (see
-    // `configure` below) fetches it once here instead of the bloom filter
-    // and the initial per-file set -- the index alone tells the resolver
-    // what exists, so those never get populated in that mode and every
-    // engine below sends this to its worker in place of them.
+    // SPEC-latex.md "The index": the release's `bundles.json`, fetched once
+    // in `configure` below. Bundle mode is the only mode a worker speaks any
+    // more -- there is no per-file TeX Live snapshot mirror left to fall
+    // back to -- so this is always populated once `configure` succeeds.
     this.bundleIndexBytes = null;
     // The most recently staged snapshot: bibtex/makeindex need the project's
     // .bib/.bst/.idx-adjacent files and the engine name to know which
@@ -126,7 +123,7 @@ class Worker2 {
 
   // -- configure --------------------------------------------------------
 
-  async configure({ base, release, texlive }) {
+  async configure({ base, release, format }) {
     if (this.release && this.release.id !== release?.id) {
       // A different release: nothing initialized against the old one is
       // safe to keep (different engine builds, different TeX Live).
@@ -134,72 +131,37 @@ class Worker2 {
     }
     this.base = base;
     this.release = release;
-    this.texlive = texlive ?? null;
-    this.initialFiles = [];
-    this.absentEntries = [];
-    this.bloomBytes = null;
     this.bundleIndexBytes = null;
 
-    // SPEC-latex.md "The index": a release that ships `bundles.json` fetches
-    // it once here, revalidated (`no-cache`) since it is the one bundling
-    // file named without a digest, then verified against the digest the
-    // release entry pins -- the same trust boundary `fetchVerified` gives
-    // every digested file, just without Cache Storage, since this file is
-    // small and expected to change release to release. With an index
-    // loaded, the bloom filter, the negative-cache seed and the initial
-    // per-file prefetch below are all TeX-Live-package-file warmups the
-    // index makes redundant (SPEC: "the bloom filter is redundant and is
-    // retired"), so none of them run in this mode.
-    if (release?.bundles) {
-      const url = resolve(this.base, release.bundles.index);
-      const response = await fetch(url, { cache: "no-cache" });
-      if (!response.ok) throw new Error(`bundles.json fetch failed: ${url}: ${response.status}`);
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (release.bundles.sha256 && (await sha256Hex(bytes)) !== release.bundles.sha256) {
-        throw new Error("bundles.json digest mismatch");
-      }
-      this.bundleIndexBytes = bytes;
-      return { ok: true, engines: Object.keys(this.release?.engines ?? {}) };
+    // The mirror's manifest carries its own format number; this worker
+    // speaks exactly one (bundled releases, `engines`/`files`/`bundles`/
+    // `bibliography`/`source`, no per-file TeX Live snapshot). A different
+    // number is a mirror this build cannot compile against at all, not a
+    // degraded mode to fall back from.
+    if (format !== 1) {
+      throw new Error(`this LaTeX mirror's manifest is format ${format ?? "unknown"}, but this build only speaks format 1`);
     }
 
-    if (this.texlive?.bloom) {
-      try {
-        const response = await fetchVerified(this.release, resolve(this.base, this.texlive.bloom.url), {
-          sha256: this.texlive.bloom.sha256,
-          size: this.texlive.bloom.size,
-        });
-        this.bloomBytes = new Uint8Array(await response.arrayBuffer());
-      } catch {
-        // The bloom filter is a resolver optimisation, not a requirement:
-        // its absence just means more individual lookups.
-      }
+    // SPEC-latex.md "The index": every release fetches its `bundles.json`
+    // once here, revalidated (`no-cache`) since it is the one bundling file
+    // named without a digest, then verified against the digest the release
+    // entry pins -- the same trust boundary `fetchVerified` gives every
+    // digested file, just without Cache Storage, since this file is small
+    // and expected to change release to release. A release with no
+    // `bundles` at all predates this mirror shape entirely and is refused
+    // rather than served through a per-file TeX Live path that no longer
+    // exists in this worker.
+    if (!release?.bundles) {
+      throw new Error("this mirror predates bundled releases");
     }
-
-    if (this.texlive?.absent) {
-      for (const key of Object.keys(this.texlive.absent)) {
-        const parsed = parseTexliveKey(key);
-        if (parsed) this.absentEntries.push({ format: parsed.format, filename: parsed.name });
-      }
+    const url = resolve(this.base, release.bundles.index);
+    const response = await fetch(url, { cache: "no-cache" });
+    if (!response.ok) throw new Error(`bundles.json fetch failed: ${url}: ${response.status}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (release.bundles.sha256 && (await sha256Hex(bytes)) !== release.bundles.sha256) {
+      throw new Error("bundles.json digest mismatch");
     }
-
-    const initial = Array.isArray(this.texlive?.initial) ? this.texlive.initial : [];
-    const entries = [];
-    for (const key of initial) {
-      const info = this.texlive?.files?.[key];
-      const parsed = parseTexliveKey(key);
-      if (!info || !parsed) continue;
-      entries.push({ key, parsed, url: resolve(this.base, info.url), sha256: info.sha256, size: info.size, scope: "initial resources" });
-    }
-    if (entries.length) {
-      const responses = await prefetch(this.release, entries, (progress) => this.emit("progress", progress));
-      for (let i = 0; i < entries.length; i++) {
-        const response = responses[i];
-        if (!response) continue;
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        this.initialFiles.push({ format: entries[i].parsed.format, name: entries[i].parsed.name, bytes });
-      }
-    }
-
+    this.bundleIndexBytes = bytes;
     return { ok: true, engines: Object.keys(this.release?.engines ?? {}) };
   }
 
@@ -212,6 +174,14 @@ class Worker2 {
   async ensureEngine(kind) {
     const existing = this.engines.get(kind);
     if (existing) return existing;
+    // Bundle mode is the only mode this worker speaks now (see `configure`),
+    // and every shipped engine resolves through it except LuaTeX, which is
+    // not shipped at all -- there is no per-file path left to fall back to
+    // for it, so selecting it fails cleanly here rather than reaching a
+    // `settexliveurl` target that no longer exists.
+    if (!BUNDLE_CAPABLE.has(kind)) {
+      throw new Error(`${kind} is not available in this release`);
+    }
     const spec = this.release?.engines?.[kind];
     if (!spec) throw new Error(`release ${this.release?.id} has no ${kind} engine`);
     const workerUrl = resolve(this.base, `${this.release.base}${spec.worker}`);
@@ -222,14 +192,7 @@ class Worker2 {
     // in the index are relative paths ("b/<sha256>/<slug>.tar") written by
     // `tools/build-bundles.mjs` alongside it, matching the mirror layout
     // `latex/tools/wasmtex.mjs` writes them under.
-    // Every worker but LuaTeX speaks `loadbundleindex` now (it imports
-    // `wasmtex-kpse-resolve.js`/`wasmtex-bundle-mode.js` just like the rest,
-    // per the engine repository); LuaTeX will join this set once its release
-    // ships those files too.
-    const bundled = !!this.release.bundles && BUNDLE_CAPABLE.has(kind);
-    const texliveUrl = bundled
-      ? resolve(this.base, this.release.bundles.index.slice(0, this.release.bundles.index.lastIndexOf("/") + 1))
-      : resolve(this.base, this.release.texlive_base);
+    const texliveUrl = resolve(this.base, this.release.bundles.index.slice(0, this.release.bundles.index.lastIndexOf("/") + 1));
     let format = null;
     if (spec.format) {
       const info = this.release.files?.[spec.format];
@@ -258,47 +221,33 @@ class Worker2 {
       this.engines.delete(kind);
       throw error;
     }
-    // A release with a bundle index sends only that (the worker itself
-    // preloads from Cache Storage and unpacks bundles on demand -- see
-    // SPEC-latex.md "The resolver"/"Browser cache"); the bloom filter, the
-    // negative-cache seed and the initial per-file prefetch below are
-    // TeX-Live-package-file warmups it makes redundant, so none of the
-    // three ever ran for this release (see `configure` above) and none run
-    // here either.
-    if (this.bundleIndexBytes && bundled) {
-      await engine.loadBundleIndex(this.bundleIndexBytes);
-      // XeTeX alone needs its ICU data table: without it, in bundle mode,
-      // the worker would try to fetch `icudt68l.dat` by name from the
-      // endpoint (which does not exist for a bundled release) and fail, and
-      // font-by-name lookups would fail too. Fetched and verified through
-      // the same digest-checked path as the format bytes, then inflated
-      // client-side since the release ships it gzipped (`icudt68l.dat.gz`,
-      // 11 MiB, versus 27 MiB raw -- over the static-asset limit).
-      if (kind === "xetex" && spec.icu) {
-        const info = this.release.files?.[spec.icu];
-        if (info) {
-          const response = await fetchVerified(this.release, resolve(this.base, info.url), {
-            sha256: info.sha256,
-            size: info.size,
-          });
-          const gz = new Uint8Array(await response.arrayBuffer());
-          if (typeof DecompressionStream === "undefined") {
-            throw new Error("this browser has no DecompressionStream, needed to inflate the bundled XeTeX ICU data");
-          }
-          const stream = new Response(gz).body.pipeThrough(new DecompressionStream("gzip"));
-          const icuBytes = new Uint8Array(await new Response(stream).arrayBuffer());
-          await engine.loadIcuData(icuBytes);
+    // The worker itself preloads from Cache Storage and unpacks bundles on
+    // demand once it has this index (SPEC-latex.md "The resolver"/"Browser
+    // cache") -- there is no bloom filter, negative-cache seed or initial
+    // per-file prefetch left to warm it with beyond this.
+    await engine.loadBundleIndex(this.bundleIndexBytes);
+    // XeTeX alone needs its ICU data table: without it, in bundle mode,
+    // the worker would try to fetch `icudt68l.dat` by name from the
+    // endpoint (which does not exist for a bundled release) and fail, and
+    // font-by-name lookups would fail too. Fetched and verified through
+    // the same digest-checked path as the format bytes, then inflated
+    // client-side since the release ships it gzipped (`icudt68l.dat.gz`,
+    // 11 MiB, versus 27 MiB raw -- over the static-asset limit).
+    if (kind === "xetex" && spec.icu) {
+      const info = this.release.files?.[spec.icu];
+      if (info) {
+        const response = await fetchVerified(this.release, resolve(this.base, info.url), {
+          sha256: info.sha256,
+          size: info.size,
+        });
+        const gz = new Uint8Array(await response.arrayBuffer());
+        if (typeof DecompressionStream === "undefined") {
+          throw new Error("this browser has no DecompressionStream, needed to inflate the bundled XeTeX ICU data");
         }
+        const stream = new Response(gz).body.pipeThrough(new DecompressionStream("gzip"));
+        const icuBytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        await engine.loadIcuData(icuBytes);
       }
-      return engine;
-    }
-    // Inject the compact initial set and the bloom filter before this
-    // engine's first pass -- never fetched per-engine beyond what
-    // `configure` already prefetched once for the whole release.
-    if (this.bloomBytes) engine.loadBloom(this.bloomBytes);
-    if (this.absentEntries.length) await engine.preload404(this.absentEntries);
-    for (const file of this.initialFiles) {
-      await engine.preloadTexlive(file.format, file.name, file.bytes);
     }
     return engine;
   }
@@ -519,18 +468,6 @@ class Worker2 {
 
 function resolve(base, path) {
   return new URL(path, base ?? self.location.href).href;
-}
-
-/// `texlive.files`/`texlive.absent` keys are `<engine>/<kpathsea format
-/// code>/<name>`; the engine segment is always the literal `pdftex` even for
-/// XeTeX/LuaTeX file lookups (section 1), so only the format code and bare
-/// name are meaningful here.
-function parseTexliveKey(key) {
-  const parts = key.split("/");
-  if (parts.length < 3) return null;
-  const format = Number(parts[1]);
-  if (!Number.isFinite(format)) return null;
-  return { format, name: parts.slice(2).join("/") };
 }
 
 async function ensureDirs(engine, path) {

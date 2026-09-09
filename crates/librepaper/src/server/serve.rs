@@ -42,6 +42,9 @@ pub struct ServeOptions {
     /// A directory of font files served to typst documents, or empty. See
     /// `crate::server::fonts`.
     pub fonts: String,
+    /// The browser bibliography VM's descriptor, as `<url>#<sha256>`, or
+    /// empty for a deployment that offers none. See `crate::server::latex::BiberVm`.
+    pub biber_vm: String,
     pub config: Configuration,
 }
 
@@ -153,6 +156,12 @@ pub async fn serve(options: ServeOptions) {
     let fonts = match first_of(&[&options.fonts, &env("LIBREPAPER_FONTS")]).trim() {
         "" => None,
         flag => Some(crate::server::fonts::Library::open(flag).unwrap_or_else(|err| die(err))),
+    };
+    // Same startup-time refusal as --latex/--fonts: a malformed flag is a
+    // typo the operator is still standing in front of.
+    let biber_vm = match first_of(&[&options.biber_vm, &env("LIBREPAPER_BIBER_VM")]).trim() {
+        "" => None,
+        flag => Some(crate::server::latex::BiberVm::parse(flag).unwrap_or_else(|err| die(err))),
     };
     let expire_from = parse_expire_from(&first_of(&[
         &options.expire_from,
@@ -340,6 +349,7 @@ pub async fn serve(options: ServeOptions) {
     instance.listing = !options.no_listing;
     instance.latex = latex;
     instance.fonts = fonts;
+    instance.biber_vm = biber_vm;
     let instance = Arc::new(instance);
 
     println!("librepaper serving http://localhost{address}");
@@ -359,6 +369,9 @@ pub async fn serve(options: ServeOptions) {
         if let Some(warning) = mirror.probe().await {
             eprintln!("{warning}");
         }
+    }
+    if let Some(vm) = &instance.biber_vm {
+        println!("  biber vm: {}", vm.url);
     }
     if retention > 0 {
         println!(
