@@ -36,6 +36,7 @@ async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
         config_home.path(),
         cache_home.path(),
         runner,
+        None,
     );
     let router = service.router();
     tokio::spawn(async move {
@@ -53,10 +54,11 @@ async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
 }
 
 /// Sets the pairing code a running instance expects, by writing
-/// `service.json` directly rather than through `LIBREPAPER_LOCAL_CODE` --
-/// tests run concurrently, and that variable is process-wide.
+/// `service.json` directly rather than through a fixed `--code` --
+/// `start_test_service` never passes one, so the service falls back to
+/// whatever `service.json` holds.
 fn set_code(test: &LocalTest, code: &str) {
-    let pairing = PairingStore::new(test.config_home.path());
+    let pairing = PairingStore::new(test.config_home.path(), None);
     pairing
         .write_service(&ServiceState {
             port: 0,

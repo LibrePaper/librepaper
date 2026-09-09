@@ -103,33 +103,12 @@ fn cache_path() -> PathBuf {
         .join("tools.json")
 }
 
-fn paths_file() -> PathBuf {
-    crate::cli::config_home()
-        .join("librepaper")
-        .join("local")
-        .join("paths.txt")
-}
-
 /// The directories to search before `PATH` and the conventional locations:
-/// one per line of `paths.txt`, then `$LIBREPAPER_TEX_PATH` (colon-separated).
-pub fn configured_paths() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(paths_file()) {
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                dirs.push(PathBuf::from(trimmed));
-            }
-        }
-    }
-    if let Ok(env_path) = std::env::var("LIBREPAPER_TEX_PATH") {
-        for part in env_path.split(':') {
-            if !part.is_empty() {
-                dirs.push(PathBuf::from(part));
-            }
-        }
-    }
-    dirs
+/// whatever `--tex-path` resolved to, flag or its matching environment
+/// variable. Clap does the splitting and the environment fallback; this
+/// module only ever sees the resulting list, never the environment itself.
+fn configured_paths(tex_path: &[PathBuf]) -> Vec<PathBuf> {
+    tex_path.to_vec()
 }
 
 /// PATH's directories, then the conventional install locations for TeX
@@ -280,7 +259,7 @@ async fn probe_version(path: &Path, tool: &str) -> Option<String> {
 /// The setup hint every missing tool carries.
 fn setup_hint(tool: &str) -> String {
     format!(
-        "{tool} not found: install TeX Live or TinyTeX, or add its bin directory to ~/.config/librepaper/local/paths.txt"
+        "{tool} not found: install TeX Live or TinyTeX, or point --tex-path at its bin directory"
     )
 }
 
@@ -540,19 +519,21 @@ fn tool_paths_from(cache: &Cache) -> ToolPaths {
 /// Finds every tool and returns the browser-facing `Capabilities`, using
 /// the cache unless `refresh` is set or the cache is stale (a changed
 /// configured path, or a cached tool's executable missing or changed).
-pub async fn discover(refresh: bool) -> Capabilities {
-    capabilities_from(&discover_cache(refresh).await)
+/// `tex_path` is the resolved `--tex-path` directory list.
+pub async fn discover(refresh: bool, tex_path: &[PathBuf]) -> Capabilities {
+    capabilities_from(&discover_cache(refresh, tex_path).await)
 }
 
 /// The resolved tool paths for `native.rs`, from the same cache `discover`
-/// maintains. Never rescans on its own -- call `discover(true)` first if a
-/// fresh scan is wanted -- so a job never pays a rescan's cost mid-run.
-pub async fn tool_paths() -> ToolPaths {
-    tool_paths_from(&discover_cache(false).await)
+/// maintains. Never rescans on its own -- call `discover(true, tex_path)`
+/// first if a fresh scan is wanted -- so a job never pays a rescan's cost
+/// mid-run.
+pub async fn tool_paths(tex_path: &[PathBuf]) -> ToolPaths {
+    tool_paths_from(&discover_cache(false, tex_path).await)
 }
 
-async fn discover_cache(refresh: bool) -> Cache {
-    let configured = configured_paths();
+async fn discover_cache(refresh: bool, tex_path: &[PathBuf]) -> Cache {
+    let configured = configured_paths(tex_path);
     if !refresh {
         if let Some(cache) = load_cache() {
             if !cache_is_stale(&cache, &configured) {
@@ -593,7 +574,7 @@ mod tests {
     fn a_missing_tool_gets_a_setup_hint() {
         let tool = tool_from_banner("xelatex", None);
         assert!(!tool.available);
-        assert!(tool.note.contains("paths.txt"));
+        assert!(tool.note.contains("--tex-path"));
     }
 
     #[test]
@@ -608,10 +589,8 @@ mod tests {
     }
 
     #[test]
-    fn configured_paths_reads_the_env_var() {
-        std::env::set_var("LIBREPAPER_TEX_PATH", "/opt/a:/opt/b");
-        let dirs = configured_paths();
-        std::env::remove_var("LIBREPAPER_TEX_PATH");
+    fn configured_paths_passes_the_given_directories_through() {
+        let dirs = configured_paths(&[PathBuf::from("/opt/a"), PathBuf::from("/opt/b")]);
         assert!(dirs.contains(&PathBuf::from("/opt/a")));
         assert!(dirs.contains(&PathBuf::from("/opt/b")));
     }

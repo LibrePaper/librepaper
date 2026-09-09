@@ -124,12 +124,11 @@ clean:  ## Remove build output
 # The port is fixed because the GitHub OAuth app's callback URL names it.
 PORT       ?= 8081
 DATA       ?= librepaper-data
-PUBLISHERS ?= anyone
-COMMENTERS ?= anyone
-# Ownership for the manual seed command. Account onboarding creates private
+# Ownership for the manual seed command, derived from .env's own
+# LIBREPAPER_PUBLISHERS (exported above). Account onboarding creates private
 # copies for each signed-in account automatically.
 comma := ,
-OWNER      ?= $(if $(filter any anyone,$(PUBLISHERS)),,$(if $(findstring $(comma),$(PUBLISHERS)),,$(PUBLISHERS)))
+OWNER      ?= $(if $(filter any anyone,$(LIBREPAPER_PUBLISHERS)),,$(if $(findstring $(comma),$(LIBREPAPER_PUBLISHERS)),,$(LIBREPAPER_PUBLISHERS)))
 # Where LaTeX distributions come from: a mirror directory or an https bucket.
 # LibrePaper always serves LaTeX -- with no `LATEX=`, the binary's own
 # default applies (the project's own mirror, DEFAULT_MIRROR in
@@ -138,9 +137,9 @@ OWNER      ?= $(if $(filter any anyone,$(PUBLISHERS)),,$(if $(findstring $(comma
 LATEX      ?=
 LATEX_FLAG ?= $(if $(LATEX),--latex $(LATEX))
 
-serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, PUBLISHERS=, COMMENTERS=, LATEX=)
+serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX=; everything else through .env)
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@$(BIN) serve --port $(PORT) --data $(DATA) --publishers $(PUBLISHERS) --commenters $(COMMENTERS) $(LATEX_FLAG)
+	@$(BIN) serve --port $(PORT) --data $(DATA) $(LATEX_FLAG)
 
 # One example per source format LibrePaper accepts. Only the HTML one is built:
 # Quarto renders it from the .qmd beside it. The .md and the .typ are rendered

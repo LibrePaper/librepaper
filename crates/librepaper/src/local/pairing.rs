@@ -64,15 +64,23 @@ pub struct Pairing {
 #[derive(Clone)]
 pub struct PairingStore {
     dir: PathBuf,
+    /// The fixed code `librepaper local start --code` was given, if any.
+    /// Takes priority over whatever `service.json` holds, so `expected_code`
+    /// answers correctly even when a caller never went through
+    /// `write_service` at all, as tests that fix the code do not.
+    fixed_code: Option<String>,
 }
 
 impl PairingStore {
     /// `config_home` is an XDG config base, e.g. `crate::cli::config_home()`
     /// in production or a temporary directory standing in for
-    /// `$XDG_CONFIG_HOME` in a test.
-    pub fn new(config_home: &Path) -> Self {
+    /// `$XDG_CONFIG_HOME` in a test. `fixed_code` is the resolved `--code`
+    /// value, flag or its matching environment variable, when `librepaper
+    /// local start` was given one; pass `None` everywhere else.
+    pub fn new(config_home: &Path, fixed_code: Option<String>) -> Self {
         PairingStore {
             dir: config_home.join("librepaper").join("local"),
+            fixed_code: fixed_code.filter(|c| !c.trim().is_empty()),
         }
     }
 
@@ -96,15 +104,13 @@ impl PairingStore {
         let _ = std::fs::remove_file(self.service_path());
     }
 
-    /// The code a `connect` must present: `$LIBREPAPER_LOCAL_CODE` when set --
-    /// so a test never has to read `service.json` back to know it -- else
-    /// the code in `service.json`, else empty (nothing can connect to a
-    /// service that has not called `write_service` yet).
+    /// The code a `connect` must present: the fixed code this store was
+    /// constructed with, when there is one, else the code in
+    /// `service.json`, else empty (nothing can connect to a service that
+    /// has not called `write_service` yet).
     pub fn expected_code(&self) -> String {
-        if let Ok(code) = std::env::var("LIBREPAPER_LOCAL_CODE") {
-            if !code.trim().is_empty() {
-                return code.trim().to_string();
-            }
+        if let Some(code) = &self.fixed_code {
+            return code.clone();
         }
         self.read_service().map(|s| s.code).unwrap_or_default()
     }
@@ -312,7 +318,7 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, PairingStore) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = PairingStore::new(dir.path());
+        let store = PairingStore::new(dir.path(), None);
         (dir, store)
     }
 
@@ -346,6 +352,22 @@ mod tests {
         assert!(store.revoke_one("https://a", "p1"));
         assert_eq!(store.authenticate("https://a", &t1), None);
         assert_eq!(store.authenticate("https://a", &t2), Some("p2".to_string()));
+    }
+
+    #[test]
+    fn a_fixed_code_wins_over_service_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = PairingStore::new(dir.path(), Some("123456".to_string()));
+        store
+            .write_service(&ServiceState {
+                port: 0,
+                instance: "test".to_string(),
+                code: "000000".to_string(),
+                pid: 1,
+                started: 0,
+            })
+            .expect("write service.json");
+        assert_eq!(store.expected_code(), "123456");
     }
 
     #[test]

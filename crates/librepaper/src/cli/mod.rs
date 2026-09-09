@@ -491,16 +491,46 @@ pub enum LocalCommand {
     /// Start the loopback service and print its pairing code
     Start {
         /// Port to listen on (default 8763)
-        #[arg(long, value_name = "PORT", default_value_t = 0)]
+        #[arg(
+            long,
+            value_name = "PORT",
+            default_value_t = 0,
+            env = "LIBREPAPER_LOCAL_PORT"
+        )]
         port: u16,
         /// Stay attached to the terminal rather than detaching
         #[arg(long)]
         foreground: bool,
+        /// Fixed pairing code to use instead of a random one each run
+        #[arg(
+            long,
+            value_name = "CODE",
+            env = "LIBREPAPER_LOCAL_CODE",
+            hide_env_values = true
+        )]
+        code: Option<String>,
+        /// Extra directories to search for TeX tools, colon-separated
+        #[arg(
+            long,
+            value_name = "DIRS",
+            env = "LIBREPAPER_TEX_PATH",
+            value_delimiter = ':'
+        )]
+        tex_path: Vec<PathBuf>,
     },
     /// Whether the service is running, its address, code and pairings
     Status,
     /// Which native tools were found, and what is missing
-    Doctor,
+    Doctor {
+        /// Extra directories to search for TeX tools, colon-separated
+        #[arg(
+            long,
+            value_name = "DIRS",
+            env = "LIBREPAPER_TEX_PATH",
+            value_delimiter = ':'
+        )]
+        tex_path: Vec<PathBuf>,
+    },
     /// Revoke pairings
     Disconnect {
         /// The browser origin to revoke; all of them with --all
@@ -510,7 +540,16 @@ pub enum LocalCommand {
         all: bool,
     },
     /// Refresh the discovered tools
-    Rescan,
+    Rescan {
+        /// Extra directories to search for TeX tools, colon-separated
+        #[arg(
+            long,
+            value_name = "DIRS",
+            env = "LIBREPAPER_TEX_PATH",
+            value_delimiter = ':'
+        )]
+        tex_path: Vec<PathBuf>,
+    },
 }
 
 /// The arguments `librepaper local` hands to `crate::local::run`.
