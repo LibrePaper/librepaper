@@ -1,18 +1,9 @@
 # Resume the refactor
 
-State at the 2026-09-08 handoff. Eleven of the twelve tracks in
-SPEC-refactor.md are merged to `live-markdown-editor`; see STATUS.md for the
-commit-level index and each `NN-*.md` for evidence and limitations.
-
-## What is not on the main branch
-
-Track 2's remaining half (legacy comment persistence split, catalogue waits
-that still hold room state, the complete lock-order audit) was implemented on
-`refactor/comment-locks` from `refactor/integration` at `dd4a696`. If that
-branch is not yet merged when you read this, review it against
-docs/specs/refactor/02-lock-scopes.md and the gate-held table in
-01-catalogue-execution.md, merge it onto `refactor/integration`, run the full
-suite, and fast-forward.
+State at the 2026-09-08 handoff. All twelve tracks in SPEC-refactor.md
+are merged to `live-markdown-editor`; see STATUS.md for the commit-level
+index and each `NN-*.md` for evidence and limitations. Nothing from the
+roadmap is left on a branch.
 
 ## How integration was done
 

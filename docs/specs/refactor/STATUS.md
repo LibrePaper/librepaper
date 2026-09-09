@@ -8,7 +8,7 @@ is for the combined branch, not for any track's branch alone.
 | Track | State | Evidence or remaining work |
 | --- | --- | --- |
 | 1. Catalogue execution | Merged | Bounded `spawn_blocking` boundary sharing the one connection (`a8c244e`); every asynchronous production caller migrated in room/ (`62e855c`, `c3060ba`, `8bc0da4`) and outside it (`dd616ad`, `a230151`, `35f61a4`, `acea5e6`, `cf51a0a`); reservation lifecycle guards with service-owned completion; `Catalog::shutdown` wired into `serve`. Synchronous exceptions (seed, CLI admin, `backup.rs`'s own connection, `Drop` impls) are listed in the spec. |
-| 2. Lock scopes | Registry merged; comment/catalogue-wait scopes in review | Registry scans (`9ec5959`). The comment persistence split, the release of room state around catalogue waits, and the full lock-order audit are on `refactor/comment-locks`; see RESUME.md. |
+| 2. Lock scopes | Merged | Registry scans (`9ec5959`); then `b63d131`, `7475c10`, `189480c`, `c360c2a`, `c329942`, `e8da8e8`: comment persistence split into prepare, persist and generation-checked apply under a dedicated `comment_write` gate, room state released around the edit reservation and the session, accounting and scheduler catalogue waits, and the complete lock-order audit with barrier regressions. |
 | 3. Shared retention | Merged | `c3771e6`, `8ae9b94`, `c6e8a72`: one history traversal, four concurrent tree reads. |
 | 4. Rendering lookup | Merged | `4e55fe9`, `5f8e9ea`: one joined candidate query; `exists` on the blob contract; now dispatched through the track 1 boundary. |
 | 5. Resident estimates | Merged | `15c2279`, `00c3500`: `resident::Measured` caches comment and manifest sizes with `DerefMut` invalidation. 200 unchanged estimates of 1,000 comments: 3.84 s and 400 serializations before, 22 ms and 2 after, identical byte answer. |
@@ -43,7 +43,8 @@ and rerun them individually rather than editing them.
 ## Review dispositions
 
 Every branch was read in full by the parent before merging. Corrections made
-at integration rather than sent back: three dropped apostrophes in attribution
+at integration rather than sent back: two whole-list assignments in the
+comment persistence split dereferenced through track 5's measured wrapper; three dropped apostrophes in attribution
 comments; migration 13 renumbered to 14 with its schema assertions; the
 size-limit tests adapted to the narrowed `Room::attach`; the two catalogue
 caller halves unified on one lock-free job form, `execute_catalog`, after
@@ -54,6 +55,5 @@ guards compose with the typed errors.
 Known compromises, all recorded in the track specs: the catalogue's own
 conflict prose is still classified by substring in exactly one pinned
 function (`CatalogError::refusal`); `MaintenanceBorrow::drop` refunds through a
-bare `spawn_blocking` outside admission; the legacy non-catalogue comment
-paths keep their mutate-then-save shape until track 2 lands; a room fenced by
+bare `spawn_blocking` outside admission; a room fenced by
 the encoded-size backstop stays read-only until reopened.
