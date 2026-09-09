@@ -6,9 +6,18 @@
 // can write into every document it serves. So it is one classic script, built
 // separately from the pages.
 import { defineConfig } from "vite";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+// Where the agent fetches KaTeX from when a document carries math: the path
+// tools/vendor-katex.mjs copies it to, named for the version the lockfile
+// pins, so the two cannot disagree.
+const katex = JSON.parse(readFileSync(resolve(import.meta.dirname, "node_modules/katex/package.json"), "utf8")).version;
+
 export default defineConfig({
+  define: {
+    __KATEX__: JSON.stringify(`/assets/katex-${katex}/`),
+  },
   build: {
     outDir: resolve(import.meta.dirname, "dist"),
     emptyOutDir: false,

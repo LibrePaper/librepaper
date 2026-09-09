@@ -87,18 +87,80 @@ fn bundles_are_immutable_and_pages_are_not() {
     }
 }
 
-// The logo is drawn, not set in a brand font, and nothing else wants one: a
-// page still reaches out to no font host.
+// The pages set no brand font, and the one thing that declares faces -- KaTeX,
+// for the mathematics in a document -- is served from here with them: every
+// file a stylesheet names is in the build, and none is on a font host.
 #[test]
-fn no_font_is_fetched_from_elsewhere() {
-    let css = stylesheets();
+fn every_font_is_served_from_here() {
+    let shell = shell();
+    let url = regex::Regex::new(r#"url\(\s*["']?([^"')]+)["']?\s*\)"#).expect("a constant pattern");
+    let mut named = 0;
+    for (route, asset) in &shell {
+        if !(route.starts_with("/assets/") && route.ends_with(".css")) {
+            continue;
+        }
+        let css = asset.text();
+        assert!(
+            !css.contains("fonts.googleapis") && !css.contains("fonts.gstatic"),
+            "{route} reaches out to a font host"
+        );
+        assert!(
+            route.contains("/katex-") || !css.contains("@font-face"),
+            "{route} declares a font face; only KaTeX does"
+        );
+        let dir = &route[..route.rfind('/').expect("a route has a slash") + 1];
+        for found in url.captures_iter(&css) {
+            let target = &found[1];
+            if target.starts_with("data:") {
+                continue;
+            }
+            assert!(
+                !target.contains("://"),
+                "{route} fetches {target} from elsewhere"
+            );
+            let served = if target.starts_with('/') {
+                target.to_string()
+            } else {
+                format!("{dir}{target}")
+            };
+            let served = served.split(['?', '#']).next().unwrap_or_default();
+            assert!(
+                shell.contains_key(served),
+                "{route} names {target}, which nothing serves"
+            );
+            named += 1;
+        }
+    }
+    assert!(named > 0, "KaTeX's faces were not found; run `make web`");
+}
+
+// A markdown document's mathematics is typeset by the agent, with the KaTeX
+// the build put beside it: the agent names one path, and the build serves the
+// script, its stylesheet and its faces there, under a name that carries the
+// version and so can be cached for a year.
+#[test]
+fn katex_is_served_where_the_agent_looks_for_it() {
+    let shell = shell();
+    let agent = shell.get("/agent.js").expect("the agent is built").text();
+    let base = regex::Regex::new(r"/assets/katex-[0-9][^/]*/").expect("a constant pattern");
+    let base = base
+        .find(&agent)
+        .expect("the agent names where KaTeX is")
+        .as_str();
+    for name in ["katex.min.js", "katex.min.css"] {
+        let asset = shell
+            .get(&format!("{base}{name}"))
+            .unwrap_or_else(|| panic!("{base}{name} is served"));
+        assert!(
+            asset.immutable,
+            "{base}{name} is named for its version and is cached as such"
+        );
+    }
     assert!(
-        !css.contains("fonts.googleapis") && !css.contains("fonts.gstatic"),
-        "an external font host"
-    );
-    assert!(
-        !css.contains("@font-face"),
-        "a font face is declared, but no font is served from here"
+        shell
+            .keys()
+            .any(|route| route.starts_with(&format!("{base}fonts/")) && route.ends_with(".woff2")),
+        "KaTeX's faces are served beside it"
     );
 }
 

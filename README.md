@@ -464,6 +464,33 @@ document and should go no further than the deployment that already has the
 source. An `http:` mirror is refused at startup, since the page a document is
 framed in will not load a compiler over one.
 
+### Typst packages and fonts
+
+A Typst document may import a package from
+[Typst Universe](https://typst.app/universe) and name any font family. The
+compiler, in the browser and in `publish` alike, never fetches anything
+itself: it says what it went looking for and did not find, the host fetches
+that, and the compile runs again. Packages come straight from the registry --
+a published version never changes, so the browser caches each forever and the
+command line keeps them where the `typst` binary keeps its own, under
+`~/.cache/typst/packages`. A font file beside the document is used as
+`--font-path` would use it.
+
+Any other family comes from the deployment's own font library:
+
+```sh
+librepaper serve --fonts /srv/librepaper/fonts      # a directory of .ttf/.otf files
+```
+
+The directory is read once at startup for the families each file carries, and
+served by family at `/api/fonts/`. The editor asks for a family the compiler
+warned about; `publish` asks the same deployment for the same files, so the
+preview and the stored PDF are set in the same faces. Without `--fonts`, a
+document naming a family the compiler does not embed is set in Typst's
+default faces and warned about, as it would be by the binary on a machine
+without that font. Which fonts a deployment offers, and under what licence, is
+the operator's decision.
+
 ### Sync
 
 The editor in the page is one door into a live session. `sync` is the other:
@@ -537,6 +564,15 @@ malformed entries, and missing files appear in Diagnostics. Parsing and Markdown
 formatting run in separate, lazily loaded WebAssembly modules. LaTeX and Typst
 keep their own bibliography compilers. Zotero exports can be uploaded as
 `.bib` files; live Zotero integration is a later milestone.
+
+### Math
+
+Markdown accepts TeX between dollars: `$\hat\beta$` in a sentence, and
+`$$…$$` on lines of its own for a displayed equation. The renderer keeps the
+TeX exactly as written, and the reader typesets it with KaTeX, served by the
+deployment itself and fetched only by a document that has math in it. A
+dollar with a number after it, as in `$5`, is still money. Typst and LaTeX
+typeset their own mathematics.
 
 ### Agents
 

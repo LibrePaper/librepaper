@@ -10,6 +10,8 @@
 // with it. That is why the sidebar treats everything arriving from here as
 // untrusted input rather than as fact.
 
+import { createMathTypesetter } from "../lib/math.js";
+
 (() => {
   const READER = new URL(document.currentScript.src).searchParams.get("reader") || "*";
   let table = null; // {nodes, starts, index, offsets, joined}
@@ -66,6 +68,11 @@
   const previewStyle = document.createElement("style");
   previewStyle.dataset.librepaperPreview = "canvas";
   previewStyle.textContent = previewCanvasStyle;
+
+  // Math arrives as TeX in tagged spans and is typeset here, with a KaTeX
+  // fetched from this origin the first time a document needs one. The path is
+  // written in at build time, beside the copy of KaTeX the build made.
+  const typesetMath = createMathTypesetter({ base: __KATEX__, document, window });
 
   // A pending suggestion's proposal is drawn after its passage by
   // `::after`, which adds no text node -- the offset tables this file keeps
@@ -751,6 +758,10 @@
       adoptStyles(parsed);
       quietly(() => {
         document.body.innerHTML = parsed.body.innerHTML;
+        // In the same breath when KaTeX is already here, so the text published
+        // below is the typeset text. The first time it is not, and the
+        // rendering lands as a mutation the observer republishes.
+        typesetMath();
       });
       // Replacing the body throws away every mark on it, and the ranges to
       // paint again only arrive after the sidebar has seen the new text and
