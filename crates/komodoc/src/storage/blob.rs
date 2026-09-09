@@ -21,7 +21,7 @@
 use std::fs::OpenOptions;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -656,6 +656,51 @@ fn is_atomic_temporary_name(name: &std::ffi::OsStr) -> bool {
         && serial.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+/// Whether a write is pushed to the platter before it is called done.
+///
+/// A deployment always wants durability: the point of the atomic write below
+/// is that a machine losing power leaves the old bytes or the new ones. A
+/// test wants none of it. It writes to a temporary directory that is deleted
+/// when the case ends, so there is no crash for the sync to survive -- and
+/// each `fsync` costs about twenty milliseconds on a journalling filesystem,
+/// which a case that writes a thousand objects pays a thousand times over.
+///
+/// The choice is made once per process: durable unless `KOMODOC_FSYNC` says
+/// otherwise, and relaxed by default when this crate is compiled under test.
+/// The environment variable is what an integration case sets, because those
+/// spawn the real binary, which is not built with `cfg(test)`.
+fn durable() -> bool {
+    #[cfg(test)]
+    const DEFAULT: bool = false;
+    #[cfg(not(test))]
+    const DEFAULT: bool = true;
+
+    static DURABLE: OnceLock<bool> = OnceLock::new();
+    *DURABLE.get_or_init(|| match std::env::var("KOMODOC_FSYNC") {
+        Ok(value) => !matches!(value.trim(), "0" | "off" | "false" | "no"),
+        Err(_) => DEFAULT,
+    })
+}
+
+/// `sync_all` on an open file, unless durability is relaxed.
+fn sync_file(file: &std::fs::File) -> std::io::Result<()> {
+    if durable() {
+        file.sync_all()
+    } else {
+        Ok(())
+    }
+}
+
+/// `sync_all` on a directory, so that a name created or removed inside it is
+/// itself on disk -- unless durability is relaxed.
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    if durable() {
+        std::fs::File::open(path)?.sync_all()
+    } else {
+        Ok(())
+    }
+}
+
 /// Leaves either the old bytes or the new ones, never a half-written file: a
 /// crash mid-write must not turn the index into something that no longer
 /// parses.
@@ -678,13 +723,12 @@ pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
     let result = write_private_file(&temporary, body)
         .and_then(|_| {
             let file = std::fs::OpenOptions::new().read(true).open(&temporary)?;
-            file.sync_all()
+            sync_file(&file)
         })
         .and_then(|_| std::fs::rename(&temporary, name))
         .and_then(|_| {
             if let Some(parent) = name.parent() {
-                let directory = std::fs::File::open(parent)?;
-                directory.sync_all()?;
+                sync_directory(parent)?;
             }
             Ok(())
         });
@@ -702,13 +746,13 @@ fn write_private_file(path: &Path, body: &[u8]) -> std::io::Result<()> {
         options.write(true).create_new(true).mode(0o600);
         let mut file = options.open(path)?;
         std::io::Write::write_all(&mut file, body)?;
-        file.sync_all()
+        sync_file(&file)
     }
     #[cfg(not(unix))]
     {
         let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
         std::io::Write::write_all(&mut file, body)?;
-        file.sync_all()
+        sync_file(&file)
     }
 }
 
