@@ -9,14 +9,19 @@ use super::*;
 /// in and the order a history reads in. The newest is marked, because "where
 /// am I" is the first question anybody asks of a list like this, and a label
 /// is printed as it was given: it is somebody's own words about a moment.
-pub async fn history_document(identifier: &str, server_flag: String, key: String) {
-    let server = server_from(&server_flag);
+pub async fn history_document(
+    identifier: &str,
+    server: Option<String>,
+    token: Option<String>,
+    key: String,
+) {
+    let server = server_or_die(server);
     let key = link_key(&key);
-    let slug = resolve_identifier(identifier, &server, &key).await;
+    let slug = resolve_identifier(identifier, &server, &key, token.as_deref()).await;
     let checkpoints = manifest_for(
         &server,
         &slug,
-        &Credentials::new(&stored_token_for(&server), &key),
+        &Credentials::new(&stored_token_for(&server, token.as_deref()), &key),
     )
     .await
     .unwrap_or_else(|err| die(err));
@@ -132,13 +137,14 @@ pub async fn diff_document(
     identifier: &str,
     from: &str,
     to: &str,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     key: String,
 ) {
-    let server = server_from(&server_flag);
+    let server = server_or_die(server);
     let key = link_key(&key);
-    let slug = resolve_identifier(identifier, &server, &key).await;
-    let credentials = Credentials::new(&stored_token_for(&server), &key);
+    let slug = resolve_identifier(identifier, &server, &key, token.as_deref()).await;
+    let credentials = Credentials::new(&stored_token_for(&server, token.as_deref()), &key);
     let manifest = manifest_for(&server, &slug, &credentials)
         .await
         .unwrap_or_else(|err| die(err));
@@ -428,11 +434,17 @@ pub(super) fn unified_range(start: usize, count: usize) -> String {
 
 /// Restores a checkpoint through the editor-only API. The key may be either a
 /// raw share key or the complete link copied from a browser.
-pub async fn restore_document(identifier: &str, sha: &str, server_flag: String, key: String) {
-    let server = server_from(&server_flag);
+pub async fn restore_document(
+    identifier: &str,
+    sha: &str,
+    server: Option<String>,
+    token: Option<String>,
+    key: String,
+) {
+    let server = server_or_die(server);
     let key = link_key(&key);
-    let slug = resolve_identifier(identifier, &server, &key).await;
-    let credentials = Credentials::new(&stored_token_for(&server), &key);
+    let slug = resolve_identifier(identifier, &server, &key, token.as_deref()).await;
+    let credentials = Credentials::new(&stored_token_for(&server, token.as_deref()), &key);
     let (status, document) = get_as(
         &format!("{server}/api/documents/{slug}"),
         &credentials,
@@ -478,10 +490,16 @@ pub async fn restore_document(identifier: &str, sha: &str, server_flag: String, 
 /// the manifest here rather than on the server: the server takes one name for
 /// a checkpoint, its whole digest, and a prefix that matched two of them would
 /// be a thing for a person to disambiguate rather than for a route to guess.
-pub async fn label_checkpoint(identifier: &str, sha: &str, label: String, server_flag: String) {
-    let server = server_from(&server_flag);
-    let slug = resolve_identifier(identifier, &server, "").await;
-    let token = require_token_for(&server);
+pub async fn label_checkpoint(
+    identifier: &str,
+    sha: &str,
+    label: String,
+    server: Option<String>,
+    token: Option<String>,
+) {
+    let server = server_or_die(server);
+    let slug = resolve_identifier(identifier, &server, "", token.as_deref()).await;
+    let token = require_token_for(&server, token.as_deref());
     let checkpoints = manifest_for(&server, &slug, &Credentials::token(&token))
         .await
         .unwrap_or_else(|err| die(err));

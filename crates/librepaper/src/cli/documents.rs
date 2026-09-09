@@ -4,9 +4,9 @@
 
 use super::*;
 
-pub async fn list_documents(server_flag: String) {
-    let server = server_from(&server_flag);
-    let documents = visible_documents(&server, &require_token_for(&server))
+pub async fn list_documents(server: Option<String>, token: Option<String>) {
+    let server = server_or_die(server);
+    let documents = visible_documents(&server, &require_token_for(&server, token.as_deref()))
         .await
         .unwrap_or_else(|err| die(err.to_string()));
     if documents.is_empty() {
@@ -232,8 +232,13 @@ fn match_identifier(identifier: &str, documents: &[Value], direct: bool) -> Resu
         .ok_or_else(|| format!("no visible document matches {identifier:?}"))
 }
 
-pub async fn resolve_identifier(identifier: &str, server: &str, key: &str) -> String {
-    resolve_identifier_with(identifier, server, key, &stored_token_for(server))
+pub async fn resolve_identifier(
+    identifier: &str,
+    server: &str,
+    key: &str,
+    token: Option<&str>,
+) -> String {
+    resolve_identifier_with(identifier, server, key, &stored_token_for(server, token))
         .await
         .unwrap_or_else(|err| die(err))
 }
@@ -276,10 +281,15 @@ async fn resolve_identifier_with(
     match_identifier(identifier, &documents, status == 200)
 }
 
-pub async fn comment_document(identifier: &str, server_flag: String, key: String) {
-    let server = server_from(&server_flag);
+pub async fn comment_document(
+    identifier: &str,
+    server: Option<String>,
+    token: Option<String>,
+    key: String,
+) {
+    let server = server_or_die(server);
     let key = link_key(&key);
-    let slug = resolve_identifier(identifier, &server, &key).await;
+    let slug = resolve_identifier(identifier, &server, &key, token.as_deref()).await;
     // The key goes back where a browser expects it, in the fragment, so the
     // page opened is the link exactly as it was shared.
     if key.is_empty() {
@@ -317,8 +327,13 @@ pub fn link_key(flag: &str) -> String {
 /// `librepaper edit` opens a document in the reader, with its source beside
 /// it. The editor is part of the reader rather than a program of its own, so
 /// this is what it should be: a way to get to the right page from a short id.
-pub async fn edit_document(identifier: &str, server_flag: String, key: String) {
-    comment_document(identifier, server_flag, key).await;
+pub async fn edit_document(
+    identifier: &str,
+    server: Option<String>,
+    token: Option<String>,
+    key: String,
+) {
+    comment_document(identifier, server, token, key).await;
 }
 
 pub fn open_url(target: &str) {
@@ -357,17 +372,19 @@ pub(crate) fn parse_link_role(word: &str) -> Result<&'static str, String> {
 
 /// `librepaper share c9k` with nothing else prints what the document says;
 /// with a flag, changes it and prints the result.
+#[allow(clippy::too_many_arguments)]
 pub async fn share_document(
     identifier: &str,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     link: String,
     until: String,
     label: Option<String>,
     budget: Option<i64>,
     revoke: String,
 ) {
-    let server = server_from(&server_flag);
-    let slug = resolve_identifier(identifier, &server, "").await;
+    let server = server_or_die(server);
+    let slug = resolve_identifier(identifier, &server, "", token.as_deref()).await;
     let target = format!("{server}/api/documents/{slug}/share");
 
     let mut change = json!({});
@@ -392,7 +409,7 @@ pub async fn share_document(
     let (status, payload) = if asking {
         get_with_token(
             &target,
-            &require_token_for(&server),
+            &require_token_for(&server, token.as_deref()),
             Duration::from_secs(60),
         )
         .await
@@ -401,7 +418,7 @@ pub async fn share_document(
         post_json(
             &target,
             &change,
-            &require_token_for(&server),
+            &require_token_for(&server, token.as_deref()),
             Duration::from_secs(60),
         )
         .await
@@ -514,9 +531,15 @@ pub(super) fn print_sharing(payload: &Value, server: &str, slug: &str) {
 /// Hands a document to somebody else: its history, its comments and its quota
 /// go with it. Confirmed like `destroy`, because it is the one other change
 /// that leaves the caller with nothing.
-pub async fn transfer_document(identifier: &str, to: &str, server_flag: String, yes: bool) {
-    let server = server_from(&server_flag);
-    let slug = resolve_identifier(identifier, &server, "").await;
+pub async fn transfer_document(
+    identifier: &str,
+    to: &str,
+    server: Option<String>,
+    token: Option<String>,
+    yes: bool,
+) {
+    let server = server_or_die(server);
+    let slug = resolve_identifier(identifier, &server, "", token.as_deref()).await;
     println!("About to transfer on {server}:");
     println!("  {slug}");
     println!("  to @{to}, with its history, its comments and its storage quota");
@@ -534,7 +557,7 @@ pub async fn transfer_document(identifier: &str, to: &str, server_flag: String, 
     let (status, payload) = post_json(
         &format!("{server}/api/documents/{slug}/transfer"),
         &json!({"to": to}),
-        &require_token_for(&server),
+        &require_token_for(&server, token.as_deref()),
         Duration::from_secs(60),
     )
     .await
@@ -548,12 +571,17 @@ pub async fn transfer_document(identifier: &str, to: &str, server_flag: String, 
     println!("{slug} now belongs to @{}", text(&payload, "owner"));
 }
 
-pub async fn destroy_document(identifier: &str, server_flag: String, yes: bool) {
-    let server = server_from(&server_flag);
+pub async fn destroy_document(
+    identifier: &str,
+    server: Option<String>,
+    token: Option<String>,
+    yes: bool,
+) {
+    let server = server_or_die(server);
     // The same identifier `comment` and `export` take. The confirmation
     // below still asks for the whole slug: this is the one irreversible
     // command, and a three-character answer is too easy to give.
-    let slug = resolve_identifier(identifier, &server, "").await;
+    let slug = resolve_identifier(identifier, &server, "", token.as_deref()).await;
     // Authenticated, not `get_json`: an owner's own document can be private,
     // and an unauthenticated read of it gets the same 404 a stranger would --
     // which used to stop `destroy` here before it ever reached the delete
@@ -561,7 +589,7 @@ pub async fn destroy_document(identifier: &str, server_flag: String, yes: bool) 
     // answers to an empty token the same as before.
     let (status, document) = get_with_token(
         &format!("{server}/api/documents/{slug}"),
-        &stored_token_for(&server),
+        &stored_token_for(&server, token.as_deref()),
         Duration::from_secs(30),
     )
     .await
@@ -593,7 +621,7 @@ pub async fn destroy_document(identifier: &str, server_flag: String, yes: bool) 
     let (status, payload) = post_json(
         &format!("{server}/api/documents/{slug}/delete"),
         &json!({}),
-        &require_token_for(&server),
+        &require_token_for(&server, token.as_deref()),
         Duration::from_secs(120),
     )
     .await

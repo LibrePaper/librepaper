@@ -168,7 +168,8 @@ async fn anchored_suggest_preserves_the_captured_occurrence_and_revision() {
         "changed",
         "assistant note".into(),
         revision.clone(),
-        String::new(),
+        None,
+        None,
         String::new(),
     )
     .await;
@@ -204,7 +205,8 @@ async fn batch_suggest_reports_partial_success_from_the_cli_shape() {
         &format!("{}/docs/{slug}#k={key}", server.url),
         file.to_str().unwrap(),
         String::new(),
-        String::new(),
+        None,
+        None,
         String::new(),
     )
     .await;

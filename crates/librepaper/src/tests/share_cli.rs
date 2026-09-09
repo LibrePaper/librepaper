@@ -2,9 +2,10 @@
 //! share` mints, revokes, and lists the three role links a document can
 //! carry.
 //!
-//! `share_document` itself reaches out over HTTP and reads its token from
-//! `$LIBREPAPER_TOKEN` or the on-disk cache (see `require_token_for`), neither
-//! of which a unit test should be poking at process-wide state to fake. What
+//! `share_document` itself reaches out over HTTP and reads its token from an
+//! explicit `--token`/`$LIBREPAPER_TOKEN` or the on-disk cache (see
+//! `require_token_for`), neither of which a unit test should be poking at
+//! process-wide state to fake. What
 //! it does with the answer, though, is an ordinary function of a JSON value in
 //! the shape `sharing_json` on the server answers with, so these tests build
 //! that shape by hand and drive `format_role_row`, `sharing_report_lines`, and

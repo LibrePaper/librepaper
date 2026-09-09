@@ -46,6 +46,18 @@ To sign in from this terminal:
     librepaper login"
 )]
 pub(crate) struct Cli {
+    /// Deployment to talk to; or $LIBREPAPER_SERVER
+    #[arg(long, global = true, env = "LIBREPAPER_SERVER", value_name = "URL")]
+    server: Option<String>,
+    /// A credential to use instead of the one `login` stored; or $LIBREPAPER_TOKEN
+    #[arg(
+        long,
+        global = true,
+        env = "LIBREPAPER_TOKEN",
+        value_name = "TOKEN",
+        hide_env_values = true
+    )]
+    token: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -164,11 +176,7 @@ impl ServiceFlags {
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Sign in through a deployment, in a browser
-    Login {
-        /// Deployment URL; defaults to $LIBREPAPER_SERVER
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
-    },
+    Login,
     /// Forget the stored sign-in
     Logout,
     /// Publish a document and print its link
@@ -184,9 +192,6 @@ pub(crate) enum Command {
         /// Which file in a directory is the document
         #[arg(long, value_name = "PATH")]
         main: Option<String>,
-        /// Deployment URL; defaults to $LIBREPAPER_SERVER
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Run the service on this machine
     Serve {
@@ -218,11 +223,7 @@ pub(crate) enum Command {
         dir: String,
     },
     /// List your documents
-    List {
-        /// Deployment URL; defaults to $LIBREPAPER_SERVER
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
-    },
+    List,
     /// Open a document for commenting
     Comment {
         /// A full slug, or one of the short handles `list` prints
@@ -231,8 +232,6 @@ pub(crate) enum Command {
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Edit a markdown or typst document, with live preview
     Edit {
@@ -242,8 +241,6 @@ pub(crate) enum Command {
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Keep a local file and a document in step, both ways, until interrupted
     Sync {
@@ -258,8 +255,6 @@ pub(crate) enum Command {
         /// sign-in needed where the deployment asks for none
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Show or change how a document is shared
     Share {
@@ -287,8 +282,6 @@ pub(crate) enum Command {
         /// away a legacy login
         #[arg(long, value_name = "ROLE")]
         revoke: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Hand a document, its history and its quota to another account
     Transfer {
@@ -296,8 +289,6 @@ pub(crate) enum Command {
         id: String,
         /// The GitHub login to hand it to
         to: String,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
         /// Skip the confirmation prompt
         #[arg(long)]
         yes: bool,
@@ -310,8 +301,6 @@ pub(crate) enum Command {
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Print the source diff between two checkpoints
     Diff {
@@ -324,8 +313,6 @@ pub(crate) enum Command {
         /// A share link, or the key from one
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Restore a checkpoint into the live document
     Restore {
@@ -336,8 +323,6 @@ pub(crate) enum Command {
         /// An editor share link, or the key from one
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Name a checkpoint, so it stands out in the timeline
     Label {
@@ -347,8 +332,6 @@ pub(crate) enum Command {
         sha: String,
         /// What to call it; omit to take an existing name away
         text: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Propose a replacement for a passage, for an editor to accept or reject
     Suggest {
@@ -379,8 +362,6 @@ pub(crate) enum Command {
         /// A comment or editor share link, or the key from one
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Apply a suggestion to the live document
     Accept {
@@ -391,8 +372,6 @@ pub(crate) enum Command {
         /// An editor share link, or the key from one
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Resolve a suggestion without applying it
     Reject {
@@ -403,8 +382,6 @@ pub(crate) enum Command {
         /// An editor share link, or the key from one
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Annotations as W3C JSON-LD, markdown, or a response to reviewers
     Export {
@@ -423,16 +400,11 @@ pub(crate) enum Command {
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
     },
     /// Replace local or remote data with the example documents
     Seed {
         #[command(flatten)]
         storage: StorageFlags,
-        /// Deployment URL to wipe and fill instead of local storage
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
         /// The account that owns the local examples, as a GitHub login or a
         /// Google address; without one nobody can edit or manage their sharing
         #[arg(long, value_name = "ACCOUNT")]
@@ -477,8 +449,6 @@ pub(crate) enum Command {
         /// The document to delete, by ID or slug
         #[arg(long, value_name = "ID")]
         document: String,
-        #[arg(long, value_name = "URL")]
-        server: Option<String>,
         /// Skip the confirmation prompt (dangerous)
         #[arg(long)]
         yes: bool,
@@ -561,21 +531,23 @@ pub struct LocalArgs {
 #[tokio::main]
 pub async fn main() {
     let cli = Cli::parse();
+    let server = cli.server;
+    let token = cli.token;
     match cli.command {
-        Command::Login { server } => login(server.unwrap_or_default()).await,
+        Command::Login => login(server).await,
         Command::Logout => logout(),
         Command::Publish {
             file,
             title,
             slug,
             main,
-            server,
         } => {
             publish(
                 &file,
                 title.unwrap_or_default(),
                 slug.unwrap_or_default(),
-                server.unwrap_or_default(),
+                server,
+                token,
                 main.unwrap_or_default(),
             )
             .await
@@ -660,24 +632,24 @@ pub async fn main() {
                 .unwrap_or_else(|error| die(error.to_string()));
             println!("resealed {changed} links");
         }
-        Command::List { server } => list_documents(server.unwrap_or_default()).await,
-        Command::Comment { id, key, server } => {
-            comment_document(&id, server.unwrap_or_default(), key.unwrap_or_default()).await
+        Command::List => list_documents(server, token).await,
+        Command::Comment { id, key } => {
+            comment_document(&id, server, token, key.unwrap_or_default()).await
         }
-        Command::Edit { id, key, server } => {
-            edit_document(&id, server.unwrap_or_default(), key.unwrap_or_default()).await
+        Command::Edit { id, key } => {
+            edit_document(&id, server, token, key.unwrap_or_default()).await
         }
         Command::Sync {
             id,
             file,
             interval,
             key,
-            server,
         } => {
             crate::cli::sync::sync_document(
                 &id,
                 &file,
-                server.unwrap_or_default(),
+                server,
+                token,
                 interval.unwrap_or_default(),
                 key.unwrap_or_default(),
             )
@@ -690,11 +662,11 @@ pub async fn main() {
             label,
             budget,
             revoke,
-            server,
         } => {
             share_document(
                 &id,
-                server.unwrap_or_default(),
+                server,
+                token,
                 link.unwrap_or_default(),
                 until.unwrap_or_default(),
                 label,
@@ -703,58 +675,18 @@ pub async fn main() {
             )
             .await
         }
-        Command::Transfer {
-            id,
-            to,
-            server,
-            yes,
-        } => transfer_document(&id, &to, server.unwrap_or_default(), yes).await,
-        Command::History { id, key, server } => {
-            history_document(&id, server.unwrap_or_default(), key.unwrap_or_default()).await
+        Command::Transfer { id, to, yes } => transfer_document(&id, &to, server, token, yes).await,
+        Command::History { id, key } => {
+            history_document(&id, server, token, key.unwrap_or_default()).await
         }
-        Command::Diff {
-            id,
-            from,
-            to,
-            key,
-            server,
-        } => {
-            diff_document(
-                &id,
-                &from,
-                &to,
-                server.unwrap_or_default(),
-                key.unwrap_or_default(),
-            )
-            .await
+        Command::Diff { id, from, to, key } => {
+            diff_document(&id, &from, &to, server, token, key.unwrap_or_default()).await
         }
-        Command::Restore {
-            id,
-            sha,
-            key,
-            server,
-        } => {
-            restore_document(
-                &id,
-                &sha,
-                server.unwrap_or_default(),
-                key.unwrap_or_default(),
-            )
-            .await
+        Command::Restore { id, sha, key } => {
+            restore_document(&id, &sha, server, token, key.unwrap_or_default()).await
         }
-        Command::Label {
-            id,
-            sha,
-            text,
-            server,
-        } => {
-            label_checkpoint(
-                &id,
-                &sha,
-                text.unwrap_or_default(),
-                server.unwrap_or_default(),
-            )
-            .await
+        Command::Label { id, sha, text } => {
+            label_checkpoint(&id, &sha, text.unwrap_or_default(), server, token).await
         }
         Command::Suggest {
             id,
@@ -766,14 +698,14 @@ pub async fn main() {
             path,
             note,
             key,
-            server,
         } => match batch {
             Some(batch) => {
                 suggest_batch(
                     &id,
                     &batch,
                     revision.unwrap_or_default(),
-                    server.unwrap_or_default(),
+                    server,
+                    token,
                     key.unwrap_or_default(),
                 )
                 .await
@@ -782,15 +714,15 @@ pub async fn main() {
                 (Some(find), None) => {
                     let path = path.unwrap_or_default();
                     let note = note.unwrap_or_default();
-                    let server = server.unwrap_or_default();
                     let key = key.unwrap_or_default();
                     match revision.unwrap_or_default() {
                         revision if revision.is_empty() => {
-                            suggest_passage(&id, &find, &replace, path, note, server, key).await
+                            suggest_passage(&id, &find, &replace, path, note, server, token, key)
+                                .await
                         }
                         revision => {
                             suggest_passage_with_revision(
-                                &id, &find, &replace, path, note, revision, server, key,
+                                &id, &find, &replace, path, note, revision, server, token, key,
                             )
                             .await
                         }
@@ -803,7 +735,8 @@ pub async fn main() {
                         &replace,
                         note.unwrap_or_default(),
                         revision.unwrap_or_default(),
-                        server.unwrap_or_default(),
+                        server,
+                        token,
                         key.unwrap_or_default(),
                     )
                     .await
@@ -815,41 +748,23 @@ pub async fn main() {
             id,
             comment_id,
             key,
-            server,
-        } => {
-            accept_suggestion(
-                &id,
-                &comment_id,
-                server.unwrap_or_default(),
-                key.unwrap_or_default(),
-            )
-            .await
-        }
+        } => accept_suggestion(&id, &comment_id, server, token, key.unwrap_or_default()).await,
         Command::Reject {
             id,
             comment_id,
             key,
-            server,
-        } => {
-            reject_suggestion(
-                &id,
-                &comment_id,
-                server.unwrap_or_default(),
-                key.unwrap_or_default(),
-            )
-            .await
-        }
+        } => reject_suggestion(&id, &comment_id, server, token, key.unwrap_or_default()).await,
         Command::Export {
             id,
             format,
             since,
             out,
             key,
-            server,
         } => {
             crate::cli::export::export_document(
                 &id,
-                server.unwrap_or_default(),
+                server,
+                token,
                 &format,
                 out.unwrap_or_default(),
                 since.unwrap_or_default(),
@@ -859,7 +774,6 @@ pub async fn main() {
         }
         Command::Seed {
             storage,
-            server,
             owner,
             backup,
         } => {
@@ -898,24 +812,21 @@ pub async fn main() {
         }
         Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
         Command::Agent { command } => {
-            if let Err(err) = crate::cli::peer::run_cli(command).await {
+            if let Err(err) = crate::cli::peer::run_cli(command, server, token).await {
                 die(err);
             }
         }
-        Command::Destroy {
-            document,
-            server,
-            yes,
-        } => destroy_document(&document, server.unwrap_or_default(), yes).await,
+        Command::Destroy { document, yes } => destroy_document(&document, server, token, yes).await,
     }
 }
 
-pub fn server_from(flag: &str) -> String {
-    let mut server = flag.to_string();
-    if server.is_empty() {
-        server = std::env::var("LIBREPAPER_SERVER").unwrap_or_default();
-    }
-    if server.is_empty() {
+/// The server this command talks to: the global `--server` flag, or the
+/// `$LIBREPAPER_SERVER` clap merges into it. Every command below needs one,
+/// and this is the one place that says so, rather than each repeating the
+/// same check.
+pub fn server_or_die(server: Option<String>) -> String {
+    let server = server.unwrap_or_default();
+    if server.trim().is_empty() {
         die("set --server or $LIBREPAPER_SERVER");
     }
     server.trim_end_matches('/').to_string()
@@ -944,14 +855,4 @@ fn origin_of(server: &str) -> String {
         ),
         _ => server.trim().trim_end_matches('/').to_lowercase(),
     }
-}
-
-/// The default server: the one `server_from("")` resolves to. Used only to
-/// decide whether the legacy unscoped token could belong to `server` --
-/// never to choose a server for a command that was given one explicitly.
-fn default_server() -> String {
-    std::env::var("LIBREPAPER_SERVER")
-        .unwrap_or_default()
-        .trim_end_matches('/')
-        .to_string()
 }

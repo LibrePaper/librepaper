@@ -74,7 +74,11 @@ pub(crate) struct Anchor {
     pub(crate) position: i64,
 }
 
-fn target_for(identifier: &str, server_flag: &str, key_flag: &str) -> (String, String, String) {
+fn target_for(
+    identifier: &str,
+    server: Option<String>,
+    key_flag: &str,
+) -> (String, String, String) {
     let supplied_key = link_key(key_flag);
     if identifier.starts_with("http://") || identifier.starts_with("https://") {
         if let Ok(link) = crate::cli::peer::DocumentLink::parse(identifier, "") {
@@ -86,11 +90,7 @@ fn target_for(identifier: &str, server_flag: &str, key_flag: &str) -> (String, S
             return (link.server().to_string(), key, link.slug().to_string());
         }
     }
-    (
-        server_from(server_flag),
-        supplied_key,
-        identifier.to_string(),
-    )
+    (server_or_die(server), supplied_key, identifier.to_string())
 }
 
 /// Finds `find` in `source`, refusing when it occurs zero or more than once so
@@ -133,13 +133,15 @@ pub(crate) fn locate_passage(source: &str, path: &str, find: &str) -> Result<Anc
 /// Proposes a replacement for a passage: finds `find` in the named file (the
 /// main file of the live document by default), builds a source anchor
 /// around it, and posts a suggestion comment. Prints the new comment's id.
+#[allow(clippy::too_many_arguments)]
 pub async fn suggest_passage(
     identifier: &str,
     find: &str,
     replace: &str,
     path: String,
     note: String,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     key: String,
 ) {
     suggest_passage_with_revision(
@@ -149,7 +151,8 @@ pub async fn suggest_passage(
         path,
         note,
         String::new(),
-        server_flag,
+        server,
+        token,
         key,
     )
     .await;
@@ -165,7 +168,8 @@ pub async fn suggest_passage_with_revision(
     path: String,
     note: String,
     revision: String,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     key: String,
 ) {
     if !revision.is_empty() {
@@ -180,9 +184,9 @@ pub async fn suggest_passage_with_revision(
     } else {
         path
     };
-    let (server, key, slug) = target_for(identifier, &server_flag, &key);
-    let slug = resolve_identifier(&slug, &server, &key).await;
-    let credentials = Credentials::new(&stored_token_for(&server), &key);
+    let (server, key, slug) = target_for(identifier, server, &key);
+    let slug = resolve_identifier(&slug, &server, &key, token.as_deref()).await;
+    let credentials = Credentials::new(&stored_token_for(&server, token.as_deref()), &key);
 
     let (status, checkpoint) = get_as(
         &format!("{server}/api/documents/{slug}/snapshot"),
@@ -251,13 +255,15 @@ pub async fn suggest_passage_with_revision(
 /// Post one source anchor copied from an assistant context. The source value
 /// is retained as a JSON value so fields and their spelling survive the CLI
 /// boundary unchanged.
+#[allow(clippy::too_many_arguments)]
 pub async fn suggest_anchor(
     identifier: &str,
     anchor_json: &str,
     replace: &str,
     note: String,
     revision: String,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     key: String,
 ) {
     revision_value(&revision).unwrap_or_else(|err| die(err));
@@ -271,8 +277,8 @@ pub async fn suggest_anchor(
             die(format!("--anchor is missing {field}"));
         }
     }
-    let (server, key, slug) = target_for(identifier, &server_flag, &key);
-    let slug = resolve_identifier(&slug, &server, &key).await;
+    let (server, key, slug) = target_for(identifier, server, &key);
+    let slug = resolve_identifier(&slug, &server, &key, token.as_deref()).await;
     let mut request = json!({
         "type": "comment",
         "motivation": "editing",
@@ -287,7 +293,7 @@ pub async fn suggest_anchor(
     if !revision.is_empty() {
         request["revision"] = json!(revision);
     }
-    let credentials = Credentials::new(&stored_token_for(&server), &key);
+    let credentials = Credentials::new(&stored_token_for(&server, token.as_deref()), &key);
     let (status, payload) = post_assistant_json(
         &format!("{server}/api/documents/{slug}/comments"),
         &request,
@@ -312,7 +318,8 @@ pub async fn suggest_batch(
     identifier: &str,
     file: &str,
     revision: String,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     key: String,
 ) {
     let raw = std::fs::read_to_string(file)
@@ -375,9 +382,9 @@ pub async fn suggest_batch(
         }
         checked.push(item);
     }
-    let (server, key, slug) = target_for(identifier, &server_flag, &key);
-    let slug = resolve_identifier(&slug, &server, &key).await;
-    let credentials = Credentials::new(&stored_token_for(&server), &key);
+    let (server, key, slug) = target_for(identifier, server, &key);
+    let slug = resolve_identifier(&slug, &server, &key, token.as_deref()).await;
+    let credentials = Credentials::new(&stored_token_for(&server, token.as_deref()), &key);
     let (status, payload) = post_assistant_json(
         &format!("{server}/api/documents/{slug}/suggestions"),
         &json!({"revision": revision, "items": checked}),
@@ -453,13 +460,14 @@ pub(crate) async fn decide_suggestion(
 pub async fn accept_suggestion(
     identifier: &str,
     comment_id: &str,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     key: String,
 ) {
-    let server = server_from(&server_flag);
+    let server = server_or_die(server);
     let key = link_key(&key);
-    let slug = resolve_identifier(identifier, &server, &key).await;
-    let credentials = Credentials::new(&stored_token_for(&server), &key);
+    let slug = resolve_identifier(identifier, &server, &key, token.as_deref()).await;
+    let credentials = Credentials::new(&stored_token_for(&server, token.as_deref()), &key);
     match decide_suggestion(&server, &slug, &credentials, comment_id, "accept").await {
         Ok(payload) => {
             let sha = text(&payload, "resolved_in");
@@ -485,13 +493,14 @@ pub async fn accept_suggestion(
 pub async fn reject_suggestion(
     identifier: &str,
     comment_id: &str,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     key: String,
 ) {
-    let server = server_from(&server_flag);
+    let server = server_or_die(server);
     let key = link_key(&key);
-    let slug = resolve_identifier(identifier, &server, &key).await;
-    let credentials = Credentials::new(&stored_token_for(&server), &key);
+    let slug = resolve_identifier(identifier, &server, &key, token.as_deref()).await;
+    let credentials = Credentials::new(&stored_token_for(&server, token.as_deref()), &key);
     match decide_suggestion(&server, &slug, &credentials, comment_id, "reject").await {
         Ok(_) => println!("rejected"),
         // A reject never goes stale -- it only marks the comment, and never
