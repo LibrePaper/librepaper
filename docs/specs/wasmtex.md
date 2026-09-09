@@ -183,10 +183,12 @@ an existing project does not silently change its typesetting environment.
 
 ### Loading and caching
 
-Load only the selected engine and necessary helpers. Prepare a compact
-initial resource set using the corpus; fetch the remaining files or small
-package groups as needed. Build-time work should remove serial network
-round trips for common documents.
+Load only the selected engine and necessary helpers. Packages arrive as
+one bundle per package directory from a release that ships them, with a
+merged `core` bundle for what every document loads (wasm-latex's
+`SPEC-latex.md`); otherwise prepare a compact initial resource set using the
+corpus and fetch the remaining files as needed. Build-time work should
+remove serial network round trips for common documents.
 
 The resource catalog must resolve bare filenames, supported extensions,
 package dependencies and font files while preserving TeX's relevant lookup

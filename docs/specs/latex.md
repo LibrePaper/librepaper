@@ -12,10 +12,14 @@ browser loads LibrePaper's own pinned WasmTex release from the deployment's
 `/latex/` mirror -- the engine the project needs and nothing else -- and
 compiles automatically after the source has been quiet for a second and a
 half, or at once from Compile now. There is no distribution to choose and no
-bundle to download by hand: packages arrive one file at a time from the
-mirror as a compile asks for them, and the ones every document needs arrive
-together before the first pass. Verified files stay in browser storage,
-namespaced by release, so the second document costs nothing to fetch.
+bundle to download by hand. A release built by wasm-latex ships TeX Live as
+one tar per package directory, indexed by `bundles.json`; the pdfTeX worker
+fetches a whole package the first time any file in it is asked for, verifies
+its digest, and keeps it in Cache Storage, so a warm session makes no
+requests. The rule for what is bundled, and why, is wasm-latex's
+`SPEC-latex.md`. Releases without bundles, and the other engines, still
+receive packages one file at a time, with the ones every document needs
+arriving together before the first pass.
 
 BibTeX runs in the browser. Biber does not: when a document asks for it, the
 reader checks for a local LibrePaper app on this machine, runs a compatible
@@ -80,7 +84,11 @@ XeTeX and LuaTeX documents compile in the browser.
   LuaTeX, bibtex8 and makeindex are still the mirrored upstream build, and
   the manifest says `reproduced: false` until all of them are.
 - The compact initial resource set is the union of what the corpus needed
-  (about 17 MB); measuring real documents should trim it.
+  (about 17 MB); measuring real documents should trim it. With a bundled
+  release it is replaced by the `core` bundle, 32 MB, which the same
+  measurement should trim.
+- The XeTeX, LuaTeX and dvipdfm workers do not resolve through bundles yet,
+  and a bundled release is not yet imported into the shipped mirror.
 - Detaching `librepaper local start` from its terminal and registering the
   `librepaper://` protocol on each desktop platform.
 - The acceptance matrices on Firefox and Safari and on memory-constrained

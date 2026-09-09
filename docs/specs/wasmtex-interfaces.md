@@ -26,7 +26,9 @@ latex/mirror/
     wasmtex-luatex.* wasmtex-luatex.fmt.gz
     BUILD-RECEIPT.*.json LICENSE-MANIFEST.json
     NOTICES/LICENSE NOTICES/THIRD_PARTY_NOTICES.md NOTICES/licensing.md
-  texlive/<snapshot>/<2hex>/<16hex>-<name>   package files, digest-named
+  wasmtex/<engineRelease>/bundles/bundles.json     package index, when the release ships one
+  wasmtex/<engineRelease>/bundles/b/<sha256>/<slug>.tar   one tar per package directory
+  texlive/<snapshot>/<2hex>/<16hex>-<name>   package files, digest-named (releases without bundles)
   texlive/<snapshot>/bloom-filter.v2.bin      generated over the index below
   biber-vm/<vmRelease>/...                    package F, see section 6
 ```
@@ -97,6 +99,14 @@ Manifest additions:
 filled by package F. `initial` lists the keys every corpus document needed:
 the compact initial resource set the browser prefetches in parallel.
 
+A release whose staged manifest carried `bundles` also has
+`bundles: { index, sha256, snapshot, count, bytes }` on its entry, `index`
+being the mirror-relative URL of `bundles.json`. The index and every tar are
+payload files, verified on import like the engines; `check-mirror.mjs`
+re-verifies each tar against the index. For such a release the pdfTeX
+worker's `settexliveurl` is the directory the index lives in, and
+`texlive.<snapshot>` is not consulted by pdfTeX at all.
+
 `default_release` names the validated default; `releases` retains older ones.
 `texlive.<snapshot>.files` keys are `<engine>/<kpathsea format code>/<name>`
 exactly as the WasmTex workers build them (`pdftex/26/amsmath.sty`; the XeTeX
@@ -111,6 +121,7 @@ The browser fetches everything from `<base>/latex/` on its own origin. Both
 | --- | --- |
 | `texlive/<snapshot>/<engine>/<format>/<name>` (5 parts, `<name>` not digest-shaped) | Look `<engine>/<format>/<name>` up in `manifest.texlive[<snapshot>].files`; serve the digested file with header `fileid: <16hex>` and `Cache-Control: no-cache`; **404** when absent (WasmTex reads any status >= 400 as absent; it is not SwiftLaTeX). |
 | `texlive/<snapshot>/bloom-filter.v2.bin` and any digest-shaped path | Static, immutable. |
+| `wasmtex/<engineRelease>/bundles/bundles.json` | `no-cache`; the one bundle file named without a digest. |
 | `wasmtex/<engineRelease>/<file>` | Static, immutable. |
 | `manifest.json` | `no-cache`. |
 | `packages/...` (legacy SwiftLaTeX protocol) | Kept working until package G removes it. |
@@ -283,10 +294,13 @@ out { cmd: "downloading", file }                                                
 Rules: a `tex` reply's `pdf` is null unless the engine exited 0 or 1 and wrote
 a PDF in this pass; the worker deletes `<stem>.pdf`/`<stem>.xdv` before each
 pass so a stale output can never turn a failed run into success. The format
-is preloaded from the release (`loadformat`); the compact initial set
-(`texlive.initial`) is prefetched through `resources.js` and injected with
-`preloadtexlive` before the first pass. The bloom filter is loaded when the
-manifest has one. `preamble snapshots` are disabled (`setpreamblesnapshot
+is preloaded from the release (`loadformat`). For a release with `bundles`,
+pdfTeX receives `loadbundleindex` with the index bytes and is awaited before
+the first pass; `downloading` then carries `bundle` and `size`, and the
+bloom filter, negative-cache seed and initial set are not sent. Otherwise
+the compact initial set (`texlive.initial`) is prefetched through
+`resources.js` and injected with `preloadtexlive` before the first pass, and
+the bloom filter is loaded when the manifest has one. `preamble snapshots` are disabled (`setpreamblesnapshot
 false`). Raw bytes cross the boundary as ArrayBuffers, never strings.
 
 `wasmtex.js` is the host-side driver class the worker uses for each nested
