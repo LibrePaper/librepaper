@@ -81,6 +81,9 @@ pub struct Message {
     /// `Some("")` proposes deleting it.
     #[serde(default)]
     pub proposed: Option<String>,
+    /// Compare-and-swap guard when refining an existing proposal.
+    #[serde(default)]
+    pub expected_proposed: Option<String>,
     #[serde(default)]
     pub comment_id: String,
     #[serde(default)]

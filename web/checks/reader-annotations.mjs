@@ -89,6 +89,12 @@ assert.equal(sent.at(-1).type, "resolve");
 annotations.delete(suggestion);
 assert.equal(comments.includes(suggestion), false);
 assert.equal(sent.at(-1).type, "delete");
+annotations.receive({ type: "refine", comment_id: draft.id,
+  comment: { id: draft.id, body: "Refined response", replies: draft.replies } });
+annotations.receive({ type: "refine", comment_id: draft.id,
+  comment: { id: draft.id, body: "Refined response", replies: draft.replies } });
+assert.equal(comments.find((item) => item.id === draft.id)?.body, "Refined response");
+assert.equal(comments.find((item) => item.id === draft.id)?.pending, false);
 annotations.receive({ type: "delete", comment_id: "remote" });
 assert.equal(comments.length, 1);
 assert.equal(annotations.receive({ type: "y-state" }), false);

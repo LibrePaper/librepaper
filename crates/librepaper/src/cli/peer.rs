@@ -19,6 +19,8 @@ use crate::document::session;
 use crate::http::{detail_of, KEY_HEADER};
 use crate::room::encode_update;
 
+use super::runner;
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRIES: usize = 3;
 
@@ -166,6 +168,30 @@ impl DocumentLink {
     pub fn path(&self) -> &str {
         &self.path
     }
+
+    /// Return the credential-bearing document URL for the local assistant
+    /// process. This value is passed only through its environment, never
+    /// included in chat output or runner state.
+    pub(super) fn credential_url(&self) -> String {
+        let Ok(mut url) = url::Url::parse(&self.server) else {
+            return self.server.clone();
+        };
+        {
+            let mut segments = match url.path_segments_mut() {
+                Ok(segments) => segments,
+                Err(_) => return self.server.clone(),
+            };
+            segments.clear().push("docs").push(&self.slug);
+        }
+        url.set_query(None);
+        if !self.path.is_empty() {
+            url.query_pairs_mut().append_pair("file", &self.path);
+        }
+        if !self.key.is_empty() {
+            url.set_fragment(Some(&format!("k={}", self.key)));
+        }
+        url.to_string()
+    }
 }
 
 fn key_from_url(url: &url::Url) -> String {
@@ -213,6 +239,9 @@ pub struct Snapshot {
     pub source: String,
     #[serde(default)]
     pub source_sha: String,
+    /// Canonical source tree metadata used to derive isolated preview revisions.
+    #[serde(default)]
+    pub tree: Value,
     #[serde(default)]
     pub comments: Vec<Value>,
     #[serde(default)]
@@ -424,6 +453,29 @@ impl AutomationPeer {
         .await
     }
 
+    /// Refine an existing suggestion in place, preserving its review thread.
+    pub async fn refine(
+        &self,
+        comment_id: &str,
+        proposed: &str,
+        body: &str,
+        expected_proposed: &str,
+        revision: &str,
+        request_id: &str,
+    ) -> Result<OperationResult, String> {
+        self.annotation(
+            "refine",
+            request_id,
+            json!({
+                "type":"refine", "comment_id":comment_id, "proposed":proposed,
+                "body":body, "expected_proposed":expected_proposed,
+                "revision":revision, "request_id":request_id,
+                "version":1, "protocol":"librepaper.room.v1"
+            }),
+        )
+        .await
+    }
+
     async fn annotation(
         &self,
         kind: &str,
@@ -434,7 +486,7 @@ impl AutomationPeer {
             return Err("a non-empty request id is required".into());
         }
         payload_set_submission_id(&mut payload, stable_submission_id(kind, request_id));
-        if matches!(kind, "comment" | "reply") && !self.capabilities.can_comment {
+        if matches!(kind, "comment" | "reply" | "refine") && !self.capabilities.can_comment {
             return Err("this link cannot add annotations".into());
         }
         if kind == "delete" && !self.capabilities.can_delete {
@@ -875,55 +927,7 @@ impl AutomationPeer {
         .map_err(|_| "timed out waiting for checkpoint".to_string())?
     }
 
-    async fn chat_request(
-        &self,
-        method: reqwest::Method,
-        suffix: &str,
-        token: &str,
-        body: Option<Value>,
-    ) -> Result<Value, String> {
-        let endpoint = format!(
-            "{}/api/documents/{}/chat{}",
-            self.link.server(),
-            self.link.slug(),
-            suffix
-        );
-        let mut request = self
-            .client
-            .request(method, endpoint)
-            .header("x-librepaper-client", "1")
-            .header("x-librepaper-automation", "1");
-        if !self.token.is_empty() {
-            request = request.header("authorization", format!("Bearer {}", self.token));
-        }
-        if !self.link.key.is_empty() {
-            request = request.header(KEY_HEADER, &self.link.key);
-        }
-        if !token.is_empty() {
-            request = request.header("x-librepaper-chat-token", token);
-        }
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|err| format!("chat request failed: {err}"))?;
-        if !response.status().is_success() {
-            return Err(http_error(response).await);
-        }
-        response
-            .json()
-            .await
-            .map_err(|err| format!("invalid chat response: {err}"))
-    }
-
-    pub async fn chat_create(&self) -> Result<Value, String> {
-        self.chat_request(reqwest::Method::POST, "", "", Some(json!({})))
-            .await
-    }
-
-    fn chat_socket_request(
+    pub(crate) fn chat_socket_request(
         &self,
         conversation: &str,
     ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, String> {
@@ -967,94 +971,7 @@ impl AutomationPeer {
         Ok(request)
     }
 
-    pub async fn chat_post(
-        &self,
-        conversation: &str,
-        token: &str,
-        text: &str,
-        request_id: &str,
-    ) -> Result<Value, String> {
-        self.chat_post_with_results(conversation, token, text, request_id, None)
-            .await
-    }
-
-    pub async fn chat_post_with_results(
-        &self,
-        conversation: &str,
-        token: &str,
-        text: &str,
-        request_id: &str,
-        results: Option<Value>,
-    ) -> Result<Value, String> {
-        let payload = chat_post_payload(request_id, text, results);
-        self.chat_request(
-            reqwest::Method::POST,
-            &format!("/{conversation}"),
-            token,
-            Some(payload),
-        )
-        .await
-        .map_err(|_| "timed out posting chat reply".to_string())
-    }
-
-    pub async fn chat_watch(
-        &self,
-        conversation: &str,
-        token: &str,
-        timeout: Duration,
-        after: Option<u64>,
-    ) -> Result<Value, String> {
-        use futures_util::{SinkExt, StreamExt};
-        validate_conversation(conversation, token)?;
-        let operation = async {
-            let (mut socket, _) =
-                tokio_tungstenite::connect_async(self.chat_socket_request(conversation)?)
-                    .await
-                    .map_err(|err| format!("could not join chat: {err}"))?;
-            socket
-                .send(Message::Text(
-                    json!({"type":"join","token":token,"role":"agent","after":after})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .map_err(|err| err.to_string())?;
-            while let Some(frame) = socket.next().await {
-                let frame = frame.map_err(|err| err.to_string())?;
-                let raw = match frame {
-                    Message::Text(raw) => raw,
-                    Message::Close(reason) => {
-                        let reason = reason
-                            .as_ref()
-                            .map(|close| close.reason.to_string())
-                            .filter(|reason| !reason.is_empty())
-                            .unwrap_or_else(|| "chat session closed".into());
-                        return Err(reason);
-                    }
-                    _ => continue,
-                };
-                let event: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
-                if event["type"] == "error" {
-                    return Err(event["message"].as_str().unwrap_or("chat rejected").into());
-                }
-                if event["type"] == "message" && event["message"]["role"] == "user" {
-                    let mut result =
-                        json!({"messages":[event["message"].clone()],"timed_out":false});
-                    if let Some(cursor) = event["message"]["cursor"].as_u64() {
-                        result["next_cursor"] = json!(cursor);
-                    }
-                    return Ok(result);
-                }
-            }
-            Err("chat closed while waiting for a message".into())
-        };
-        match tokio::time::timeout(timeout.max(Duration::from_secs(1)), operation).await {
-            Ok(result) => result,
-            Err(_) => Ok(json!({"messages":[],"timed_out":true})),
-        }
-    }
-
-    async fn request(
+    pub(super) async fn request(
         &self,
         method: reqwest::Method,
         endpoint: &str,
@@ -1114,14 +1031,6 @@ impl AutomationPeer {
             .map(|bytes| bytes.to_vec())
             .map_err(|err| format!("could not fetch document state: {err}"))
     }
-}
-
-pub(crate) fn chat_post_payload(request_id: &str, text: &str, results: Option<Value>) -> Value {
-    let mut payload = json!({"id":request_id,"role":"agent","text":text});
-    if let Some(results) = results {
-        payload["context"] = json!({"results": results});
-    }
-    payload
 }
 
 fn state_reference(server: &str, reference: &str) -> Result<String, String> {
@@ -1234,10 +1143,73 @@ pub fn awareness_client_id(doc: &yrs::Doc) -> u32 {
 /// CLI suitable for an agent process without a shell parser.
 #[derive(Subcommand, Clone, Debug)]
 pub enum AgentCommand {
-    /// Read and reply to a private sidebar conversation.
-    Chat {
+    /// Keep a local Codex app-server session connected to a private sidebar conversation.
+    Connect {
+        link: String,
+        /// Private conversation identifier from the LibrePaper sidebar.
+        #[arg(long)]
+        conversation: String,
+        /// Conversation credential; defaults to LIBREPAPER_CHAT_TOKEN.
+        #[arg(long)]
+        token: Option<String>,
+        /// Directory for the local thread id and completed task ids.
+        #[arg(long)]
+        state_dir: Option<std::path::PathBuf>,
+        /// Start a detached runner and wait until it is ready.
+        #[arg(long)]
+        background: bool,
+    },
+    /// Show the local runner state for a conversation.
+    Status {
+        link: String,
+        #[arg(long)]
+        conversation: String,
+        #[arg(long)]
+        state_dir: Option<std::path::PathBuf>,
+    },
+    /// Ask the local runner to stop through its nonce-bound control file.
+    Stop {
+        link: String,
+        #[arg(long)]
+        conversation: String,
+        #[arg(long)]
+        state_dir: Option<std::path::PathBuf>,
+    },
+    /// Inspect structured document context for an assistant task.
+    Inspect {
+        link: String,
         #[command(subcommand)]
-        command: ChatCommand,
+        command: super::assistant_tools::InspectCommand,
+    },
+    /// Refine an existing suggestion while retaining its review identity.
+    Refine {
+        link: String,
+        #[arg(long, value_name = "ID")]
+        comment_id: String,
+        #[arg(long)]
+        proposed: String,
+        #[arg(long, default_value = "")]
+        body: String,
+        #[arg(long)]
+        expected_proposed: String,
+        #[arg(long)]
+        revision: String,
+        #[arg(long, value_name = "ID")]
+        request_id: Option<String>,
+    },
+    /// Ask the connected runner to have the browser render a candidate tree.
+    Preview {
+        link: String,
+        #[arg(long)]
+        conversation: String,
+        #[arg(long)]
+        revision: String,
+        #[arg(long, value_name = "FILE")]
+        files: std::path::PathBuf,
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        state_dir: Option<std::path::PathBuf>,
     },
     /// Print the source and annotations visible through this link.
     Read { link: String },
@@ -1317,41 +1289,7 @@ pub enum AgentCommand {
     },
 }
 
-#[derive(Subcommand, Clone, Debug)]
-pub enum ChatCommand {
-    /// Create a private conversation; keep its returned token private.
-    Create { link: String },
-    /// Stay connected until the next live user message arrives.
-    Watch {
-        link: String,
-        #[arg(long)]
-        conversation: String,
-        /// Conversation credential; defaults to LIBREPAPER_CHAT_TOKEN.
-        #[arg(long)]
-        token: Option<String>,
-        #[arg(long)]
-        after: Option<u64>,
-        #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=300))]
-        timeout: u64,
-    },
-    /// Post an agent reply to a private conversation.
-    Post {
-        link: String,
-        #[arg(long)]
-        conversation: String,
-        #[arg(long)]
-        token: Option<String>,
-        #[arg(long)]
-        message: String,
-        #[arg(long)]
-        request_id: Option<String>,
-        /// JSON result identifiers to relay under context.results.
-        #[arg(long, value_name = "JSON")]
-        results: Option<String>,
-    },
-}
-
-fn validate_conversation(conversation: &str, token: &str) -> Result<(), String> {
+pub(crate) fn validate_conversation(conversation: &str, token: &str) -> Result<(), String> {
     if conversation.is_empty()
         || conversation.len() > 128
         || !conversation
@@ -1366,7 +1304,7 @@ fn validate_conversation(conversation: &str, token: &str) -> Result<(), String> 
     Ok(())
 }
 
-fn chat_token(token: Option<String>) -> Result<String, String> {
+pub(crate) fn chat_token(token: Option<String>) -> Result<String, String> {
     let token = token
         .or_else(|| std::env::var("LIBREPAPER_CHAT_TOKEN").ok())
         .unwrap_or_default();
@@ -1378,11 +1316,12 @@ fn chat_token(token: Option<String>) -> Result<String, String> {
 
 pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
     let link_text = match &command {
-        AgentCommand::Chat { command } => match command {
-            ChatCommand::Create { link }
-            | ChatCommand::Watch { link, .. }
-            | ChatCommand::Post { link, .. } => link,
-        },
+        AgentCommand::Connect { link, .. }
+        | AgentCommand::Status { link, .. }
+        | AgentCommand::Stop { link, .. }
+        | AgentCommand::Inspect { link, .. }
+        | AgentCommand::Refine { link, .. }
+        | AgentCommand::Preview { link, .. } => link,
         AgentCommand::Read { link }
         | AgentCommand::Source { link }
         | AgentCommand::Comments { link }
@@ -1395,54 +1334,116 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
         | AgentCommand::Edit { link, .. }
         | AgentCommand::Checkpoint { link, .. } => link,
     };
-    let link = DocumentLink::parse(link_text, "")?;
+    let link_text = if link_text == "-" {
+        std::env::var("LIBREPAPER_DOCUMENT")
+            .map_err(|_| "LIBREPAPER_DOCUMENT is required for the background runner".to_string())?
+    } else {
+        link_text.to_owned()
+    };
+    let link = DocumentLink::parse(&link_text, "")?;
+    match &command {
+        AgentCommand::Status {
+            conversation,
+            state_dir,
+            ..
+        } => {
+            let status =
+                super::runner_lifecycle::status(&link, conversation, state_dir.as_deref())?;
+            println!(
+                "{}",
+                serde_json::to_string(&status).map_err(|err| err.to_string())?
+            );
+            return Ok(());
+        }
+        AgentCommand::Stop {
+            conversation,
+            state_dir,
+            ..
+        } => {
+            super::runner_lifecycle::stop(&link, conversation, state_dir.as_deref())?;
+            println!("{}", json!({"stopped":true,"conversation":conversation}));
+            return Ok(());
+        }
+        _ => {}
+    }
     let peer = AutomationPeer::open(link).await?;
     match command {
-        AgentCommand::Chat { command } => {
-            let value = match command {
-                ChatCommand::Create { .. } => peer.chat_create().await?,
-                ChatCommand::Watch {
-                    conversation,
-                    token,
-                    after,
-                    timeout,
-                    ..
-                } => {
-                    peer.chat_watch(
-                        &conversation,
-                        &chat_token(token)?,
-                        Duration::from_secs(timeout),
-                        after,
-                    )
-                    .await?
-                }
-                ChatCommand::Post {
-                    conversation,
-                    token,
-                    message,
-                    request_id,
-                    results,
-                    ..
-                } => {
-                    let results = results
-                        .map(|raw| {
-                            serde_json::from_str(&raw)
-                                .map_err(|err| format!("invalid --results JSON: {err}"))
-                        })
-                        .transpose()?;
-                    peer.chat_post_with_results(
-                        &conversation,
-                        &chat_token(token)?,
-                        &message,
-                        &request_id.unwrap_or_else(random_request_id),
-                        results,
-                    )
-                    .await?
-                }
-            };
+        AgentCommand::Connect {
+            conversation,
+            token,
+            state_dir,
+            background,
+            ..
+        } => {
+            let config = runner::config(conversation.clone(), token, state_dir.clone())?;
+            if background {
+                super::runner_lifecycle::start_background(
+                    peer.link(),
+                    &conversation,
+                    &config.token,
+                    config.state_dir.as_deref(),
+                )?;
+                println!("{}", json!({"started":true,"conversation":conversation}));
+            } else {
+                runner::run(&peer, config).await?;
+            }
+        }
+        AgentCommand::Status { .. } | AgentCommand::Stop { .. } => {
+            unreachable!("local lifecycle handled before opening document")
+        }
+        AgentCommand::Inspect { command, .. } => {
+            let value = super::assistant_tools::inspect(&peer, command).await?;
             println!(
                 "{}",
                 serde_json::to_string(&value).map_err(|err| err.to_string())?
+            );
+        }
+        AgentCommand::Refine {
+            comment_id,
+            proposed,
+            body,
+            expected_proposed,
+            revision,
+            request_id,
+            ..
+        } => {
+            let id = request_id.unwrap_or_else(random_request_id);
+            print_result(
+                peer.refine(
+                    &comment_id,
+                    &proposed,
+                    &body,
+                    &expected_proposed,
+                    &revision,
+                    &id,
+                )
+                .await?,
+            )?;
+        }
+        AgentCommand::Preview {
+            conversation,
+            revision,
+            files,
+            task_id,
+            state_dir,
+            ..
+        } => {
+            let raw = std::fs::read_to_string(&files)
+                .map_err(|err| format!("could not read {}: {err}", files.display()))?;
+            let files: Value = serde_json::from_str(&raw)
+                .map_err(|err| format!("invalid preview files JSON: {err}"))?;
+            let result = super::runner_preview::preview(
+                &peer,
+                &conversation,
+                state_dir.as_deref(),
+                &revision,
+                &task_id,
+                files,
+            )
+            .await?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).map_err(|err| err.to_string())?
             );
         }
         AgentCommand::Read { .. } => {
@@ -1801,6 +1802,18 @@ mod tests {
         assert_eq!(link.slug(), "abc");
         assert!(link.has_key());
         assert!(!format!("{link:?}").contains("secret"));
+    }
+
+    #[test]
+    fn credential_url_reconstructs_document_scope() {
+        let link = DocumentLink::parse(
+            "https://docs.example/raw/paper?file=chapters%2Fintro.md#k=secret",
+            "",
+        )
+        .expect("link");
+        let credential = link.credential_url();
+        assert!(credential
+            .starts_with("https://docs.example/docs/paper?file=chapters%2Fintro.md#k=secret"));
     }
 
     #[test]

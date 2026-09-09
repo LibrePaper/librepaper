@@ -244,8 +244,6 @@ fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), Strin
                      DELETE FROM maintenance_jobs;
                      DELETE FROM account_activity;
                      DELETE FROM erasure_batches;
-                     DELETE FROM messages;
-                     DELETE FROM conversations;
                      DELETE FROM replies;
                      DELETE FROM comments;
                      DELETE FROM renderings;

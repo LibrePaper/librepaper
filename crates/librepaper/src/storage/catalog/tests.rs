@@ -1,6 +1,6 @@
 use super::{
-    Account, Catalog, Checkpoint, Conversation, JournalPreparation, JournalSegment, Link, Message,
-    MutationAuthority, NewDocument, OperationRequest, Rendering,
+    Account, Catalog, Checkpoint, JournalPreparation, JournalSegment, Link, MutationAuthority,
+    NewDocument, OperationRequest, Rendering,
 };
 use sha2::Digest;
 
@@ -750,37 +750,6 @@ fn sql_children_are_bounded_and_expiry_filtered() {
         until: "".into(),
     };
     catalog.put_link(&link).unwrap();
-    catalog
-        .create_conversation(&Conversation {
-            slug: "doc".into(),
-            id: "conversation".into(),
-            token_hash: "token".into(),
-            expires_at: 100,
-        })
-        .unwrap();
-    let message = catalog
-        .append_message(&Message {
-            slug: "doc".into(),
-            conversation_id: "conversation".into(),
-            cursor: -1,
-            id: "message".into(),
-            role: "user".into(),
-            text: "hello".into(),
-            context: None,
-        })
-        .unwrap();
-    assert_eq!(message.cursor, 0);
-    assert_eq!(
-        catalog
-            .messages("doc", "conversation", None, 1)
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(catalog
-        .conversation("doc", "conversation", 100)
-        .unwrap()
-        .is_none());
     let checkpoint = catalog
         .insert_checkpoint(&Checkpoint {
             slug: "doc".into(),

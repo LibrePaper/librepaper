@@ -82,6 +82,16 @@ export function createAnnotations({ slug, list, update, anchor, repaint, send, c
       }
       publish();
       repaint();
+    } else if (event.type === "refine") {
+      outbox.acknowledge(event);
+      const item = list().find((candidate) => candidate.id === event.comment_id);
+      if (!item || !event.comment) return true;
+      // The authoritative comment may have arrived through a read-only link;
+      // preserve the caller's existing delete permission instead of granting
+      // it merely because a refinement was broadcast.
+      Object.assign(item, event.comment, { pending: false });
+      publish();
+      repaint();
     } else return false;
     return true;
   }

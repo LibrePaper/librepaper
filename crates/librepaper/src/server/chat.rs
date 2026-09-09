@@ -1,5 +1,9 @@
-//! Live private channels. Only socket handles and bounded request digests are
-//! retained: message bodies are never stored or replayed.
+//! The private assistant channel.
+//!
+//! A channel is a short lived rendezvous between one browser and one local
+//! runner. The server relays bounded events while sockets are connected; it is
+//! not a queue or a transcript store. The runner owns task queues and
+//! reconnect reconciliation on the user's computer.
 
 use super::*;
 use crate::room::Outgoing;
@@ -8,6 +12,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::{mpsc, Mutex};
+
+const CHANNEL_SECONDS: i64 = 60 * 60;
+const MAX_CONTEXT: usize = 16 * 1024;
+const MAX_EVENT_TEXT: usize = 32 * 1024;
+const MAX_ID: usize = 128;
 
 impl Server {
     pub(super) async fn handle_chat_socket(
@@ -55,61 +64,58 @@ impl Server {
         };
         upgrade
             .max_message_size(64 * 1024)
-            .on_upgrade(move |socket| async move {
-                self.run_chat_socket(socket, connection).await;
-            })
+            .on_upgrade(move |socket| async move { self.run_chat_socket(socket, connection).await })
             .into_response()
     }
 
     pub(super) async fn run_chat_socket(&self, mut socket: WebSocket, mut connection: Connection) {
-        // The secret travels inside the encrypted stream, never in a URL.
         let first = tokio::time::timeout(Duration::from_secs(10), socket.recv()).await;
         let Ok(Some(Ok(WsMessage::Text(first)))) = first else {
             return;
         };
-        let Ok(join) = serde_json::from_str::<Value>(&first) else {
+        let Ok(join) = serde_json::from_str::<Join>(&first) else {
             return;
         };
-        if join["type"] != "join" {
+        if join.kind != "join"
+            || join.token.is_empty()
+            || !matches!(join.role.as_str(), "user" | "agent")
+        {
+            let _ = socket
+                .send(WsMessage::Text(
+                    json!({"type":"error","status":400,"message":"invalid join"})
+                        .to_string()
+                        .into(),
+                ))
+                .await;
             return;
         }
-        let token = join["token"].as_str().unwrap_or("").to_string();
-        let role = join["role"].as_str().unwrap_or("").to_string();
-        let after = join["after"].as_u64();
-        let receives = role == "user" || join["receive"].as_bool().unwrap_or(true);
         let id = connection.chat.clone().unwrap_or_default();
         let slug = connection.slug.clone();
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
-        let (tx, mut rx) = mpsc::channel(32);
+        let (tx, mut rx) = mpsc::channel(128);
         connection.tx = tx.clone();
-        // Register before advertising presence so a concurrent delivery can
-        // always recheck this participant's document authorization.
         self.connections.lock().await.insert(socket_id, connection);
         let ready = match self
             .chat
-            .attach(&slug, &id, &token, &role, receives, socket_id, tx.clone())
+            .attach(&slug, &id, &join.token, &join.role, socket_id, tx.clone())
             .await
         {
             Ok(ready) => ready,
             Err((status, message)) => {
                 self.connections.lock().await.remove(&socket_id);
-                let _ = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    socket.send(WsMessage::Text(
+                let _ = socket
+                    .send(WsMessage::Text(
                         json!({"type":"error","status":status,"message":message})
                             .to_string()
                             .into(),
-                    )),
-                )
-                .await;
+                    ))
+                    .await;
                 return;
             }
         };
-        // Sharing can change while the handshake is in flight.
         self.reauthorize_connection(&slug, socket_id).await;
         if self.chat.attached(&id, socket_id).await {
             let _ = tx.try_send(Outgoing::Text(ready.to_string()));
-            let _ = self.chat.drain_pending(&id, &token, socket_id, after).await;
         }
         let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
         let mut last_frame = tokio::time::Instant::now();
@@ -118,50 +124,26 @@ impl Server {
             tokio::select! {
                 frame = socket.recv() => {
                     last_frame = tokio::time::Instant::now();
-                    let raw = match frame {
-                        Some(Ok(WsMessage::Text(text))) => text,
-                        Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
-                        _ => continue,
-                    };
-                    let Ok(mut value) = serde_json::from_str::<Value>(&raw) else { continue; };
-                    if value["type"] != "message" { continue; }
-                    let request_id = value["id"].as_str().unwrap_or("").to_string();
-                    value["role"] = Value::String(role.clone());
-                    // Recheck the sender and the channel's other participant
-                    // before every delivery, including expiry.
-                    if !self.reauthorize_connection(&slug, socket_id).await { break; }
-                    if !self.chat.attached(&id,socket_id).await { break; }
-                    let result = match serde_json::from_value::<chat::Post>(value) {
-                        Ok(post) => {
-                            self.reauthorize_chat_recipient(&slug, &id, &post.role).await;
-                            if !self.chat.attached(&id, socket_id).await {
-                                Err((404, "channel not found"))
-                            } else {
-                                self.chat.post(&slug,&id,&token,Some(socket_id),post).await
-                            }
-                        }
-                        Err(_) => Err((400,"invalid message")),
-                    };
-                    let reply = match result {
-                        Ok(reply) => reply,
-                        Err((status,message)) => json!({"type":"error","id":request_id,"status":status,"message":message}),
-                    };
+                    let raw = match frame { Some(Ok(WsMessage::Text(text))) => text, Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break, _ => continue };
+                    let Ok(value) = serde_json::from_str::<Value>(&raw) else { continue; };
+                    if !self.reauthorize_connection(&slug, socket_id).await || !self.chat.attached(&id, socket_id).await { break; }
+                    if let Some(recipient) = self.chat.recipient_socket(&id, &join.role).await {
+                        let _ = self.reauthorize_connection(&slug, recipient).await;
+                    }
+                    let event_id = value["id"].as_str().unwrap_or("").to_string();
+                    let result = self.chat.relay(&slug, &id, &join.token, socket_id, &join.role, value).await;
+                    let reply = match result { Ok(reply) => reply, Err((status, message)) => json!({"type":"error","id":event_id,"status":status,"message":message}) };
                     if tx.try_send(Outgoing::Text(reply.to_string())).is_err() { break; }
                 }
                 outgoing = rx.recv() => {
-                    if !self.chat.attached(&id,socket_id).await { break; }
-                    let (frame,close) = match outgoing {
-                        Some(Outgoing::Text(text)) => (WsMessage::Text(text.into()),false),
-                        Some(Outgoing::Close(reason)) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame{code:1000,reason:reason.into()})),true),
-                        None => break,
-                    };
-                    if !matches!(tokio::time::timeout(Duration::from_secs(5),socket.send(frame)).await,Ok(Ok(()))) || close { break; }
+                    if !self.chat.attached(&id, socket_id).await { break; }
+                    let (frame, close) = match outgoing { Some(Outgoing::Text(text)) => (WsMessage::Text(text.into()), false), Some(Outgoing::Close(reason)) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame { code: 1000, reason: reason.into() })), true), None => break };
+                    if !matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(frame)).await, Ok(Ok(()))) || close { break; }
                 }
                 _ = housekeeping.tick() => {
-                    if !self.chat.attached(&id,socket_id).await || last_frame.elapsed() > Duration::from_secs(30) { break; }
-                    let _ = self.chat.drain_pending(&id, &token, socket_id, after).await;
+                    if !self.chat.attached(&id, socket_id).await || last_frame.elapsed() > Duration::from_secs(30) { break; }
                     if last_ping.elapsed() >= Duration::from_secs(10) {
-                        if !matches!(tokio::time::timeout(Duration::from_secs(5),socket.send(WsMessage::Ping(Vec::new().into()))).await,Ok(Ok(()))) { break; }
+                        if !matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(WsMessage::Ping(Vec::new().into()))).await, Ok(Ok(()))) { break; }
                         last_ping = tokio::time::Instant::now();
                     }
                 }
@@ -212,34 +194,9 @@ impl Server {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let id = tail.first().copied().unwrap_or("");
         let result = match (request.method().as_str(), tail) {
             ("POST", []) => self.chat.create(slug).await,
-            ("POST", [_]) => {
-                let bytes = match to_bytes(request.into_body(), 64 * 1024).await {
-                    Ok(bytes) => bytes,
-                    Err(_) => return write_json(413, &json!({"error":"message too large"})),
-                };
-                let Ok(mut post) = serde_json::from_slice::<chat::Post>(&bytes) else {
-                    return write_json(400, &json!({"error":"invalid message"}));
-                };
-                // The convenience route is used by the CLI for agent replies,
-                // but authenticated clients may also submit a user message
-                // before an agent socket connects. Those messages live in a
-                // bounded, one-shot mailbox and are delivered on watch.
-                if post.role != "user" {
-                    post.role = "agent".into();
-                }
-                if let Err(response) = self
-                    .recheck_chat_caller(slug, &headers, arrival, query.as_deref())
-                    .await
-                {
-                    return *response;
-                }
-                self.reauthorize_chat_recipient(slug, id, &post.role).await;
-                self.chat.post(slug, id, &token, None, post).await
-            }
-            ("DELETE", [_]) => {
+            ("DELETE", [id]) => {
                 if let Err(response) = self
                     .recheck_chat_caller(slug, &headers, arrival, query.as_deref())
                     .await
@@ -248,10 +205,6 @@ impl Server {
                 }
                 self.chat.delete(slug, id, &token).await
             }
-            ("GET", [_]) | ("POST", [_, "listen"]) => Err((
-                410,
-                "chat requires a live WebSocket; polling and replay are unavailable",
-            )),
             _ => return write_json(405, &json!({"error":"unsupported chat operation"})),
         };
         let mut response = match result {
@@ -262,15 +215,6 @@ impl Server {
         response
     }
 
-    async fn reauthorize_chat_recipient(&self, slug: &str, id: &str, sender_role: &str) {
-        if let Some(socket_id) = self.chat.recipient_socket(id, sender_role).await {
-            let _ = self.reauthorize_connection(slug, socket_id).await;
-        }
-    }
-
-    /// Re-resolve the HTTP caller immediately before a body-dependent chat
-    /// mutation.  Reading the request body can await long enough for a session
-    /// or link to be revoked, so the handshake-time viewer is insufficient.
     async fn recheck_chat_caller(
         &self,
         slug: &str,
@@ -297,94 +241,66 @@ impl Server {
     }
 }
 
-const CHANNEL_SECONDS: i64 = 60 * 60;
-
-#[derive(Default)]
-pub struct Hub {
-    channels: Mutex<HashMap<String, Channel>>,
+#[derive(Deserialize)]
+struct Join {
+    #[serde(rename = "type")]
+    kind: String,
+    token: String,
+    role: String,
 }
-
-struct Channel {
-    slug: String,
-    token_hash: String,
-    touched_at: i64,
-    browser: Option<Peer>,
-    agent: Option<Peer>,
-    requests: VecDeque<(String, String)>,
-    /// User messages accepted by the authenticated HTTP mailbox while the
-    /// agent is between socket connections.  This is deliberately bounded
-    /// and is consumed on delivery; it is not a transcript.
-    pending: VecDeque<(u64, String)>,
-    next_cursor: u64,
-    minute: i64,
-    sent: u32,
-}
-
-struct Peer {
-    socket: u64,
-    tx: mpsc::Sender<Outgoing>,
-    receives: bool,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Task {
     pub kind: String,
     pub scope: String,
 }
-
-#[derive(Deserialize)]
-pub struct Post {
-    pub id: String,
+#[derive(Clone, Debug, Deserialize)]
+struct Message {
+    id: String,
+    text: String,
     #[serde(default)]
-    pub role: String,
-    pub text: String,
+    context: Value,
     #[serde(default)]
-    pub context: Value,
-    #[serde(default)]
-    pub task: Option<Task>,
+    task: Option<Task>,
 }
 
+fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_ID && !id.chars().any(char::is_control)
+}
 fn valid_task(task: Option<&Task>) -> bool {
     task.is_none_or(|task| {
         matches!(
             task.kind.as_str(),
-            "proofread" | "tighten" | "rewrite" | "explain" | "outline" | "respond"
+            "proofread"
+                | "tighten"
+                | "rewrite"
+                | "explain"
+                | "outline"
+                | "respond"
+                | "fix"
+                | "refine"
         ) && matches!(task.scope.as_str(), "selection" | "file" | "document")
             && task.kind.len() <= 32
             && task.scope.len() <= 32
     })
 }
-
-fn valid_results(context: &Value) -> bool {
-    let Some(results) = context.get("results") else {
-        return true;
-    };
-    let Some(results) = results.as_object() else {
-        return false;
-    };
-    if let Some(suggestions) = results.get("suggestions") {
-        let Some(suggestions) = suggestions.as_array() else {
-            return false;
-        };
-        if suggestions.len() > 100
-            || suggestions.iter().any(|id| {
-                id.as_str().is_none_or(|id| {
-                    id.is_empty() || id.len() > 128 || id.chars().any(char::is_control)
-                })
-            })
-        {
-            return false;
-        }
-    }
-    results.get("pass").is_none_or(|pass| {
-        pass.as_str().is_some_and(|pass| {
-            !pass.is_empty() && pass.len() <= 128 && !pass.chars().any(char::is_control)
-        })
-    })
+fn valid_context(context: &Value) -> bool {
+    serde_json::to_vec(context).is_ok_and(|bytes| bytes.len() <= MAX_CONTEXT)
 }
-
-pub type Error = (u16, &'static str);
-
+fn valid_status(status: &str) -> bool {
+    matches!(
+        status,
+        "queued" | "working" | "needs_input" | "completed" | "failed" | "cancelled"
+    )
+}
+fn bounded_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
+    let value = value[key]
+        .as_str()
+        .ok_or((400, "bounded string is required"))?;
+    if !valid_id(value) {
+        return Err((400, "invalid bounded string"));
+    }
+    Ok(value)
+}
 fn random() -> String {
     let mut bytes = [0; 32];
     rand::rng().fill_bytes(&mut bytes);
@@ -402,15 +318,34 @@ fn token_matches(stored: &str, token: &str) -> bool {
     !token.is_empty() && stored.len() == hash.len() && difference == 0
 }
 
+#[derive(Default)]
+pub struct Hub {
+    channels: Mutex<HashMap<String, Channel>>,
+}
+struct Channel {
+    slug: String,
+    token_hash: String,
+    touched_at: i64,
+    browser: Option<Peer>,
+    agent: Option<Peer>,
+    requests: VecDeque<(String, String)>,
+    events: VecDeque<i64>,
+}
+struct Peer {
+    socket: u64,
+    tx: mpsc::Sender<Outgoing>,
+}
+pub type Error = (u16, &'static str);
+
 impl Channel {
-    fn listening(&self) -> bool {
-        self.agent.as_ref().is_some_and(|peer| peer.receives)
+    fn expired(&self, current: i64) -> bool {
+        self.browser.is_none()
+            && self.agent.is_none()
+            && current - self.touched_at >= CHANNEL_SECONDS
     }
-
     fn presence(&self) -> Value {
-        json!({"type":"presence", "listening":self.listening(), "browser":self.browser.is_some()})
+        json!({"type":"presence","browser":self.browser.is_some(),"agent":self.agent.is_some()})
     }
-
     fn announce(&self) {
         let text = self.presence().to_string();
         for peer in [&self.browser, &self.agent].into_iter().flatten() {
@@ -423,11 +358,7 @@ impl Hub {
     pub async fn create(&self, slug: &str) -> Result<Value, Error> {
         let current = now();
         let mut channels = self.channels.lock().await;
-        channels.retain(|_, channel| {
-            channel.browser.is_some()
-                || channel.agent.is_some()
-                || current - channel.touched_at < CHANNEL_SECONDS
-        });
+        channels.retain(|_, channel| !channel.expired(current));
         if channels
             .values()
             .filter(|channel| channel.slug == slug)
@@ -448,30 +379,28 @@ impl Hub {
                 browser: None,
                 agent: None,
                 requests: VecDeque::new(),
-                pending: VecDeque::new(),
-                next_cursor: 0,
-                minute: 0,
-                sent: 0,
+                events: VecDeque::new(),
             },
         );
         Ok(json!({"id":id,"token":token,"ephemeral":true}))
     }
-
-    #[allow(clippy::too_many_arguments)]
     pub async fn attach(
         &self,
         slug: &str,
         id: &str,
         token: &str,
         role: &str,
-        receives: bool,
         socket: u64,
         tx: mpsc::Sender<Outgoing>,
     ) -> Result<Value, Error> {
         let mut channels = self.channels.lock().await;
         let channel = channels
             .get_mut(id)
-            .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
+            .filter(|channel| {
+                channel.slug == slug
+                    && !channel.expired(now())
+                    && token_matches(&channel.token_hash, token)
+            })
             .ok_or((404, "channel not found"))?;
         let participant = match role {
             "user" => &mut channel.browser,
@@ -481,17 +410,12 @@ impl Hub {
         if participant.is_some() {
             return Err((409, "participant is already connected"));
         }
-        *participant = Some(Peer {
-            socket,
-            tx,
-            receives,
-        });
+        *participant = Some(Peer { socket, tx });
         channel.touched_at = now();
-        let ready = json!({"type":"ready", "listening":channel.listening(), "browser":channel.browser.is_some()});
+        let ready = json!({"type":"ready","browser":channel.browser.is_some(),"agent":channel.agent.is_some()});
         channel.announce();
         Ok(ready)
     }
-
     pub async fn attached(&self, id: &str, socket: u64) -> bool {
         self.channels.lock().await.get(id).is_some_and(|channel| {
             [&channel.browser, &channel.agent]
@@ -500,94 +424,44 @@ impl Hub {
         })
     }
 
-    /// Return the socket on the other side of a delivery.  The server uses
-    /// this narrow lookup to reauthorize that one participant immediately
-    /// before a message is sent, rather than rechecking every socket in the
-    /// document's room.
-    pub async fn recipient_socket(&self, id: &str, sender_role: &str) -> Option<u64> {
-        self.channels.lock().await.get(id).and_then(|channel| {
-            let peer = match sender_role {
+    pub async fn recipient_socket(&self, id: &str, role: &str) -> Option<u64> {
+        self.channels
+            .lock()
+            .await
+            .get(id)
+            .and_then(|channel| match role {
                 "user" => channel.agent.as_ref(),
                 "agent" => channel.browser.as_ref(),
                 _ => None,
-            }?;
-            peer.receives.then_some(peer.socket)
-        })
+            })
+            .map(|peer| peer.socket)
     }
-
-    /// Deliver queued HTTP mailbox messages to a newly connected agent.  The
-    /// queue is consumed only after a sender slot has been reserved, so a
-    /// full websocket queue does not lose a message.  `after` is a cursor
-    /// supplied by a reconnecting agent; old messages are intentionally not
-    /// replayed because chat remains ephemeral rather than becoming a
-    /// transcript store.
-    pub async fn drain_pending(
-        &self,
-        id: &str,
-        token: &str,
-        socket: u64,
-        after: Option<u64>,
-    ) -> Result<(), Error> {
-        let mut channels = self.channels.lock().await;
-        let channel = channels
-            .get_mut(id)
-            .filter(|channel| token_matches(&channel.token_hash, token))
-            .ok_or((404, "channel not found"))?;
-        let peer = channel
-            .agent
-            .as_ref()
-            .filter(|peer| peer.socket == socket && peer.receives)
-            .ok_or((409, "agent is not listening"))?;
-
-        if let Some(after) = after {
-            while channel
-                .pending
-                .front()
-                .is_some_and(|(cursor, _)| *cursor <= after)
-            {
-                channel.pending.pop_front();
-            }
-        }
-        while let Some((_, payload)) = channel.pending.front().cloned() {
-            let slot = match peer.tx.try_reserve() {
-                Ok(slot) => slot,
-                Err(_) => break,
-            };
-            slot.send(Outgoing::Text(payload));
-            channel.pending.pop_front();
-        }
-        Ok(())
-    }
-
     pub async fn detach(&self, id: &str, socket: u64) {
         let mut channels = self.channels.lock().await;
         let Some(channel) = channels.get_mut(id) else {
             return;
         };
-        // The originating tab owns the channel's lifetime. Closing it revokes
-        // the capability, including outstanding agent connections.
         if channel
             .browser
             .as_ref()
             .is_some_and(|peer| peer.socket == socket)
         {
-            if let Some(peer) = &channel.agent {
-                let _ = peer
-                    .tx
-                    .try_send(Outgoing::Close("browser disconnected".into()));
-            }
-            channels.remove(id);
-        } else if channel
+            channel.browser = None;
+            channel.requests.clear();
+            channel.touched_at = now();
+            channel.announce();
+        }
+        if channel
             .agent
             .as_ref()
             .is_some_and(|peer| peer.socket == socket)
         {
             channel.agent = None;
+            channel.requests.clear();
             channel.touched_at = now();
             channel.announce();
         }
     }
-
     pub async fn delete(&self, slug: &str, id: &str, token: &str) -> Result<Value, Error> {
         let mut channels = self.channels.lock().await;
         let channel = channels
@@ -600,7 +474,6 @@ impl Hub {
         channels.remove(id);
         Ok(json!({"deleted":true}))
     }
-
     pub async fn purge(&self, slug: &str) {
         let mut channels = self.channels.lock().await;
         channels.retain(|_, channel| {
@@ -611,183 +484,206 @@ impl Hub {
                 let _ = peer.tx.try_send(Outgoing::Close("document removed".into()));
             }
             false
-        });
+        })
     }
 
-    /// The socket id binds live writes to the participant established by join.
-    /// HTTP replies use the same capability, and require a live agent socket.
-    pub async fn post(
+    async fn relay(
         &self,
         slug: &str,
         id: &str,
         token: &str,
-        socket: Option<u64>,
-        post: Post,
+        socket: u64,
+        role: &str,
+        value: Value,
     ) -> Result<Value, Error> {
-        if post.id.is_empty()
-            || post.id.len() > 128
-            || !matches!(post.role.as_str(), "user" | "agent")
-            || post.text.trim().is_empty()
-            || post.text.len() > 32 * 1024
-            || !valid_task(post.task.as_ref())
-            || !valid_results(&post.context)
-            || serde_json::to_vec(&(post.task.as_ref(), &post.context))
-                .map_err(|_| (400, "bad context"))?
-                .len()
-                > 16 * 1024
-        {
-            return Err((400, "invalid bounded message"));
+        let kind = value["type"]
+            .as_str()
+            .ok_or((400, "event type is required"))?;
+        match kind {
+            "message" => {
+                let message: Message =
+                    serde_json::from_value(value).map_err(|_| (400, "invalid message"))?;
+                if !valid_id(&message.id)
+                    || message.text.trim().is_empty()
+                    || message.text.len() > MAX_EVENT_TEXT
+                    || !valid_task(message.task.as_ref())
+                    || !valid_context(&message.context)
+                {
+                    return Err((400, "invalid bounded message"));
+                }
+                let mut frame = json!({"type":"message","message":{"id":message.id,"role":role,"text":message.text,"context":message.context}});
+                if let Some(task) = message.task {
+                    frame["message"]["task"] =
+                        serde_json::to_value(task).map_err(|_| (400, "invalid task"))?;
+                }
+                self.deliver(slug, id, token, socket, role, frame).await
+            }
+            "task" => {
+                if role != "agent" {
+                    return Err((403, "only the agent can report task status"));
+                }
+                bounded_string(&value, "task_id")?;
+                let status = value["status"]
+                    .as_str()
+                    .ok_or((400, "task status is required"))?;
+                if !valid_status(status) {
+                    return Err((400, "invalid task status"));
+                }
+                if value.get("text").is_some_and(|text| {
+                    !text.is_string()
+                        || text
+                            .as_str()
+                            .is_some_and(|text| text.len() > MAX_EVENT_TEXT)
+                }) {
+                    return Err((400, "invalid task text"));
+                }
+                if value.get("context").is_some() && !valid_context(&value["context"]) {
+                    return Err((400, "task context is too large"));
+                }
+                self.deliver(slug, id, token, socket, role, value).await
+            }
+            "cancel" => {
+                if role != "user" {
+                    return Err((403, "only the user can cancel a task"));
+                }
+                bounded_string(&value, "task_id")?;
+                self.deliver(slug, id, token, socket, role, value).await
+            }
+            "input" => {
+                if role != "user" {
+                    return Err((403, "only the user can answer an input request"));
+                }
+                bounded_string(&value, "task_id")?;
+                bounded_string(&value, "request_id")?;
+                if !value["response"].is_object() || !valid_context(&value["response"]) {
+                    return Err((400, "invalid input response"));
+                }
+                self.deliver(slug, id, token, socket, role, value).await
+            }
+            "capabilities" => {
+                if role != "agent"
+                    || !value["capabilities"].is_object()
+                    || !valid_context(&value["capabilities"])
+                    || !value["capabilities"]
+                        .as_object()
+                        .is_some_and(|caps| caps.values().all(Value::is_boolean))
+                {
+                    return Err((400, "invalid capabilities"));
+                }
+                self.deliver(slug, id, token, socket, role, value).await
+            }
+            "preview_request" => {
+                bounded_string(&value, "task_id")?;
+                bounded_string(&value, "base_revision")?;
+                if role != "agent"
+                    || !valid_id(value["revision"].as_str().unwrap_or(""))
+                    || !value["files"].is_object()
+                    || !valid_context(&value["files"])
+                    || !value["files"].as_object().is_some_and(|files| {
+                        files.iter().all(|(path, text)| {
+                            !path.is_empty()
+                                && !path.starts_with('/')
+                                && !path.contains('\\')
+                                && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
+                                && text.is_string()
+                        })
+                    })
+                {
+                    return Err((400, "invalid preview request"));
+                }
+                self.deliver(slug, id, token, socket, role, value).await
+            }
+            "preview_result" => {
+                bounded_string(&value, "task_id")?;
+                bounded_string(&value, "request_id")?;
+                bounded_string(&value, "base_revision")?;
+                if role != "user"
+                    || !valid_id(value["revision"].as_str().unwrap_or(""))
+                    || !value.get("ok").is_some_and(Value::is_boolean)
+                    || !valid_context(&value["diagnostics"])
+                    || !value["diagnostics"].is_array()
+                {
+                    return Err((400, "invalid preview result"));
+                }
+                self.deliver(slug, id, token, socket, role, value).await
+            }
+            _ => Err((400, "unsupported chat event")),
+        }
+    }
+    async fn deliver(
+        &self,
+        slug: &str,
+        id: &str,
+        token: &str,
+        socket: u64,
+        role: &str,
+        frame: Value,
+    ) -> Result<Value, Error> {
+        let event_id = frame["id"]
+            .as_str()
+            .or_else(|| frame["message"]["id"].as_str())
+            .unwrap_or("");
+        if !valid_id(event_id) {
+            return Err((400, "event id is required"));
+        }
+        if frame.to_string().len() > 64 * 1024 {
+            return Err((413, "event is too large"));
         }
         let mut channels = self.channels.lock().await;
         let channel = channels
             .get_mut(id)
             .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
             .ok_or((404, "channel not found"))?;
-        let mailbox = post.role == "user" && socket.is_none();
-        let offline_reply = post.role == "agent" && socket.is_none();
-        let (sender, recipient) = if post.role == "user" {
-            (&channel.browser, &channel.agent)
-        } else {
-            (&channel.agent, &channel.browser)
-        };
-        let mut payload = json!({"type":"message","message":{"id":post.id,"role":post.role,"text":post.text,"context":post.context}});
-        if let Some(task) = &post.task {
-            payload["message"]["task"] =
-                serde_json::to_value(task).map_err(|_| (400, "bad task"))?;
-        }
-        let digest = crate::document::store::digest_of(&payload.to_string());
-        let request = format!("{}:{}", post.role, post.id);
-        let duplicate = channel
+        let digest = crate::document::store::digest_of(&frame.to_string());
+        let key = format!("{role}:{event_id}");
+        if let Some((_, previous)) = channel
             .requests
             .iter()
-            .find(|(key, _)| key == &request)
-            .map(|(_, previous)| previous == &digest);
-        if (mailbox || offline_reply) && duplicate.is_some() {
-            return if duplicate == Some(true) {
-                Ok(json!({"type":"ack","id":post.id}))
-            } else {
-                Err((409, "message id already used for different content"))
-            };
-        }
-        let sender = sender.as_ref();
-        if !mailbox && !offline_reply {
-            let sender = sender.ok_or((409, "sender is not connected"))?;
-            if socket.is_some_and(|socket| socket != sender.socket) {
-                return Err((403, "wrong participant"));
+            .find(|(request_key, _)| request_key == &key)
+        {
+            if previous == &digest {
+                return Ok(json!({"type":"ack","id":event_id}));
             }
+            return Err((409, "event id already used for different content"));
         }
-        let recipient = recipient.as_ref();
-        if !mailbox && !offline_reply {
-            let recipient = recipient.ok_or((
-                409,
-                if post.role == "user" {
-                    "agent is not connected"
-                } else {
-                    "browser is not connected"
-                },
-            ))?;
-            if !recipient.receives {
-                return Err((409, "recipient is not listening"));
-            }
+        let current = now();
+        while channel.events.front().is_some_and(|at| current - at >= 60) {
+            channel.events.pop_front();
         }
-        if let Some(previous) = duplicate {
-            return if previous {
-                Ok(json!({"type":"ack","id":post.id}))
-            } else {
-                Err((409, "message id already used for different content"))
-            };
+        if channel.events.len() >= 600 {
+            return Err((429, "too many assistant events; try later"));
         }
-        let minute = now() / 60;
-        if channel.minute != minute {
-            channel.minute = minute;
-            channel.sent = 0;
+        let sender = match role {
+            "user" => channel.browser.as_ref(),
+            "agent" => channel.agent.as_ref(),
+            _ => None,
         }
-        if channel.sent >= 60 {
-            return Err((429, "too many chat messages; try again shortly"));
+        .filter(|peer| peer.socket == socket)
+        .ok_or((403, "wrong participant"))?;
+        let recipient = match role {
+            "user" => channel.agent.as_ref(),
+            "agent" => channel.browser.as_ref(),
+            _ => None,
         }
-        let cursor = if post.role == "user" {
-            channel.next_cursor = channel.next_cursor.saturating_add(1);
-            Some(channel.next_cursor)
-        } else {
-            None
-        };
-        let payload = if let Some(cursor) = cursor {
-            let mut payload = payload;
-            payload["message"]["cursor"] = json!(cursor);
-            payload
-        } else {
-            payload
-        };
-        let text = payload.to_string();
-        if mailbox {
-            if recipient.is_none_or(|peer| !peer.receives) {
-                if channel.pending.len() >= 256 {
-                    return Err((409, "chat mailbox is full"));
-                }
-                channel
-                    .pending
-                    .push_back((cursor.expect("user cursor"), text));
-            } else {
-                let recipient_slot = recipient
-                    .expect("checked recipient")
-                    .tx
-                    .try_reserve()
-                    .map_err(|_| (409, "recipient cannot receive messages"))?;
-                recipient_slot.send(Outgoing::Text(text));
-            }
-        } else if offline_reply {
-            // When the agent socket is live, an HTTP reply is echoed to the
-            // sender as well as delivered to the browser. Reserve both
-            // queues first so a full peer queue cannot half-deliver it.
-            let recipient_slot = recipient
-                .filter(|peer| peer.receives)
-                .map(|peer| {
-                    peer.tx
-                        .try_reserve()
-                        .map_err(|_| (409, "recipient cannot receive messages"))
-                })
-                .transpose()?;
-            let sender_slot = sender
-                .filter(|peer| peer.receives)
-                .map(|peer| {
-                    peer.tx
-                        .try_reserve()
-                        .map_err(|_| (409, "sender cannot receive messages"))
-                })
-                .transpose()?;
-            if let Some(slot) = recipient_slot {
-                slot.send(Outgoing::Text(text.clone()));
-            }
-            if let Some(slot) = sender_slot {
-                slot.send(Outgoing::Text(text));
-            }
-        } else {
-            // Reserve both queues first: a slow participant causes a clear
-            // refusal, never a half-delivered successful message.
-            let recipient = recipient.ok_or((409, "agent is not connected"))?;
-            let recipient_slot = recipient
-                .tx
-                .try_reserve()
-                .map_err(|_| (409, "recipient cannot receive messages"))?;
-            let sender_slot = sender
-                .ok_or((409, "sender is not connected"))?
-                .tx
-                .try_reserve()
-                .map_err(|_| (409, "sender cannot receive messages"))?;
-            recipient_slot.send(Outgoing::Text(text.clone()));
-            sender_slot.send(Outgoing::Text(text));
-        }
-        channel.requests.push_back((request, digest));
+        .ok_or((409, "recipient is not connected"))?;
+        let recipient_slot = recipient
+            .tx
+            .try_reserve()
+            .map_err(|_| (409, "recipient cannot receive events"))?;
+        let sender_slot = sender
+            .tx
+            .try_reserve()
+            .map_err(|_| (409, "sender cannot receive events"))?;
+        let text = frame.to_string();
+        recipient_slot.send(Outgoing::Text(text.clone()));
+        sender_slot.send(Outgoing::Text(text));
+        channel.requests.push_back((key, digest));
+        channel.events.push_back(current);
         if channel.requests.len() > 256 {
             channel.requests.pop_front();
         }
-        channel.sent += 1;
         channel.touched_at = now();
-        let mut ack = json!({"type":"ack","id":post.id});
-        if let Some(cursor) = cursor {
-            ack["cursor"] = json!(cursor);
-        }
-        Ok(ack)
+        Ok(json!({"type":"ack","id":event_id}))
     }
 }
 
@@ -795,249 +691,171 @@ impl Hub {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn delayed_http_body_rechecks_revoked_link() {
-        use crate::tests::{
-            new_test_server, post_as, publish_test_document, read_key_of, session_as, text,
-            TEST_PUBLISHER,
-        };
-        let server = new_test_server().await;
-        let document = publish_test_document(&server.url).await;
-        let slug = text(&document, "slug");
-        let key = read_key_of(&document);
-        let channel = server.instance.chat.create(&slug).await.unwrap();
-        let id = text(&channel, "id");
-        let (reading, started) = tokio::sync::oneshot::channel();
-        let (release, resume) = tokio::sync::oneshot::channel();
-        let body = Body::from_stream(futures_util::stream::once(async move {
-            // This body is polled by the server after its initial viewer check.
-            reading.send(()).unwrap();
-            resume.await.unwrap();
-            Ok::<_, std::convert::Infallible>(
-                json!({"id":"late","text":"must not arrive"}).to_string(),
-            )
-        }));
-        let request = Request::builder()
-            .method("POST")
-            .uri(format!("/api/documents/{slug}/chat/{id}"))
-            .header("host", "localhost")
-            .header("x-librepaper-client", "1")
-            .header(LINK_HEADER, key)
-            .header(AUTOMATION_HEADER, "1")
-            .header("x-librepaper-chat-token", text(&channel, "token"))
-            .body(body)
-            .unwrap();
-        let arrival = Arrival::from_headers(request.headers());
-        let instance = server.instance.clone();
-        let requested_slug = slug.clone();
-        let pending = tokio::spawn(async move {
-            instance
-                .handle_chat(request, &arrival, &requested_slug, &[&id])
-                .await
-        });
-        tokio::time::timeout(Duration::from_secs(5), started)
-            .await
-            .unwrap()
-            .unwrap();
-        let (status, _) = post_as(
-            &session_as(TEST_PUBLISHER),
-            &server.url,
-            &format!("/api/documents/{slug}/share"),
-            json!({"revoke":"reader"}),
+    async fn channel() -> (Hub, String, String) {
+        let hub = Hub::default();
+        let created = hub.create("paper").await.unwrap();
+        (
+            hub,
+            created["id"].as_str().unwrap().to_owned(),
+            created["token"].as_str().unwrap().to_owned(),
         )
-        .await;
-        assert_eq!(status, 200);
-        release.send(()).unwrap();
-        assert_eq!(pending.await.unwrap().status(), 404);
     }
 
-    fn post() -> Post {
-        Post {
-            id: "one".into(),
-            role: "user".into(),
-            text: "hi".into(),
-            context: Value::Null,
-            task: None,
-        }
-    }
     #[tokio::test]
-    async fn reply_only_connection_does_not_accept_browser_instructions() {
-        let hub = Hub::default();
+    async fn relay_requires_both_connected_peers_and_preserves_channel_on_detach() {
+        let (hub, id, token) = channel().await;
+        let (user_tx, _user_rx) = mpsc::channel(4);
+        let (agent_tx, _agent_rx) = mpsc::channel(4);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        let result = hub
+            .relay(
+                "paper",
+                &id,
+                &token,
+                1,
+                "user",
+                json!({"type":"message","id":"m1","text":"hello"}),
+            )
+            .await;
+        assert_eq!(result.unwrap_err().0, 409);
+        hub.attach("paper", &id, &token, "agent", 2, agent_tx)
+            .await
+            .unwrap();
+        hub.detach(&id, 1).await;
+        assert!(!hub.attached(&id, 1).await);
+        assert!(hub
+            .attach("paper", &id, &token, "user", 3, mpsc::channel(4).0)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn relay_enforces_event_direction_and_deduplicates_identical_retries() {
+        let (hub, id, token) = channel().await;
+        let (user_tx, mut user_rx) = mpsc::channel(8);
+        let (agent_tx, mut agent_rx) = mpsc::channel(8);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        hub.attach("paper", &id, &token, "agent", 2, agent_tx)
+            .await
+            .unwrap();
+        let invalid = hub
+            .relay(
+                "paper",
+                &id,
+                &token,
+                1,
+                "user",
+                json!({"type":"task","id":"t1","task_id":"m1","status":"working"}),
+            )
+            .await;
+        assert_eq!(invalid.unwrap_err().0, 403);
+        let frame = json!({"type":"message","id":"m1","text":"hello"});
+        hub.relay("paper", &id, &token, 1, "user", frame.clone())
+            .await
+            .unwrap();
+        hub.relay("paper", &id, &token, 1, "user", frame)
+            .await
+            .unwrap();
+        let mut delivered = 0;
+        while let Ok(event) = agent_rx.try_recv() {
+            if matches!(event, Outgoing::Text(text) if text.contains("\"m1\"")) {
+                delivered += 1;
+            }
+        }
+        assert_eq!(delivered, 1);
+        let mut echoed = 0;
+        while let Ok(event) = user_rx.try_recv() {
+            if matches!(event, Outgoing::Text(text) if text.contains("\"m1\"")) {
+                echoed += 1;
+            }
+        }
+        assert_eq!(echoed, 1);
+        // Delivery to a socket is not durable admission by the runner. After
+        // reconnecting, let it see retries and consult its persisted ledger.
+        hub.detach(&id, 2).await;
+        let (replacement_tx, mut replacement_rx) = mpsc::channel(8);
+        hub.attach("paper", &id, &token, "agent", 3, replacement_tx)
+            .await
+            .unwrap();
+        hub.relay(
+            "paper",
+            &id,
+            &token,
+            1,
+            "user",
+            json!({"type":"message","id":"m1","text":"hello"}),
+        )
+        .await
+        .unwrap();
+        let mut retried = false;
+        while let Ok(event) = replacement_rx.try_recv() {
+            retried |= matches!(event, Outgoing::Text(text) if text.contains("\"m1\""));
+        }
+        assert!(retried);
+    }
+
+    #[tokio::test]
+    async fn task_and_preview_events_are_bounded_and_role_checked() {
+        let (hub, id, token) = channel().await;
+        let (user_tx, mut user_rx) = mpsc::channel(8);
+        let (agent_tx, _agent_rx) = mpsc::channel(8);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        hub.attach("paper", &id, &token, "agent", 2, agent_tx)
+            .await
+            .unwrap();
+        while user_rx.try_recv().is_ok() {}
+        hub.relay(
+            "paper",
+            &id,
+            &token,
+            2,
+            "agent",
+            json!({"type":"task","id":"t1","task_id":"m1","status":"working"}),
+        )
+        .await
+        .unwrap();
+        let task = user_rx.recv().await.unwrap();
+        assert!(matches!(task, Outgoing::Text(text) if text.contains("\"working\"")));
+        let invalid = hub.relay("paper", &id, &token, 1, "user", json!({"type":"preview_result","id":"p1","request_id":"p0","base_revision":"base","task_id":"m1","revision":"r1","ok":true,"diagnostics":[]})).await;
+        assert!(invalid.is_ok());
+        let invalid_status = hub
+            .relay(
+                "paper",
+                &id,
+                &token,
+                2,
+                "agent",
+                json!({"type":"task","id":"t2","task_id":"m1","status":"unknown"}),
+            )
+            .await;
+        assert_eq!(invalid_status.unwrap_err().0, 400);
+    }
+
+    #[tokio::test]
+    async fn idle_disconnected_channel_expires_but_connected_channel_survives() {
+        let (hub, id, token) = channel().await;
+        hub.channels.lock().await.get_mut(&id).unwrap().touched_at = now() - CHANNEL_SECONDS - 1;
+        assert_eq!(
+            hub.attach("paper", &id, &token, "user", 1, mpsc::channel(4).0)
+                .await
+                .unwrap_err()
+                .0,
+            404
+        );
         let created = hub.create("paper").await.unwrap();
         let id = created["id"].as_str().unwrap();
         let token = created["token"].as_str().unwrap();
-        let (browser, _browser_rx) = mpsc::channel(16);
-        let (agent, _agent_rx) = mpsc::channel(16);
-        hub.attach("paper", id, token, "user", true, 1, browser)
+        hub.attach("paper", id, token, "user", 2, mpsc::channel(4).0)
             .await
             .unwrap();
-        let ready = hub
-            .attach("paper", id, token, "agent", false, 2, agent)
-            .await
-            .unwrap();
-        assert_eq!(ready["listening"], false);
-        assert_eq!(
-            hub.post("paper", id, token, Some(1), post())
-                .await
-                .unwrap_err()
-                .0,
-            409
-        );
-        let mut reply = post();
-        reply.role = "agent".into();
-        assert!(hub.post("paper", id, token, Some(2), reply).await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn only_live_sockets_receive_no_replay_and_browser_close_revokes() {
-        let hub = Hub::default();
-        let channel = hub.create("paper").await.unwrap();
-        let id = channel["id"].as_str().unwrap();
-        let token = channel["token"].as_str().unwrap();
-        let (browser, mut browser_rx) = mpsc::channel(16);
-        let (agent, mut agent_rx) = mpsc::channel(16);
-        assert_eq!(
-            hub.attach("paper", id, "wrong", "user", true, 1, browser.clone())
-                .await
-                .unwrap_err()
-                .0,
-            404
-        );
-        hub.attach("paper", id, token, "user", true, 1, browser)
-            .await
-            .unwrap();
-        assert_eq!(
-            hub.post("paper", id, token, Some(1), post())
-                .await
-                .unwrap_err()
-                .0,
-            409
-        );
-        hub.attach("paper", id, token, "agent", true, 2, agent)
-            .await
-            .unwrap();
-        hub.post("paper", id, token, Some(1), post()).await.unwrap();
-        hub.post("paper", id, token, Some(1), post()).await.unwrap();
-        let mut messages = 0;
-        while let Ok(frame) = agent_rx.try_recv() {
-            if let Outgoing::Text(text) = frame {
-                if text.contains("\"type\":\"message\"") {
-                    messages += 1;
-                }
-            }
-        }
-        assert_eq!(messages, 1, "retries do not duplicate delivery");
-        hub.detach(id, 2).await;
-        assert_eq!(
-            hub.post("paper", id, token, Some(1), post())
-                .await
-                .unwrap_err()
-                .0,
-            409
-        );
-        let (agent, mut agent_rx) = mpsc::channel(16);
-        hub.attach("paper", id, token, "agent", true, 3, agent)
-            .await
-            .unwrap();
-        assert!(matches!(agent_rx.try_recv(), Ok(Outgoing::Text(_))));
-        assert!(
-            agent_rx.try_recv().is_err(),
-            "reconnecting never replays messages"
-        );
-        hub.detach(id, 1).await;
-        assert!(!hub.attached(id, 3).await);
-        assert_eq!(
-            hub.post("paper", id, token, None, post())
-                .await
-                .unwrap_err()
-                .0,
-            404
-        );
-        browser_rx.close();
-    }
-
-    #[tokio::test]
-    async fn authenticated_http_user_message_waits_for_agent_and_is_idempotent() {
-        let hub = Hub::default();
-        let channel = hub.create("paper").await.unwrap();
-        let id = channel["id"].as_str().unwrap();
-        let token = channel["token"].as_str().unwrap();
-        let ack = hub.post("paper", id, token, None, post()).await.unwrap();
-        assert_eq!(ack["cursor"], 1);
-        assert_eq!(
-            hub.drain_pending(id, "wrong", 1, None).await.unwrap_err().0,
-            404
-        );
-
-        let (agent, mut agent_rx) = mpsc::channel(16);
-        hub.attach("paper", id, token, "agent", true, 1, agent)
-            .await
-            .unwrap();
-        hub.drain_pending(id, token, 1, None).await.unwrap();
-        let mut delivered = None;
-        while let Ok(Outgoing::Text(text)) = agent_rx.try_recv() {
-            let value: Value = serde_json::from_str(&text).unwrap();
-            if value["type"] == "message" {
-                delivered = Some(value);
-            }
-        }
-        let delivered = delivered.expect("mailbox message was delivered");
-        assert_eq!(delivered["message"]["id"], "one");
-        assert_eq!(delivered["message"]["cursor"], 1);
-        assert_eq!(
-            hub.post("paper", id, token, None, post()).await.unwrap()["id"],
-            "one"
-        );
-    }
-
-    #[tokio::test]
-    async fn task_and_result_metadata_are_relayed_and_bounded() {
-        let hub = Hub::default();
-        let channel = hub.create("paper").await.unwrap();
-        let id = channel["id"].as_str().unwrap();
-        let token = channel["token"].as_str().unwrap();
-        let (browser, _browser_rx) = mpsc::channel(16);
-        let (agent, mut agent_rx) = mpsc::channel(16);
-        hub.attach("paper", id, token, "user", true, 1, browser)
-            .await
-            .unwrap();
-        hub.attach("paper", id, token, "agent", true, 2, agent)
-            .await
-            .unwrap();
-        let mut message = post();
-        message.task = Some(Task {
-            kind: "tighten".into(),
-            scope: "selection".into(),
-        });
-        message.context = json!({
-            "results": {"suggestions": ["suggestion-1"], "pass": "pass-1"}
-        });
-        hub.post("paper", id, token, Some(1), message)
-            .await
-            .unwrap();
-        let relayed = loop {
-            let Some(Outgoing::Text(text)) = agent_rx.recv().await else {
-                panic!("agent channel closed")
-            };
-            let value: Value = serde_json::from_str(&text).unwrap();
-            if value["type"] == "message" {
-                break value;
-            }
-        };
-        assert_eq!(relayed["message"]["task"]["kind"], "tighten");
-        assert_eq!(relayed["message"]["context"]["results"]["pass"], "pass-1");
-
-        let mut invalid = post();
-        invalid.task = Some(Task {
-            kind: "unknown".into(),
-            scope: "selection".into(),
-        });
-        assert_eq!(
-            hub.post("paper", id, token, Some(1), invalid)
-                .await
-                .unwrap_err()
-                .0,
-            400
-        );
+        hub.channels.lock().await.get_mut(id).unwrap().touched_at = now() - CHANNEL_SECONDS - 1;
+        hub.create("other").await.unwrap();
+        assert!(hub.attached(id, 2).await);
     }
 }

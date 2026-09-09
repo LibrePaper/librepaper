@@ -5,21 +5,23 @@
   import ChatComposer from "./ChatComposer.svelte";
   import { createAgentClient } from "../lib/agent-client.js";
   import {
-    captureAttachment, capabilityAllows,
+    captureAttachment, capabilityAllows, suggestionContext,
     normalizeCapabilities, scopeLabel, visibleResults,
   } from "../lib/assistant.js";
 
   let {
     slug, link, path = "", selection = null, revision = "", request = null,
-    comments = [], onreview,
+    comments = [], suggestion: initialSuggestion = null, onreview, onpreview,
   } = $props();
   let client;
-  let connection = $state({ id: "", token: "", messages: [], connected: false,
-    listening: false, agentJoined: false, ended: false, error: "", capabilities: null });
+  let connection = $state({ id: "", token: "", messages: [], tasks: {}, connected: false,
+    runnerConnected: false, status: "idle", error: "", capabilities: null });
   let busy = $state(false);
   let starting = $state(true);
   let problem = $state("");
   let attachment = $state(null);
+  let suggestion = $state(null);
+  $effect(() => { if (suggestion === null && initialSuggestion) suggestion = initialSuggestion; });
   let task = $state(null);
   let scope = $state("selection");
   let diagnostic = $state(null);
@@ -30,18 +32,25 @@
   let setupOpen = $state(true);
   let resetPending = $state(false);
   let pendingRequest = $state(null);
+  let commentContext = $state(null);
+  let inputDraft = $state("");
+  let inputDrafts = $state({});
   let lastRequestId = "";
   let lastSelection = $state(null);
   let suppressedSelection = $state("");
   let capabilityGeneration = 0;
   let verifiedCapabilities = $state(null);
+  const previewResponses = new Map();
+  const previewInFlight = new Set();
   const selectedText = $derived(attachment?.selection?.exact || "");
   const caps = $derived(normalizeCapabilities(verifiedCapabilities));
   const contextPath = $derived(diagnostic?.file || diagnostic?.path || path);
   const preparedTaskValid = $derived(!task || capabilityAllows(caps, task, {
     attached: attachment?.anchored ? attachment : (task.kind === "explain" ? attachment : null), path: contextPath,
   }));
-  const sendable = $derived(connection.listening && preparedTaskValid);
+  const uncertainDelivery = $derived(Object.values(connection.tasks || {}).some((item) =>
+    item?.delivery === "uncertain" && item.request === draft.trim()));
+  const sendable = $derived(connection.connected && connection.runnerConnected && preparedTaskValid && !uncertainDelivery);
   const chipScope = (kind) => ["tighten", "rewrite"].includes(kind) ? "selection"
     : kind === "proofread" ? (scope === "document" ? "document" : "file")
       : scope === "selection" && !attachment ? (contextPath ? "file" : "document") : scope;
@@ -49,20 +58,17 @@
     attached: attachment?.anchored ? attachment : (kind === "explain" ? attachment : null), path: contextPath,
   });
   const status = $derived(
-    connection.ended ? "Connection ended"
-      : !connection.id ? "Connect your agent"
-        : connection.listening ? "Ready for your message"
-          : connection.agentJoined ? "Agent isn't listening" : "Connect your agent",
+    !connection.id ? "Set up your assistant"
+      : !connection.connected ? "Reconnecting to assistant"
+        : !connection.runnerConnected ? "Start your LibrePaper runner"
+          : connection.status === "working" ? "Assistant is working" : "Assistant ready",
   );
   const statusHelp = $derived(
-    connection.ended ? "Reconnect to create a fresh setup prompt. Your draft will stay here."
-      : connection.listening ? "Your agent is receiving messages."
-        : connection.agentJoined ? "Resume watch in the agent's own window."
-          : "Copy the setup prompt and run it in your agent's own window.",
+    !connection.connected ? "The browser reconnects automatically. Your draft and task history stay on this device."
+      : !connection.runnerConnected ? "Copy the setup prompt into your agent. It starts the local runner for this document."
+        : connection.status === "working" ? "You can send a follow-up while it works." : "Your local runner is connected and ready.",
   );
-  const lastResult = $derived(connection.messages.reduce((found, message) =>
-    message?.role === "agent" && message?.context?.results ? message : found, null));
-  const reviewable = $derived(lastResult ? visibleResults(lastResult, comments) : { suggestions: [], pass: null });
+  const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
 
   function shell(value) {
     return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -84,7 +90,7 @@
   }
 
   function instructions() {
-    if (!connection.id || !connection.token || connection.ended || !validDocumentLink()) return "";
+    if (!connection.id || !connection.token || !validDocumentLink()) return "";
     const documentLink = agentLink || link;
     return [
       "Check the LibrePaper CLI: librepaper --version && librepaper agent --help. If missing or outdated, follow https://github.com/LibrePaper/librepaper#install before continuing.",
@@ -93,8 +99,8 @@
       `export LIBREPAPER_CHAT_TOKEN=${shell(connection.token)}`,
       `export LIBREPAPER_CONVERSATION=${shell(connection.id)}`,
       'librepaper agent capabilities "$LIBREPAPER_DOCUMENT"',
-      `librepaper agent chat watch "$LIBREPAPER_DOCUMENT" --conversation ${shell(connection.id)} --timeout 25`,
-      "Run watch again whenever you are ready for the next message. Use the document and writing skills for anchored suggestions and report result identifiers in context.results.",
+      `librepaper agent connect "$LIBREPAPER_DOCUMENT" --conversation ${shell(connection.id)} --token "$LIBREPAPER_CHAT_TOKEN" --background`,
+      "Keep this runner attached to the document. Use the document and writing skills for anchored suggestions and report result identifiers in context.results.",
     ].join("\n");
   }
 
@@ -135,7 +141,9 @@
     if (!next) return;
     pendingRequest = null;
     saveDraft("");
-    task = null;
+    task = next.task || null;
+    commentContext = next.comment || null;
+    suggestion = next.suggestion || next.comment?.suggestion || null;
     diagnostic = next.diagnostic || null;
     diagnosticRevision = next.diagnostic ? next.revision || next.diagnostic.revision || "" : "";
     if (next.diagnostic) {
@@ -146,11 +154,25 @@
       attach(next.selection, next.revision || revision);
       scope = "selection";
     } else if (next.diagnostic) {
+      commentContext = null;
       scope = next.diagnostic.file || next.diagnostic.path ? "file" : "document";
     }
+    if (next.task) {
+      task = { ...next.task };
+      scope = next.task.scope || scope;
+      if (!next.comment && !next.diagnostic) saveDraft(promptFor(task.kind, task.scope));
+    }
+    if (next.comment) {
+      const quoted = next.comment.source || next.comment;
+      if (quoted?.exact) attach({ ...quoted, revision: next.revision || next.comment.revision || revision }, next.revision || next.comment.revision || revision);
+      else { suppressedSelection = selectionKey(selection || lastSelection); attachment = null; }
+      scope = attachment ? "selection" : (contextPath ? "file" : "document");
+      task = { kind: next.comment.suggestion ? "refine" : "respond", scope };
+      saveDraft(next.comment.suggestion ? "Refine this suggestion." : "Address this comment.");
+    }
     if (next.diagnostic) {
-      task = { kind: "explain", scope };
-      if (!draft.trim()) saveDraft("Explain this diagnostic.");
+      task = next.task || { kind: "fix", scope };
+      if (!draft.trim()) saveDraft(task.kind === "fix" ? "Fix this diagnostic." : "Explain this diagnostic.");
     }
     lastRequestId = next.id || lastRequestId;
   }
@@ -178,7 +200,7 @@
 
   function promptFor(kind, chosenScope) {
     const target = chosenScope === "document" ? "the whole document" : chosenScope === "file" ? "this file" : "the selected passage";
-    return `${{ proofread: "Proofread", tighten: "Tighten", rewrite: "Rewrite", explain: "Explain" }[kind] || kind} ${target}.`;
+    return `${{ proofread: "Proofread", tighten: "Tighten", rewrite: "Rewrite", explain: "Explain", fix: "Fix", refine: "Refine" }[kind] || kind} ${target}.`;
   }
 
   function chooseScope(next) {
@@ -197,6 +219,8 @@
     await act(async () => {
       await client.send(text, {
         task: task || undefined, attachment,
+        suggestion: suggestionContext(suggestion),
+        thread: ["respond", "refine"].includes(task?.kind) ? commentContext : null,
         path: task?.scope === "file" || !task ? contextPath : "",
         revision: diagnosticRevision || attachment?.revision || (task?.scope === "selection" ? revision : ""),
         diagnostic,
@@ -216,19 +240,42 @@
 
   async function reconnect() { await act(() => client.reconnect()); }
 
+  function taskEntries() { return Object.values(connection.tasks || {}).filter((item) => item?.status); }
+  function cancelTask(id) { return act(() => client.cancel(id)); }
+  async function retryTask(id) {
+    await act(async () => {
+      if (!await client.retry(id)) throw new Error("The original request is no longer available to retry.");
+    });
+  }
+  async function answerInput(decision) {
+    const item = inputTask;
+    if (!item?.input?.request_id) return;
+    const input = item.input;
+    const response = input.kind === "approval"
+      ? { decision }
+      : { answers: Object.fromEntries((input.questions || []).map((question) => {
+        const id = question.id || "answer";
+        return [id, { answers: [String(inputDrafts[id] || inputDraft).trim()] }];
+      })) };
+    await act(() => client.respond(item.id, input.request_id, response));
+    if (input.kind !== "approval") { inputDraft = ""; inputDrafts = {}; }
+  }
+
   async function newConversation() {
     if (!resetPending) { resetPending = true; return; }
     await act(async () => {
       await client.end();
       suppressedSelection = selectionKey(selection || lastSelection);
-      saveDraft(""); task = null; attachment = null; diagnostic = null; diagnosticRevision = "";
+      saveDraft(""); task = null; suggestion = null; attachment = null; diagnostic = null; diagnosticRevision = "";
       resetPending = false;
       await client.create();
     });
   }
 
-  function chooseResult() {
+  function chooseResult(results) {
+    const reviewable = visibleResults({ context: { results } }, comments);
     if (reviewable.suggestions.length || reviewable.pass) onreview?.(reviewable);
+    else problem = "These suggestions are no longer available.";
   }
 
   $effect(() => {
@@ -240,6 +287,39 @@
     }
   });
   $effect(() => requestArrived(request));
+  $effect(() => {
+    const preview = connection.previewRequest;
+    if (!preview?.id || !onpreview || !client) return;
+    const cached = previewResponses.get(preview.id);
+    const sendResult = (result) => client.previewResult({
+      ...result,
+      id: `${preview.id}-result`, request_id: preview.id,
+      task_id: preview.task_id,
+      base_revision: preview.base_revision, revision: preview.revision,
+    });
+    // A runner retries an unconfirmed preview with the same request ID after
+    // reconnecting. Reuse the immutable browser result and resend it rather
+    // than compiling the candidate twice.
+    if (cached) { void sendResult(cached); return; }
+    if (previewInFlight.has(preview.id)) return;
+    previewInFlight.add(preview.id);
+    void (async () => {
+      let result;
+      try {
+        result = await onpreview(preview);
+      } catch (error) {
+        result = {
+          ok: false,
+          diagnostics: [{ severity: "error", message: error?.message || "Candidate verification failed." }],
+          output: "none",
+        };
+      }
+      previewResponses.set(preview.id, result);
+      while (previewResponses.size > 8) previewResponses.delete(previewResponses.keys().next().value);
+      previewInFlight.delete(preview.id);
+      await sendResult(result);
+    })();
+  });
   async function checkCapabilities(nextLink = agentLink) {
     const generation = ++capabilityGeneration;
     verifiedCapabilities = null;
@@ -275,26 +355,20 @@
   <PanelHeader title="Agent" />
   <div class="agent-status" role="status" aria-live="polite">
     <strong>{status}</strong><span class="panel-muted">{statusHelp}</span>
+    {#if connection.id && !connection.connected}<button class="btn btn-sm preset-tonal-surface" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button>{/if}
   </div>
   {#if !connection.id}<button class="btn preset-filled-primary-500" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
-
-  {#if connection.ended}
-    <div class="agent-recovery">
-      <p class="panel-muted">This channel ended or was revoked. Reconnect for fresh credentials and setup instructions.</p>
-      <button class="btn preset-filled-primary-500" disabled={busy} onclick={() => void reconnect()}>Reconnect agent</button>
-    </div>
-  {/if}
 
   <details class="agent-setup" open={setupOpen} ontoggle={(event) => setupOpen = event.currentTarget.open}>
     <summary>Connection settings</summary>
     <div class="setup-body">
-      <p class="panel-muted">Connect an AI agent you already use. Copy the setup prompt into its own window; LibrePaper does not run a model or save this conversation.</p>
+      <p class="panel-muted">Copy the setup prompt into your agent. It starts a local runner that keeps this document connected; model credentials stay on your computer.</p>
       <label class="label">Document link for the agent
         <input class="input" type="url" bind:value={agentLink} oninput={(event) => void checkCapabilities(event.currentTarget.value)} aria-describedby="agent-link-help" />
       </label>
       <p id="agent-link-help" class="panel-meta">The link determines what the agent may do. The browser checks the effective access for this link.</p>
       <div class="setup-actions">
-        <button class="btn btn-sm preset-filled-primary-500" disabled={busy || connection.ended || !connection.id || !validDocumentLink()} onclick={() => void copyInstructions()}>{copied ? "Copied" : "Copy setup prompt"}</button>
+        <button class="btn btn-sm preset-filled-primary-500" disabled={busy || !connection.id || !validDocumentLink()} onclick={() => void copyInstructions()}>{copied ? "Copied" : "Copy setup prompt"}</button>
         {#if connection.id}<button class="btn btn-sm preset-tonal-surface" disabled={busy} onclick={() => void act(() => checkCapabilities(agentLink))}>Check access</button>{/if}
       </div>
       {#if !validDocumentLink()}<p class="panel-muted" role="alert">Choose a link to this same document and server.</p>{/if}
@@ -307,7 +381,7 @@
   {#if connection.id}
     <div class="agent-actions">
       <div class="agent-action-buttons">
-        <button class="btn btn-sm preset-tonal-surface" disabled={busy || connection.ended || !validDocumentLink()} onclick={() => void copyInstructions()}>{copied ? "Copied" : "Copy setup prompt"}</button>
+        <button class="btn btn-sm preset-tonal-surface" disabled={busy || !connection.id || !validDocumentLink()} onclick={() => void copyInstructions()}>{copied ? "Copied" : "Copy setup prompt"}</button>
         <details class="secondary-menu"><summary class="btn btn-sm preset-tonal-surface">More</summary><div class="menu-card"><button class="btn btn-sm" onclick={() => void newConversation()}>New conversation</button></div></details>
       </div>
     </div>
@@ -321,7 +395,33 @@
     </div>
   {/if}
 
-  <ChatTranscript messages={connection.messages} empty={connection.listening ? "No live messages yet." : "Connect your agent to start chatting."} roleLabel={(message) => message.role === "user" ? "You" : "Agent"} />
+  {#if taskEntries().length}
+    <div class="task-statuses" aria-label="Assistant tasks">
+      {#each taskEntries() as item (item.id)}
+        <div class="task-status" role="status"><span><strong>{item.task?.kind || "Task"}</strong> · {item.status.replaceAll("_", " ")}{#if item.message || item.error}<small>{item.message || item.error}</small>{/if}</span>
+          {#if ["queued", "working", "needs_input"].includes(item.status)}<button class="btn btn-sm" disabled={item.cancelRequested} onclick={() => void cancelTask(item.id)}>{item.cancelRequested ? "Stopping…" : "Stop"}</button>{/if}
+          {#if item.delivery === "uncertain"}<button class="btn btn-sm preset-filled-primary-500" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button>{/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
+  <ChatTranscript messages={connection.messages} empty={connection.runnerConnected ? "No messages yet." : "Start the runner to begin."} roleLabel={(message) => message.role === "user" ? "You" : "Agent"} onresult={chooseResult} />
+
+  {#if inputTask}
+    <div class="input-request" role="group" aria-label="Assistant input request">
+      <strong>{inputTask.input.kind === "approval" ? "The assistant requests approval" : "The assistant needs an answer"}</strong>
+      {#if inputTask.input.message}<p>{inputTask.input.message}</p>{/if}
+      {#if inputTask.input.kind === "approval"}
+        <div class="setup-actions"><button class="btn btn-sm preset-filled-primary-500" disabled={busy} onclick={() => void answerInput("accept")}>Approve</button><button class="btn btn-sm" disabled={busy} onclick={() => void answerInput("decline")}>Deny</button></div>
+      {:else}
+        {#each inputTask.input.questions || [] as question, index (question.id || `question-${index}`)}
+          {@const questionId = question.id || "answer"}
+          <label class="label">{question.question}<textarea class="input" value={inputDrafts[questionId] || ""} oninput={(event) => inputDrafts[questionId] = event.currentTarget.value} rows="3" placeholder={question.header || "Answer"}></textarea></label>
+        {/each}
+        <button class="btn btn-sm preset-filled-primary-500" disabled={busy || !(inputTask.input.questions || []).length || !(inputTask.input.questions || []).every((question, index) => (inputDrafts[question.id || "answer"] || inputDraft).trim())} onclick={() => void answerInput()}>Send answer</button>
+      {/if}
+    </div>
+  {/if}
 
   <div class="agent-context">
     <div class="task-chips" role="group" aria-label="Assistant tasks">
@@ -347,9 +447,8 @@
   </div>
 
   <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={saveDraft} onsend={send} />
-  {#if !sendable}<p class="panel-meta">{!connection.listening ? "You can draft now. Send becomes available when your agent is listening." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>{/if}
-  {#if reviewable.suggestions.length || reviewable.pass}<button class="btn preset-tonal-surface review-button" onclick={chooseResult}>Review suggestions{reviewable.suggestions.length ? ` (${reviewable.suggestions.length})` : ""}</button>{/if}
-  <p class="conversation-notice panel-meta">Conversation isn't saved. The external agent or its provider may retain messages.</p>
+  {#if !sendable}<p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : !connection.runnerConnected ? "You can draft now. Send becomes available when the local runner connects." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>{/if}
+  <p class="conversation-notice panel-meta">This transcript is kept locally in your browser. Your agent or model provider may retain messages.</p>
   {#if problem || connection.error}<p class="panel-muted" role="alert">{problem || connection.error}</p>{/if}
 </section>
 
@@ -359,6 +458,10 @@
   .agent-status, .agent-setup, .setup-body, .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
   .agent-status { padding:calc(var(--spacing) * 2); border-radius:var(--radius-container); background:var(--color-surface-100-900); }
   .agent-status span { overflow-wrap:anywhere; }
+  .task-statuses { display:flex; flex-direction:column; gap:var(--spacing); }
+  .task-status { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing); padding:var(--spacing) calc(var(--spacing) * 1.5); border-left:3px solid var(--color-primary-500); background:var(--color-surface-100-900); }
+  .task-status span { overflow-wrap:anywhere; }
+  .task-status small { display:block; margin-top:calc(var(--spacing) * .5); white-space:pre-wrap; }
   .agent-setup { overflow:auto; max-height:30vh; }
   .agent-setup summary { cursor:pointer; font-weight:600; }
   .setup-body { padding-top:var(--spacing); }
@@ -380,7 +483,8 @@
   .reset-warning { padding:calc(var(--spacing) * 2); background:var(--color-warning-100-900); overflow-wrap:anywhere; }
   .request-warning { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); background:var(--color-warning-100-900); overflow-wrap:anywhere; }
   .conversation-notice { margin:0; }
-  .review-button { align-self:flex-start; }
+  .input-request { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); border-left:3px solid var(--color-warning-500); background:var(--color-surface-100-900); }
+  .input-request p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
   .agent-panel :global(.chat-transcript-wrap) { flex:1 1 12rem; min-height:8rem; max-height:42vh; }
   @media (max-height:600px) { .agent-setup { max-height:20vh; } .attachment blockquote { max-height:4rem; } }
 </style>

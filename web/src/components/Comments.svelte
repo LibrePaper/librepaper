@@ -33,6 +33,7 @@
     onreply,
     onaccept,
     onreject,
+    onassistant,
     onrejectconfirmed,
     pending,
   } = $props();
@@ -146,6 +147,7 @@
         {onreply}
         {onaccept}
         {onreject}
+        {onassistant}
       />
       {/each}
       </div>

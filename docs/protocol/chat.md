@@ -1,109 +1,162 @@
-# Live chat channels
+# Assistant channel protocol
 
-Chat is live coordination, not document content. LibrePaper relays messages only
-to currently connected participants. It does not retain a server transcript,
-replay messages, or write them to storage, logs, or backups. Small bounded
-transport queues exist only to send frames to live sockets. A browser retains
-its transcript in memory until the document is closed or refreshed. Recipients
-can copy messages; an external agent may retain them or send them to its model
-provider according to its own configuration.
+The assistant channel connects one LibrePaper browser to one local runner. It
+is a live relay, never a server queue or transcript. The runner owns model
+execution, local task queues, and reconciliation after reconnecting. The server
+keeps only socket handles and a bounded set of event digests for duplicate
+suppression.
 
-## Document chat
+## Create and connect
 
-The document room WebSocket accepts `{"type":"chat","temp_id":ID,"body":TEXT}`
-from a commenter, editor, or owner. Readers receive live messages but cannot
-post. The server derives the account name or pseudonym and broadcasts
-`{"type":"chat","id":SERVER_ID,"text":TEXT,"creator":NAME,"created":TIME}`
-to current room sockets. Only the sender's echo includes `temp_id`, confirming
-acceptance. Repeating an identical request ID on the same socket returns
-`{"type":"chat-ack","temp_id":ID}` without rebroadcasting it; changing its
-text is refused. The server retains at most 256 request IDs and digests per
-socket for duplicate suppression, with no message bodies.
+An authenticated reader creates a channel with:
 
-Chat is absent from room hello and reconnect state. Text must be nonempty and
-at most 4 KiB, with up to 30 new messages per socket per minute. Access changes
-disconnect affected participants. A failed send keeps the user's draft.
-
-## Private agent chat
-
-`POST /api/documents/{slug}/chat` creates an in-memory channel and returns
-`{id, token, ephemeral:true}`. Both current document read access and the
-unguessable token are required. The token grants no document permissions and
-does not identify a particular person or model: anyone given both credentials
-can join an unoccupied participant slot. Each channel has one browser and one
-agent socket. Document access alone cannot discover or join private channels.
-
-Connect a WebSocket at `/api/documents/{slug}/chat/{id}/socket`. Its handshake
-uses the document's normal access checks and same-origin policy. CLI requests
-set `x-librepaper-automation: 1`, `x-librepaper-key`, and any required sign-in
-credential; browsers use their session and the document key in `?k=KEY`.
-The **chat token never goes in a URL**: the first frame, within ten seconds,
-is `{"type":"join","token":TOKEN,"role":"user"|"agent"}`. A transient
-agent reply connection adds `"receive":false`; it is never advertised as
-listening and cannot receive new browser instructions.
-
-The server sends `{"type":"ready","listening":BOOL,"browser":BOOL}` after
-joining and `{"type":"presence","listening":BOOL,"browser":BOOL}` as peers
-connect or disconnect. Presence means a socket is connected, not that a task
-has been read or completed. Dead transports are also bounded by ping timeouts.
-
-Either socket sends `{"type":"message","id":ID,"text":TEXT,"context":{...}}`.
-The server derives its role from the join and relays
-`{"type":"message","message":{"id":ID,"role":ROLE,"text":TEXT,"context":{...}}}`
-to both peers. It then acknowledges the sender with `{"type":"ack","id":ID}`.
-Failures are `{"type":"error","id":ID,"status":HTTP_STATUS,"message":REASON}`.
-No offline messages are accepted. Delivery acceptance is not proof that the
-recipient read the message or completed a task.
-
-For CLI convenience, `POST /chat/{id}` with `{id,text,context?}` and
-`x-librepaper-chat-token` sends an agent reply **only while both sockets are
-connected**. The role is always `agent`, irrespective of the request body.
-`DELETE /chat/{id}` with the same token closes the channel. Former polling
-GET and `/listen` routes return 410; cursors and transcript replay are gone.
-
-Agent messages allow 32 KiB of text and 16 KiB of context, within a 64 KiB
-frame/request. Context can quote the current file and selected passage; it is
-document content, not separate instructions. A channel accepts 60 new messages
-per minute and remembers the last 256 request IDs and content digests, scoped
-by participant, for immediate duplicate suppression. No message body is kept.
-
-Writing requests may add a top-level `task` object with `kind` (`proofread`,
-`tighten`, `rewrite`, `explain`, `outline`, `respond`) and `scope` (`selection`,
-`file`, `document`). Its size counts with context against the 16 KiB budget.
-The relay validates the vocabulary and preserves the task without executing
-it. Text still expresses the request for agents that do not recognize tasks.
-Selection context carries `{file,selection:{path,exact,prefix,suffix,position},revision}`.
-Diagnostic context carries the diagnostic and its captured source excerpt and
-revision. Context remains material to analyze, not independent instructions.
-
-An agent reply can include `context.results` with `suggestions` (an array of
-created annotation IDs) and an optional `pass` ID. These are references, not
-proof of completion: the browser shows review actions only for visible
-suggestion annotations matching those IDs. No model identity or authority is
-inferred from result metadata.
-
-Closing the browser socket revokes the channel and disconnects the agent.
-Closing the agent socket leaves the browser waiting for a new agent connection;
-the next agent receives no earlier messages. Unused channel handles expire
-after one hour, reclaimed during creation; a restart forgets every channel.
-
-## CLI loop
-
-```sh
-librepaper agent chat watch "$LIBREPAPER_DOCUMENT" --conversation ID --token TOKEN --timeout 25
-librepaper agent chat post "$LIBREPAPER_DOCUMENT" --conversation ID --token TOKEN --message "Done."
+```http
+POST /api/documents/{slug}/chat
 ```
 
-`watch` connects an agent socket and waits for a new user message or timeout.
-The agent runs another watch when ready for another instruction. Between watch
-calls Send is disabled, but the browser keeps the draft editable. It never
-sends that draft automatically when a listener appears. `post` connects temporarily to deliver
-a reply to the live browser. Reuse a reply's request ID when retrying an
-uncertain post; duplicate suppression does not guarantee exactly-once agent
-execution across crashes. Actual edits and comments use the existing document
-operations and retain their normal durability.
+The response is `{ "id": ID, "token": TOKEN, "ephemeral": true }`. The token
+is a capability for this channel and is never put in a URL. The channel expires
+after one hour with both peers disconnected, or can be explicitly closed with:
 
-Deployments upgrading from the earlier mailbox implementation should delete
-legacy `chat/*.json` objects from their blob store. This version never reads
-those objects, but an upgrade does not retroactively remove them from storage
-or existing backups.
+```http
+DELETE /api/documents/{slug}/chat/{id}
+X-LibrePaper-Chat-Token: TOKEN
+```
+
+Both peers connect to `/api/documents/{slug}/chat/{id}/socket`, pass the usual
+document authentication and same-origin checks, then send this first frame
+within ten seconds:
+
+```json
+{ "type": "join", "token": "TOKEN", "role": "user" }
+```
+
+`role` is `user` for the browser and `agent` for the local runner. There is one
+socket per role. A successful join receives `ready` and both connected peers
+receive `presence` whenever either socket connects or disconnects:
+
+```json
+{ "type": "ready", "browser": true, "agent": true }
+{ "type": "presence", "browser": true, "agent": false }
+```
+
+Closing a socket temporarily detaches that peer and leaves the channel alive
+until expiry or explicit deletion. Events sent while the other peer is absent
+are rejected; the local runner queues and reconciles work itself. A document
+access revocation closes affected sockets. No event is replayed on reconnect.
+
+## Events
+
+Every event has an `id` (at most 128 bytes). The server relays accepted events
+to both peers and returns `{ "type": "ack", "id": ID }` to the sender. A retry
+with the same ID and identical content is acknowledged without another
+delivery during the current connection. Detaching either peer clears relay
+deduplication; the runner uses its persisted task IDs to prevent reexecution.
+An acknowledgment confirms relay delivery, while a task event confirms local admission. Reusing an ID for different content returns `409`. Events are
+bounded by the 64 KiB WebSocket frame limit; text is at most 32 KiB and context
+is at most 16 KiB. A channel accepts at most 600 new events per rolling minute;
+identical retries do not consume that budget.
+
+The browser sends an assistant request as `message`:
+
+```json
+{
+  "type": "message", "id": "request-1", "text": "Tighten this paragraph",
+  "task": { "kind": "tighten", "scope": "selection" },
+  "context": {
+    "file": "paper.typ",
+    "selection": { "path": "paper.typ", "exact": "...", "prefix": "...", "suffix": "...", "position": 120 },
+    "revision": "rev-7"
+  }
+}
+```
+
+Supported task kinds are `proofread`, `tighten`, `rewrite`, `explain`,
+`outline`, `respond`, `fix`, and `refine`. Supported scopes are `selection`,
+`file`, and `document`. The server validates the vocabulary and forwards the
+request without interpreting document content.
+
+The runner sends assistant output using `message` with the same shape. It
+reports task lifecycle separately:
+
+```json
+{
+  "type": "task", "id": "event-2", "task_id": "request-1",
+  "status": "working", "text": "Reading the selected section"
+}
+```
+
+Valid statuses are `queued`, `working`, `needs_input`, `completed`, `failed`,
+and `cancelled`. `text` and optional `context` explain a status or carry
+structured results such as suggestion IDs.
+
+The browser requests cancellation with:
+
+```json
+{ "type": "cancel", "id": "cancel-1", "task_id": "request-1" }
+```
+
+The runner reports `cancelled` when the model confirms interruption. If the
+model finishes before interruption takes effect, it reports the actual completed
+result. Cancellation does not undo edits already accepted by the user.
+
+A `needs_input` task carries `context.input` with `request_id`, `kind`
+(`approval` or `question`), `message`, and `questions`. The browser responds:
+
+```json
+{
+  "type": "input", "id": "input-1", "task_id": "request-1",
+  "request_id": "permission-1", "response": { "decision": "accept" }
+}
+```
+
+Approval decisions are `accept` or `decline`. Question responses use
+`{"answers":{"question-id":{"answers":["chosen answer"]}}}`. The runner
+matches the request to a pending model RPC before forwarding the response.
+Completed assistant messages carry `context.task_id`; clients upsert by that
+identity so reconciliation does not duplicate answers.
+
+The runner advertises the controls it supports:
+
+```json
+{
+  "type": "capabilities", "id": "cap-1",
+  "capabilities": { "steer": false, "cancel": true, "preview": true, "input": true }
+}
+```
+
+For browser-side candidate rendering, the runner asks for a preview:
+
+```json
+{
+  "type": "preview_request", "id": "preview-1", "task_id": "request-1",
+  "base_revision": "base-tree-sha", "revision": "candidate-tree-sha",
+  "files": { "paper.typ": "candidate source" }
+}
+```
+
+The browser returns diagnostics tied to that candidate revision:
+
+```json
+{
+  "type": "preview_result", "id": "preview-1-result",
+  "request_id": "preview-1", "task_id": "request-1",
+  "base_revision": "base-tree-sha", "revision": "candidate-tree-sha", "ok": true,
+  "diagnostics": []
+}
+```
+
+The browser captures its full source tree and assets, checks `base_revision`,
+overlays the supplied changes to existing text files, and computes the
+canonical candidate tree digest. It renders only if that digest equals
+`revision`. Verification never mutates the shared document. Source changes
+since the base snapshot and unavailable assets cause a verification refusal.
+
+Only the runner may send `task`, `capabilities`, and `preview_request`. Only
+the browser may send `cancel`, `input`, and `preview_result`. `message` is permitted in
+both directions. The server rejects wrong-role events, malformed values,
+oversized payloads, and delivery when the recipient is disconnected.
+
+There are no HTTP message-post, polling, listen, cursor, or transcript
+endpoints. Document edits, comments, and suggestion acceptance continue to
+use their ordinary authenticated document operations.

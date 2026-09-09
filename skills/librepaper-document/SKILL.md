@@ -96,10 +96,17 @@ through.** Full rules, multi-file projects, and `--source` in
 Report actions from successful results only. An error, a timeout, or an
 unconfirmed write is not a completed action — say which it was.
 
-## Sidebar chat
+## Focused reads
 
-The robot icon in the browser opens a private live conversation. That is a
-separate skill: `librepaper-pair`.
+`librepaper agent inspect "$LIBREPAPER_DOCUMENT" --help` lists targeted tools
+for files, headings, source sections, literal passage search, comment threads,
+bibliography source, and changes since a checkpoint. Prefer these to repeatedly
+reading the entire project. Source locations and anchors include their revision.
+
+## Sidebar assistant
+
+The robot icon connects to a persistent local runner that owns a dedicated
+agent session. Start and manage it with the `librepaper-pair` skill.
 
 ## References
 

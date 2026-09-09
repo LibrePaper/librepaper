@@ -398,7 +398,7 @@ async fn failed_delete_does_not_purge_chat_channel() {
     assert!(server
         .instance
         .chat
-        .attach("missing-document", &id, &token, "user", true, 1, sender,)
+        .attach("missing-document", &id, &token, "user", 1, sender)
         .await
         .is_ok());
 }

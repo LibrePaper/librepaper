@@ -5,6 +5,8 @@
 //! room/concurrency coverage remains in `src/tests/agent_cli.rs`, where the
 //! private test harness can coordinate Yjs replicas and restarts.
 
+use std::fs;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -15,10 +17,14 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 #[derive(Debug)]
 struct CliOutput {
@@ -223,6 +229,118 @@ fn read_key_of(document: &Value) -> String {
         .expect("published document has a read link")
 }
 
+type BrowserSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn create_channel(server: &LiveServer, slug: &str, key: &str) -> (String, String) {
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/documents/{slug}/chat", server.base))
+        .header("x-librepaper-client", "1")
+        .header("x-librepaper-automation", "1")
+        .header("x-librepaper-key", key)
+        .send()
+        .await
+        .expect("create assistant channel");
+    let status = response.status();
+    let payload: Value = response.json().await.expect("channel JSON");
+    assert_eq!(status, 200, "creating assistant channel: {payload}");
+    (text(&payload, "id"), text(&payload, "token"))
+}
+
+async fn browser_socket(
+    server: &LiveServer,
+    slug: &str,
+    key: &str,
+    id: &str,
+    token: &str,
+) -> BrowserSocket {
+    let authority = server
+        .base
+        .strip_prefix("http://")
+        .expect("test server uses HTTP");
+    let url = format!("ws://{authority}/api/documents/{slug}/chat/{id}/socket");
+    let mut request = url
+        .into_client_request()
+        .expect("browser websocket request");
+    request
+        .headers_mut()
+        .insert("x-librepaper-client", "1".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("x-librepaper-automation", "1".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("x-librepaper-key", key.parse().expect("share key header"));
+    let (mut socket, _) = connect_async(request).await.expect("browser websocket");
+    socket
+        .send(TungsteniteMessage::Text(
+            json!({"type":"join","token":token,"role":"user"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("browser join");
+    socket
+}
+
+async fn next_frame(socket: &mut BrowserSocket) -> Value {
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(10), socket.next())
+            .await
+            .expect("assistant frame timeout")
+            .expect("assistant socket closed")
+            .expect("assistant websocket error");
+        if let TungsteniteMessage::Text(text) = frame {
+            let value: Value = serde_json::from_str(&text).expect("assistant frame JSON");
+            return value;
+        }
+    }
+}
+
+fn write_fake_codex(directory: &Path, count_file: &Path, delay_ms: u64) -> std::path::PathBuf {
+    let script = directory.join("fake-codex.js");
+    let source = format!(
+        r#"#!/usr/bin/env node
+const fs = require('fs');
+const readline = require('readline');
+const count = {count_file:?};
+let turn = 0;
+let finishTurn = null;
+let timer = null;
+function send(value) {{ process.stdout.write(JSON.stringify(value) + '\n'); }}
+const input = readline.createInterface({{ input: process.stdin }});
+input.on('line', line => {{
+  let value; try {{ value = JSON.parse(line); }} catch {{ return; }}
+  const method = value.method;
+  if (value.id === 'input-1' && finishTurn) {{ finishTurn(); finishTurn = null; return; }}
+  if (method === 'initialize') send({{id:value.id,result:{{}}}});
+  else if (method === 'thread/start' || method === 'thread/resume') send({{id:value.id,result:{{thread:{{id:'fake-thread'}}}}}});
+  else if (method === 'turn/start') {{
+    turn += 1; fs.writeFileSync(count, String(turn));
+    const turnId = 'fake-turn-' + turn;
+    send({{id:value.id,result:{{turn:{{id:turnId}}}}}});
+    const text = value.params?.input?.[0]?.text || '';
+    const answer = JSON.stringify({{text:'Fake response: ' + text.slice(0,40),results:{{suggestions:[],pass:null}}}});
+    const finish = () => {{ timer = null; send({{method:'item/agentMessage/delta',params:{{threadId:'fake-thread',turnId:turnId,delta:answer}}}}); send({{method:'item/completed',params:{{threadId:'fake-thread',turnId:turnId,item:{{type:'agentMessage',text:answer}}}}}}); send({{method:'turn/completed',params:{{threadId:'fake-thread',turn:{{id:turnId,status:'completed'}}}}}}); }};
+    if (text.includes('Need your input')) {{
+      finishTurn = finish;
+      timer = setTimeout(() => {{ timer = null; send({{id:'input-1',method:'item/tool/requestUserInput',params:{{threadId:'fake-thread',turnId:turnId,questions:[{{id:'answer',question:'Continue?'}}]}}}}); }}, {delay_ms});
+    }} else timer = setTimeout(finish, {delay_ms});
+  }} else if (method === 'turn/interrupt') {{ if (timer) clearTimeout(timer); timer = null; finishTurn = null; send({{id:value.id,result:{{}}}}); send({{method:'turn/completed',params:{{threadId:'fake-thread',turn:{{id:'fake-turn-' + turn,status:'interrupted'}}}}}}); }}
+}});
+"#
+    );
+    fs::write(&script, source).expect("fake Codex script");
+    #[cfg(unix)]
+    {
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+                .expect("fake Codex executable");
+        }
+    }
+    script
+}
+
 #[derive(Clone)]
 struct MockPeerState {
     source: String,
@@ -352,7 +470,12 @@ async fn skill_examples_are_present_in_agent_help() {
         "delete",
         "edit",
         "checkpoint",
-        "chat",
+        "connect",
+        "status",
+        "stop",
+        "preview",
+        "inspect",
+        "refine",
     ] {
         assert!(
             output
@@ -363,6 +486,419 @@ async fn skill_examples_are_present_in_agent_help() {
             output.stdout
         );
     }
+}
+
+#[tokio::test]
+async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
+    let server = LiveServer::start().await;
+    let document = publish_markdown(&server, "# Runner\n\nA paragraph.\n").await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    let link = server.link(&slug, &key);
+    let (conversation, token) = create_channel(&server, &slug, &key).await;
+    let tools = tempfile::tempdir().expect("runner temporary directory");
+    let count = tools.path().join("turn-count");
+    let fake = write_fake_codex(tools.path(), &count, 250);
+    let state = tools.path().join("state");
+    let mut runner = Command::new(env!("CARGO_BIN_EXE_librepaper"))
+        .args([
+            "agent",
+            "connect",
+            &link,
+            "--conversation",
+            &conversation,
+            "--token",
+            &token,
+            "--state-dir",
+            state.to_str().unwrap(),
+        ])
+        .env_remove("LIBREPAPER_TOKEN")
+        .env_remove("LIBREPAPER_SERVER")
+        .env_remove("LIBREPAPER_CHAT_TOKEN")
+        .env("LIBREPAPER_CODEX", &fake)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("local runner starts");
+    let mut browser = browser_socket(&server, &slug, &key, &conversation, &token).await;
+    let mut saw_runner = false;
+    for _ in 0..8 {
+        let frame = next_frame(&mut browser).await;
+        if frame["type"] == "presence" && frame["agent"] == true {
+            saw_runner = true;
+            break;
+        }
+    }
+    assert!(saw_runner, "runner never joined");
+    browser.send(TungsteniteMessage::Text(json!({
+        "type":"message", "id":"request-success", "text":"Tighten this paragraph",
+        "task":{"kind":"tighten","scope":"selection"},
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","prefix":"","suffix":"","position":13},"revision":"source"}
+    }).to_string().into())).await.expect("send task");
+    let mut saw_working = false;
+    let mut saw_reply = false;
+    let mut saw_completed = false;
+    for _ in 0..16 {
+        let frame = next_frame(&mut browser).await;
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-success"
+            && frame["status"] == "working"
+        {
+            saw_working = true;
+        }
+        if frame["type"] == "message" && frame["message"]["role"] == "agent" {
+            saw_reply = true;
+            assert!(text(&frame["message"], "text").starts_with("Fake response:"));
+        }
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-success"
+            && frame["status"] == "completed"
+        {
+            saw_completed = true;
+        }
+        if saw_working && saw_reply && saw_completed {
+            break;
+        }
+    }
+    assert!(
+        saw_working && saw_reply && saw_completed,
+        "runner did not complete task"
+    );
+    assert_eq!(fs::read_to_string(&count).expect("turn count"), "1");
+    browser.send(TungsteniteMessage::Text(json!({
+        "type":"message", "id":"request-success", "text":"Tighten this paragraph",
+        "task":{"kind":"tighten","scope":"selection"},
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","prefix":"","suffix":"","position":13},"revision":"source"}
+    }).to_string().into())).await.expect("retry duplicate");
+    let duplicate = next_frame(&mut browser).await;
+    assert_eq!(duplicate["type"], "ack");
+    assert_eq!(
+        fs::read_to_string(&count).expect("turn count after duplicate"),
+        "1"
+    );
+
+    // A second turn starts while a third remains queued. Cancelling the
+    // queued request must not interrupt the active turn or consume a Codex
+    // turn of its own.
+    browser.send(TungsteniteMessage::Text(json!({
+        "type":"message", "id":"request-second", "text":"Rewrite this paragraph",
+        "task":{"kind":"rewrite","scope":"selection"},
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+    }).to_string().into())).await.expect("send second task");
+    let mut second_working = false;
+    for _ in 0..16 {
+        let frame = next_frame(&mut browser).await;
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-second"
+            && frame["status"] == "working"
+        {
+            second_working = true;
+            break;
+        }
+    }
+    assert!(second_working, "second task did not start");
+    browser.send(TungsteniteMessage::Text(json!({
+        "type":"message", "id":"request-third", "text":"Explain this paragraph",
+        "task":{"kind":"explain","scope":"selection"},
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+    }).to_string().into())).await.expect("send queued task");
+    browser
+        .send(TungsteniteMessage::Text(
+            json!({
+                "type":"cancel", "id":"cancel-third", "task_id":"request-third"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("cancel queued task");
+    let mut third_cancelled = false;
+    let mut second_completed = false;
+    for _ in 0..40 {
+        let frame = next_frame(&mut browser).await;
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-third"
+            && frame["status"] == "cancelled"
+        {
+            third_cancelled = true;
+        }
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-second"
+            && frame["status"] == "completed"
+        {
+            second_completed = true;
+        }
+        if third_cancelled && second_completed {
+            break;
+        }
+    }
+    assert!(third_cancelled, "queued cancellation was not confirmed");
+    assert!(
+        second_completed,
+        "active task was not completed after queued cancellation"
+    );
+    assert_eq!(
+        fs::read_to_string(&count).expect("turn count after cancellation"),
+        "2"
+    );
+
+    // A Codex app-server input request is surfaced as a task input state and
+    // answered through the relay before the same turn is allowed to finish.
+    browser.send(TungsteniteMessage::Text(json!({
+        "type":"message", "id":"request-input", "text":"Need your input before continuing",
+        "task":{"kind":"explain","scope":"selection"},
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+    }).to_string().into())).await.expect("send input task");
+    let mut input_answered = false;
+    let mut input_completed = false;
+    for _ in 0..40 {
+        let frame = next_frame(&mut browser).await;
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-input"
+            && frame["status"] == "needs_input"
+        {
+            let request_id = frame["context"]["input"]["request_id"]
+                .as_str()
+                .expect("input request id");
+            let snapshot_output = agent(&["read", &link]).await;
+            assert_eq!(
+                snapshot_output.status, 0,
+                "read before preview failed: {snapshot_output:?}"
+            );
+            let snapshot = json_stdout(&snapshot_output);
+            let base_revision = text(&snapshot, "sha");
+            assert!(
+                !base_revision.is_empty(),
+                "snapshot has no tree revision: {snapshot}"
+            );
+            let candidate_source = format!(
+                "{}\nCandidate text.\n",
+                snapshot["texts"]["main.md"].as_str().expect("main source")
+            );
+            let preview_files = tools.path().join("preview-files.json");
+            fs::write(
+                &preview_files,
+                serde_json::to_vec(&json!({"main.md": candidate_source})).unwrap(),
+            )
+            .expect("preview files");
+            let preview = Command::new(env!("CARGO_BIN_EXE_librepaper"))
+                .args([
+                    "agent",
+                    "preview",
+                    &link,
+                    "--conversation",
+                    &conversation,
+                    "--revision",
+                    &base_revision,
+                    "--files",
+                    preview_files.to_str().unwrap(),
+                    "--task-id",
+                    "request-input",
+                    "--state-dir",
+                    state.to_str().unwrap(),
+                ])
+                .env_remove("LIBREPAPER_TOKEN")
+                .env_remove("LIBREPAPER_SERVER")
+                .env_remove("LIBREPAPER_CHAT_TOKEN")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("preview command starts");
+            let request = loop {
+                let candidate = next_frame(&mut browser).await;
+                if candidate["type"] == "preview_request" && candidate["task_id"] == "request-input"
+                {
+                    break candidate;
+                }
+            };
+            assert_eq!(request["base_revision"], base_revision);
+            assert_ne!(request["revision"], base_revision);
+            assert_eq!(request["files"]["main.md"], candidate_source);
+            browser
+                .send(TungsteniteMessage::Text(
+                    json!({
+                        "type":"preview_result", "id":"preview-wrong", "request_id":request["id"],
+                        "task_id":"request-input", "base_revision":"wrong-base", "revision":"wrong-revision",
+                        "ok":true, "diagnostics":[]
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("send stale preview result");
+            browser
+                .send(TungsteniteMessage::Text(
+                    json!({
+                        "type":"preview_result", "id":"preview-correct", "request_id":request["id"],
+                        "task_id":"request-input", "base_revision":request["base_revision"], "revision":request["revision"],
+                        "ok":true, "diagnostics":[], "output":"html"
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("send preview result");
+            let preview_output =
+                tokio::time::timeout(Duration::from_secs(5), preview.wait_with_output())
+                    .await
+                    .expect("preview command timeout")
+                    .expect("preview command wait");
+            assert!(
+                preview_output.status.success(),
+                "preview failed: {}",
+                String::from_utf8_lossy(&preview_output.stderr)
+            );
+            let preview_json: Value =
+                serde_json::from_slice(&preview_output.stdout).expect("preview result JSON");
+            assert_eq!(preview_json["ok"], true);
+            assert_eq!(preview_json["request_id"], request["id"]);
+            assert_eq!(preview_json["task_id"], "request-input");
+            assert_eq!(preview_json["base_revision"], base_revision);
+            assert_eq!(preview_json["revision"], request["revision"]);
+            browser.send(TungsteniteMessage::Text(json!({
+                "type":"input", "id":"input-answer", "task_id":"request-input", "request_id":request_id,
+                "response":{"answers":{"answer":{"answers":["yes"]}}}
+            }).to_string().into())).await.expect("answer input request");
+            input_answered = true;
+        }
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-input"
+            && frame["status"] == "completed"
+        {
+            input_completed = true;
+        }
+        if input_answered && input_completed {
+            break;
+        }
+    }
+    assert!(
+        input_answered && input_completed,
+        "input task did not resume and complete"
+    );
+    assert_eq!(
+        fs::read_to_string(&count).expect("turn count after input"),
+        "3"
+    );
+
+    // An active cancellation reaches the app-server interrupt request and
+    // settles only when Codex confirms the interrupted turn.
+    browser.send(TungsteniteMessage::Text(json!({
+        "type":"message", "id":"request-active-cancel", "text":"Cancel this turn",
+        "task":{"kind":"rewrite","scope":"selection"},
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+    }).to_string().into())).await.expect("send active cancellation task");
+    let mut active_working = false;
+    for _ in 0..20 {
+        let frame = next_frame(&mut browser).await;
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-active-cancel"
+            && frame["status"] == "working"
+        {
+            active_working = true;
+            break;
+        }
+    }
+    assert!(active_working, "active cancellation task did not start");
+    browser
+        .send(TungsteniteMessage::Text(
+            json!({
+                "type":"cancel", "id":"cancel-active", "task_id":"request-active-cancel"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("cancel active task");
+    let mut active_cancelled = false;
+    for _ in 0..30 {
+        let frame = next_frame(&mut browser).await;
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-active-cancel"
+            && frame["status"] == "cancelled"
+        {
+            active_cancelled = true;
+            break;
+        }
+    }
+    assert!(active_cancelled, "active cancellation was not confirmed");
+    assert_eq!(
+        fs::read_to_string(&count).expect("turn count after active cancellation"),
+        "4"
+    );
+
+    // Detaching the browser must leave the local runner and Codex turn alive;
+    // a fresh browser socket receives the terminal result after reconnecting.
+    browser.send(TungsteniteMessage::Text(json!({
+        "type":"message", "id":"request-reconnect", "text":"Tighten this paragraph again",
+        "task":{"kind":"tighten","scope":"selection"},
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+    }).to_string().into())).await.expect("send reconnect task");
+    browser.close(None).await.expect("close browser socket");
+    let mut reconnected = browser_socket(&server, &slug, &key, &conversation, &token).await;
+    let mut reconnect_completed = false;
+    for _ in 0..40 {
+        let frame = next_frame(&mut reconnected).await;
+        if frame["type"] == "task"
+            && frame["task_id"] == "request-reconnect"
+            && frame["status"] == "completed"
+        {
+            reconnect_completed = true;
+            break;
+        }
+    }
+    assert!(
+        reconnect_completed,
+        "reconnected browser did not receive final task result"
+    );
+    assert_eq!(
+        fs::read_to_string(&count).expect("turn count after reconnect"),
+        "5"
+    );
+    let status = agent(&[
+        "status",
+        &link,
+        "--conversation",
+        &conversation,
+        "--state-dir",
+        state.to_str().unwrap(),
+    ])
+    .await;
+    let mut status = status;
+    for _ in 0..20 {
+        if status.status == 0 && json_stdout(&status)["state"] == "ready" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        status = agent(&[
+            "status",
+            &link,
+            "--conversation",
+            &conversation,
+            "--state-dir",
+            state.to_str().unwrap(),
+        ])
+        .await;
+    }
+    assert_eq!(status.status, 0, "runner status failed: {status:?}");
+    assert_eq!(json_stdout(&status)["state"], "ready");
+    let stop = agent(&[
+        "stop",
+        &link,
+        "--conversation",
+        &conversation,
+        "--state-dir",
+        state.to_str().unwrap(),
+    ])
+    .await;
+    assert_eq!(stop.status, 0, "runner stop failed: {stop:?}");
+    let exited = tokio::time::timeout(Duration::from_secs(5), runner.wait())
+        .await
+        .expect("runner stop timeout")
+        .expect("runner wait");
+    assert!(exited.success(), "runner exited with {exited}");
 }
 
 #[tokio::test]
@@ -540,179 +1076,6 @@ async fn cli_selected_file_uses_file_sha_and_refuses_stale_input() {
     assert_eq!(stale_result["outcome"], "stale-input");
     assert_eq!(stale_result["status"], 409);
     assert_ne!(stale_result["value"]["actual_sha"], old_sha);
-}
-
-#[tokio::test]
-async fn cli_mailbox_watches_user_messages_posts_idempotently_and_checkpoints_over_room() {
-    let server = LiveServer::start().await;
-    let document = publish_markdown(&server, "# Mailbox\n").await;
-    let slug = text(&document, "slug");
-    let reader = read_key_of(&document);
-    let editor = mint_role(&server, &slug, "editor").await;
-    let link = server.link(&slug, &reader);
-    let created = agent(&["chat", "create", &link]).await;
-    assert_eq!(created.status, 0, "create failed: {created:?}");
-    let credentials = json_stdout(&created);
-    let id = credentials["id"].as_str().unwrap();
-    let token = credentials["token"].as_str().unwrap();
-    let endpoint = format!("{}/api/documents/{slug}/chat/{id}", server.base);
-    let client = reqwest::Client::new();
-    let sent = client.post(&endpoint)
-        .header("x-librepaper-client", "1")
-        .header("x-librepaper-automation", "1")
-        .header("x-librepaper-key", &reader)
-        .header("x-librepaper-chat-token", token)
-        .json(&json!({"id":"user-1","role":"user","text":"Review this paragraph","context":{"file":"main.md","selection":"Mailbox"}}))
-        .send().await.unwrap();
-    assert!(
-        sent.status().is_success(),
-        "user send failed: {}",
-        sent.text().await.unwrap()
-    );
-    let watch = agent(&[
-        "chat",
-        "watch",
-        &link,
-        "--conversation",
-        id,
-        "--token",
-        token,
-        "--timeout",
-        "0",
-    ])
-    .await;
-    assert_eq!(watch.status, 0, "watch failed: {watch:?}");
-    let inbox = json_stdout(&watch);
-    assert_eq!(inbox["messages"].as_array().unwrap().len(), 1);
-    assert_eq!(inbox["messages"][0]["text"], "Review this paragraph");
-    assert_eq!(inbox["messages"][0]["context"]["selection"], "Mailbox");
-    let cursor = inbox["next_cursor"].as_u64().unwrap().to_string();
-    for _ in 0..2 {
-        let posted = agent(&[
-            "chat",
-            "post",
-            &link,
-            "--conversation",
-            id,
-            "--token",
-            token,
-            "--message",
-            "Looks good",
-            "--request-id",
-            "agent-1",
-        ])
-        .await;
-        assert_eq!(posted.status, 0, "post failed: {posted:?}");
-    }
-    let empty = agent(&[
-        "chat",
-        "watch",
-        &link,
-        "--conversation",
-        id,
-        "--token",
-        token,
-        "--after",
-        &cursor,
-        "--timeout",
-        "0",
-    ])
-    .await;
-    assert_eq!(empty.status, 0, "watch after failed: {empty:?}");
-    assert_eq!(json_stdout(&empty)["messages"], json!([]));
-    let unauthorized = agent(&[
-        "chat",
-        "watch",
-        &link,
-        "--conversation",
-        id,
-        "--token",
-        "wrong",
-        "--timeout",
-        "0",
-    ])
-    .await;
-    assert_ne!(unauthorized.status, 0);
-    let checkpoint = agent(&["checkpoint", &server.link(&slug, &editor)]).await;
-    assert_eq!(checkpoint.status, 0, "checkpoint failed: {checkpoint:?}");
-    assert_eq!(json_stdout(&checkpoint)["value"]["durable"], true);
-}
-
-#[tokio::test]
-async fn cli_posts_chat_reply_while_watch_is_connected() {
-    let server = LiveServer::start().await;
-    let document = publish_markdown(&server, "# Concurrent chat\n").await;
-    let slug = text(&document, "slug");
-    let reader = read_key_of(&document);
-    let link = server.link(&slug, &reader);
-    let created = agent(&["chat", "create", &link]).await;
-    assert_eq!(created.status, 0, "create failed: {created:?}");
-    let credentials = json_stdout(&created);
-    let id = credentials["id"].as_str().expect("conversation id");
-    let token = credentials["token"].as_str().expect("conversation token");
-
-    let config_home = tempfile::tempdir().expect("watch config directory");
-    let watch = Command::new(env!("CARGO_BIN_EXE_librepaper"))
-        .args([
-            "agent",
-            "chat",
-            "watch",
-            &link,
-            "--conversation",
-            id,
-            "--token",
-            token,
-            "--timeout",
-            "10",
-        ])
-        .env_remove("LIBREPAPER_TOKEN")
-        .env_remove("LIBREPAPER_SERVER")
-        .env_remove("LIBREPAPER_CHAT_TOKEN")
-        .env("XDG_CONFIG_HOME", config_home.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("watch subprocess starts");
-
-    // Give the watch enough time to claim the sole agent participant slot.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let posted = agent(&[
-        "chat",
-        "post",
-        &link,
-        "--conversation",
-        id,
-        "--token",
-        token,
-        "--message",
-        "Reply while watching",
-        "--request-id",
-        "concurrent-reply",
-    ])
-    .await;
-    assert_eq!(posted.status, 0, "concurrent post failed: {posted:?}");
-
-    let client = reqwest::Client::new();
-    let sent = client
-        .post(format!("{}/api/documents/{slug}/chat/{id}", server.base))
-        .header("x-librepaper-client", "1")
-        .header("x-librepaper-automation", "1")
-        .header("x-librepaper-key", &reader)
-        .header("x-librepaper-chat-token", token)
-        .json(&json!({"id":"user-concurrent","role":"user","text":"Wake the watch"}))
-        .send()
-        .await
-        .expect("send user message");
-    assert!(sent.status().is_success(), "user message failed: {sent:?}");
-
-    let output = tokio::time::timeout(Duration::from_secs(5), watch.wait_with_output())
-        .await
-        .expect("watch exits after user message")
-        .expect("watch output");
-    assert!(output.status.success(), "watch failed: {output:?}");
-    let inbox: Value = serde_json::from_slice(&output.stdout).expect("watch JSON");
-    assert_eq!(inbox["messages"][0]["text"], "Wake the watch");
 }
 
 #[tokio::test]
