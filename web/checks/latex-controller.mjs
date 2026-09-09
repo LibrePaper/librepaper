@@ -287,7 +287,7 @@ function nextProject() {
   const bcf = () => enc.encode('<bcf:controlfile><bcf:datasource type="file">refs.bib</bcf:datasource></bcf:controlfile>');
   const localUnreachable = {
     async runBiber() {
-      const error = new Error("could not reach local Komodoc");
+      const error = new Error("could not reach local LibrePaper");
       error.name = "Unreachable";
       throw error;
     },

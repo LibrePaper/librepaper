@@ -5,8 +5,8 @@
 //! whitespace of every kind, texts of some kilobytes.
 #![no_main]
 
-use komodoc_fuzz::{partition, round_trip};
-use komodoc_text::merge;
+use librepaper_fuzz::{partition, round_trip};
+use librepaper_text::merge;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: (&str, &str, &str)| {

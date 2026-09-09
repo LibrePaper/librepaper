@@ -21,8 +21,8 @@ baseline; it does not predict the new shared journal's total bill.
 The current configuration waits for two seconds of quiet before saving and
 five minutes of quiet before making a checkpoint. The proposed fifteen-second
 floor and maximum dirty age are spec work, not existing configuration knobs.
-See `crates/komodoc/src/config.rs` and `Room::tick` in
-`crates/komodoc/src/room/mod.rs`. Five minutes of quiet does not establish twelve
+See `crates/librepaper/src/config.rs` and `Room::tick` in
+`crates/librepaper/src/room/mod.rs`. Five minutes of quiet does not establish twelve
 checkpoints per editing hour or a five-minute host-loss recovery bound.
 
 An ordinary persist writes a full Yjs state and can also update the current
@@ -143,17 +143,17 @@ isolated prefix, a restricted application key, and a fresh random prefix.
 It must check wrong and current ETags, create-only writes, two clients racing
 on the same ETag, immediate GET/list visibility, version enumeration and
 physical cleanup of every test version. Exactly one conflicting writer must
-win. Do not run the fixed `.komodoc-probe` against existing application data.
+win. Do not run the fixed `.librepaper-probe` against existing application data.
 
 ## Local measurements and review
 
-`cargo test -p komodoc --lib tests::s3:: --offline` passed all eight selected
+`cargo test -p librepaper --lib tests::s3:: --offline` passed all eight selected
 tests. They cover request construction, conditional responses and detection
 of ignored conditions against a local fake bucket. They do not prove B2
 compatibility or atomic races at a real provider.
 
 The preserved [session harness](storage-workload/src/main.rs) uses the real
-public `komodoc::session` APIs. Run it with
+public `librepaper::session` APIs. Run it with
 `cargo run --manifest-path docs/research/storage-workload/Cargo.toml --offline`.
 The root reviewer reran the same source from the temporary measurement
 project. Representative results, in bytes:
@@ -217,7 +217,7 @@ Other suggestions need these corrections:
   accounting must agree; this is not a guaranteed format-free change.
 - **Yjs garbage collection:** already enabled. Installed `yrs 0.27.4`
   sets `Options::default().skip_gc` to false and invokes GC during transaction
-  commit. Komodoc uses that default. Some synchronization metadata remains;
+  commit. LibrePaper uses that default. Some synchronization metadata remains;
   this is not a proof of a fixed relationship between live text and state
   size. Recreating documents to discard identities would need a separate
   offline-client compatibility design.

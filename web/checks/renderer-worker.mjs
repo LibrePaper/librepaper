@@ -10,7 +10,7 @@ class Worker {
 }
 globalThis.Worker = Worker;
 globalThis.location = { href: "https://example.org/docs/paper" };
-globalThis.KOMODOC_MODULES = { typst: "/typst.wasm", markdown: "/markdown.wasm" };
+globalThis.LIBREPAPER_MODULES = { typst: "/typst.wasm", markdown: "/markdown.wasm" };
 const renderers = await import("../src/lib/renderers.js");
 const text = new Proxy({ "main.typ": "Hello" }, {});
 const tree = { main: "main.typ", texts: text, assets: { "figure.png": Uint8Array.of(1, 2) } };
@@ -49,8 +49,8 @@ assert.equal(html.html, "<p>HTML</p>");
 assert.equal(workers.length, 2);
 console.log("renderer-worker: cloning, reply routing, errors, recovery and HTML passed");
 
-globalThis.KOMODOC_MODULES.bibliography = "/bibliography.wasm";
-globalThis.KOMODOC_MODULES.citations = "/citations.wasm";
+globalThis.LIBREPAPER_MODULES.bibliography = "/bibliography.wasm";
+globalThis.LIBREPAPER_MODULES.citations = "/citations.wasm";
 const { analyzeBibliography } = await import("../src/lib/bibliography-engine.js");
 const analyzing = analyzeBibliography({ main: "paper.md", format: "markdown", source: "@doe", texts: { "refs.bib": "" } });
 const bibliographyWorker = workers.at(-1);

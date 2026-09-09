@@ -3,8 +3,8 @@
 //! idempotent, and a name that passes keeps passing once it is stored.
 #![no_main]
 
-use komodoc::paths::{check, collision_key, kind_of, normalise, placeholder, suffixed};
-use komodoc_fuzz::{configuration, rules};
+use librepaper::paths::{check, collision_key, kind_of, normalise, placeholder, suffixed};
+use librepaper_fuzz::{configuration, rules};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: (&str, u8)| {

@@ -1,9 +1,9 @@
 # The text algorithms the binary and the engine share: the word diff, and the
-# three-way merge `komodoc sync` reconciles a saved file with. A crate of its
-# own because `komodoc` is a binary, which nothing can depend on, and the
-# engine needs the same diff for the browser's per-file timeline.
+# three-way merge `librepaper sync` reconciles a saved file with. A crate of
+# its own because `librepaper` is a binary, which nothing can depend on, and
+# the engine needs the same diff for the browser's per-file timeline.
 [package]
-name = "komodoc-text"
+name = "librepaper-text"
 version = "0.1.0"
 edition = "2021"
 publish = false

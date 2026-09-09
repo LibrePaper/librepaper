@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use komodoc_engine::diagnostic::RenderedDocument;
-use komodoc_engine::typst::{compile_pdf, no_files};
+use librepaper_engine::diagnostic::RenderedDocument;
+use librepaper_engine::typst::{compile_pdf, no_files};
 
 const PAPER: &str = include_str!("../tests/typst-corpus/paper.typ");
 const LONG: &str = include_str!("../tests/typst-corpus/long.typ");

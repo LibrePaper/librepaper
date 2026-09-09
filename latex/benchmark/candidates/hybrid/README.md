@@ -83,7 +83,7 @@ This harness supports one root-level XeLaTeX main file and the fixed fixture
 file set. Main-file/environment changes require reload; arbitrary project
 file deletion, remote BIB sources, extra backends, and general project
 lifecycle handling are outside this experiment. It is not connected to the
-Komodoc editor, and production adapters and offered distributions are unchanged.
+LibrePaper editor, and production adapters and offered distributions are unchanged.
 
 The timings are single-machine Chromium observations, not repeated medians.
 The package server is local, no deliberate throttling is applied, and native

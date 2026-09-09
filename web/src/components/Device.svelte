@@ -4,7 +4,7 @@
   import Stack from "./layout/Stack.svelte";
   import { me as whoami, post } from "../lib/api.js";
 
-  // Where a terminal's `komodoc login` sends the person. The server has
+  // Where a terminal's `librepaper login` sends the person. The server has
   // already sent anyone without a session through /auth/login, so by the time
   // this renders there is an account to name.
   //

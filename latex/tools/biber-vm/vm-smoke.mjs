@@ -1,5 +1,5 @@
 // Boots the built Biber VM release in headless Chromium and runs a real
-// Biber job end to end: mount, KOMODOC_VM_READY, `biber --version`, then a
+// Biber job end to end: mount, LIBREPAPER_VM_READY, `biber --version`, then a
 // genuine bibliography build with Unicode author names, checking the .bbl
 // is non-empty and byte-exact on the Unicode text. Records boot time, cold
 // and warm Biber time, and bytes fetched. Writes latex/tools/biber-vm/RESULTS.md.

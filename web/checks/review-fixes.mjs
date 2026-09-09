@@ -57,7 +57,7 @@ globalThis.fetch = async (url) => url.endsWith("/good")
 try {
   const partial = await gather("slug", { "good.png": "good", "bad.png": "bad" });
   assert.deepEqual(partial.missing, ["bad.png"]);
-  assert.match(partial.urls["good.png"], /#komodoc-asset=good$/);
+  assert.match(partial.urls["good.png"], /#librepaper-asset=good$/);
   await assert.rejects(
     gather("slug", { "good.png": "good", "bad.png": "bad" }, {}, { strict: true }),
     (error) => error.missing?.[0] === "bad.png",

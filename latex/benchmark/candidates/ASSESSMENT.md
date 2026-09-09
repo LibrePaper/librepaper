@@ -10,7 +10,7 @@ earlier direct-WASM candidate comparison.
 The parallel experiments did not establish a production-ready replacement.
 They support keeping TeX Live as the compatibility foundation, while treating
 the browser port, package delivery, and compilation pipeline as engineering
-work Komodoc must either verify upstream or maintain itself.
+work LibrePaper must either verify upstream or maintain itself.
 
 ## Evidence
 
@@ -28,7 +28,7 @@ configuration also does not prove that its underlying TeX engine cannot work.
 
 ## Best current hypothesis
 
-Build one Komodoc-controlled TeX Live release from an existing, understandable
+Build one LibrePaper-controlled TeX Live release from an existing, understandable
 WASM port. Keep the browser-specific patch set small and reviewable. Own the
 static resource catalog, matching formats/fonts, persistent cache, and thin
 compile orchestration. Deliver engine and bibliography modules only when needed.

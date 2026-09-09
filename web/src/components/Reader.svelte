@@ -72,7 +72,7 @@
   // there is nothing left to remember here, and a stale entry is only ever
   // read by code that no longer exists.
   try {
-    localStorage.removeItem("komodoc-latex");
+    localStorage.removeItem("librepaper-latex");
   } catch {
     // Storage can be unavailable (private browsing, a locked-down profile);
     // there is nothing to migrate away from in that case either.
@@ -761,7 +761,7 @@
       // that is left to do here is the title.
       if (event.title) {
         doc = { ...doc, title: event.title };
-        document.title = `${event.title} · Komodoc`;
+        document.title = `${event.title} · LibrePaper`;
       }
       return;
     }
@@ -934,7 +934,7 @@
       checkpoints = await history.load(SLUG, keyHeaders(KEY));
       historyProblem = "";
       if (!historyBaseline && checkpoints.length) {
-        const remembered = read(`komodoc-history-baseline:${SLUG}`, "");
+        const remembered = read(`librepaper-history-baseline:${SLUG}`, "");
         const own = [...comments].reverse().find((comment) =>
           comment.mine && comment.revision && checkpoints.some((point) => point.sha === comment.revision),
         );
@@ -963,7 +963,7 @@
       fileDiff = null;
       fileDiffGeneration += 1;
       mergeTarget = null;
-      write(`komodoc-history-baseline:${SLUG}`, sha);
+      write(`librepaper-history-baseline:${SLUG}`, sha);
       await computeHistoryChanges(loaded);
     } catch (error) {
       if (request === historyBaselineGeneration) historyProblem = error.message || "that checkpoint could not be read";
@@ -1179,7 +1179,7 @@
       const point = await history.checkpoint(SLUG, sha, keyHeaders(KEY));
       if (mine !== navigationGeneration) return;
       viewing = point;
-      write(`komodoc-history-baseline:${SLUG}`, sha);
+      write(`librepaper-history-baseline:${SLUG}`, sha);
       historyProblem = "";
     } catch (error) {
       if (mine !== navigationGeneration) return;
@@ -1827,14 +1827,14 @@
   async function storeRendering(name, bytes, synctex, current = true, provenance = null) {
     const source = sourceGeneration;
     const navigation = navigationGeneration;
-    // `x-komodoc-provenance` travels on both PUTs of the same job's bytes --
-    // never a SyncTeX map paired with a different job's PDF -- so the server
-    // can answer a reader's `renderedNote` with what actually produced this
-    // rendering (section 4 of the interfaces doc).
+    // `x-librepaper-provenance` travels on both PUTs of the same job's bytes
+    // -- never a SyncTeX map paired with a different job's PDF -- so the
+    // server can answer a reader's `renderedNote` with what actually produced
+    // this rendering (section 4 of the interfaces doc).
     const headers = {
       ...SHELL_HEADERS,
       ...keyHeaders(KEY),
-      ...(provenance ? { "x-komodoc-provenance": JSON.stringify(provenance) } : {}),
+      ...(provenance ? { "x-librepaper-provenance": JSON.stringify(provenance) } : {}),
     };
     const put = (suffix, body) =>
       fetch(`/api/documents/${SLUG}/renderings/${name}${suffix}`, { method: "PUT", headers, body })
@@ -2211,7 +2211,7 @@
   });
   // Narrow screens show one workspace view at a time. This is independent of
   // the desktop split, so widening the window restores the reader's layout.
-  const MOBILE_VIEW = "komodoc-mobile-view";
+  const MOBILE_VIEW = "librepaper-mobile-view";
   let mobileView = $state(["document", "source", "sidebar"].includes(read(MOBILE_VIEW, "document"))
     ? read(MOBILE_VIEW, "document") : "document");
   let preferredPane = $state(read(LAYOUT, "split") === "source" ? "source" : "document");
@@ -2836,7 +2836,7 @@
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error("not found"))))
       .then((found) => {
         doc = found;
-        document.title = `${found.title} · Komodoc`;
+        document.title = `${found.title} · LibrePaper`;
         docsOrigin = found.docs_origin || location.origin;
         // The frame is an empty page with the agent in it, on the documents
         // origin. What goes into it is what this browser renders -- or, for a
@@ -2956,7 +2956,7 @@
 <Nav {me} documentation={false}>
   {#snippet children()}
     <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
-      {toolbarPath ? basename(toolbarPath) : doc.title || "Komodoc"}
+      {toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
     </span>
   {/snippet}
   {#snippet status()}
@@ -2992,7 +2992,7 @@
       {#if editing && sourceFormat === "latex" && compilesHere}
         <!-- Automatic compilation covers every edit; this is only for asking
              again right now -- after fixing an error, or after connecting
-             local Komodoc -- without waiting for the debounce or typing a
+             local LibrePaper -- without waiting for the debounce or typing a
              fresh keystroke. No "play" icon exists in Icon.svelte's set, so
              this reuses "check": the label carries the meaning. -->
         <IconButton icon="check" label="Compile now" title="Compile now" onclick={compileNow} />
@@ -3008,7 +3008,7 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact || (splitTight && layout === "split")}
-      style="--komodoc-activity: {ACTIVITY_WIDTH}px; --komodoc-editor: {pixels(PANES.editor, panes)}px; --komodoc-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="--librepaper-activity: {ACTIVITY_WIDTH}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- The column, first: the files, the comments or the history, chosen by
        the activity bar. A file dropped anywhere on it joins the project. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -3296,7 +3296,7 @@
                suggestion anyway, but an editor has to apply it by hand
                rather than clicking Accept -- see `docs/specs/track-changes.md`. -->
           <p class="text-warning-600-400 text-sm">
-            Komodoc could not place this passage in the source. An editor will have to apply the suggestion by hand.
+            LibrePaper could not place this passage in the source. An editor will have to apply the suggestion by hand.
           </p>
         {/if}
         <label class="label">
@@ -3388,14 +3388,14 @@
     font-size: var(--text-sm);
   }
   .sidebar { flex-direction: row; }
-  .sidebar.collapsed { flex: 0 0 var(--komodoc-activity); }
+  .sidebar.collapsed { flex: 0 0 var(--librepaper-activity); }
   .sidebar-activity {
     display: flex;
     flex: none;
     flex-direction: column;
     align-items: center;
     gap: var(--spacing);
-    width: var(--komodoc-activity);
+    width: var(--librepaper-activity);
     padding-block: calc(var(--spacing) * 3);
   }
   .activity-sections, .activity-utilities {

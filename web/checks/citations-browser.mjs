@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const temporary = mkdtempSync(join(tmpdir(), "komodoc-citations-check-"));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-citations-check-"));
 const output = join(temporary, "build"), profile = join(temporary, "chrome"), entry = join(temporary, "entry.js");
 const port = 22000 + Math.floor(Math.random() * 1000);
 const imports = (path) => JSON.stringify(join(root, path));
@@ -19,7 +19,7 @@ writeFileSync(entry, [
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
   "import Editor from " + imports("web/src/components/Editor.svelte") + ";",
-  "globalThis.KOMODOC_MODULES = { bibliography: '/bibliography.wasm' };",
+  "globalThis.LIBREPAPER_MODULES = { bibliography: '/bibliography.wasm' };",
   "const session = joinSession({ send: () => {}, mayEdit: true });",
   "const main = session.addText('paper.md', '---\\nbibliography: refs.bib\\n---\\n\\nSee ');",
   "session.addText('refs.bib', '@article{smith2020, author={Jane Smith}, title={A Study of Rivers}, year={2020}, journal={Nature}}');",

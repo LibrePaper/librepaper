@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { browser, until } from "../tools/browser-driver.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const temporary = mkdtempSync(join(tmpdir(), "komodoc-assistant-review-"));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-assistant-review-"));
 const entry = join(temporary, "entry.js");
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "src/styles/app.css"))};
@@ -30,9 +30,9 @@ try {
   await build({ configFile: false, root, plugins: [svelte(), tailwindcss()], logLevel: "error",
     build: { outDir: join(temporary, "build"), lib: { entry, formats: ["es"], fileName: () => "panel.js" } } });
   server = createServer((request, response) => {
-    const file = request.url === "/panel.js" ? "panel.js" : request.url === "/style.css" ? "komodoc-web.css" : null;
+    const file = request.url === "/panel.js" ? "panel.js" : request.url === "/style.css" ? "librepaper-web.css" : null;
     response.setHeader("content-type", file?.endsWith("js") ? "text/javascript" : file ? "text/css" : "text/html");
-    response.end(file ? readFileSync(join(temporary, "build", file)) : '<!doctype html><html data-theme="komodoc"><head><link rel="stylesheet" href="/style.css"><style>body{display:flex;height:500px;width:360px;overflow:hidden}</style></head><body><script type="module" src="/panel.js"></script></body></html>');
+    response.end(file ? readFileSync(join(temporary, "build", file)) : '<!doctype html><html data-theme="librepaper"><head><link rel="stylesheet" href="/style.css"><style>body{display:flex;height:500px;width:360px;overflow:hidden}</style></head><body><script type="module" src="/panel.js"></script></body></html>');
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   page = await browser("chromium", join(temporary, "profile"), 24000 + Math.floor(Math.random() * 10000));

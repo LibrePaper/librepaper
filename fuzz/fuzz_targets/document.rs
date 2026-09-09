@@ -15,9 +15,9 @@
 use std::collections::HashSet;
 
 use arbitrary::Arbitrary;
-use komodoc::session;
-use komodoc_fuzz::{configuration, rules};
-use komodoc_text::diff;
+use librepaper::session;
+use librepaper_fuzz::{configuration, rules};
+use librepaper_text::diff;
 use libfuzzer_sys::fuzz_target;
 use yrs::types::text::TextPrelim;
 use yrs::{Map, Transact};
@@ -149,7 +149,7 @@ fuzz_target!(|ops: Vec<Op>| {
     let mut taken = HashSet::new();
     for path in file_paths.values().chain(session::assets_of(&doc).keys()) {
         assert!(
-            taken.insert(komodoc::paths::collision_key(path)),
+            taken.insert(librepaper::paths::collision_key(path)),
             "after repair, two files collide at {path:?}"
         );
     }

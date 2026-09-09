@@ -14,7 +14,7 @@ const SRC = join(ROOT, "src");
 
 // The theme is the one place a colour is written down, and the stylesheet
 // beside it is the one place the application's own shapes are described.
-const THEME = new Set(["src/styles/theme.css", "src/styles/komodoc.css", "src/styles/app.css"]);
+const THEME = new Set(["src/styles/theme.css", "src/styles/librepaper.css", "src/styles/app.css"]);
 
 // Two things are outside the design system, and have to be.
 //

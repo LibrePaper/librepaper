@@ -25,7 +25,7 @@ is deliberately out of scope.
 
 ## Data model
 
-`Comment` (in `crates/komodoc/src/room/comments.rs`) gains two fields, both
+`Comment` (in `crates/librepaper/src/room/comments.rs`) gains two fields, both
 serialized and both sent to clients:
 
 ```rust
@@ -78,14 +78,14 @@ above (the room's `is_owner` flag, which is "at least editor"). Behaviour:
    occurrence whose surrounding text best matches `source.prefix` and
    `source.suffix` (longest common suffix of the prefix and longest common
    prefix of the suffix), ties broken by distance from `source.position`.
-   Apply one `komodoc_text::Edit { at, delete: len16(exact), insert: proposed }`
+   Apply one `librepaper_text::Edit { at, delete: len16(exact), insert: proposed }`
    to that `Y.Text` in one transaction and collect the update.
 3. When it occurs zero times, fall back to a three-way merge with the
    suggestion's `revision` checkpoint as base: base = that checkpoint's text
    at `source.path` (through `checkpoint_texts`), remote = base with the
    proposal applied at the anchor (located as in step 2, in the base), local
-   = the live text. `komodoc_text::merge(base, local, remote)`. With no
-   conflicts, apply `komodoc_text::diff(live, merged.text)` to the live
+   = the live text. `librepaper_text::merge(base, local, remote)`. With no
+   conflicts, apply `librepaper_text::diff(live, merged.text)` to the live
    `Y.Text` and collect the update. With conflicts, or when the anchor is not
    found in the base either, refuse with `{"type":"error","stale":true,
    "comment_id":..., "message":"the passage has changed since this was
@@ -134,7 +134,7 @@ is decided by the server and never accepted from a client's `y-checkpoint`.
 
 - JSON-LD: a suggestion's `body` becomes an array with the note (when any)
   and `{"type":"TextualBody","purpose":"editing","value":<proposed>}`.
-  `outcome` is emitted as `"komodoc:outcome"` when set.
+  `outcome` is emitted as `"librepaper:outcome"` when set.
 - Markdown: `**Suggested:** “…”` after the quotation, then the note.
 - Response: the heading reads `editing, accepted in 4f2a91c` or
   `editing, rejected`; the body shows `**Suggested:** “…”`. The existing
@@ -146,9 +146,9 @@ Three commands, each taking the same identifier `comment` takes (a short id,
 a slug, or a pasted link) and the same `--key` and `--server` flags:
 
 ```sh
-komodoc suggest c9k --find "with 95% probability" --replace "in 95% of samples" [--path main.md] [--note "..."]
-komodoc accept  c9k <comment-id>
-komodoc reject  c9k <comment-id>
+librepaper suggest c9k --find "with 95% probability" --replace "in 95% of samples" [--path main.md] [--note "..."]
+librepaper accept  c9k <comment-id>
+librepaper reject  c9k <comment-id>
 ```
 
 `suggest` fetches the current source through the existing endpoints the
@@ -219,7 +219,7 @@ The toggle is disabled with an explanation for a document rendered to PDF
 
 ## Tests
 
-Rust, `crates/komodoc/src/tests/suggestions.rs`: creating a suggestion with
+Rust, `crates/librepaper/src/tests/suggestions.rs`: creating a suggestion with
 and without a proposal; a reader link refused; accept by a commenter refused;
 accept applies the edit to the session text, broadcasts a `y-update`, takes an
 `accept` checkpoint and marks the comment; accept after the passage moved
@@ -228,7 +228,7 @@ changed refuses with `stale`; accept with a concurrent unrelated edit
 merges; reject; resolve semantics on suggestions; retry with the same
 `request_id` is a no-op; exports carry the proposal and the outcome.
 
-Rust, `crates/komodoc/src/tests/suggest_cli.rs`: the three commands against a
+Rust, `crates/librepaper/src/tests/suggest_cli.rs`: the three commands against a
 test server, including the zero-and-many `--find` refusals and exit code 3.
 
 Web, `web/checks/suggestions.mjs`: the card's diff runs, the modal prefill

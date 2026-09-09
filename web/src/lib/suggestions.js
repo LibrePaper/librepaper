@@ -11,7 +11,7 @@ export function prefillFor(pending) {
 }
 
 /// Turns `history.wordDiff`'s UTF-16 edits `{at, delete, insert}` -- sorted
-/// and non-overlapping, the way `komodoc-text` produces them -- into runs a
+/// and non-overlapping, the way `librepaper-text` produces them -- into runs a
 /// card can render without re-deriving offsets: the untouched stretches of
 /// `oldText`, the deleted stretches, and the inserted text, in reading order.
 /// A suggestion with no proposal comes back as a single "del" run over the

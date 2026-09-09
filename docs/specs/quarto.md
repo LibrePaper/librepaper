@@ -1,8 +1,8 @@
-# SPEC: Quarto in Komodoc
+# SPEC: Quarto in LibrePaper
 
 Quarto is Pandoc Markdown with executable cells. The cells are the only part
 that needs a kernel; the rest is a dialect the Markdown engine can be taught.
-This page specifies a `.qmd` as a Komodoc source format that no machine ever
+This page specifies a `.qmd` as a LibrePaper source format that no machine ever
 executes: the prose, the divs, the citations and the cross-references render
 in the browser through the same engine crate as Markdown, and the results of
 code cells arrive from the author's last local render, keyed to the cells
@@ -12,11 +12,11 @@ format already keeps.
 The route the README describes -- render to self-contained HTML locally,
 publish the HTML -- stays and is not changed by this. Its limit is the reason
 for this page: the HTML is not the source, so what is typed in the browser
-never reaches the `.qmd`, and `komodoc sync` has nothing to write back.
+never reaches the `.qmd`, and `librepaper sync` has nothing to write back.
 
 ## What happens when a Quarto document opens
 
-`komodoc publish paper.qmd` stores the file as `quarto`; `komodoc publish
+`librepaper publish paper.qmd` stores the file as `quarto`; `librepaper publish
 paper/` takes the project directory with its figures, its `.bib` and any
 frozen results. The reader renders the source in the browser with the
 Markdown module and shows a flow HTML page, as it does for `.md`. Editing,
@@ -30,7 +30,7 @@ reader shows the output the author's machine produced for that exact cell
 text, when it has one; otherwise a placeholder that says the cell has not
 been rendered since it changed. Editing a paragraph disturbs no output.
 Editing a cell drops that cell's output until the next `quarto render` on
-the author's machine, which `komodoc sync` or a second `publish` carries
+the author's machine, which `librepaper sync` or a second `publish` carries
 up. This is the rule native Typst publishing already follows: an artifact
 travels with the inputs it was produced from and is shown only while they
 match.
@@ -172,14 +172,14 @@ with outputs in place, and a list of supporting files, the figures. With
 `format: html: keep-md: true`, the same Markdown lands beside the document
 as a `.md` file, with figures under `<document>_files/figure-html/`.
 
-`komodoc publish paper.qmd` and `komodoc publish paper/` look for either,
+`librepaper publish paper.qmd` and `librepaper publish paper/` look for either,
 in that order. From the executed Markdown, the CLI cuts each cell's output:
 the blocks that follow a cell's fence up to the next cell or the next
 paragraph of the original source. It keys the output by the SHA-256 of the
 cell's source text after the option lines are removed, with whitespace at
 the ends of lines trimmed. Outputs and their figures are uploaded as assets
 of the document; the map from cell digest to output is one asset named
-`.komodoc/quarto-outputs.json`. The source that is stored is the `.qmd`
+`.librepaper/quarto-outputs.json`. The source that is stored is the `.qmd`
 itself, never the executed Markdown, so the author's file and the document
 are the same text.
 
@@ -194,7 +194,7 @@ and publishes the source; every cell shows the placeholder. When the freeze
 is older than the source, `publish` still uploads it: the digests decide,
 cell by cell, which outputs still apply.
 
-`komodoc sync c9k paper.qmd` beside a Makefile that runs `quarto render`
+`librepaper sync c9k paper.qmd` beside a Makefile that runs `quarto render`
 re-reads the freeze on every save and uploads the outputs whose digests the
 document does not yet have, so a render is a checkpoint with fresh outputs.
 

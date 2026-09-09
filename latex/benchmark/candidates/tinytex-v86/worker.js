@@ -18,16 +18,16 @@ emulator.add_listener('serial0-output-byte', b => {
     stage = 'mounting';
     // The Buildroot kernel supplies the guest's device/proc mounts. The Debian
     // userland and TinyTeX are served from the lazy 9p filesystem.
-    send("stty -echo; test -x /mnt/usr/bin/env && mount --bind /dev /mnt/dev && mount -t proc proc /mnt/proc && printf '\\nKOMODOC_VM_READY\\n' || printf '\\nKOMODOC_VM_FAILED\\n'");
+    send("stty -echo; test -x /mnt/usr/bin/env && mount --bind /dev /mnt/dev && mount -t proc proc /mnt/proc && printf '\\nLIBREPAPER_VM_READY\\n' || printf '\\nLIBREPAPER_VM_FAILED\\n'");
   }
-  if (stage === 'mounting' && output.includes('\nKOMODOC_VM_READY\r\n')) {
+  if (stage === 'mounting' && output.includes('\nLIBREPAPER_VM_READY\r\n')) {
     stage = 'ready'; postMessage({ type: 'status', status: 'ready', guestMemoryBytes: 512 * 1024 * 1024 });
   }
-  if (stage === 'mounting' && output.includes('\nKOMODOC_VM_FAILED\r\n')) {
+  if (stage === 'mounting' && output.includes('\nLIBREPAPER_VM_FAILED\r\n')) {
     stage = 'failed'; postMessage({ type: 'status', status: 'error', error: 'Guest filesystem setup failed' });
   }
   if (active) {
-    const found = output.slice(active.start).match(new RegExp('KOMODOC_DONE_' + active.id + ':(\\d+)\\r?\\n'));
+    const found = output.slice(active.start).match(new RegExp('LIBREPAPER_DONE_' + active.id + ':(\\d+)\\r?\\n'));
     if (found) {
       postMessage({ type: 'command', id: active.id, exitCode: Number(found[1]), milliseconds: performance.now() - active.started });
       active = null;
@@ -40,7 +40,7 @@ onmessage = async ({ data }) => {
       if (active) throw new Error('A guest command is already running');
       if (!/^[a-z0-9_]+$/.test(data.id)) throw new Error('Invalid command id');
       active = { id: data.id, start: output.length, started: performance.now() };
-      send(data.command + "; printf '\\nKOMODOC_DONE_" + data.id + ":%s\\n' \"$?\"");
+      send(data.command + "; printf '\\nLIBREPAPER_DONE_" + data.id + ":%s\\n' \"$?\"");
     } else if (data.type === 'write') {
       await emulator.create_file(data.path, new Uint8Array(data.bytes));
       postMessage({ type: 'file', id: data.id, written: true });

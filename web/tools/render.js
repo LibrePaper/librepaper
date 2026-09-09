@@ -45,7 +45,7 @@ function call(wasm, name, ...strings) {
 // binary PDF as HTML and lets this check remain a Node-only source navigation
 // check.
 function pdfText(bytes, label) {
-  const directory = mkdtempSync(join(tmpdir(), "komodoc-sync-pdf-"));
+  const directory = mkdtempSync(join(tmpdir(), "librepaper-sync-pdf-"));
   const file = join(directory, "render.pdf");
   try {
     writeFileSync(file, bytes);

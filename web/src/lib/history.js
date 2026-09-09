@@ -58,7 +58,7 @@ export async function label(slug, sha, text, headers = {}) {
 }
 
 /// The shortest name for a checkpoint that is still a name: seven characters,
-/// which is what git prints and what `komodoc label` accepts.
+/// which is what git prints and what `librepaper label` accepts.
 export const shortSha = (sha) => (sha || "").slice(0, 7);
 
 /// The shared word-level diff, with a test seam for callers that already have
@@ -103,7 +103,7 @@ export function hunks(oldText, newText, edits = [], context = 6) {
 }
 
 // The new-text offset of an edit is its old offset plus all prior insertions
-// and deletions. Edits from komodoc-text are sorted and non-overlapping.
+// and deletions. Edits from librepaper-text are sorted and non-overlapping.
 function newOffset(edits, edit) {
   let offset = Number(edit.at) || 0;
   for (const prior of edits) {

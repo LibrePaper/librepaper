@@ -106,13 +106,13 @@
       const capabilities = await latex.local.capabilities({ rescan: true });
       doctor = JSON.stringify(capabilities, null, 2);
     } catch (error) {
-      doctor = error?.message || "komodoc local doctor could not be reached";
+      doctor = error?.message || "librepaper local doctor could not be reached";
     }
   }
 
   const CONNECTION_WORDS = {
     unknown: "Not checked yet.",
-    unreachable: "Local Komodoc is unavailable.",
+    unreachable: "Local LibrePaper is unavailable.",
     denied: "This browser declined the local-network permission.",
     reachable: "Reachable, not yet connected.",
     unauthorized: "Connected app, but this project is not authorized.",
@@ -258,7 +258,7 @@
         <label class="settings-row">
           <span class="settings-label">Pairing code</span>
           <input class="input" type="text" inputmode="numeric" bind:value={pairingCode}
-                 placeholder="printed by komodoc local start" />
+                 placeholder="printed by librepaper local start" />
         </label>
         <div class="settings-row">
           <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={connecting || !pairingCode}
@@ -270,7 +270,7 @@
           </button>
         </div>
       {/if}
-      <p class="panel-meta">{local?.instructions || "Run `komodoc local start` and enter the pairing code it prints."}</p>
+      <p class="panel-meta">{local?.instructions || "Run `librepaper local start` and enter the pairing code it prints."}</p>
 
       {#if local?.capabilities?.tools}
         <table class="settings-capabilities">
@@ -291,7 +291,7 @@
       {/if}
 
       <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={doctorReport}>
-        komodoc local doctor
+        librepaper local doctor
       </button>
       {#if doctor}<pre class="settings-doctor">{doctor}</pre>{/if}
     </section>

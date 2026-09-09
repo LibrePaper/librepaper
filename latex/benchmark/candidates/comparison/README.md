@@ -1,11 +1,11 @@
 # Browser TeX/BibTeX engine comparison
 
 Compared 2026-09-07. **Recommendation: use WasmTex's 2026 engine layer as the
-first Komodoc-controlled distribution.** TeXlyre BusyTeX is the runner-up;
+first LibrePaper-controlled distribution.** TeXlyre BusyTeX is the runner-up;
 defer Typeward. This selects where to invest integration work, not a
 production-ready replacement. No production adapter or mirror was changed.
 
-The revised requirement is browser TeX and real BibTeX, with local Komodoc
+The revised requirement is browser TeX and real BibTeX, with local LibrePaper
 finding compatible Biber when required. Browser Biber does not affect this
 ranking. TeXlyre's Biber defects and WasmTex's full-Biber backend limitation
 therefore do not disqualify either.
@@ -56,7 +56,7 @@ The [2025 standalone BibTeX check](wasmtex-2025-bibtex-result.json) passed too.
 
 This establishes a working direct browser pdfTeX/BibTeX sequence. It does not
 resolve every detail of the earlier whole-wrapper multifile failure. Nested
-auxiliary files and custom styles still need to pass the real Komodoc adapter.
+auxiliary files and custom styles still need to pass the real LibrePaper adapter.
 The [earlier XeTeX hybrid](../hybrid/REPORT.md) additionally matched native
 PDF text/page counts and real-Biber outputs across four scenarios, but those
 results used 2025 engines and must not be attributed to this 2026 build.
@@ -64,7 +64,7 @@ results used 2025 engines and must not be attributed to this 2026 build.
 The 2026 manifest publishes separate WASM modules: pdfTeX 1.67 MB, BibTeX
 0.206 MB, XeTeX 3.49 MB and LuaHBTeX 6.61 MB, excluding formats/resources.
 pdfTeX's format adds 3.66 MB before transport compression. Module separation
-is already built and published; Komodoc would not first have to split a
+is already built and published; LibrePaper would not first have to split a
 combined engine.
 
 Build recipes pin TeX Live sources and the Emscripten image. Engine families
@@ -73,7 +73,7 @@ starting point, not proof that we can reproduce the builds yet.
 
 Maintenance includes custom kpathsea hooks, worker state restoration,
 PDF-library adaptations and engine-specific build recipes. Earlier
-package/format mismatch and stale-XDV behavior demonstrate why Komodoc should
+package/format mismatch and stale-XDV behavior demonstrate why LibrePaper should
 own a narrow controller instead of assuming the whole SDK resolves integration.
 Defer experimental checkpoint features.
 
@@ -93,7 +93,7 @@ article/paper, XeTeX/font and combined package cases with bundled resources.
 The [ACM diagnosis](../existing/REPORT.md) isolated a fixable package lookup
 chain. Neither finding means that the underlying engine is broken.
 
-Its disadvantage for Komodoc is shipped delivery:
+Its disadvantage for LibrePaper is shipped delivery:
 
 - Existing combined WASM: 32.51 MB.
 - Basic data bundle: 92.79 MB, already internally LZ4-compressed.
@@ -101,7 +101,7 @@ Its disadvantage for Komodoc is shipped delivery:
   formats/resources for multiple engines.
 - Current pipeline source still enables all available data bundles on an
   unresolved package. It also offers a BibTeX8 fallback when Biber is missing;
-  Komodoc must prevent that substitution.
+  LibrePaper must prevent that substitution.
 
 These sizes are not inherent TeX requirements. Smaller resources and split
 engines are possible work. Split targets exist in the Makefile, but current
@@ -154,9 +154,9 @@ integration validation.
 
 ## Ownership and adoption
 
-Use one pinned, Komodoc-hosted release based on WasmTex's engine layer. Load
+Use one pinned, LibrePaper-hosted release based on WasmTex's engine layer. Load
 the selected project engine and required helpers automatically. Ordinary
-BibTeX needs no local application. Biber requests use connected local Komodoc
+BibTeX needs no local application. Biber requests use connected local LibrePaper
 with a compatible Biber, or explain that requirement.
 
 Own immutable static resources, matching formats/fonts, cache namespaces by
@@ -181,7 +181,7 @@ Retain TeXlyre as the alternative if these expose substantial engine defects.
 Component licences differ: TeXlyre modifications are AGPL-3.0; WasmTex and
 Typeward have MIT wrapper/build code with separately licensed engines and
 dependencies. None is an unconditionally MIT-licensed complete distribution.
-This comparison does not establish legal compatibility for Komodoc.
+This comparison does not establish legal compatibility for LibrePaper.
 
 ## Reproduction and sources
 

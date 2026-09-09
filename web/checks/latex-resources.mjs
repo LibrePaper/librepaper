@@ -77,7 +77,7 @@ const resources = await import("../src/lib/latex/resources.js?latex-resources-ch
 const release = { digest: "a".repeat(64), id: "2026-test" };
 const other = { digest: "b".repeat(64), id: "2026-other" };
 
-assert.equal(resources.namespace(release), `komodoc-latex-${"a".repeat(16)}`);
+assert.equal(resources.namespace(release), `librepaper-latex-${"a".repeat(16)}`);
 assert.notEqual(resources.namespace(release), resources.namespace(other));
 
 // --- fetchVerified: fresh fetch, verified, cached --------------------------
@@ -154,24 +154,26 @@ assert.equal(progress.at(-1).done, 9);
 assert.equal(progress.at(-1).total, 9);
 assert.ok(progress.length >= 2, "progress reported incrementally, not just once at the end");
 
-// --- size() sums bytes across komodoc-latex-* caches only -------------------
+// --- size() sums bytes across librepaper-latex-* caches only
+// -------------------
 
 const before = await resources.size();
 assert.ok(before > 0, "size() reflects what has already been cached above");
 
 // A cache under a different (non-latex) prefix must not be counted.
-const unrelated = await caches.open("komodoc");
+const unrelated = await caches.open("librepaper");
 await unrelated.put("https://example.com/doc.pdf", new Response(new Uint8Array(1000), { headers: { "content-length": "1000" } }));
 const afterUnrelated = await resources.size();
-assert.equal(afterUnrelated, before, "size() ignores caches outside the komodoc-latex- prefix");
+assert.equal(afterUnrelated, before, "size() ignores caches outside the librepaper-latex- prefix");
 
-// --- clear() deletes every komodoc-latex-* cache and nothing else ----------
+// --- clear() deletes every librepaper-latex-* cache and nothing else
+// ----------
 
 await resources.clear();
 assert.equal(await resources.size(), 0);
 const remainingNames = await caches.keys();
-assert.ok(remainingNames.includes("komodoc"), "clear() must never touch project/document storage");
-assert.ok(!remainingNames.some((n) => n.startsWith("komodoc-latex-")), "every latex cache is gone");
+assert.ok(remainingNames.includes("librepaper"), "clear() must never touch project/document storage");
+assert.ok(!remainingNames.some((n) => n.startsWith("librepaper-latex-")), "every latex cache is gone");
 
 // --- readiness() after clear: everything missing again ----------------------
 

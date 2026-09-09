@@ -18,7 +18,7 @@ The basic bundle includes formats and runtime files for multiple engines. Servin
 
 These payloads are already internally compressed. Describing the local benchmark as lacking HTTP compression should not be read as saying the TeX files inside its .data assets are uncompressed. Additional transport compression may help, but requires measurement.
 
-Komodoc's current deployment uses Workers Static Assets. That service has a 25 MiB per-file limit: the oversized artifacts below need splitting, smaller engine builds, or an object-storage/CDN hosting path. This is a deployment constraint, not a reason to run compilation on a server. [Cloudflare limits](https://developers.cloudflare.com/workers/platform/limits/).
+LibrePaper's current deployment uses Workers Static Assets. That service has a 25 MiB per-file limit: the oversized artifacts below need splitting, smaller engine builds, or an object-storage/CDN hosting path. This is a deployment constraint, not a reason to run compilation on a server. [Cloudflare limits](https://developers.cloudflare.com/workers/platform/limits/).
 
 - busytex.wasm: 32.51 MB.
 - texlive-basic.data: 92.79 MB.

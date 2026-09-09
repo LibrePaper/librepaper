@@ -2,7 +2,7 @@
 //! HTML file with its styles inline, because a published document has to stand
 //! on its own -- no webfonts, no scripts, nothing to fetch.
 
-/// What an HTML document Komodoc rendered looks like. One file, because
+/// What an HTML document LibrePaper rendered looks like. One file, because
 /// Markdown and authored HTML use this page; Typst documents are paged PDFs
 /// and use the PDF viewer instead.
 pub const DOCUMENT_CSS: &str = include_str!("../document.css");

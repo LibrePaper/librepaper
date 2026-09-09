@@ -41,8 +41,8 @@ function testValidateRelativePath() {
 }
 
 function testParseDoneMarker() {
-  check("finds the marker and exit code", vm.parseDoneMarker("blah\nKOMODOC_DONE_job1_biber:0\r\n", "job1_biber") === 0);
-  check("finds a nonzero exit code", vm.parseDoneMarker("KOMODOC_DONE_x:2\n", "x") === 2);
+  check("finds the marker and exit code", vm.parseDoneMarker("blah\nLIBREPAPER_DONE_job1_biber:0\r\n", "job1_biber") === 0);
+  check("finds a nonzero exit code", vm.parseDoneMarker("LIBREPAPER_DONE_x:2\n", "x") === 2);
   check("returns null when absent", vm.parseDoneMarker("no marker here", "x") === null);
 }
 
@@ -106,7 +106,7 @@ function fakeResources({ prefetchProgress = [] } = {}) {
         memory_mb: 256,
         biber: "2.21",
         objects: "biber-vm/rel1/objects/",
-        boot: { ready: "KOMODOC_VM_READY" },
+        boot: { ready: "LIBREPAPER_VM_READY" },
         files: {
           "libv86.js": { url: "biber-vm/rel1/libv86.js", sha256: "a", size: 1 },
           "v86.wasm": { url: "biber-vm/rel1/v86.wasm", sha256: "b", size: 1 },

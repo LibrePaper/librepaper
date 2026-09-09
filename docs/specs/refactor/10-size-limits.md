@@ -165,7 +165,7 @@ deleted, or retried in a loop.
 
 ### What the tests cover
 
-`crates/komodoc/src/tests/size_limits.rs` (22 tests, 1 ignored):
+`crates/librepaper/src/tests/size_limits.rs` (22 tests, 1 ignored):
 
 - Policy: the shipped defaults validate; the supported maximum is
   configurable; `--max-size 100` is a configuration error and does not clamp;

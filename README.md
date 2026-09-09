@@ -1,4 +1,4 @@
-# Komodoc
+# LibrePaper
 
 Publish an HTML or Markdown document, share a link to it, and collect
 comments and highlights in real time.
@@ -13,11 +13,11 @@ comments and highlights in real time.
 
 <div class="screenshot-pair">
 <figure>
-<img src="docs/images/sandbox.png" alt="Komodoc sandbox landing page with the upload area and document list">
+<img src="docs/images/sandbox.png" alt="LibrePaper sandbox landing page with the upload area and document list">
 <figcaption>The free sandbox landing page.</figcaption>
 </figure>
 <figure>
-<img src="docs/images/commenting.png" alt="A document open in Komodoc with highlighted passages and the comments sidebar">
+<img src="docs/images/commenting.png" alt="A document open in LibrePaper with highlighted passages and the comments sidebar">
 <figcaption>The annotation window, with highlights and threaded comments.</figcaption>
 </figure>
 </div>
@@ -25,25 +25,25 @@ comments and highlights in real time.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/komodoc/main/deploy/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/librepaper/main/deploy/install.sh | sh
 ```
 
 The installer supports Linux and macOS. Windows binaries are available on the
-[releases page](https://github.com/vincentarelbundock/komodoc/releases).
+[releases page](https://github.com/vincentarelbundock/librepaper/releases).
 
 ## Web interface: Try it now!
 
-The Komodoc sandbox is a free website where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log with your Github username:
+The LibrePaper sandbox is a free website where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log with your Github username:
 
-[Komodoc sandbox](https://komodoc.arelbundock.com)
+[LibrePaper sandbox](https://librepaper.arelbundock.com)
 
 If you do not want to log in but want to try annotating some documents, you can try one of these live examples:
 
-- [Markdown: What a Regression Table Is Hiding](https://komodoc.arelbundock.com/docs/markdown-what-a-regression-table-is-hiding-c9kqgt7acs)
-- [Typst: What a Confidence Interval Does Not Say](https://komodoc.arelbundock.com/docs/typst-what-a-confidence-interval-does-not-say-5vvxv8ebpd)
-- [HTML: What the Bootstrap Actually Resamples](https://komodoc.arelbundock.com/docs/html-what-the-bootstrap-actually-resamples-g6zm9dbzpa) (rendered by Quarto)
-- [LaTeX: What a Standard Error Assumes](https://komodoc.arelbundock.com/docs/latex-what-a-standard-error-assumes-75x2fwzpc8)
-- [Publication and management console](https://komodoc.arelbundock.com) (requires Github Login)
+- [Markdown: What a Regression Table Is Hiding](https://librepaper.arelbundock.com/docs/markdown-what-a-regression-table-is-hiding-c9kqgt7acs)
+- [Typst: What a Confidence Interval Does Not Say](https://librepaper.arelbundock.com/docs/typst-what-a-confidence-interval-does-not-say-5vvxv8ebpd)
+- [HTML: What the Bootstrap Actually Resamples](https://librepaper.arelbundock.com/docs/html-what-the-bootstrap-actually-resamples-g6zm9dbzpa) (rendered by Quarto)
+- [LaTeX: What a Standard Error Assumes](https://librepaper.arelbundock.com/docs/latex-what-a-standard-error-assumes-75x2fwzpc8)
+- [Publication and management console](https://librepaper.arelbundock.com) (requires Github Login)
 
 A published document lives at `/docs/<title>-<suffix>`, where the suffix is
 random so the link cannot be guessed from the title. The seeded examples above
@@ -54,39 +54,39 @@ other document keeps an unguessable address. A link that resolves to nothing
 gets a 404 page saying so.
 
 <aside class="callout warning">
-<strong>Warning:</strong> Do not publish confidential information on the Komodoc sandbox. Normally, documents are only visible to the person who uploaded them, or to people holding a share link they minted. But if you are gathering comments on documents about national security, you should probably <a href="#self-managed-server">host your own instance</a> or find another solution.
+<strong>Warning:</strong> Do not publish confidential information on the LibrePaper sandbox. Normally, documents are only visible to the person who uploaded them, or to people holding a share link they minted. But if you are gathering comments on documents about national security, you should probably <a href="#self-managed-server">host your own instance</a> or find another solution.
 </aside>
 
 <br>
 
 The standard web-based workflow is:
 
-1. Open a Komodoc server in a browser, 
+1. Open a LibrePaper server in a browser, 
 2. Sign in with GitHub (if the manager requires it), 
 3. Upload an `.html` or `.md` file,
 4. Send the read link to your readers, or mint a comment link and send that.
 
 Only somebody holding a live link can open the document; its bare URL opens
-for you alone. The Komodoc console lists only the documents you own or have
+for you alone. The LibrePaper console lists only the documents you own or have
 been let into.
 
-Click on the thumbnails near to top of this page for screenshots of the Komodoc management console and annotation page.
+Click on the thumbnails near to top of this page for screenshots of the LibrePaper management console and annotation page.
 
 
 ## CLI
 
-Every command executed from the CLI must point to a specific Komodoc server. Typically, users will specify their server with a flag. For example, to make a request against the Komodoc sandbox, a live instance maintained by the developers, use:
+Every command executed from the CLI must point to a specific LibrePaper server. Typically, users will specify their server with a flag. For example, to make a request against the LibrePaper sandbox, a live instance maintained by the developers, use:
 
 ```sh
-komodoc <COMMAND> --server https://komodoc.arelbundock.com
+librepaper <COMMAND> --server https://librepaper.arelbundock.com
 ```
 
 When making repeated calls to the same server, it is convenient to specify the address using an [Environment Variable](#environment-variables). This allows us to omit the `--server` flag:
 
 ```sh
-export KOMODOC_SERVER="https://komodoc.arelbundock.com"
+export LIBREPAPER_SERVER="https://librepaper.arelbundock.com"
 
-komodoc <COMMAND>
+librepaper <COMMAND>
 ```
 
 In the examples below, we use the environment variables and omit the flag.
@@ -96,7 +96,7 @@ In the examples below, we use the environment variables and omit the flag.
 Sign in once, through the deployment rather than through any one provider:
 
 ```sh
-komodoc login
+librepaper login
 ```
 
 It prints an address and an eight-character code:
@@ -113,7 +113,7 @@ code and the account it would sign in, and nothing happens until you press
 terminal.
 
 The token that comes back is the deployment's own and lasts ninety days.
-`komodoc logout` deletes it. It cannot be revoked one at a time: rotating the
+`librepaper logout` deletes it. It cannot be revoked one at a time: rotating the
 server's session key signs every browser and every terminal out at once.
 
 ### Publish
@@ -121,7 +121,7 @@ server's session key signs every browser and every terminal out at once.
 Publish an HTML or Markdown document:
 
 ```sh
-komodoc publish paper.html --title "My Paper"
+librepaper publish paper.html --title "My Paper"
 ```
 
 HTML files must be self-contained, with images, styles, and fonts embedded. For
@@ -141,17 +141,17 @@ the same document, the way two browsers' do.
 A document is a directory, so publish the directory:
 
 ```sh
-komodoc publish paper/ --title "My Paper"
+librepaper publish paper/ --title "My Paper"
 ```
 
 Everything in it goes: the chapters, the `.bib`, the figures. Three things are
 left behind â names beginning with a dot, the main file's own `.pdf`, and
 whatever git ignores, since a `.gitignore` is the author's own statement of
 what is derived. Which file is the document is the one text at the top level
-that Komodoc renders, or `main.*`; when neither settles it, `--main` does:
+that LibrePaper renders, or `main.*`; when neither settles it, `--main` does:
 
 ```sh
-komodoc publish paper/ --main chapters/thesis.typ
+librepaper publish paper/ --main chapters/thesis.typ
 ```
 
 Publishing a single file that reads its neighbours says so rather than
@@ -160,7 +160,7 @@ it themselves, and would get the error you never saw:
 
 ```
 paper.typ reads lib.typ and refs.bib; publish the directory to send them along:
-  komodoc publish .
+  librepaper publish .
 ```
 
 ### List
@@ -172,7 +172,7 @@ you publish again gets a new one; the seeded examples below keep theirs,
 because their suffix is derived rather than random:
 
 ```sh
-komodoc list
+librepaper list
 ```
 
 ```
@@ -201,11 +201,11 @@ read, comment, edit -- each of which can be created, replaced, revoked and
 given an expiry. Minting one is the whole act of sharing:
 
 ```sh
-komodoc share c9k                       # print the owner's link and every role's link
-komodoc share c9k --link comment        # mint (or rotate) the comment link
-komodoc share c9k --link edit --until 30d
-komodoc share c9k --link comment --label "Review bot" --budget 20
-komodoc share c9k --revoke edit         # turn the edit link off
+librepaper share c9k                       # print the owner's link and every role's link
+librepaper share c9k --link comment        # mint (or rotate) the comment link
+librepaper share c9k --link edit --until 30d
+librepaper share c9k --link comment --label "Review bot" --budget 20
+librepaper share c9k --revoke edit         # turn the edit link off
 ```
 
 That prints one URL with a key in its fragment. A fragment is never sent to a
@@ -213,7 +213,7 @@ server, so the key lands in no access log and on no `Referer` header. Minting a
 role's link again rotates it: the old key dies and the new one takes over,
 which is how a leaked link is killed without losing the role it stood for.
 Links expire after six months unless `--until` says otherwise (`--until never`
-for one that does not). `komodoc publish` mints the read link when it creates
+for one that does not). `librepaper publish` mints the read link when it creates
 a document and prints that, with no expiry, so what it prints is the thing to
 send; revoke it and the document is yours alone until you mint another.
 
@@ -244,17 +244,17 @@ and for nobody else.
 
 Named grants -- an editor or a commenter added by GitHub login, from before
 links existed -- are legacy: still honoured, still revocable by that login,
-but a document never grows new ones. `komodoc share c9k` lists any that remain
+but a document never grows new ones. `librepaper share c9k` lists any that remain
 under a `people (legacy)` heading.
 
 Every command that acts on one document takes `--key` with a link, or the key
 out of one, and then acts as that link's holder rather than as your sign-in:
 
 ```sh
-komodoc comment c9k --key 'https://komodoc.example.org/docs/c9k#k=…'
-komodoc sync c9k paper.typ --key …      # an edit link; no login needed where
+librepaper comment c9k --key 'https://librepaper.example.org/docs/c9k#k=…'
+librepaper sync c9k paper.typ --key …      # an edit link; no login needed where
                                         # the deployment asks for none
-komodoc export c9k --key …
+librepaper export c9k --key …
 ```
 
 The owner is one account, because the storage quota and `destroy` both need an
@@ -262,13 +262,13 @@ answer to "whose". Handing it on is its own command, confirmed the way
 `destroy` is:
 
 ```sh
-komodoc transfer c9k alice
+librepaper transfer c9k alice
 ```
 
 The document, its history, its comments and its storage quota all move. An
 editor cannot share: the owner is the one whose quota and whose name are on the
 document. In the browser, all of this is the **Share** button in the reader,
-and `komodoc list` marks the documents shared with you with the role you hold.
+and `librepaper list` marks the documents shared with you with the role you hold.
 
 ### Comment
 
@@ -276,7 +276,7 @@ Open a document in your browser for commenting. The ID is the one `list`
 prints (a full slug also works), and `--key` takes a link you were sent:
 
 ```sh
-komodoc comment c9k
+librepaper comment c9k
 ```
 
 ### Edit
@@ -288,7 +288,7 @@ next to the source folds away. `edit` takes the same ID `comment` does, and
 just opens that page:
 
 ```sh
-komodoc edit c9k
+librepaper edit c9k
 ```
 
 The **Files** sidebar is a folder tree. Its toolbar creates files and folders
@@ -317,7 +317,7 @@ Several people can edit at once. The source is a CRDT (Yjs), so two people
 typing in the same sentence converge without either waiting for the other, and
 the toolbar says how many are in the session. The server holds the document,
 relays every update and keeps the result, so closing the last tab loses nothing
-and whoever opens the document next, in a browser or with `komodoc sync`, joins
+and whoever opens the document next, in a browser or with `librepaper sync`, joins
 what is there.
 
 What is shared is the source. The preview is not: each browser renders what it
@@ -326,7 +326,7 @@ relaying a few dozen bytes per keystroke.
 
 History is kept for you. The server takes a checkpoint of the source when the
 document has been quiet for a while, when the last editor leaves, when someone
-comments, and whenever `komodoc publish` writes to it. Unchanged text reuses its
+comments, and whenever `librepaper publish` writes to it. Unchanged text reuses its
 checkpoint; an explicit restore records a new event. The history panel lets you
 read earlier versions, compare changes, and restore a whole version or bring
 back individual passages in the editor.
@@ -342,14 +342,14 @@ The formats, and they are not available in the same places:
 
 | | Published with | Renderer | Over the wire |
 |---|---|---|---|
-| **Markdown** | `komodoc publish paper.md` | comrak | ~130 KB compressed |
-| **Typst** | `komodoc publish paper.typ` | typst | ~13 MB compressed |
-| **HTML** | `komodoc publish paper.html` | the identity | nothing |
-| **LaTeX** | `komodoc publish paper.tex` | WasmTex, fetched by the browser | ~6 MB for pdfTeX and its format, then the packages a document asks for |
+| **Markdown** | `librepaper publish paper.md` | comrak | ~130 KB compressed |
+| **Typst** | `librepaper publish paper.typ` | typst | ~13 MB compressed |
+| **HTML** | `librepaper publish paper.html` | the identity | nothing |
+| **LaTeX** | `librepaper publish paper.tex` | WasmTex, fetched by the browser | ~6 MB for pdfTeX and its format, then the packages a document asks for |
 
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
-no `typst` binary on your PATH, because the compiler is inside Komodoc, and it
+no `typst` binary on your PATH, because the compiler is inside LibrePaper, and it
 is the same one the editor runs â so a document cannot render one way when it
 is published and another way when it is edited.
 
@@ -371,7 +371,7 @@ rendered" until an editor compiles them. Native Typst publishing uploads its
 PDF when the compiled inputs match the published project.
 
 The typst renderer is built by `make typst`, which needs a Rust toolchain and
-is deliberately not part of `make build`. Without it Komodoc builds and runs
+is deliberately not part of `make build`. Without it LibrePaper builds and runs
 exactly as before, and simply does not offer typst editing.
 
 A document published as HTML is its own source, and its renderer is the
@@ -388,12 +388,12 @@ fix that cannot wait for a render.
 
 #### LaTeX
 
-`komodoc publish paper.tex` stores a `.tex` file as `latex`, and
-`komodoc publish paper/` takes the whole directory — the chapters, the `.bib`,
-the figures. Nothing is compiled on the way: Komodoc carries no TeX, no build
+`librepaper publish paper.tex` stores a `.tex` file as `latex`, and
+`librepaper publish paper/` takes the whole directory — the chapters, the `.bib`,
+the figures. Nothing is compiled on the way: LibrePaper carries no TeX, no build
 embeds one, and there is no `make latex`.
 
-LaTeX is compiled in the browser, by Komodoc's own pinned release of the
+LaTeX is compiled in the browser, by LibrePaper's own pinned release of the
 [WasmTex](https://github.com/corca-ai/wasmtex) engines — pdfTeX, XeTeX,
 LuaTeX and BibTeX built for WebAssembly, with the formats generated for those
 exact binaries and a pinned TeX Live package snapshot. An editor's browser
@@ -402,7 +402,7 @@ and compiles automatically from then on; readers see the stored PDF and fetch
 no compiler at all. Packages arrive from the deployment's mirror one file at a
 time as a compile asks for them, and verified files stay in browser storage
 so the next document costs nothing to fetch. The engines are GPL works of
-their own, fetched at run time rather than linked into Komodoc; their notices
+their own, fetched at run time rather than linked into LibrePaper; their notices
 travel with the mirror.
 
 The project engine — Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX — and the pinned
@@ -411,7 +411,7 @@ a `% !TEX program = xelatex` line in the main file, then looks for packages
 that only a Unicode engine can load, and otherwise uses pdfLaTeX.
 
 BibTeX runs in the browser. Biber does not, and two things stand in for it.
-If Komodoc's local app is running on your machine, the reader hands it the
+If LibrePaper's local app is running on your machine, the reader hands it the
 `.bcf` and the `.bib` files, runs your own Biber, and continues typesetting
 in the browser. Without the app, the reader boots a small Linux guest in a
 worker — a Debian image holding Biber and nothing else, run by v86 — and runs
@@ -420,10 +420,10 @@ the real Biber there; slower, but nothing to install.
 The local app is the same binary:
 
 ```sh
-komodoc local start        # a loopback service; prints a pairing code
-komodoc local doctor       # which TeX tools it found, and whether it can confine them
-komodoc local status
-komodoc local disconnect --all
+librepaper local start        # a loopback service; prints a pairing code
+librepaper local doctor       # which TeX tools it found, and whether it can confine them
+librepaper local status
+librepaper local disconnect --all
 ```
 
 Enter the code once in the document's Settings panel and later fallbacks are
@@ -441,9 +441,9 @@ A self-hoster says where the browser distribution comes from:
 ```sh
 make latex-mirror                                # compiler and TeX packages
 make deploy LATEX=latex/mirror                    # use that mirror locally
-komodoc serve --latex /srv/komodoc/latex          # or a copied mirror
-komodoc serve --latex https://mirror.example.com  # or a bucket serving one
-komodoc serve --latex                             # or the project's own
+librepaper serve --latex /srv/librepaper/latex          # or a copied mirror
+librepaper serve --latex https://mirror.example.com  # or a bucket serving one
+librepaper serve --latex                             # or the project's own
 ```
 
 `make deploy` checks that the selected mirror contains a default WasmTex
@@ -473,11 +473,11 @@ it makes the file on your disk a peer in the same session, so you can work in
 vim, Positron or Emacs and still be in the document everyone else is reading.
 
 ```sh
-komodoc sync c9k paper.typ
+librepaper sync c9k paper.typ
 ```
 
 ```
-syncing paper.typ with https://komodoc.example.org/docs/coverage-t2rpf5rzq6
+syncing paper.typ with https://librepaper.example.org/docs/coverage-t2rpf5rzq6
 joined the session (2 peers)
 paper.typ changed
 checkpoint 4f2a91c
@@ -492,7 +492,7 @@ and saving text the document already has is none. If the file is not there
 when you start, it is written from the document, which is how you pull one
 down to edit locally.
 
-Beside a Makefile that runs `quarto render`, `komodoc sync c9k paper.html`
+Beside a Makefile that runs `quarto render`, `librepaper sync c9k paper.html`
 turns every render into a checkpoint with no step between your tools and your
 readers.
 
@@ -542,16 +542,16 @@ keep their own bibliography compilers. Zotero exports can be uploaded as
 
 ### Agents
 
-Give an agent a Komodoc link and it can work on the document with that link's
+Give an agent a LibrePaper link and it can work on the document with that link's
 permissions. A read link reads, a comment link also annotates, and an edit
 link also changes source. Signing in supplies attribution and satisfies the
 deployment's sign-in policy; it does not give an agent using a read link the
 owner's editing rights.
 
-Komodoc ships three agent skills. Install them with:
+LibrePaper ships three agent skills. Install them with:
 
 ```sh
-npx skills add vincentarelbundock/komodoc
+npx skills add vincentarelbundock/librepaper
 ```
 
 That works for Claude Code, opencode, Cursor, and the other agents
@@ -559,20 +559,20 @@ That works for Claude Code, opencode, Cursor, and the other agents
 `--agent claude-code` to pick one. You can also copy the directories under
 [`skills/`](skills) into your agent's skill directory by hand.
 
-- [`komodoc-document`](skills/komodoc-document/SKILL.md) — read, comment on,
+- [`librepaper-document`](skills/librepaper-document/SKILL.md) — read, comment on,
   and edit a document from its link.
-- [`komodoc-pair`](skills/komodoc-pair/SKILL.md) — pair live in the sidebar
+- [`librepaper-pair`](skills/librepaper-pair/SKILL.md) — pair live in the sidebar
   chat.
-- [`komodoc-write`](skills/komodoc-write/SKILL.md) — proofread, tighten, rewrite,
+- [`librepaper-write`](skills/librepaper-write/SKILL.md) — proofread, tighten, rewrite,
   and explain with anchored suggestions an editor reviews.
 
-Each explains how to install the single Komodoc binary locally and use its
+Each explains how to install the single LibrePaper binary locally and use its
 commands. Any agent that can run commands can use them:
 
 ```sh
-komodoc agent capabilities 'https://komodoc.example.org/docs/paper#k=YOUR_KEY'
-komodoc agent read 'https://komodoc.example.org/docs/paper#k=YOUR_KEY'
-komodoc agent comment 'https://komodoc.example.org/docs/paper#k=YOUR_KEY' \
+librepaper agent capabilities 'https://librepaper.example.org/docs/paper#k=YOUR_KEY'
+librepaper agent read 'https://librepaper.example.org/docs/paper#k=YOUR_KEY'
+librepaper agent comment 'https://librepaper.example.org/docs/paper#k=YOUR_KEY' \
   --exact 'selected words' --body 'Please explain this assumption.'
 ```
 
@@ -580,8 +580,8 @@ Each command returns JSON. Read the current source before editing, save the
 revised text locally, and pass the source SHA you read:
 
 ```sh
-komodoc agent edit "$KOMODOC_DOCUMENT" --file revised.md --expected-sha SOURCE_SHA
-komodoc agent checkpoint "$KOMODOC_DOCUMENT"
+librepaper agent edit "$LIBREPAPER_DOCUMENT" --file revised.md --expected-sha SOURCE_SHA
+librepaper agent checkpoint "$LIBREPAPER_DOCUMENT"
 ```
 
 `--file` names the local input; `--path` selects a remote file inside a
@@ -591,9 +591,9 @@ session as the browser and wait for durable acknowledgement.
 
 The robot icon opens a private live channel. Start your preferred
 agent yourself, then give it the connection instructions from that panel;
-`komodoc-pair` is the skill that covers this mode.
-The agent uses `komodoc agent chat watch` to receive messages and
-`komodoc agent chat post` to reply. It uses the same document commands above
+`librepaper-pair` is the skill that covers this mode.
+The agent uses `librepaper agent chat watch` to receive messages and
+`librepaper agent chat post` to reply. It uses the same document commands above
 for comments and edits. No local service, pairing, provider adapter, or
 agent launcher is needed.
 
@@ -613,7 +613,7 @@ offer **Ask assistant**, carrying the error's original source context.
 The agent must be connected before either side can send. Messages are held only
 in the live clients and server memory: they are not saved, backed up, or replayed
 after refresh or restart. Both document access and a separate conversation
-credential are required. Komodoc cannot wake or stop an external agent, and an
+credential are required. LibrePaper cannot wake or stop an external agent, and an
 agent may send content to its chosen model provider according to its own
 configuration.
 
@@ -625,7 +625,7 @@ See the [live chat interface](docs/protocol/chat.md) and the
 By default a server keeps everything in a directory:
 
 ```sh
-komodoc serve --data ./komodoc-data
+librepaper serve --data ./librepaper-data
 ```
 
 It can keep it in any S3-compatible bucket instead â R2, AWS, MinIO, Backblaze
@@ -633,18 +633,18 @@ It can keep it in any S3-compatible bucket instead â R2, AWS, MinIO, Backbl
 and the ownership of the data are yours:
 
 ```sh
-export KOMODOC_S3_ACCESS_KEY=...
-export KOMODOC_S3_SECRET_KEY=...
+export LIBREPAPER_S3_ACCESS_KEY=...
+export LIBREPAPER_S3_SECRET_KEY=...
 
-komodoc serve --s3-endpoint https://<account>.r2.cloudflarestorage.com \
-              --s3-bucket komodoc --s3-region auto
+librepaper serve --s3-endpoint https://<account>.r2.cloudflarestorage.com \
+              --s3-bucket librepaper --s3-region auto
 ```
 
 Credentials come from the environment by preference: a flag is visible to every
-process on the machine and lands in your shell history, and komodoc says so if
+process on the machine and lands in your shell history, and librepaper says so if
 you pass one.
 
-Everything komodoc writes lives under one prefix (`komodoc/` by default,
+Everything librepaper writes lives under one prefix (`librepaper/` by default,
 `--s3-prefix` to change it), so a bucket can be shared and deleting a
 document has a bounded blast radius. It never deletes the bucket, and never
 touches a key outside its own prefix.
@@ -668,7 +668,7 @@ the whole directory at that moment, so a chapter and the file that includes it
 can never come back out of step.
 
 ```sh
-komodoc history c9k
+librepaper history c9k
 ```
 
 ```
@@ -683,8 +683,8 @@ Name a moment so it stands out, and so it is the last thing shed if a quota
 ever bites:
 
 ```sh
-komodoc label c9k 4f2a91c "sent to the journal"
-komodoc label c9k 4f2a91c            # and to take the name off again
+librepaper label c9k 4f2a91c "sent to the journal"
+librepaper label c9k 4f2a91c            # and to take the name off again
 ```
 
 In the reader, the history button opens the same list beside the document.
@@ -702,8 +702,8 @@ individual changes into the live source.
 The same comparisons and whole-version restore are available in the terminal:
 
 ```sh
-komodoc diff c9k 8b03d77 4f2a91c
-komodoc restore c9k 8b03d77
+librepaper diff c9k 8b03d77 4f2a91c
+librepaper restore c9k 8b03d77
 ```
 
 Restore requires editor access. It records the current version before applying
@@ -719,18 +719,18 @@ position, so it still finds its place after the file has moved on underneath
 it:
 
 ```sh
-komodoc suggest c9k --find "with 95% probability" --replace "in 95% of samples"
+librepaper suggest c9k --find "with 95% probability" --replace "in 95% of samples"
 ```
 
 `--find` must occur exactly once in the file (the main file by default;
-`--path` names another one); `komodoc suggest` refuses and says how many
+`--path` names another one); `librepaper suggest` refuses and says how many
 times otherwise, so the anchor is never ambiguous. An empty `--replace`
 proposes deleting the passage; `--note` adds an optional remark. It prints
 the new comment's id, which is what `accept` and `reject` take:
 
 ```sh
-komodoc accept c9k 22222222-2222-4222-8222-222222222222
-komodoc reject c9k 22222222-2222-4222-8222-222222222222
+librepaper accept c9k 22222222-2222-4222-8222-222222222222
+librepaper reject c9k 22222222-2222-4222-8222-222222222222
 ```
 
 `accept` requires editor access. It applies the proposal to the live source
@@ -750,10 +750,10 @@ Export annotations as readable Markdown. `export` takes the same ID `comment`
 does, a short ID from `list`:
 
 ```sh
-komodoc export c9k --format markdown --out comments.md
+librepaper export c9k --format markdown --out comments.md
 ```
 
-Without `--format markdown`, Komodoc exports W3C Web Annotation JSON-LD.
+Without `--format markdown`, LibrePaper exports W3C Web Annotation JSON-LD.
 
 ### Response to reviewers
 
@@ -763,7 +763,7 @@ within each, with the remark, the passage as that reviewer saw it, what became
 of it since, and the thread underneath as the answer.
 
 ```sh
-komodoc export c9k --format response --since 4f2a91c --out response.md
+librepaper export c9k --format response --since 4f2a91c --out response.md
 ```
 
 ```markdown
@@ -781,7 +781,7 @@ komodoc export c9k --format response --since 4f2a91c --out response.md
 ```
 
 Replying to a comment in the reader is writing this document. `--since` takes
-a checkpoint from `komodoc history` and keeps the comments made at or after
+a checkpoint from `librepaper history` and keeps the comments made at or after
 it, which is a round of review.
 
 **Then** is a quotation rather than a recollection, because every comment
@@ -798,7 +798,7 @@ Delete one document, including its history and comments. It takes the same ID
 asks you to type the full slug to confirm unless `--yes` is supplied:
 
 ```sh
-komodoc destroy --document c9k
+librepaper destroy --document c9k
 ```
 
 It deletes the document, its history and its comments. Nothing else on the
@@ -806,7 +806,7 @@ server is touched.
 
 ## Deploy
 
-Komodoc is one static binary with everything compiled into it: the reader, the
+LibrePaper is one static binary with everything compiled into it: the reader, the
 renderers, and the server. Run it on your laptop for a quick trial, or on a
 small host for something durable.
 
@@ -815,10 +815,10 @@ small host for something durable.
 Run a public local instance with no GitHub setup at all:
 
 ```sh
-komodoc serve --port 8081 --publishers YOUR-GITHUB-LOGIN
+librepaper serve --port 8081 --publishers YOUR-GITHUB-LOGIN
 ```
 
-Open <http://localhost:8081>. Everything is stored in `komodoc-data` (see [Storage](#storage)).
+Open <http://localhost:8081>. Everything is stored in `librepaper-data` (see [Storage](#storage)).
 
 ### Self-managed server
 
@@ -826,7 +826,7 @@ Run the bundled server on your own host, with `--data` set to a persistent
 directory:
 
 ```sh
-komodoc serve --port 8080 --data /var/lib/komodoc --publishers YOUR-GITHUB-LOGIN
+librepaper serve --port 8080 --data /var/lib/librepaper --publishers YOUR-GITHUB-LOGIN
 ```
 
 To let people sign in, set up a [GitHub app](#github-oauth) for this server's address.
@@ -838,7 +838,7 @@ Run the server behind a reverse proxy that terminates HTTPS, and have the proxy 
 Delete documents automatically after their most recent publication:
 
 ```sh
-komodoc serve --expire-after 24h
+librepaper serve --expire-after 24h
 ```
 
 For a fixed lifetime from the first upload, use `--expire-from created`. Use
@@ -847,8 +847,8 @@ hourly pass, and once at startup.
 
 ### Storage
 
-`komodoc serve` keeps documents, comments and the session key in the directory
-named by `--data` or `KOMODOC_DATA`, `komodoc-data` in the working directory by
+`librepaper serve` keeps documents, comments and the session key in the directory
+named by `--data` or `LIBREPAPER_DATA`, `librepaper-data` in the working directory by
 default; back it up if the instance holds real work. Point it at a bucket
 instead and the server holds nothing of its own â see
 [Bring your own bucket](#bring-your-own-bucket).
@@ -865,7 +865,7 @@ Six flags bound what a deployment will store:
 | `--uploads-per-hour` | uploads one publisher may make in an hour | 30 |
 
 ```sh
-komodoc serve --max-size 8 --max-assets 16 --quota 500 --storage 10240
+librepaper serve --max-size 8 --max-assets 16 --quota 500 --storage 10240
 ```
 
 `--max-size` may not be set above 8 MB. It bounds the text a person can see;
@@ -901,7 +901,7 @@ Two flags say who may do what.
 annotate them. Both accept a comma-separated list of names:
 
 ```sh
-komodoc serve --publishers alice,anne@example.org --commenters @example.org
+librepaper serve --publishers alice,anne@example.org --commenters @example.org
 ```
 
 A name is a GitHub login, a Google account's verified email address, or a whole
@@ -938,7 +938,7 @@ listed to strangers.
 
 Authentication hardening updates browser and terminal credentials to separate,
 versioned signatures. After upgrading from unversioned credentials, sign in
-again in the browser and run `komodoc login` for each terminal. Existing
+again in the browser and run `librepaper login` for each terminal. Existing
 anonymous visitor cookies retain their ownership and upgrade on the next page
 visit. Logout removes the browser cookie; account session revocation is what
 invalidates copies of issued credentials.
@@ -974,23 +974,23 @@ Pass the credentials to `serve` through the environment, rather than as flags: a
 an environment variable is not.
 
 ```sh
-export KOMODOC_GITHUB_CLIENT_ID="..."
-export KOMODOC_GITHUB_CLIENT_SECRET="..."
+export LIBREPAPER_GITHUB_CLIENT_ID="..."
+export LIBREPAPER_GITHUB_CLIENT_SECRET="..."
 ```
 
-Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `KOMODOC_GOOGLE_CLIENT_ID` and `KOMODOC_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review â but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
+Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review â but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
 
-`komodoc logout` deletes the terminal's local token. It does not revoke a
+`librepaper logout` deletes the terminal's local token. It does not revoke a
 copy held elsewhere. Rotating the server's session key invalidates issued
 browser and terminal credentials across the deployment.
 
 ## Environment variables
 
-[^github-data]: Komodoc requests no GitHub scopes through OAuth. It uses the
+[^github-data]: LibrePaper requests no GitHub scopes through OAuth. It uses the
 GitHub API only to obtain your public login name; it does not collect your email,
 repositories, or other profile data.
 
-[^google-data]: Komodoc reads the verified email address on a Google account,
+[^google-data]: LibrePaper reads the verified email address on a Google account,
 the hosted domain, the account identifier, and the profile name. The address is what
 `--publishers`, `--commenters` and a grant by name are matched against, and
 where a retention notice is sent; it is shown to no other reader anywhere.
@@ -1000,20 +1000,20 @@ Flags take precedence over their corresponding environment variables.
 
 | Variable | Purpose |
 | --- | --- |
-| `KOMODOC_SERVER` | Default server for `login`, `publish`, `list`, `export`, and document deletion |
-| `KOMODOC_TOKEN` | A token to use instead of the one `komodoc login` stores; a GitHub token works too |
-| `KOMODOC_DATA` | Directory `serve` and `seed` use for documents and comments (default `komodoc-data`) |
-| `KOMODOC_GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
-| `KOMODOC_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
-| `KOMODOC_GOOGLE_CLIENT_ID` | Google OAuth client ID, for signing in with Google |
-| `KOMODOC_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `KOMODOC_PUBLISHERS` | Who may publish: `anyone`, `any`, or a list of logins, addresses and domains |
-| `KOMODOC_COMMENTERS` | Who may comment: `anyone`, `any`, or a list of logins, addresses and domains |
-| `KOMODOC_EXPIRE_AFTER` | Automatically delete documents after a duration such as `24h` or `30d` |
-| `KOMODOC_EXPIRE_FROM` | Start retention at `updated` (default) or `created` |
-| `KOMODOC_LATEX` | Where `serve` reads LaTeX distributions from: an https bucket or a directory |
-| `KOMODOC_VERSION` | Version selected by the installer |
-| `KOMODOC_BIN_DIR` | Installation directory selected by the installer |
+| `LIBREPAPER_SERVER` | Default server for `login`, `publish`, `list`, `export`, and document deletion |
+| `LIBREPAPER_TOKEN` | A token to use instead of the one `librepaper login` stores; a GitHub token works too |
+| `LIBREPAPER_DATA` | Directory `serve` and `seed` use for documents and comments (default `librepaper-data`) |
+| `LIBREPAPER_GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
+| `LIBREPAPER_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
+| `LIBREPAPER_GOOGLE_CLIENT_ID` | Google OAuth client ID, for signing in with Google |
+| `LIBREPAPER_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `LIBREPAPER_PUBLISHERS` | Who may publish: `anyone`, `any`, or a list of logins, addresses and domains |
+| `LIBREPAPER_COMMENTERS` | Who may comment: `anyone`, `any`, or a list of logins, addresses and domains |
+| `LIBREPAPER_EXPIRE_AFTER` | Automatically delete documents after a duration such as `24h` or `30d` |
+| `LIBREPAPER_EXPIRE_FROM` | Start retention at `updated` (default) or `created` |
+| `LIBREPAPER_LATEX` | Where `serve` reads LaTeX distributions from: an https bucket or a directory |
+| `LIBREPAPER_VERSION` | Version selected by the installer |
+| `LIBREPAPER_BIN_DIR` | Installation directory selected by the installer |
 
 ## Building from source
 
@@ -1023,7 +1023,7 @@ Three builds go into one binary.
 | --- | --- | --- |
 | `crates/engine/` | markdown and typst, rendered | cargo, natively and to WebAssembly |
 | `web/` | the pages: Svelte, Skeleton, CodeMirror 6, Yjs | bun and vite |
-| `crates/komodoc/` | the server and the command line | cargo |
+| `crates/librepaper/` | the server and the command line | cargo |
 
 The engine is built twice â natively into the binary, and to WebAssembly for
 the browser â so the editor's preview and the command line's output come from
@@ -1034,7 +1034,7 @@ nothing under that directory is edited by hand.
 make web      # the pages, from web/
 make wasm     # Markdown, bibliography parsing, and citation formatting
 make typst    # the typst renderer, ~30 MB (slow, and optional)
-make build    # dist/komodoc, with the pages and renderers embedded
+make build    # dist/librepaper, with the pages and renderers embedded
 make test     # rustfmt, clippy and the test suite
 ```
 
@@ -1060,7 +1060,7 @@ binary; signing in does not require Quarto or a checkout of this repository.
 
 The pages are [Skeleton](https://skeleton.dev) on Tailwind 4. Skeleton supplies
 the furniture -- buttons, cards, inputs, tables, dialogs, tooltips, toasts --
-and `web/src/styles/theme.css` colours all of it from Komodoc's own four
+and `web/src/styles/theme.css` colours all of it from LibrePaper's own four
 colours, so the palette is written down once and nowhere else.
 
 Three rules keep a growing application looking like one application, and

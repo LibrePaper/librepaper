@@ -57,7 +57,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     requests.add(controller);
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     const headers = { Accept: "application/json", ...SHELL_HEADERS, ...keyHeaders(documentKey(overrideLink)) };
-    if (authorized && token) headers["X-Komodoc-Chat-Token"] = token;
+    if (authorized && token) headers["X-LibrePaper-Chat-Token"] = token;
     if (body !== undefined) headers["Content-Type"] = "application/json";
     try {
       const response = await fetcher(`/api/documents/${encodeURIComponent(slug)}${suffix}`, {

@@ -643,7 +643,7 @@ fn to_hayagriva(library: &Library) -> (hayagriva::Library, Vec<Diagnostic>) {
     for entry in &library.entries {
         let mut bib = format!("@{}{{{},", entry.entry_type, entry.key);
         for (field, value) in &entry.raw {
-            if field.starts_with("__komodoc_") || field == "crossref" {
+            if field.starts_with("__librepaper_") || field == "crossref" {
                 continue;
             }
             bib.push_str(field);

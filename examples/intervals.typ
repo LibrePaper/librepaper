@@ -2,7 +2,7 @@
 
 A confidence interval is a statement about a procedure, not about a parameter. The distinction sounds pedantic until you watch what readers do with the number, at which point it becomes the whole difference between a result and a claim.
 
-This note is written in Typst, and Komodoc rendered it to HTML when it was published: no toolchain ran over it first. The same compiler runs in the editor, so the preview beside the source is the document you are reading.
+This note is written in Typst, and LibrePaper rendered it to HTML when it was published: no toolchain ran over it first. The same compiler runs in the editor, so the preview beside the source is the document you are reading.
 
 == The procedure, not the parameter
 

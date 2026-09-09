@@ -9,14 +9,14 @@ Its receipt source revisions are `0dddc924cc6e69bd2a4b4630e02efe414f84515e`
 snapshot `2025-92e10d3241a312f0`.
 
 The candidate is technically promising for ordinary client-side pdfLaTeX, but it
-does not satisfy Komodoc's browser-only bibliography requirement. WasmTex's own
+does not satisfy LibrePaper's browser-only bibliography requirement. WasmTex's own
 [`docs/bibliography.md`](https://github.com/corca-ai/wasmtex/blob/44c5861fcdf729838205b00b96ac9509bc7fb677/docs/bibliography.md) says the default biblatex implementation is
 “biblatex-lite”, covering a numeric/author-year subset, while full-fidelity Biber
 requires a registered server backend. [`docs/howto.md`](https://github.com/corca-ai/wasmtex/blob/44c5861fcdf729838205b00b96ac9509bc7fb677/docs/howto.md) also states that the
 browser `WasmTex` UI is pdfLaTeX-only; XeLaTeX/LuaLaTeX require the headless
 compiler and matching hosted assets. A server Biber dependency is disallowed for
 this use case, so this is a candidate for a constrained preview, not a complete
-Komodoc renderer.
+LibrePaper renderer.
 
 ## Published asset and source evidence
 
@@ -43,7 +43,7 @@ the WASM assets; consumers must self-host or sync the hosted release. The worker
 URL must be same-origin with the application: a direct local page using the
 GitHub Pages URL failed with `SecurityError: Failed to construct 'Worker'` even
 though the worker response advertises CORS. The harness had to proxy the exact
-published paths locally. A Komodoc integration therefore owns an asset proxy or
+published paths locally. A LibrePaper integration therefore owns an asset proxy or
 mirrored release, CDN availability, mirror snapshot selection, and receipt
 verification.
 
@@ -122,10 +122,10 @@ full Biber as unsupported without a server backend.
 
 ## Recommended next fix
 
-Do not integrate WasmTex as Komodoc's complete browser LaTeX backend yet. If it is
+Do not integrate WasmTex as LibrePaper's complete browser LaTeX backend yet. If it is
 kept as an experiment, first fix or isolate the classic BibTeX rerun/bbl injection
 path, add an actual browser test that checks citation text/order, and decide where
-Komodoc will self-host the exact engine release and immutable TeX Live snapshot.
+LibrePaper will self-host the exact engine release and immutable TeX Live snapshot.
 Full Biber remains a hard blocker unless the requirement changes to allow an
 explicit server backend. Repeat Xe/Lua and packages with a longer driver timeout,
 then test SyncTeX coordinate mapping and memory under the real editor worker.

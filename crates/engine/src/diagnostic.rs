@@ -265,7 +265,7 @@ fn quote(text: &str) -> String {
 /// the command line and a reader can all show the same one.
 pub fn diagnostics_page(diagnostics: &[Diagnostic], title: &str) -> String {
     let mut body = String::from(
-        "<h1>This document does not compile</h1>\n<ul class=\"komodoc-diagnostics\">\n",
+        "<h1>This document does not compile</h1>\n<ul class=\"librepaper-diagnostics\">\n",
     );
     for diagnostic in diagnostics {
         let place = if diagnostic.line == 0 {
@@ -296,11 +296,11 @@ pub fn diagnostics_page(diagnostics: &[Diagnostic], title: &str) -> String {
         body.push_str("</li>\n");
     }
     body.push_str("</ul>\n");
-    let head = "<style>\n.komodoc-diagnostics { list-style: none; padding: 0; }\n\
-        .komodoc-diagnostics > li { border-left: 3px solid #c0392b; padding-left: 0.75rem; \
-        margin-bottom: 1rem; }\n.komodoc-diagnostics > li.warning { border-left-color: #b7791f; }\n\
-        .komodoc-diagnostics .where { color: #666; font-variant-numeric: tabular-nums; }\n\
-        .komodoc-diagnostics .hints { color: #666; }\n</style>";
+    let head = "<style>\n.librepaper-diagnostics { list-style: none; padding: 0; }\n\
+        .librepaper-diagnostics > li { border-left: 3px solid #c0392b; padding-left: 0.75rem; \
+        margin-bottom: 1rem; }\n.librepaper-diagnostics > li.warning { border-left-color: #b7791f; }\n\
+        .librepaper-diagnostics .where { color: #666; font-variant-numeric: tabular-nums; }\n\
+        .librepaper-diagnostics .hints { color: #666; }\n</style>";
     crate::page::page(title, head, &body)
 }
 

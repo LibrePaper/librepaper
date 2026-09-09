@@ -1,8 +1,8 @@
-# Existing Komodoc room operations for automation
+# Existing LibrePaper room operations for automation
 
 This document describes the HTTP and WebSocket contract used by headless
-automation peers. The credential is the value of the x-komodoc-key header.
-Clients may also send x-komodoc-automation: 1; this is required for
+automation peers. The credential is the value of the x-librepaper-key header.
+Clients may also send x-librepaper-automation: 1; this is required for
 link-bounded operation when a machine also has a cached signed-in browser
 session. The server keeps that identity for attribution and policy ceilings,
 but the live link remains the complete document authority. Signed-in comments
@@ -15,7 +15,7 @@ GET /api/documents/{slug}/snapshot returns one room-locked read:
 
     {
       "version": 1,
-      "protocol": "komodoc.snapshot.v1",
+      "protocol": "librepaper.snapshot.v1",
       "slug": "paper",
       "title": "Paper",
       "format": "markdown",
@@ -65,7 +65,7 @@ The result is the created or changed event:
       "type": "comment",
       "request_id": "request-123",
       "version": 1,
-      "protocol": "komodoc.room.v1",
+      "protocol": "librepaper.room.v1",
       "comment": {}
     }
 
@@ -91,7 +91,7 @@ An editor receives either a durable checkpoint:
       "request_id": "checkpoint-123",
       "durable": true,
       "version": 1,
-      "protocol": "komodoc.room.v1"
+      "protocol": "librepaper.room.v1"
     }
 
 or a durable no-op with noop: true when the live tree already has that
@@ -137,7 +137,7 @@ it must not assume that receiving a relay means an edit is durable.
 ## Compatibility
 
 Unknown response fields must be ignored. Clients must require
-protocol == komodoc.room.v1 (or the snapshot protocol) only when they need
+protocol == librepaper.room.v1 (or the snapshot protocol) only when they need
 the v1 guarantees, and otherwise retain the pre-v1 browser behavior. The
 server accepts messages without request_id so existing browser bundles can
 continue to connect during a rolling deployment.

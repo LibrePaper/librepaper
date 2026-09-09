@@ -6,7 +6,7 @@ Updated: 2026-09-08 (America/Toronto)
 
 Finish the **local SQLite** implementation of `docs/specs/catalog.md`. Turso is
 explicitly deferred. After functional compliance is approved by an Astra review,
-reorganize `crates/komodoc` according to the module tree in the latest user request,
+reorganize `crates/librepaper` according to the module tree in the latest user request,
 run another complete review, and only then commit everything on
 `live-markdown-editor`.
 
@@ -15,7 +15,7 @@ findings were fixed, but Astra's code trace showed that several core findings re
 
 ## Repository state
 
-- Working directory: `/home/vincent/repos/komodoc`
+- Working directory: `/home/vincent/repos/librepaper`
 - Intended branch: `live-markdown-editor`
 - The worktree is intentionally dirty and contains a large uncommitted implementation.
 - Do not reset or discard files. Some pre-existing/unrelated changes are also present;
@@ -35,14 +35,14 @@ Before the second Astra review, the current tree passed:
 ```text
 cargo fmt --all
 git diff --check
-cargo clippy -p komodoc --all-targets -- -D warnings
-cargo test -p komodoc --quiet
+cargo clippy -p librepaper --all-targets -- -D warnings
+cargo test -p librepaper --quiet
 
 library:     616 passed, 0 failed, 1 ignored
 integration: 4 passed, 0 failed
 ```
 
-`target/debug/komodoc` was rebuilt from the current tree immediately before the
+`target/debug/librepaper` was rebuilt from the current tree immediately before the
 second review. Green tests do **not** establish spec compliance.
 
 ## Review status
@@ -145,7 +145,7 @@ exercises the production path and does not mask the issue with fixture-only beha
    crash cases against a freshly built real binary and file-backed SQLite deployment.
 6. Ask a `gpt-6-astra` instance at maximum reasoning for a complete read-only review
    against all 18 findings. Fix every actionable finding and repeat until APPROVE.
-7. Only after functional approval, reorganize `crates/komodoc` following the user's
+7. Only after functional approval, reorganize `crates/librepaper` following the user's
    proposed `cli/`, `server/`, `room/`, `document/`, `storage/`, `auth/`, and `seed/`
    boundaries. Preserve public paths deliberately; update source references in docs.
 8. Re-run the complete checks and ask Astra to review the reorganized final tree.

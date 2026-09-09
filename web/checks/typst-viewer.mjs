@@ -63,19 +63,19 @@ const frame = document.getElementById("frame");
 window.seen = { ready: [], regions: [] };
 addEventListener("message", (event) => {
   const message = event.data;
-  if (!message || message.komodoc !== true) return;
+  if (!message || message.librepaper !== true) return;
   if (message.type === "ready") window.seen.ready.push(message.text);
   if (message.type === "regions-unplaceable") window.seen.regions.push(message);
 });
 window.sendPdf = async (path) => {
   const bytes = await fetch(path).then((r) => r.arrayBuffer());
   window.seen.ready.length = 0;
-  frame.contentWindow.postMessage({ komodoc: true, type: "preview", pdf: bytes }, "*", [bytes]);
+  frame.contentWindow.postMessage({ librepaper: true, type: "preview", pdf: bytes }, "*", [bytes]);
 };
 window.text = () => window.seen.ready.at(-1) || "";
 window.anchor = (selector) => anchorOne(window.text(), selector, flatten(window.text()));
-window.paint = (ranges) => frame.contentWindow.postMessage({ komodoc: true, type: "highlight", ranges }, "*");
-window.paintRegions = (regions) => frame.contentWindow.postMessage({ komodoc: true, type: "regions", regions }, "*");
+window.paint = (ranges) => frame.contentWindow.postMessage({ librepaper: true, type: "highlight", ranges }, "*");
+window.paintRegions = (regions) => frame.contentWindow.postMessage({ librepaper: true, type: "regions", regions }, "*");
 window.doc = () => frame.contentDocument;
 window.ready = true;
 </script></body>`;
@@ -228,7 +228,7 @@ async function run() {
     const spans = [...page.querySelectorAll('.textLayer span:not(.gap)')].filter((span) => span.textContent.trim());
     const lefts = spans.map((span) => span.getBoundingClientRect().left).sort((a, b) => a - b);
     const gap = lefts.slice(1).reduce((max, left, i) => Math.max(max, left - lefts[i]), 0);
-    return { marks: page.querySelectorAll('mark[data-komodoc~="typst-column"]').length, gap };
+    return { marks: page.querySelectorAll('mark[data-librepaper~="typst-column"]').length, gap };
   `);
   check("a text anchor paints in Typst's multi-column PDF layout", columns?.marks > 0 && columns.gap > 50, JSON.stringify(columns));
   const ligature = await tab.eval(`
@@ -236,7 +236,7 @@ async function run() {
     if (!at) return null;
     window.paint([{ id: 'typst-ligature', start: at.start, end: at.end, motivation: 'highlighting' }]);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    return { marks: window.doc().querySelectorAll('mark[data-komodoc~="typst-ligature"]').length, text: window.text().slice(at.start, at.end) };
+    return { marks: window.doc().querySelectorAll('mark[data-librepaper~="typst-ligature"]').length, text: window.text().slice(at.start, at.end) };
   `);
   check("a ligature-safe Typst text anchor paints", ligature?.marks > 0 && ligature.text === "fixture", JSON.stringify(ligature));
 
@@ -296,8 +296,8 @@ async function run() {
       if (!at) return null;
       window.paint([{ id: 'typst-cross-page', start: at.start, end: at.end, motivation: 'commenting' }]);
       await new Promise((resolve) => setTimeout(resolve, 120));
-      const viewer = frame.contentWindow.komodocViewer;
-      const marks = [...window.doc().querySelectorAll('mark[data-komodoc]')].filter((m) => !m.closest('span.gap'));
+      const viewer = frame.contentWindow.librepaperViewer;
+      const marks = [...window.doc().querySelectorAll('mark[data-librepaper]')].filter((m) => !m.closest('span.gap'));
       const markPages = [...new Set(marks.map((mark) => mark.closest('.page')?.dataset.page).filter(Boolean))];
       return { at, startPage: viewer.pageForOffset(at.start), endPage: viewer.pageForOffset(at.end - 1), markPages, marks: marks.length };
     `);
@@ -312,7 +312,7 @@ async function run() {
     if (!at) return { index: window.text().indexOf('Montréal, β, and'), sample: window.text().slice(window.text().indexOf('Montréal') - 20, window.text().indexOf('Montréal') + 80) };
     window.paint([{ id: 'typst-unicode', start: at.start, end: at.end, motivation: 'highlighting' }]);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    return { at, marks: window.doc().querySelectorAll('mark[data-komodoc~="typst-unicode"]').length };
+    return { at, marks: window.doc().querySelectorAll('mark[data-librepaper~="typst-unicode"]').length };
   `);
   check("a repeated Unicode anchor is painted through the shared anchor code", known?.marks > 0, JSON.stringify(known));
 

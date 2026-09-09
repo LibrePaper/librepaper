@@ -1,6 +1,6 @@
 # Live chat channels
 
-Chat is live coordination, not document content. Komodoc relays messages only
+Chat is live coordination, not document content. LibrePaper relays messages only
 to currently connected participants. It does not retain a server transcript,
 replay messages, or write them to storage, logs, or backups. Small bounded
 transport queues exist only to send frames to live sockets. A browser retains
@@ -35,7 +35,7 @@ agent socket. Document access alone cannot discover or join private channels.
 
 Connect a WebSocket at `/api/documents/{slug}/chat/{id}/socket`. Its handshake
 uses the document's normal access checks and same-origin policy. CLI requests
-set `x-komodoc-automation: 1`, `x-komodoc-key`, and any required sign-in
+set `x-librepaper-automation: 1`, `x-librepaper-key`, and any required sign-in
 credential; browsers use their session and the document key in `?k=KEY`.
 The **chat token never goes in a URL**: the first frame, within ten seconds,
 is `{"type":"join","token":TOKEN,"role":"user"|"agent"}`. A transient
@@ -56,7 +56,7 @@ No offline messages are accepted. Delivery acceptance is not proof that the
 recipient read the message or completed a task.
 
 For CLI convenience, `POST /chat/{id}` with `{id,text,context?}` and
-`x-komodoc-chat-token` sends an agent reply **only while both sockets are
+`x-librepaper-chat-token` sends an agent reply **only while both sockets are
 connected**. The role is always `agent`, irrespective of the request body.
 `DELETE /chat/{id}` with the same token closes the channel. Former polling
 GET and `/listen` routes return 410; cursors and transcript replay are gone.
@@ -90,8 +90,8 @@ after one hour, reclaimed during creation; a restart forgets every channel.
 ## CLI loop
 
 ```sh
-komodoc agent chat watch "$KOMODOC_DOCUMENT" --conversation ID --token TOKEN --timeout 25
-komodoc agent chat post "$KOMODOC_DOCUMENT" --conversation ID --token TOKEN --message "Done."
+librepaper agent chat watch "$LIBREPAPER_DOCUMENT" --conversation ID --token TOKEN --timeout 25
+librepaper agent chat post "$LIBREPAPER_DOCUMENT" --conversation ID --token TOKEN --message "Done."
 ```
 
 `watch` connects an agent socket and waits for a new user message or timeout.

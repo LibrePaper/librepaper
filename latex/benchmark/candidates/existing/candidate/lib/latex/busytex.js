@@ -2,7 +2,7 @@
 //
 // Written by us against the pipeline's exported API. BusyTeX is MIT and is
 // fetched at runtime as a separate work; nothing of it is linked into
-// Komodoc's build.
+// LibrePaper's build.
 //
 // The shape of this distribution is the opposite of SwiftLaTeX's. One module
 // holds pdfTeX, XeTeX, LuaTeX, BibTeX and dvipdfmx, and a TeX Live comes with

@@ -32,7 +32,7 @@ tracks. Complete the remaining caller migrations here.
 ## Implementation evidence
 
 Delivered on `refactor/write-errors`. The type is `room::WriteError`
-(`crates/komodoc/src/room/error.rs`); the HTTP and socket mapping is
+(`crates/librepaper/src/room/error.rs`); the HTTP and socket mapping is
 `server::reply::{refused, refused_with, socket_refusal}`.
 
 ### Before and after
@@ -91,7 +91,7 @@ holds answers with an update, not with a refusal
 - **Sockets** (`server/socket.rs`, `server/mod.rs`): checkpoint failures answer
   with `socket_refusal`, which keeps `request_id`, `version` and `protocol`;
   a refused update closes the socket with the error's client message.
-- **`komodoc sync`** (`cli/sync.rs`): `terminal_close_reason` asked whether a
+- **`librepaper sync`** (`cli/sync.rs`): `terminal_close_reason` asked whether a
   close reason was one of four literals. It now asks
   `room::error::permanent_close_reason`, the same table the room closes with,
   so rewording a refusal cannot leave the CLI reconnecting forever.
@@ -148,5 +148,5 @@ than 201 followed by a document with no text.
 
 `WriteError::Document` and `ServerBusy` exist to keep four socket close
 messages byte-identical, because a close frame carries only text and
-`komodoc sync` reads it. If the protocol ever carries a machine-readable code
+`librepaper sync` reads it. If the protocol ever carries a machine-readable code
 on close, those variants collapse into `Size`, `Quota` and `Capacity`.

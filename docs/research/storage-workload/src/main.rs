@@ -1,4 +1,4 @@
-use komodoc::session;
+use librepaper::session;
 use std::time::Instant;
 
 fn measure(label: &str, files: Vec<(&str, String)>) {

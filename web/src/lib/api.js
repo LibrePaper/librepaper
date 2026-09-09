@@ -5,7 +5,7 @@
 // the server, that a state-changing request came from this page and not from a
 // hostile document on the sibling documents host. It goes on every write and
 // on the listing, never on plain navigation.
-export const SHELL_HEADERS = { "X-Komodoc-Client": "shell" };
+export const SHELL_HEADERS = { "X-LibrePaper-Client": "shell" };
 
 async function json(response) {
   if (!response.ok) {
@@ -19,7 +19,7 @@ async function json(response) {
 // document. A header rather than a query parameter, so it never reaches an
 // access log; a browser cannot set one cross-origin without a preflight the
 // server never grants, so this is proof it came from this page.
-export const KEY_HEADER = "X-Komodoc-Key";
+export const KEY_HEADER = "X-LibrePaper-Key";
 
 export const keyHeaders = (key) => (key ? { [KEY_HEADER]: key } : {});
 

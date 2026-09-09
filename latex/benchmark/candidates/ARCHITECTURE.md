@@ -1,11 +1,11 @@
-# Provisional direction for Komodoc's browser TeX runtime
+# Provisional direction for LibrePaper's browser TeX runtime
 
 The best current hypothesis is an existing WASM TeX foundation with a
-Komodoc-controlled release pipeline, package catalog, and browser orchestration.
+LibrePaper-controlled release pipeline, package catalog, and browser orchestration.
 The engine supplier remains an evaluation question. The product should expose a
 dependable compilation environment rather than a menu of experimental runtimes.
 
-## What Komodoc would own
+## What LibrePaper would own
 
 1. **One coherent release identity.** Pin engine sources/toolchain, compiled
    modules, formats, package archives/database, bibliography tools, font indexes,

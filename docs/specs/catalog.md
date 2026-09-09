@@ -2,7 +2,7 @@
 
 ## Decision
 
-KomoDoc has one storage design with two deployment profiles:
+LibrePaper has one storage design with two deployment profiles:
 
 - **Local:** SQLite is authoritative and immutable objects live in the same
   private deployment directory. This is the simple self-hosted profile.
@@ -63,7 +63,7 @@ export/republication instruction. Never silently treat it as an empty store.
 is always `<directory>/state`.
 
 `serve --catalog <libsql-url> --bucket <r2-bucket>` selects the hosted profile
-and requires `KOMODOC_CATALOG_TOKEN` plus R2 credentials. Hosted mode also
+and requires `LIBREPAPER_CATALOG_TOKEN` plus R2 credentials. Hosted mode also
 requires an absolute `--server-state <path>` for its private disposable state.
 Reject partial or mixed configurations. Credentials and secret-file locations
 come from the environment and are never printed with their contents.
@@ -429,8 +429,8 @@ budget and durable revision before its row becomes visible.
 Session signing and link sealing use separate random 256-bit keys. Local mode
 stores them as `<deployment>/secrets/session.key` and `links.key` in a `0700`
 directory with `0600` files. Create them durably only for a verified empty
-deployment. Hosted mode requires `KOMODOC_SESSION_KEY_FILE` and
-`KOMODOC_LINK_SEALING_KEY_FILE`, provisioned from protected external storage or
+deployment. Hosted mode requires `LIBREPAPER_SESSION_KEY_FILE` and
+`LIBREPAPER_LINK_SEALING_KEY_FILE`, provisioned from protected external storage or
 a secret manager; the disposable state directory is not their recovery source.
 A nonempty catalogue with a missing or unreadable key refuses startup.
 
@@ -473,7 +473,7 @@ points. Thus a zero document recovery window does not shorten backup retention.
 ## Migrations
 
 Migrations are embedded, numbered, forward-only files under
-`crates/komodoc/migrations/`. Each runs in its own primary transaction and
+`crates/librepaper/migrations/`. Each runs in its own primary transaction and
 updates `PRAGMA user_version`. Startup applies missing versions, accepts an
 exact match and rejects a database newer than the binary.
 

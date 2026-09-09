@@ -42,7 +42,7 @@ const MAGNET = 12;
 export const PANES = {
   editor: {
     name: "editor",
-    key: "komodoc-source-share",
+    key: "librepaper-source-share",
     // A share of what the source and the document have between them.
     fraction: true,
     reset: 1 / 2,
@@ -51,7 +51,7 @@ export const PANES = {
   },
   sidebar: {
     name: "sidebar",
-    key: "komodoc-sidebar",
+    key: "librepaper-sidebar",
     fraction: false,
     reset: 360, // px, a comfortable comment card
     min: 240, // px, about the narrowest a comment card reads at
@@ -122,7 +122,7 @@ function shareOf(window) {
 
 /// Under this the window is being shared rather than laid out: the column's
 /// natural width stops being a third of it. Above the mobile breakpoint in
-/// `komodoc.css`, where the panes stop sharing a row at all.
+/// `librepaper.css`, where the panes stop sharing a row at all.
 const NARROW = 1000;
 
 /// The source's share of the surface, within what both of them can read at.

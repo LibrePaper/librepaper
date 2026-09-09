@@ -3,7 +3,7 @@
 The prototype successfully runs ordinary Linux TeX and real Biber in a Chromium
 worker, with no installed user app or compilation server. The tested multifile,
 Biber, and ACM documents match the native reference in extracted text, page count,
-and bibliography bytes. The current v86 setup is too slow for Komodoc's desired
+and bibliography bytes. The current v86 setup is too slow for LibrePaper's desired
 live-preview experience.
 
 ## What was built

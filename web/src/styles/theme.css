@@ -1,11 +1,11 @@
-/* The Komodoc theme.
+/* The LibrePaper theme.
  *
  * Skeleton asks a theme for eleven stops of each colour and derives the rest
  * -- the contrast text, and the light/dark pairs -- from them. So this file is
  * the whole of the palette, and the only place in the application where a
  * colour is written down.
  *
- * The four that matter are the ones Komodoc already had:
+ * The four that matter are the ones LibrePaper already had:
  * colorhunt.co/palette/9cb0806187642b5748273338. Pine carries every
  * affordance, moss is the same colour with more light in it, sage is what a
  * highlight is tinted with, and slate is the ink and the panels. Each ramp is
@@ -13,7 +13,7 @@
  * same hue rather than a new decision.
  */
 
-[data-theme="komodoc"] {
+[data-theme="librepaper"] {
 	/* Light, for now. Every colour below has its dark counterpart and the
 	   application is written in light/dark pairs throughout, so turning this to
 	   `light dark` is the whole of the change -- but a document in the frame
@@ -146,7 +146,7 @@
 
 	/* The height of the bar, which the reader sizes its panes against: the
 	   window less this is exactly what the panes have. */
-	--komodoc-bar: 3.5rem;
+	--librepaper-bar: 3.5rem;
 
 	/* The spacing step everything is measured in, and a corner radius quiet
 	   enough that a row of controls reads as a row rather than as a row of

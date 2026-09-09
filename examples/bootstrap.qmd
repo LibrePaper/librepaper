@@ -36,7 +36,7 @@ the whole method, and it is an approximation of one distribution by another, not
 a way of extracting extra information from a fixed sample.
 
 This note was written in Quarto and rendered to HTML, figures and all, before
-it was published. Komodoc stores that HTML as its own source, so the editor
+it was published. LibrePaper stores that HTML as its own source, so the editor
 opens on the page rather than on the `.qmd`, and a lasting change belongs in
 the `.qmd` and a fresh render.
 

@@ -2,7 +2,7 @@
 
 ## Decision
 
-KomoDoc uses one batching implementation with two storage profiles:
+LibrePaper uses one batching implementation with two storage profiles:
 
 - **Local:** SQLite catalogue and immutable objects in a local directory.
 - **Hosted:** Turso catalogue and immutable objects in R2.

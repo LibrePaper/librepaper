@@ -2,13 +2,13 @@
 
 ## User workflow
 
-A user gives their AI agent a Komodoc document or file link and asks it to
+A user gives their AI agent a LibrePaper document or file link and asks it to
 read, comment, or edit. A distributable `SKILL.md` explains how to install
-Komodoc locally and use its commands. The user can continue giving
+LibrePaper locally and use its commands. The user can continue giving
 instructions in the agent's own window, or chat from an Agent panel in the
 document sidebar, opened with Lucide's robot (`bot`) icon.
 
-The agent runs on the user's computer. Komodoc is agnostic about the agent,
+The agent runs on the user's computer. LibrePaper is agnostic about the agent,
 model, and provider: it supplies document tools and a private live channel.
 The user's agent manages its own model access, credentials, and execution.
 
@@ -22,7 +22,7 @@ Ship a skill with installation instructions using the existing release
 installer (`deploy/install.sh`), platform guidance, a version check, and
 working examples for the supported CLI. Check for a compatible installed
 binary before installing. Installation should require neither a local
-Komodoc server nor a source checkout. Keep the examples synchronized with
+LibrePaper server nor a source checkout. Keep the examples synchronized with
 the shipped commands; the skill must not advertise unimplemented commands.
 
 Commands accept the pasted link directly, resolving its server, document,
@@ -56,8 +56,8 @@ ordinary output and logs.
 ## Sidebar conversation
 
 The Agent sidebar is a private ephemeral channel. The user starts their agent
-outside Komodoc and gives it the document link and channel instructions.
-Komodoc does not launch, configure, or manage agent processes or providers.
+outside LibrePaper and gives it the document link and channel instructions.
+LibrePaper does not launch, configure, or manage agent processes or providers.
 
 The panel creates a conversation with an unguessable capability separate from
 the document link. Reading or posting requires both current document access
@@ -72,7 +72,7 @@ The panel offers copyable instructions for the local agent, a transcript,
 a message composer, current file and optional selected passage context, and
 an indication that an agent socket is connected. The browser can send only
 while that socket is present. Presence does not prove an agent is working or
-that Komodoc can wake or stop an external agent.
+that LibrePaper can wake or stop an external agent.
 
 The CLI exposes chat create, watch, and post commands. Watching waits for user
 messages over a WebSocket with a bounded timeout. Each watch receives only
@@ -94,7 +94,7 @@ Rust and expose presence without implying that the file client has a caret.
 
 ## Automation clients as peers
 
-Extract a reusable peer module from `crates/komodoc/src/cli/sync.rs` and use it
+Extract a reusable peer module from `crates/librepaper/src/cli/sync.rs` and use it
 to back the commands and library for a headless automation client. Its
 credential is the supplied read, comment, or edit link, presented internally
 the way `--key` presents one, with the access boundary described above.

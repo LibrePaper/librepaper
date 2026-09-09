@@ -220,7 +220,7 @@ query are distinguishable.
 
 The map the caller migration follows. Built by enumerating the 142
 `pub fn`/`pub(crate) fn` names on `impl Catalog` across the ten catalogue
-files, resolving every call in `crates/komodoc/src` outside `storage/catalog/`
+files, resolving every call in `crates/librepaper/src` outside `storage/catalog/`
 whose receiver chain roots in a `catalog` binding, excluding `#[cfg(test)]`
 regions and `tests/`, then reading each enclosing function for its gate,
 receipt and reservation ownership. **228 production call sites in 18 files.**
@@ -560,7 +560,7 @@ reached them, 20 of them while holding a room `tokio::Mutex`. After: 75 of
 them are admitted jobs on blocking threads, and the four listed above remain
 synchronous with their reasons. No lock was reordered or shortened.
 
-Tests, in `crates/komodoc/src/tests/catalogue_room.rs`, all against a real
+Tests, in `crates/librepaper/src/tests/catalogue_room.rs`, all against a real
 catalogue-backed room whose publication receipt was completed the way
 production completes it:
 

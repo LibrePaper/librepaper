@@ -4,7 +4,7 @@
 // v86 guest, booted from the release's pinned image, that runs the real
 // `biber` binary on a BCF a successful WasmTex pass already produced. It
 // never runs TeX, never touches the network beyond fetching its own pinned
-// image, and is only ever started when local Komodoc is unavailable and
+// image, and is only ever started when local LibrePaper is unavailable and
 // bibliography work remains.
 //
 // `vm-worker.js` owns the emulator; this file owns *when* to talk to it --
@@ -79,10 +79,10 @@ export function validateRelativePath(path) {
   return path;
 }
 
-/// Parses `KOMODOC_DONE_<id>:<code>` out of the serial transcript captured
+/// Parses `LIBREPAPER_DONE_<id>:<code>` out of the serial transcript captured
 /// since a command started, the same marker `tinytex-v86/worker.js` uses.
 export function parseDoneMarker(output, id) {
-  const found = output.match(new RegExp("KOMODOC_DONE_" + id + ":(\\d+)\\r?\\n"));
+  const found = output.match(new RegExp("LIBREPAPER_DONE_" + id + ":(\\d+)\\r?\\n"));
   return found ? Number(found[1]) : null;
 }
 
@@ -212,8 +212,8 @@ async function boot(release, onProgress) {
         basefsUrl: byName["fs.json"],
         baseurl: at(vmJson.objects),
         memoryBytes: (vmJson.memory_mb || 256) * 1024 * 1024,
-        ready: vmJson.boot?.ready || "KOMODOC_VM_READY",
-        failed: vmJson.boot?.failed || "KOMODOC_VM_FAILED",
+        ready: vmJson.boot?.ready || "LIBREPAPER_VM_READY",
+        failed: vmJson.boot?.failed || "LIBREPAPER_VM_FAILED",
         setup: vmJson.boot?.setup || null,
         exec: vmJson.boot?.exec || null,
         cmdline: vmJson.boot?.cmdline || null,

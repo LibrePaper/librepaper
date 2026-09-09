@@ -16,7 +16,7 @@
 // which is why every pattern below runs on stripped, commentless text.
 //
 // Reimplemented against `wasmtex`'s own `engine-select.js` (not imported: that
-// package is not a runtime dependency of Komodoc). The precedence and the
+// package is not a runtime dependency of LibrePaper). The precedence and the
 // package/command lists mirror it because the corpus and the wasmtex
 // benchmark already encode "what this document needs" against these rules.
 

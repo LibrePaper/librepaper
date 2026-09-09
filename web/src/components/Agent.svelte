@@ -87,13 +87,13 @@
     if (!connection.id || !connection.token || connection.ended || !validDocumentLink()) return "";
     const documentLink = agentLink || link;
     return [
-      "Check the Komodoc CLI: komodoc --version && komodoc agent --help. If missing or outdated, follow https://github.com/vincentarelbundock/komodoc#install before continuing.",
-      "Load the pairing, document, and writing assistant skills: npx skills add vincentarelbundock/komodoc.",
-      `export KOMODOC_DOCUMENT=${shell(documentLink)}`,
-      `export KOMODOC_CHAT_TOKEN=${shell(connection.token)}`,
-      `export KOMODOC_CONVERSATION=${shell(connection.id)}`,
-      'komodoc agent capabilities "$KOMODOC_DOCUMENT"',
-      `komodoc agent chat watch "$KOMODOC_DOCUMENT" --conversation ${shell(connection.id)} --timeout 25`,
+      "Check the LibrePaper CLI: librepaper --version && librepaper agent --help. If missing or outdated, follow https://github.com/vincentarelbundock/librepaper#install before continuing.",
+      "Load the pairing, document, and writing assistant skills: npx skills add vincentarelbundock/librepaper.",
+      `export LIBREPAPER_DOCUMENT=${shell(documentLink)}`,
+      `export LIBREPAPER_CHAT_TOKEN=${shell(connection.token)}`,
+      `export LIBREPAPER_CONVERSATION=${shell(connection.id)}`,
+      'librepaper agent capabilities "$LIBREPAPER_DOCUMENT"',
+      `librepaper agent chat watch "$LIBREPAPER_DOCUMENT" --conversation ${shell(connection.id)} --timeout 25`,
       "Run watch again whenever you are ready for the next message. Use the document and writing skills for anchored suggestions and report result identifiers in context.results.",
     ].join("\n");
   }
@@ -288,7 +288,7 @@
   <details class="agent-setup" open={setupOpen} ontoggle={(event) => setupOpen = event.currentTarget.open}>
     <summary>Connection settings</summary>
     <div class="setup-body">
-      <p class="panel-muted">Connect an AI agent you already use. Copy the setup prompt into its own window; Komodoc does not run a model or save this conversation.</p>
+      <p class="panel-muted">Connect an AI agent you already use. Copy the setup prompt into its own window; LibrePaper does not run a model or save this conversation.</p>
       <label class="label">Document link for the agent
         <input class="input" type="url" bind:value={agentLink} oninput={(event) => void checkCapabilities(event.currentTarget.value)} aria-describedby="agent-link-help" />
       </label>

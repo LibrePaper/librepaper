@@ -88,7 +88,7 @@ async function compile(example, phase, reference) {
   const finalLog = typeof outputs[stem + '.log'] === 'number' ? readFileSync(join(dir, stem + '.log'), 'utf8') : log;
   const reviewWarnings = warnings(finalLog);
   const agreement = reference && phase !== 'edit' && pdf.pdf ? textAgreement(reference.text, pdf.text) : null;
-  const editVisible = phase === 'edit' && pdf.pdf ? /Komodoc emulator edit\./.test(pdf.text) : null;
+  const editVisible = phase === 'edit' && pdf.pdf ? /LibrePaper emulator edit\./.test(pdf.text) : null;
   const measurement = { phase, seconds, guestCommandSeconds: run.milliseconds / 1000, exitCode: run.exitCode, network, outputs, pdf: pdf.pdf, pages: pdf.pages, warnings: reviewWarnings, textAgreement: agreement, referencePages: reference?.pages, editVisible,
     biberInvoked: /Run number \d+ of rule ['"]biber /.test(log),
     status: run.exitCode || !pdf.pdf ? 'failed' : reviewWarnings.length || editVisible === false || (agreement != null && (agreement < 0.99 || pdf.pages !== reference.pages)) ? 'needs-review' : 'pdf-produced' };
@@ -101,7 +101,7 @@ function native(example, tree) {
   mkdirSync(dir, { recursive: true });
   for (const [path, bytes] of Object.entries(inputFiles(tree))) { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), bytes); }
   try {
-    execFileSync('docker', ['run', '--rm', '--network', 'none', '--platform', 'linux/386', '--user', `${process.getuid()}:${process.getgid()}`, '--mount', `type=bind,src=${dir},dst=/work`, 'komodoc-tinytex-v86:experiment', '/bin/sh', '-c', compileCommand(example)], { stdio: 'inherit', timeout: 180000 });
+    execFileSync('docker', ['run', '--rm', '--network', 'none', '--platform', 'linux/386', '--user', `${process.getuid()}:${process.getgid()}`, '--mount', `type=bind,src=${dir},dst=/work`, 'librepaper-tinytex-v86:experiment', '/bin/sh', '-c', compileCommand(example)], { stdio: 'inherit', timeout: 180000 });
   } catch (error) { console.log(`native ${example.id}: ${error.message}`); return null; }
   return inspectPDF(join(dir, example.main.replace(/\.tex$/, '.pdf')));
 }
@@ -121,7 +121,7 @@ try {
     const record = { id: example.id, engine: example.engine, treeSha256: treeDigest(tree), native: reference ? { pdf: reference.pdf, pages: reference.pages } : null, phases: [] };
     report.cases.push(record);
     record.phases.push(await compile(example, 'first', reference));
-    const edited = tree.texts[tree.main].replace(/\\end\{document\}(?![\s\S]*\\end\{document\})/, '\n\\par Komodoc emulator edit.\n\\end{document}');
+    const edited = tree.texts[tree.main].replace(/\\end\{document\}(?![\s\S]*\\end\{document\})/, '\n\\par LibrePaper emulator edit.\n\\end{document}');
     await file('write', '/work/' + example.id + '/' + tree.main, [...Buffer.from(edited)]);
     record.phases.push(await compile(example, 'edit', reference));
     // Separate TeX execution from latexmk's Perl startup/orchestration cost.

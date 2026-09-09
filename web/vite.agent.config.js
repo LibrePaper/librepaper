@@ -15,7 +15,7 @@ export default defineConfig({
     lib: {
       entry: resolve(import.meta.dirname, "src/agent/agent.js"),
       formats: ["iife"],
-      name: "komodocAgent",
+      name: "librepaperAgent",
       fileName: () => "agent.js",
     },
     target: "es2022",

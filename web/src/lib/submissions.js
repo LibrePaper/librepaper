@@ -3,7 +3,7 @@ import { read, write } from "./storage.js";
 // Keep the complete submission until the server acknowledges it. A reload or
 // a reconnect never treats a missing acknowledgment as a successful write.
 export function submissions({ slug, changed = () => {} }) {
-  const key = `komodoc-submissions-${slug}`;
+  const key = `librepaper-submissions-${slug}`;
   const saved = read(key, []);
   const items = new Map(
     (Array.isArray(saved) ? saved : [])

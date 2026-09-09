@@ -1,5 +1,5 @@
 # Rebuilding this workspace is dominated by one link, not by codegen: the
-# komodoc test binary is a single crate with the whole suite inside it, and
+# librepaper test binary is a single crate with the whole suite inside it, and
 # relinking it after a one-line edit is the slowest thing in the edit-test
 # loop. The default `ld` does that work on one thread. `mold` does it on all
 # of them, which is most of the wait.

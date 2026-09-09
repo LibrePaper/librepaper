@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHmac } from "node:crypto";
 
-const binary = resolve(process.argv[2] || "target/debug/komodoc");
+const binary = resolve(process.argv[2] || "target/debug/librepaper");
 const browsers = process.argv[3] && process.argv[3] !== "both"
   ? [process.argv[3]] : ["firefox", "chromium"];
 const original = "# History acceptance\n\nThe red fox watches the quiet river.\n\nA paragraph to remove.\n";
@@ -17,10 +17,10 @@ const revised = "# History acceptance\n\nThe blue fox watches the quiet river.\n
 const run = promisify(execFile);
 
 for (const name of browsers) {
-  const directory = mkdtempSync(join(tmpdir(), "komodoc-history-browser-"));
+  const directory = mkdtempSync(join(tmpdir(), "librepaper-history-browser-"));
   const port = 20000 + Math.floor(Math.random() * 10000);
   const base = `http://localhost:${port}`;
-  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("KOMODOC_")));
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("LIBREPAPER_")));
   const server = spawn(binary, ["serve", "--port", String(port), "--data", join(directory, "data"), "--publishers", "anyone", "--commenters", "anyone"], {
     stdio: ["ignore", "ignore", "pipe"], env: environment,
   });
@@ -35,7 +35,7 @@ for (const name of browsers) {
     const secret = Buffer.from(readFileSync(join(directory, "data/session.key"), "utf8").trim(), "hex");
     const payload = Buffer.from(`owner|owner|${Math.floor(Date.now() / 1000) + 3600}`).toString("base64url");
     const cookie = `${payload}.${createHmac("sha256", secret).update(payload).digest("base64url")}`;
-    const headers = { "content-type": "application/json", "x-komodoc-client": "1", cookie: `komodoc_session=${cookie}` };
+    const headers = { "content-type": "application/json", "x-librepaper-client": "1", cookie: `librepaper_session=${cookie}` };
     const request = async (path, method = "GET", body) => {
       const response = await fetch(`${base}${path}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
       const result = await response.json();
@@ -51,7 +51,7 @@ for (const name of browsers) {
     await request(`${historyPath}/${first.sha}`, "PATCH", { label: "Original draft" });
     tab = await browser(name, join(directory, "browser"), port + 1);
     await tab.navigate(base);
-    await tab.evaluate(`document.cookie = ${JSON.stringify(`komodoc_session=${cookie}; path=/`)}`);
+    await tab.evaluate(`document.cookie = ${JSON.stringify(`librepaper_session=${cookie}; path=/`)}`);
     await tab.navigate(`${base}/docs/${slug}`);
     await until("editor", () => tab.evaluate('!!document.querySelector(".cm-content")'));
     await tab.insert(revised, true);
@@ -69,7 +69,7 @@ for (const name of browsers) {
     assert.match(diff, /\+The blue fox/);
 
     // An independent read-link visit must offer comparison without an editor.
-    await tab.evaluate('document.cookie = "komodoc_session=; Max-Age=0; path=/"');
+    await tab.evaluate('document.cookie = "librepaper_session=; Max-Age=0; path=/"');
     await tab.navigate("about:blank");
     await tab.navigate(`${base}${shareUrl}`);
     await until("reader preview", async () => (await tab.text()).includes("blue fox"));
@@ -116,7 +116,7 @@ for (const name of browsers) {
     assert.equal(copied.hash, historical.hash, "copied checkpoint retains share key");
 
     // The editor restores through the same route that the CLI uses.
-    await tab.evaluate(`document.cookie = ${JSON.stringify(`komodoc_session=${cookie}; path=/`)}`);
+    await tab.evaluate(`document.cookie = ${JSON.stringify(`librepaper_session=${cookie}; path=/`)}`);
     await tab.navigate("about:blank");
     await tab.navigate(`${base}/docs/${slug}?at=${first.sha}`);
     await until("historical owner preview", async () => (await tab.text()).includes("red fox"));

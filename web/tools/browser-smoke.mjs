@@ -1,13 +1,13 @@
 // The reader, in a real browser.
 //
-// The protocol tests in `komodoc/src/tests/` prove the server and `collab.js`
-// agree. They say nothing about the page a person actually looks at: whether
-// the frame gets painted, whether a reader sees an edit arrive, whether the
-// badge says the true thing when the socket is down. That is what this does --
-// headless Chromium over the DevTools protocol, against a real `komodoc serve`
-// on a temporary directory.
+// The protocol tests in `librepaper/src/tests/` prove the server and
+// `collab.js` agree. They say nothing about the page a person actually looks
+// at: whether the frame gets painted, whether a reader sees an edit arrive,
+// whether the badge says the true thing when the socket is down. That is what
+// this does -- headless Chromium over the DevTools protocol, against a real
+// `librepaper serve` on a temporary directory.
 //
-// Usage: browser-smoke.mjs <path-to-komodoc-binary>
+// Usage: browser-smoke.mjs <path-to-librepaper-binary>
 // Nothing here touches a deployment or any storage but its own temporary one.
 
 import { spawn } from "node:child_process";
@@ -23,13 +23,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
 
-const binary = process.argv[2] || "dist/komodoc";
+const binary = process.argv[2] || "dist/librepaper";
 if (!existsSync(binary)) {
-  console.error(`browser: no komodoc binary at ${binary}; run \`make build\` first`);
+  console.error(`browser: no librepaper binary at ${binary}; run \`make build\` first`);
   process.exit(1);
 }
 
-const data = mkdtempSync(join(tmpdir(), "komodoc-smoke-"));
+const data = mkdtempSync(join(tmpdir(), "librepaper-smoke-"));
 const PORT = 8200 + Math.floor(Math.random() * 300);
 const BASE = `http://localhost:${PORT}`;
 let failures = 0;
@@ -204,8 +204,8 @@ function sessionCookie(login) {
 }
 
 async function publish(body, cookie = "") {
-  const headers = { "content-type": "application/json", "x-komodoc-client": "1" };
-  if (cookie) headers.cookie = `komodoc_session=${cookie}`;
+  const headers = { "content-type": "application/json", "x-librepaper-client": "1" };
+  if (cookie) headers.cookie = `librepaper_session=${cookie}`;
   const response = await fetch(`${BASE}/api/documents`, {
     method: "POST",
     headers,
@@ -369,7 +369,7 @@ async function run() {
   );
   check("publishing hands back a read link", /#k=/.test(owned.share_url || ""), JSON.stringify(owned).slice(0, 120));
   const ownerTab = await openTab(`${BASE}/docs/${owned.slug}`, [
-    { name: "komodoc_session", value: sessionCookie("owner"), domain: "localhost", path: "/" },
+    { name: "librepaper_session", value: sessionCookie("owner"), domain: "localhost", path: "/" },
   ]);
   const readerTab = await openTab(`${BASE}${owned.share_url}`, [], { ownProfile: true });
   const readerSees = await until("the reader renders", async () =>
@@ -444,7 +444,7 @@ async function run() {
   check("the toolbar says the socket is down rather than claiming saved", saidOffline);
 
   await editor.evalInFrame(`
-    parent.postMessage({ komodoc: true, type: "selection",
+    parent.postMessage({ librepaper: true, type: "selection",
       selector: { exact: "The first paragraph.", prefix: "", suffix: "", position: 0 }
     }, ${JSON.stringify(BASE)});
     return true;
@@ -538,8 +538,8 @@ async function run() {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-komodoc-client": "1",
-      cookie: `komodoc_session=${alice}`,
+      "x-librepaper-client": "1",
+      cookie: `librepaper_session=${alice}`,
     },
     body: JSON.stringify({ link: { role: "commenter", until: "180d" } }),
   }).then((r) => r.json());
@@ -554,7 +554,7 @@ async function run() {
     const state = await reviewer.eval(`
       return {
         hash: location.hash,
-        stored: JSON.parse(localStorage.getItem("komodoc-keys") || "{}")["${shared.slug}"] || "",
+        stored: JSON.parse(localStorage.getItem("librepaper-keys") || "{}")["${shared.slug}"] || "",
         text: document.body.innerText,
       };
     `);
@@ -572,7 +572,7 @@ async function run() {
   const asReviewer = await until("the role arrives", async () => {
     const role = await reviewer.eval(`
       const response = await fetch("/api/documents/${shared.slug}", {
-        headers: { "X-Komodoc-Key": JSON.parse(localStorage.getItem("komodoc-keys"))["${shared.slug}"] },
+        headers: { "X-LibrePaper-Key": JSON.parse(localStorage.getItem("librepaper-keys"))["${shared.slug}"] },
       });
       return (await response.json()).role;
     `);
@@ -583,7 +583,7 @@ async function run() {
   // Copying the link puts the key back, so a link copied here is the link
   // that was shared.
   const copied = await reviewer.eval(`
-    const keys = JSON.parse(localStorage.getItem("komodoc-keys"));
+    const keys = JSON.parse(localStorage.getItem("librepaper-keys"));
     return location.origin + "/docs/${shared.slug}#k=" + encodeURIComponent(keys["${shared.slug}"]);
   `);
   check("the copied link carries the key back", copied.endsWith(`#k=${mintedKey}`));
@@ -622,7 +622,7 @@ async function run() {
   check("the empty shell still carries the agent", bare.includes("agent.js"), bare.slice(0, 80));
 
   const ownerOfSecret = await openTab(`${BASE}/docs/${secret.slug}`, [
-    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+    { name: "librepaper_session", value: alice, domain: "localhost", path: "/" },
   ]);
   const shown = await until("the document is served into the owner's frame", async () =>
     (await ownerOfSecret.evalInFrame("return document.body.innerText", secret.slug))?.includes(
@@ -662,7 +662,7 @@ async function run() {
     alice,
   );
   const author = await openTab(`${BASE}/docs/${paper.slug}`, [
-    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+    { name: "librepaper_session", value: alice, domain: "localhost", path: "/" },
   ]);
   await until("the paper is open", async () =>
     (await author.eval(`return document.body.innerText`)).includes("A Modular Paper"),
@@ -778,7 +778,7 @@ async function run() {
   // And the server holds the same directory, which is what a reader will be
   // given and what a checkpoint will record.
   const heldPaper = await fetch(`${BASE}/api/documents/${paper.slug}`, {
-    headers: { cookie: `komodoc_session=${alice}` },
+    headers: { cookie: `librepaper_session=${alice}` },
   }).then((r) => r.json());
   check(
     "the server records which file is the document",
@@ -814,7 +814,7 @@ async function run() {
     alice,
   );
   const illustrator = await openTab(`${BASE}/docs/${illustrated.slug}`, [
-    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+    { name: "librepaper_session", value: alice, domain: "localhost", path: "/" },
   ]);
   await until("the illustrated paper opens", async () =>
     (await illustrator.eval(`return document.body.innerText`)).includes("A Paper With A Figure"),
@@ -869,7 +869,7 @@ async function run() {
     illustrator.requests.find((url) => url.includes(figureRoute)),
   );
   const stored = await fetch(asked, {
-    headers: { "x-komodoc-client": "1", cookie: `komodoc_session=${alice}` },
+    headers: { "x-librepaper-client": "1", cookie: `librepaper_session=${alice}` },
   });
   const back = Buffer.from(await stored.arrayBuffer());
   check(
@@ -933,12 +933,12 @@ async function run() {
   // because that is how a real visit finds it: already set from last time.
   const vimDoc = await publish({ title: "Vim Keys", source: "start\n", source_format: "markdown" }, alice);
   const vimTab = await openTab(`${BASE}/docs/${vimDoc.slug}`, [
-    { name: "komodoc_session", value: alice, domain: "localhost", path: "/" },
+    { name: "librepaper_session", value: alice, domain: "localhost", path: "/" },
   ]);
   await until("the vim document's editor is mounted", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
-  await vimTab.eval(`localStorage.setItem("komodoc-keymap", JSON.stringify("vim")); return true;`);
+  await vimTab.eval(`localStorage.setItem("librepaper-keymap", JSON.stringify("vim")); return true;`);
   await vimTab.send("Page.reload");
   await until("Vim's status panel is drawn", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-vim-panel"))`)),
@@ -970,7 +970,7 @@ async function run() {
   // `:q<Enter>`: the source pane closes, to the document alone.
   await vimKeys(vimTab, ":q<Enter>");
   const closed = await until("the layout closes to the document alone", async () =>
-    (await vimTab.eval(`return JSON.parse(localStorage.getItem("komodoc-layout") || "null")`)) === "document"
+    (await vimTab.eval(`return JSON.parse(localStorage.getItem("librepaper-layout") || "null")`)) === "document"
       ? true
       : null,
   );
@@ -984,7 +984,7 @@ async function run() {
   await until("the source pane reopens", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
-  await vimTab.eval(`localStorage.setItem("komodoc-keymap", JSON.stringify("default")); return true;`);
+  await vimTab.eval(`localStorage.setItem("librepaper-keymap", JSON.stringify("default")); return true;`);
   await vimTab.send("Page.reload");
   await until("the editor remounts with the keys turned off", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),

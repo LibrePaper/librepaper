@@ -1,5 +1,5 @@
 dist/
-komodoc-data/
+librepaper-data/
 examples/*.html
 examples/*_files/
 .envrc

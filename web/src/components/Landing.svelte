@@ -19,7 +19,7 @@
   let me = $state({});
   // Replaced by the server's own on load; this is only what the drop zone
   // says in the instant before that arrives. Keep it in step with
-  // `Configuration::default` in `crates/komodoc/src/config.rs`.
+  // `Configuration::default` in `crates/librepaper/src/config.rs`.
   let config = $state({
     max_document: 4 * 1024 * 1024,
     extensions: [".html", ".htm", ".md", ".markdown", ".typ", ".tex"],
@@ -252,7 +252,7 @@
     const dot = file.name.lastIndexOf(".");
     const extension = dot < 0 ? "" : file.name.slice(dot).toLowerCase();
     if (!config.extensions.includes(extension)) {
-      return refuse(`${file.name} is not a document Komodoc can serve. Only ${config.extensions.join(", ")} work.`);
+      return refuse(`${file.name} is not a document LibrePaper can serve. Only ${config.extensions.join(", ")} work.`);
     }
     if (file.size > config.max_document) {
       return refuse(`${file.name} is ${(file.size / (1024 * 1024)).toFixed(1)} MB; the limit is ${maxLabel}.`);

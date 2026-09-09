@@ -1,4 +1,4 @@
-# SPEC: LaTeX in Komodoc
+# SPEC: LaTeX in LibrePaper
 
 The compiler, its resources, the local fallback and the browser Biber VM are
 specified in [wasmtex.md](wasmtex.md); the module boundaries
@@ -8,7 +8,7 @@ page is the short account of what a person sees, and of what remains.
 ## What happens when a LaTeX document opens
 
 A reader sees the stored PDF at once and downloads no compiler. An editor's
-browser loads Komodoc's own pinned WasmTex release from the deployment's
+browser loads LibrePaper's own pinned WasmTex release from the deployment's
 `/latex/` mirror -- the engine the project needs and nothing else -- and
 compiles automatically after the source has been quiet for a second and a
 half, or at once from Compile now. There is no distribution to choose and no
@@ -18,7 +18,7 @@ together before the first pass. Verified files stay in browser storage,
 namespaced by release, so the second document costs nothing to fetch.
 
 BibTeX runs in the browser. Biber does not: when a document asks for it, the
-reader checks for a local Komodoc app on this machine, runs a compatible
+reader checks for a local LibrePaper app on this machine, runs a compatible
 native Biber there, and continues typesetting in the browser. Without the
 app, or without a compatible Biber, the reader boots a small Linux guest in a
 worker -- v86 and a Debian image holding Biber and nothing else -- and runs
@@ -33,12 +33,12 @@ the session, with "Try browser compilation" to come back.
 
 ## What the local app is
 
-`komodoc local start` runs a loopback service on this machine, prints a
+`librepaper local start` runs a loopback service on this machine, prints a
 pairing code, and waits. The reader connects with that code once per origin
-and project; later fallbacks are automatic. `komodoc local doctor` says which
+and project; later fallbacks are automatic. `librepaper local doctor` says which
 of pdfLaTeX, XeLaTeX, LuaLaTeX, BibTeX, Biber and makeindex it found, at
-which versions, and whether it can confine them; `komodoc local status` and
-`komodoc local disconnect` do what their names say. The service accepts
+which versions, and whether it can confine them; `librepaper local status` and
+`librepaper local disconnect` do what their names say. The service accepts
 structured jobs -- a snapshot's files with their digests, an engine name, a
 job name -- and never a command. It runs the tools with shell escape off,
 inside `bwrap` or `sandbox-exec` where the platform has them, and reports
@@ -80,8 +80,8 @@ XeTeX and LuaTeX documents compile in the browser.
   says `reproduced: false` until that is done.
 - The compact initial resource set is the union of what the corpus needed
   (about 17 MB); measuring real documents should trim it.
-- Detaching `komodoc local start` from its terminal and registering the
-  `komodoc://` protocol on each desktop platform; `bibtex8` selection in
+- Detaching `librepaper local start` from its terminal and registering the
+  `librepaper://` protocol on each desktop platform; `bibtex8` selection in
   the native controller.
 - The acceptance matrices on Firefox and Safari and on memory-constrained
   devices; the numbers so far are single Chromium runs.

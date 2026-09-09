@@ -49,13 +49,13 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 0));
   const created = requests[0];
   assert.equal(created.url, "/api/documents/paper/chat");
-  assert.equal(created.headers["X-Komodoc-Client"], "shell");
-  assert.equal(created.headers["X-Komodoc-Key"], "document-secret");
-  assert.equal(created.headers["X-Komodoc-Chat-Token"], undefined);
+  assert.equal(created.headers["X-LibrePaper-Client"], "shell");
+  assert.equal(created.headers["X-LibrePaper-Key"], "document-secret");
+  assert.equal(created.headers["X-LibrePaper-Chat-Token"], undefined);
   const capabilities = await client.capabilities();
   assert.deepEqual(capabilities, { can_read: true, can_comment: true, can_edit: false });
   assert.equal(requests[1].url, "/api/documents/paper/assistant/capabilities");
-  assert.equal(requests[1].headers["X-Komodoc-Key"], "document-secret");
+  assert.equal(requests[1].headers["X-LibrePaper-Key"], "document-secret");
   const socket = FakeWebSocket.instances[0];
   assert.equal(new URL(socket.url).searchParams.get("k"), "document-secret");
   assert.equal(socket.url.includes("chat-secret"), false, "chat capability stays out of the URL");

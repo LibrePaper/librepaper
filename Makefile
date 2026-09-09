@@ -5,10 +5,10 @@ $(BIN) test: $(IMAGES)
 web/dist/docs/images/%.png: docs/images/%.png
 	@mkdir -p $(dir $@)
 	@cp $< $@
-# Komodoc. `make` builds the single static binary into dist/.
+# LibrePaper. `make` builds the single static binary into dist/.
 #
 # Three crates under crates/: engine (markdown and typst rendering, CLI and WASM),
-# komodoc (server and CLI), text (utilities). The web app in web/ is Svelte,
+# librepaper (server and CLI), text (utilities). The web app in web/ is Svelte,
 # bundled by vite and installed by bun. The binary embeds the web build (from
 # web/dist) and the WASM renderers, and serves them.
 
@@ -18,7 +18,7 @@ web/dist/docs/images/%.png: docs/images/%.png
 -include .env
 export
 
-BIN     := dist/komodoc
+BIN     := dist/librepaper
 # The markdown renderer, built for the browser: the editor previews with it,
 # and it is embedded in the binary like every other shell file.
 WASM    := web/dist/wasm/markdown.wasm
@@ -26,7 +26,7 @@ BIB     := web/dist/wasm/bibliography.wasm
 CITES   := web/dist/wasm/citations.wasm
 # Optional, and built separately by `make typst`: see the bottom of this file.
 TYPST   := web/dist/wasm/typst.wasm
-MODULE  := target/wasm32-unknown-unknown/wasm/komodoc_engine.wasm
+MODULE  := target/wasm32-unknown-unknown/wasm/librepaper_engine.wasm
 # The pages. web/dist is entirely a build output, so it is an input to
 # nothing: what the pages are built from lives in web/src and web/public.
 SHELL_OUT := web/dist/index.html
@@ -41,15 +41,15 @@ help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
 	@grep -hE '^[a-z.A-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' | sort
 
-build: $(BIN)  ## Build dist/komodoc, with the shell and renderers embedded
+build: $(BIN)  ## Build dist/librepaper, with the shell and renderers embedded
 
 # Rebuilt whenever any source, page or renderer changes.
 # Once the optional Typst module has been opted into, keep it in step with the
 # shell and native compiler. Otherwise a new binary can embed an old HTML ABI.
 $(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(wildcard $(TYPST)) $(SHELL_OUT)
 	@mkdir -p $(dir $@)
-	@cargo build --release -p komodoc
-	@cp target/release/komodoc $@
+	@cargo build --release -p librepaper
+	@cp target/release/librepaper $@
 	@echo "$@ ($$(($$(stat -c%s $@) / 1024 / 1024)) MiB) -- deploys on its own"
 
 # The documentation page is the README, so it is copied in to be embedded. The
@@ -78,14 +78,14 @@ test: $(WASM) $(BIB) $(CITES) $(wildcard $(TYPST)) $(SHELL_OUT)  ## Run rustfmt,
 # It is not required: `cargo test` still runs everything, just more slowly and
 # only up to the first crate that fails.
 #
-# KOMODOC_FSYNC=0 is read by the storage layer. The suite's own crate relaxes
-# durability under `cfg(test)` on its own; this is for the cases that spawn
-# the real binary, which is built without it. Nothing a test writes outlives
-# the run, so there is no crash for an fsync to survive.
+# LIBREPAPER_FSYNC=0 is read by the storage layer. The suite's own crate
+# relaxes durability under `cfg(test)` on its own; this is for the cases that
+# spawn the real binary, which is built without it. Nothing a test writes
+# outlives the run, so there is no crash for an fsync to survive.
 	@command -v cargo-nextest >/dev/null \
-		&& KOMODOC_FSYNC=0 cargo nextest run --workspace \
+		&& LIBREPAPER_FSYNC=0 cargo nextest run --workspace \
 		|| { echo "cargo-nextest not installed (cargo install cargo-nextest); using cargo test"; \
-		     KOMODOC_FSYNC=0 cargo test --workspace; }
+		     LIBREPAPER_FSYNC=0 cargo test --workspace; }
 
 # The rendered reader, in a real browser. Not part of `test`: it needs the
 # built binary and a chromium, and it starts a server of its own on a
@@ -107,7 +107,7 @@ fmt:  ## Format every crate
 # sanitizer doubles the build time to find nothing the panics do not.
 FUZZ_SECONDS ?= 60
 # Every target unless told otherwise. `update` is known to fail on a panic
-# inside yrs (the ignored test in crates/komodoc/src/tests/directories.rs
+# inside yrs (the ignored test in crates/librepaper/src/tests/directories.rs
 # reproduces it), so CI runs the other three until that is settled.
 FUZZ_TARGETS ?= $(shell cd fuzz && cargo fuzz list)
 # The global export would evaluate this for every recipe, even outside fuzz.
@@ -122,15 +122,15 @@ fuzz: $(WASM) $(BIB) $(CITES) $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SE
 # Release builds are described in .github/workflows/release.yml and run when a
 # v* tag is pushed. This does the same thing locally, without tagging.
 snapshot: $(WASM) $(BIB) $(CITES) $(TYPST) $(SHELL_OUT)  ## Build the release binary locally, without tagging
-	@cargo build --release -p komodoc
-	@echo "target/release/komodoc"
+	@cargo build --release -p librepaper
+	@echo "target/release/librepaper"
 
 clean:  ## Remove build output
-	@rm -rf dist target/release/komodoc web/dist web/node_modules
+	@rm -rf dist target/release/librepaper web/dist web/node_modules
 
 # The port is fixed because the GitHub OAuth app's callback URL names it.
 PORT       ?= 8081
-DATA       ?= komodoc-data
+DATA       ?= librepaper-data
 PUBLISHERS ?= anyone
 COMMENTERS ?= anyone
 # Ownership for the manual seed command. Account onboarding creates private
@@ -148,9 +148,9 @@ serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, PUBLISHER
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
 	@$(BIN) serve --port $(PORT) --data $(DATA) --publishers $(PUBLISHERS) --commenters $(COMMENTERS) $(LATEX_FLAG)
 
-# One example per source format Komodoc accepts. Only the HTML one is built:
+# One example per source format LibrePaper accepts. Only the HTML one is built:
 # Quarto renders it from the .qmd beside it. The .md and the .typ are rendered
-# by Komodoc itself at publish time, and the .tex is compiled by the browser
+# by LibrePaper itself at publish time, and the .tex is compiled by the browser
 # that opens it, so none of those three has a rule below.
 EXAMPLES := examples/bootstrap.html examples/regression-tables.md \
             examples/intervals.typ examples/standard-errors.tex
@@ -165,7 +165,7 @@ examples/%.html: examples/%.qmd
 	@cd examples && quarto render $(notdir $<) --quiet
 
 # Not in the help: it is a step of `deploy`, not a thing to run on its own.
-# A deployment is seeded once. Resetting a nonempty catalogue is a `komodoc
+# A deployment is seeded once. Resetting a nonempty catalogue is a `librepaper
 # seed --backup <verified-point>` the operator runs deliberately, so a second
 # `make deploy` serves what is there rather than refusing to start.
 seed: $(BIN) $(EXAMPLES)
@@ -177,7 +177,7 @@ seed: $(BIN) $(EXAMPLES)
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
-	@pkill -f '[d]ist/komodoc serve' && echo "stopped" || echo "nothing to stop"
+	@pkill -f '[d]ist/librepaper serve' && echo "stopped" || echo "nothing to stop"
 
 .PHONY: deploy latex-check latex-mirror latex-smoke
 
@@ -238,7 +238,7 @@ latex-push: latex-smoke  ## Verify and push the LaTeX mirror to Cloudflare (run 
 	@printf '.cache/\nbusytex/\ntexlyre-busytex/\nswiftlatex-xetex/\nswiftlatex-pdftex/\npackages/\n' > $(MIRROR)/.assetsignore
 	@printf '/*\n  Cache-Control: public, max-age=31536000, immutable\n/manifest.json\n  Cache-Control: no-store\n' > $(MIRROR)/_headers
 	@cd deploy/latex && bunx wrangler deploy --assets "$(abspath $(MIRROR))"
-	@echo "serve with: komodoc serve --latex https://komodoc-latex.<account>.workers.dev/"
+	@echo "serve with: librepaper serve --latex https://librepaper-latex.<account>.workers.dev/"
 
 # --- the web app -----------------------------------------------------------
 #
@@ -263,7 +263,7 @@ $(SHELL_OUT): $(WEB) web/dist/README.md
 wasm: $(WASM) $(BIB) $(CITES)  ## Build Markdown and bibliography modules for the browser
 
 $(WASM): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
-	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
+	@cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
 		--no-default-features --features markdown
 	@mkdir -p $(dir $@)
 	@cp $(MODULE) $@
@@ -272,7 +272,7 @@ $(WASM): $(shell find crates/engine/src crates/text/src -type f) crates/engine/C
 typst: $(TYPST)  ## Build the typst renderer for the browser (slow: ~30 MB)
 
 $(TYPST): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
-	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
+	@cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
 		--no-default-features --features typst
 	@mkdir -p $(dir $@)
 	@cp $(MODULE) $@
@@ -282,13 +282,13 @@ $(TYPST): $(shell find crates/engine/src crates/text/src -type f) crates/engine/
 .NOTPARALLEL:
 
 $(BIB): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
-	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
+	@cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
 		--no-default-features --features bibliography
 	@mkdir -p $(dir $@)
 	@cp $(MODULE) $@
 
 $(CITES): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
-	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
+	@cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
 		--no-default-features --features citations
 	@mkdir -p $(dir $@)
 	@cp $(MODULE) $@

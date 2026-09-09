@@ -235,8 +235,8 @@ Package: natbib 2010/09/13 8.31b (PWD, AO)
 \bibsep=\skip55
 LaTeX Info: Redefining \cite on input line 694.
 \c@NAT@ctr=\count295
-) (./komodoc.sty
-Package: komodoc 2026/01/01 v1.0 the corpus's own package
+) (./librepaper.sty
+Package: librepaper 2026/01/01 v1.0 the corpus's own package
 )
 (/texlive/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def
 File: l3backend-pdftex.def 2025-10-09 L3 backend support: PDF output (pdfTeX)
@@ -367,7 +367,7 @@ For additional information on amsmath, use the `?' option.
 (/texlive/texmf-dist/tex/latex/graphics/trig.sty)
 (/texlive/texmf-dist/tex/latex/graphics-cfg/graphics.cfg)
 (/texlive/texmf-dist/tex/latex/graphics-def/pdftex.def)))
-(/texlive/texmf-dist/tex/latex/natbib/natbib.sty) (./komodoc.sty)
+(/texlive/texmf-dist/tex/latex/natbib/natbib.sty) (./librepaper.sty)
 (/texlive/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def) (./main.aux
 (./chapters/01.aux) (./chapters/02.aux))
 (/texlive/texmf-dist/tex/context/base/mkii/supp-pdf.mkii

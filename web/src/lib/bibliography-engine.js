@@ -1,7 +1,7 @@
 import { rendererRequest } from "./renderer-client.js";
 
 export function analyzeBibliography(request) {
-  const url = globalThis.KOMODOC_MODULES?.bibliography;
+  const url = globalThis.LIBREPAPER_MODULES?.bibliography;
   if (!url) return Promise.reject(new Error("Bibliography support is unavailable in this build."));
   return rendererRequest(new URL(url, globalThis.location.href).href, "bibliography", {
     main: request.main || "", format: request.format || "", source: request.source || "", texts: { ...request.texts },

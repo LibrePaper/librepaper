@@ -1,7 +1,7 @@
 /* The application's styles, in the order they have to be in.
  *
  * Tailwind first, then Skeleton's utilities on top of it, then the theme that
- * colours them, then the parts of Komodoc that no framework has anything to
+ * colours them, then the parts of LibrePaper that no framework has anything to
  * say about: the resizable panes, the editor, the document frame, the comment
  * column.
  *
@@ -13,7 +13,7 @@
 @import "tailwindcss";
 @import "@skeletonlabs/skeleton";
 @import "./theme.css";
-@import "./komodoc.css";
+@import "./librepaper.css";
 
 /* Where to look for the classes actually used, since the pages are Svelte
    components rather than files Tailwind scans by default. */

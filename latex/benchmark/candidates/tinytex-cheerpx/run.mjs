@@ -92,7 +92,7 @@ async function compile(example, phase, reference) {
   const finalLog = typeof outputs[stem + '.log'] === 'number' ? readFileSync(join(dir, stem + '.log'), 'utf8') : log;
   const reviewWarnings = warnings(finalLog);
   const agreement = reference && phase === 'first' && pdf.pdf ? textAgreement(reference.text, pdf.text) : null;
-  const editVisible = phase === 'edit' && pdf.pdf ? /Komodoc emulator edit\./.test(pdf.text) : null;
+  const editVisible = phase === 'edit' && pdf.pdf ? /LibrePaper emulator edit\./.test(pdf.text) : null;
   const measurement = { phase, seconds, guestCommandSeconds: run.milliseconds / 1000, exitCode: run.exitCode, network, outputs, pdf: pdf.pdf, pages: pdf.pages, warnings: reviewWarnings, textAgreement: agreement, referencePages: reference?.pages, editVisible,
     biberInvoked: /Run number \d+ of rule ['"]biber /.test(log),
     status: run.exitCode || !pdf.pdf ? 'failed' : reviewWarnings.length || editVisible === false || (agreement != null && (agreement < 0.99 || pdf.pages !== reference.pages)) ? 'needs-review' : 'pdf-produced' };
@@ -120,7 +120,7 @@ try {
     const record = { id: example.id, engine: example.engine, treeSha256: treeDigest(tree), native: reference ? { pdf: reference.pdf, pages: reference.pages } : null, phases: [] };
     report.cases.push(record);
     record.phases.push(await compile(example, 'first', reference));
-    const edited = tree.texts[tree.main].replace(/\\end\{document\}(?![\s\S]*\\end\{document\})/, '\n\\par Komodoc emulator edit.\n\\end{document}');
+    const edited = tree.texts[tree.main].replace(/\\end\{document\}(?![\s\S]*\\end\{document\})/, '\n\\par LibrePaper emulator edit.\n\\end{document}');
     await file('write', '/work/' + example.id + '/' + tree.main, [...Buffer.from(edited)]);
     record.phases.push(await compile(example, 'edit', reference));
     // Separate TeX execution from latexmk's Perl startup/orchestration cost.
@@ -130,16 +130,16 @@ try {
     }
     if(example.id==='biber-sorting' && record.phases.at(-1).exitCode===0) {
       const name='biblatex-examples.bib';
-      const updated=tree.texts[name].replace(/(@book\{companion,[\s\S]*?\btitle\s*=\s*\{)/,'$1Komodoc bibliography update: ');
+      const updated=tree.texts[name].replace(/(@book\{companion,[\s\S]*?\btitle\s*=\s*\{)/,'$1LibrePaper bibliography update: ');
       if(updated===tree.texts[name]) throw new Error('Bibliography edit did not change fixture');
       await file('write','/work/'+example.id+'/'+name,[...Buffer.from(updated)]);
       const changed=await compile(example,'bibliography-edit',reference);
       const pdf=inspectPDF(join(results,example.id,'bibliography-edit',example.main.replace(/\.tex$/,'.pdf')));
-      // pdftotext -layout may wrap the edited title at a column boundary
-      // (the observed output is `Komodoc\nbibliography update:`). Treat runs
-      // of whitespace as equivalent so this check tests the rendered title,
+      // pdftotext -layout may wrap the edited title at a column boundary (the
+      // observed output is `LibrePaper\nbibliography update:`). Treat runs of
+      // whitespace as equivalent so this check tests the rendered title,
       // rather than the extractor's line-breaking choice.
-      changed.bibliographyEditVisible=/Komodoc\s+bibliography\s+update/.test(pdf.text);
+      changed.bibliographyEditVisible=/LibrePaper\s+bibliography\s+update/.test(pdf.text);
       if(!changed.bibliographyEditVisible || !changed.biberInvoked) changed.status='needs-review';
       record.phases.push(changed);
     }

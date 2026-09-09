@@ -132,7 +132,7 @@ wire format, or a permission decision).
   attached and no request id -- so no request-serving path reaches the
   full-snapshot reconciliation when a catalogue is present. The one
   production caller that does reach it with a catalogue attached is
-  `seed::seed_annotations`, the `komodoc seed` dev command that writes a
+  `seed::seed_annotations`, the `librepaper seed` dev command that writes a
   bounded, small, fixed set of demo annotations once per example document.
   Documented this on both `save_catalog_comments` and `Room::save`; no
   code change, since the caller is not a production request path and its

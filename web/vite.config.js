@@ -17,7 +17,7 @@ import { rmSync } from "node:fs";
 // alongside the fresh one, and a rule from a page that no longer exists still
 // applies to the pages that do.
 const clearOwnOutput = {
-  name: "komodoc-clear-own-output",
+  name: "librepaper-clear-own-output",
   buildStart() {
     const out = resolve(import.meta.dirname, "dist");
     rmSync(resolve(out, "assets"), { recursive: true, force: true });

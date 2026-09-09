@@ -43,7 +43,7 @@ function authScope(headers) {
     ? Array.from(headers.entries())
     : Object.entries(headers || {});
   return JSON.stringify(entries
-    .filter(([name]) => name.toLowerCase() !== "x-komodoc-client")
+    .filter(([name]) => name.toLowerCase() !== "x-librepaper-client")
     .map(([name, value]) => `${name.toLowerCase()}:${String(value)}`)
     .sort());
 }

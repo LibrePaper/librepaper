@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Komodoc</title>
+    <title>LibrePaper</title>
     <!--
       The text layer's rules, kept here rather than imported from
       pdfjs-dist/web/pdf_viewer.css: that file is four thousand lines of
@@ -58,7 +58,7 @@
         colour; all this does is undo the transparency the text layer sets on
         everything, so the wash is visible over the canvas beneath.
       */
-      .textLayer mark[data-komodoc] { color: transparent; border-radius: 2px; }
+      .textLayer mark[data-librepaper] { color: transparent; border-radius: 2px; }
       /* pdf.js measures its fonts with a canvas it keeps on the body. */
       canvas.hiddenCanvasElement { display: none; }
       ::selection { background: rgb(0 100 255 / 0.3); }

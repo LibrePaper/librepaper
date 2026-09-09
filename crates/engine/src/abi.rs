@@ -289,7 +289,7 @@ pub unsafe extern "C" fn word_diff(
     new: *const u8,
     new_len: usize,
 ) -> usize {
-    let edits = komodoc_text::diff(text_at(old, old_len), text_at(new, new_len));
+    let edits = librepaper_text::diff(text_at(old, old_len), text_at(new, new_len));
     let result = serde_json::to_string(
         &edits
             .iter()

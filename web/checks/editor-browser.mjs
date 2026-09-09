@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(here));
-const temporary = mkdtempSync(join(tmpdir(), "komodoc-editor-check-"));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-editor-check-"));
 const output = join(temporary, "build");
 const profile = join(temporary, "chrome");
 const entry = join(temporary, "entry.js");

@@ -2,9 +2,9 @@
 //! crates already make on hand-written cases; here it is made on whatever
 //! libFuzzer produces.
 
-use komodoc::config::Configuration;
-use komodoc::paths::Rules;
-use komodoc_text::{diff, tokenize, Edit};
+use librepaper::config::Configuration;
+use librepaper::paths::Rules;
+use librepaper_text::{diff, tokenize, Edit};
 
 /// The deployment's default rules, which is what every real document is
 /// checked against.

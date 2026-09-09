@@ -12,7 +12,7 @@ const n = (value, scale = 1) => value == null ? "—" : (value / scale).toFixed(
 const lines = [
   "# Public-project LaTeX baseline", "", `Measured: ${report.date}.`, "", report.method, "",
   `Browser: ${report.userAgent}.`, "", `Mirror manifest SHA-256: \`${report.manifestSha256}\`.`, "",
-  "These measurements assess Komodoc's current adapters and local mirror together. A failure does not establish an engine limitation. The native reference uses the installed TeX Live, whose version may differ from the browser distribution. A PDF and matching text still require visual review; text agreement does not validate citation order or layout.", "",
+  "These measurements assess LibrePaper's current adapters and local mirror together. A failure does not establish an engine limitation. The native reference uses the installed TeX Live, whose version may differ from the browser distribution. A PDF and matching text still require visual review; text agreement does not validate citation order or layout.", "",
   "## Sources", "",
   ...Object.entries(SOURCES).map(([id, source]) => `- ${id}: [${source.revision.slice(0, 12)}](${source.repository}/tree/${source.revision}). ${source.license}.`), "",
   "## Native references", "",

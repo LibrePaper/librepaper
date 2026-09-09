@@ -9,7 +9,7 @@
 # with `cargo fuzz run <target> artifacts/<target>/<file>`, then turn it into
 # a test in the crate the bug is in.
 [package]
-name = "komodoc-fuzz"
+name = "librepaper-fuzz"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -20,8 +20,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
-komodoc = { path = "../crates/komodoc" }
-komodoc-text = { path = "../crates/text" }
+librepaper = { path = "../crates/librepaper" }
+librepaper-text = { path = "../crates/text" }
 # Pinned to what the binary uses, so a peer's raw write into the shared
 # document is made with the same encoder the room decodes.
 yrs = "0.27"

@@ -5,7 +5,7 @@ Every module below is owned by one work package. The shapes here are the
 agreement between packages; a package may add fields but must not rename or
 remove what is listed, and must not edit another package's files.
 
-Naming: a **release** is one immutable Komodoc browser distribution (engines,
+Naming: a **release** is one immutable LibrePaper browser distribution (engines,
 formats, package snapshot, VM image identity). A **snapshot** is one immutable
 document tree plus compile settings. A **job** is one attempt to compile a
 snapshot on one backend. A **backend** is `browser`, `local` or `vm`.
@@ -103,7 +103,7 @@ and LuaTeX workers also use the `pdftex/` prefix, see their controllers).
 ### Serving (package A, Rust and dev server)
 
 The browser fetches everything from `<base>/latex/` on its own origin. Both
-`crates/komodoc/src/server/latex.rs` and `latex/tools/serve.mjs` must answer:
+`crates/librepaper/src/server/latex.rs` and `latex/tools/serve.mjs` must answer:
 
 | Request | Answer |
 | --- | --- |
@@ -233,10 +233,10 @@ Status = {
 ```
 
 Status message wording, verbatim: `Loading browser compiler`, `Compiling in
-browser`, `Checking local Komodoc`, `Local connection needed`, `Running local
+browser`, `Checking local LibrePaper`, `Local connection needed`, `Running local
 Biber`, `Preparing browser bibliography support`, `Updating bibliography in
 browser`, `Compiling locally`, `Current preview ready`, `Compilation failed;
-previous preview shown`, `Local Komodoc is unavailable`.
+previous preview shown`, `Local LibrePaper is unavailable`.
 
 ### 2.3 Engine selection: `web/src/lib/latex/engine.js` (package B1)
 
@@ -296,11 +296,11 @@ from WasmTex's `lib/` is imported.
 ### 2.5 Resources: `web/src/lib/latex/resources.js` (package B1)
 
 ```js
-export function namespace(release)                 // `komodoc-latex-${release.digest.slice(0,16)}`
+export function namespace(release)                 // `librepaper-latex-${release.digest.slice(0,16)}`
 export async function fetchVerified(url, { sha256, size, signal })   // Cache Storage under the release namespace; verifies sha256 on a miss; discards and refetches a corrupt hit; a network error is thrown, never cached
 export async function prefetch(entries, onProgress)                  // parallel (6 at a time) fetchVerified over [{url, sha256, size}]; progress {done,total,scope}
-export async function size()                       // bytes held across all komodoc-latex-* caches
-export async function clear()                      // deletes every komodoc-latex-* cache and the VM caches; never touches project storage
+export async function size()                       // bytes held across all librepaper-latex-* caches
+export async function clear()                      // deletes every librepaper-latex-* cache and the VM caches; never touches project storage
 export async function readiness(release, keys)     // { ready: boolean, missing: string[] } for the keys a project has used
 export function persist()                          // navigator.storage.persist once, refusal tolerated
 export function remember(release, key)             // record that a project used a texlive key (localStorage, bounded)
@@ -310,24 +310,24 @@ export function remember(release, key)             // record that a project used
 
 ```js
 export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
-export function address() / setAddress(url)         // localStorage `komodoc-local-address`
+export function address() / setAddress(url)         // localStorage `librepaper-local-address`
 export function status()                            // LocalStatus
 export function subscribe(listener)
 export async function probe({ force = false })      // one bounded health probe (2 s); caches a negative result for the episode (60 s backoff, doubling to 10 min); returns LocalStatus
-export async function connect(code)                 // POST /connect with pairing code -> stores token per (origin, project) in localStorage `komodoc-local-pairings`
+export async function connect(code)                 // POST /connect with pairing code -> stores token per (origin, project) in localStorage `librepaper-local-pairings`
 export async function disconnect()
 export async function retry()                       // clears the negative cache and probes
 export async function capabilities({ rescan = false }) // Capabilities or throws {name:"Unauthorized"|"Unreachable"}
 export async function runBiber(request: BiberRequest, { signal, onProgress }) // BiberResult; a rejected promise means the bridge could not be used (unreachable/unauthorized/refused), NOT a Biber failure
 export async function runTex({ job, tree, engine, main }, { signal, onProgress }) // NativeResult below
-export function openApp()                            // tries `komodoc://local/open`; returns instructions string for the CLI
+export function openApp()                            // tries `librepaper://local/open`; returns instructions string for the CLI
 export function configure({ project, origin })
 
 LocalStatus = {
   state: "unknown"|"unreachable"|"denied"|"reachable"|"unauthorized"|"connected"|"incompatible",
   address: string, protocol: number|null, version: string|null,
   capabilities: Capabilities|null, checkedAt: number|null, error: string|null,
-  instructions: string   // e.g. "Run `komodoc local start` and enter the pairing code it prints"
+  instructions: string   // e.g. "Run `librepaper local start` and enter the pairing code it prints"
 }
 Capabilities = {
   tools: { pdflatex: Tool, xelatex: Tool, lualatex: Tool, bibtex: Tool, bibtex8: Tool, biber: Tool, makeindex: Tool },
@@ -404,7 +404,7 @@ native (if a suitable local TeX exists) and otherwise to the VM.
 `web/src/components/Reader.svelte`, `Settings.svelte`, `LatexCard.svelte`
 (deleted) and a new `LatexStatus.svelte` (compact status line under the
 toolbar badge with the phase message, backend, and the actions `Connect local
-Komodoc`, `Retry connection`, `Try browser compilation`, `Open Komodoc`).
+LibrePaper`, `Retry connection`, `Try browser compilation`, `Open LibrePaper`).
 
 - No chooser, no book icon. `latex.configure({project: SLUG, settings,
   mayCompile})` on open; `latex.subscribe` drives the badge and status line.
@@ -414,7 +414,7 @@ Komodoc`, `Retry connection`, `Try browser compilation`, `Open Komodoc`).
   failed: ...") without leaving an error state after a successful fallback.
 - Settings panel for LaTeX: engine select (Automatic/pdfLaTeX/XeLaTeX/
   LuaLaTeX), pinned release with "Update to <default>" and "Revert", local
-  connection status + controls + `komodoc local doctor` output, cache size +
+  connection status + controls + `librepaper local doctor` output, cache size +
   clear.
 - Project settings persist in the Yjs `meta` map under keys `latex.engine`
   and `latex.release` (web/src/lib/collab.js gains `latexSettings()` /
@@ -422,13 +422,13 @@ Komodoc`, `Retry connection`, `Try browser compilation`, `Open Komodoc`).
   release pin receives the default when an editor's browser first compiles it
   (write through `setLatexSettings`), never when a reader opens it.
 - Rendering upload: `PUT /api/documents/<slug>/renderings/<sha>` unchanged,
-  plus header `x-komodoc-provenance: <JSON Provenance, <= 2 KB>`; SyncTeX
+  plus header `x-librepaper-provenance: <JSON Provenance, <= 2 KB>`; SyncTeX
   uploaded only from the same job as the PDF.
-- Migration: delete the `komodoc-latex` localStorage key on load.
+- Migration: delete the `librepaper-latex` localStorage key on load.
 
 ## 4. Server side (package R2)
 
-- `crates/komodoc/src/document/history.rs`: `Tree` gains
+- `crates/librepaper/src/document/history.rs`: `Tree` gains
   `#[serde(default, skip_serializing_if = "Option::is_none")] pub settings:
   Option<CompileSettings>` with `CompileSettings { engine: String, release:
   String }` (both `#[serde(default, skip_serializing_if = "String::is_empty")]`).
@@ -438,29 +438,29 @@ Komodoc`, `Retry connection`, `Try browser compilation`, `Open Komodoc`).
   `web/src/lib/tree-digest.js` mirrors it (`settings` after `files` in the
   canonical JSON, only when present).
 - Rendering provenance: `handle_rendering_upload` reads
-  `x-komodoc-provenance` (JSON, <= 2048 bytes, must parse as an object),
+  `x-librepaper-provenance` (JSON, <= 2048 bytes, must parse as an object),
   stores it beside the PDF (`room.put_rendering_provenance`), and
   `handle_rendering_latest` answers `provenance` when stored. Readers see it
   in the rendered note.
 - `/api/config` gains `"latex_local": { "address": "http://127.0.0.1:8763/", "protocol": 1 }`.
-- Tests: `crates/komodoc/src/tests/wasmtex_server.rs`.
+- Tests: `crates/librepaper/src/tests/wasmtex_server.rs`.
 
 ## 5. Local bridge protocol v1 (packages R1a, R1b, B3)
 
 Loopback only: bind `127.0.0.1` (and `[::1]` when available), default port
-8763, `komodoc local start --port N` overrides. Every request must carry a
+8763, `librepaper local start --port N` overrides. Every request must carry a
 `Host` header of `127.0.0.1[:port]`, `localhost[:port]` or `[::1][:port]`,
 otherwise 403 (DNS rebinding). CORS: preflight and responses echo the
 request `Origin` only when that origin has a pairing or the route is
 `health`/`connect`; `Access-Control-Allow-Private-Network: true` is answered
 on preflight. No cookies. Bodies are bounded (JSON 64 KB, uploads 64 MB).
 
-Base path `/komodoc/local/v1/`:
+Base path `/librepaper/local/v1/`:
 
 | Method, path | Auth | Body / answer |
 | --- | --- | --- |
-| `GET health` | none | `{ "service": "komodoc-local", "protocol": [1], "version": "<VERSION>", "instance": "<random 16 hex, per start>" }` |
-| `POST connect` | none, rate limited 5/min | `{ "origin": "https://komodoc.example", "project": "<slug>", "code": "123456" }` -> `{ "token": "<32 bytes base64url>", "expires": <unix> }`. The code is printed by `komodoc local start` (and `status`), rotates every start, and is also accepted from the `KOMODOC_LOCAL_CODE` env for tests. Wrong code -> 403. |
+| `GET health` | none | `{ "service": "librepaper-local", "protocol": [1], "version": "<VERSION>", "instance": "<random 16 hex, per start>" }` |
+| `POST connect` | none, rate limited 5/min | `{ "origin": "https://librepaper.example", "project": "<slug>", "code": "123456" }` -> `{ "token": "<32 bytes base64url>", "expires": <unix> }`. The code is printed by `librepaper local start` (and `status`), rotates every start, and is also accepted from the `LIBREPAPER_LOCAL_CODE` env for tests. Wrong code -> 403. |
 | `POST disconnect` | bearer | revokes this token |
 | `GET capabilities` | bearer | `Capabilities` (section 2.6). Paths never leave the app. |
 | `POST capabilities/rescan` | bearer | same |
@@ -517,7 +517,7 @@ version, exports a v86 9p filesystem (`fs.json` + `objects/`), and writes
 vm.json          { "runtime": "v86", "version": "<libv86 revision>", "licence": "BSD-2-Clause", "memory_mb": 256,
                    "files": { "libv86.js": {url,sha256,size}, "v86.wasm": {...}, "seabios.bin": {...}, "vgabios.bin": {...}, "bzimage": {...}, "fs.json": {...} },
                    "objects": "biber-vm/<vmRelease>/objects/", "biber": "2.21", "perl": "...", "guest": "debian-bookworm-i386",
-                   "boot": { "ready": "KOMODOC_VM_READY", "shell": "sh" }, "recipe": "latex/tools/biber-vm/", "sources": [...] }
+                   "boot": { "ready": "LIBREPAPER_VM_READY", "shell": "sh" }, "recipe": "latex/tools/biber-vm/", "sources": [...] }
 libv86.js v86.wasm seabios.bin vgabios.bin bzimage fs.json objects/<sha>...
 ```
 
@@ -532,14 +532,14 @@ prompt, then a marker line. The guest has no network device.
 ## 7. CLI (package R1a)
 
 ```
-komodoc local start [--port 8763] [--foreground]   # prints the pairing code and the address; runs until interrupted
-komodoc local status                                # reachable? paired origins? code
-komodoc local doctor                                # discovery report, confinement, suggestions
-komodoc local disconnect [--origin URL] [--all]     # revoke pairings
-komodoc local rescan                                # refresh discovery cache
+librepaper local start [--port 8763] [--foreground]   # prints the pairing code and the address; runs until interrupted
+librepaper local status                                # reachable? paired origins? code
+librepaper local doctor                                # discovery report, confinement, suggestions
+librepaper local disconnect [--origin URL] [--all]     # revoke pairings
+librepaper local rescan                                # refresh discovery cache
 ```
 
-State lives under `<config home>/komodoc/local/` (`service.json`: port,
+State lives under `<config home>/librepaper/local/` (`service.json`: port,
 instance, code, pid; `pairings.json`; `tools.json` discovery cache) and
-workspaces under `<cache home>/komodoc/local/jobs/`. Never under the
-project directory. `komodoc serve` never starts the local service.
+workspaces under `<cache home>/librepaper/local/jobs/`. Never under the
+project directory. `librepaper serve` never starts the local service.

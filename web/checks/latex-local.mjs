@@ -1,4 +1,4 @@
-// The local bridge client, against a fake local Komodoc.
+// The local bridge client, against a fake local LibrePaper.
 //
 // `local.js` never touches `fetch` or `localStorage` directly -- everything
 // ambient goes through its `_testing.inject`-able `deps` -- so this check
@@ -60,7 +60,7 @@ function bytesResponse(status, bytes) {
   };
 }
 
-const HEALTH_OK = { service: "komodoc-local", protocol: [1], version: "0.1.0", instance: "abc123" };
+const HEALTH_OK = { service: "librepaper-local", protocol: [1], version: "0.1.0", instance: "abc123" };
 
 function setup({ storage = fakeStorage(), now = clock(), fetchImpl } = {}) {
   local._testing.reset();
@@ -83,7 +83,7 @@ async function testProbeUnreachable() {
   const { now } = setup({ fetchImpl: async () => { throw new TypeError("fetch failed"); } });
   const status = await local.probe();
   check("a network failure classifies as unreachable", status.state === "unreachable", status.state);
-  check("unreachable carries instructions", /komodoc local start/.test(status.instructions));
+  check("unreachable carries instructions", /librepaper local start/.test(status.instructions));
 
   let calls = 0;
   local._testing.inject({ fetch: async () => { calls += 1; throw new TypeError("fetch failed"); } });
@@ -104,20 +104,20 @@ async function testProbeDenied() {
 }
 
 async function testProbeIncompatible() {
-  setup({ fetchImpl: async () => jsonResponse(200, { service: "komodoc-local", protocol: [2], version: "9.0", instance: "x" }) });
+  setup({ fetchImpl: async () => jsonResponse(200, { service: "librepaper-local", protocol: [2], version: "9.0", instance: "x" }) });
   const status = await local.probe();
   check("a protocol without 1 classifies as incompatible", status.state === "incompatible", status.state);
 }
 
 async function testProbeUnauthorizedThenConnected() {
   const storage = fakeStorage();
-  local.configure({ project: "demo", origin: "https://komodoc.example" });
+  local.configure({ project: "demo", origin: "https://librepaper.example" });
   setup({ storage, fetchImpl: async () => jsonResponse(200, HEALTH_OK) });
-  local.configure({ project: "demo", origin: "https://komodoc.example" });
+  local.configure({ project: "demo", origin: "https://librepaper.example" });
   const status = await local.probe();
   check("reachable with no pairing classifies as unauthorized", status.state === "unauthorized", status.state);
 
-  storage.setItem("komodoc-local-pairings", JSON.stringify({ "https://komodoc.example|demo": { token: "tok", expires: 0, instance: "abc" } }));
+  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://librepaper.example|demo": { token: "tok", expires: 0, instance: "abc" } }));
   local._testing.inject({
     fetch: async (url) => {
       if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
@@ -132,18 +132,18 @@ async function testProbeUnauthorizedThenConnected() {
 
 async function testProbeDropsExpiredToken() {
   const storage = fakeStorage();
-  local.configure({ project: "demo", origin: "https://komodoc.example" });
-  storage.setItem("komodoc-local-pairings", JSON.stringify({ "https://komodoc.example|demo": { token: "stale", expires: 0, instance: "abc" } }));
+  local.configure({ project: "demo", origin: "https://librepaper.example" });
+  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://librepaper.example|demo": { token: "stale", expires: 0, instance: "abc" } }));
   setup({ storage, fetchImpl: async (url) => {
     if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
     if (url.endsWith("/capabilities")) return jsonResponse(401, { error: "expired" });
     throw new Error(`unexpected ${url}`);
   } });
-  local.configure({ project: "demo", origin: "https://komodoc.example" });
+  local.configure({ project: "demo", origin: "https://librepaper.example" });
   const status = await local.probe();
   check("a 401 verifying capabilities falls back to unauthorized", status.state === "unauthorized", status.state);
-  const stored = JSON.parse(storage.getItem("komodoc-local-pairings"));
-  check("the stale token is dropped from storage", !("https://komodoc.example|demo" in stored));
+  const stored = JSON.parse(storage.getItem("librepaper-local-pairings"));
+  check("the stale token is dropped from storage", !("https://librepaper.example|demo" in stored));
 }
 
 /* --------------------------------------------------------- negative-cache backoff */
@@ -189,14 +189,14 @@ async function testConnectStoresPairing() {
   } });
   local.configure({ project: "proj1", origin: "https://app.example" });
   await local.connect("654321");
-  const stored = JSON.parse(storage.getItem("komodoc-local-pairings"));
+  const stored = JSON.parse(storage.getItem("librepaper-local-pairings"));
   check("the pairing is stored under origin|project", stored["https://app.example|proj1"]?.token === "newtoken", JSON.stringify(stored));
 }
 
 async function testDisconnectRemovesPairing() {
   const storage = fakeStorage();
   local.configure({ project: "proj1", origin: "https://app.example" });
-  storage.setItem("komodoc-local-pairings", JSON.stringify({ "https://app.example|proj1": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://app.example|proj1": { token: "tok", expires: 0, instance: "x" } }));
   setup({ storage, fetchImpl: async (url) => {
     if (url.endsWith("/disconnect")) return jsonResponse(200, {});
     if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
@@ -204,7 +204,7 @@ async function testDisconnectRemovesPairing() {
   } });
   local.configure({ project: "proj1", origin: "https://app.example" });
   await local.disconnect();
-  const stored = JSON.parse(storage.getItem("komodoc-local-pairings"));
+  const stored = JSON.parse(storage.getItem("librepaper-local-pairings"));
   check("disconnect() removes the pairing", !("https://app.example|proj1" in stored));
 }
 
@@ -213,7 +213,7 @@ async function testDisconnectRemovesPairing() {
 async function testMultipartBiberBody() {
   const storage = fakeStorage();
   local.configure({ project: "proj1", origin: "https://app.example" });
-  storage.setItem("komodoc-local-pairings", JSON.stringify({ "https://app.example|proj1": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://app.example|proj1": { token: "tok", expires: 0, instance: "x" } }));
   const nonUtf8 = new Uint8Array([0xff, 0xfe, 0x00, 0x80, 0x81, 0x41, 0x42]);
   let capturedForm = null;
   setup({ storage, fetchImpl: async (url, init) => {
@@ -258,7 +258,7 @@ async function testMultipartBiberBody() {
 async function testPollingIntervals() {
   const storage = fakeStorage();
   local.configure({ project: "p", origin: "https://a" });
-  storage.setItem("komodoc-local-pairings", JSON.stringify({ "https://a|p": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://a|p": { token: "tok", expires: 0, instance: "x" } }));
   const { now } = setup({ storage, fetchImpl: null });
   local.configure({ project: "p", origin: "https://a" });
   const waits = [];
@@ -287,7 +287,7 @@ async function testPollingIntervals() {
 async function testCancelViaAbort() {
   const storage = fakeStorage();
   local.configure({ project: "p", origin: "https://a" });
-  storage.setItem("komodoc-local-pairings", JSON.stringify({ "https://a|p": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://a|p": { token: "tok", expires: 0, instance: "x" } }));
   setup({ storage, fetchImpl: null });
   local.configure({ project: "p", origin: "https://a" });
   let canceled = false;
@@ -314,7 +314,7 @@ async function testCancelViaAbort() {
 async function testRefusedUnreachableUnauthorized() {
   const storage = fakeStorage();
   local.configure({ project: "p", origin: "https://a" });
-  storage.setItem("komodoc-local-pairings", JSON.stringify({ "https://a|p": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://a|p": { token: "tok", expires: 0, instance: "x" } }));
 
   setup({ storage, fetchImpl: async () => jsonResponse(409, { error: "a newer generation is already queued" }) });
   local.configure({ project: "p", origin: "https://a" });

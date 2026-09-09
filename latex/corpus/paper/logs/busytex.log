@@ -120,8 +120,8 @@ Package: natbib 2010/09/13 8.31b (PWD, AO)
 \bibsep=\skip54
 LaTeX Info: Redefining \cite on input line 694.
 \c@NAT@ctr=\count271
-) (./komodoc.sty
-Package: komodoc 2026/01/01 v1.0 the corpus's own package
+) (./librepaper.sty
+Package: librepaper 2026/01/01 v1.0 the corpus's own package
 ) (/texlive/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def
 File: l3backend-pdftex.def 2023-01-16 L3 backend support: PDF output (pdfTeX)
 \l__color_backend_stack_int=\count272

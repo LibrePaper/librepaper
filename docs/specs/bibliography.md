@@ -2,22 +2,22 @@
 
 The remaining bibliography work is importing and searching Zotero libraries
 from the author's machine. Reuse the existing document library and citation
-completion. Komodoc stores no third-party credentials and runs no background
+completion. LibrePaper stores no third-party credentials and runs no background
 sync on the author's behalf.
 
 ## Zotero
 
 Zotero holds the library the author actually maintains, and the useful
 integration is the one that puts it in the tree as a `.bib` without a
-credential ever reaching Komodoc.
+credential ever reaching LibrePaper.
 
-**From the terminal.** `komodoc bib pull` reads the author's Zotero library on
+**From the terminal.** `librepaper bib pull` reads the author's Zotero library on
 their machine and writes it into the document's tree through the existing
 publish path:
 
 ```sh
-komodoc bib pull "$KOMODOC_DOCUMENT" --collection "Paper: sandbox costs"
-komodoc bib pull "$KOMODOC_DOCUMENT" --group 2451 --into references.bib
+librepaper bib pull "$LIBREPAPER_DOCUMENT" --collection "Paper: sandbox costs"
+librepaper bib pull "$LIBREPAPER_DOCUMENT" --group 2451 --into references.bib
 ```
 
 The default target is `references.bib`, replaced whole on each pull. Entries
@@ -28,7 +28,7 @@ it are overwritten, and an author who wants entries of their own keeps them in
 a second `.bib`, which the library unions in. Saying that plainly is kinder
 than a merge that guesses.
 
-**From the local app.** The local app in `crates/komodoc/src/local/` already
+**From the local app.** The local app in `crates/librepaper/src/local/` already
 discovers tools on the author's machine for LaTeX; it gains one more
 discovery, a Zotero running on its loopback port, and exposes search and
 export over the existing bridge protocol. With it, the browser's completion
@@ -43,7 +43,7 @@ reported like any other local capability: present, absent, or incompatible,
 never assumed.
 
 **What is deliberately not built.** Not a server-side Zotero sync. It would be
-the first third-party credential Komodoc stores and the first background job
+the first third-party credential LibrePaper stores and the first background job
 it runs for a user, and it would drag in secret storage and rotation, token
 revocation, the interaction with the retention and erasure rules in
 [catalog.md](catalog.md), and a rate-limited third-party API on the serving
@@ -63,7 +63,7 @@ keeps working.
 
 1. Establish the supported Zotero export/search transport, version negotiation,
    and citation-key policy. Resolve key stability before implementing imports.
-2. Implement `komodoc bib pull` with collection/group selection, deterministic
+2. Implement `librepaper bib pull` with collection/group selection, deterministic
    exports, and clear replacement and failure behavior.
 3. Add Zotero discovery, search, and export to the local bridge, reporting
    present, absent, or incompatible capabilities.
@@ -72,7 +72,7 @@ keeps working.
 
 ## Tests
 
-Rust, `crates/komodoc/src/tests/bib_cli.rs`: `bib pull` writes a deterministic
+Rust, `crates/librepaper/src/tests/bib_cli.rs`: `bib pull` writes a deterministic
 file; pulling again with one added entry produces a one-entry diff; existing
 citation keys remain stable. An unreachable Zotero returns setup guidance and
 preserves the existing bibliography rather than replacing it with an empty file.

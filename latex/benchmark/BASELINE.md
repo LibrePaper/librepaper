@@ -8,7 +8,7 @@ Browser: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) 
 
 Mirror manifest SHA-256: `709b30becccd4a4c6197007914dcf0b2ed8e3ef7ea0257d0252785aec9b7b577`.
 
-These measurements assess Komodoc's current adapters and local mirror together. A failure does not establish an engine limitation. The native reference uses the installed TeX Live, whose version may differ from the browser distribution. A PDF and matching text still require visual review; text agreement does not validate citation order or layout.
+These measurements assess LibrePaper's current adapters and local mirror together. A failure does not establish an engine limitation. The native reference uses the installed TeX Live, whose version may differ from the browser distribution. A PDF and matching text still require visual review; text agreement does not validate citation order or layout.
 
 ## Sources
 

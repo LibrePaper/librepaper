@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildBloom } from "./bloom.mjs";
 
-const directory = mkdtempSync(join(tmpdir(), "komodoc-mirror-test-"));
+const directory = mkdtempSync(join(tmpdir(), "librepaper-mirror-test-"));
 const checker = fileURLToPath(new URL("./check-mirror.mjs", import.meta.url));
 function asset(url, content) {
   const bytes = Buffer.from(content);

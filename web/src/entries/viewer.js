@@ -46,7 +46,7 @@ function waiting(message) {
 /// Draw `bytes`, which may be the ones already on screen.
 ///
 /// One path for a new preview and for a redraw, so the two cannot drift about
-/// what `komodocViewer` holds or which generation won.
+/// what `librepaperViewer` holds or which generation won.
 async function paint(bytes) {
   const mine = ++paintGeneration;
   // pdf.js hands the buffer to its worker, which detaches it. So `drawn` is
@@ -63,7 +63,7 @@ async function paint(bytes) {
     // The page index for an offset, for the caret lock and SyncTeX. Neither
     // is built here; both need this and nothing else from the viewer, so it
     // is exposed now rather than left for them to reach into the DOM for.
-    globalThis.komodocViewer = { pageForOffset: viewer.pageForOffset, pages };
+    globalThis.librepaperViewer = { pageForOffset: viewer.pageForOffset, pages };
     // The agent republishes off its own mutation observer, which the swap in
     // `render` has just tripped: one code path for "the document changed",
     // whether the change was an HTML preview or a page finishing. There is
@@ -93,7 +93,7 @@ addEventListener("resize", () => {
 addEventListener("message", async (event) => {
   if (event.source !== parent) return;
   const message = event.data;
-  if (!message || message.komodoc !== true) return;
+  if (!message || message.librepaper !== true) return;
   if (message.type !== "preview" || !message.pdf) return;
 
   // The bytes cross the frame boundary as an ArrayBuffer -- structured clone

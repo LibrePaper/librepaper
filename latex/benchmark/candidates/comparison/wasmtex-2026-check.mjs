@@ -75,7 +75,7 @@ async function smoke(){
  }finally{tex.terminate();bib.terminate();}
 }
 let driver;
-const profile=mkdtempSync(join(tmpdir(),'komodoc-wasmtex-2026-'));
+const profile=mkdtempSync(join(tmpdir(),'librepaper-wasmtex-2026-'));
 try{
  driver=await browser('chromium',profile,9711);
  await driver.navigate('http://127.0.0.1:8709/');

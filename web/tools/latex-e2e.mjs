@@ -1,5 +1,5 @@
-// The routing table, driven end to end: a real `komodoc serve --latex`, a
-// real `komodoc local start` when asked for, headless Chromium opening a
+// The routing table, driven end to end: a real `librepaper serve --latex`, a
+// real `librepaper local start` when asked for, headless Chromium opening a
 // published LaTeX project as its editor, and the stored rendering's
 // provenance saying which backend produced it.
 //
@@ -19,7 +19,7 @@
 // compiles the project natively. It needs the mirror at latex/mirror and
 // Chromium; it touches no deployment and no data but its own.
 //
-// Set localStorage `komodoc-latex-debug` (this script does) to see every
+// Set localStorage `librepaper-latex-debug` (this script does) to see every
 // routing decision on the console, which is what the trace below prints.
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
@@ -30,21 +30,21 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const BINARY = resolve(process.argv[2] || "dist/komodoc");
+const BINARY = resolve(process.argv[2] || "dist/librepaper");
 const MODE = process.argv[3] || "local";
 const FIXTURE = resolve(process.argv[4] || join(ROOT, "latex", "corpus", "e2e", "biber"));
 const WAIT = Number(process.argv[5] || 300);
 const MIRROR = process.argv[6] || `${ROOT}/latex/mirror`;
-const OUT = mkdtempSync(join(tmpdir(), "komodoc-latex-e2e-"));
+const OUT = mkdtempSync(join(tmpdir(), "librepaper-latex-e2e-"));
 const PORT = 8600 + Math.floor(Math.random() * 200);
 const LOCAL_PORT = 8763;
 const BASE = `http://localhost:${PORT}`;
 const DEBUG = 9500 + Math.floor(Math.random() * 200);
-const HEADERS = { "x-komodoc-client": "1", "sec-fetch-site": "same-origin" };
+const HEADERS = { "x-librepaper-client": "1", "sec-fetch-site": "same-origin" };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const data = mkdtempSync(join(tmpdir(), "komodoc-e2e-"));
-const config = mkdtempSync(join(tmpdir(), "komodoc-e2e-config-"));
-const profile = mkdtempSync(join(tmpdir(), "komodoc-e2e-profile-"));
+const data = mkdtempSync(join(tmpdir(), "librepaper-e2e-"));
+const config = mkdtempSync(join(tmpdir(), "librepaper-e2e-config-"));
+const profile = mkdtempSync(join(tmpdir(), "librepaper-e2e-profile-"));
 const server = spawn(BINARY, ["serve", "--port", String(PORT), "--data", data, "--publishers", "anyone", "--commenters", "anyone", "--latex", MIRROR], { stdio: ["ignore", "ignore", "ignore"] });
 let local = null;
 const localOut = [];
@@ -66,13 +66,13 @@ try {
   if (MODE === "local") {
     let code = null;
     for (let i = 0; i < 60 && !code; i++) {
-      try { code = JSON.parse(readFileSync(join(config, "komodoc/local/service.json"), "utf8")).code; } catch {}
+      try { code = JSON.parse(readFileSync(join(config, "librepaper/local/service.json"), "utf8")).code; } catch {}
       await wait(250);
     }
     if (!code) throw new Error(`no pairing code: ${localOut.join("")}`);
-    const health = await (await fetch(`http://127.0.0.1:${LOCAL_PORT}/komodoc/local/v1/health`)).json();
+    const health = await (await fetch(`http://127.0.0.1:${LOCAL_PORT}/librepaper/local/v1/health`)).json();
     console.log("local health", JSON.stringify(health));
-    const connect = await fetch(`http://127.0.0.1:${LOCAL_PORT}/komodoc/local/v1/connect`, { method: "POST", headers: { "content-type": "application/json", origin: BASE }, body: JSON.stringify({ origin: BASE, project: slug, code }) });
+    const connect = await fetch(`http://127.0.0.1:${LOCAL_PORT}/librepaper/local/v1/connect`, { method: "POST", headers: { "content-type": "application/json", origin: BASE }, body: JSON.stringify({ origin: BASE, project: slug, code }) });
     const pairing = await connect.json();
     console.log("connect", connect.status, JSON.stringify(pairing).slice(0, 80));
     token = { token: pairing.token, expires: pairing.expires, instance: health.instance };
@@ -106,9 +106,9 @@ try {
   await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, sessionId);
   await send("Page.navigate", { url: `${BASE}/` }, sessionId);
   await wait(1500);
-  await send("Runtime.evaluate", { expression: `localStorage.setItem("komodoc-latex-debug", "1")` }, sessionId);
+  await send("Runtime.evaluate", { expression: `localStorage.setItem("librepaper-latex-debug", "1")` }, sessionId);
   if (token) {
-    await send("Runtime.evaluate", { expression: `localStorage.setItem("komodoc-local-pairings", JSON.stringify({ [location.origin + "|" + ${JSON.stringify(slug)}]: ${JSON.stringify(token)} }))` }, sessionId);
+    await send("Runtime.evaluate", { expression: `localStorage.setItem("librepaper-local-pairings", JSON.stringify({ [location.origin + "|" + ${JSON.stringify(slug)}]: ${JSON.stringify(token)} }))` }, sessionId);
   }
   await send("Page.navigate", { url }, sessionId);
   const t0 = Date.now();

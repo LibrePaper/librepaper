@@ -1,14 +1,14 @@
 # The LaTeX mirror on Cloudflare, as a worker that is nothing but files.
 #
-# `make latex-push` deploys this. The assets directory is the mirror
-# `node latex/tools/mirror.mjs` builds; `.assetsignore` and `_headers`, written
+# `make latex-push` deploys this. The assets directory is the mirror `node
+# latex/tools/mirror.mjs` builds; `.assetsignore` and `_headers`, written
 # beside it by the make target, keep the three distributions the card does not
 # show out of the upload and give every digested file a cache that never
 # expires. Only `manifest.json` is fetched fresh, since it is the one path not
 # named by its digest. A deployment reaches this at
-# https://komodoc-latex.<account>.workers.dev/, which is what `komodoc serve
-# --latex` defaults to.
-name = "komodoc-latex"
+# https://librepaper-latex.<account>.workers.dev/, which is what `librepaper
+# serve --latex` defaults to.
+name = "librepaper-latex"
 compatibility_date = "2026-09-01"
 workers_dev = true
 

@@ -1,4 +1,4 @@
-// The local Komodoc app, as a browser client.
+// The local LibrePaper app, as a browser client.
 //
 // The browser can discover a reachable local service; it cannot enumerate
 // installed applications or prove one is absent (SPEC "What detection
@@ -23,8 +23,8 @@
 
 export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
 
-const ADDRESS_KEY = "komodoc-local-address";
-const PAIRINGS_KEY = "komodoc-local-pairings";
+const ADDRESS_KEY = "librepaper-local-address";
+const PAIRINGS_KEY = "librepaper-local-pairings";
 
 const NEGATIVE_MIN_MS = 60 * 1000;
 const NEGATIVE_MAX_MS = 10 * 60 * 1000;
@@ -154,17 +154,17 @@ function requirePairing() {
 function instructionsFor(state) {
   switch (state) {
     case "unreachable":
-      return "Local Komodoc is unavailable. Run `komodoc local start` on this computer, or set a custom address in Settings.";
+      return "Local LibrePaper is unavailable. Run `librepaper local start` on this computer, or set a custom address in Settings.";
     case "denied":
       return "Your browser blocked access to the local app. Allow local network access for this site and retry.";
     case "unauthorized":
-      return "Run `komodoc local start` on this computer and enter the pairing code it prints.";
+      return "Run `librepaper local start` on this computer and enter the pairing code it prints.";
     case "connected":
-      return "Local Komodoc is connected.";
+      return "Local LibrePaper is connected.";
     case "reachable":
-      return "Local Komodoc responded but could not be verified yet. Retry the connection.";
+      return "Local LibrePaper responded but could not be verified yet. Retry the connection.";
     case "incompatible":
-      return "The local Komodoc app speaks a protocol this browser does not support. Update Komodoc and retry.";
+      return "The local LibrePaper app speaks a protocol this browser does not support. Update LibrePaper and retry.";
     default:
       return "";
   }
@@ -226,7 +226,7 @@ function noteNegative(nowMs) {
 let addressSpaceSupported = true;
 
 async function healthFetch(addr) {
-  const url = addr + "komodoc/local/v1/health";
+  const url = addr + "librepaper/local/v1/health";
   const init = {
     method: "GET",
     mode: "cors",
@@ -273,7 +273,7 @@ async function sha256hex(bytes) {
 /// with the server's own message when it gave one.
 async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
   const addr = address();
-  const url = addr + "komodoc/local/v1/" + path;
+  const url = addr + "librepaper/local/v1/" + path;
   const headers = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
   let body;
@@ -293,12 +293,12 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
   }
   if (response.status === 401) {
     dropPairing();
-    const error = new Error("Local Komodoc rejected the stored pairing");
+    const error = new Error("Local LibrePaper rejected the stored pairing");
     error.name = "Unauthorized";
     throw error;
   }
   if (!response.ok) {
-    let message = `Local Komodoc refused the request (${response.status})`;
+    let message = `Local LibrePaper refused the request (${response.status})`;
     try {
       const data = await response.clone().json();
       if (data && typeof data.error === "string") message = data.error;
@@ -353,7 +353,7 @@ export async function probe({ force = false } = {}) {
       checkedAt: deps.now(), error: "malformed health response", instructions: instructionsFor("unreachable"),
     });
   }
-  if (body?.service !== "komodoc-local" || !Array.isArray(body?.protocol)) {
+  if (body?.service !== "librepaper-local" || !Array.isArray(body?.protocol)) {
     noteNegative(deps.now());
     return setStatus({
       state: "unreachable", address: addr, protocol: null, version: body?.version || null, capabilities: null,
@@ -449,7 +449,7 @@ export function openApp() {
     if (typeof window !== "undefined" && window.document?.body) {
       const iframe = window.document.createElement("iframe");
       iframe.style.display = "none";
-      iframe.src = "komodoc://local/open";
+      iframe.src = "librepaper://local/open";
       window.document.body.appendChild(iframe);
       setTimeout(() => iframe.remove(), 3000);
     }

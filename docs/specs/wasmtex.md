@@ -6,14 +6,14 @@ Date: 2026-09-07.
 
 ## Decision
 
-WasmTex is Komodoc's sole browser LaTeX compiler foundation. Komodoc owns a
+WasmTex is LibrePaper's sole browser LaTeX compiler foundation. LibrePaper owns a
 pinned distribution of its engines, matching formats, packages and fonts,
 plus the controller that runs them. The product offers one browser
 distribution, with pdfLaTeX, XeLaTeX and LuaLaTeX selected according to the
 project's requirements.
 
 TeX and BibTeX run in the browser. When a document requests Biber, or browser
-compilation fails, Komodoc checks whether the local Komodoc app is available.
+compilation fails, LibrePaper checks whether the local LibrePaper app is available.
 The app searches for a suitable local installation and tries the required
 work on the author's machine.
 
@@ -112,7 +112,7 @@ Implementation primarily touches:
   loading, preview, local fallback and removal of distribution selection.
 - latex/tools/: release building, resources, manifests and static mirroring,
   including the separately loaded Biber VM runtime/image.
-- crates/komodoc/src/cli/mod.rs and new local compilation modules: commands,
+- crates/librepaper/src/cli/mod.rs and new local compilation modules: commands,
   discovery, authenticated local service and native execution.
 - Existing history/rendering structures where compiler settings and
   provenance need to be represented.
@@ -134,11 +134,11 @@ Start from the WasmTex source revision and 2026 release evaluated in
 
 Treat these as the first release inputs, not moving dependencies. Verify the
 artifacts and preserve their corresponding source and licence notices.
-The production browser must obtain resources from Komodoc's configured mirror;
+The production browser must obtain resources from LibrePaper's configured mirror;
 it must not depend on an upstream project's live service.
 
 Use the engine layer rather than importing WasmTex's editor or complete
-headless application pipeline. Komodoc controls project state, bibliography
+headless application pipeline. LibrePaper controls project state, bibliography
 runs, cancellation, freshness, diagnostics and publishing.
 
 First mirror the verified existing binaries. Then reproduce the selected
@@ -278,7 +278,7 @@ local boundary, including Unicode bibliography output.
 
 ### What detection means
 
-The browser can discover a reachable local Komodoc service. It cannot
+The browser can discover a reachable local LibrePaper service. It cannot
 reliably enumerate installed applications or prove that an application is
 absent. An installed but stopped app, a denied browser permission and a
 missing app may all be unreachable.
@@ -286,12 +286,12 @@ missing app may all be unreachable.
 On a Biber request or browser failure:
 
 1. Reuse a healthy authenticated local connection if one exists.
-2. Otherwise perform one bounded probe of Komodoc's documented loopback
+2. Otherwise perform one bounded probe of LibrePaper's documented loopback
    endpoint, subject to the browser's permission rules.
 3. If available, establish or resume the authorized project connection and
    request capability discovery.
 4. If unreachable, continue through the browser Biber VM when eligible.
-   Otherwise show "Local Komodoc is unavailable" with Open/Connect,
+   Otherwise show "Local LibrePaper is unavailable" with Open/Connect,
    Retry connection and setup controls.
 
 Do not scan ports or the local network. Use a single documented endpoint,
@@ -299,7 +299,7 @@ with a configurable address for users who run it differently. Exact port and
 platform activation mechanisms are implementation details to settle when the
 bridge is built.
 
-An Open Komodoc action may use an application protocol where registration is
+An Open LibrePaper action may use an application protocol where registration is
 supported. It must be user-initiated when required by the browser/OS. A
 command-line start/connect instruction remains available for installations
 without desktop integration.
@@ -310,20 +310,20 @@ an app connection event or a reasonable bounded backoff.
 
 ### App integration
 
-The existing Komodoc executable owns the local service. Add commands
+The existing LibrePaper executable owns the local service. Add commands
 equivalent to:
 
-    komodoc local start
-    komodoc local status
-    komodoc local doctor
-    komodoc local disconnect
+    librepaper local start
+    librepaper local status
+    librepaper local doctor
+    librepaper local disconnect
 
 Final command naming can follow the existing CLI conventions. No separate
 Node, R or emulator installation is required. The local app uses native
 tools already installed on the machine.
 
 Desktop installation should provide app activation and a clear way to keep
-the local service available. Starting the public Komodoc deployment must not
+the local service available. Starting the public LibrePaper deployment must not
 implicitly enable a native compilation service.
 
 ### Connection boundary
@@ -367,7 +367,7 @@ Report capabilities individually:
 - Required fonts/resource availability where it can be checked.
 - Native execution/confinement support.
 
-An installed Komodoc app does not imply an installed TeX distribution.
+An installed LibrePaper app does not imply an installed TeX distribution.
 Finding Biber does not imply finding a complete TeX installation.
 
 Cache discovery results and refresh on explicit rescan, changed configured
@@ -389,7 +389,7 @@ When browser TeX produces a usable BCF:
 
 1. Package that BCF, bibliography files and applicable project configuration
    for the same immutable snapshot.
-2. Ask local Komodoc to find a Biber compatible with the browser release's
+2. Ask local LibrePaper to find a Biber compatible with the browser release's
    biblatex/control-file format.
 3. Run it in an isolated project workspace.
 4. Return BBL bytes, BLG/log output, exit status and tool identity.
@@ -443,7 +443,7 @@ time and pin Biber to the browser release's biblatex/control-file requirements.
 
 Select the emulator during implementation, using the existing VM experiments
 as evidence. Its deployment licence, browser support, startup cost and memory
-requirements must fit Komodoc. No vendor choice or further research is needed
+requirements must fit LibrePaper. No vendor choice or further research is needed
 to accept this plan.
 
 Serve the runtime and image through the configured static mirror. Record
@@ -481,7 +481,7 @@ resources for the next use. A denied persistent-cache request is recoverable.
 
 Show "Preparing browser bibliography support" during initial loading and
 "Updating bibliography in browser" during Biber execution. Preserve the
-preview and editor responsiveness. Explain that connecting local Komodoc can
+preview and editor responsiveness. Explain that connecting local LibrePaper can
 speed up bibliography work, without requiring installation to continue.
 
 Measure first-use download/startup separately from warm Biber execution.
@@ -506,7 +506,7 @@ The local app stages source and assets into a private per-project workspace,
 uses the requested native engine, and runs the required bibliography/index
 passes until convergence or the deadline.
 
-Implement a bounded native controller in Komodoc. Do not require latexmk,
+Implement a bounded native controller in LibrePaper. Do not require latexmk,
 Node or R merely to coordinate executable calls. If a future implementation
 uses an available helper, it must preserve the same configuration, execution
 and dependency rules without becoming an additional required installation.
@@ -573,7 +573,7 @@ The protocol is versioned and limited to discovery, compilation and results:
 
 | Operation | Purpose |
 | --- | --- |
-| Health | Identify reachable Komodoc and supported protocol versions. |
+| Health | Identify reachable LibrePaper and supported protocol versions. |
 | Connect/disconnect | Establish or revoke origin/project-scoped access. |
 | Capabilities/rescan | Report or refresh usable native tools. |
 | Submit Biber job | Run bibliography processing on supplied inputs. |
@@ -634,7 +634,7 @@ fallback and errors. Status distinguishes:
 
 - Loading browser compiler/resources.
 - Compiling in browser.
-- Checking local Komodoc.
+- Checking local LibrePaper.
 - Local connection needed.
 - Running local Biber.
 - Preparing browser bibliography support.
@@ -680,7 +680,7 @@ describe the new browser/local behavior.
 
 Mirror the selected 2026 artifacts, preserve source/licence provenance,
 generate a coherent resource manifest and make all browser fetches use the
-configured Komodoc mirror. Reproduce pdfTeX/BibTeX and their formats from
+configured LibrePaper mirror. Reproduce pdfTeX/BibTeX and their formats from
 pinned inputs. Establish the same release process for XeTeX/LuaTeX.
 
 Acceptance: a clean build can reconstruct the release; no runtime dependency
@@ -714,7 +714,7 @@ compilation when possible.
 
 Acceptance: Biber-only and full-native routes work with discovered tools on
 Linux amd64/arm64, macOS Intel/Apple Silicon and Windows amd64, matching the
-current Komodoc release targets. Missing tools produce setup guidance, not
+current LibrePaper release targets. Missing tools produce setup guidance, not
 implicit installation.
 
 ### 5. Connect automatic fallback and rendering publication
@@ -810,6 +810,6 @@ delay writing or accepting this plan.
 - [Measured comparison and reproduction](../../latex/benchmark/candidates/comparison/README.md)
 - [Existing WasmTex/Biber VM experiment](../../latex/benchmark/candidates/hybrid/REPORT.md)
 - [WasmTex source](https://github.com/corca-ai/wasmtex)
-- [Existing rendering implementation](../../crates/komodoc/src/server/figures.rs)
+- [Existing rendering implementation](../../crates/librepaper/src/server/figures.rs)
 - [Browser local-network permissions](https://developer.chrome.com/blog/local-network-access)
 - [TeX Live security/configuration changes](https://www.tug.org/texlive/bugs.html)

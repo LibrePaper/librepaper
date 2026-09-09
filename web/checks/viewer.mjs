@@ -80,7 +80,7 @@ const frame = document.getElementById("frame");
 window.seen = { ready: [], selection: [], regions: [] };
 addEventListener("message", (event) => {
   const message = event.data;
-  if (!message || message.komodoc !== true) return;
+  if (!message || message.librepaper !== true) return;
   if (message.type === "ready") window.seen.ready.push(message.text);
   if (message.type === "selection") window.seen.selection.push(message.selector);
   if (message.type === "regions-unplaceable") window.seen.regions.push(message);
@@ -88,7 +88,7 @@ addEventListener("message", (event) => {
 window.sendPdf = async (path) => {
   const bytes = await fetch(path).then((r) => r.arrayBuffer());
   window.seen.ready.length = 0;
-  frame.contentWindow.postMessage({ komodoc: true, type: "preview", pdf: bytes }, "*", [bytes]);
+  frame.contentWindow.postMessage({ librepaper: true, type: "preview", pdf: bytes }, "*", [bytes]);
 };
 window.text = () => window.seen.ready.at(-1) || "";
 // The sidebar's own job: take a selector, find it in the published text, and
@@ -98,9 +98,9 @@ window.anchor = (selector) => {
   return anchorOne(text, selector, flatten(text));
 };
 window.paint = (ranges) =>
-  frame.contentWindow.postMessage({ komodoc: true, type: "highlight", ranges }, "*");
+  frame.contentWindow.postMessage({ librepaper: true, type: "highlight", ranges }, "*");
 window.paintRegions = (regions) =>
-  frame.contentWindow.postMessage({ komodoc: true, type: "regions", regions }, "*");
+  frame.contentWindow.postMessage({ librepaper: true, type: "regions", regions }, "*");
 window.doc = () => frame.contentDocument;
 window.ready = true;
 </script></body>`;
@@ -322,7 +322,7 @@ async function run() {
       canvases: doc.querySelectorAll(".page canvas").length,
       spans: pages.map((page) => page.querySelectorAll(".textLayer span:not(.gap)").length),
       published: window.text().length,
-      viewerPages: frame.contentWindow.komodocViewer?.pages ?? 0,
+      viewerPages: frame.contentWindow.librepaperViewer?.pages ?? 0,
     };
   `);
   check("the article draws 3 pages", drawn.canvases === 3, JSON.stringify(drawn));
@@ -393,13 +393,13 @@ async function run() {
       const selector = ${JSON.stringify(one.selector)};
       const at = window.anchor(selector);
       if (!at) return { ok: false };
-      const viewer = frame.contentWindow.komodocViewer;
+      const viewer = frame.contentWindow.librepaperViewer;
       window.paint([{ id: "case", start: at.start, end: at.end, motivation: "commenting" }]);
       await new Promise((r) => setTimeout(r, 120));
       // A mark inside a run separator is at the page's origin, zero-sized
       // and clipped, so it says nothing about where the passage sits; only
       // the marks over real runs do.
-      const marks = [...window.doc().querySelectorAll("mark[data-komodoc]")].filter(
+      const marks = [...window.doc().querySelectorAll("mark[data-librepaper]")].filter(
         (m) => !m.closest("span.gap"),
       );
       const tops = [...new Set(marks.map((m) => Math.round(m.getBoundingClientRect().top)))];
@@ -503,7 +503,7 @@ async function run() {
     const text = window.text();
     return {
       canvases: doc.querySelectorAll(".page canvas").length,
-      viewerPages: frame.contentWindow.komodocViewer?.pages ?? 0,
+      viewerPages: frame.contentWindow.librepaperViewer?.pages ?? 0,
       stillArticle: text.includes("incomprehensibility"),
       anchors: Boolean(window.anchor({ exact: "incomprehensibility", prefix: "", suffix: "" })),
     };

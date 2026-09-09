@@ -14,7 +14,7 @@
 
 <nav class="flex items-center justify-between gap-4">
   <div class="nav-identity flex min-w-0 items-center gap-3">
-    <a class="flex items-center gap-2" href="/" aria-label="Komodoc home">
+    <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
       <Logo />
     </a>
     <!-- The separator and the name it separates are one thing, so a bar too
@@ -32,7 +32,7 @@
 
   <div class="nav-actions flex shrink-0 items-center gap-2">
     {@render tools?.()}
-    <!-- The one link that is the same on every page: what Komodoc is and how
+    <!-- The one link that is the same on every page: what LibrePaper is and how
          to use it, from the project's own README. An icon among the other
          icons rather than a phrase in the middle of the bar, which is width
          the document title wanted and a shape nothing else in the bar had. -->

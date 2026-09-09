@@ -48,14 +48,14 @@ Treat the upgrade as one-way once anybody has opened a document.
 ## Before upgrading
 
 Copy the storage. It is a directory or a bucket prefix, and every object under
-it belongs to komodoc:
+it belongs to librepaper:
 
 ```sh
 # a directory
-cp -a komodoc-data komodoc-data.before-history
+cp -a librepaper-data librepaper-data.before-history
 
 # a bucket
-aws s3 sync s3://your-bucket/komodoc s3://your-bucket/komodoc.before-history
+aws s3 sync s3://your-bucket/librepaper s3://your-bucket/librepaper.before-history
 ```
 
 Nothing else is needed: `index.json`, `documents/`, `sources/`, `rooms/` and
@@ -72,12 +72,12 @@ To roll back after documents have been opened, restore the copy:
 
 ```sh
 # a directory
-mv komodoc-data komodoc-data.after-history
-mv komodoc-data.before-history komodoc-data
+mv librepaper-data librepaper-data.after-history
+mv librepaper-data.before-history librepaper-data
 
 # a bucket
-aws s3 rm s3://your-bucket/komodoc --recursive
-aws s3 sync s3://your-bucket/komodoc.before-history s3://your-bucket/komodoc
+aws s3 rm s3://your-bucket/librepaper --recursive
+aws s3 sync s3://your-bucket/librepaper.before-history s3://your-bucket/librepaper
 ```
 
 That returns every document to what it said at the moment of the copy. What is
@@ -90,8 +90,8 @@ A document's history is plain text under its own prefix, so a single document
 can be read out of the new layout without the old release:
 
 ```sh
-cat komodoc-data/history/<slug>/index.json          # the checkpoints, oldest first
-cat komodoc-data/history/<slug>/<sha>               # the source at that checkpoint
+cat librepaper-data/history/<slug>/index.json          # the checkpoints, oldest first
+cat librepaper-data/history/<slug>/<sha>               # the source at that checkpoint
 ```
 
 Each checkpoint object is the document's source as it stood, byte for byte, so
@@ -143,7 +143,7 @@ deliberately not done:
 # Signing in, left open
 
 - The table of pending terminal sign-ins is capped at a thousand in total.
-  One caller can fill it and keep every new `komodoc login` waiting for ten
+  One caller can fill it and keep every new `librepaper login` waiting for ten
   minutes; nothing else. A per-address cap would be the better bound.
 - `Grant.login` holds a handle, not a login, since providers arrived; rename
   the field to reflect provider-neutral handles.

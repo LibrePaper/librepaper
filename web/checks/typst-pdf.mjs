@@ -10,7 +10,7 @@ import { call, handOver } from "../src/lib/renderer-wasm.js";
 const corpus = new URL("../../crates/engine/tests/typst-corpus/", import.meta.url);
 const { instance } = await WebAssembly.instantiate(readFileSync(new URL("../dist/wasm/typst.wasm", import.meta.url)), {});
 const wasm = instance.exports;
-const directory = mkdtempSync(join(tmpdir(), "komodoc-typst-corpus-"));
+const directory = mkdtempSync(join(tmpdir(), "librepaper-typst-corpus-"));
 const inputs = Object.fromEntries(["paper.typ", "lib.typ", "long.typ", "refs.bib", "broken.typ"].map((name) => [name, readFileSync(new URL(name, corpus), "utf8")]));
 const assets = { "asset.svg": new Uint8Array(readFileSync(new URL("asset.svg", corpus))) };
 const inspect = (result, name) => {

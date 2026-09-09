@@ -199,9 +199,9 @@ const sourceComment = (revision) => ({
     const a = await sourceTextAt("doc-a", sha, "main.md");
     const b = await sourceTextAt("doc-b", sha, "main.md");
     const documentFetches = fetches;
-    const keyed = await sourceTextAt("doc-a", sha, "main.md", { "X-Komodoc-Key": "one" });
-    const keyedAgain = await sourceTextAt("doc-a", sha, "main.md", { "X-Komodoc-Key": "one" });
-    const otherKey = await sourceTextAt("doc-a", sha, "main.md", { "X-Komodoc-Key": "two" });
+    const keyed = await sourceTextAt("doc-a", sha, "main.md", { "X-LibrePaper-Key": "one" });
+    const keyedAgain = await sourceTextAt("doc-a", sha, "main.md", { "X-LibrePaper-Key": "one" });
+    const otherKey = await sourceTextAt("doc-a", sha, "main.md", { "X-LibrePaper-Key": "two" });
     check("failed source checkpoint fetches are retried", failed && a === "A");
     check("source checkpoint cache keys include the document", b === "B" && documentFetches === 3);
     check("source checkpoint cache keys include link context", keyed === "A" && keyedAgain === "A" && otherKey === "A" && fetches === 5);

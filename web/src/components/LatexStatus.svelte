@@ -84,7 +84,7 @@
       <span class="latex-actions">
         {#if actions.includes("connect")}
           <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => onconnect?.()}>
-            Connect local Komodoc
+            Connect local LibrePaper
           </button>
         {/if}
         {#if actions.includes("retry")}
@@ -94,7 +94,7 @@
         {/if}
         {#if actions.includes("open-app")}
           <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={openApp}>
-            Open Komodoc
+            Open LibrePaper
           </button>
         {/if}
         {#if actions.includes("try-browser")}
@@ -103,7 +103,7 @@
           </button>
         {/if}
         {#if actions.includes("doctor")}
-          <span class="text-surface-600-400 text-xs">Run <code>komodoc local doctor</code> for setup help.</span>
+          <span class="text-surface-600-400 text-xs">Run <code>librepaper local doctor</code> for setup help.</span>
         {/if}
         {#if actions.includes("diagnostics")}
           <span class="text-surface-600-400 text-xs">See Diagnostics for what the local build said.</span>

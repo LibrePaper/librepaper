@@ -23,25 +23,25 @@ export function write(key, value) {
   }
 }
 
-export const VIEWED = "komodoc-viewed";
-export const FAVORITES = "komodoc-favorites";
-export const LINKED = "komodoc-linked";
+export const VIEWED = "librepaper-viewed";
+export const FAVORITES = "librepaper-favorites";
+export const LINKED = "librepaper-linked";
 // How the window was last divided, and which side the source was on. Both are
 // one reader's habit rather than anything about a document, so reopening an
 // editor lands where they left it.
-export const LAYOUT = "komodoc-layout";
-export const SOURCE_SIDE = "komodoc-source-side";
+export const LAYOUT = "librepaper-layout";
+export const SOURCE_SIDE = "librepaper-source-side";
 // Which panel the column last showed -- the files, the comments or the history
 // -- or "" for closed. Absent on a first visit, which opens on the files.
-export const PANEL = "komodoc-panel";
+export const PANEL = "librepaper-panel";
 // The link keys this browser has been given, by slug. A key is a secret, and
 // this is the right place for one: it is per browser, so opening the link on a
 // phone means pasting it again, and it is cleared with everything else.
-export const KEYS = "komodoc-keys";
+export const KEYS = "librepaper-keys";
 // Which keys the editor answers to, "default" or "vim". A habit of the
 // person typing rather than of the document, so it lives here rather than on
 // the shared text, and a coauthor on the other end keeps whichever they chose.
-export const KEYMAP = "komodoc-keymap";
+export const KEYMAP = "librepaper-keymap";
 
 // A page can keep using a link key even when persistent storage is denied. The
 // value lasts only for this page, which is the same lifetime as the fragment

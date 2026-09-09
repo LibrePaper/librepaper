@@ -2,7 +2,7 @@
 
 ## Scope
 
-KomoDoc has local and hosted profiles built on the same batching code. Their
+LibrePaper has local and hosted profiles built on the same batching code. Their
 durability differs:
 
 - Local process recovery uses the deployment disk; disk-loss recovery restores

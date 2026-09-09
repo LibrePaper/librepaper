@@ -13,7 +13,7 @@ import { browser, pause, until } from "../tools/browser-driver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(here));
-const temporary = mkdtempSync(join(tmpdir(), "komodoc-history-merge-check-"));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-history-merge-check-"));
 const output = join(temporary, "build");
 const profile = join(temporary, "browser");
 const entry = join(temporary, "entry.js");

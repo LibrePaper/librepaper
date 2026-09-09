@@ -30,7 +30,7 @@ export function offerLatex(on) {
 }
 
 function urls() {
-  return globalThis.KOMODOC_MODULES || {};
+  return globalThis.LIBREPAPER_MODULES || {};
 }
 
 /// Whether this deployment serves a renderer for this format at all. The typst
@@ -70,9 +70,9 @@ function request(format, operation, args = {}) {
   return rendererRequest(new URL(url, globalThis.location.href).href, operation, args);
 }
 
-/// The word-level diff shared with `komodoc sync`. It does not depend on the
-/// source format, but runs through the same engine module as the document so
-/// the browser needs no second WASM bundle. HTML documents use Markdown's
+/// The word-level diff shared with `librepaper sync`. It does not depend on
+/// the source format, but runs through the same engine module as the document
+/// so the browser needs no second WASM bundle. HTML documents use Markdown's
 /// small module when one is available.
 export function diff(oldText, newText, format = "markdown") {
   // Diffing is format independent. Prefer Markdown even for a Typst reader so

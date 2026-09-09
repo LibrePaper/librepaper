@@ -3,7 +3,7 @@
 Research notes on Overleaf's feature set, compiled from Overleaf's own marketing
 pages and documentation (September 2026). Purpose: a checklist of what a
 collaborative browser-based document editor is expected to do, to inform the
-komodoc live markdown editor.
+librepaper live markdown editor.
 
 Sources are listed at the bottom.
 
@@ -39,7 +39,7 @@ Sources are listed at the bottom.
 - **Error, warning, and log panel** — parsed compiler output with jump-to-line;
   raw logs also available.
 - **Compile timeout tiers** — free accounts get a short compile budget; premium
-  plans get extended compile time. (Relevant to komodoc's sandbox cost bounding.)
+  plans get extended compile time. (Relevant to librepaper's sandbox cost bounding.)
 - **Stop-on-first-error vs. full-run** compile modes.
 - **Automatic bibliography compilation** — no separate bibtex/biber invocation.
 
@@ -126,7 +126,7 @@ Sources are listed at the bottom.
   and Community Edition (open source, AGPL, `overleaf/overleaf` on GitHub),
   deployed via the Overleaf Toolkit.
 
-## 10. Takeaways for komodoc
+## 10. Takeaways for librepaper
 
 Features that plausibly map onto a live markdown/Typst editor, ranked by how
 much they define the product:

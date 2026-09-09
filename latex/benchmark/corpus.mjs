@@ -10,7 +10,7 @@ export const SOURCES = JSON.parse(readFileSync(join(HERE, "sources.json"), "utf8
 
 // Official examples exercise workflows; the small local cases isolate failures.
 // Engine directives are added only to the in-memory input. The benchmark
-// records whether Komodoc's adapter actually honors the requested engine.
+// records whether LibrePaper's adapter actually honors the requested engine.
 export const CASES = [
   { id: "acm-conference", source: "acmart", main: "sigconf.tex", engine: "pdflatex", features: "ACM conference, BibTeX, figures, tables" },
   { id: "acm-journal", source: "acmart", main: "acmsmall.tex", engine: "pdflatex", features: "ACM journal, BibTeX, figures, tables" },

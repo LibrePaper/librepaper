@@ -1709,7 +1709,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "komodoc"
+name = "librepaper"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -1722,8 +1722,8 @@ dependencies = [
  "html-escape",
  "http-body-util",
  "include_dir",
- "komodoc-engine",
- "komodoc-text",
+ "librepaper-engine",
+ "librepaper-text",
  "notify",
  "percent-encoding",
  "rand 0.9.5",
@@ -1741,7 +1741,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "komodoc-engine"
+name = "librepaper-engine"
 version = "0.1.0"
 dependencies = [
  "comrak",
@@ -1752,18 +1752,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "komodoc-fuzz"
+name = "librepaper-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
- "komodoc",
- "komodoc-text",
+ "librepaper",
+ "librepaper-text",
  "libfuzzer-sys",
  "yrs",
 ]
 
 [[package]]
-name = "komodoc-text"
+name = "librepaper-text"
 version = "0.1.0"
 
 [[package]]

@@ -1809,63 +1809,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "komodoc"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64",
- "chacha20poly1305",
- "clap",
- "fs2",
- "futures-util",
- "hex",
- "hmac",
- "html-escape",
- "http-body-util",
- "include_dir",
- "komodoc-engine",
- "komodoc-text",
- "notify",
- "percent-encoding",
- "rand 0.9.5",
- "regex",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "tempfile",
- "time",
- "tokio",
- "tokio-tungstenite",
- "unicode-normalization",
- "url",
- "yrs",
-]
-
-[[package]]
-name = "komodoc-engine"
-version = "0.1.0"
-dependencies = [
- "biblatex",
- "comrak",
- "ecow",
- "hayagriva",
- "komodoc-text",
- "serde_json",
- "typst",
- "typst-assets",
- "typst-layout",
- "typst-pdf",
-]
-
-[[package]]
-name = "komodoc-text"
-version = "0.1.0"
-
-[[package]]
 name = "kqueue"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1955,6 +1898,63 @@ name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
+name = "librepaper"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "chacha20poly1305",
+ "clap",
+ "fs2",
+ "futures-util",
+ "hex",
+ "hmac",
+ "html-escape",
+ "http-body-util",
+ "include_dir",
+ "librepaper-engine",
+ "librepaper-text",
+ "notify",
+ "percent-encoding",
+ "rand 0.9.5",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "unicode-normalization",
+ "url",
+ "yrs",
+]
+
+[[package]]
+name = "librepaper-engine"
+version = "0.1.0"
+dependencies = [
+ "biblatex",
+ "comrak",
+ "ecow",
+ "hayagriva",
+ "librepaper-text",
+ "serde_json",
+ "typst",
+ "typst-assets",
+ "typst-layout",
+ "typst-pdf",
+]
+
+[[package]]
+name = "librepaper-text"
+version = "0.1.0"
 
 [[package]]
 name = "libsqlite3-sys"

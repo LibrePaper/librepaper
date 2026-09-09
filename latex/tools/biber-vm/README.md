@@ -73,7 +73,7 @@ node latex/tools/biber-vm/prepare.mjs   # fetches/verifies v86 runtime + biber b
 node latex/tools/biber-vm/build.mjs     # docker build, export, pack, write latex/mirror/biber-vm/<vmRelease>/
 ```
 
-`build.mjs --export-only` reuses an already-built `komodoc-biber-vm:build`
+`build.mjs --export-only` reuses an already-built `librepaper-biber-vm:build`
 Docker image and repeats only export/pack/registration — useful when only
 v86-runtime files or `vm.json` metadata changed. The build is idempotent:
 re-running it with unchanged inputs reproduces the same `<vmRelease>` and
@@ -99,7 +99,7 @@ node latex/tools/biber-vm/vm-smoke.mjs [vmRelease]
 ```
 
 Boots the built release in headless Chromium via `web/tools/browser-driver.mjs`,
-using the same mount / `KOMODOC_VM_READY` boot protocol as
+using the same mount / `LIBREPAPER_VM_READY` boot protocol as
 `latex/benchmark/candidates/tinytex-v86/worker.js` (Buildroot kernel boots
 first; the packed Debian+Biber rootfs is mounted over 9p at `/mnt` and
 subsequent commands run via `chroot /mnt`). Runs `biber --version`, then a
@@ -174,7 +174,7 @@ device and makes no runtime network access.
   caching, matching production per section 6's contract, but no
   range-request or priority-loading behavior was implemented or measured
   here; that is server/client integration work, not guest packaging.
-- **Serving in production**: `crates/komodoc/src/latex.rs` and
+- **Serving in production**: `crates/librepaper/src/latex.rs` and
   `latex/tools/serve.mjs` are package A's files and were not touched. This
   recipe only writes static files under `latex/mirror/biber-vm/` for them to
   serve like any other immutable digest-named mirror content.

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(here));
-const temporary = mkdtempSync(join(tmpdir(), "komodoc-files-check-"));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-files-check-"));
 const output = join(temporary, "build");
 const profile = join(temporary, "chrome");
 const entry = join(temporary, "entry.js");
@@ -321,7 +321,7 @@ try {
       return;
     }
     response.setHeader("Content-Type", "text/html");
-    response.end('<!doctype html><html data-theme="komodoc"><head><link rel="stylesheet" href="/files-check.css"></head><body style="width:340px;height:720px"><script type="module" src="/files-check.js"></script></body></html>');
+    response.end('<!doctype html><html data-theme="librepaper"><head><link rel="stylesheet" href="/files-check.css"></head><body style="width:340px;height:720px"><script type="module" src="/files-check.js"></script></body></html>');
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);

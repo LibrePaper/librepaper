@@ -8,7 +8,7 @@
 // fetched from a mirror a compromised or misconfigured server could poison,
 // and the spec asks for verification and eviction recovery that bare-URL
 // caching does not need. The two caches are also namespaced apart on purpose
-// ("komodoc" vs "komodoc-latex-*") so `clear()` here can never touch a
+// ("librepaper" vs "librepaper-latex-*") so `clear()` here can never touch a
 // project's rendered pages, and vice versa.
 //
 // Everything here runs unbundled under Node for `latex-resources.mjs`, so it
@@ -22,8 +22,8 @@
 // explicit argument rather than through hidden module state -- easier to
 // test and it makes "which cache" visible at every call site.
 
-const PREFIX = "komodoc-latex-";
-const REMEMBER_KEY = "komodoc-latex-used";
+const PREFIX = "librepaper-latex-";
+const REMEMBER_KEY = "librepaper-latex-used";
 const REMEMBER_LIMIT = 2000;
 
 /// The Cache Storage name for one release: short (16 hex chars of the
@@ -118,7 +118,7 @@ export async function prefetch(release, entries, onProgress) {
   return results;
 }
 
-/// Bytes held across every `komodoc-latex-*` cache. Sums `content-length`
+/// Bytes held across every `librepaper-latex-*` cache. Sums `content-length`
 /// when a response carries it (cheap: no body read) and falls back to
 /// reading the body only when it does not; `fetchVerified` above always
 /// stores a response with the header set, so the fallback exists only for
@@ -143,10 +143,10 @@ export async function size() {
   return total;
 }
 
-/// Deletes every `komodoc-latex-*` cache -- which includes the biber VM's
+/// Deletes every `librepaper-latex-*` cache -- which includes the biber VM's
 /// static resources, namespaced under the same prefix by convention (see
 /// `vm.js`) -- and never touches anything else: a project's rendered pages
-/// live in the plain `komodoc` cache from `cache.js`, a different name
+/// live in the plain `librepaper` cache from `cache.js`, a different name
 /// entirely, so clearing compiler resources can never delete source
 /// documents.
 export async function clear() {

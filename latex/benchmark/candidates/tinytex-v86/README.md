@@ -30,7 +30,7 @@ Sources: [TinyTeX recipe](https://github.com/rstudio/tinytex/tree/d01200eb642187
 
 ## Reproduce
 
-From the Komodoc repository root, with Node, Docker, curl, tar, Chromium, and
+From the LibrePaper repository root, with Node, Docker, curl, tar, Chromium, and
 Poppler's `pdfinfo`/`pdftotext` available to the developer:
 
 ```sh

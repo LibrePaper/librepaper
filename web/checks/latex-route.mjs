@@ -35,7 +35,7 @@ function fresh(overrides = {}) {
 }
 
 // Biber needed, local unreachable, VM not eligible (unsupported browser or
-// no valid bcf yet) -> show the browser output with "Local Komodoc is
+// no valid bcf yet) -> show the browser output with "Local LibrePaper is
 // unavailable".
 {
   const state = fresh({ localStatus: "unreachable", vmSupported: false });

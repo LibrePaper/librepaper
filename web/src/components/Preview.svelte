@@ -30,14 +30,14 @@
   /// small and is cloned, as it always was.
   export function tell(message, transfer) {
     if (!docsOrigin || !frame?.contentWindow) return false;
-    frame.contentWindow.postMessage({ komodoc: true, ...message }, docsOrigin, transfer);
+    frame.contentWindow.postMessage({ librepaper: true, ...message }, docsOrigin, transfer);
     return true;
   }
 
   function receive(event) {
     if (!docsOrigin || event.origin !== docsOrigin || event.source !== frame?.contentWindow) return;
     const message = event.data;
-    if (!message || message.komodoc !== true) return;
+    if (!message || message.librepaper !== true) return;
     onmessage(message);
   }
 </script>

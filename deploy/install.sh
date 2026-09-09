@@ -1,17 +1,17 @@
 #!/bin/sh
-# Install komodoc: fetch the release binary for this machine and put it on the
-# PATH. Nothing else is needed -- the tool is one static file.
+# Install librepaper: fetch the release binary for this machine and put it on
+# the PATH. Nothing else is needed -- the tool is one static file.
 #
-#   curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/komodoc/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/librepaper/main/install.sh | sh
 #
 # Environment:
-#   KOMODOC_VERSION   version to install, e.g. v0.0.1 (default: latest)
-#   KOMODOC_BIN_DIR   where to put the binary (default: ~/.local/bin)
+#   LIBREPAPER_VERSION   version to install, e.g. v0.0.1 (default: latest)
+#   LIBREPAPER_BIN_DIR   where to put the binary (default: ~/.local/bin)
 set -eu
 
-REPO="vincentarelbundock/komodoc"
-VERSION="${KOMODOC_VERSION:-latest}"
-BIN_DIR="${KOMODOC_BIN_DIR:-$HOME/.local/bin}"
+REPO="vincentarelbundock/librepaper"
+VERSION="${LIBREPAPER_VERSION:-latest}"
+BIN_DIR="${LIBREPAPER_BIN_DIR:-$HOME/.local/bin}"
 
 die() { printf 'install: %s\n' "$*" >&2; exit 1; }
 
@@ -42,14 +42,14 @@ if [ "$VERSION" = latest ]; then
 	[ -n "$VERSION" ] || die "could not determine the latest version"
 fi
 
-archive="komodoc_${os}_${arch}.tar.gz"
+archive="librepaper_${os}_${arch}.tar.gz"
 url="https://github.com/$REPO/releases/download/$VERSION/$archive"
 checksums_url="https://github.com/$REPO/releases/download/$VERSION/checksums.txt"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-printf 'install: downloading komodoc %s (%s/%s)\n' "$VERSION" "$os" "$arch" >&2
+printf 'install: downloading librepaper %s (%s/%s)\n' "$VERSION" "$os" "$arch" >&2
 # The archive is saved under its release name, not a generic temp name, so the
 # line pulled out of checksums.txt below names a file that is actually there.
 fetch "$url" > "$tmp/$archive" || die "download failed: $url"
@@ -72,13 +72,13 @@ fi
 verify || die "checksum mismatch for $archive; the download may be corrupt or tampered with"
 
 tar -xzf "$tmp/$archive" -C "$tmp" || die "the download was not a valid archive"
-[ -f "$tmp/komodoc" ] || die "the archive did not contain a komodoc binary"
+[ -f "$tmp/librepaper" ] || die "the archive did not contain a librepaper binary"
 
 mkdir -p "$BIN_DIR"
-mv "$tmp/komodoc" "$BIN_DIR/komodoc"
-chmod +x "$BIN_DIR/komodoc"
+mv "$tmp/librepaper" "$BIN_DIR/librepaper"
+chmod +x "$BIN_DIR/librepaper"
 
-printf 'install: komodoc %s -> %s/komodoc\n' "$VERSION" "$BIN_DIR" >&2
+printf 'install: librepaper %s -> %s/librepaper\n' "$VERSION" "$BIN_DIR" >&2
 
 case ":$PATH:" in
 	*":$BIN_DIR:"*) ;;

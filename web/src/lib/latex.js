@@ -4,7 +4,7 @@
 // one module worker running WasmTex, speaks the section 2.4 protocol to it,
 // and decides -- through `latex/route.js`'s pure state machine -- when a
 // Biber request or a browser failure should instead go to the author's local
-// Komodoc app or, failing that, to a Biber-only virtual machine in the
+// LibrePaper app or, failing that, to a Biber-only virtual machine in the
 // browser. `latex/jobs.js` gives every compile its identity, `latex/
 // bibliography.js` reads the real aux/bcf/log a pass produced rather than
 // guessing from source text, and `latex/status.js` is the store the reader's
@@ -118,12 +118,12 @@ let lastStaged = null; // { project, inputs, bibIdentity, generated }
 // the backends that need more than its id (the VM image hangs off it).
 let currentReleaseEntry = null;
 
-/// Routing decisions, on the console, when `localStorage["komodoc-latex-debug"]`
+/// Routing decisions, on the console, when `localStorage["librepaper-latex-debug"]`
 /// is set: the one way to see why a compile went where it went without a
 /// debugger attached to a worker.
 function trace(...words) {
   try {
-    if (typeof localStorage !== "undefined" && localStorage.getItem("komodoc-latex-debug")) console.debug("latex:", ...words);
+    if (typeof localStorage !== "undefined" && localStorage.getItem("librepaper-latex-debug")) console.debug("latex:", ...words);
   } catch {
     /* storage refused: nothing to trace to */
   }
@@ -371,7 +371,8 @@ function classifyWorkerError(error, fallbackKind) {
   return error?.name === "WorkerDied" ? "init" : fallbackKind;
 }
 
-// --- Backend seams (local Komodoc, the Biber VM) ----------------------------
+// --- Backend seams (local LibrePaper, the Biber VM)
+// ----------------------------
 
 async function getLocal() {
   if (localOverride !== undefined) return localOverride;
@@ -511,7 +512,7 @@ async function runBibliography({ request, attempts, engine }) {
 
   for (;;) {
     if (decision.action === "try-local-biber") {
-      statusStore.set({ phase: "checking-local", message: "Checking local Komodoc", backend: null });
+      statusStore.set({ phase: "checking-local", message: "Checking local LibrePaper", backend: null });
       const local = await getLocal();
       if (!local) {
         decision = route.decide(
@@ -635,7 +636,7 @@ async function runNative({ job, tree, engine, releaseId, attempts, startedAt }) 
       attempts,
       startedAt,
       ok: false,
-      failure: { kind: "local-unavailable", message: "Local Komodoc is unavailable", stage: "native" },
+      failure: { kind: "local-unavailable", message: "Local LibrePaper is unavailable", stage: "native" },
       provenance: baseProvenance(engine, releaseId),
     });
   }
@@ -1131,7 +1132,7 @@ export const local = {
   },
   async openApp() {
     const module = await getLocal();
-    return module ? module.openApp() : "Run `komodoc local start` and follow the printed instructions.";
+    return module ? module.openApp() : "Run `librepaper local start` and follow the printed instructions.";
   },
 };
 

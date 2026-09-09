@@ -78,12 +78,12 @@ assert.deepEqual(
 assert.equal(failureHint(null), "");
 assert.equal(
   failureHint({ kind: "local-unavailable" }),
-  "Local Komodoc is unavailable. Connect it or retry the connection.",
+  "Local LibrePaper is unavailable. Connect it or retry the connection.",
 );
 assert.match(failureHint({ kind: "tool-missing", message: "biber was not found" }), /biber was not found/);
-assert.match(failureHint({ kind: "tool-missing", message: "biber was not found" }), /komodoc local doctor/);
+assert.match(failureHint({ kind: "tool-missing", message: "biber was not found" }), /librepaper local doctor/);
 assert.match(failureHint({ kind: "incompatible", message: "biblatex 3.21 needs Biber 2.21" }), /biblatex 3\.21/);
-assert.match(failureHint({ kind: "vm" }), /Retry, or connect local Komodoc/);
+assert.match(failureHint({ kind: "vm" }), /Retry, or connect local LibrePaper/);
 assert.equal(failureHint({ kind: "native" }), "The local build failed too; see Diagnostics.");
 assert.equal(failureHint({ kind: "tex", message: "Undefined control sequence" }), "Undefined control sequence");
 

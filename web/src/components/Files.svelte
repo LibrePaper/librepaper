@@ -27,7 +27,7 @@
   let destination = $state("");
   let conflict = $state(null);
   let settleConflict;
-  const dragType = "application/x-komodoc-files";
+  const dragType = "application/x-librepaper-files";
   const dragToken = crypto.randomUUID();
   const root = $derived(fileTree(files, folders));
   const collection = $derived(createTreeViewCollection({ rootNode: root, nodeToValue: (node) => node.id, nodeToString: (node) => node.name,

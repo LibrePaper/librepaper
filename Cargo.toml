@@ -1,9 +1,10 @@
-# Komodoc: three crates. `engine` renders markdown and typst, natively and as
-# WebAssembly; `text` holds the word diff and merge that both the binary and
-# the engine need; `komodoc` is the binary -- the command line and the server.
+# LibrePaper: three crates. `engine` renders markdown and typst, natively and
+# as WebAssembly; `text` holds the word diff and merge that both the binary and
+# the engine need; `librepaper` is the binary -- the command line and the
+# server.
 [workspace]
 resolver = "2"
-members = ["crates/engine", "crates/text", "crates/komodoc"]
+members = ["crates/engine", "crates/text", "crates/librepaper"]
 # The fuzz targets need libFuzzer and a nightly compiler, so they build on
 # their own: `make fuzz`, or `cargo fuzz run <target>` from fuzz/.
 exclude = ["fuzz"]

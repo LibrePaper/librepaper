@@ -1,7 +1,7 @@
 // The browser's half of the protocol, run outside a browser.
 //
 // This imports the editor's own `collab.js` -- not a copy of it, not a model
-// of it -- opens a real socket to a running komodoc, and answers a line of
+// of it -- opens a real socket to a running librepaper, and answers a line of
 // JSON per operation. It exists so the Rust suite can drive the actual client
 // module against the actual server, and find out whether the two agree about
 // joining, relaying, acknowledgment and reconnection.

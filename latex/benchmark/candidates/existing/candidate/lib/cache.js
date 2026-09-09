@@ -15,7 +15,7 @@
 // Nothing here throws. A browser with no Cache Storage -- a private window, a
 // context without `caches` -- still fetches; it just fetches again next time.
 
-const CACHE = "komodoc";
+const CACHE = "librepaper";
 
 let opened = null;
 

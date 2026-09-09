@@ -5,7 +5,7 @@ reload measurements, see [the browser LaTeX evaluation](../benchmark/README.md).
 
 Four documents, each a directory with a `main.tex`, written for
 `docs/specs/latex.md` step 1. They exist to be compiled by every distribution
-Komodoc drives and by a TeX Live on a desk, and to disagree with none of
+LibrePaper drives and by a TeX Live on a desk, and to disagree with none of
 them. What each is for:
 
 - **`article/`** — one file, with its bibliography inside it in
@@ -16,7 +16,7 @@ them. What each is for:
 
 - **`paper/`** — the ordinary paper the directories spec is for. A main
   file, two chapters reached by `\include`, a `refs.bib` beside them, a
-  PNG and a PDF included by relative path, and a `komodoc.sty` of its
+  PNG and a PDF included by relative path, and a `librepaper.sty` of its
   own that no TeX Live has — so a compile fails outright unless every
   path of the tree reached the engine's filesystem. Four pages.
 

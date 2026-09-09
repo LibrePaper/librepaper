@@ -2,7 +2,7 @@
 
 A regression table is a summary, and every summary is a decision about what to leave out. The trouble is that the omissions are conventional rather than deliberate, so a reader learns to skim past exactly the places where the argument is weakest.
 
-This note is a checklist. It is written in Markdown and Komodoc rendered it to HTML when it was published: no toolchain ran over it first.
+This note is a checklist. It is written in Markdown and LibrePaper rendered it to HTML when it was published: no toolchain ran over it first.
 
 ## Start at the bottom
 

@@ -71,13 +71,13 @@ export function failureHint(failure) {
   if (!failure) return "";
   switch (failure.kind) {
     case "local-unavailable":
-      return "Local Komodoc is unavailable. Connect it or retry the connection.";
+      return "Local LibrePaper is unavailable. Connect it or retry the connection.";
     case "tool-missing":
-      return `${failure.message || "A required tool is missing"}. Run \`komodoc local doctor\` for setup help.`;
+      return `${failure.message || "A required tool is missing"}. Run \`librepaper local doctor\` for setup help.`;
     case "incompatible":
       return `${failure.message || "The local and browser versions are incompatible"}.`;
     case "vm":
-      return `${failure.message || "The browser bibliography VM could not finish this"}. Retry, or connect local Komodoc.`;
+      return `${failure.message || "The browser bibliography VM could not finish this"}. Retry, or connect local LibrePaper.`;
     case "native":
       return "The local build failed too; see Diagnostics.";
     default:

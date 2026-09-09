@@ -3,7 +3,7 @@
 #set page(
   paper: "a4",
   margin: 2cm,
-  header: [Komodoc corpus · #context counter(page).display()],
+  header: [LibrePaper corpus · #context counter(page).display()],
   footer: [Typst PDF fixture],
   columns: 2,
 )

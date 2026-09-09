@@ -4,7 +4,7 @@ Research notes on the official Typst web app, compiled from typst.app's own
 documentation and pricing pages (September 2026). Companion to
 `docs/research/market-research.md` (Overleaf). Purpose: a checklist of what a
 collaborative browser-based document editor is expected to do, to inform the
-komodoc live markdown/Typst editor.
+librepaper live markdown/Typst editor.
 
 Typst is deliberately a smaller, newer product than Overleaf: the app is the
 commercial layer on top of an open-source (Apache-2.0) compiler, so the free
@@ -29,7 +29,7 @@ Sources are listed at the bottom.
   user state.
 - **No per-plan compile timeout tier.** Unlike Overleaf, Typst does not sell
   compile time; the limits are storage and file count instead (see §7). Worth
-  noting for komodoc's cost-bounding design — Typst's compiler is fast enough
+  noting for librepaper's cost-bounding design — Typst's compiler is fast enough
   that they don't need to meter it.
 
 ## 3. Collaboration
@@ -140,15 +140,15 @@ Where Typst is **behind**:
 - Much smaller template gallery; no publisher/journal submission pipeline.
 - Git sync is experimental and refuses non-empty target directories.
 
-## 11. Takeaways for komodoc
+## 11. Takeaways for librepaper
 
 1. **Live preview must feel instant.** Typst set the bar; a debounce-and-render
    loop that feels laggy reads as a worse product regardless of features.
 2. **Range-anchored, threaded, resolvable comments** are the minimum viable
    review surface — Typst ships a full Pro tier on essentially this alone.
-3. **History/diff/restore is the open gap** in the Typst ecosystem. If komodoc
+3. **History/diff/restore is the open gap** in the Typst ecosystem. If librepaper
    wants a wedge against typst.app specifically, that is it.
-4. **Don't meter compiles if you don't have to** — but komodoc's sandbox cost
+4. **Don't meter compiles if you don't have to** — but librepaper's sandbox cost
    constraint is real, so Overleaf's timeout tiering remains the fallback model.
 5. **Per-user vs. project-scoped state** is a real design decision: Typst makes
    preview target user-local and export settings project-global. Worth copying
@@ -160,7 +160,7 @@ Where Typst is **behind**:
 8. Presentation mode is a cheap, high-delight feature once you already render
    pages — laser pointer, ink, and lights-off are small additions.
 9. The closed web app around an open compiler leaves room for an open
-   collaborative workspace; that is the space komodoc sits in.
+   collaborative workspace; that is the space librepaper sits in.
 
 ## Sources
 

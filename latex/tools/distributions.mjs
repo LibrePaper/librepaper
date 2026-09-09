@@ -1,4 +1,4 @@
-// The four distributions Komodoc knows how to drive, as data.
+// The four distributions LibrePaper knows how to drive, as data.
 //
 // A distribution is a set of static files a browser fetches and runs: one or
 // more WebAssembly modules, the JavaScript Emscripten generated to host them,
@@ -80,7 +80,7 @@ export const DISTRIBUTIONS = [
     // and `mktexpk` cannot fork inside a worker. Both stay in the worker and
     // in the mirror, because the flag travels in the manifest: a self-hoster
     // who fixes a bundle turns one on by flipping this and rebuilding the
-    // mirror, with no build of Komodoc involved. The card lists what the
+    // mirror, with no build of LibrePaper involved. The card lists what the
     // manifest marks shown and names none of them itself.
     shown: false,
     label: "SwiftLaTeX XeTeX",

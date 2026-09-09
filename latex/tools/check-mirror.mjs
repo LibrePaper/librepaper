@@ -4,8 +4,9 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { verifyBloom } from "./bloom.mjs";
 
-// Keep the default in step with crates/komodoc/src/latex.rs::DEFAULT_MIRROR.
-const base = process.argv[2] || "https://komodoc-latex.vincentarelbundock.workers.dev/";
+// Keep the default in step with
+// crates/librepaper/src/latex.rs::DEFAULT_MIRROR.
+const base = process.argv[2] || "https://librepaper-latex.vincentarelbundock.workers.dev/";
 try {
   let manifest;
   if (/^https?:\/\//.test(base)) {

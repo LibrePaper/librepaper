@@ -4,7 +4,7 @@ Measured 2026-09-07 in headless Chromium 151, using Siglum source commit
 [`00db6721bc7c50dd651761da1c07a1ef3285dbcf`](https://github.com/SiglumProject/siglum/tree/00db6721bc7c50dd651761da1c07a1ef3285dbcf)
 (`v0.1.4`). The reproducible harness is [runner.mjs](runner.mjs), with the
 required local server on 8701 and Chromium DevTools on 9701. It uses the
-eight-case Komodoc corpus, a fresh profile for each case, then edit and reload
+eight-case LibrePaper corpus, a fresh profile for each case, then edit and reload
 in that profile. No CTAN proxy was enabled, so missing packages are reported as
 failures. The run was concurrent with other agent work; timings are
 exploratory and are not used to rank engines.
@@ -80,7 +80,7 @@ Package resolution is a finite checked-in TeX Live 2025 index plus lazy bundle
 fetching. With the CTAN proxy disabled, several corpus files fail on packages
 that are not in the shipped bundles. Enabling the proxy would add an external
 runtime service and would make package bytes/version provenance mutable unless
-Komodoc operated and pinned that proxy itself.
+LibrePaper operated and pinned that proxy itself.
 
 ## Feasibility and maintenance
 
@@ -91,11 +91,11 @@ and SyncTeX data is emitted. The measured corpus shows the current bundle
 selection is incomplete for ordinary ACM, siunitx, biblatex, and Unicode cases,
 and the one successful case differs materially in pages and bibliography.
 
-Adopting it would require Komodoc to pin and serve the WASM, loader, all bundle
+Adopting it would require LibrePaper to pin and serve the WASM, loader, all bundle
 metadata/data, the filesystem package, and likely an operated CTAN proxy;
 maintainers would need to keep the BusyTeX/TeX Live engine, format files,
 bundle offsets, package index, and browser storage schema coherent. If Siglum
-disappeared, Komodoc could serve the already downloaded assets, but would own
+disappeared, LibrePaper could serve the already downloaded assets, but would own
 the bundle-generation/update pipeline and would need to implement or integrate
 BibTeX/Biber, LuaLaTeX, missing package coverage, and security review of the
 proxy/update path. The repository's pinned [build guide](https://github.com/SiglumProject/siglum/blob/00db6721bc7c50dd651761da1c07a1ef3285dbcf/docs/building.md)

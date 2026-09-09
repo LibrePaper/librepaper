@@ -1,5 +1,5 @@
 //! The rendering engine: a Markdown/HTML source becomes standalone HTML, while
-//! a Typst source becomes the PDF Komodoc stores.
+//! a Typst source becomes the PDF LibrePaper stores.
 //!
 //! Two callers that cannot share a binary render through this crate: the
 //! command line, natively, and the editor, as WebAssembly in the browser. One

@@ -46,8 +46,8 @@
   // typst's generated rules remain untouched. adoptStyles keeps it appended
   // after the document styles and it only applies while previewing flow HTML.
   const previewCanvasStyle = `
-    html.komodoc-preview.komodoc-flow { background: #f6f6f4; }
-    html.komodoc-preview.komodoc-flow body {
+    html.librepaper-preview.librepaper-flow { background: #f6f6f4; }
+    html.librepaper-preview.librepaper-flow body {
       box-sizing: border-box;
       width: min(800px, calc(100vw - 32px));
       max-width: 800px;
@@ -56,7 +56,7 @@
       background: #fff;
     }
     @media (max-width: 640px) {
-      html.komodoc-preview.komodoc-flow body {
+      html.librepaper-preview.librepaper-flow body {
         width: calc(100vw - 24px);
         margin: 16px auto 40px;
         padding: 24px 20px;
@@ -64,7 +64,7 @@
     }
   `;
   const previewStyle = document.createElement("style");
-  previewStyle.dataset.komodocPreview = "canvas";
+  previewStyle.dataset.librepaperPreview = "canvas";
   previewStyle.textContent = previewCanvasStyle;
 
   // A pending suggestion's proposal is drawn after its passage by
@@ -74,12 +74,12 @@
   // change, and it survives every body replacement `adoptStyles` does for a
   // live preview.
   const proposedStyle = document.createElement("style");
-  proposedStyle.dataset.komodocProposed = "1";
+  proposedStyle.dataset.librepaperProposed = "1";
   proposedStyle.textContent = `
     mark[data-proposed]::after {
       content: attr(data-proposed);
       text-decoration: underline;
-      color: var(--komodoc-proposed-color, inherit);
+      color: var(--librepaper-proposed-color, inherit);
       margin-inline-start: 0.2em;
     }
   `;
@@ -92,19 +92,19 @@
   // exactly the `data-proposed` trick above, so the offset tables below
   // never see it as a character of real content.
   const redlineStyle = document.createElement("style");
-  redlineStyle.dataset.komodocRedlines = "1";
+  redlineStyle.dataset.librepaperRedlines = "1";
   redlineStyle.textContent = `
-    mark.komodoc-ins {
+    mark.librepaper-ins {
       background: hsl(145 45% 88%);
       color: inherit;
       text-decoration: underline;
       text-decoration-color: hsl(145 45% 32%);
     }
-    mark.komodoc-del {
+    mark.librepaper-del {
       background: transparent;
       padding: 0;
     }
-    mark.komodoc-del::before {
+    mark.librepaper-del::before {
       content: attr(data-deleted);
       background: hsl(0 45% 93%);
       color: hsl(0 55% 40%);
@@ -113,8 +113,8 @@
   `;
   document.head.appendChild(redlineStyle);
   function adoptStyles(parsed) {
-    document.documentElement.classList.add("komodoc-preview");
-    document.documentElement.classList.toggle("komodoc-flow", !parsed.body.querySelector(":scope > svg.typst-doc"));
+    document.documentElement.classList.add("librepaper-preview");
+    document.documentElement.classList.toggle("librepaper-flow", !parsed.body.querySelector(":scope > svg.typst-doc"));
     const wanted = [...parsed.head.querySelectorAll("style, link[rel~='stylesheet' i]")];
     const markup = wanted.map((node) => node.outerHTML).join("");
     if (markup !== installed) {
@@ -150,7 +150,7 @@
   const edge = ([hue, saturation]) => `hsl(${hue} ${Math.min(saturation + 10, 60)}% 45%)`;
 
   function post(message) {
-    parent.postMessage({ komodoc: true, ...message }, READER);
+    parent.postMessage({ librepaper: true, ...message }, READER);
   }
 
   // One walk of the document builds the text-node table (with a node->index
@@ -256,7 +256,7 @@
     lastRanges = ranges;
     quietly(() => {
       document
-        .querySelectorAll("mark[data-komodoc]")
+        .querySelectorAll("mark[data-librepaper]")
         .forEach((mark) => mark.replaceWith(...mark.childNodes));
       document.body.normalize(); // restore the pristine text-node structure
     });
@@ -293,7 +293,7 @@
         const mark = document.createElement("mark");
         // Every comment covering this stretch is named, so a click can pick the
         // most specific one and `reveal` can find any of them.
-        mark.dataset.komodoc = covering.map((item) => item.id).join(" ");
+        mark.dataset.librepaper = covering.map((item) => item.id).join(" ");
         const live = covering.filter((item) => !item.resolved);
         // The innermost annotation is the one this stretch most specifically
         // belongs to, so its tool decides the colour; the number of annotations
@@ -315,7 +315,7 @@
           mark.style.textDecoration = "line-through";
           if (end === suggestion.end) {
             mark.dataset.proposed = suggestion.proposed || "";
-            mark.style.setProperty("--komodoc-proposed-color", edge(tintOf("editing")));
+            mark.style.setProperty("--librepaper-proposed-color", edge(tintOf("editing")));
           }
         }
         range.surroundContents(mark);
@@ -348,8 +348,8 @@
   // mark wraps nothing and is simply removed.
   function clearRedlineMarks() {
     quietly(() => {
-      document.querySelectorAll("mark.komodoc-ins").forEach((mark) => mark.replaceWith(...mark.childNodes));
-      document.querySelectorAll("mark.komodoc-del").forEach((mark) => mark.remove());
+      document.querySelectorAll("mark.librepaper-ins").forEach((mark) => mark.replaceWith(...mark.childNodes));
+      document.querySelectorAll("mark.librepaper-del").forEach((mark) => mark.remove());
       document.body.normalize();
     });
   }
@@ -396,7 +396,7 @@
         range.setStart(node, at - table.starts[index]);
         range.collapse(true);
         const mark = document.createElement("mark");
-        mark.className = "komodoc-del";
+        mark.className = "librepaper-del";
         mark.dataset.deleted = item.text || "";
         if (item.who) mark.title = item.who;
         range.insertNode(mark);
@@ -414,7 +414,7 @@
           range.setStart(piece.node, piece.from);
           range.setEnd(piece.node, piece.to);
           const mark = document.createElement("mark");
-          mark.className = "komodoc-ins";
+          mark.className = "librepaper-ins";
           if (item.who) mark.title = item.who;
           range.surroundContents(mark);
         }
@@ -510,14 +510,14 @@
   // hash the URL for documents that provide no asset identity.
   function stableImageDigest(image) {
     const metadata =
-      image.dataset.komodocImageDigest ||
-      image.dataset.komodocDigest ||
-      image.getAttribute("data-komodoc-image-digest") ||
-      image.getAttribute("data-komodoc-digest");
+      image.dataset.librepaperImageDigest ||
+      image.dataset.librepaperDigest ||
+      image.getAttribute("data-librepaper-image-digest") ||
+      image.getAttribute("data-librepaper-digest");
     if (metadata) return metadata.slice(0, 16);
     const source = image.currentSrc || image.src || "";
     try {
-      const marker = new URL(source, document.baseURI).hash.match(/(?:^#|[?&])komodoc-asset=([^&#]+)/);
+      const marker = new URL(source, document.baseURI).hash.match(/(?:^#|[?&])librepaper-asset=([^&#]+)/);
       if (marker) return decodeURIComponent(marker[1]).slice(0, 16);
     } catch {
       /* an invalid source is handled by the URL hash fallback below */
@@ -549,17 +549,17 @@
   // with it: no recomputing on scroll, no listening to resize.
   function layerFor(image) {
     let wrap = image.parentElement;
-    if (!wrap || wrap.dataset.komodocFigure !== "1") {
+    if (!wrap || wrap.dataset.librepaperFigure !== "1") {
       wrap = document.createElement("span");
-      wrap.dataset.komodocFigure = "1";
+      wrap.dataset.librepaperFigure = "1";
       wrap.style.cssText = "position:relative;display:inline-block;max-width:100%";
       image.replaceWith(wrap);
       wrap.appendChild(image);
     }
-    let layer = wrap.querySelector(":scope > .komodoc-regions");
+    let layer = wrap.querySelector(":scope > .librepaper-regions");
     if (!layer) {
       layer = document.createElement("span");
-      layer.className = "komodoc-regions";
+      layer.className = "librepaper-regions";
       layer.style.cssText = "position:absolute;inset:0;pointer-events:none";
       wrap.appendChild(layer);
     }
@@ -570,7 +570,7 @@
   async function paintRegions(regions) {
     const mine = ++regionsGeneration;
     quietly(() => {
-      document.querySelectorAll(".komodoc-regions").forEach((layer) => (layer.innerHTML = ""));
+      document.querySelectorAll(".librepaper-regions").forEach((layer) => (layer.innerHTML = ""));
     });
     const found = images();
     // The digests touch crypto.subtle, which is the slow part; running them
@@ -593,7 +593,7 @@
           continue;
         }
         const box = document.createElement("span");
-        box.dataset.komodoc = item.id;
+        box.dataset.librepaper = item.id;
         box.style.cssText =
           `position:absolute;left:${item.x}%;top:${item.y}%;width:${item.w}%;height:${item.h}%;` +
           `border:2px solid ${edge(item.resolved ? NEUTRAL : tintOf(item.motivation))};` +
@@ -707,7 +707,7 @@
   addEventListener("message", (event) => {
     if (event.source !== parent) return;
     const message = event.data;
-    if (!message || message.komodoc !== true) return;
+    if (!message || message.librepaper !== true) return;
     if (message.type === "highlight") highlight(message.ranges || []);
     if (message.type === "regions") paintRegions(message.regions || []);
     if (message.type === "redlines") redlines(message.items || []);
@@ -792,7 +792,7 @@
       // in that figure's region layer. Either one is what "go to it" means.
       const id = CSS.escape(String(message.id));
       document
-        .querySelector(`mark[data-komodoc~="${id}"], .komodoc-regions [data-komodoc~="${id}"]`)
+        .querySelector(`mark[data-librepaper~="${id}"], .librepaper-regions [data-librepaper~="${id}"]`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   });

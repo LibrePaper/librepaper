@@ -32,15 +32,15 @@
 //
 // The guest runs one command at a time, the same discipline
 // `tinytex-v86/worker.js` uses: a command is `<cmd>; printf
-// '\nKOMODOC_DONE_<id>:%s\n' "$?"` and completion is recognised by that
+// '\nLIBREPAPER_DONE_<id>:%s\n' "$?"` and completion is recognised by that
 // marker appearing in the serial transcript captured since the command was
 // sent. Boot completion is the `~% ` shell prompt, confirmed by one more
 // round-trip through the same marker convention so a prompt printed before
 // the shell can actually accept input is never mistaken for readiness.
 
 let emulator = null;
-let readyMarker = "KOMODOC_VM_READY";
-let failedMarker = "KOMODOC_VM_FAILED";
+let readyMarker = "LIBREPAPER_VM_READY";
+let failedMarker = "LIBREPAPER_VM_FAILED";
 let setupCommand = null; // the descriptor's one-time guest setup, run at the first prompt
 let execPrefix = ""; // how a job command enters the guest (a chroot, usually)
 let output = "";
@@ -146,7 +146,7 @@ function onSerialByte(byte) {
   }
 
   if (pendingCommand) {
-    const found = output.slice(pendingCommand.start).match(new RegExp("KOMODOC_DONE_" + pendingCommand.markerId + ":(\\d+)\\r?\\n"));
+    const found = output.slice(pendingCommand.start).match(new RegExp("LIBREPAPER_DONE_" + pendingCommand.markerId + ":(\\d+)\\r?\\n"));
     if (found) {
       const command = pendingCommand;
       pendingCommand = null;
@@ -163,7 +163,7 @@ function runCommand(command, markerId) {
     // The command runs inside the guest; the marker is printed by the outer
     // shell afterwards, with the guest command's exit status.
     const inside = execPrefix ? `${execPrefix}${shellQuote(command)}` : command;
-    send(`${inside}; printf '\\nKOMODOC_DONE_${markerId}:%s\\n' "$?"`);
+    send(`${inside}; printf '\\nLIBREPAPER_DONE_${markerId}:%s\\n' "$?"`);
   });
 }
 

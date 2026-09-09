@@ -1,9 +1,9 @@
 // What the application has to say, said in one place.
 //
 // Before this there were two ways: alert(), which stops the page dead and
-// looks like a browser rather than like Komodoc, and a line of text beside the
-// save button that only the editor could use. A toast is neither: it appears,
-// it is readable, and it goes.
+// looks like a browser rather than like LibrePaper, and a line of text beside
+// the save button that only the editor could use. A toast is neither: it
+// appears, it is readable, and it goes.
 //
 // The store is Zag's, so a toast is announced to a screen reader, pauses on
 // hover, and stacks with the others rather than replacing them.

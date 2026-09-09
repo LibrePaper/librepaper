@@ -1,6 +1,6 @@
 # Browser LaTeX evaluation
 
-This corpus gives Komodoc public documents to test before choosing a browser
+This corpus gives LibrePaper public documents to test before choosing a browser
 compiler. It complements the small regression fixtures in `latex/corpus/`.
 It does not change the editor, the offered distributions, or the package mirror.
 
@@ -18,8 +18,8 @@ The subsequent parallel candidate experiments and current recommendation are in
 | thesis | Scientific Thesis Template's `main-english.tex` | LuaLaTeX | Long document, KOMA-Script, Biber, TikZ, fonts |
 | biber-related | biblatex example 90 | XeLaTeX | Related works, translations, Unicode bibliography |
 | biber-sorting | biblatex example 91 | XeLaTeX | Different citation and bibliography sorting contexts |
-| multifile | Existing Komodoc `paper/` | pdfLaTeX | Chapters, local style, relative asset paths |
-| packages | Existing Komodoc `packages/` | pdfLaTeX | siunitx, TikZ, booktabs, biblatex with BibTeX |
+| multifile | Existing LibrePaper `paper/` | pdfLaTeX | Chapters, local style, relative asset paths |
+| packages | Existing LibrePaper `packages/` | pdfLaTeX | siunitx, TikZ, booktabs, biblatex with BibTeX |
 | unicode-fonts | Authored fixture in this directory | XeLaTeX | Named Libertinus text/math fonts, Greek and Cyrillic |
 
 The public projects are pinned by commit and archive SHA-256 in
@@ -48,7 +48,7 @@ node latex/benchmark/report.mjs
 Developer requirements: Node with `fetch` and `WebSocket`, `tar`, an installed
 TeX Live with `latexmk`/Biber, Poppler's `pdfinfo`/`pdftotext`, Chromium, and the
 existing `latex/mirror/manifest.json` plus its assets. These tools generate and
-evaluate fixtures locally; they are never required by Komodoc authors or readers.
+evaluate fixtures locally; they are never required by LibrePaper authors or readers.
 The native run disables shell escape and latexmk configuration files. It is a
 reference build of the pinned public inputs, not a general-purpose sandbox for
 arbitrary uploaded TeX. Upstream shell scripts and package installers are not run.

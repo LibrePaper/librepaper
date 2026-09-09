@@ -11,8 +11,8 @@ import { pack } from './pack.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const mirrorRoot = fileURLToPath(new URL('../../mirror/', import.meta.url));
-const image = 'komodoc-biber-vm:build';
-const container = 'komodoc-biber-vm-export-' + process.pid;
+const image = 'librepaper-biber-vm:build';
+const container = 'librepaper-biber-vm-export-' + process.pid;
 
 const run = (cmd, args) => execFileSync(cmd, args, { cwd: root, stdio: 'inherit' });
 const sha256hex = (data) => createHash('sha256').update(data).digest('hex');
@@ -110,10 +110,10 @@ const vmJson = {
   // enters the guest. The browser worker reads these rather than knowing
   // the guest's layout itself.
   boot: {
-    ready: 'KOMODOC_VM_READY',
-    failed: 'KOMODOC_VM_FAILED',
+    ready: 'LIBREPAPER_VM_READY',
+    failed: 'LIBREPAPER_VM_FAILED',
     shell: 'sh',
-    setup: "stty -echo; test -x /mnt/usr/local/bin/biber && mount --bind /dev /mnt/dev && mount -t proc proc /mnt/proc && printf '\\nKOMODOC_VM_READY\\n' || printf '\\nKOMODOC_VM_FAILED\\n'",
+    setup: "stty -echo; test -x /mnt/usr/local/bin/biber && mount --bind /dev /mnt/dev && mount -t proc proc /mnt/proc && printf '\\nLIBREPAPER_VM_READY\\n' || printf '\\nLIBREPAPER_VM_FAILED\\n'",
     exec: 'chroot /mnt /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin LC_ALL=C.UTF-8 HOME=/tmp /bin/sh -c',
     cmdline: 'tsc=reliable mitigations=off random.trust_cpu=on',
   },

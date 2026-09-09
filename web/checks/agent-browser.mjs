@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { browser, until } from "../tools/browser-driver.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const temporary = mkdtempSync(join(tmpdir(), "komodoc-agent-browser-"));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-agent-browser-"));
 const entry = join(temporary, "entry.js");
 const harness = join(temporary, "Harness.svelte");
 writeFileSync(harness, `
@@ -30,7 +30,7 @@ window.calls = [];
 window.sockets = [];
 window.fetch = async (url, init) => {
   if (new URL(url, location.href).pathname.endsWith('/assistant/capabilities')) {
-    if(window.delayedCapabilities) return new Promise(resolve=>window.delayedCapabilities.push({key:init.headers['X-Komodoc-Key'],resolve:value=>resolve(Response.json(value))}));
+    if(window.delayedCapabilities) return new Promise(resolve=>window.delayedCapabilities.push({key:init.headers['X-LibrePaper-Key'],resolve:value=>resolve(Response.json(value))}));
     return Response.json({can_read:true,can_comment:true,can_edit:false});
   }
   const suffix = new URL(url, location.href).pathname.split('/chat')[1];
@@ -69,9 +69,9 @@ try {
   await build({ configFile:false, root, plugins:[svelte(),tailwindcss()], logLevel:"error",
     build:{ outDir:join(temporary,"build"), lib:{entry,formats:["es"],fileName:()=>"panel.js"} } });
   server=createServer((request,response)=>{
-    if(request.url==='/komodoc-web.css'){response.setHeader('content-type','text/css');response.end(readFileSync(join(temporary,'build/komodoc-web.css')));return;}
+    if(request.url==='/librepaper-web.css'){response.setHeader('content-type','text/css');response.end(readFileSync(join(temporary,'build/librepaper-web.css')));return;}
     response.setHeader("content-type",request.url==="/panel.js"?"text/javascript":"text/html");
-    response.end(request.url==="/panel.js"?readFileSync(join(temporary,"build/panel.js")):'<!doctype html><html data-theme="komodoc"><head><link rel="stylesheet" href="/komodoc-web.css"><style>body{display:flex;height:700px;width:360px;overflow:hidden}</style></head><body><script type="module" src="/panel.js"></script></body></html>');
+    response.end(request.url==="/panel.js"?readFileSync(join(temporary,"build/panel.js")):'<!doctype html><html data-theme="librepaper"><head><link rel="stylesheet" href="/librepaper-web.css"><style>body{display:flex;height:700px;width:360px;overflow:hidden}</style></head><body><script type="module" src="/panel.js"></script></body></html>');
   });
   await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve);});
   page=await browser("chromium",join(temporary,"profile"),22000+Math.floor(Math.random()*10000));
@@ -91,7 +91,7 @@ try {
 
   await page.evaluate(`(()=>{const clipboard={writeText:value=>{window.copiedInstructions=value;return Promise.resolve();}};Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});document.querySelector('.agent-actions button').click();})()`);
   await until("instructions copied",()=>page.evaluate('typeof window.copiedInstructions==="string"'),1000);
-  assert.match(await page.evaluate("window.copiedInstructions"),/komodoc agent chat watch/);
+  assert.match(await page.evaluate("window.copiedInstructions"),/librepaper agent chat watch/);
   assert.doesNotMatch(await page.evaluate("window.copiedInstructions"),/--after/);
 
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='First';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true}));})()`);

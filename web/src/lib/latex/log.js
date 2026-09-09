@@ -1,12 +1,12 @@
 // The TeX log, read.
 //
 // The log is parsed here, in JavaScript, and not in the engine crate, because
-// the compiler is not our crate: there is no Rust on the other side of a
-// LaTeX compile to hand us a diagnostic list the way typst's does. So this
-// file is the one place in Komodoc where a diagnostic is manufactured rather
-// than received, and it emits `engine/src/diagnostic.rs`'s shape unchanged so
-// that everything downstream -- the gutter mark, the underline, the badge --
-// cannot tell a LaTeX error from a typst one.
+// the compiler is not our crate: there is no Rust on the other side of a LaTeX
+// compile to hand us a diagnostic list the way typst's does. So this file is
+// the one place in LibrePaper where a diagnostic is manufactured rather than
+// received, and it emits `engine/src/diagnostic.rs`'s shape unchanged so that
+// everything downstream -- the gutter mark, the underline, the badge -- cannot
+// tell a LaTeX error from a typst one.
 //
 // TeX's log format is not a format. It is what a program printed in 1982 and
 // has printed since, and every rule below is a rule about that printing:

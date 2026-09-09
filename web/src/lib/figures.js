@@ -69,7 +69,7 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
           // Blob URLs are recreated on every page load. Keep the immutable
           // store identity in the fragment, which is ignored by the resource
           // fetch but available to the injected document agent.
-          urls.set(sha, `${objectUrl}#komodoc-asset=${encodeURIComponent(sha)}`);
+          urls.set(sha, `${objectUrl}#librepaper-asset=${encodeURIComponent(sha)}`);
         }
         return [path, body, urls.get(sha)];
       } catch {

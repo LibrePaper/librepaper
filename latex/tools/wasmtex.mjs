@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The WasmTex half of `latex/mirror`: engine release plus TeX Live package
-// snapshot, mirrored under Komodoc's own names so the browser never depends
+// snapshot, mirrored under LibrePaper's own names so the browser never depends
 // on an upstream project's live service (see `docs/specs/wasmtex-interfaces.md`
 // section 1, the contract this file produces exactly).
 //

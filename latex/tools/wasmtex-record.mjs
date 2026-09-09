@@ -248,7 +248,7 @@ async function main() {
     }
   });
 
-  const profile = mkdtempSync(join(tmpdir(), "komodoc-wasmtex-record-"));
+  const profile = mkdtempSync(join(tmpdir(), "librepaper-wasmtex-record-"));
   let driver;
   const results = [];
   const initialSources = ["article", "paper", "packages"];

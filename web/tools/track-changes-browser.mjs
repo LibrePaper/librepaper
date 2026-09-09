@@ -1,18 +1,18 @@
 // Track changes, in a real browser: suggest through the reader, accept from
 // the card, redlines since a checkpoint, and the CLI against the same server.
 // Not part of `bun run check`: it needs the built binary and a chromium.
-// Run: node web/tools/track-changes-browser.mjs dist/komodoc
+// Run: node web/tools/track-changes-browser.mjs dist/librepaper
 
 // The reader, in a real browser.
 //
-// The protocol tests in `komodoc/src/tests/` prove the server and `collab.js`
-// agree. They say nothing about the page a person actually looks at: whether
-// the frame gets painted, whether a reader sees an edit arrive, whether the
-// badge says the true thing when the socket is down. That is what this does --
-// headless Chromium over the DevTools protocol, against a real `komodoc serve`
-// on a temporary directory.
+// The protocol tests in `librepaper/src/tests/` prove the server and
+// `collab.js` agree. They say nothing about the page a person actually looks
+// at: whether the frame gets painted, whether a reader sees an edit arrive,
+// whether the badge says the true thing when the socket is down. That is what
+// this does -- headless Chromium over the DevTools protocol, against a real
+// `librepaper serve` on a temporary directory.
 //
-// Usage: browser-smoke.mjs <path-to-komodoc-binary>
+// Usage: browser-smoke.mjs <path-to-librepaper-binary>
 // Nothing here touches a deployment or any storage but its own temporary one.
 
 import { spawn } from "node:child_process";
@@ -28,13 +28,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
 
-const binary = process.argv[2] || "dist/komodoc";
+const binary = process.argv[2] || "dist/librepaper";
 if (!existsSync(binary)) {
-  console.error(`browser: no komodoc binary at ${binary}; run \`make build\` first`);
+  console.error(`browser: no librepaper binary at ${binary}; run \`make build\` first`);
   process.exit(1);
 }
 
-const data = mkdtempSync(join(tmpdir(), "komodoc-smoke-"));
+const data = mkdtempSync(join(tmpdir(), "librepaper-smoke-"));
 const PORT = 8200 + Math.floor(Math.random() * 300);
 const BASE = `http://localhost:${PORT}`;
 let failures = 0;
@@ -209,8 +209,8 @@ function sessionCookie(login) {
 }
 
 async function publish(body, cookie = "") {
-  const headers = { "content-type": "application/json", "x-komodoc-client": "1" };
-  if (cookie) headers.cookie = `komodoc_session=${cookie}`;
+  const headers = { "content-type": "application/json", "x-librepaper-client": "1" };
+  if (cookie) headers.cookie = `librepaper_session=${cookie}`;
   const response = await fetch(`${BASE}/api/documents`, {
     method: "POST",
     headers,
@@ -332,11 +332,11 @@ async function run() {
   const owner = sessionCookie("vincent");
   const doc = await publish({ title: "A Paper", source: MARKDOWN, source_format: "markdown" }, owner);
   const readKey = (doc.share_url || "").split("#k=")[1] || "";
-  const api = (path) => fetch(`${BASE}${path}`, { headers: { "x-komodoc-client": "1", "x-komodoc-key": readKey } }).then((r) => r.json());
-  const minted = await fetch(`${BASE}/api/documents/${slug0(doc)}/share`, { method: "POST", headers: { "content-type": "application/json", "x-komodoc-client": "1", cookie: `komodoc_session=${owner}` }, body: JSON.stringify({ link: { role: "editor", until: "" } }) }).then((r) => r.json());
+  const api = (path) => fetch(`${BASE}${path}`, { headers: { "x-librepaper-client": "1", "x-librepaper-key": readKey } }).then((r) => r.json());
+  const minted = await fetch(`${BASE}/api/documents/${slug0(doc)}/share`, { method: "POST", headers: { "content-type": "application/json", "x-librepaper-client": "1", cookie: `librepaper_session=${owner}` }, body: JSON.stringify({ link: { role: "editor", until: "" } }) }).then((r) => r.json());
   const editKey = minted.key || (minted.link || "").split("#k=")[1] || "";
   const slug = doc.slug;
-  const editor = await openTab(`${BASE}/docs/${slug}`, [{ name: "komodoc_session", value: owner, url: BASE }]);
+  const editor = await openTab(`${BASE}/docs/${slug}`, [{ name: "librepaper_session", value: owner, url: BASE }]);
   const painted = await until("the frame is painted", async () =>
     (await editor.evalInFrame("return document.body.innerText", slug))?.includes("The first paragraph."),
   );
@@ -348,7 +348,7 @@ async function run() {
   await editor.eval(`document.querySelector('[aria-label="Suggest"]').click(); return true;`);
 
   await editor.evalInFrame(`
-    parent.postMessage({ komodoc: true, type: "selection",
+    parent.postMessage({ librepaper: true, type: "selection",
       selector: { exact: "The first paragraph.", prefix: "", suffix: "", position: 0 }
     }, ${JSON.stringify(BASE)});
     return true;
@@ -427,15 +427,15 @@ async function run() {
     return box.checked;
   `);
   const redlined = await until("redlines in the frame", () => editor.evalInFrame(`
-    const ins = document.querySelector("mark.komodoc-ins");
-    const del = document.querySelector("mark.komodoc-del");
+    const ins = document.querySelector("mark.librepaper-ins");
+    const del = document.querySelector("mark.librepaper-del");
     return ins || del ? { ins: ins?.textContent, del: del?.dataset.deleted, who: (ins || del).title, text: document.body.innerText } : null;
   `, slug));
   check("insertions and deletions are painted inline", redlined?.ins === "opening" && redlined?.del === "first", JSON.stringify(redlined).slice(0, 200));
   check("redlines add no text to the document", !(redlined?.text || "").includes("first"), redlined?.text);
 
   await editor.eval(`const el = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("Comments")); if (!el) throw new Error("no Comments tab among " + [...document.querySelectorAll("button, a")].map((b) => b.getAttribute("aria-label") || b.title || b.textContent.trim()).join(",")); el.click(); return true;`);
-  const cleared = await until("redlines cleared", async () => !(await editor.evalInFrame(`return Boolean(document.querySelector("mark.komodoc-ins, mark.komodoc-del"))`, slug)));
+  const cleared = await until("redlines cleared", async () => !(await editor.evalInFrame(`return Boolean(document.querySelector("mark.librepaper-ins, mark.librepaper-del"))`, slug)));
   check("leaving the history panel clears the redlines", cleared);
 
   /* --- C. the CLI against the same server --------------------------------- */
@@ -443,11 +443,11 @@ async function run() {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const cli = (args) => spawnSync(binary, [...args, "--server", BASE, "--key", editKey], { encoding: "utf8", env: { ...process.env, HOME: data } });
   const suggested = cli(["suggest", slug, "--find", "opening paragraph", "--replace", "second paragraph", "--note", "from the terminal"]);
-  check("komodoc suggest prints a comment id", suggested.status === 0 && /^[0-9a-f-]{20,}\s*$/.test(suggested.stdout), `${suggested.status} ${suggested.stdout} ${suggested.stderr}`.slice(0, 200));
+  check("librepaper suggest prints a comment id", suggested.status === 0 && /^[0-9a-f-]{20,}\s*$/.test(suggested.stdout), `${suggested.status} ${suggested.stdout} ${suggested.stderr}`.slice(0, 200));
   const twice = cli(["suggest", slug, "--find", "a", "--replace", "x"]);
-  check("komodoc suggest refuses an ambiguous passage with a count", twice.status !== 0 && /occurs [0-9]+ times/.test(twice.stderr), twice.stderr.slice(0, 200));
+  check("librepaper suggest refuses an ambiguous passage with a count", twice.status !== 0 && /occurs [0-9]+ times/.test(twice.stderr), twice.stderr.slice(0, 200));
   const accepted = cli(["accept", slug, suggested.stdout.trim()]);
-  check("komodoc accept applies it", accepted.status === 0 && /^accepted, resolved in [0-9a-f]{7}/.test(accepted.stdout), `${accepted.status} ${accepted.stdout} ${accepted.stderr}`.slice(0, 200));
+  check("librepaper accept applies it", accepted.status === 0 && /^accepted, resolved in [0-9a-f]{7}/.test(accepted.stdout), `${accepted.status} ${accepted.stdout} ${accepted.stderr}`.slice(0, 200));
   const sourceAfterCli = await api(`/api/documents/${slug}/source`);
   check("the CLI acceptance reached the source", (sourceAfterCli.source || "").includes("The second paragraph."), sourceAfterCli.source);
   const again = cli(["accept", slug, suggested.stdout.trim()]);

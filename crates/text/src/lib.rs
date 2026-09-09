@@ -1,4 +1,4 @@
-//! The word diff, and the three-way merge that `komodoc sync` needs when a
+//! The word diff, and the three-way merge that `librepaper sync` needs when a
 //! text editor saves a buffer that was read before the session moved on.
 //!
 //! A token here is either a maximal run of whitespace or a maximal run of

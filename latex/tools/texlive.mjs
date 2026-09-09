@@ -56,7 +56,7 @@ export function pagesFromLog(log) {
 const record = {};
 for (const example of EXAMPLES) {
   const source = join(CORPUS, example.name);
-  const work = mkdtempSync(join(tmpdir(), `komodoc-latex-${example.name}-`));
+  const work = mkdtempSync(join(tmpdir(), `librepaper-latex-${example.name}-`));
   cpSync(source, work, { recursive: true, filter: (from) => !from.includes("/logs") });
   rmSync(join(work, "logs"), { recursive: true, force: true });
 

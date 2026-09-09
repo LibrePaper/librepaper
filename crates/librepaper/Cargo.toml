@@ -1,0 +1,73 @@
+# LibrePaper: the command line and the server, one binary.
+[package]
+name = "librepaper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+# The doc comments quote shell sessions and file layouts, not Rust: they are
+# read, never run.
+[lib]
+doctest = false
+
+[[bin]]
+name = "librepaper"
+path = "src/main.rs"
+
+[dependencies]
+librepaper-engine = { path = "../engine" }
+librepaper-text = { path = "../text" }
+
+# The server. WebSockets come with axum, so nothing here frames them by hand.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal", "process", "io-util"] }
+axum = { version = "0.8", features = ["ws", "multipart", "http1"] }
+http-body-util = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# Every JSON body, in and out.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# GitHub, S3, and the deployment the command line talks to. rustls rather than
+# OpenSSL, so every target cross-compiles from one machine.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2", "multipart"] }
+# Digests, SigV4, and the signature on every cookie.
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.9"
+# The slug pattern, which the shell shares as a string, and the handful of
+# patterns that read documents for seeding.
+regex = "1"
+# Timestamps in the index and the room, RFC 3339 like the Worker wrote them.
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+# The shell, compiled in: real .html, .css and .js files under web/dist.
+include_dir = "0.7"
+# The command line.
+clap = { version = "4", features = ["derive"] }
+# The blob store is a trait with async methods behind a pointer.
+async-trait = "0.1"
+url = "2"
+percent-encoding = "2"
+# What a browser shows of a document, for anchoring seeded annotations.
+html-escape = "0.2"
+yrs = "0.27"
+unicode-normalization = "0.1.25"
+# `sync` is a WebSocket client, and axum's socket type is the server half of
+# the same library. This is the tungstenite axum already builds, over the
+# rustls reqwest already builds, so what it adds to the binary is the client
+# handshake and nothing else.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# Watching for a save. The one thing `sync` cannot do by polling without
+# either missing a save or spinning: inotify, FSEvents and
+# ReadDirectoryChangesW behind one interface.
+notify = "8"
+fs2 = "0.4"
+chacha20poly1305 = "0.10"
+# The authoritative local catalogue.  Bundling keeps local deployments and
+# file-backed tests independent of the host's SQLite installation.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
+sha1 = "0.10"

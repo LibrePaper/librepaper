@@ -10,7 +10,7 @@
 #![no_main]
 
 use arbitrary::Arbitrary;
-use komodoc::session::{self, Admission};
+use librepaper::session::{self, Admission};
 use libfuzzer_sys::fuzz_target;
 
 #[derive(Arbitrary, Debug)]

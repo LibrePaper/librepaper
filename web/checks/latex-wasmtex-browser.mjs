@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 import { browser, until } from "../tools/browser-driver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO = dirname(HERE.replace(/\/web\/checks$/, "/web/checks")); // .../komodoc-wasmtex
+const REPO = dirname(HERE.replace(/\/web\/checks$/, "/web/checks")); // .../librepaper-wasmtex
 const ROOT = dirname(dirname(HERE));
 const MIRROR = join(ROOT, "latex", "mirror");
 const CORPUS = join(ROOT, "latex", "corpus");
@@ -114,14 +114,14 @@ function inspectPdfBytes(bytesArray, scratch) {
 
 // --- the in-page driver, injected once ---------------------------------------
 
-// Defines globalThis.__komodoc: a hand-rolled controller for the section 2.4
-// protocol (id in, id echoed back; unsolicited progress/downloading have no
-// id). `compileTree` runs the ordinary sequence from docs/specs/wasmtex.md
+// Defines globalThis.__librepaper: a hand-rolled controller for the section
+// 2.4 protocol (id in, id echoed back; unsolicited progress/downloading have
+// no id). `compileTree` runs the ordinary sequence from docs/specs/wasmtex.md
 // ("Browser compilation controller"): stage, tex, inspect outputs for
-// bibliography/index work, run the helper, write its output back, rerun
-// until the log stops asking for it or 8 passes are used.
+// bibliography/index work, run the helper, write its output back, rerun until
+// the log stops asking for it or 8 passes are used.
 const PAGE_DRIVER = `
-async function __komodocInit(base) {
+async function __librepaperInit(base) {
   const manifest = await (await fetch(base + "/mirror/manifest.json")).json();
   const release = manifest.releases[manifest.default_release];
   const texlive = manifest.texlive[release.snapshot];
@@ -156,16 +156,16 @@ async function __komodocInit(base) {
     });
   }
   const configured = await send("configure", { base: base + "/mirror/", release, texlive });
-  globalThis.__komodoc = { worker, send, release, texlive, configured };
+  globalThis.__librepaper = { worker, send, release, texlive, configured };
   return { engines: configured.engines };
 }
 
-function __komodocStem(main) {
+function __librepaperStem(main) {
   return main.slice(main.lastIndexOf("/") + 1).replace(/\\.[^.]+$/, "");
 }
 
-async function __komodocCompile(engineName, tree) {
-  const send = globalThis.__komodoc.send;
+async function __librepaperCompile(engineName, tree) {
+  const send = globalThis.__librepaper.send;
   // Assets cross from Node to the page as plain JSON arrays of byte values
   // (there is no Uint8Array literal in JSON); the engines' writeFile only
   // preserves bytes correctly from a real typed array (see wasmtex.js's
@@ -177,7 +177,7 @@ async function __komodocCompile(engineName, tree) {
   }
   tree = Object.assign({}, tree, { assets });
   await send("stage", { engine: engineName, tree, generated: {} });
-  const stem = __komodocStem(tree.main);
+  const stem = __librepaperStem(tree.main);
   let last = null;
   let ranBibtex = false;
   let ranMakeindex = false;
@@ -203,7 +203,7 @@ async function __komodocCompile(engineName, tree) {
     if (needsBibtex) {
       ranBibtex = true;
       const bib = await send("bibtex", { stem, eight: false });
-      globalThis.__komodocLastBib = bib;
+      globalThis.__librepaperLastBib = bib;
       if (bib.bbl) await send("write", { path: stem + ".bbl", bytes: bib.bbl });
       continue;
     }
@@ -221,7 +221,7 @@ async function __komodocCompile(engineName, tree) {
   return last;
 }
 
-function __komodocBytes(buf) {
+function __librepaperBytes(buf) {
   if (!buf) return null;
   const bytes = new Uint8Array(buf);
   let binary = "";
@@ -257,13 +257,13 @@ async function runJob(driver, expression, timeoutMs = 240000) {
 /// The shape both the corpus-case loop and the three invariant checks below
 /// pull out of a compile: enough to inspect the PDF and the log without
 /// shipping the whole outputs map back to Node.
-const SUMMARY = `(r) => ({ ok: r.ok, status: r.status, log: r.log, pdf: __komodocBytes(r.pdf), synctex: __komodocBytes(r.synctex), passes: r.__passes, ranBibtex: r.__ranBibtex })`;
+const SUMMARY = `(r) => ({ ok: r.ok, status: r.status, log: r.log, pdf: __librepaperBytes(r.pdf), synctex: __librepaperBytes(r.synctex), passes: r.__passes, ranBibtex: r.__ranBibtex })`;
 
 async function main() {
   const manifest = await waitForMirror();
   log(`mirror ready: default_release=${manifest.default_release}`);
 
-  const scratch = mkdtempSync(join(tmpdir(), "komodoc-wasmtex-browser-"));
+  const scratch = mkdtempSync(join(tmpdir(), "librepaper-wasmtex-browser-"));
   const server = spawn(process.execPath, [join(ROOT, "latex", "tools", "serve.mjs"), "--port", String(PORT), "--mirror", MIRROR, "--record"], {
     stdio: ["ignore", "pipe", "pipe"],
     cwd: ROOT,
@@ -280,7 +280,7 @@ async function main() {
     await driver.navigate(`${BASE}/`);
     await until("harness page", () => driver.evaluate("document.readyState === 'complete'"), 20000);
     await driver.evaluate(PAGE_DRIVER);
-    const init = await driver.evaluate(`__komodocInit(${JSON.stringify(BASE)})`);
+    const init = await driver.evaluate(`__librepaperInit(${JSON.stringify(BASE)})`);
     log("configured:", JSON.stringify(init));
 
     const cases = [
@@ -295,7 +295,7 @@ async function main() {
       const start = Date.now();
       const result = await runJob(
         driver,
-        `__komodocCompile(${JSON.stringify(c.engine)}, ${JSON.stringify(tree)}).then(${SUMMARY})`,
+        `__librepaperCompile(${JSON.stringify(c.engine)}, ${JSON.stringify(tree)}).then(${SUMMARY})`,
       );
       timings[c.id] = Date.now() - start;
       log(`${c.id}: passes=${result.passes} ranBibtex=${result.ranBibtex}`);
@@ -328,7 +328,7 @@ async function main() {
         const hasCitationText = inspected.text.includes("Knuth");
         const noUndefined = !/undefined citations|Citation .*undefined/i.test(result.log);
         if (!hasCitationText && !noUndefined) {
-          const bib = await driver.evaluate("globalThis.__komodocLastBib && { status: globalThis.__komodocLastBib.status, blg: globalThis.__komodocLastBib.blg }");
+          const bib = await driver.evaluate("globalThis.__librepaperLastBib && { status: globalThis.__librepaperLastBib.status, blg: globalThis.__librepaperLastBib.blg }");
           log("paper bibtex result:", JSON.stringify(bib));
           throw new Error(`paper: no evidence BibTeX ran (no "Knuth" in text, log warns of undefined citations)`);
         }
@@ -341,7 +341,7 @@ async function main() {
       await fetch(`${BASE}/__reset`);
       const tree = treeOf("article", "main.tex");
       const edited = { ...tree, texts: { ...tree.texts, "main.tex": tree.texts["main.tex"].replace("Nothing is concluded.", "Nothing at all is concluded.") } };
-      await runJob(driver, `__komodocCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(edited)})`);
+      await runJob(driver, `__librepaperCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(edited)})`);
       const tally = await (await fetch(`${BASE}/__bytes`)).json();
       log(`prose-edit recompile: ${tally.total} new bytes fetched from the mirror`);
       if (tally.total !== 0) {
@@ -355,7 +355,7 @@ async function main() {
       delete tree.texts["chapters/02.tex"];
       const result = await runJob(
         driver,
-        `__komodocCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(tree)}).then(${SUMMARY})`,
+        `__librepaperCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(tree)}).then(${SUMMARY})`,
       );
       // \include (unlike \input) reports a missing target as "No file
       // chapters/02.tex." rather than "File ... not found" -- both wordings
@@ -370,7 +370,7 @@ async function main() {
 
     // --- a fatal error must never hand back a stale PDF --------------------
     {
-      // `\KomodocUndefined` alone is not fatal: an undefined control
+      // `\LibrePaperUndefined` alone is not fatal: an undefined control
       // sequence is TeX's most ordinary recoverable error in nonstopmode
       // (verified against the real engine -- pdfTeX skips the token, status
       // 1, and still writes a PDF). `latex/corpus/broken/main.tex`'s own
@@ -378,15 +378,15 @@ async function main() {
       // ... TeX stops dead on it: an input it cannot find is an emergency
       // stop" -- so that is the fatal construct used here, injected right
       // before \end{document} exactly where the spec's example puts
-      // \KomodocUndefined.
+      // \LibrePaperUndefined.
       const tree = treeOf("article", "main.tex");
       tree.texts["main.tex"] = tree.texts["main.tex"].replace(
         "\\end{document}",
-        "\\input{chapters/komodoc-does-not-exist}\n\\end{document}",
+        "\\input{chapters/librepaper-does-not-exist}\n\\end{document}",
       );
       const result = await runJob(
         driver,
-        `__komodocCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(tree)}).then(${SUMMARY})`,
+        `__librepaperCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(tree)}).then(${SUMMARY})`,
       );
       log(`fatal-error recompile: ok=${result.ok} status=${result.status} pdf=${result.pdf ? "present" : "null"}`);
       if (result.pdf !== null) {

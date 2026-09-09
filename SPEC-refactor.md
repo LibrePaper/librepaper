@@ -16,7 +16,7 @@ are recorded in [the combined storage review](docs/reviews/storage-review.md).
 ## Purpose and boundaries
 
 Reduce editing stalls, repeated storage work, and inconsistent internal APIs in
-`crates/komodoc/src/room/` and `crates/komodoc/src/storage/`, and close the
+`crates/librepaper/src/room/` and `crates/librepaper/src/storage/`, and close the
 remaining attribution and storage-limit gaps. Preserve the durability,
 authorization, quota, and concurrency guarantees established by the fixes.
 Deliver this work as separate, reviewable changes rather than another

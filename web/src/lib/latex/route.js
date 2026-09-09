@@ -74,7 +74,7 @@ function markVm(state, identity) {
   };
 }
 
-const LOCAL_UNAVAILABLE = { kind: "local-unavailable", message: "Local Komodoc is unavailable" };
+const LOCAL_UNAVAILABLE = { kind: "local-unavailable", message: "Local LibrePaper is unavailable" };
 
 /// `event` is `{ type, ...context }`. `state` is whatever the previous
 /// `decide` returned (or `initialState` for the first call of a session).

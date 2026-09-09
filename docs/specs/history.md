@@ -13,7 +13,7 @@ commit and whether the working tree is dirty on the checkpoint it causes.
 from both commands.
 
 This gives authors a pointer into their local source history, including
-Quarto projects. It does not make Komodoc a git remote.
+Quarto projects. It does not make LibrePaper a git remote.
 
 ## Pinning, later
 

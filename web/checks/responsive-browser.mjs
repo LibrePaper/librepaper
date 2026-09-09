@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { browser, until } from "../tools/browser-driver.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const temp = mkdtempSync(join(tmpdir(), "komodoc-reader-responsive-"));
+const temp = mkdtempSync(join(tmpdir(), "librepaper-reader-responsive-"));
 const entry = join(temp, "entry.js");
 const room = join(temp, "room.js");
 const out = join(temp, "build");
@@ -54,7 +54,7 @@ try {
   serverHttp=createServer((req,res)=>{
     if(req.url==="/docs/paper") {
       res.setHeader("content-type","text/html");
-      res.end('<!doctype html><html data-theme="komodoc"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/komodoc-web.css"></head><body><script type="module" src="/check.js"></script></body></html>');
+      res.end('<!doctype html><html data-theme="librepaper"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/librepaper-web.css"></head><body><script type="module" src="/check.js"></script></body></html>');
       return;
     }
     if(req.url.startsWith('/raw/')) {
@@ -151,7 +151,7 @@ try {
 
   for (const saved of ['source','document']) {
     await b.resize(390,844);
-    await b.evaluate(`localStorage.setItem('komodoc-layout', JSON.stringify(${JSON.stringify(saved)}))`);
+    await b.evaluate(`localStorage.setItem('librepaper-layout', JSON.stringify(${JSON.stringify(saved)}))`);
     await b.navigate(url);
     await until('reader remount',()=>b.evaluate('document.querySelector(".cm-editor") !== null'),10000);
     await click(nav('Document')); assert.equal(await visible('.viewport'), true);
