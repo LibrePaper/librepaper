@@ -362,6 +362,12 @@ fn read_bounded_file(path: &std::path::Path, limit: usize) -> std::io::Result<Ve
     Ok(bytes)
 }
 
+fn recovered_finished_at(age: u64) -> Instant {
+    Instant::now()
+        .checked_sub(Duration::from_secs(age))
+        .unwrap_or_else(Instant::now)
+}
+
 fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry> {
     let mut entries: Vec<_> = match std::fs::read_dir(jobs_root) {
         Ok(entries) => entries.flatten().collect(),
@@ -523,7 +529,12 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
                 cancel_rx,
                 queued: false,
                 superseded: false,
-                finished_at: Instant::now().checked_sub(Duration::from_secs(age)),
+                // A recovered terminal job must always have a local expiry
+                // instant.  `checked_sub` can theoretically return `None`
+                // on a platform with a narrow Instant range; leaving it
+                // unset would make preview admission treat this old job as
+                // permanently active after a restart.
+                finished_at: Some(recovered_finished_at(age)),
             },
         );
         if interrupted {
@@ -1640,5 +1651,20 @@ async fn handle_preview(
             &json!({"id":id,"url":url,"state":"starting","expires_in":3600}),
         ),
         Err(error) => write_json(400, &json!({"error":error})),
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::recovered_finished_at;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn recovered_terminal_jobs_always_have_an_expiry_instant() {
+        let started = Instant::now();
+        let finished = recovered_finished_at(u64::MAX);
+        let now = Instant::now();
+        assert!(started <= finished && finished <= now);
+        assert!(now.duration_since(finished) <= Duration::from_millis(100));
     }
 }

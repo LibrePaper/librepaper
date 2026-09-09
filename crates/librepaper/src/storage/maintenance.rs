@@ -201,10 +201,21 @@ pub fn document_object_key(storage_id: &str, object_key: &str) -> bool {
     object_key.starts_with(&prefix)
 }
 
-/// Validate a key against the exact namespaces owned by one document.  The
-/// content prefix covers current trees/blobs/assets/renderings; the remaining
-/// entries are the legacy and mutable sidecars retained for restart-safe
-/// deletion.  No arbitrary `content/` or `sources/` key is accepted.
+/// Object namespaces owned by one catalogue document. Keep discovery and
+/// direct deletion on the same list, including portable result objects.
+pub fn document_object_prefixes(slug: &str, storage_id: &str) -> Vec<String> {
+    vec![
+        content_prefix(storage_id),
+        source_prefix(slug),
+        format!("history/{slug}/"),
+        format!("documents/{slug}/"),
+        format!("quarto/blobs/{storage_id}/"),
+        format!("quarto/bundles/{storage_id}/{slug}/"),
+        format!("quarto/selections/{storage_id}/{slug}/"),
+    ]
+}
+
+/// Validate an exact document-owned namespace; never accept a shared prefix.
 pub fn document_object_key_for(slug: &str, storage_id: &str, object_key: &str) -> bool {
     if slug.is_empty()
         || storage_id.is_empty()
@@ -231,13 +242,9 @@ pub fn document_object_key_for(slug: &str, storage_id: &str, object_key: &str) -
     if exact.iter().any(|key| key == object_key) {
         return true;
     }
-    [
-        source_prefix(slug),
-        format!("history/{slug}/"),
-        format!("documents/{slug}/"),
-    ]
-    .iter()
-    .any(|prefix| object_key.starts_with(prefix))
+    document_object_prefixes(slug, storage_id)
+        .iter()
+        .any(|prefix| object_key.starts_with(prefix))
 }
 
 /// Add one durable job.  The object is charged until the worker confirms its
@@ -474,12 +481,7 @@ impl DeletionWorker {
                 now,
             )
             .await?;
-            let prefixes = [
-                content_prefix(&storage_id),
-                source_prefix(&slug),
-                format!("history/{slug}/"),
-                format!("documents/{slug}/"),
-            ];
+            let prefixes = document_object_prefixes(&slug, &storage_id);
             let discovery_slug = slug.clone();
             self.catalog
                 .execute(MAINTENANCE_JOB_BYTES, move |connection| {
@@ -1785,6 +1787,21 @@ mod tests {
 
     #[test]
     fn document_cleanup_accepts_only_owned_legacy_keys() {
+        for key in [
+            "quarto/blobs/sid/digest",
+            "quarto/bundles/sid/paper/render/manifest.json",
+            "quarto/selections/sid/paper/html.json",
+        ] {
+            assert!(document_object_key_for("paper", "sid", key));
+        }
+        for key in [
+            "quarto/blobs/sid-other/digest",
+            "quarto/blobs/digest",
+            "quarto/bundles/sid/other/render/manifest.json",
+            "quarto/selections/other/paper/html.json",
+        ] {
+            assert!(!document_object_key_for("paper", "sid", key));
+        }
         assert!(document_object_key_for("paper", "sid", "sources/paper"));
         assert!(document_object_key_for(
             "paper",

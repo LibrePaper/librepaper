@@ -40,10 +40,17 @@ local function capture_inline_values(doc)
   end
   local function paragraph(el)
     local codes = {}
+    local has_break = false
     for _, inline in ipairs(el.content or {}) do
-      if pandoc.utils.type(inline) == "Code" then codes[#codes + 1] = inline.text end
+      local kind = pandoc.utils.type(inline)
+      local tag = inline.t or inline.tag or kind
+      if tag == "Code" then
+        codes[#codes + 1] = inline.text
+      elseif tag == "SoftBreak" or tag == "LineBreak" then
+        has_break = true
+      end
     end
-    paragraphs[#paragraphs + 1] = {text = pandoc.utils.stringify(el), codes = codes}
+    paragraphs[#paragraphs + 1] = {text = pandoc.utils.stringify(el), codes = codes, has_break = has_break}
   end
   doc:walk({
     Para = paragraph,
@@ -58,15 +65,17 @@ local function capture_inline_values(doc)
         for _, code in ipairs(paragraph.codes) do
           if code == record.expression then has_source_code = true end
         end
-        if not has_source_code then
-          local cursor = 1
-          while true do
-            local start = paragraph.text:find(prefix, cursor, true)
-            local finish = start and paragraph.text:find(suffix, start + #prefix, true)
-            if not (start and finish) then break end
-            local value = paragraph.text:sub(start + #prefix, finish - 1)
+        if not has_source_code and not paragraph.has_break then
+          -- A source record is reliable only when its authored prefix and
+          -- suffix anchor the whole rendered paragraph. This preserves
+          -- decimal values (the first period belongs to the value) while
+          -- rejecting soft-wrapped or repeated prose where a suffix could be
+          -- paired with the wrong occurrence.
+          local starts_with_prefix = paragraph.text:sub(1, #prefix) == prefix
+          local ends_with_suffix = paragraph.text:sub(-#suffix) == suffix
+          if starts_with_prefix and ends_with_suffix and #paragraph.text >= #prefix + #suffix then
+            local value = paragraph.text:sub(#prefix + 1, #paragraph.text - #suffix)
             if value ~= record.expression then matches[#matches + 1] = value end
-            cursor = finish + #suffix
           end
         end
       end

@@ -22,6 +22,7 @@
   import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
+  import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import PendingAnnotations from "./PendingAnnotations.svelte";
   import {
     SHELL_HEADERS,
@@ -1831,6 +1832,10 @@
     if (renderers.formatOf(treeNow().main) === "quarto" && quartoView === "output" && !viewing) {
       try {
         const output = await loadQuartoOutput();
+        // Freshness hashes the whole Quarto tree, including included files
+        // and assets. Run it after the debounced output selection settles so
+        // it describes the bundle that was actually loaded.
+        void refreshQuartoFreshness();
         if (output?.kind === "pdf" && output.bytes) framePreview.publish({ kind: "pdf", sha: output.renderId || quartoBundle?.render_id || null, bytes: output.bytes });
         else if (output?.html) {
           const document = output.page ? output.page(output.downloadName, false) : output.html;
@@ -1842,6 +1847,17 @@
         // temporarily unavailable; selection reports the actionable error.
       }
       return;
+    }
+    // Draft preview work is already debounced by sourceChanged. If front
+    // matter changed the target format, refresh the selected context before
+    // hashing freshness so an older bundle cannot remain associated with the
+    // new draft.
+    if (sourceFormat === "quarto" && session) {
+      if (quartoBundle?.context?.format !== quartoTargetFormat()) {
+        try { await loadQuartoOutput(); } catch { /* the draft remains usable */ }
+        if (readerDisposed || sourceFormat !== "quarto") return;
+      }
+      void refreshQuartoFreshness();
     }
     // A paged document is compiled in an editor's browser and nowhere else,
     // so everybody else is shown the PDF the server kept from the last one
@@ -2055,15 +2071,23 @@
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
+    if (sourceFormat === "quarto") quartoFreshnessSerial += 1;
     if (sourceFormat === "quarto" && session) {
       const main = session.mainPath() || "main.qmd";
       const parsed = quarto.parseQuarto(session.textOf(session.mainId())?.toString?.() || session.text.toString(), { path: main });
-      renderDiagnostics = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
-      paintCombinedDiagnostics();
-      void refreshQuartoFreshness();
-      if (quartoBundle?.context?.format !== quartoTargetFormat()) {
-        void loadQuartoOutput().then(() => paintPreview()).catch(() => {});
-      }
+      const nextDiagnostics = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
+      const diagnosticsGeneration = sourceGeneration;
+      // Yjs can notify this observer from inside CodeMirror's update
+      // listener. Editor.setDiagnostics dispatches another update, which
+      // CodeMirror rejects while the first one is still in progress. Source
+      // invalidation stays synchronous, but the editor repaint waits until
+      // the current transaction has returned and is skipped if newer text
+      // arrived before then.
+      queueMicrotask(() => {
+        if (readerDisposed || diagnosticsGeneration !== sourceGeneration) return;
+        renderDiagnostics = nextDiagnostics;
+        paintCombinedDiagnostics();
+      });
     }
     const outputIsPdf = pdfOutput;
     // The keystroke, which is what the diagnostic wait is measured from.
@@ -2073,7 +2097,8 @@
     // timer for every Typst keystroke would starve the PDF indefinitely.
     if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
     clearTimeout(previewTimer);
-    if (outputIsPdf && !compilesHere) {
+    const quartoOutputView = sourceFormat === "quarto" && quartoView === "output";
+    if (outputIsPdf && !compilesHere && !quartoOutputView) {
       // The text has moved, so what is in the frame is a rendering of an
       // earlier version. That is known here rather than asked: the rendering
       // is named by the digest of the source it was compiled from.
@@ -2083,7 +2108,11 @@
     }
     // A rendering waiting for the text to stay quiet is of a text that did
     // not.
-    if (outputIsPdf) dropHeldRendering();
+    // A saved Quarto PDF is selected through the output view while the source
+    // remains a .qmd (and therefore has an HTML source format). Keep that
+    // view on the ordinary debounced path so its tree-wide freshness check
+    // still runs if the output kind changes or the format mapping evolves.
+    if (outputIsPdf && !quartoOutputView) dropHeldRendering();
     // A LaTeX compile takes seconds, so it waits for the source to be quiet
     // for longer -- `latex.DEBOUNCE`, which is that module's number and not
     // one written twice. A reader watching somebody else type waits longer
@@ -2394,6 +2423,7 @@
   let files = $state([]);
   let folders = $state([]);
   let openFile = $state("");
+  let handledFileTransactions = new WeakSet();
   const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
   let peersByFile = $state(new Map());
   // The deployment's rules, which say what a path may be and what may sit at
@@ -2477,11 +2507,16 @@
 
   // A file added, renamed, removed, or made the main one: the list is redrawn
   // and the document is rendered again, because every one of those changes
-  // what a compiler would produce.
-  function filesChanged(events) {
+  // what a compiler would produce. Main-text edits also arrive through the
+  // source watcher; skip them here so one Yjs transaction does not schedule
+  // the same diagnostics and preview twice. Included-file edits still need a
+  // source change of their own because they can alter a Quarto render without
+  // changing the main Y.Text.
+  function filesChanged(events, active = session) {
+    if (!active || active !== session) return;
     // Nested text edits change the preview, but not the file list.
-    if (!Array.isArray(events) || events.some((event) => event.target === session.files)) refreshFiles();
-    sourceChanged();
+    if (!Array.isArray(events) || events.some((event) => event.target === active.files)) refreshFiles();
+    if (needsSourceRefresh(events, active.text, handledFileTransactions)) sourceChanged();
   }
 
   function refreshPeers() {
@@ -2700,6 +2735,7 @@
       onState: (state_) => (persistence = state_),
       onSession: (active) => {
         session = active;
+        handledFileTransactions = new WeakSet();
         refreshFiles();
       },
       onSource: (active) => {
@@ -3246,7 +3282,6 @@
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={sourceFormat} file={openFile} {keys}
                   onbibliography={bibliographyAnalyzed} oncaret={followCaret} onsave={reportPersistence} onquit={showDocumentAlone}
-                  onchange={() => { if (sourceFormat === "quarto") { sourceChanged(); void paintPreview(); } }}
                   onfilechange={(id) => { openFile = id; shownFigure = null; }} />
         {/key}
       {/if}

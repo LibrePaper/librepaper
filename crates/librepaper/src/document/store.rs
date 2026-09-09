@@ -2152,12 +2152,9 @@ impl Store {
                     .map_err(|err| err.to_string())?;
             }
             let mut keys: Vec<(String, i64)> = Vec::new();
-            for prefix in [
-                document_prefix(&document.storage_id),
-                source_prefix(slug),
-                format!("history/{slug}/"),
-                format!("documents/{slug}/"),
-            ] {
+            for prefix in
+                crate::storage::maintenance::document_object_prefixes(slug, &document.storage_id)
+            {
                 let found = self
                     .blobs
                     .list(&prefix)

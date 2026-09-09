@@ -11,7 +11,7 @@ import { escapeHtml, safeFragment } from "../results-content.js";
 export { sha256, sha256Bytes };
 
 const CELL_FENCE = /^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$/;
-const DIV_FENCE = /^ {0,3}(:{3,})(?:\s+(.*?))?\s*$/;
+const DIV_FENCE = /^ {0,3}(:{3,})(?:(?:\s+|\s*(?=\{))(.+?))?\s*$/;
 const INCLUDE = /\{\{<\s*include\s+([^ >]+).*?>\}\}/g;
 const INLINE_ENGINE = /^(?:r|python|julia|ojs|bash|embed)(?:\s+.+|\}.*)$/;
 
@@ -78,6 +78,8 @@ export function parseFrontMatter(source) {
   let current = value;
   let currentKey = null;
   let arrayKey = null;
+  let arrayItem = null;
+  let arrayIndent = -1;
   for (let i = 1; i < close; i += 1) {
     const line = lines[i];
     if (!line.trim() || /^\s*#/.test(line)) continue;
@@ -86,8 +88,10 @@ export function parseFrontMatter(source) {
       if (!Array.isArray(value[arrayKey])) value[arrayKey] = [];
       const item = list[2].trim();
       const at = item.indexOf(":");
-      value[arrayKey].push(at > 0 ? { [item.slice(0, at).trim()]: scalar(item.slice(at + 1)) } : scalar(item));
-      current = value;
+      arrayItem = at > 0 ? { [item.slice(0, at).trim()]: scalar(item.slice(at + 1)) } : null;
+      value[arrayKey].push(arrayItem || scalar(item));
+      arrayIndent = list[1].length;
+      current = arrayItem || value;
       continue;
     }
     const match = /^(\s*)([^:#][^:]*):(?:\s*(.*))?$/.exec(line);
@@ -102,8 +106,13 @@ export function parseFrontMatter(source) {
       current = value;
       currentKey = key;
       arrayKey = !rest && /^(authors?|keywords?|bibliography|csl|filters?)$/i.test(key) ? key : null;
+      arrayItem = null;
+      arrayIndent = -1;
       if (rest) current[key] = scalar(rest);
       else current[key] = arrayKey ? [] : {};
+    } else if (arrayItem && indent > arrayIndent && typeof arrayItem === "object" && !Array.isArray(arrayItem)) {
+      arrayItem[key] = scalar(rest);
+      current = arrayItem;
     } else if (currentKey && typeof value[currentKey] === "object" && !Array.isArray(value[currentKey])) {
       arrayKey = null;
       current = value[currentKey];
@@ -195,10 +204,15 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
         const code = raw.join("\n");
         const attributeInfo = fence.info.includes("{") ? fence.info.slice(fence.info.indexOf("{")) : fence.info;
         const parsed = parseAttributes(attributeInfo);
-        const infoText = fence.info.replace(/^\{/, "").replace(/\}$/, "");
-        const firstSpace = infoText.search(/\s/);
-        const infoAttributes = firstSpace < 0 ? "" : infoText.slice(firstSpace);
-        const label = String(options.label || parsed.id || "");
+        const infoText = fence.info.replace(/^\{/, "").replace(/\}$/, "").trim();
+        const infoMatch = /^[^,\s]+([\s,].*)?$/.exec(infoText);
+        let infoAttributes = infoMatch?.[1] || "";
+        if (infoAttributes.trimStart().startsWith(",")) infoAttributes = infoAttributes.trimStart().slice(1).replace(/^\s+/, "");
+        const infoParsed = parseAttributes(infoAttributes.replace(/,(?=\s*[A-Za-z][\w-]*\s*=)/g, " "));
+        const infoOptions = infoParsed.attributes;
+        Object.assign(infoOptions, options);
+        Object.assign(options, infoOptions);
+        const label = String(options.label || infoParsed.id || parsed.id || "");
         const id = label ? `${path}#${label}` : `${path}#cell-${cells.length + 1}`;
         cells.push({
           id, path, label, language: fence.language, info: infoAttributes, options, code, rawCode,
@@ -216,7 +230,7 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
     const braced = cell && String(cell[2]).trim().startsWith("{");
     const rawInfo = cell ? String(cell[2]).trim() : "";
     const innerInfo = rawInfo.replace(/^\{/, "").replace(/\}$/, "").trimStart();
-    const hasLanguage = braced && /^[A-Za-z][A-Za-z0-9_-]*(?:\s|$)/.test(innerInfo);
+    const hasLanguage = braced && /^[A-Za-z][A-Za-z0-9_-]*(?:\s|,|$)/.test(innerInfo);
     if (hasLanguage) {
       const info = rawInfo.replace(/^\{/, "").replace(/\}$/, "");
       fence = { char: cell[1][0], length: cell[1].length, info, language: languageOf(info), startLine: i };

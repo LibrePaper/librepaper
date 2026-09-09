@@ -355,7 +355,7 @@ impl Server {
             }),
             Err(error) => json!({
                 "status": "unknown",
-                "reason": "source restored; Quarto selection cleanup will retry",
+                "reason": "source restored; Quarto selection reconciliation failed; retry the restore or select saved results",
                 "error": error,
             }),
         };

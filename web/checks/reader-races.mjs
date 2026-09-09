@@ -8,6 +8,7 @@ import { diagnosticContext } from "../src/lib/assistant-review.js";
 import { createReaderBoot } from "../src/lib/reader/boot.js";
 import { createPendingChat } from "../src/lib/reader/chat.js";
 import { createReaderCollaboration } from "../src/lib/reader/collaboration.js";
+import { needsSourceRefresh } from "../src/lib/reader/source-events.js";
 
 const reader = readFileSync(new URL("../src/components/Reader.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -93,10 +94,13 @@ const deferred = () => {
 const context = (values) => vm.createContext({
   clearTimeout,
   setTimeout,
+  queueMicrotask,
   Promise,
   Uint8Array,
   ArrayBuffer,
   readerDisposed: false,
+  sourceFormat: "",
+  session: null,
   diagnosticContext,
   snapshotDigest: async () => "test-render-digest",
   historyDiffGeneration: 0,
@@ -193,17 +197,35 @@ console.log("reader-races: all checks passed");
   let refreshes = 0;
   let changes = 0;
   const files = {};
-  const ctx = context({ session: { files }, refreshFiles: () => refreshes++, sourceChanged: () => changes++ });
-  vm.runInContext(body("  function filesChanged(events)", "  function refreshPeers()"), ctx);
+  const mainText = {};
+  const active = { files, text: mainText };
+  const seenTransactions = new WeakSet();
+  const ctx = context({ session: active, needsSourceRefresh, handledFileTransactions: seenTransactions, refreshFiles: () => refreshes++, sourceChanged: () => changes++ });
+  vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: {} }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(refreshes, 0);
   assert.equal(changes, 1);
+  ctx.events = [{ target: mainText }];
+  vm.runInContext("filesChanged(events)", ctx);
+  assert.equal(changes, 1, "the source watcher owns main-text edits");
   ctx.events = [{ target: files }];
   vm.runInContext("filesChanged(events)", ctx);
   vm.runInContext("filesChanged({})", ctx);
   assert.equal(refreshes, 2);
   assert.equal(changes, 3);
+  const transaction = {};
+  ctx.events = [{ target: {}, transaction }];
+  vm.runInContext("filesChanged(events)", ctx);
+  ctx.events = [{ target: files, transaction }];
+  vm.runInContext("filesChanged(events)", ctx);
+  assert.equal(changes, 4, "one mixed Yjs transaction schedules one repaint");
+  assert.equal(refreshes, 3);
+  const other = { files: {}, text: {} };
+  ctx.events = [{ target: {} }];
+  ctx.other = other;
+  vm.runInContext("filesChanged(events, other)", ctx);
+  assert.equal(changes, 4, "stale session events are ignored");
 }
 
 // Renaming the main file into LaTeX configures the already joined project,
@@ -383,6 +405,84 @@ for (const invalidate of [null, "navigation", "main"]) {
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
   assert.equal(scheduled, 1, "Typst preview timer remains bounded during typing");
+}
+
+// Yjs may notify the main-text observer from inside CodeMirror's update
+// listener. Diagnostic painting must wait until that update has returned;
+// otherwise Editor.setDiagnostics dispatches a forbidden nested update.
+{
+  let inEditorUpdate = true;
+  let paintedDiagnostics = 0;
+  const ctx = context({
+    sourceGeneration: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
+    session: {
+      mainPath: () => "main.qmd", mainId: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),
+      text: { toString: () => "# Draft\n" },
+    },
+    quarto: { parseQuarto: () => ({ diagnostics: [], source: "# Draft\n" }) },
+    renderDiagnostics: [], paintCombinedDiagnostics: () => {
+      if (inEditorUpdate) throw new Error("nested CodeMirror update");
+      paintedDiagnostics++;
+    },
+    diagnosticPainter: { typed: () => {} }, diagnosticContext,
+    editing: true, pdfOutput: false, previewTimer: null,
+    setTimeout: () => {}, clearTimeout: () => {}, paintPreview: () => {},
+  });
+  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
+  vm.runInContext("sourceChanged()", ctx);
+  inEditorUpdate = false;
+  await new Promise(queueMicrotask);
+  assert.equal(paintedDiagnostics, 1, "diagnostics paint after the editor update returns");
+}
+
+// Quarto freshness is work for the bounded preview, not the keystroke path.
+// A saved PDF output follows that same path even though the source itself is
+// a .qmd and normally has HTML source semantics.
+{
+  let scheduled = 0;
+  let freshness = 0;
+  const published = [];
+  const ctx = context({
+    sourceGeneration: 0, quartoFreshnessSerial: 0, editing: true, sourceFormat: "quarto",
+    quartoView: "output", pdfOutput: true, compilesHere: false, previewTimer: null, viewing: null,
+    quartoBundle: { context: { format: "pdf" } }, quartoTargetFormat: () => "pdf",
+    treeNow: () => ({ main: "main.qmd", texts: { "main.qmd": "---\nformat: pdf\n---\n" }, digests: {} }),
+    renderers: { formatOf: () => "quarto" },
+    diagnosticPainter: { typed: () => {} }, setTimeout: () => ++scheduled, clearTimeout: () => {},
+    paintPreview: () => {}, dropHeldRendering: () => {},
+    renderingStore: { schedulePoll: () => {}, cancelPoll: () => {} },
+    refreshQuartoFreshness: () => freshness++,
+    loadQuartoOutput: async () => ({ kind: "pdf", renderId: "saved", bytes: Uint8Array.of(7) }),
+    framePreview: { publish: (value) => published.push(value), clear: () => {} },
+  });
+  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
+  vm.runInContext("sourceChanged()", ctx);
+  assert.equal(freshness, 0, "typing does not hash the Quarto tree");
+  assert.equal(scheduled, 1, "Quarto typing schedules one bounded preview");
+  vm.runInContext(paintPreview, ctx);
+  await vm.runInContext("paintPreview()", ctx);
+  assert.equal(freshness, 1, "saved Quarto PDF freshness runs in the debounced paint");
+  assert.equal(published[0].kind, "pdf");
+}
+
+// A front-matter format change reloads the draft context before freshness is
+// classified, rather than leaving an older-format bundle selected.
+{
+  let loads = 0;
+  let freshness = 0;
+  const ctx = context({
+    sourceFormat: "quarto", session: {}, quartoView: "draft", paintsTheFrame: false, pdfOutput: false, compilesHere: false,
+    previewTimer: null, quartoBundle: { context: { format: "html" } },
+    quartoTargetFormat: () => "pdf", loadQuartoOutput: async () => { loads++; },
+    treeNow: () => ({ main: "main.qmd", texts: { "main.qmd": "source" }, digests: {} }),
+    renderers: { formatOf: () => "quarto" }, viewing: null,
+    refreshQuartoFreshness: () => freshness++, refreshFramedPage: () => {},
+    renderingStore: { cancelPoll: () => {} },
+  });
+  vm.runInContext(paintPreview, ctx);
+  await vm.runInContext("paintPreview()", ctx);
+  assert.equal(loads, 1, "draft format changes reload the target Quarto context");
+  assert.equal(freshness, 1, "freshness follows the reloaded draft context");
 }
 
 // Typst follows the PDF lifecycle too: one compile in flight, latest request

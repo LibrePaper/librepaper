@@ -1100,3 +1100,163 @@ async fn quarto_source_round_trips_without_execution_or_serialization() {
     let snapshot: serde_json::Value = response.json().await.unwrap();
     assert_eq!(text(&snapshot, "main"), "main.qmd");
 }
+
+#[tokio::test]
+async fn quarto_empty_dependencies_publish_and_remain_readable() {
+    let server = new_test_server().await;
+    let slug = text(&publish_quarto(&server.url).await, "slug");
+    let mut bundle = imported_bundle(&slug, "empty-dependency", "<p>Saved</p>");
+    let digest = crate::quarto::sha256(b"");
+    bundle["manifest"]["assets"] =
+        json!([{"path":"paper_files/empty.css", "sha256":digest, "mime":"text/css", "size":0}]);
+    bundle["blobs"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"sha256":digest,"mime":"text/css","data":""}));
+    let (status, published) = post(
+        &server.url,
+        &format!("/api/documents/{slug}/quarto/bundles"),
+        bundle,
+    )
+    .await;
+    assert_eq!(status, 201, "{published}");
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let storage = catalog.document(&slug).unwrap().unwrap().storage_id;
+    let body = server
+        .instance
+        .store
+        .blobs
+        .get(&crate::quarto::scoped_blob_key(&storage, &digest))
+        .await
+        .unwrap();
+    assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn quarto_objects_are_reclaimed_by_direct_and_resumed_deletion() {
+    for resumed in [false, true] {
+        let server = new_test_server().await;
+        let slug = text(&publish_quarto(&server.url).await, "slug");
+        let (status, published) = post(
+            &server.url,
+            &format!("/api/documents/{slug}/quarto/bundles"),
+            imported_bundle(&slug, "delete-me", "<p>Saved</p>"),
+        )
+        .await;
+        assert_eq!(status, 201, "{published}");
+        let catalog = server.instance.store.catalog.as_ref().unwrap();
+        let storage = catalog.document(&slug).unwrap().unwrap().storage_id;
+        let prefixes = crate::storage::maintenance::document_object_prefixes(&slug, &storage);
+        let quarto_prefixes: Vec<_> = prefixes
+            .iter()
+            .filter(|prefix| prefix.starts_with("quarto/"))
+            .collect();
+        for prefix in &quarto_prefixes {
+            assert!(!server
+                .instance
+                .store
+                .blobs
+                .list(prefix)
+                .await
+                .unwrap()
+                .is_empty());
+        }
+        let unrelated = "quarto/blobs/another-storage/keep";
+        server
+            .instance
+            .store
+            .blobs
+            .put(unrelated, vec![1], "application/octet-stream")
+            .await
+            .unwrap();
+        if resumed {
+            catalog.begin_delete(&slug).unwrap();
+            let worker = crate::storage::maintenance::DeletionWorker::new(
+                catalog.clone(),
+                server.instance.store.blobs.clone(),
+                crate::storage::maintenance::DeletionLimits {
+                    max_jobs: 1000,
+                    max_object_requests: 1000,
+                    max_read_bytes: 2_000_000,
+                },
+            )
+            .unwrap();
+            let retirements = crate::storage::maintenance::JournalRetirementWorker::new(
+                catalog.clone(),
+                server.instance.store.blobs.clone(),
+                1000,
+            )
+            .unwrap();
+            let started = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            for now in started..started + 20 {
+                worker.run_once(now).await.unwrap();
+                retirements.run_once(now).await.unwrap();
+                if catalog.document(&slug).unwrap().is_none() {
+                    break;
+                }
+            }
+            assert!(catalog.document(&slug).unwrap().is_none());
+        } else {
+            server.instance.store.remove(&slug).await.unwrap();
+        }
+        for prefix in quarto_prefixes {
+            assert!(
+                server
+                    .instance
+                    .store
+                    .blobs
+                    .list(prefix)
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "leftover prefix {prefix}"
+            );
+        }
+        assert_eq!(
+            server.instance.store.blobs.get(unrelated).await.unwrap(),
+            vec![1]
+        );
+    }
+}
+
+#[tokio::test]
+async fn quarto_restore_does_not_promote_a_never_selected_bundle() {
+    let server = new_test_server().await;
+    let slug = text(&publish_quarto(&server.url).await, "slug");
+    let room = server.instance.rooms.try_get(&slug).await.unwrap();
+    let digest = room.tree().await.digest();
+    let (_, checkpoint) = post(
+        &server.url,
+        &format!("/api/documents/{slug}/quarto/checkpoint"),
+        json!({"tree_sha256":digest}),
+    )
+    .await;
+    let mut bundle = imported_bundle(&slug, "unselected", "<p>Saved but not chosen</p>");
+    bundle["manifest"]["source"]["tree_sha256"] = json!(digest);
+    bundle["select"] = json!(false);
+    let (status, published) = post(
+        &server.url,
+        &format!("/api/documents/{slug}/quarto/bundles"),
+        bundle,
+    )
+    .await;
+    assert_eq!(status, 201, "{published}");
+    let (status, restored) = post(
+        &server.url,
+        &format!("/api/documents/{slug}/restore"),
+        json!({"sha":text(&checkpoint,"revision")}),
+    )
+    .await;
+    assert_eq!(status, 200, "{restored}");
+    assert_eq!(restored["quarto_selection"]["status"], "cleared");
+    let (status, _) = get_json_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}/quarto/bundles/selected/html"),
+    )
+    .await;
+    assert_eq!(status, 404);
+}

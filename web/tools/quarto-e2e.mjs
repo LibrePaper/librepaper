@@ -222,6 +222,7 @@ try {
   await until("default context restored", async () => (await frameText()).includes("cached computation text"));
   await tab.evaluate('document.querySelector("details.render-options").open = false');
 
+  await tab.evaluate('window.__quartoEditErrors = []; window.addEventListener("error", (event) => window.__quartoEditErrors.push(event.message))');
   const proseEdit = source.replace("Opening prose remains visible", "Edited prose remains visible");
   await tab.insert(proseEdit, true);
   await pause(1200);
@@ -229,6 +230,7 @@ try {
   assert.equal(editedSource.replace(/\\r\\n/g, "\\n"), proseEdit, "the browser editor round-trips the complete prose edit");
   await until("prose edit", async () => (await frameText()).includes("Edited prose remains visible"));
   await until("cached result after prose edit", async () => (await frameText()).includes("cached computation text"));
+  assert.deepEqual(await tab.evaluate("window.__quartoEditErrors"), [], "editing must not dispatch diagnostics inside a CodeMirror update");
   assert.match(await tab.evaluate("document.body.innerText"), /Saved results; computation source unchanged|Showing saved results/);
 
   const codeEdit = proseEdit.replace("x <- 1", "x <- 2");
@@ -297,7 +299,7 @@ try {
   await until("comment inspection reload", () => tab.evaluate('!!document.querySelector(".cm-content")'));
   await tab.evaluate('(() => { const button = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label") === "Comments" || candidate.textContent.trim() === "Comments"); if (button?.getAttribute("aria-pressed") !== "true") button?.click(); })()');
   await until("reloaded result comment", () => tab.evaluate('document.body.innerText.includes("Original result comment")'));
-  await tab.evaluate('([...document.querySelectorAll("button")].find((button) => button.textContent.includes("Inspect original result")) || {}).click?.()');
+  await until("original result inspection control", () => tab.evaluate('(() => { const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent.includes("Inspect original result")); if (!button) return false; button.click(); return true; })()'));
   await until("original result dialog", () => tab.evaluate('document.body.innerText.includes("Original saved result") && document.body.innerText.includes("render-quarto-browser-e2e")'));
   assert.ok(await tab.evaluate('document.body.innerText.includes("Saved figure")'), "inspection shows the original result caption after reload");
   assert.ok(!(await tab.evaluate('document.body.innerText.includes("Replacement saved figure")')), "inspection does not substitute the newer result");

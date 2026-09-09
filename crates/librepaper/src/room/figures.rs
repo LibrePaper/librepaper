@@ -299,6 +299,14 @@ impl Room {
         let epochs = read_quarto_selection_epochs(catalog, &self.storage_id, &self.slug)
             .await
             .map_err(|error| error.to_string())?;
+        let storage_id = self.storage_id.clone();
+        let document_id = self.slug.clone();
+        let history = catalog
+            .execute_catalog(storage_id.len() + document_id.len() + 256, move |catalog| {
+                catalog.quarto_selection_history(&storage_id, &document_id)
+            })
+            .await
+            .map_err(|error| error.to_string())?;
         let prefix = if self.storage_id.is_empty() {
             format!("quarto/bundles/{}/", self.slug)
         } else {
@@ -361,9 +369,14 @@ impl Room {
                         && row.is_some_and(|row| manifest.render_id == row.render_id)
                 })
                 .or_else(|| {
-                    retained
+                    history
                         .iter()
-                        .find(|manifest| manifest.context.id == context_id)
+                        .filter(|(context, _, _)| context == &context_id)
+                        .find_map(|(_, render, _)| {
+                            retained.iter().find(|manifest| {
+                                manifest.context.id == context_id && &manifest.render_id == render
+                            })
+                        })
                 });
             let Some(manifest) = manifest else {
                 clear_quarto_selection_with_authority(
@@ -455,9 +468,6 @@ impl Room {
         actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
     ) -> Result<i64, WriteError> {
         let _rendering_writer = self.rendering_write.lock().await;
-        if body.is_empty() {
-            return Err(WriteError::Invalid("that Quarto object is empty".into()));
-        }
         if !self.hold().await {
             return Err(self.fenced());
         }

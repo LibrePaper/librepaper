@@ -1156,7 +1156,8 @@ pub async fn sync_project(
 ) {
     if dry_run {
         let main = discover_project_main(root).unwrap_or_default();
-        let inventory = project_inventory(root, &main).unwrap_or_else(|err| die(err));
+        let inventory =
+            project_inventory(root, &main, &BTreeSet::new()).unwrap_or_else(|err| die(err));
         println!(
             "would sync project {} ({} source files, {} assets){}",
             root.display(),
@@ -1536,7 +1537,11 @@ impl ProjectClient {
         if !crate::document::render::is_quarto(&main) {
             return Err("Project synchronization requires a Quarto .qmd entrypoint".into());
         }
-        let inventory = project_inventory(&self.root, &main)?;
+        let mut known_paths: BTreeSet<String> = self.baseline.files.keys().cloned().collect();
+        known_paths.extend(self.baseline.assets.keys().cloned());
+        known_paths.extend(remote.keys().cloned());
+        known_paths.extend(remote_assets.keys().cloned());
+        let inventory = project_inventory(&self.root, &main, &known_paths)?;
         let merged = merge_project_texts(&self.baseline.files, &inventory, &remote);
         let mut asset_conflicts = BTreeMap::new();
         let before = session::encode_vector(&self.doc);
@@ -1666,7 +1671,7 @@ impl ProjectClient {
     ) -> Result<(), String> {
         let main = session::main_path(&self.doc);
         for (path, body) in files {
-            if !project_path_is_shared(&self.root, &main, path)? {
+            if !project_path_is_shared(&self.root, &main, path, &inventory.all)? {
                 continue;
             }
             if inventory.files.get(path) != Some(body) {
@@ -1684,7 +1689,7 @@ impl ProjectClient {
             if asset_conflicts.contains_key(&path) {
                 continue;
             }
-            if !project_path_is_shared(&self.root, &main, &path)? {
+            if !project_path_is_shared(&self.root, &main, &path, &inventory.all)? {
                 continue;
             }
             let at = safe_project_path(&self.root, &path)?;
@@ -1779,9 +1784,29 @@ fn save_project_baseline(root: &Path, baseline: &ProjectBaseline) -> Result<(), 
     })
 }
 
-fn project_inventory(root: &Path, main: &str) -> Result<ProjectInventory, String> {
+fn project_inventory(
+    root: &Path,
+    main: &str,
+    known_paths: &BTreeSet<String>,
+) -> Result<ProjectInventory, String> {
     let ignored = crate::cli::git_ignores(root);
-    let all_paths = crate::cli::files_under(root, "", &ignored);
+    let mut all_paths = crate::cli::files_under(root, "", &ignored);
+    // Gitignored files are normally outside this peer's authority. A path
+    // that was already shared is different: the browser may have created it
+    // locally during an earlier reconcile, and dropping it from the next
+    // inventory would look like an intentional deletion. Re-admit only known
+    // paths that are present on disk; new gitignored files remain private.
+    for path in known_paths {
+        if all_paths.iter().any(|candidate| candidate == path) {
+            continue;
+        }
+        let Ok(at) = safe_project_path(root, path) else {
+            continue;
+        };
+        if at.is_file() {
+            all_paths.push(path.clone());
+        }
+    }
     let listed = all_paths.clone();
     let listed = if crate::document::render::is_quarto(main) {
         crate::local::engine_adapter::quarto_shared_paths(root, main, listed)
@@ -1814,7 +1839,12 @@ fn project_inventory(root: &Path, main: &str) -> Result<ProjectInventory, String
 /// Apply the same Quarto sharing policy to a path arriving from the room.
 /// `project_inventory` only sees paths that exist locally; remote paths must
 /// be checked independently before they are materialised on disk.
-fn project_path_is_shared(root: &Path, main: &str, path: &str) -> Result<bool, String> {
+fn project_path_is_shared(
+    root: &Path,
+    main: &str,
+    path: &str,
+    available: &BTreeSet<String>,
+) -> Result<bool, String> {
     if crate::document::paths::check(&crate::config::Configuration::default().paths(), path)
         .is_err()
     {
@@ -1823,8 +1853,12 @@ fn project_path_is_shared(root: &Path, main: &str, path: &str) -> Result<bool, S
     if main.is_empty() || !crate::document::render::is_quarto(main) {
         return Ok(true);
     }
+    let mut candidates: Vec<String> = available.iter().cloned().collect();
+    if !candidates.iter().any(|candidate| candidate == path) {
+        candidates.push(path.to_string());
+    }
     Ok(
-        crate::local::engine_adapter::quarto_shared_paths(root, main, vec![path.to_string()])?
+        crate::local::engine_adapter::quarto_shared_paths(root, main, candidates)?
             .iter()
             .any(|candidate| candidate == path),
     )

@@ -26,6 +26,9 @@ const longFence = "````\n```{r}\nplot(1)\n```\n````\n";
 assert.equal(parseQuarto(longFence, { path: "paper.qmd" }).cells.length, 0, "short inner fences stay inside a longer opaque fence");
 const longCell = "````{r}\n#| label: long\nplot(1)\n```\n````\n";
 assert.equal(parseQuarto(longCell, { path: "paper.qmd" }).cells.length, 1, "a long executable fence closes only at its own length");
+const knitrComma = parseQuarto("```{r,echo=FALSE}\nhidden_one()\n```\n```{r, echo=FALSE}\nhidden_two()\n```\n```{r , echo=FALSE}\nhidden_three()\n```\n", { path: "paper.qmd" });
+assert.deepEqual(knitrComma.cells.map((cell) => [cell.language, cell.options.echo]), [["r", false], ["r", false], ["r", false]]);
+assert.doesNotMatch(composeDraft("```{r,echo=FALSE}\nhidden_one()\n```\n").markdown, /hidden_one/);
 const paritySource = [
   "---", "title: Parity", "---", "", "A {{< include appendix.qmd >}} value.", "",
   "```r", "plot(x)", "```", "", "```{r #fig-a echo=false}", "#| fig-cap: A", "x <- 1", "plot(x)", "```", "",
@@ -100,6 +103,14 @@ assert.match(nestedDraft, /Figure 1/);
 assert.match(nestedDraft, /Table 1/);
 assert.match(nestedDraft, /href="#fig-one">Figure 1/);
 assert.match(nestedDraft, /href="#tbl-one">Table 1/);
+const compactCallout = composeDraft(":::{.callout-note}\nCompact note.\n:::\n").markdown;
+assert.match(compactCallout, /quarto-callout/);
+assert.equal((compactCallout.match(/<\/div>/g) || []).length, 2, "compact div opener must pair with its title and content closers");
+const nestedAuthors = parseQuarto([
+  "---", "authors:", "  - name: Ada Lovelace", "    affiliation: Analytical Engine", "  - name: Grace Hopper", "    affiliation: Navy", "---", "", "Text",
+].join("\n"), { path: "paper.qmd" });
+assert.equal(nestedAuthors.diagnostics.length, 0, "nested author metadata should not make freshness unknown");
+assert.deepEqual(nestedAuthors.metadata.authors.map((author) => author.name), ["Ada Lovelace", "Grace Hopper"]);
 const unauthorizedInclude = composeDraft("{{< include ../secret.qmd >}}", {
   expandIncludes: { "../secret.qmd": "must never appear", "safe.qmd": "safe" },
 });

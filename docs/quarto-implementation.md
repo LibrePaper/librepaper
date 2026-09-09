@@ -103,11 +103,14 @@ Arbitrary filters, extensions, executable diagrams, and widgets do not run in
 Draft. Full YAML/project semantics are delegated to Quarto during a real render.
 
 Selected bundles and one associated bundle per retained revision/context are
-kept with bounded additional render history. Source restore reselects a retained
-matching bundle or explicitly clears the selection. Clearing still advances its
+kept with bounded additional render history. Source restore reselects a retained,
+previously selected matching bundle or explicitly clears the selection. A saved
+bundle that was never selected is not promoted by restore. Clearing still advances its
 generation, so a job started before the restore cannot overwrite that choice.
 Backups preserve bundle objects, the authoritative selection rows, and those
-generation records.
+generation records and selection history. If reconciliation fails after the
+source is restored, the response reports the failure and asks for a retry or
+an explicit saved-result selection; it does not promise a background retry.
 
 Cached HTML table fragments pass through an inert parser and an element,
 attribute, and URL allowlist. Text output stays literal. SVG is used as an image,

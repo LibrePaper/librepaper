@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::Path as AxumPath;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -11,6 +13,7 @@ use base64::Engine;
 use futures_util::StreamExt;
 use librepaper::session;
 use serde_json::{json, Value};
+use sha2::Digest;
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex, Notify};
 
@@ -22,6 +25,7 @@ enum ServerCommand {
 
 struct MockPeer {
     initial: Vec<u8>,
+    assets: HashMap<String, Vec<u8>>,
     commands: Arc<Mutex<mpsc::UnboundedReceiver<ServerCommand>>>,
     ready: Arc<Notify>,
     updates: mpsc::UnboundedSender<Vec<u8>>,
@@ -29,6 +33,17 @@ struct MockPeer {
 
 async fn document_route() -> impl IntoResponse {
     Json(json!({"slug":"demo", "role":"editor", "can_edit":true}))
+}
+
+async fn asset_route(
+    AxumPath((_slug, sha)): AxumPath<(String, String)>,
+    axum::extract::State(peer): axum::extract::State<Arc<MockPeer>>,
+) -> impl IntoResponse {
+    peer.assets
+        .get(&sha)
+        .cloned()
+        .map(|bytes| (StatusCode::OK, bytes))
+        .unwrap_or((StatusCode::NOT_FOUND, Vec::new()))
 }
 
 async fn websocket_route(
@@ -165,6 +180,27 @@ async fn directory_sync_reaches_cli_and_preserves_private_generated_files() {
     std::fs::write(root.path().join("delete.qmd"), "Delete me.\n").unwrap();
     std::fs::write(root.path().join("private.dat"), "local private\n").unwrap();
     std::fs::write(root.path().join("analysis.html"), "local generated\n").unwrap();
+    std::fs::create_dir_all(root.path().join("fig")).unwrap();
+    std::fs::write(root.path().join("included.txt"), "explicitly shared\n").unwrap();
+    std::fs::write(
+        root.path().join(".librepaper-share.json"),
+        r#"{"include":["included.txt"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join(".gitignore"),
+        "ignored.qmd\nfig/plot.png\nunrelated.txt\n",
+    )
+    .unwrap();
+    let git = std::process::Command::new("git")
+        .args([
+            "-C",
+            root.path().to_str().expect("UTF-8 project root"),
+            "init",
+        ])
+        .output()
+        .expect("initialize project git metadata");
+    assert!(git.status.success(), "git init failed: {git:?}");
 
     let remote = session::new_doc();
     let main = session::put_text(&remote, "analysis.qmd", "# Analysis\n\nBase.\n");
@@ -173,11 +209,16 @@ async fn directory_sync_reaches_cli_and_preserves_private_generated_files() {
     session::put_text(&remote, "delete.qmd", "Delete me.\n");
     session::put_text(&remote, "private.dat", "remote private\n");
     session::put_text(&remote, "analysis.html", "remote generated\n");
+    session::put_text(&remote, "ignored.qmd", "browser added ignored file\n");
+    let figure = b"browser-added-figure".to_vec();
+    let figure_sha = format!("{:x}", sha2::Sha256::digest(&figure));
+    session::put_asset(&remote, "fig/plot.png", &figure_sha);
 
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let (updates_tx, mut updates_rx) = mpsc::unbounded_channel();
     let peer = Arc::new(MockPeer {
         initial: session::encode_state(&remote),
+        assets: [(figure_sha.clone(), figure)].into_iter().collect(),
         commands: Arc::new(Mutex::new(command_rx)),
         ready: Arc::new(Notify::new()),
         updates: updates_tx,
@@ -186,6 +227,7 @@ async fn directory_sync_reaches_cli_and_preserves_private_generated_files() {
     let address = listener.local_addr().unwrap();
     let app = Router::new()
         .route("/api/documents/demo", get(document_route))
+        .route("/api/documents/{slug}/assets/{sha}", get(asset_route))
         .route("/ws/{slug}", get(websocket_route))
         .with_state(peer.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -196,6 +238,7 @@ async fn directory_sync_reaches_cli_and_preserves_private_generated_files() {
         .await
         .expect("sync CLI joins the mock peer");
     wait_for_exists(&root.path().join(".librepaper-sync.json")).await;
+    std::fs::write(root.path().join("unrelated.txt"), "new private file\n").unwrap();
 
     let before = session::encode_vector(&remote);
     session::put_text(&remote, "shared.qmd", "Shared remote edit.\n");
@@ -212,6 +255,12 @@ async fn directory_sync_reaches_cli_and_preserves_private_generated_files() {
     )
     .await;
     wait_for_missing(&root.path().join("delete.qmd")).await;
+    wait_for_content(
+        &root.path().join("ignored.qmd"),
+        "browser added ignored file\n",
+    )
+    .await;
+    wait_for_content(&root.path().join("fig/plot.png"), "browser-added-figure").await;
     wait_for_baseline_text(root.path(), "Shared remote edit.").await;
     assert_eq!(
         std::fs::read_to_string(root.path().join("private.dat")).unwrap(),
@@ -220,6 +269,10 @@ async fn directory_sync_reaches_cli_and_preserves_private_generated_files() {
     assert_eq!(
         std::fs::read_to_string(root.path().join("analysis.html")).unwrap(),
         "local generated\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("unrelated.txt")).unwrap(),
+        "new private file\n"
     );
 
     std::fs::write(
@@ -264,6 +317,19 @@ async fn directory_sync_reaches_cli_and_preserves_private_generated_files() {
         remote_texts.get("analysis.html").map(String::as_str),
         Some("remote generated\n")
     );
+    assert_eq!(
+        remote_texts.get("included.txt").map(String::as_str),
+        Some("explicitly shared\n")
+    );
+    assert_eq!(
+        remote_texts.get("ignored.qmd").map(String::as_str),
+        Some("browser added ignored file\n")
+    );
+    assert_eq!(
+        session::assets_of(&remote).get("fig/plot.png"),
+        Some(&figure_sha)
+    );
+    assert!(!remote_texts.contains_key("unrelated.txt"));
 
     child.kill().await.expect("stop sync CLI");
     server.abort();

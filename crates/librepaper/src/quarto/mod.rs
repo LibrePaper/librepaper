@@ -330,11 +330,16 @@ fn parse_info(info: &str) -> (String, String, Option<String>) {
         let end = rest.find('}').unwrap_or(rest.len());
         let inside = &rest[..end];
         let inside = inside.trim_start();
-        let split = inside.find(char::is_whitespace).unwrap_or(inside.len());
-        (
-            inside[..split].to_ascii_lowercase(),
-            inside[split..].to_owned(),
-        )
+        let split = inside
+            .find(|character: char| character.is_whitespace() || character == ',')
+            .unwrap_or(inside.len());
+        let attrs = &inside[split..];
+        let attrs = if let Some(trimmed) = attrs.trim_start().strip_prefix(',') {
+            trimmed.trim_start()
+        } else {
+            attrs
+        };
+        (inside[..split].to_ascii_lowercase(), attrs.to_owned())
     } else {
         let mut pieces = info.splitn(2, '{');
         (
@@ -505,6 +510,19 @@ mod tests {
         assert_eq!(doc.cells.len(), 1);
         assert_eq!(doc.cells[0].label.as_deref(), Some("plot"));
         assert!(doc.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parser_accepts_knitr_comma_options() {
+        let doc = parse_qmd(
+            "```{r,echo=FALSE}\nhidden_one()\n```\n```{r, echo=FALSE}\nhidden_two()\n```\n```{r , echo=FALSE}\nhidden_three()\n```\n",
+            "paper.qmd",
+        );
+        assert_eq!(doc.cells.len(), 3);
+        assert_eq!(doc.cells[0].language, "r");
+        assert_eq!(doc.cells[0].options, "echo=FALSE");
+        assert_eq!(doc.cells[1].options, "echo=FALSE");
+        assert_eq!(doc.cells[2].options, "echo=FALSE");
     }
     #[test]
     fn context_changes_when_code_or_options_change() {

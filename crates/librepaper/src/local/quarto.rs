@@ -731,10 +731,17 @@ pub async fn run_job_with_bindings(
     } else {
         None
     };
-    let project = snapshot_dir
-        .as_ref()
-        .map(|directory| directory.path().to_path_buf())
-        .unwrap_or_else(|| bound_project.clone());
+    // `tempdir()` may return a path under `/var` whose canonical spelling is
+    // `/private/var` on macOS.  Quarto and the later race checks must use the
+    // same spelling, so canonicalize the fresh snapshot before invoking it.
+    let project = if let Some(directory) = snapshot_dir.as_ref() {
+        match canonical_snapshot_root(directory.path()) {
+            Ok(root) => root,
+            Err(_) => return failed(&request, &job_id, "isolated Quarto snapshot root changed"),
+        }
+    } else {
+        bound_project.clone()
+    };
     let output = workspace.out();
     if let Err(error) = tokio::fs::create_dir_all(&output).await {
         return failed(
@@ -766,7 +773,17 @@ pub async fn run_job_with_bindings(
             )
         }
     };
-    let inventory_before = match inventory_manifest(&project, &effective_manifest) {
+    let shared_inventory_before = match inventory_manifest(&project, &request.manifest) {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            return failed(
+                &request,
+                &job_id,
+                &format!("could not inventory executed shared project: {error}"),
+            )
+        }
+    };
+    let _execution_inventory_before = match inventory_manifest(&project, &effective_manifest) {
         Ok(inventory) => inventory,
         Err(error) => {
             return failed(
@@ -776,7 +793,11 @@ pub async fn run_job_with_bindings(
             )
         }
     };
-    let dependencies = dependency_records(&effective_manifest, &options.main);
+    // The browser can reproduce context identity only from the shared
+    // manifest. Declared local data inputs stay in the execution inventory
+    // and provenance, but never enter the portable computation fingerprint.
+    let dependencies = dependency_records(&request.manifest, &options.main);
+    let execution_dependencies = dependency_records(&effective_manifest, &options.main);
     if options.render_scope == protocol::QuartoRenderScope::Project {
         if let Err(error) = validate_project_scope(&project) {
             return failed(&request, &job_id, &error);
@@ -790,7 +811,7 @@ pub async fn run_job_with_bindings(
             &options.format,
             options.profile.as_ref(),
             &options.parameters,
-            &dependencies,
+            &execution_dependencies,
         ) {
             return failed(&request, &job_id, &error);
         }
@@ -805,9 +826,10 @@ pub async fn run_job_with_bindings(
             &format!("could not write collector: {error}"),
         );
     }
-    let inline_records_bytes =
-        serde_json::to_vec(&crate::quarto::parse_qmd(&source_before, main_name).inline_records)
-            .map_err(|error| format!("encode Quarto inline records: {error}"));
+    let inline_records_bytes = serde_json::to_vec(
+        &crate::local::quarto_capture::inline_capture_records(&source_before, main_name),
+    )
+    .map_err(|error| format!("encode Quarto inline records: {error}"));
     let inline_records_bytes = match inline_records_bytes {
         Ok(bytes) => bytes,
         Err(error) => return failed(&request, &job_id, &error),
@@ -947,13 +969,16 @@ pub async fn run_job_with_bindings(
         };
     }
     if let Err(error) =
-        persist_frozen_cache_identity(&project, &options, &source_before, &dependencies)
+        persist_frozen_cache_identity(&project, &options, &source_before, &execution_dependencies)
     {
         return failed(&request, &job_id, &error);
     }
     // Declaring a local computation input does not grant permission to publish it.
     let publication_inventory = SourceInventory {
-        tree_sha256: inventory_before.tree_sha256.clone(),
+        // Declared data inputs are execution inputs.  They are deliberately
+        // excluded from the shared source freshness identity and publication
+        // inventory, especially for isolated snapshots.
+        tree_sha256: shared_inventory_before.tree_sha256.clone(),
         files: request
             .manifest
             .iter()
@@ -1533,7 +1558,12 @@ fn collect_bundle_with_dependencies(
                 QuartoRenderPolicy::ProjectDefaults => "cache-use-unknown",
             }
             .into(),
-            external_inputs: "not-fully-observed".into(),
+            external_inputs: if options.data_inputs.is_empty() {
+                "not-fully-observed"
+            } else {
+                "unknown"
+            }
+            .into(),
             started_at: timestamp_from(started),
             completed_at: now,
         },
@@ -1664,34 +1694,48 @@ fn referenced_resource_closure(
     artifact: &[u8],
 ) -> Result<BTreeSet<String>, String> {
     let mut references = BTreeSet::new();
+    let mut seen = BTreeMap::new();
     let mut pending = vec![(entrypoint.to_string(), artifact.to_vec())];
     let mut total_bytes = artifact.len();
     while let Some((current, bytes)) = pending.pop() {
-        for reference in referenced_resources(&bytes, &current) {
-            if !references.insert(reference.clone()) {
+        for (reference, kind) in referenced_resources(&bytes, &current) {
+            if seen
+                .get(&reference)
+                .is_some_and(|previous| *previous == ReferenceKind::Resource || *previous == kind)
+            {
                 continue;
             }
+            seen.insert(reference.clone(), kind);
             let path = root.join(&reference);
             let path = if is_regular_file(&path) {
                 path
             } else if let Some(fallback) = fallback {
                 let fallback_path = fallback.join(&reference);
-                let allowed = fallback_allowed.is_none_or(|files| {
-                    files.iter().any(|file| file == &reference)
-                        || is_display_resource_path(&reference)
-                });
+                let allowed = fallback_allowed
+                    .is_none_or(|files| files.iter().any(|file| file == &reference));
                 if allowed && is_regular_file(&fallback_path) {
                     fallback_path
+                } else if kind == ReferenceKind::Navigation {
+                    // A link to another page may point at a page outside the
+                    // submitted render closure.  Keep it as navigation when
+                    // present in the output, but never read an unshared local
+                    // page merely because it was linked from HTML.
+                    seen.remove(&reference);
+                    continue;
                 } else {
                     return Err(format!(
                         "required artifact dependency {reference} is missing"
                     ));
                 }
+            } else if kind == ReferenceKind::Navigation {
+                seen.remove(&reference);
+                continue;
             } else {
                 return Err(format!(
                     "required artifact dependency {reference} is missing"
                 ));
             };
+            references.insert(reference.clone());
             let extension = Path::new(&reference)
                 .extension()
                 .and_then(|extension| extension.to_str())
@@ -1728,41 +1772,19 @@ fn is_regular_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn is_display_resource_path(path: &str) -> bool {
-    matches!(
-        Path::new(path)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .map(|extension| extension.to_ascii_lowercase())
-            .as_deref(),
-        Some(
-            "css"
-                | "js"
-                | "mjs"
-                | "png"
-                | "jpg"
-                | "jpeg"
-                | "gif"
-                | "svg"
-                | "webp"
-                | "ico"
-                | "pdf"
-                | "mp4"
-                | "webm"
-                | "woff"
-                | "woff2"
-                | "ttf"
-                | "otf"
-        )
-    )
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReferenceKind {
+    Navigation,
+    Resource,
 }
 
-fn referenced_resources(bytes: &[u8], current: &str) -> BTreeSet<String> {
+fn referenced_resources(bytes: &[u8], current: &str) -> BTreeMap<String, ReferenceKind> {
     let text = String::from_utf8_lossy(bytes);
-    let mut paths = BTreeSet::new();
+    let mut paths = BTreeMap::new();
     for marker in ["src=", "href=", "url("] {
         let mut rest = text.as_ref();
         while let Some(index) = rest.find(marker) {
+            let marker_offset = text.len() - rest.len() + index;
             rest = &rest[index + marker.len()..];
             let rest_trimmed = rest.trim_start();
             let quote = rest_trimmed
@@ -1794,13 +1816,49 @@ fn referenced_resources(bytes: &[u8], current: &str) -> BTreeSet<String> {
                     .unwrap_or(value)
                     .trim();
                 if let Some(path) = resolve_resource_path(current, clean) {
-                    paths.insert(path);
+                    let kind = if marker == "href="
+                        && html_tag_name(&text, marker_offset).is_some_and(|tag| {
+                            tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area")
+                        }) {
+                        ReferenceKind::Navigation
+                    } else {
+                        ReferenceKind::Resource
+                    };
+                    paths
+                        .entry(path)
+                        .and_modify(|existing| {
+                            if kind == ReferenceKind::Resource {
+                                *existing = kind;
+                            }
+                        })
+                        .or_insert(kind);
                 }
             }
             rest = rest_trimmed.get(value.len()..).unwrap_or_default();
         }
     }
     paths
+}
+
+fn html_tag_name(text: &str, marker_offset: usize) -> Option<&str> {
+    let open = text[..marker_offset].rfind('<')?;
+    if text[..marker_offset]
+        .rfind('>')
+        .is_some_and(|close| close > open)
+    {
+        return None;
+    }
+    let start = open + 1;
+    let tag = text[start..marker_offset].trim_start();
+    let end = tag
+        .find(|character: char| character.is_whitespace() || character == '>')
+        .unwrap_or(tag.len());
+    let name = &tag[..end];
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphabetic()))
+    .then_some(name)
 }
 
 fn resolve_resource_path(current: &str, reference: &str) -> Option<String> {
@@ -1974,6 +2032,15 @@ fn copy_isolated_snapshot(
     Ok(())
 }
 
+fn canonical_snapshot_root(path: &Path) -> Result<PathBuf, String> {
+    let root = std::fs::canonicalize(path)
+        .map_err(|error| format!("canonicalize isolated snapshot root: {error}"))?;
+    if !root.is_dir() {
+        return Err("isolated snapshot root is not a directory".into());
+    }
+    Ok(root)
+}
+
 fn ensure_no_symlink_components(root: &Path, path: &Path) -> Result<(), String> {
     let relative = path
         .strip_prefix(root)
@@ -2135,11 +2202,11 @@ fn is_artifact(
     scope: protocol::QuartoRenderScope,
 ) -> bool {
     let extension = if format == "revealjs" { "html" } else { format };
-    let stem = Path::new(main)
-        .file_stem()
-        .and_then(|x| x.to_str())
-        .unwrap_or("index");
-    if relative == format!("{stem}.{extension}") {
+    let expected = Path::new(main)
+        .with_extension(extension)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if relative == expected {
         return true;
     }
     if extension != "html" {
@@ -3218,7 +3285,7 @@ mod tests {
         std::fs::create_dir(&output).expect("output directory");
         std::fs::write(
             output.join("paper.html"),
-            b"<a href=\"data/private.csv\">private data</a>",
+            b"<img src=\"data/private.csv\">private data",
         )
         .expect("artifact");
         std::fs::create_dir_all(dir.path().join("data")).expect("data directory");
@@ -3229,7 +3296,7 @@ mod tests {
             Some(dir.path()),
             Some(&empty_shared),
             "paper.html",
-            b"<a href=\"data/private.csv\">private data</a>",
+            b"<img src=\"data/private.csv\">private data",
         )
         .unwrap_err();
         assert!(error.contains("required artifact dependency"));
@@ -3240,10 +3307,120 @@ mod tests {
             Some(dir.path()),
             Some(&shared),
             "paper.html",
-            b"<a href=\"data/private.csv\">private data</a>",
+            b"<img src=\"data/private.csv\">private data",
         )
         .expect("explicitly shared data");
         assert!(references.contains("data/private.csv"));
+    }
+
+    #[test]
+    fn managed_dependency_closure_skips_missing_or_unshared_navigation() {
+        let dir = tempdir().expect("project");
+        let output = dir.path().join("output");
+        std::fs::create_dir(&output).expect("output directory");
+        std::fs::write(
+            output.join("paper.html"),
+            b"<a href=\"chapters/missing.html\">next</a><a href=\"private.html\">private</a>",
+        )
+        .expect("artifact");
+        std::fs::write(dir.path().join("private.html"), b"local page").expect("private page");
+        let references = referenced_resource_closure(
+            &output,
+            Some(dir.path()),
+            Some(&[]),
+            "paper.html",
+            b"<a href=\"chapters/missing.html\">next</a><a href=\"private.html\">private</a>",
+        )
+        .expect("navigation links do not require publication inputs");
+        assert!(references.is_empty());
+    }
+
+    #[test]
+    fn navigation_kind_is_taken_from_html_tag_not_file_extension() {
+        let dir = tempdir().expect("project");
+        let output = dir.path().join("output");
+        std::fs::create_dir(&output).expect("output directory");
+        let navigation =
+            b"<a href=\"data/raw.csv\">download</a><area href=\"route\"><script src=\"loader\"></script>";
+        let error = referenced_resource_closure(
+            &output,
+            Some(dir.path()),
+            Some(&[]),
+            "paper.html",
+            navigation,
+        )
+        .unwrap_err();
+        assert!(error.contains("loader"));
+        let navigation_only = b"<a href=\"data/raw.csv\">download</a><area href=\"route\">";
+        let references = referenced_resource_closure(
+            &output,
+            Some(dir.path()),
+            Some(&[]),
+            "paper.html",
+            navigation_only,
+        )
+        .expect("all navigation links are optional");
+        assert!(references.is_empty());
+    }
+
+    #[test]
+    fn required_resource_is_not_hidden_by_an_earlier_navigation_link() {
+        let dir = tempdir().expect("project");
+        let output = dir.path().join("output");
+        std::fs::create_dir(&output).expect("output directory");
+        std::fs::write(
+            output.join("paper.html"),
+            b"<A href=\"second.html\">next</A>",
+        )
+        .expect("artifact");
+        std::fs::write(
+            output.join("second.html"),
+            b"<script src=\"same-route\"></script>",
+        )
+        .expect("linked page");
+        let error = referenced_resource_closure(
+            &output,
+            None,
+            None,
+            "paper.html",
+            b"<A href=\"second.html\">next</A>",
+        )
+        .unwrap_err();
+        assert!(error.contains("same-route"));
+    }
+
+    #[test]
+    fn managed_dependency_closure_still_requires_unshared_display_resources() {
+        let dir = tempdir().expect("project");
+        let output = dir.path().join("output");
+        std::fs::create_dir(&output).expect("output directory");
+        std::fs::write(output.join("paper.html"), b"<img src=\"private.png\">").expect("artifact");
+        std::fs::write(dir.path().join("private.png"), b"private image").expect("private image");
+        let error = referenced_resource_closure(
+            &output,
+            Some(dir.path()),
+            Some(&[]),
+            "paper.html",
+            b"<img src=\"private.png\">",
+        )
+        .unwrap_err();
+        assert!(error.contains("required artifact dependency"));
+    }
+
+    #[test]
+    fn nested_document_entrypoint_selects_nested_html_artifact() {
+        assert!(is_artifact(
+            "chapters/intro.html",
+            "chapters/intro.qmd",
+            "html",
+            protocol::QuartoRenderScope::Document,
+        ));
+        assert!(is_artifact(
+            "intro.html",
+            "chapters/intro.qmd",
+            "html",
+            protocol::QuartoRenderScope::Document,
+        ));
     }
 
     #[test]
@@ -3447,6 +3624,41 @@ mod tests {
         assert!(destination.path().join("paper.qmd").is_file());
         assert!(destination.path().join("data/input.csv").is_file());
         assert!(!destination.path().join("private.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn isolated_snapshot_root_is_canonicalized_before_use() {
+        let real = tempdir().expect("real snapshot root");
+        let alias = tempdir().expect("alias parent");
+        let alias_path = alias.path().join("snapshot");
+        std::os::unix::fs::symlink(real.path(), &alias_path).expect("snapshot alias");
+        assert_eq!(canonical_snapshot_root(&alias_path).unwrap(), real.path());
+    }
+
+    #[test]
+    fn computation_fingerprint_includes_declared_snapshot_inputs() {
+        let source = "```{r}\nread.csv('data/input.csv')\n```\n";
+        let parameters = crate::results::parameters_sha256(&BTreeMap::new());
+        let dependencies = vec!["data/input.csv\0deadbeef".to_string()];
+        let adapter = engine_adapter::quarto_computation_fingerprint(
+            source,
+            "paper.qmd",
+            "html",
+            &[],
+            Some(&parameters),
+            &dependencies,
+        );
+        let mut parsed = crate::quarto::parse_qmd(source, "paper.qmd");
+        parsed.dependencies = dependencies;
+        let browser_contract = crate::quarto::computation_fingerprint_for_format(
+            &parsed,
+            "paper.qmd",
+            "html",
+            &[],
+            Some(&parameters),
+        );
+        assert_eq!(adapter, browser_contract);
     }
 
     #[cfg(unix)]

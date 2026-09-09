@@ -661,7 +661,8 @@ async fn quarto_frozen_refuses_changed_source_before_execution() {
 #[tokio::test]
 #[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
 async fn quarto_isolated_snapshot_does_not_write_the_bound_project() {
-    let (directory, bindings, mut request, workspace) = fixture("# snapshot\n\n```{r}\n#| label: snapshot-data\nstopifnot(read.csv('local.csv')$x == 1)\nwriteLines('snapshot only', 'marker.txt')\nprint('snapshot data read')\n```\n");
+    let source = "# snapshot\n\n```{r}\n#| label: snapshot-data\nstopifnot(read.csv('local.csv')$x == 1)\nwriteLines('snapshot only', 'marker.txt')\nprint('snapshot data read')\n```\n";
+    let (directory, bindings, mut request, workspace) = fixture(source);
     std::fs::write(directory.path().join("project/local.csv"), "x\n1\n").unwrap();
     let options = request.quarto.as_mut().unwrap();
     options.execution_mode = QuartoExecutionMode::IsolatedSnapshot;
@@ -681,6 +682,21 @@ async fn quarto_isolated_snapshot_does_not_write_the_bound_project() {
         manifest.source.verification,
         crate::results::Verification::IsolatedSnapshot
     );
+    let expected_tree = crate::quarto::sha256(b"snapshot-tree");
+    assert_eq!(
+        manifest.source.tree_sha256.as_deref(),
+        Some(expected_tree.as_str())
+    );
+    let parameters_sha256 = crate::results::parameters_sha256(&BTreeMap::new());
+    let expected_context = crate::local::engine_adapter::quarto_computation_fingerprint(
+        source,
+        "paper.qmd",
+        "html",
+        &[],
+        Some(&parameters_sha256),
+        &[],
+    );
+    assert_eq!(manifest.context.computation_sha256, expected_context);
 }
 
 #[tokio::test]
@@ -720,4 +736,42 @@ async fn quarto_book_scope_keeps_chapter_navigation() {
         .iter()
         .any(|asset| asset.path == "chapter.html"));
     assert!(String::from_utf8_lossy(&result.files["artifact.html"]).contains("chapter.html"));
+}
+
+#[tokio::test]
+#[ignore = "requires installed Quarto"]
+async fn quarto_nested_document_entrypoint_collects_flattened_or_nested_output() {
+    let source = "---\ntitle: Intro\nformat: html\n---\n# Introduction\n\nA nested entrypoint.\n";
+    let (directory, bindings, mut request, workspace) = fixture(source);
+    let project = directory.path().join("project");
+    std::fs::create_dir_all(project.join("chapters")).unwrap();
+    std::fs::rename(
+        project.join("paper.qmd"),
+        project.join("chapters/intro.qmd"),
+    )
+    .unwrap();
+    let binding = bindings
+        .grant(
+            &request.origin,
+            &request.project,
+            &project,
+            "chapters/intro.qmd",
+        )
+        .unwrap();
+    request.manifest[0].path = "chapters/intro.qmd".into();
+    request.quarto.as_mut().unwrap().binding_id = binding.id;
+    request.quarto.as_mut().unwrap().main = "chapters/intro.qmd".into();
+    request.main = "chapters/intro.qmd".into();
+    let (_sender, cancel) = tokio::sync::watch::channel(false);
+    let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let result = run_job_with_bindings(request, workspace, cancel, progress, &bindings).await;
+    assert_eq!(result.status.status, "done", "{:?}", result.status);
+    let manifest: crate::quarto::BundleManifest =
+        serde_json::from_slice(&result.files["quarto-bundle.json"]).unwrap();
+    let artifact = manifest.artifact.expect("nested HTML artifact");
+    assert!(
+        artifact.entrypoint == "chapters/intro.html" || artifact.entrypoint == "intro.html",
+        "unexpected nested artifact: {}",
+        artifact.entrypoint
+    );
 }

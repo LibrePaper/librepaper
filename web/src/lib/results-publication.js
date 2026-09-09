@@ -16,7 +16,7 @@ export async function publishResultsBundle(api, payload, knownManifest = null) {
   let response = await publish.call(api, reduced);
   // Another selection/GC pass can retire a previously known blob. Retry the
   // original bounded payload once, preserving the render ID and generation.
-  if (response.status === 400 && reduced.blobs.length !== payload.blobs.length) response = await publish.call(api, payload);
+  if ((response.status === 400 || response.status === 404) && reduced.blobs.length !== payload.blobs.length) response = await publish.call(api, payload);
   if (response.ok) return response.json();
   if (response.status === 409) {
     const saved = await bundle.call(api, payload.manifest.render_id);

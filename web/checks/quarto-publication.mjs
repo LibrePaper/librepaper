@@ -16,11 +16,13 @@ await assert.rejects(publishQuartoBundle({
   quartoPublish: async () => ({ ok:false, status:409, json:async () => ({ error:"render ID conflict" }) }),
   quartoBundle: async () => ({ ok:true, json:async () => ({ ...payload.manifest, context:{ id:"pdf" } }) }),
 }, payload), /render ID conflict/);
+for (const status of [400, 404]) {
 const fallback = [];
 await publishQuartoBundle({ quartoPublish: async (body) => {
   fallback.push(body);
-  return fallback.length === 1 ? { ok:false, status:400 } : { ok:true, json:async () => ({ selected:true }) };
+  return fallback.length === 1 ? { ok:false, status } : { ok:true, json:async () => ({ selected:true }) };
 } }, payload, { artifact:{ sha256:"same" } });
 assert.deepEqual(fallback.map((body) => body.blobs.length), [0, 1]);
 assert.equal(fallback[1], payload);
+}
 console.log("quarto publication: selection conflict acknowledgement, immutable outbox, and missing-blob retry passed");

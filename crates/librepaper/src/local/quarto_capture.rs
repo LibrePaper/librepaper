@@ -15,6 +15,39 @@ pub fn filter() -> &'static str {
     include_str!("../../assets/quarto-capture.lua")
 }
 
+/// Return inline records whose authored line is a complete, single-line
+/// paragraph. The Pandoc filter can then associate a rendered value without
+/// guessing across soft-wrapped prose or duplicate occurrences.
+pub fn inline_capture_records(
+    source: &str,
+    source_path: &str,
+) -> Vec<crate::quarto::InlineExpression> {
+    let parsed = quarto::parse_qmd(source, source_path);
+    let lines: Vec<_> = source.lines().collect();
+    parsed
+        .inline_records
+        .iter()
+        .filter(|record| {
+            let Some(line) = record.line.checked_sub(1).and_then(|line| lines.get(line)) else {
+                return false;
+            };
+            if line.trim().is_empty()
+                || (record.line > 1 && !lines[record.line - 2].trim().is_empty())
+                || (record.line < lines.len() && !lines[record.line].trim().is_empty())
+            {
+                return false;
+            }
+            parsed
+                .inline_records
+                .iter()
+                .filter(|other| other.line == record.line)
+                .count()
+                == 1
+        })
+        .cloned()
+        .collect()
+}
+
 #[derive(Deserialize)]
 struct CaptureFile {
     schema: u32,
@@ -90,9 +123,9 @@ pub fn collect(
     let mut cells = Vec::new();
     for cell in &parsed.cells {
         let options = cell_options(&cell.source);
-        let hidden = options.get("include").and_then(serde_yaml::Value::as_bool) == Some(false)
-            || options.get("output").and_then(serde_yaml::Value::as_bool) == Some(false)
-            || options.get("eval").and_then(serde_yaml::Value::as_bool) == Some(false);
+        let hidden = option_is_false(&options, &cell.options, "include")
+            || option_is_false(&options, &cell.options, "output")
+            || option_is_false(&options, &cell.options, "eval");
         let ambiguous = cell
             .label
             .as_ref()
@@ -262,6 +295,19 @@ fn cell_options(source: &str) -> serde_yaml::Value {
     serde_yaml::from_str(&options).unwrap_or_default()
 }
 
+fn header_option_is_false(options: &str, key: &str) -> bool {
+    options
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .filter_map(|item| item.split_once('='))
+        .any(|(name, value)| name == key && value.eq_ignore_ascii_case("false"))
+}
+
+fn option_is_false(body: &serde_yaml::Value, header: &str, key: &str) -> bool {
+    body.get(key)
+        .and_then(serde_yaml::Value::as_bool)
+        .map_or_else(|| header_option_is_false(header, key), |value| !value)
+}
+
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     let file =
         std::fs::File::open(path).map_err(|error| format!("read captured output: {error}"))?;
@@ -338,6 +384,9 @@ mod tests {
         std::fs::write(dir.path().join("paper.qmd"), source).unwrap();
         std::fs::write(dir.path().join("capture.lua"), filter()).unwrap();
         let captured = dir.path().join("capture.json");
+        let records = inline_capture_records(source, "paper.qmd");
+        let records_path = dir.path().join("inline-records.json");
+        std::fs::write(&records_path, serde_json::to_vec(&records).unwrap()).unwrap();
         let result = std::process::Command::new("quarto")
             .args([
                 "render",
@@ -351,6 +400,7 @@ mod tests {
             ])
             .current_dir(dir.path())
             .env("LIBREPAPER_QUARTO_CELL_MANIFEST", &captured)
+            .env("LIBREPAPER_QUARTO_INLINE_RECORDS", &records_path)
             .output()
             .expect("Quarto installed for explicit runtime test");
         assert!(
@@ -398,6 +448,19 @@ mod tests {
             assert_eq!(cell.coverage, CellCoverage::IntentionallyHidden);
             assert!(cell.outputs.is_empty());
         }
+    }
+
+    #[test]
+    #[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
+    fn real_r_render_recovers_decimal_inline_values_without_suffix_guessing() {
+        let source = "```{r}\npi_value <- 3.141593\n```\n\nThe mean is `r pi_value`.\n\nThe mean is `r pi_value`.\nNext sentence.\n";
+        let capture = real_capture(source);
+        let values: Vec<_> = capture
+            .inline_results
+            .iter()
+            .map(|result| result.value.as_str())
+            .collect();
+        assert_eq!(values, vec!["3.141593"]);
     }
 
     #[test]
@@ -468,6 +531,62 @@ mod tests {
         .unwrap();
         assert_eq!(captured.cells[0].outputs.len(), 2);
         assert_eq!(captured.cells[0].outputs[1].ordinal, 1);
+    }
+
+    #[test]
+    fn inline_capture_records_require_single_line_paragraphs() {
+        let source = "The mean is `r pi`.\n\nThe mean is `r pi`.\nNext sentence.\n";
+        let records = inline_capture_records(source, "paper.qmd");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].line, 1);
+        assert!(inline_capture_records("A `r pi`. B `r pi`.\n", "paper.qmd").is_empty());
+    }
+
+    #[test]
+    fn knitr_comma_include_option_stays_hidden_in_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("capture.json");
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&json!({
+                "schema": 1,
+                "candidates": [{"labels":["hidden"],"outputs":[{"kind":"text","text":"secret"}]}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let source = "```{r,include=false #hidden}\nsecret()\n```\n";
+        let captured = collect(&file, "paper.qmd", source, dir.path()).unwrap();
+        assert_eq!(
+            captured.cells[0].coverage,
+            CellCoverage::IntentionallyHidden
+        );
+        assert!(captured.cells[0].outputs.is_empty());
+    }
+
+    #[test]
+    fn cell_options_override_header_visibility_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("capture.json");
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&json!({
+                "schema": 1,
+                "candidates": [
+                    {"labels":["body-wins"],"outputs":[{"kind":"text","text":"shown"}]},
+                    {"labels":["body-hides"],"outputs":[{"kind":"text","text":"hidden"}]}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let source = "```{r,include=false #body-wins}\n#| include: true\nshown()\n```\n```{r,include=true #body-hides}\n#| include: false\nhidden()\n```\n";
+        let captured = collect(&file, "paper.qmd", source, dir.path()).unwrap();
+        assert_eq!(captured.cells[0].coverage, CellCoverage::Captured);
+        assert_eq!(
+            captured.cells[1].coverage,
+            CellCoverage::IntentionallyHidden
+        );
     }
 
     #[test]

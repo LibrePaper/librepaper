@@ -985,6 +985,16 @@ impl Catalog {
                 )
                 .map_err(CatalogError::from)?;
             }
+            if let Some(selection) = selection {
+                tx.execute(
+                    "INSERT INTO quarto_selection_history(storage_id,document_id,context_id,render_id,generation)
+                     VALUES(?1,?2,?3,?4,?5)
+                     ON CONFLICT(storage_id,document_id,context_id,render_id)
+                     DO UPDATE SET generation=MAX(generation,excluded.generation)",
+                    params![storage_id, selection.document_id, selection.context_id,
+                            selection.render_id, selection.generation as i64],
+                ).map_err(CatalogError::from)?;
+            }
             let pending: Option<String> = tx
                 .query_row(
                     "SELECT pending_publication FROM documents WHERE storage_id=?1",
@@ -994,6 +1004,24 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             if pending.is_none() && new_bytes<old_bytes { let released: i64 = tx.query_row("SELECT MIN(?2,MAX(0,counted_size-size)) FROM documents WHERE storage_id=?1",params![storage_id,old_bytes-new_bytes],|row|row.get(0))?; tx.execute("UPDATE documents SET counted_size=counted_size-?2 WHERE storage_id=?1",params![storage_id,released]).map_err(CatalogError::from)?; tx.execute("UPDATE totals SET bytes=bytes-?1 WHERE id=1",[released]).map_err(CatalogError::from)?; }
             Ok(())
+        })
+    }
+
+    pub fn quarto_selection_history(
+        &self,
+        storage_id: &str,
+        document_id: &str,
+    ) -> CatalogResult<Vec<(String, String, u64)>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT context_id,render_id,generation FROM quarto_selection_history
+                 WHERE storage_id=?1 AND document_id=?2 ORDER BY generation DESC",
+            )?;
+            let rows = statement.query_map(params![storage_id, document_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(CatalogError::from)
         })
     }
 

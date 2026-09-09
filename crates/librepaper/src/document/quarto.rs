@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn cell_visibility_overrides_header_and_document_defaults() {
-        let source = "---\nexecute:\n  echo: false\n---\n```{r echo=FALSE}\nhidden()\n```\n```{r echo=true}\nvisible()\n```\n```{r echo=true}\n#| echo: false\nalso_hidden()\n```\n";
+        let source = "---\nexecute:\n  echo: false\n---\n```{r,echo=FALSE}\nhidden()\n```\n```{r echo=true}\nvisible()\n```\n```{r echo=true}\n#| echo: false\nalso_hidden()\n```\n";
         let result = compile("paper.qmd", source, "Paper", &BTreeMap::new());
         let html = result
             .output
