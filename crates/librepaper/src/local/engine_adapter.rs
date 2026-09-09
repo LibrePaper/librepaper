@@ -119,6 +119,7 @@ fn unsupported(request: &JobRequest, id: &str, error: &str) -> JobOutcome {
 pub struct QuartoInvocationPlan {
     pub main: String,
     pub format: String,
+    pub render_scope: super::protocol::QuartoRenderScope,
     pub policy: super::protocol::QuartoRenderPolicy,
     pub profile: Option<String>,
     pub parameters: Vec<(String, Value)>,
@@ -130,6 +131,7 @@ impl QuartoInvocationPlan {
         Ok(Self {
             main: options.main.clone(),
             format: options.format.clone(),
+            render_scope: options.render_scope,
             policy: options.policy,
             profile: options.profile.clone(),
             parameters: options
@@ -144,9 +146,11 @@ impl QuartoInvocationPlan {
     /// caller has already canonicalised the project root and checked the
     /// entrypoint against its binding.
     pub fn apply(&self, command: &mut Command, output: &Path, filter: &Path) {
+        command.arg("render");
+        if self.render_scope == super::protocol::QuartoRenderScope::Document {
+            command.arg(&self.main);
+        }
         command
-            .arg("render")
-            .arg(&self.main)
             .arg("--to")
             .arg(&self.format)
             .arg("--no-execute-daemon")
@@ -160,10 +164,10 @@ impl QuartoInvocationPlan {
                 command.arg("--cache-refresh");
             }
             super::protocol::QuartoRenderPolicy::Frozen => {
-                // `--use-freezer` reuses cached computation while allowing
-                // Quarto to materialize cached display resources. Combining
-                // it with `--no-execute` makes newer Quarto versions omit
-                // those displays from the Pandoc AST.
+                // `--use-freezer` selects the saved computation result. The
+                // adapter's preflight verifies the complete cache and source
+                // identity before this process starts; adding `--no-execute`
+                // here makes Quarto drop cached display nodes in 1.10.18.
                 command.arg("--use-freezer");
             }
         }

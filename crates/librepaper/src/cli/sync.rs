@@ -24,8 +24,10 @@
 //! that arrived. `The merge` below is what answers that, over the three-way
 //! merge in `wasm-helpers`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -56,7 +58,17 @@ pub async fn sync_document(
     server_flag: String,
     interval: String,
     key: String,
+    dry_run: bool,
 ) {
+    let target = Path::new(file);
+    if target.is_dir() {
+        sync_project(identifier, target, server_flag, interval, key, dry_run).await;
+        return;
+    }
+    if dry_run {
+        println!("would sync file {file}");
+        return;
+    }
     let server = server_from(&server_flag);
     let every = parse_interval(&interval).unwrap_or_else(|err| die(err));
     // A link is a credential in its own right: with one, a sign-in is sent
@@ -308,13 +320,17 @@ impl Client {
         // What this client already has, so the server answers with the rest
         // and nothing more. Empty on the first connection and not on a
         // reconnection, which is what makes rejoining cheap.
-        self.say(
+        // A failed flush leaves its complete update in `outbox`. Put the
+        // handshake ahead of that replay so the server has re-established the
+        // sync session before it sees any queued update frames.
+        self.outbox.insert(
+            0,
             json!({"type": "y-open", "vector": encode_update(&session::encode_vector(&self.doc))}),
         );
         // Awareness identifies the headless client in the browser's peer
         // list. It carries no caret or editor state: the sync process has no
         // position to publish, and presence never changes its authority.
-        self.say(json!({
+        let awareness = json!({
             "type": "y-awareness",
             "update": encode_update(&crate::cli::peer::awareness_update(
                 crate::cli::peer::awareness_client_id(&self.doc),
@@ -322,7 +338,8 @@ impl Client {
                 &format!("{} (sync)", self.presence_name),
                 "#4f46e5",
             )),
-        }));
+        });
+        self.outbox.insert(1, awareness);
         self.flush(&mut write).await?;
 
         let mut ticker = tokio::time::interval(self.every);
@@ -753,7 +770,7 @@ type Socket = futures_util::stream::SplitSink<
     Message,
 >;
 
-async fn send(write: &mut Socket, payload: Value) -> Result<(), String> {
+pub(crate) async fn send(write: &mut Socket, payload: Value) -> Result<(), String> {
     use futures_util::SinkExt;
     write
         .send(Message::Text(payload.to_string().into()))
@@ -764,7 +781,7 @@ async fn send(write: &mut Socket, payload: Value) -> Result<(), String> {
 /// The document's whole state, when it was too large for a text frame. Same
 /// origin, signed and short-lived, and the signature is not the authorization:
 /// the bearer and the link key say who is asking, as they do everywhere else.
-async fn fetch_state(
+pub(crate) async fn fetch_state(
     server: &str,
     reference: &str,
     token: &str,
@@ -1093,4 +1110,1127 @@ pub fn parse_interval(value: &str) -> Result<Duration, String> {
         return Err("--interval must be between 50ms and 10s".into());
     }
     Ok(Duration::from_millis(millis as u64))
+}
+
+/* ----------------------------------------------------------- project mirror */
+
+/// A persisted, path-keyed agreement between the local project and the room.
+/// It is a readable JSON sidecar with a compact Yjs checkpoint: the sidecar
+/// remains usable while the process is offline and is enough to distinguish an
+/// intentional deletion from a file that was never shared.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct ProjectBaseline {
+    version: u8,
+    /// The server and document this checkpoint belongs to. A sidecar follows
+    /// the directory, so it must never become the base for another document.
+    #[serde(default)]
+    identity: String,
+    #[serde(default)]
+    files: BTreeMap<String, String>,
+    #[serde(default)]
+    assets: BTreeMap<String, String>,
+    /// The complete Yjs state at the checkpoint. Text and asset maps make the
+    /// sidecar readable, while this state preserves local updates that may
+    /// have been queued but not acknowledged when the process stopped.
+    #[serde(default)]
+    state: Vec<u8>,
+}
+
+#[derive(Default)]
+struct ProjectInventory {
+    all: BTreeSet<String>,
+    files: BTreeMap<String, String>,
+    assets: BTreeMap<String, (Vec<u8>, String)>,
+}
+
+/// Directory mode uses the same source and asset maps as the browser. The
+/// single-file path above remains the default, while passing a directory as
+/// the existing `file` argument opts into this project mirror.
+pub async fn sync_project(
+    identifier: &str,
+    root: &Path,
+    server_flag: String,
+    interval: String,
+    key: String,
+    dry_run: bool,
+) {
+    if dry_run {
+        let main = discover_project_main(root).unwrap_or_default();
+        let inventory = project_inventory(root, &main).unwrap_or_else(|err| die(err));
+        println!(
+            "would sync project {} ({} source files, {} assets){}",
+            root.display(),
+            inventory.files.len(),
+            inventory.assets.len(),
+            if main.is_empty() {
+                String::new()
+            } else {
+                format!(", main {main}")
+            },
+        );
+        for path in inventory.files.keys() {
+            println!("source {path}");
+        }
+        for path in inventory.assets.keys() {
+            println!("asset {path}");
+        }
+        return;
+    }
+    let server = server_from(&server_flag);
+    let every = parse_interval(&interval).unwrap_or_else(|err| die(err));
+    let key = link_key(&key);
+    let token = if key.is_empty() {
+        require_token_for(&server)
+    } else {
+        stored_token_for(&server)
+    };
+    let slug = resolve_identifier(identifier, &server, &key).await;
+    check_edit_permission(&server, &slug, &token, &key)
+        .await
+        .unwrap_or_else(|err| match err {
+            PermissionError::Terminal(message) | PermissionError::Retry(message) => die(message),
+        });
+    let root = root.canonicalize().unwrap_or_else(|err| {
+        die(format!(
+            "could not resolve project {}: {err}",
+            root.display()
+        ))
+    });
+    let _lock = Lock::take(&root.join(".librepaper-project")).unwrap_or_else(|err| die(err));
+    let (events, mut watched) = tokio::sync::mpsc::channel(128);
+    let _watcher = watch_project(&root, events).unwrap_or_else(|err| die(err));
+    let mut wait = RECONNECT_FIRST;
+    let mut client = ProjectClient::new(
+        root.clone(),
+        every,
+        server.clone(),
+        token.clone(),
+        key.clone(),
+    )
+    .with_slug(slug.clone());
+    println!(
+        "syncing project {} with {server}/docs/{slug}",
+        root.display()
+    );
+    loop {
+        if client.established {
+            if let Err(err) = check_edit_permission(&server, &slug, &token, &key).await {
+                match err {
+                    PermissionError::Terminal(message) => {
+                        eprintln!("{message}");
+                        return;
+                    }
+                    PermissionError::Retry(message) => {
+                        eprintln!("{message}; reconnecting in {}", describe(wait));
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            _ = tokio::signal::ctrl_c() => return,
+                        }
+                        wait = (wait * 2).min(RECONNECT_MOST);
+                        continue;
+                    }
+                }
+            }
+        }
+        match client.run(&mut watched).await {
+            Ok(reason) => {
+                if !reason.is_empty() {
+                    eprintln!("{reason}");
+                }
+                return;
+            }
+            Err(err) => {
+                eprintln!("{err}; reconnecting in {}", describe(wait));
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = tokio::signal::ctrl_c() => return,
+                }
+                wait = (wait * 2).min(RECONNECT_MOST);
+            }
+        }
+    }
+}
+
+struct ProjectClient {
+    root: PathBuf,
+    every: Duration,
+    server: String,
+    token: String,
+    key: String,
+    slug: String,
+    identity: String,
+    doc: yrs::Doc,
+    baseline: ProjectBaseline,
+    established: bool,
+    state_ready: bool,
+    from_disk: Option<Instant>,
+    from_session: Option<Instant>,
+    seq: i64,
+    outbox: Vec<Value>,
+    incoming: Option<(i64, Vec<u8>)>,
+    /// A restored state must be offered to the server after every reconnect.
+    /// It remains set until the flush containing the full update succeeds.
+    needs_full_sync: bool,
+    full_sync_queued: bool,
+}
+
+impl ProjectClient {
+    fn new(root: PathBuf, every: Duration, server: String, token: String, key: String) -> Self {
+        let baseline = load_project_baseline(&root).unwrap_or_default();
+        let established = baseline.version == 1;
+        Self {
+            root,
+            every,
+            server,
+            token,
+            key,
+            slug: String::new(),
+            identity: String::new(),
+            doc: session::new_doc(),
+            baseline,
+            established,
+            state_ready: false,
+            from_disk: None,
+            from_session: None,
+            seq: 0,
+            outbox: Vec::new(),
+            incoming: None,
+            needs_full_sync: false,
+            full_sync_queued: false,
+        }
+    }
+
+    fn with_slug(mut self, slug: String) -> Self {
+        self.slug = slug;
+        self.identity = format!("{}/docs/{}", self.server.trim_end_matches('/'), self.slug);
+        if self.baseline.identity != self.identity {
+            self.baseline = ProjectBaseline::default();
+            self.doc = session::new_doc();
+            self.established = false;
+        }
+        if !self.baseline.state.is_empty() {
+            if session::apply_update(&self.doc, &self.baseline.state).is_ok() {
+                self.needs_full_sync = true;
+            } else {
+                // A corrupt or incompatible checkpoint must not prevent a
+                // fresh reconciliation from the local files and server.
+                self.baseline = ProjectBaseline::default();
+                self.doc = session::new_doc();
+                self.established = false;
+            }
+        }
+        self
+    }
+
+    fn say(&mut self, message: Value) {
+        self.outbox.push(message);
+    }
+
+    async fn run(
+        &mut self,
+        watched: &mut tokio::sync::mpsc::Receiver<()>,
+    ) -> Result<String, String> {
+        use futures_util::{SinkExt, StreamExt};
+        let mut request = socket_url(&self.server, &self.slug)
+            .into_client_request()
+            .map_err(|err| err.to_string())?;
+        if !self.token.is_empty() {
+            request.headers_mut().insert(
+                "authorization",
+                format!("Bearer {}", self.token)
+                    .parse()
+                    .map_err(|_| "the stored token is not a header value".to_string())?,
+            );
+        }
+        if !self.key.is_empty() {
+            request.headers_mut().insert(
+                KEY_HEADER,
+                self.key
+                    .parse()
+                    .map_err(|_| "the link key is not a header value".to_string())?,
+            );
+        }
+        let (socket, _) = tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio_tungstenite::connect_async(request),
+        )
+        .await
+        .map_err(|_| "timed out joining the session".to_string())?
+        .map_err(|err| format!("could not join the session: {err}"))?;
+        let (mut write, mut read) = socket.split();
+        self.state_ready = false;
+        self.needs_full_sync = !self.baseline.state.is_empty();
+        self.full_sync_queued = false;
+        self.outbox.insert(
+            0,
+            json!({
+                "type": "y-open",
+                "vector": encode_update(&session::encode_vector(&self.doc)),
+            }),
+        );
+        let awareness = json!({
+            "type": "y-awareness",
+            "update": encode_update(&crate::cli::peer::awareness_update(
+                crate::cli::peer::awareness_client_id(&self.doc),
+                1,
+                "librepaper (sync)",
+                "#4f46e5",
+            )),
+        });
+        self.outbox.insert(1, awareness);
+        self.flush(&mut write).await?;
+        let mut ticker = tokio::time::interval(self.every);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                incoming = read.next() => {
+                    let Some(frame) = incoming else { return Err("the session closed".into()); };
+                    match frame.map_err(|err| format!("the session closed: {err}"))? {
+                        Message::Text(raw) => {
+                            if let Some(reason) = self.receive(&raw).await? {
+                                return Ok(reason);
+                            }
+                            self.flush(&mut write).await?;
+                        }
+                        Message::Close(frame) => {
+                            let reason = frame.map(|value| value.reason.to_string()).unwrap_or_default();
+                            if terminal_close_reason(&reason) { return Ok(reason); }
+                            return Err(if reason.is_empty() { "the server closed the session; reconnecting".into() } else { format!("the server closed the session ({reason}); reconnecting") });
+                        }
+                        Message::Ping(payload) => { write.send(Message::Pong(payload)).await.map_err(|err| err.to_string())?; }
+                        _ => {}
+                    }
+                }
+                Some(()) = watched.recv() => { self.from_disk = Some(Instant::now()); }
+                _ = ticker.tick() => {
+                    self.settle().await?;
+                    self.flush(&mut write).await?;
+                }
+                _ = tokio::signal::ctrl_c() => return Ok("stopped".into()),
+            }
+        }
+    }
+
+    async fn flush(&mut self, write: &mut Socket) -> Result<(), String> {
+        let pending = std::mem::take(&mut self.outbox);
+        for message in pending.iter().cloned() {
+            if let Err(err) = send(write, message).await {
+                self.outbox = pending;
+                return Err(err);
+            }
+        }
+        if self.full_sync_queued {
+            self.full_sync_queued = false;
+            self.needs_full_sync = false;
+        }
+        Ok(())
+    }
+
+    async fn receive(&mut self, raw: &str) -> Result<Option<String>, String> {
+        let Ok(message): Result<Value, _> = serde_json::from_str(raw) else {
+            return Ok(None);
+        };
+        match text(&message, "type").as_str() {
+            "y-state" => {
+                let update = match message.get("ref").and_then(Value::as_str) {
+                    Some(reference) => {
+                        fetch_state(&self.server, reference, &self.token, &self.key).await?
+                    }
+                    None => decode_update(&text(&message, "update")).unwrap_or_default(),
+                };
+                if !update.is_empty() {
+                    session::apply_update(&self.doc, &update)?;
+                }
+                self.state_ready = true;
+                self.reconcile_local().await?;
+                if self.needs_full_sync {
+                    let whole = session::encode_state(&self.doc);
+                    self.seq += 1;
+                    for frame in update_messages(&whole, self.seq) {
+                        self.say(frame);
+                    }
+                    self.full_sync_queued = true;
+                }
+            }
+            "y-update" => {
+                if let Some(update) = decode_update(&text(&message, "update")) {
+                    session::apply_update(&self.doc, &update)?;
+                    self.from_session = Some(Instant::now());
+                }
+            }
+            "y-update-start" => {
+                let seq = message.get("seq").and_then(Value::as_i64).unwrap_or(0);
+                self.incoming = Some((seq, Vec::new()));
+            }
+            "y-update-chunk" => {
+                if let Some((_, bytes)) = &mut self.incoming {
+                    if let Some(chunk) = decode_update(&text(&message, "update")) {
+                        bytes.extend(chunk);
+                    }
+                }
+            }
+            "y-update-end" => {
+                if let Some((_, bytes)) = self.incoming.take() {
+                    if !bytes.is_empty() {
+                        session::apply_update(&self.doc, &bytes)?;
+                        self.from_session = Some(Instant::now());
+                    }
+                }
+            }
+            "y-snapshot" => {
+                let update = session::encode_state(&self.doc);
+                self.seq += 1;
+                for frame in update_messages(&update, self.seq) {
+                    self.say(frame);
+                }
+            }
+            "y-peers" => {
+                if let Some(count) = message.get("count").and_then(Value::as_i64) {
+                    println!("session has {count} peer{}", plural(count));
+                }
+            }
+            "y-checkpoint" => {
+                let sha = text(&message, "sha");
+                println!("checkpoint {}", sha.chars().take(7).collect::<String>());
+            }
+            "error" => {
+                let said = text(&message, "message");
+                if !said.is_empty() {
+                    eprintln!("{said}");
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    async fn settle(&mut self) -> Result<(), String> {
+        if !self.state_ready {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if self
+            .from_disk
+            .is_some_and(|at| now.duration_since(at) >= self.every)
+        {
+            self.from_disk = None;
+            self.reconcile_local().await?;
+        }
+        if self
+            .from_session
+            .is_some_and(|at| now.duration_since(at) >= self.every)
+        {
+            self.from_session = None;
+            // A remote update and a local save can cross while disconnected.
+            // Reconcile both against the persisted base before writing either
+            // side; writing the remote snapshot directly loses the local edit.
+            self.reconcile_local().await?;
+        }
+        Ok(())
+    }
+
+    async fn reconcile_local(&mut self) -> Result<(), String> {
+        let mut remote = session::texts_of(&self.doc);
+        let remote_assets = session::assets_of(&self.doc);
+        let main = session::main_path(&self.doc);
+        if !crate::document::render::is_quarto(&main) {
+            return Err("Project synchronization requires a Quarto .qmd entrypoint".into());
+        }
+        let inventory = project_inventory(&self.root, &main)?;
+        let merged = merge_project_texts(&self.baseline.files, &inventory, &remote);
+        let mut asset_conflicts = BTreeMap::new();
+        let before = session::encode_vector(&self.doc);
+        let mut changed = false;
+        // Preserve Y.Text identity for a local filesystem rename whenever the
+        // old shared body is still present and the new path is its only match.
+        // This keeps browser carets and concurrent edits attached to the file.
+        for (new_path, body) in &merged {
+            if remote.contains_key(new_path) || !inventory.all.contains(new_path) {
+                continue;
+            }
+            if merged
+                .iter()
+                .filter(|(path, value)| *value == body && !remote.contains_key(path.as_str()))
+                .count()
+                != 1
+            {
+                continue;
+            }
+            let candidates: Vec<_> = self
+                .baseline
+                .files
+                .iter()
+                .filter(|(old_path, old_body)| {
+                    *old_body == body
+                        && !merged.contains_key((*old_path).as_str())
+                        && !inventory.all.contains((*old_path).as_str())
+                        && remote.get((*old_path).as_str()) == Some(old_body)
+                })
+                .collect();
+            if candidates.len() != 1 {
+                continue;
+            }
+            let (old_path, _) = candidates[0];
+            let old_path = old_path.clone();
+            if session::rename_path(&self.doc, &old_path, new_path) {
+                remote.remove(&old_path);
+                remote.insert(new_path.clone(), body.clone());
+                changed = true;
+            }
+        }
+        for (path, body) in &merged {
+            if remote.get(path) != Some(body) {
+                session::put_text(&self.doc, path, body);
+                changed = true;
+            }
+        }
+        for path in remote.keys().filter(|path| !merged.contains_key(*path)) {
+            if session::remove_path(&self.doc, path) {
+                changed = true;
+            }
+        }
+        for (path, (bytes, digest)) in &inventory.assets {
+            if remote_assets.get(path) == Some(digest) {
+                continue;
+            }
+            if self.baseline.assets.get(path) == Some(digest) {
+                // The local bytes did not move. A changed or removed remote
+                // asset therefore wins the three-way decision; the tree
+                // writer below fetches a replacement, while a missing remote
+                // name removes the local copy.
+                if !remote_assets.contains_key(path) {
+                    remove_project_file(&self.root, path)?;
+                }
+                continue;
+            }
+            if let Some(base_digest) = self.baseline.assets.get(path) {
+                if remote_assets.get(path).is_some_and(|remote_digest| {
+                    remote_digest != base_digest && remote_digest != digest
+                }) {
+                    // Keep the local bytes and preserve the remote bytes in a
+                    // sidecar. The next save can resolve this explicitly;
+                    // silently choosing either binary would be data loss.
+                    if let Some(remote_digest) = remote_assets.get(path) {
+                        asset_conflicts.insert(path.clone(), remote_digest.clone());
+                    }
+                    continue;
+                }
+            }
+            let sha = self.upload_asset(bytes).await?;
+            if remote_assets.get(path) != Some(&sha) {
+                session::put_asset(&self.doc, path, &sha);
+                changed = true;
+            }
+        }
+        for (path, digest) in &remote_assets {
+            if inventory.assets.contains_key(path) {
+                continue;
+            }
+            if inventory.all.contains(path) {
+                continue;
+            }
+            if self.baseline.assets.get(path) == Some(digest) {
+                // A local replacement has already been dealt with above; a
+                // missing previously shared path is an intentional deletion.
+                if session::remove_asset(&self.doc, path) {
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.seq += 1;
+            let update = session::encode_diff(&self.doc, &before)?;
+            for frame in update_messages(&update, self.seq) {
+                self.say(frame);
+            }
+        }
+        self.write_project_tree(&merged, &inventory, &asset_conflicts)
+            .await?;
+        self.baseline = ProjectBaseline {
+            version: 1,
+            identity: self.identity.clone(),
+            files: merged,
+            assets: session::assets_of(&self.doc),
+            state: session::encode_state(&self.doc),
+        };
+        save_project_baseline(&self.root, &self.baseline)?;
+        self.established = true;
+        Ok(())
+    }
+
+    async fn write_project_tree(
+        &self,
+        files: &BTreeMap<String, String>,
+        inventory: &ProjectInventory,
+        asset_conflicts: &BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let main = session::main_path(&self.doc);
+        for (path, body) in files {
+            if !project_path_is_shared(&self.root, &main, path)? {
+                continue;
+            }
+            if inventory.files.get(path) != Some(body) {
+                write_project_file(&self.root, path, body)?;
+            }
+        }
+        for path in inventory
+            .files
+            .keys()
+            .filter(|path| !files.contains_key(*path))
+        {
+            remove_project_file(&self.root, path)?;
+        }
+        for (path, digest) in session::assets_of(&self.doc) {
+            if asset_conflicts.contains_key(&path) {
+                continue;
+            }
+            if !project_path_is_shared(&self.root, &main, &path)? {
+                continue;
+            }
+            let at = safe_project_path(&self.root, &path)?;
+            let same = std::fs::read(&at)
+                .ok()
+                .is_some_and(|bytes| digest_of(&bytes) == digest);
+            if !same {
+                let bytes =
+                    fetch_project_asset(&self.server, &self.slug, &digest, &self.token, &self.key)
+                        .await?;
+                write_project_bytes(&self.root, &path, &bytes)?;
+            }
+        }
+        // Binary files cannot carry inline conflict markers. Keep the local
+        // bytes in place and put the remote bytes beside them so neither
+        // concurrent edit is silently discarded.
+        for (path, digest) in asset_conflicts {
+            let bytes =
+                fetch_project_asset(&self.server, &self.slug, digest, &self.token, &self.key)
+                    .await?;
+            write_project_bytes(&self.root, &asset_conflict_path(path, digest), &bytes)?;
+        }
+        Ok(())
+    }
+
+    async fn upload_asset(&self, bytes: &[u8]) -> Result<String, String> {
+        let endpoint = format!("{}/api/documents/{}/assets", self.server, self.slug);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|err| format!("could not create asset client: {err}"))?;
+        let mut request = client
+            .put(endpoint)
+            .header("x-librepaper-client", "1")
+            .body(bytes.to_vec());
+        if !self.token.is_empty() {
+            request = request.header("authorization", format!("Bearer {}", self.token));
+        }
+        if !self.key.is_empty() {
+            request = request.header(KEY_HEADER, &self.key);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|err| format!("could not upload asset: {err}"))?;
+        let status = response.status();
+        let payload: Value = response.json().await.unwrap_or(Value::Null);
+        if !status.is_success() {
+            return Err(format!(
+                "asset upload failed ({}): {}",
+                status.as_u16(),
+                detail_of(&payload)
+            ));
+        }
+        let sha = text(&payload, "sha");
+        if sha.len() != 64 {
+            return Err("asset upload returned no valid digest".into());
+        }
+        Ok(sha)
+    }
+}
+
+fn load_project_baseline(root: &Path) -> Result<ProjectBaseline, String> {
+    let path = root.join(".librepaper-sync.json");
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|err| format!("invalid {}: {err}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(ProjectBaseline::default()),
+        Err(err) => Err(format!("could not read {}: {err}", path.display())),
+    }
+}
+
+fn save_project_baseline(root: &Path, baseline: &ProjectBaseline) -> Result<(), String> {
+    let path = root.join(".librepaper-sync.json");
+    let bytes = serde_json::to_vec_pretty(baseline)
+        .map_err(|err| format!("could not encode sync baseline: {err}"))?;
+    let temporary = unique_temporary_path(root, std::ffi::OsStr::new("librepaper-sync.json"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|err| format!("could not create sync baseline: {err}"))?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|err| format!("could not write sync baseline: {err}"))?;
+    file.sync_all()
+        .map_err(|err| format!("could not flush sync baseline: {err}"))?;
+    std::fs::rename(&temporary, &path).map_err(|err| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("could not replace sync baseline: {err}")
+    })
+}
+
+fn project_inventory(root: &Path, main: &str) -> Result<ProjectInventory, String> {
+    let ignored = crate::cli::git_ignores(root);
+    let all_paths = crate::cli::files_under(root, "", &ignored);
+    let listed = all_paths.clone();
+    let listed = if crate::document::render::is_quarto(main) {
+        crate::local::engine_adapter::quarto_shared_paths(root, main, listed)
+            .map_err(|err| format!("could not apply Quarto sharing policy: {err}"))?
+    } else {
+        listed
+    };
+    let mut inventory = ProjectInventory::default();
+    inventory.all.extend(all_paths);
+    for path in listed {
+        inventory.all.insert(path.clone());
+        let at = safe_project_path(root, &path)?;
+        let bytes = std::fs::read(&at).map_err(|err| format!("could not read {path}: {err}"))?;
+        match crate::document::paths::check(&crate::config::Configuration::default().paths(), &path)
+        {
+            Ok(crate::document::paths::Kind::Text) => {
+                inventory.files.insert(path, normalise(&bytes)?);
+            }
+            Ok(crate::document::paths::Kind::Asset) => {
+                inventory
+                    .assets
+                    .insert(path, (bytes.clone(), digest_of(&bytes)));
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(inventory)
+}
+
+/// Apply the same Quarto sharing policy to a path arriving from the room.
+/// `project_inventory` only sees paths that exist locally; remote paths must
+/// be checked independently before they are materialised on disk.
+fn project_path_is_shared(root: &Path, main: &str, path: &str) -> Result<bool, String> {
+    if crate::document::paths::check(&crate::config::Configuration::default().paths(), path)
+        .is_err()
+    {
+        return Ok(false);
+    }
+    if main.is_empty() || !crate::document::render::is_quarto(main) {
+        return Ok(true);
+    }
+    Ok(
+        crate::local::engine_adapter::quarto_shared_paths(root, main, vec![path.to_string()])?
+            .iter()
+            .any(|candidate| candidate == path),
+    )
+}
+
+fn discover_project_main(root: &Path) -> Result<String, String> {
+    let ignored = crate::cli::git_ignores(root);
+    let listed = crate::cli::files_under(root, "", &ignored);
+    let mut quarto: Vec<_> = listed
+        .iter()
+        .filter(|path| crate::document::render::is_quarto(path))
+        .cloned()
+        .collect();
+    quarto.sort();
+    if let Some(main) = quarto
+        .iter()
+        .find(|path| matches!(path.as_str(), "index.qmd" | "main.qmd"))
+        .or_else(|| quarto.first())
+    {
+        return Ok(main.clone());
+    }
+    crate::cli::main_file(&listed, "")
+}
+
+fn merge_project_texts(
+    base: &BTreeMap<String, String>,
+    local: &ProjectInventory,
+    remote: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut paths: BTreeSet<String> = base.keys().cloned().collect();
+    paths.extend(local.files.keys().cloned());
+    paths.extend(remote.keys().cloned());
+    let mut merged = BTreeMap::new();
+    for path in paths {
+        let baseline = base.get(&path);
+        let local_value = if local.files.contains_key(&path) {
+            local.files.get(&path)
+        } else if local.all.contains(&path) {
+            // The file is present but the sharing policy excludes it (for
+            // example a generated output or a private input). It is outside
+            // this peer's authority, so leave the room's value alone.
+            remote.get(&path)
+        } else if baseline.is_some() {
+            None
+        } else {
+            remote.get(&path)
+        };
+        let remote_value = remote.get(&path);
+        let value = merge_project_value(baseline, local_value, remote_value);
+        if let Some(value) = value {
+            merged.insert(path, value);
+        }
+    }
+    merged
+}
+
+fn merge_project_conflict(base: &str, local: &str, remote: &str) -> String {
+    let merged = wasm_helpers::text::merge(base, local, remote);
+    if merged.conflicts.is_empty() && !local.is_empty() && !remote.is_empty() {
+        return merged.text;
+    }
+    format!("<<<<<<< LOCAL\n{local}\n||||||| BASE\n{base}\n=======\n{remote}\n>>>>>>> SHARED\n")
+}
+
+fn merge_project_value(
+    base: Option<&String>,
+    local: Option<&String>,
+    remote: Option<&String>,
+) -> Option<String> {
+    if local == base {
+        return remote.cloned();
+    }
+    if remote == base {
+        return local.cloned();
+    }
+    if local == remote {
+        return local.cloned();
+    }
+    match (local, remote) {
+        (Some(local), Some(remote)) => Some(merge_project_conflict(
+            base.map(String::as_str).unwrap_or(""),
+            local,
+            remote,
+        )),
+        // A concurrent deletion is a real edit. Run the text merge against
+        // an empty side so the surviving content is retained with conflict
+        // markers instead of deleting a locally edited file.
+        (None, Some(remote)) if base.is_some() => Some(merge_project_conflict(
+            base.map(String::as_str).unwrap_or(""),
+            "",
+            remote,
+        )),
+        (None, Some(remote)) => Some(remote.clone()),
+        (Some(local), None) if base.is_none() => Some(local.clone()),
+        (Some(local), None) => Some(merge_project_conflict(
+            base.map(String::as_str).unwrap_or(""),
+            local,
+            "",
+        )),
+        (None, None) => None,
+    }
+}
+
+fn safe_project_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let path = Path::new(relative);
+    if path.is_absolute() || relative.is_empty() {
+        return Err(format!("unsafe project path {relative:?}"));
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!("unsafe project path {relative:?}"));
+    }
+    let candidate = root.join(path);
+    // New nested files have no canonical path yet. Walk to the nearest
+    // existing ancestor; canonicalising it catches symlinked directories
+    // before callers create anything below them.
+    let mut existing = candidate.as_path();
+    while !existing.exists() {
+        existing = existing
+            .parent()
+            .ok_or_else(|| format!("could not resolve project path {relative:?}"))?;
+    }
+    let check = existing
+        .canonicalize()
+        .map_err(|err| format!("could not resolve project path {relative:?}: {err}"))?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|err| format!("could not resolve project root: {err}"))?;
+    if !check.starts_with(&canonical_root) {
+        return Err(format!("project path escapes the project: {relative:?}"));
+    }
+    Ok(candidate)
+}
+
+fn write_project_file(root: &Path, path: &str, body: &str) -> Result<(), String> {
+    write_project_bytes(root, path, body.as_bytes())
+}
+
+fn write_project_bytes(root: &Path, path: &str, body: &[u8]) -> Result<(), String> {
+    let target = safe_project_path(root, path)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("project path has no parent: {path}"))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|err| format!("could not create directory for {path}: {err}"))?;
+    let temporary = unique_temporary_path(parent, target.file_name().unwrap_or_default());
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|err| format!("could not create temporary file for {path}: {err}"))?;
+    use std::io::Write;
+    file.write_all(body)
+        .map_err(|err| format!("could not write {path}: {err}"))?;
+    file.sync_all()
+        .map_err(|err| format!("could not flush {path}: {err}"))?;
+    std::fs::rename(&temporary, &target).map_err(|err| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("could not replace {path}: {err}")
+    })
+}
+
+static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn unique_temporary_path(parent: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    loop {
+        let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{}.librepaper-{}-{sequence}",
+            name.to_string_lossy(),
+            std::process::id()
+        ));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+}
+
+fn asset_conflict_path(path: &str, digest: &str) -> String {
+    format!(
+        "{path}.librepaper-conflict-{}",
+        &digest[..digest.len().min(12)]
+    )
+}
+
+fn remove_project_file(root: &Path, path: &str) -> Result<(), String> {
+    let target = safe_project_path(root, path)?;
+    match std::fs::remove_file(target) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("could not remove {path}: {error}")),
+    }
+}
+
+async fn fetch_project_asset(
+    server: &str,
+    slug: &str,
+    sha: &str,
+    token: &str,
+    key: &str,
+) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|err| err.to_string())?;
+    let mut request = client
+        .get(format!("{server}/api/documents/{slug}/assets/{sha}"))
+        .header("x-librepaper-client", "1");
+    if !token.is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    if !key.is_empty() {
+        request = request.header(KEY_HEADER, key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("could not fetch asset {sha}: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "could not fetch asset {sha} ({})",
+            response.status().as_u16()
+        ));
+    }
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|err| format!("could not read asset {sha}: {err}"))
+}
+
+fn digest_of(bytes: &[u8]) -> String {
+    crate::document::store::digest_of_bytes(bytes)
+}
+
+fn watch_project(
+    root: &Path,
+    events: tokio::sync::mpsc::Sender<()>,
+) -> Result<notify::RecommendedWatcher, String> {
+    use notify::Watcher;
+    let root = root.to_path_buf();
+    let callback_root = root.clone();
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        let Ok(event) = result else {
+            return;
+        };
+        if !matches!(
+            event.kind,
+            notify::EventKind::Create(_)
+                | notify::EventKind::Modify(_)
+                | notify::EventKind::Remove(_)
+        ) {
+            return;
+        }
+        if event.paths.iter().any(|path| {
+            let relative = path
+                .strip_prefix(&callback_root)
+                .ok()
+                .and_then(|path| path.to_str())
+                .unwrap_or("");
+            !relative.starts_with('.') && !relative.contains(".librepaper-")
+        }) {
+            let _ = events.try_send(());
+        }
+    })
+    .map_err(|err| format!("could not watch {}: {err}", root.display()))?;
+    watcher
+        .watch(&root, notify::RecursiveMode::Recursive)
+        .map_err(|err| format!("could not watch {}: {err}", root.display()))?;
+    Ok(watcher)
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+
+    #[test]
+    fn project_merge_keeps_independent_edits() {
+        let mut base = BTreeMap::new();
+        base.insert("paper.qmd".into(), "one\ntwo\n".into());
+        let mut local = ProjectInventory::default();
+        local.all.insert("paper.qmd".into());
+        local
+            .files
+            .insert("paper.qmd".into(), "one local\ntwo\n".into());
+        let mut remote = BTreeMap::new();
+        remote.insert("paper.qmd".into(), "one\ntwo remote\n".into());
+        let merged = merge_project_texts(&base, &local, &remote);
+        assert!(merged["paper.qmd"].contains("local"));
+        assert!(merged["paper.qmd"].contains("remote"));
+    }
+
+    #[test]
+    fn project_merge_preserves_local_only_files() {
+        let mut local = ProjectInventory::default();
+        local.all.insert("paper.qmd".into());
+        local.files.insert("paper.qmd".into(), "local\n".into());
+        let merged = merge_project_texts(&BTreeMap::new(), &local, &BTreeMap::new());
+        assert_eq!(merged.get("paper.qmd").map(String::as_str), Some("local\n"));
+    }
+
+    #[test]
+    fn project_merge_keeps_local_edit_when_remote_deleted_file() {
+        let base = [("paper.qmd".into(), "old\n".into())].into_iter().collect();
+        let mut local = ProjectInventory::default();
+        local.all.insert("paper.qmd".into());
+        local
+            .files
+            .insert("paper.qmd".into(), "local edit\n".into());
+        let merged = merge_project_texts(&base, &local, &BTreeMap::new());
+        let value = merged.get("paper.qmd").expect("conflict is retained");
+        assert!(value.contains("local edit"));
+    }
+
+    #[test]
+    fn project_paths_reject_escape_and_absolute_names() {
+        let root = tempfile::tempdir().expect("temp root");
+        assert!(safe_project_path(root.path(), "../outside.qmd").is_err());
+        assert!(safe_project_path(root.path(), "/outside.qmd").is_err());
+    }
+
+    #[test]
+    fn project_paths_allow_new_nested_files() {
+        let root = tempfile::tempdir().expect("temp root");
+        let path = safe_project_path(root.path(), "figures/new/plot.png").expect("safe path");
+        assert_eq!(path, root.path().join("figures/new/plot.png"));
+    }
+
+    #[test]
+    fn asset_conflicts_get_a_stable_sidecar_name() {
+        assert_eq!(
+            asset_conflict_path("fig/plot.png", &"a".repeat(64)),
+            "fig/plot.png.librepaper-conflict-aaaaaaaaaaaa"
+        );
+    }
+
+    #[test]
+    fn project_baseline_round_trips() {
+        let root = tempfile::tempdir().expect("temp root");
+        let baseline = ProjectBaseline {
+            version: 1,
+            identity: "https://example.test/docs/demo".into(),
+            files: [("paper.qmd".into(), "source\n".into())]
+                .into_iter()
+                .collect(),
+            assets: [("fig/plot.png".into(), "a".repeat(64))]
+                .into_iter()
+                .collect(),
+            state: Vec::new(),
+        };
+        save_project_baseline(root.path(), &baseline).expect("save baseline");
+        assert_eq!(
+            load_project_baseline(root.path())
+                .expect("load baseline")
+                .files,
+            baseline.files
+        );
+    }
+
+    #[tokio::test]
+    async fn project_restart_restores_and_replays_unacknowledged_state() {
+        let root = tempfile::tempdir().expect("temp root");
+        std::fs::write(root.path().join("paper.qmd"), "local edit\n").expect("local file");
+        let doc = session::new_doc();
+        let main = session::put_text(&doc, "paper.qmd", "local edit\n");
+        session::set_main(&doc, &main);
+        let identity = "https://example.test/docs/demo";
+        save_project_baseline(
+            root.path(),
+            &ProjectBaseline {
+                version: 1,
+                identity: identity.into(),
+                files: [("paper.qmd".into(), "local edit\n".into())]
+                    .into_iter()
+                    .collect(),
+                assets: BTreeMap::new(),
+                // This represents a local edit whose update was queued just
+                // before the old process stopped, before the server applied
+                // it or sent an acknowledgement.
+                state: session::encode_state(&doc),
+            },
+        )
+        .expect("persist checkpoint");
+
+        let mut restarted = ProjectClient::new(
+            root.path().to_path_buf(),
+            Duration::from_millis(50),
+            "https://example.test".into(),
+            String::new(),
+            String::new(),
+        )
+        .with_slug("demo".into());
+        assert_eq!(session::text_of(&restarted.doc), "local edit\n");
+
+        restarted
+            .receive(r#"{"type":"y-state","update":""}"#)
+            .await
+            .expect("reconcile restored state");
+        assert!(restarted
+            .outbox
+            .iter()
+            .any(|message| message["type"] == "y-update-start"));
+        assert!(restarted.needs_full_sync);
+        assert!(restarted.full_sync_queued);
+    }
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { _testing, configure, quartoRequest, runQuarto } from "../src/lib/latex/local.js";
+import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus } from "../src/lib/latex/local.js";
 import { parameterSha256 } from "../src/lib/quarto.js";
 
 const digest = "a".repeat(64);
@@ -88,7 +88,7 @@ setup(async (url, init = {}) => {
 const first = await runQuarto({
   job: { id: "stable-job", binding: "binding-1" },
   tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" }, assets: {} },
-  options: { inputRevision: "rev-1", inputDigest: digest },
+  options: { inputRevision: "rev-1", inputDigest: digest, executionMode:"isolated-snapshot", dataInputs:["data/local.csv"], renderScope:"project" },
 });
 assert.equal(first.ok, true);
 assert.equal(first.kind, "html");
@@ -98,6 +98,10 @@ assert.equal(posts[0], posts[1], "retry reuses the exact logical multipart reque
 const retriedJob = JSON.parse(posts[0]);
 assert.equal(retriedJob.quarto.idempotency_key, "stable-job");
 assert.equal(retriedJob.quarto.shared_tree_sha256, digest);
+assert.equal(retriedJob.quarto.execution_mode, "isolated-snapshot");
+assert.equal(retriedJob.quarto.shared_inventory_complete, true);
+assert.deepEqual(retriedJob.quarto.data_inputs, ["data/local.csv"]);
+assert.equal(retriedJob.quarto.render_scope, "project");
 
 const missing = JSON.parse(new TextDecoder().decode(manifest));
 missing.assets = [{ path: "figures/missing.png", sha256: digest, mime: "image/png", size: 1 }];
@@ -120,3 +124,20 @@ assert.equal(rejected.publish, null);
 assert.match(rejected.error, /missing required output/);
 
 console.log("quarto-local: strict request validation, idempotent POST retry, and required closure passed");
+
+const previewCalls = [];
+setup(async (url, init) => {
+  previewCalls.push({url, init});
+  return response(init.method === "DELETE" ? {stopped:true} : {id:"preview-1",url:"http://127.0.0.1:4000/",state:"running"});
+});
+const preview = await startQuartoPreview({job:{binding:"binding-1"}, tree:{main:"paper.qmd",texts:{"paper.qmd":"# Preview"}},options:{}});
+assert.equal(preview.id, "preview-1");
+const previewRequest = JSON.parse(previewCalls[0].init.body);
+assert.equal(previewRequest.manifest[0].sha256, await sha(new TextEncoder().encode("# Preview")));
+assert.equal(previewCalls[0].init.headers.Authorization, "Bearer token");
+assert.equal(previewRequest.token, undefined);
+assert.equal((await quartoPreviewStatus(preview.id)).state, "running");
+await stopQuartoPreview(preview.id);
+assert.equal(previewCalls[2].init.method, "DELETE");
+assert.ok(previewCalls[2].url.endsWith("/previews/preview-1"));
+console.log("quarto-local: snapshot inventory and managed preview lifecycle requests passed");

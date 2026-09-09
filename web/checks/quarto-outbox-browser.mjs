@@ -11,15 +11,19 @@ const source = readFileSync(new URL("../src/lib/quarto-pending.js", import.meta.
 const artifactSource = readFileSync(new URL("../src/lib/quarto-artifact.js", import.meta.url));
 const resultsPendingSource = readFileSync(new URL("../src/lib/results-pending.js", import.meta.url));
 const resultsArtifactSource = readFileSync(new URL("../src/lib/results-artifact.js", import.meta.url));
+const interactiveSource = readFileSync(new URL("../src/lib/results-interactive.js", import.meta.url));
 const identitySource = readFileSync(new URL("../src/lib/engines/identity.js", import.meta.url));
+const requests = [];
 const server = createServer((request, response) => {
+  requests.push(request.url);
   response.setHeader("content-type", request.url.endsWith(".js") ? "text/javascript" : "text/html");
   response.end(request.url === "/pending.js" ? source
     : request.url === "/artifact.js" ? artifactSource
       : request.url === "/results-pending.js" ? resultsPendingSource
         : request.url === "/results-artifact.js" ? resultsArtifactSource
-          : request.url === "/engines/identity.js" ? identitySource
-            : '<!doctype html><script type="module">import * as pending from "/pending.js"; import * as artifact from "/artifact.js"; window.pending = pending; window.artifact = artifact;</script>');
+          : request.url === "/results-interactive.js" ? interactiveSource
+            : request.url === "/engines/identity.js" ? identitySource
+              : '<!doctype html><script type="module">import * as pending from "/pending.js"; import * as artifact from "/artifact.js"; import * as results from "/results-artifact.js"; window.pending = pending; window.artifact = artifact; window.results = results;</script>');
 });
 await new Promise((done) => server.listen(0, "127.0.0.1", done));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -77,7 +81,48 @@ try {
   })()`));
   assert.deepEqual(result, {fontRewritten:true, importRewritten:true, safe:true, refused:true, downloadSafe:true, pdfPreview:true, pdfDownloadSafe:true});
   console.log("quarto outbox: reload recovery, document scope, and late acknowledgement checks passed");
+  const isolation = await tab.evaluate(`(async () => {
+    const source = '<script>let isolated=false; try { parent.document.body; } catch { isolated=true; } fetch("/credential-probe").then(() => parent.postMessage({widget:false}, "*"), () => parent.postMessage({widget:isolated}, "*"));<\/script>';
+    const bytes = new TextEncoder().encode(source);
+    const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(x=>x.toString(16).padStart(2,"0")).join("");
+    const rendered = await artifact.prepareQuartoArtifact({artifact:{kind:"html",entrypoint:"widget.html",mime:"text/html",sha256,size:bytes.length},assets:[]}, bytes, () => null);
+    const frame = document.createElement("iframe"); frame.sandbox="allow-scripts";
+    const result = new Promise(resolve => { window.addEventListener("message", function listener(event) { if(event.source === frame.contentWindow && event.data && "widget" in event.data) { window.removeEventListener("message", listener); resolve(event.data.widget && event.origin === "null"); } }); });
+    frame.srcdoc=rendered.page("widget.html", true); document.body.append(frame);
+    const safe=await result; frame.remove(); rendered.dispose(); return safe;
+  })()`);
+  assert.equal(isolation, true, "widget scripts execute with opaque origin and blocked fetch");
   console.log("quarto artifact: nested CSS/font closure, spaces, active content isolation, and digest checks passed");
+
+  // The ordinary Reader output wraps this static page in an empty-sandbox
+  // iframe before posting it through the document-origin agent. Keep that
+  // boundary covered separately from the opt-in widget test above: a relative
+  // URL that is absent from the verified inventory must not become a request
+  // against the document/application origin.
+  requests.length = 0;
+  const staticHtml = '<!doctype html><script>parent.postMessage({ran:true}, "*"); fetch("/credential-probe-static");</script><a href="/credential-probe-static">probe</a>';
+  const staticBytes = new TextEncoder().encode(staticHtml);
+  const staticSha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", staticBytes))].map(x => x.toString(16).padStart(2, "0")).join("");
+  const staticManifest = { artifact:{kind:"html",entrypoint:"report.html",mime:"text/html",sha256:staticSha,size:staticBytes.length}, assets:[] };
+  const opaque = await tab.evaluate(`(async () => {
+    const bytes = new TextEncoder().encode(${JSON.stringify(staticHtml)});
+    const prepared = await results.prepareResultsArtifact(${JSON.stringify(staticManifest)}, bytes, () => null);
+    const frame = document.createElement("iframe");
+    frame.sandbox = "";
+    frame.referrerPolicy = "no-referrer";
+    const page = prepared.page("report.html", false);
+    frame.srcdoc = page;
+    document.body.append(frame);
+    await new Promise(resolve => { frame.onload = resolve; setTimeout(resolve, 250); });
+    const inaccessible = frame.contentDocument === null;
+    frame.remove();
+    prepared.dispose();
+    return JSON.stringify({inaccessible, rewritten: !page.includes("credential-probe-static")});
+  })()`);
+  const staticIsolation = JSON.parse(opaque);
+  assert.deepEqual(staticIsolation, {inaccessible:true, rewritten:true}, "static saved output stays opaque and rewrites unresolved resources");
+  assert.equal(requests.some((url) => url === "/credential-probe-static"), false, "static output cannot request an app-origin resource");
+  console.log("quarto artifact: static output sandbox and unresolved-resource isolation passed");
 } finally {
   await tab?.close();
   await new Promise((done) => server.close(done));

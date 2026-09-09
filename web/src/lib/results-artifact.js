@@ -1,6 +1,7 @@
 // Turn a complete, authenticated shared-results bundle into browser-local display resources.
 // Relative URLs are resolved against the file that contains them, including
 // nested CSS imports and fonts. No URL is resolved against the app's location.
+import { artifactPages } from "./results-interactive.js";
 import { validateResultsManifest } from "./engines/identity.js";
 
 const ROOT = "https://librepaper-results.invalid/";
@@ -52,7 +53,7 @@ export async function prepareResultsArtifact(manifest, artifactBytes, readAsset)
         bytes.set(asset.path, await verified(downloaded, asset));
       }
     }));
-    const assets = {};
+    const assets = Object.create(null);
     const building = new Set();
     function reference(value, containingPath, required = true) {
       const resolved = resultsArtifactReference(value, containingPath);
@@ -128,7 +129,7 @@ export async function prepareResultsArtifact(manifest, artifactBytes, readAsset)
       if (element.hasAttribute("style")) element.setAttribute("style", css(element.getAttribute("style"), main));
       if (element.localName === "style") element.textContent = css(element.textContent, main);
     }
-    return { kind:"html", html:`<!doctype html>\n${parsed.documentElement.outerHTML}`, assets, urls, dispose,
+    return { ...artifactPages(manifest, artifact, bytes), kind:"html", html:`<!doctype html>\n${parsed.documentElement.outerHTML}`, assets, urls, dispose,
       // Plain-text MIME prevents an app-origin HTML execution context even
       // if this download URL is opened directly instead of saved to disk.
       downloadUrl:blob(artifact, "text/plain;charset=utf-8"), staticPreview:true };

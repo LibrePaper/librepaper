@@ -75,6 +75,7 @@
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { createRenderingStore } from "../lib/reader/rendering-store.js";
   import { clearPendingResults, loadPendingResults, savePendingResults } from "../lib/results-pending.js";
+  import ResultsArtifactBrowser from "./ResultsArtifactBrowser.svelte";
   import { prepareResultsArtifact } from "../lib/results-artifact.js";
   import { createResultsLoader } from "../lib/results-loader.js";
   import { publishResultsBundle } from "../lib/results-publication.js";
@@ -151,6 +152,11 @@
 
   let preview = $state(null);
   let quartoView = $state("draft");
+  let quartoProjectScope = $state(false);
+  let quartoSnapshot = $state(false);
+  let quartoDataInputs = $state("");
+  let quartoPreview = $state(null);
+  let quartoPreviewStarting = $state(false);
   let quartoOutput = $state(null);
   let quartoOutputState = $state("");
   let quartoBundle = $state(null);
@@ -192,6 +198,24 @@
     } catch (error) { if (serial === quartoInspectSerial) toastProblem(error.message); }
   }
 
+  async function locateQuartoResult(item) {
+    const path = item.cell.source_path;
+    const text = treeNow().texts?.[path];
+    if (typeof text !== "string") { say("The source file for this result is unavailable.", true); return; }
+    const cells = quarto.parseQuarto(text, {path}).cells;
+    const candidates = item.cell.label ? cells.filter(cell => cell.label === item.cell.label)
+      : (await Promise.all(cells.map(async cell => ({cell, digest:await quarto.cellFingerprint(cell)}))))
+        .filter(value => value.digest === item.cell.source_sha256).map(value => value.cell);
+    if (candidates.length !== 1 || candidates[0].ambiguous) { say("This saved result cannot be mapped unambiguously to the current source.", true); return; }
+    if (treeNow().texts?.[path] !== text) { say("The source changed while locating this result; try again.", true); return; }
+    const id = session.idOf(path);
+    if (!id || !editor) return;
+    quartoResultsOpen = false;
+    closeQuartoResults();
+    openFile = id;
+    editor.goToIn(id, candidates[0].sourceStart);
+  }
+
   function commentQuartoResult(item, geometry = {}) {
     const manifest = quartoInspected?.manifest || quartoBundle;
     if (!manifest || !mayChat) return;
@@ -222,7 +246,7 @@
   function quartoPreparedOutput(manifest, prepared, local = false) {
     if (!manifest.artifact) return null;
     return {
-      html: prepared.html, bytes: prepared.bytes || null, downloadUrl: prepared.downloadUrl,
+      pages: prepared.pages, page: prepared.page, html: prepared.html, bytes: prepared.bytes || null, downloadUrl: prepared.downloadUrl,
       downloadName: manifest.artifact.entrypoint, kind: prepared.kind,
       renderId: manifest.render_id, provenance: manifest.provenance || null, local,
     };
@@ -1023,12 +1047,40 @@
     void paintPreview();
   }
 
+  $effect(() => {
+    const active = quartoPreview;
+    if (!active) return;
+    const timer = setInterval(() => {
+      void localQuarto.quartoPreviewStatus(active.id).then(status => {
+        if (quartoPreview?.id === active.id && quartoPreview.state !== status.state) quartoPreview = {...quartoPreview, state:status.state};
+      }).catch(error => {
+        if (quartoPreview?.id === active.id) { quartoPreview = null; say("Live preview ended: " + error.message, true); }
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  });
+
+  async function toggleQuartoPreview() {
+    if (quartoPreviewStarting || quartoJob || viewing || !mayEdit) return;
+    quartoPreviewStarting = true;
+    localQuarto.configure({ project: SLUG, origin: location.origin });
+    try {
+      if (quartoPreview) { await localQuarto.stopQuartoPreview(quartoPreview.id); quartoPreview = null; }
+      else {
+        const tree = treeNow();
+        const context = quartoRenderContext(tree);
+        const started = await localQuarto.startQuartoPreview({ job:{binding:quartoBindingId}, tree,
+          options:{entrypoint:tree.main, format:context.format, profile:context.profiles[0] || null, parameters:context.parameters} });
+        if (readerDisposed || sourceFormat !== "quarto") await localQuarto.stopQuartoPreview(started.id);
+        else quartoPreview = started;
+      }
+    } catch (error) { say(error.message, true); }
+    finally { quartoPreviewStarting = false; }
+  }
+
   async function renderQuartoLocally(policy = "project-defaults") {
     if (!mayEdit || sourceFormat !== "quarto" || quartoJob || quartoOptionsChanging || viewing) return;
-    if (policy === "frozen" && (quartoOptions.profile || Object.keys(quartoOptions.parameters).length)) {
-      say("Frozen results require the default profile and no parameter overrides.", true);
-      return;
-    }
+    if (quartoPreview || quartoPreviewStarting) { say("Stop live preview before rendering saved results.", true); return; }
     if (quartoPendingPublish) {
       say("A completed render is waiting to be shared; use Retry sharing first.", true);
       return;
@@ -1058,7 +1110,8 @@
         job: { id, binding: quartoBindingId, inputRevision, inputDigest, sharedTreeSha256: inputDigest },
         tree: renderTree,
         options: { entrypoint: renderTree.main, format: renderFormat, profile: renderContext.profiles[0] || null,
-          parameters: renderContext.parameters, policy, inputRevision, inputDigest, sharedTreeSha256: inputDigest },
+          parameters: renderContext.parameters, policy, inputRevision, inputDigest, sharedTreeSha256: inputDigest,
+          renderScope:quartoProjectScope ? "project" : "document", executionMode:quartoSnapshot ? "isolated-snapshot" : "working-tree", dataInputs:quartoDataInputs.split("\n").map(x => x.trim()).filter(Boolean) },
       }, {
         signal: controller.signal,
         onProgress: (progress) => { if (quartoJob?.id === id) quartoJob = { ...quartoJob, stage: progress.stage || "running" }; },
@@ -1779,7 +1832,10 @@
       try {
         const output = await loadQuartoOutput();
         if (output?.kind === "pdf" && output.bytes) framePreview.publish({ kind: "pdf", sha: output.renderId || quartoBundle?.render_id || null, bytes: output.bytes });
-        else if (output?.html) framePreview.publish({ kind: "html", html: output.html });
+        else if (output?.html) {
+          const document = output.page ? output.page(output.downloadName, false) : output.html;
+          framePreview.publish({ kind: "html", html: '<!doctype html><body style="margin:0"><iframe title="Saved Quarto artifact" sandbox="" referrerpolicy="no-referrer" style="border:0;width:100%;height:100vh" srcdoc="' + quarto.escapeHtml(document) + '"></iframe></body>' });
+        }
         else if (output?.downloadUrl) framePreview.publish({ kind: "html", html: `<main class="quarto-artifact-download"><p>This saved Quarto artifact is ${output.kind.toUpperCase()}.</p><p>Use the download link above to open it.</p></main>` });
       } catch {
         // The draft remains available when the immutable output is missing or
@@ -2825,6 +2881,7 @@
       previewTimer = null;
       boot.dispose();
       passages.clearPassageCache();
+      if (quartoPreview) void localQuarto.stopQuartoPreview(quartoPreview.id).catch(() => {});
       framePreview.dispose();
       releaseQuartoUrls();
       renderingStore?.dispose();
@@ -2965,6 +3022,8 @@
             <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => showPanel("settings")}>{quartoLocalStatus.state === "connected" ? "Local app connected" : "Connect local app"}</button>
             <input class="input input-sm w-36" aria-label="Local Quarto binding ID" placeholder="binding ID" value={quartoBindingId}
                    onchange={(event) => { quartoBindingId = event.currentTarget.value.trim(); localQuarto.setBindingId(quartoBindingId); }} />
+            <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={Boolean(quartoJob) || Boolean(viewing) || quartoPreviewStarting} onclick={() => void toggleQuartoPreview()}>{quartoPreview ? "Stop live preview" : "Start live preview"}</button>
+            {#if quartoPreview?.state === "starting"}<small>Starting local preview…</small>{:else if quartoPreview}<a class="anchor" href={quartoPreview.url} target="_blank" rel="noopener noreferrer">Open local preview (not shared)</a>{/if}
             {#if quartoJob}
               <button type="button" class="btn btn-sm preset-tonal-error" onclick={cancelQuartoRender}>Cancel render</button>
             {:else}
@@ -2972,14 +3031,21 @@
               <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={quartoOptionsChanging || Boolean(viewing)} onclick={() => void renderQuartoLocally("refresh-computations")}>Refresh computations</button>
               {#if quartoLocalStatus.capabilities?.quarto?.policies?.includes("frozen")}
                 <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
-                  disabled={quartoOptionsChanging || Boolean(viewing) || Boolean(quartoOptions.profile) || Object.keys(quartoOptions.parameters).length > 0}
-                  title="Requires a matching complete local freezer, the default profile, and no parameter overrides."
+                  disabled={quartoOptionsChanging || Boolean(viewing)}
+                  title="Requires a complete local freezer matching this render context."
                   onclick={() => void renderQuartoLocally("frozen")}>Use frozen results</button>
               {/if}
             {/if}
             {#if quartoPendingPublish}<button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void retryQuartoPublish()}>Retry sharing</button>{/if}
           {/if}
         </div>
+        {#if editing && mayEdit}
+          <details><summary>Execution workspace</summary>
+            <label><input type="checkbox" bind:checked={quartoProjectScope} disabled={Boolean(quartoJob)} /> Render all pages of a website or book (HTML)</label>
+            <label><input type="checkbox" bind:checked={quartoSnapshot} disabled={Boolean(quartoJob)} /> Render an isolated copy of all shared files</label>
+            {#if quartoSnapshot}<label>Additional local data files (one relative path per line)<textarea class="textarea" bind:value={quartoDataInputs} disabled={Boolean(quartoJob)}></textarea></label><small>Only shared files and these declared inputs are copied. Install required packages in the local environment.</small>{/if}
+          </details>
+        {/if}
         <QuartoRenderOptions options={quartoOptions} disabled={Boolean(quartoJob) || quartoOptionsChanging || Boolean(viewing)} onapply={applyQuartoOptions} />
         {#if quartoJob}<small class="text-surface-600-400">Quarto: {quartoJob.stage}…</small>{/if}
         {#if quartoLog}<details class="text-xs"><summary>Local render log</summary><pre class="max-h-32 overflow-auto whitespace-pre-wrap">{quartoLog}</pre></details>{/if}
@@ -3238,10 +3304,11 @@
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
            away={!shown.document || unrendered || failedBeforeRender} />
   {#if sourceFormat === "quarto" && quartoView === "output" && quartoOutput?.downloadUrl}
-    <p class="px-4 py-2 text-sm text-surface-700-300">
+    <div class="px-4 py-2 text-sm text-surface-700-300">
       Saved Quarto {quartoOutput.kind.toUpperCase()} artifact:
+      {#if quartoOutput.page}<ResultsArtifactBrowser artifact={quartoOutput} />{/if}
       <a class="anchor" href={quartoOutput.downloadUrl} download={quartoOutput.downloadName}>Download artifact</a>
-    </p>
+    </div>
   {/if}
 
   <nav class="mobile-pane-nav" aria-label="Workspace view">
@@ -3284,7 +3351,7 @@
   <SavedResults items={quartoInspected?.items || resultItems(quartoBundle)}
     assets={quartoInspected?.assets || quartoAssets} renderId={quartoInspected?.manifest.render_id || quartoBundle?.render_id || ""}
     selectedRegion={quartoInspected?.region || null}
-    canComment={mayChat && !quartoOutput?.local} oncomment={commentQuartoResult} />
+    onsource={editing ? locateQuartoResult : undefined} canComment={mayChat && !quartoOutput?.local} oncomment={commentQuartoResult} />
 </Modal>
 
 <Modal bind:open={commenting} title={tool === "editing" ? "Suggest a change" : "Add comment"}>

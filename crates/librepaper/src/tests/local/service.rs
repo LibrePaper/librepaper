@@ -706,3 +706,149 @@ async fn interrupted_quarto_job_is_recovered_as_failed_and_keeps_idempotency() {
     assert_eq!(status["status"], "failed");
     assert_eq!(status["stage"], "recovery");
 }
+
+#[tokio::test]
+async fn preview_requires_pairing_binding_scope_and_matching_inputs() {
+    let test = start_test_service(Arc::new(FakeRunner::default())).await;
+    let unauthorized = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), 401);
+    set_code(&test, "123456");
+    let token = connected_token(&test, ORIGIN, "paper", "123456").await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("paper.qmd"), "current source").unwrap();
+    let binding = BindingStore::new(test.config_home.path())
+        .grant(ORIGIN, "paper", project.path(), "paper.qmd")
+        .unwrap();
+    let mut body = json!({"protocol":1,"kind":"quarto","origin":ORIGIN,"project":"other","snapshot":"revision","generation":1,"manifest":manifest_for(&[("paper.qmd", b"old source")]),"quarto":{"binding_id":binding.id,"main":"paper.qmd","format":"html"}});
+    let response = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    body["project"] = json!("paper");
+    let response = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    assert!(response.text().await.unwrap().contains("synchronize"));
+    let response = test
+        .client
+        .delete(format!("{}/previews/missing", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+#[ignore = "requires installed Quarto"]
+async fn quarto_managed_preview_starts_serves_and_stops() {
+    let test = start_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "123456");
+    let token = connected_token(&test, ORIGIN, "paper", "123456").await;
+    let project = tempfile::Builder::new()
+        .prefix("quarto-preview-")
+        .tempdir()
+        .unwrap();
+    let source = b"# Managed preview\n\nAuthor-only text.\n";
+    std::fs::write(project.path().join("paper.qmd"), source).unwrap();
+    let binding = BindingStore::new(test.config_home.path())
+        .grant(ORIGIN, "paper", project.path(), "paper.qmd")
+        .unwrap();
+    let body = json!({"protocol":1,"kind":"quarto","origin":ORIGIN,"project":"paper","snapshot":"revision","generation":1,"manifest":manifest_for(&[("paper.qmd", source)]),"quarto":{"binding_id":binding.id,"main":"paper.qmd","format":"html"}});
+    let response = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let preview: Value = response.json().await.unwrap();
+    assert_eq!(status, 201, "{preview}");
+    let id = preview["id"].as_str().unwrap();
+    let url = preview["url"].as_str().unwrap();
+    let endpoint = format!("{}/previews/{id}", test.base);
+    let mut ready = false;
+    for _ in 0..100 {
+        let state: Value = test
+            .client
+            .get(&endpoint)
+            .header("Origin", ORIGIN)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if state["state"] == "running" {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(ready, "preview did not become ready");
+    assert!(test
+        .client
+        .get(url)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    let duplicate = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(duplicate.status(), 400);
+    let response = test
+        .client
+        .delete(&endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let missing = test
+        .client
+        .get(&endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+    assert!(
+        test.client.get(url).send().await.is_err(),
+        "stopped preview URL must no longer serve"
+    );
+}

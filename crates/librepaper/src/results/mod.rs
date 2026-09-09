@@ -23,6 +23,7 @@ pub const MAX_BUNDLE_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_ASSETS: usize = 2048;
 pub const MAX_OUTPUTS: usize = 4096;
 pub const MAX_CELLS: usize = 4096;
+pub const MAX_INLINE_RESULTS: usize = 4096;
 pub const MAX_PATH_BYTES: usize = 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +48,10 @@ pub struct BundleManifest {
     pub cells: Vec<CellRecord>,
     #[serde(default)]
     pub assets: Vec<AssetDescriptor>,
+    /// Values captured for executable inline expressions. This field is
+    /// additive so manifests produced before inline capture remain valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inline_results: Vec<InlineResult>,
     pub coverage: Coverage,
 }
 
@@ -113,6 +118,22 @@ pub struct CellRecord {
     pub coverage: CellCoverage,
     #[serde(default)]
     pub outputs: Vec<OutputRecord>,
+}
+
+/// A source-located value produced by an executable inline expression. The
+/// renderer may use it only when the occurrence, expression, and computation
+/// context all match the current source; otherwise it keeps the source
+/// expression visible.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InlineResult {
+    pub id: String,
+    pub expression: String,
+    pub source_path: String,
+    pub line: usize,
+    pub column: usize,
+    pub value: String,
+    #[serde(default)]
+    pub context_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -647,8 +668,13 @@ impl BundleManifest {
                 "unsupported context fingerprint version".into(),
             ));
         }
-        if self.cells.len() > MAX_CELLS || self.assets.len() > MAX_ASSETS {
-            return Err(BundleError::TooLarge("too many cells or assets".into()));
+        if self.cells.len() > MAX_CELLS
+            || self.assets.len() > MAX_ASSETS
+            || self.inline_results.len() > MAX_INLINE_RESULTS
+        {
+            return Err(BundleError::TooLarge(
+                "too many cells, assets, or inline results".into(),
+            ));
         }
         let mut paths = BTreeSet::new();
         let mut asset_hashes = BTreeMap::new();
@@ -762,6 +788,34 @@ impl BundleManifest {
                 if output.content_sha256.as_deref().is_some_and(|v| !is_sha(v)) {
                     return Err(BundleError::Invalid("invalid output digest".into()));
                 }
+            }
+        }
+        let mut inline_ids = BTreeSet::new();
+        for result in &self.inline_results {
+            if result.id.is_empty()
+                || result.id.len() > MAX_PATH_BYTES
+                || !safe_path(&result.source_path)
+                || result.source_path.is_empty()
+                || result.line == 0
+                || result.column == 0
+                || result.expression.len() > MAX_BLOB_BYTES
+                || result.value.len() > MAX_BLOB_BYTES
+            {
+                return Err(BundleError::Invalid(
+                    "invalid inline result descriptor".into(),
+                ));
+            }
+            if !inline_ids.insert(result.id.clone()) {
+                return Err(BundleError::Invalid("duplicate inline result id".into()));
+            }
+            if result
+                .context_sha256
+                .as_deref()
+                .is_some_and(|digest| !is_sha(digest))
+            {
+                return Err(BundleError::Invalid(
+                    "invalid inline result context digest".into(),
+                ));
             }
         }
         Ok(())

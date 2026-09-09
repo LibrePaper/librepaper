@@ -220,6 +220,27 @@ pub struct QuartoJobOptions {
     /// changes during execution.
     #[serde(default)]
     pub shared_tree_sha256: Option<String>,
+    /// Where the adapter may read inputs.  The omitted value keeps the
+    /// original linked-working-tree protocol byte-for-byte compatible.
+    #[serde(default, skip_serializing_if = "QuartoExecutionMode::is_working_tree")]
+    pub execution_mode: QuartoExecutionMode,
+    /// Render one bound document or the complete Quarto project.  The
+    /// historical document scope is omitted from legacy JSON.
+    #[serde(default, skip_serializing_if = "QuartoRenderScope::is_document")]
+    pub render_scope: QuartoRenderScope,
+    /// Local files required by the document in addition to the shared
+    /// manifest.  Snapshot mode copies these only after checking their
+    /// declared, project-relative paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_inputs: Vec<String>,
+    /// Snapshot mode requires the caller to attest that `manifest` is the
+    /// complete shared inventory.  This is intentionally opt-in.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shared_inventory_complete: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn default_quarto_main() -> String {
@@ -241,6 +262,10 @@ impl Default for QuartoJobOptions {
             policy: QuartoRenderPolicy::default(),
             idempotency_key: None,
             shared_tree_sha256: None,
+            execution_mode: QuartoExecutionMode::WorkingTree,
+            render_scope: QuartoRenderScope::Document,
+            data_inputs: Vec::new(),
+            shared_inventory_complete: false,
         }
     }
 }
@@ -254,6 +279,37 @@ pub enum QuartoRenderPolicy {
     Frozen,
 }
 
+/// The local project source for a render.  Working-tree is the historical
+/// default; isolated snapshots are explicit because they omit private files,
+/// package environments, and other local context unless declared.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuartoExecutionMode {
+    #[default]
+    WorkingTree,
+    IsolatedSnapshot,
+}
+
+impl QuartoExecutionMode {
+    pub const fn is_working_tree(&self) -> bool {
+        matches!(self, Self::WorkingTree)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuartoRenderScope {
+    #[default]
+    Document,
+    Project,
+}
+
+impl QuartoRenderScope {
+    pub const fn is_document(&self) -> bool {
+        matches!(self, Self::Document)
+    }
+}
+
 impl QuartoJobOptions {
     pub fn validate(&self) -> Result<(), String> {
         if self.binding_id.is_empty() || self.binding_id.len() > 256 {
@@ -264,6 +320,16 @@ impl QuartoJobOptions {
         }
         if !matches!(self.format.as_str(), "html" | "pdf" | "docx" | "revealjs") {
             return Err(format!("unsupported quarto output format: {}", self.format));
+        }
+        if self.render_scope == QuartoRenderScope::Project
+            && !matches!(self.format.as_str(), "html" | "revealjs")
+        {
+            return Err("Quarto project renders support only html or revealjs output".into());
+        }
+        if self.render_scope == QuartoRenderScope::Project
+            && self.policy == QuartoRenderPolicy::Frozen
+        {
+            return Err("frozen Quarto rendering does not support project scope".into());
         }
         if let Some(profile) = &self.profile {
             if profile.is_empty()
@@ -321,6 +387,30 @@ impl QuartoJobOptions {
             digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
         }) {
             return Err("invalid shared Quarto tree digest".into());
+        }
+        if self.data_inputs.len() > 2000 {
+            return Err("too many declared Quarto data inputs".into());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for path in &self.data_inputs {
+            if !safe_relative_path(path) {
+                return Err(format!("unsafe declared Quarto data input: {path}"));
+            }
+            if !seen.insert(path) {
+                return Err(format!("duplicate declared Quarto data input: {path}"));
+            }
+        }
+        if self.execution_mode == QuartoExecutionMode::IsolatedSnapshot
+            && !self.shared_inventory_complete
+        {
+            return Err(
+                "isolated Quarto snapshots require a complete shared input inventory".into(),
+            );
+        }
+        if self.execution_mode == QuartoExecutionMode::IsolatedSnapshot
+            && self.shared_tree_sha256.is_none()
+        {
+            return Err("isolated Quarto snapshots require a shared tree digest".into());
         }
         Ok(())
     }
@@ -519,5 +609,27 @@ mod tests {
         .expect("parses");
         assert_eq!(request.options.deadline_seconds, DEFAULT_DEADLINE_SECONDS);
         assert_eq!(request.options.max_passes, DEFAULT_MAX_PASSES);
+    }
+
+    #[test]
+    fn quarto_options_keep_legacy_wire_shape_and_gate_snapshots() {
+        let options = QuartoJobOptions {
+            binding_id: "binding".into(),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_value(&options).expect("encode");
+        assert!(encoded.get("execution_mode").is_none());
+        assert!(encoded.get("render_scope").is_none());
+        assert!(encoded.get("data_inputs").is_none());
+        assert!(encoded.get("shared_inventory_complete").is_none());
+        let decoded: QuartoJobOptions = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded.execution_mode, QuartoExecutionMode::WorkingTree);
+
+        let mut snapshot = options;
+        snapshot.execution_mode = QuartoExecutionMode::IsolatedSnapshot;
+        assert!(snapshot.validate().is_err());
+        snapshot.shared_inventory_complete = true;
+        snapshot.shared_tree_sha256 = Some("0".repeat(64));
+        assert!(snapshot.validate().is_ok());
     }
 }

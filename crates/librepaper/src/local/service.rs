@@ -283,6 +283,7 @@ struct Inner {
     port: u16,
     pairing: PairingStore,
     quarto_bindings: BindingStore,
+    previews: Mutex<super::quarto_preview::Previews>,
     runner: Arc<dyn Runner>,
     jobs: Mutex<HashMap<String, JobEntry>>,
     queue: Mutex<VecDeque<String>>,
@@ -320,6 +321,7 @@ impl LocalService {
             port,
             pairing: PairingStore::new(config_home),
             quarto_bindings: BindingStore::new(config_home),
+            previews: Mutex::new(Default::default()),
             runner,
             jobs: Mutex::new(recovered),
             queue: Mutex::new(VecDeque::new()),
@@ -330,6 +332,14 @@ impl LocalService {
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
         LocalService { inner }
+    }
+
+    pub async fn stop_previews(&self) {
+        let mut previews = self.inner.previews.lock().await;
+        let ids: Vec<_> = previews.0.keys().cloned().collect();
+        for id in ids {
+            previews.stop(&id).await;
+        }
     }
 
     pub fn router(&self) -> Router {
@@ -659,6 +669,13 @@ async fn run_reaper(inner: Arc<Inner>) {
     let mut ticker = tokio::time::interval(Duration::from_secs(30));
     loop {
         ticker.tick().await;
+        let active_pairings = inner.pairing.active_pairings();
+        inner
+            .previews
+            .lock()
+            .await
+            .reap(&active_pairings, &inner.quarto_bindings)
+            .await;
         let mut jobs = inner.jobs.lock().await;
         let now = Instant::now();
         let expired: Vec<String> = jobs
@@ -750,6 +767,12 @@ async fn dispatch(
         }
         ["capabilities", "rescan"] if *method == Method::POST => {
             handle_capabilities(inner, headers, origin, true).await
+        }
+        ["previews"] if *method == Method::POST => {
+            handle_preview(inner, headers, origin, None, request).await
+        }
+        ["previews", id] if *method == Method::DELETE || *method == Method::GET => {
+            handle_preview(inner, headers, origin, Some(id), request).await
         }
         ["jobs"] if *method == Method::POST => {
             handle_jobs_post(inner, headers, origin, request).await
@@ -868,9 +891,14 @@ async fn handle_disconnect(inner: &Inner, headers: &HeaderMap, origin: Option<&s
         Ok(project) => project,
         Err(response) => return response,
     };
+    let origin = pairing::normalize_origin(origin.unwrap_or_default());
+    inner.pairing.revoke_one(&origin, &project);
     inner
-        .pairing
-        .revoke_one(origin.unwrap_or_default(), &project);
+        .previews
+        .lock()
+        .await
+        .stop_scope(&origin, &project)
+        .await;
     write_json(200, &json!({"ok": true}))
 }
 
@@ -990,7 +1018,22 @@ async fn handle_jobs_post(
     if let Err(error) = crate::local::engine_adapter::select(&job) {
         return write_json(400, &json!({"error": error}));
     }
+    let previews = inner.previews.lock().await;
     if job.kind == "quarto" {
+        if previews.0.values().any(|p| {
+            job.quarto.as_ref().is_some_and(|q| {
+                p.binding == q.binding_id
+                    || inner
+                        .quarto_bindings
+                        .get_scoped(&q.binding_id, &origin, &project)
+                        .is_some_and(|binding| binding.root == p.root)
+            })
+        }) {
+            return write_json(
+                409,
+                &json!({"error":"Stop managed preview before rendering or publishing."}),
+            );
+        }
         let Some(options) = job.quarto.as_ref() else {
             return write_json(
                 400,
@@ -1504,4 +1547,98 @@ fn plain(status: u16, text: &str) -> Reply {
         StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     set(&mut response, "content-type", "text/plain; charset=utf-8");
     response
+}
+
+async fn handle_preview(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    id: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    let project = match authenticate(inner, headers, origin) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let origin = pairing::normalize_origin(origin.unwrap_or_default());
+    if let Some(id) = id {
+        let mut previews = inner.previews.lock().await;
+        let active_pairings = inner.pairing.active_pairings();
+        previews
+            .reap(&active_pairings, &inner.quarto_bindings)
+            .await;
+        let Some(preview) = previews
+            .0
+            .get(id)
+            .filter(|p| p.origin == origin && p.project == project)
+        else {
+            return plain(404, "preview not found");
+        };
+        if request.method() == Method::GET {
+            let address = preview
+                .url
+                .trim_start_matches("http://")
+                .trim_end_matches('/');
+            let ready = matches!(
+                tokio::time::timeout(
+                    Duration::from_millis(200),
+                    tokio::net::TcpStream::connect(address)
+                )
+                .await,
+                Ok(Ok(_))
+            );
+            return write_json(
+                200,
+                &json!({"id":id, "url":preview.url, "state":if ready { "running" } else { "starting" }}),
+            );
+        }
+        previews.stop(id).await;
+        return write_json(200, &json!({"stopped":true}));
+    }
+    let job = match read_json_body::<JobRequest>(request).await {
+        Ok(job) => job,
+        Err(e) => return e,
+    };
+    if pairing::normalize_origin(&job.origin) != origin || job.project != project {
+        return plain(403, "preview scope mismatch");
+    }
+    let mut job = job;
+    job.origin = origin.clone();
+    if !PROTOCOL_VERSIONS.contains(&job.protocol)
+        || job.kind != "quarto"
+        || job.manifest.len() > MAX_FILES
+    {
+        return plain(400, "invalid preview request");
+    }
+    let mut previews = inner.previews.lock().await;
+    let active_pairings = inner.pairing.active_pairings();
+    previews
+        .reap(&active_pairings, &inner.quarto_bindings)
+        .await;
+    if inner.jobs.lock().await.values().any(|entry| {
+        entry.finished_at.is_none()
+            && entry.request.quarto.as_ref().is_some_and(|q| {
+                job.quarto.as_ref().is_some_and(|p| {
+                    q.binding_id == p.binding_id
+                        || inner
+                            .quarto_bindings
+                            .get_scoped(&q.binding_id, &entry.origin, &entry.project)
+                            .zip(
+                                inner
+                                    .quarto_bindings
+                                    .get_scoped(&p.binding_id, &origin, &project),
+                            )
+                            .is_some_and(|(a, b)| a.root == b.root)
+                })
+            })
+    }) {
+        return plain(409, "Wait for the render job before starting preview");
+    }
+    match previews.start(&job, &inner.quarto_bindings).await {
+        Ok((id, url)) => write_json(
+            201,
+            &json!({"id":id,"url":url,"state":"starting","expires_in":3600}),
+        ),
+        Err(error) => write_json(400, &json!({"error":error})),
+    }
 }

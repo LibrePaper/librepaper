@@ -252,6 +252,9 @@ pub(crate) enum Command {
         key: Option<String>,
         #[arg(long, value_name = "URL")]
         server: Option<String>,
+        /// Show the project files that would be synchronized, then exit
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show or change how a document is shared
     Share {
@@ -651,6 +654,7 @@ pub async fn main() {
             interval,
             key,
             server,
+            dry_run,
         } => {
             crate::cli::sync::sync_document(
                 &id,
@@ -658,6 +662,7 @@ pub async fn main() {
                 server.unwrap_or_default(),
                 interval.unwrap_or_default(),
                 key.unwrap_or_default(),
+                dry_run,
             )
             .await
         }

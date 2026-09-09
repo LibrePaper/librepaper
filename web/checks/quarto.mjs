@@ -80,6 +80,53 @@ assert.match(dialectDraft, /quarto-callout/);
 assert.match(dialectDraft, /href="#fig-trend"/);
 assert.match(dialectDraft, /id="fig-trend"/);
 assert.doesNotMatch(dialectDraft, /\n---\n/);
+const nestedDialect = [
+  "::: {.callout-note #note}", "Outer", "::: {.callout-warning #inner}", "Inner", ":::", ":::", "",
+  "::: {.columns}", "::: {.column}", "Column", ":::", ":::", "",
+  "::: {.panel-tabset}", "## First", ":::", "",
+  "::: {#fig-one}", "Figure caption", ":::", "",
+  "::: {#tbl-one}", "Table caption", ":::", "",
+  "See @fig-one and @tbl-one.",
+].join("\n");
+const nestedParsed = parseQuarto(nestedDialect, { path: "paper.qmd" });
+assert.equal(nestedParsed.divs.find((div) => div.id === "inner").depth, 1);
+const nestedDraft = composeDraft(nestedDialect, { path: "paper.qmd" }).markdown;
+assert.match(nestedDraft, /quarto-callout/);
+assert.match(nestedDraft, /quarto-columns/);
+assert.match(nestedDraft, /quarto-column/);
+assert.match(nestedDraft, /quarto-tabset/);
+assert.match(nestedDraft, /data-quarto-tabset="static"/);
+assert.match(nestedDraft, /Figure 1/);
+assert.match(nestedDraft, /Table 1/);
+assert.match(nestedDraft, /href="#fig-one">Figure 1/);
+assert.match(nestedDraft, /href="#tbl-one">Table 1/);
+const unauthorizedInclude = composeDraft("{{< include ../secret.qmd >}}", {
+  expandIncludes: { "../secret.qmd": "must never appear", "safe.qmd": "safe" },
+});
+assert.doesNotMatch(unauthorizedInclude.markdown, /must never appear/);
+assert.match(unauthorizedInclude.markdown, /Include unavailable/);
+const inlineSource = "Value: `r 1 + 1`.";
+const inlineParsed = parseQuarto(inlineSource, { path: "paper.qmd" });
+const inline = inlineParsed.inlineRecords[0];
+const multiInline = parseQuarto("`r 1 + 1`\n`r 2 + 2`", { path: "paper.qmd" }).inlineRecords;
+assert.deepEqual(multiInline.map((item) => item.id), ["paper.qmd#inline-1-0", "paper.qmd#inline-2-0"]);
+const duplicateInlineSource = "Values: `r 1 + 1`, `r 1 + 1`.";
+const duplicateInline = parseQuarto(duplicateInlineSource, { path: "paper.qmd" }).inlineRecords;
+const duplicateDraft = composeDraft(duplicateInlineSource, {
+  path: "paper.qmd", currentContext: "context-1",
+  inlineValues: duplicateInline.map((item) => ({ ...item, context_sha256: "context-1", value: "2" })),
+});
+assert.equal((duplicateDraft.markdown.match(/quarto-inline-value/g) || []).length, 2);
+const capturedInline = composeDraft(inlineSource, {
+  path: "paper.qmd", currentContext: "context-1",
+  inlineValues: { [inline.id]: { id: inline.id, expression: inline.expression, line: inline.line, context_sha256: "context-1", value: "2" } },
+});
+assert.match(capturedInline.markdown, /quarto-inline-value[^>]*>2</);
+const staleInline = composeDraft(inlineSource, {
+  path: "paper.qmd", currentContext: "context-2",
+  inlineValues: { [inline.id]: { id: inline.id, expression: inline.expression, line: inline.line, context_sha256: "context-1", value: "2" } },
+});
+assert.match(staleInline.markdown, /`r 1 \+ 1`/);
 const mappedTree = await virtualTree({ main: "main.qmd", texts: { "main.qmd": "---\ntitle: Map\n---\n\nProse line\n\n```{r}\nplot(1)\n```\n" } });
 const mappedDiagnostics = mapQuartoDiagnostics([
   { severity: "error", message: "prose", file: "main.md", line: 3, column: 1 },
@@ -127,3 +174,4 @@ const editedCaption = outputMarkup({ outputs:[{ kind:"table", html:"<table></tab
 assert.match(editedCaption, /Current caption/);
 assert.doesNotMatch(editedCaption, /Old caption/);
 console.log("quarto: parser, draft, identity, protocol, and sanitizer scenarios passed");
+assert.doesNotMatch(composeDraft("{{< include hidden.qmd >}}", {expandIncludes:{"hidden.qmd":"```{r}\n#| include: false\nsecret_hidden_code()\n```\nVisible prose"}}).markdown, /secret_hidden_code/);

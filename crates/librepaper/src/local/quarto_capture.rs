@@ -20,6 +20,22 @@ struct CaptureFile {
     schema: u32,
     #[serde(default)]
     candidates: Vec<Candidate>,
+    #[serde(default)]
+    inline: Vec<CapturedInline>,
+}
+
+#[derive(Deserialize)]
+struct CapturedInline {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    expression: String,
+    #[serde(default)]
+    line: usize,
+    #[serde(default)]
+    column: usize,
+    #[serde(default)]
+    value: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +58,7 @@ struct CapturedOutput {
 
 pub struct Capture {
     pub cells: Vec<CellRecord>,
+    pub inline_results: Vec<crate::results::InlineResult>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -173,7 +190,66 @@ pub fn collect(
             outputs,
         });
     }
-    Ok(Capture { cells, diagnostics })
+    let mut inline_results = Vec::new();
+    for record in &parsed.inline_records {
+        let matches: Vec<_> = capture
+            .inline
+            .iter()
+            .filter(|candidate| {
+                let location_matches = (candidate.line == 0 || candidate.line == record.line)
+                    && (candidate.column == 0 || candidate.column == record.column);
+                let expression_matches = candidate.expression == record.expression;
+                let identity_matches = (!candidate.id.is_empty() && candidate.id == record.id)
+                    || (candidate.id.is_empty()
+                        && candidate.line == record.line
+                        && candidate.column == record.column);
+                location_matches && expression_matches && identity_matches
+            })
+            .collect();
+        if matches.len() == 1 {
+            let candidate = matches[0];
+            if candidate.value.is_none() {
+                diagnostics.push(Diagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!("Captured inline expression has no value: {}", record.id),
+                    source_path: Some(source_path.into()),
+                    start_line: Some(record.line),
+                });
+            } else {
+                inline_results.push(crate::results::InlineResult {
+                    id: record.id.clone(),
+                    expression: record.expression.clone(),
+                    source_path: source_path.into(),
+                    line: record.line,
+                    column: record.column,
+                    value: candidate.value.clone().unwrap_or_default(),
+                    context_sha256: None,
+                });
+            }
+        } else if !matches.is_empty() {
+            diagnostics.push(Diagnostic {
+                severity: DiagnosticSeverity::Warning,
+                message: format!("Captured inline expression is ambiguous: {}", record.id),
+                source_path: Some(source_path.into()),
+                start_line: Some(record.line),
+            });
+        } else {
+            diagnostics.push(Diagnostic {
+                severity: DiagnosticSeverity::Warning,
+                message: format!(
+                    "Inline value could not be captured; source expression retained: {}",
+                    record.id
+                ),
+                source_path: Some(source_path.into()),
+                start_line: Some(record.line),
+            });
+        }
+    }
+    Ok(Capture {
+        cells,
+        inline_results,
+        diagnostics,
+    })
 }
 
 fn cell_options(source: &str) -> serde_yaml::Value {
@@ -392,5 +468,66 @@ mod tests {
         .unwrap();
         assert_eq!(captured.cells[0].outputs.len(), 2);
         assert_eq!(captured.cells[0].outputs[1].ordinal, 1);
+    }
+
+    #[test]
+    fn inline_capture_requires_the_source_occurrence_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("capture.json");
+        let source = "Value: `r 1 + 1`.\n";
+        let record = quarto::parse_qmd(source, "paper.qmd").inline_records[0].clone();
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&json!({
+                "schema": 1,
+                "candidates": [],
+                "inline": [{
+                    "id": record.id,
+                    "expression": record.expression,
+                    "line": record.line,
+                    "column": record.column,
+                    "value": "2"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let captured = collect(&file, "paper.qmd", source, dir.path()).unwrap();
+        assert_eq!(captured.inline_results.len(), 1);
+        assert_eq!(captured.inline_results[0].value, "2");
+        assert!(captured.inline_results[0].context_sha256.is_none());
+    }
+
+    #[test]
+    fn inline_capture_preserves_empty_values_and_rejects_identity_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("capture.json");
+        let source = "Value: `r 1 + 1`.\n";
+        let record = quarto::parse_qmd(source, "paper.qmd").inline_records[0].clone();
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&json!({
+                "schema": 1,
+                "candidates": [],
+                "inline": [{"id": record.id.clone(), "expression": "r 2 + 2", "line": record.line, "column": record.column, "value": "wrong"}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let captured = collect(&file, "paper.qmd", source, dir.path()).unwrap();
+        assert!(captured.inline_results.is_empty());
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&json!({
+                "schema": 1,
+                "candidates": [],
+                "inline": [{"id": record.id, "expression": record.expression, "line": record.line, "column": record.column, "value": ""}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let captured = collect(&file, "paper.qmd", source, dir.path()).unwrap();
+        assert_eq!(captured.inline_results.len(), 1);
+        assert_eq!(captured.inline_results[0].value, "");
     }
 }

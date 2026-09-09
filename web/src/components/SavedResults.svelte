@@ -1,6 +1,6 @@
 <script>
   import { safeFragment } from "../lib/results-content.js";
-  let { items = [], assets = {}, renderId = "", canComment = false, selectedRegion = null, oncomment } = $props();
+  let { items = [], assets = {}, renderId = "", canComment = false, selectedRegion = null, onsource, oncomment } = $props();
   let drawingItem = $state(null);
   let drag = $state(null);
   const point = (event) => {
@@ -49,6 +49,7 @@
       <pre class="whitespace-pre-wrap overflow-auto text-sm">{item.output.text || "This result cannot be displayed inline."}</pre>
     {/if}
     {#if item.output.caption}<p class="text-sm">{item.output.caption}</p>{/if}
+    {#if onsource}<button class="btn btn-sm preset-tonal-surface self-start" onclick={() => onsource(item)}>Go to source cell</button>{/if}
     {#if canComment && /^[a-f0-9]{64}$/.test(item.digest)}
       <button class="btn btn-sm preset-tonal-surface self-start" onclick={() => oncomment?.(item)}>Comment on this result</button>
       {#if item.output.kind === "image" && assets[item.output.asset]}

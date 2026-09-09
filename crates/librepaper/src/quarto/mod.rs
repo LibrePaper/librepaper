@@ -21,6 +21,20 @@ pub struct QmdCell {
     pub end_line: usize,
     pub source_sha256: String,
 }
+
+/// A source-located inline computation. The expression and location are kept
+/// together so a captured value can only replace the exact occurrence it came
+/// from; callers must retain the original expression when no matching value
+/// exists or when its context is stale.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InlineExpression {
+    pub id: String,
+    pub expression: String,
+    pub source: String,
+    pub line: usize,
+    pub column: usize,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct QmdDocument {
     pub front_matter: Option<String>,
@@ -29,6 +43,7 @@ pub struct QmdDocument {
     /// records. Their exact bytes participate in the conservative context
     /// fingerprint rather than being guessed from rendered output.
     pub inline_expressions: Vec<String>,
+    pub inline_records: Vec<InlineExpression>,
     pub includes: Vec<String>,
     /// Ordered `path\0sha256` records for shared files outside the main
     /// document. Local execution supplies these from its verified input
@@ -73,7 +88,7 @@ pub fn parse_qmd(source: &str, path: &str) -> QmdDocument {
         let line = lines[index];
         let trimmed = line.trim_end_matches(['\r', '\n']);
         let Some((fence, info)) = opening_fence(trimmed) else {
-            collect_inline_and_include(trimmed, &mut result);
+            collect_inline_and_include(trimmed, index + 1, path, &mut result);
             index += 1;
             continue;
         };
@@ -227,9 +242,39 @@ fn option_label(body: &str) -> Option<String> {
     None
 }
 
-fn collect_inline_and_include(line: &str, result: &mut QmdDocument) {
+fn collect_inline_and_include(
+    line: &str,
+    line_number: usize,
+    path: &str,
+    result: &mut QmdDocument,
+) {
     if line.contains("{{") || has_executable_inline(line) {
         result.inline_expressions.push(line.trim().to_owned());
+    }
+    let mut occurrence = 0;
+    let mut in_tick = false;
+    let mut start = 0;
+    for (index, byte) in line.bytes().enumerate() {
+        if byte != b'`' {
+            continue;
+        }
+        if in_tick {
+            let expression = line[start..index].trim();
+            if executable_inline_segment(expression) {
+                result.inline_records.push(InlineExpression {
+                    id: format!("{path}#inline-{line_number}-{occurrence}"),
+                    expression: expression.to_owned(),
+                    source: line.to_owned(),
+                    line: line_number,
+                    column: start + 1,
+                });
+                occurrence += 1;
+            }
+            in_tick = false;
+        } else {
+            start = index + 1;
+            in_tick = true;
+        }
     }
     let mut offset = 0;
     while let Some(relative) = line[offset..].find("{{<") {
@@ -511,6 +556,16 @@ mod tests {
             computation_fingerprint(&doc, "p.qmd", &[], None),
             computation_fingerprint(&changed, "p.qmd", &[], None)
         );
+    }
+
+    #[test]
+    fn inline_records_keep_occurrence_identity_and_location() {
+        let doc = parse_qmd("Value `r 1 + 1` and `r 2 + 2`.\n", "paper.qmd");
+        assert_eq!(doc.inline_records.len(), 2);
+        assert_eq!(doc.inline_records[0].id, "paper.qmd#inline-1-0");
+        assert_eq!(doc.inline_records[1].id, "paper.qmd#inline-1-1");
+        assert_eq!(doc.inline_records[0].expression, "r 1 + 1");
+        assert_eq!(doc.inline_records[1].column, 22);
     }
 
     #[test]

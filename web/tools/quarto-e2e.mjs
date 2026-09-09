@@ -1,5 +1,5 @@
 // Real Quarto reader workflow: publish source and a complete result bundle
-// through the HTTP API, then exercise Draft/full-output loading in Chromium.
+// through the HTTP API, then exercise Draft/full-output loading in the browser.
 // No local Quarto installation or local pairing is used by this check.
 // Usage: node web/tools/quarto-e2e.mjs [librepaper-binary]
 import assert from "node:assert/strict";
@@ -142,7 +142,7 @@ try {
   assert.equal(browserStatus, 200, `browser document access failed: ${browserStatus}`);
   await tab.navigate(`${base}/docs/${slug}`);
   await until("reader origin", () => tab.evaluate(`location.pathname === ${JSON.stringify(`/docs/${slug}`)}`));
-  const frameText = async () => (await tab.frameEvaluate("document.body.innerText")) || "";
+  const frameText = async () => (await tab.frameEvaluate("document.body.innerText", 2)) || (await tab.frameEvaluate("document.body.innerText")) || "";
   await until("Quarto editor", () => tab.evaluate('!!document.querySelector(".cm-content")'));
   await until("cached draft text", async () => (await frameText()).includes("cached computation text"));
   await until("draft callout", async () => (await frameText()).includes("This callout is part of the draft."));
@@ -240,8 +240,8 @@ try {
 
   await tab.evaluate('([...document.querySelectorAll("button")].find((button) => button.textContent.includes("Quarto output")) || {}).click?.()');
   await until("full Quarto output", async () => (await frameText()).includes("Full artifact"));
-  assert.ok(await tab.frameEvaluate('Boolean(document.querySelector("img[src^=\\"blob:\\"]"))'), "full artifact image dependency is isolated to a blob URL");
-  assert.ok(await tab.frameEvaluate('Boolean(document.querySelector("link[href^=\\"blob:\\"]"))'), "full artifact stylesheet dependency is isolated to a blob URL");
+  assert.ok(await tab.frameEvaluate('document.querySelector("img").src.startsWith("data:")', 2), "full artifact image uses an opaque data URL");
+  assert.ok(await tab.frameEvaluate('document.querySelector("link").href.startsWith("data:")', 2), "full artifact stylesheet uses an opaque data URL");
 
   // Result comments keep the immutable render identity, rather than silently
   // following a later replacement selected for the same context. Exercise

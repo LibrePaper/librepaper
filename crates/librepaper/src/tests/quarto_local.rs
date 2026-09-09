@@ -85,6 +85,15 @@ fn remove_pngs(root: &std::path::Path) {
     }
 }
 
+fn add_manifest_file(directory: &tempfile::TempDir, request: &mut JobRequest, path: &str) {
+    let bytes = std::fs::read(directory.path().join("project").join(path)).unwrap();
+    request.manifest.push(ManifestEntry {
+        path: path.into(),
+        sha256: crate::quarto::sha256(&bytes),
+        size: bytes.len() as u64,
+    });
+}
+
 #[tokio::test]
 #[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
 async fn quarto_managed_job_uses_local_data_and_returns_publishable_bundle() {
@@ -150,6 +159,52 @@ async fn quarto_managed_job_uses_local_data_and_returns_publishable_bundle() {
         );
     }
     crate::quarto::decode_uploads(&manifest, &uploads.into_values().collect::<Vec<_>>()).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
+async fn quarto_managed_job_captures_inline_value_with_context_identity() {
+    let source = r#"---
+format: html
+---
+
+The answer is `r 1 + 1`.
+
+```{r}
+#| label: inline-cell
+1 + 1
+```
+"#;
+    let (directory, bindings, request, workspace) = fixture(source);
+    let (_sender, cancel) = tokio::sync::watch::channel(false);
+    let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let outcome = run_job_with_bindings(request, workspace, cancel, progress, &bindings).await;
+    assert_eq!(outcome.status.status, "done", "{:?}", outcome.status);
+    let manifest: crate::quarto::BundleManifest =
+        serde_json::from_slice(outcome.files.get("quarto-bundle.json").unwrap()).unwrap();
+    let expected = crate::quarto::parse_qmd(source, "paper.qmd")
+        .inline_records
+        .into_iter()
+        .next()
+        .expect("inline source record");
+    let captured = manifest
+        .inline_results
+        .iter()
+        .find(|result| result.id == expected.id)
+        .expect("captured inline result");
+    assert_eq!(captured.expression, expected.expression);
+    assert_eq!(captured.source_path, "paper.qmd");
+    assert_eq!(captured.line, expected.line);
+    assert_eq!(captured.column, expected.column);
+    assert_eq!(captured.value.trim(), "2");
+    assert_eq!(
+        captured.context_sha256.as_deref(),
+        Some(manifest.context.computation_sha256.as_str())
+    );
+    // The browser parser uses the same source occurrence identity, so the
+    // durable result can only attach to this exact inline occurrence.
+    assert_eq!(captured.id, "paper.qmd#inline-5-0");
+    assert!(directory.path().join("project/paper.qmd").is_file());
 }
 
 #[tokio::test]
@@ -327,6 +382,192 @@ async fn quarto_frozen_rebuild_reuses_a_plot_without_running_code() {
 
 #[tokio::test]
 #[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
+async fn quarto_frozen_rebuild_verifies_profiles_and_typed_parameters() {
+    let source = "---\nformat: html\nparams:\n  answer: 0\n---\n```{r}\n#| label: fig-profile\nstopifnot(identical(as.numeric(params$answer), 7))\nwriteLines('executed', 'marker.txt')\nplot(1:5)\n```\n";
+    let (directory, bindings, mut request, _workspace) = fixture(source);
+    let project = directory.path().join("project");
+    std::fs::write(
+        project.join("_quarto.yml"),
+        "project:\n  type: default\nexecute:\n  freeze: true\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("_quarto-review.yml"), "format: html\n").unwrap();
+    add_manifest_file(&directory, &mut request, "_quarto-review.yml");
+    let options = request.quarto.as_mut().unwrap();
+    options.profile = Some("review".into());
+    options
+        .parameters
+        .insert("answer".into(), serde_json::json!(7));
+    let first_workspace = Workspace {
+        root: directory.path().join("render-profile-first"),
+    };
+    std::fs::create_dir(&first_workspace.root).unwrap();
+    let (_sender, cancel) = tokio::sync::watch::channel(false);
+    let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let first = run_job_with_bindings(
+        request.clone(),
+        first_workspace,
+        cancel,
+        progress,
+        &bindings,
+    )
+    .await;
+    assert_eq!(first.status.status, "done", "{:?}", first.status);
+    assert!(project.join("marker.txt").is_file());
+    let cache = project.join("_freeze/paper/execute-results/html.json");
+    let cache_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(cache).unwrap()).unwrap();
+    assert!(cache_json.get("librepaper_context").is_some());
+    std::fs::remove_file(project.join("marker.txt")).unwrap();
+    let mut frozen = request;
+    frozen.quarto.as_mut().unwrap().policy = QuartoRenderPolicy::Frozen;
+    let frozen_workspace = Workspace {
+        root: directory.path().join("render-profile-frozen"),
+    };
+    std::fs::create_dir(&frozen_workspace.root).unwrap();
+    let (_sender, cancel) = tokio::sync::watch::channel(false);
+    let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let result = run_job_with_bindings(frozen, frozen_workspace, cancel, progress, &bindings).await;
+    assert_eq!(result.status.status, "done", "{:?}", result.status);
+    assert!(!project.join("marker.txt").exists());
+    let manifest: crate::quarto::BundleManifest =
+        serde_json::from_slice(&result.files["quarto-bundle.json"]).unwrap();
+    assert!(manifest
+        .assets
+        .iter()
+        .any(|asset| asset.path.ends_with(".png")));
+    assert!(String::from_utf8_lossy(&result.files["artifact.html"]).contains("fig-profile"));
+}
+
+#[tokio::test]
+#[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
+async fn quarto_frozen_rebuild_verifies_nested_included_sources() {
+    let source = "---\nformat: html\n---\n{{< include child.qmd >}}\n```{r}\n#| label: fig-included\nwriteLines('executed', 'marker.txt')\nplot(1:5)\n```\n";
+    let (directory, bindings, mut request, _workspace) = fixture(source);
+    let project = directory.path().join("project");
+    std::fs::write(
+        project.join("child.qmd"),
+        "Child page.\n{{< include nested.md >}}\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("nested.md"), "Nested included text.\n").unwrap();
+    add_manifest_file(&directory, &mut request, "child.qmd");
+    add_manifest_file(&directory, &mut request, "nested.md");
+    std::fs::write(
+        project.join("_quarto.yml"),
+        "project:\n  type: default\nexecute:\n  freeze: true\n",
+    )
+    .unwrap();
+    let first_workspace = Workspace {
+        root: directory.path().join("render-include-first"),
+    };
+    std::fs::create_dir(&first_workspace.root).unwrap();
+    let (_sender, cancel) = tokio::sync::watch::channel(false);
+    let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let first = run_job_with_bindings(
+        request.clone(),
+        first_workspace,
+        cancel,
+        progress,
+        &bindings,
+    )
+    .await;
+    assert_eq!(first.status.status, "done", "{:?}", first.status);
+    std::fs::remove_file(project.join("marker.txt")).unwrap();
+    let mut frozen = request;
+    frozen.quarto.as_mut().unwrap().policy = QuartoRenderPolicy::Frozen;
+    let frozen_workspace = Workspace {
+        root: directory.path().join("render-include-frozen"),
+    };
+    std::fs::create_dir(&frozen_workspace.root).unwrap();
+    let (_sender, cancel) = tokio::sync::watch::channel(false);
+    let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let result = run_job_with_bindings(frozen, frozen_workspace, cancel, progress, &bindings).await;
+    assert_eq!(result.status.status, "done", "{:?}", result.status);
+    assert!(!project.join("marker.txt").exists());
+    let manifest: crate::quarto::BundleManifest =
+        serde_json::from_slice(&result.files["quarto-bundle.json"]).unwrap();
+    assert!(manifest
+        .assets
+        .iter()
+        .any(|asset| asset.path.ends_with(".png")));
+}
+
+#[tokio::test]
+#[ignore = "requires installed Quarto"]
+async fn quarto_project_scope_collects_pages_and_nested_web_resources() {
+    let source = "---\ntitle: Home\nformat: html\n---\n<link rel=\"stylesheet\" href=\"styles.css\">\n<img src=\"assets/logo.svg\" alt=\"logo\">\nHome page.\n";
+    let (directory, bindings, mut request, workspace) = fixture(source);
+    let project = directory.path().join("project");
+    std::fs::write(
+        project.join("_quarto.yml"),
+        "project:\n  type: website\nwebsite:\n  title: Test site\n  navbar:\n    left:\n      - href: paper.qmd\n        text: Home\n      - href: about.qmd\n        text: About\nformat: html\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("about.qmd"),
+        "---\ntitle: About\n---\nAbout page.\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(project.join("assets")).unwrap();
+    std::fs::create_dir_all(project.join("theme")).unwrap();
+    std::fs::write(
+        project.join("styles.css"),
+        "@import url('theme/extra.css'); body { color: #222; }\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("theme/extra.css"), "body { margin: 0; }\n").unwrap();
+    std::fs::write(
+        project.join("assets/logo.svg"),
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"><circle cx=\"4\" cy=\"4\" r=\"3\"/></svg>\n",
+    )
+    .unwrap();
+    for path in [
+        "_quarto.yml",
+        "about.qmd",
+        "styles.css",
+        "theme/extra.css",
+        "assets/logo.svg",
+    ] {
+        add_manifest_file(&directory, &mut request, path);
+    }
+    request.quarto.as_mut().unwrap().render_scope = QuartoRenderScope::Project;
+    let (_sender, cancel) = tokio::sync::watch::channel(false);
+    let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let result = run_job_with_bindings(request, workspace, cancel, progress, &bindings).await;
+    assert_eq!(result.status.status, "done", "{:?}", result.status);
+    let manifest: crate::quarto::BundleManifest =
+        serde_json::from_slice(&result.files["quarto-bundle.json"]).unwrap();
+    let artifact = manifest.artifact.as_ref().expect("project artifact");
+    assert!(artifact.entrypoint == "paper.html" || artifact.entrypoint == "index.html");
+    assert!(
+        manifest
+            .assets
+            .iter()
+            .any(|asset| asset.path == "about.html"),
+        "project assets: {:?}",
+        manifest
+            .assets
+            .iter()
+            .map(|asset| &asset.path)
+            .collect::<Vec<_>>()
+    );
+    assert!(manifest
+        .assets
+        .iter()
+        .any(|asset| asset.path.ends_with("extra.css")));
+    assert!(manifest
+        .assets
+        .iter()
+        .any(|asset| asset.path.ends_with("logo.svg")));
+    assert_eq!(
+        manifest.coverage.cell_outputs,
+        crate::quarto::CoverageLevel::None
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
 async fn quarto_frozen_refuses_missing_or_corrupt_cache_before_execution() {
     let source =
         "---\nformat: html\n---\n```{r}\nwriteLines('executed', 'marker.txt')\nplot(1:5)\n```\n";
@@ -415,4 +656,68 @@ async fn quarto_frozen_refuses_changed_source_before_execution() {
         .as_deref()
         .is_some_and(|error| error.contains("does not match the current source")));
     assert!(!directory.path().join("project/marker.txt").exists());
+}
+
+#[tokio::test]
+#[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
+async fn quarto_isolated_snapshot_does_not_write_the_bound_project() {
+    let (directory, bindings, mut request, workspace) = fixture("# snapshot\n\n```{r}\n#| label: snapshot-data\nstopifnot(read.csv('local.csv')$x == 1)\nwriteLines('snapshot only', 'marker.txt')\nprint('snapshot data read')\n```\n");
+    std::fs::write(directory.path().join("project/local.csv"), "x\n1\n").unwrap();
+    let options = request.quarto.as_mut().unwrap();
+    options.execution_mode = QuartoExecutionMode::IsolatedSnapshot;
+    options.shared_inventory_complete = true;
+    options.shared_tree_sha256 = Some(crate::quarto::sha256(b"snapshot-tree"));
+    options.data_inputs = vec!["local.csv".into()];
+    let (_sender, cancel) = tokio::sync::watch::channel(false);
+    let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let result = run_job_with_bindings(request, workspace, cancel, progress, &bindings).await;
+    assert_eq!(result.status.status, "done", "{:?}", result.status);
+    assert!(!directory.path().join("project/quarto-bundle.json").exists());
+    assert!(!directory.path().join("project/marker.txt").exists());
+    assert!(!directory.path().join("project/.quarto").exists());
+    let manifest: crate::quarto::BundleManifest =
+        serde_json::from_slice(&result.files["quarto-bundle.json"]).unwrap();
+    assert_eq!(
+        manifest.source.verification,
+        crate::results::Verification::IsolatedSnapshot
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires installed Quarto"]
+async fn quarto_book_scope_keeps_chapter_navigation() {
+    let source = "# Preface\n\nBook introduction.\n";
+    let (directory, bindings, mut request, workspace) = fixture(source);
+    let project = directory.path().join("project");
+    std::fs::rename(project.join("paper.qmd"), project.join("index.qmd")).unwrap();
+    std::fs::write(
+        project.join("chapter.qmd"),
+        "# A chapter\n\nChapter content.\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("_quarto.yml"), "project:\n  type: book\nbook:\n  title: Example book\n  chapters:\n    - index.qmd\n    - chapter.qmd\nformat: html\n").unwrap();
+    let binding = bindings
+        .grant(&request.origin, &request.project, &project, "index.qmd")
+        .unwrap();
+    request.manifest[0].path = "index.qmd".into();
+    request.main = "index.qmd".into();
+    let options = request.quarto.as_mut().unwrap();
+    options.binding_id = binding.id;
+    options.main = "index.qmd".into();
+    options.render_scope = QuartoRenderScope::Project;
+    for path in ["chapter.qmd", "_quarto.yml"] {
+        add_manifest_file(&directory, &mut request, path);
+    }
+    let (_sender, cancel) = tokio::sync::watch::channel(false);
+    let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let result = run_job_with_bindings(request, workspace, cancel, progress, &bindings).await;
+    assert_eq!(result.status.status, "done", "{:?}", result.status);
+    let manifest: crate::quarto::BundleManifest =
+        serde_json::from_slice(&result.files["quarto-bundle.json"]).unwrap();
+    assert_eq!(manifest.artifact.as_ref().unwrap().entrypoint, "index.html");
+    assert!(manifest
+        .assets
+        .iter()
+        .any(|asset| asset.path == "chapter.html"));
+    assert!(String::from_utf8_lossy(&result.files["artifact.html"]).contains("chapter.html"));
 }

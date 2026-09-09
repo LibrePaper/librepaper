@@ -141,6 +141,28 @@ function languageOf(info) {
 
 function optionValue(value) { return scalar(value); }
 
+function headingOf(line) {
+  const match = /^ {0,3}#{1,6}\s+(.+?)\s+\{#([A-Za-z][\w:.-]*)\}\s*$/.exec(line);
+  return match ? { text: match[1], id: match[2] } : null;
+}
+
+function inlineOccurrence(line, path, lineNumber, occurrence) {
+  const matches = [];
+  const pattern = /`([^`\n]+)`/g;
+  for (const match of line.matchAll(pattern)) {
+    if (!executableInline(match[0])) continue;
+    matches.push({
+      id: `${path}#inline-${lineNumber}-${occurrence + matches.length}`,
+      expression: match[1].trim(),
+      line: lineNumber,
+      // Rust records the byte column immediately after the opening tick.
+      column: new TextEncoder().encode(line.slice(0, match.index + 1)).length + 1,
+      source: line,
+    });
+  }
+  return matches;
+}
+
 export function parseQuarto(source, { path = "main.qmd" } = {}) {
   source = String(source ?? "");
   const lines = source.split("\n");
@@ -150,6 +172,8 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
   const divs = [];
   const inlineExpressions = [];
   const includes = [];
+  const inlineRecords = [];
+  const headings = [];
   const diagnostics = [...frontMatter.diagnostics];
   const stack = [];
   let fence = null;
@@ -209,16 +233,22 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
       continue;
     }
     if (line.includes("{{") || executableInline(line)) inlineExpressions.push(line.trim());
+    // Occurrence numbering is per source line, matching the native parser.
+    inlineRecords.push(...inlineOccurrence(line, path, i + 1, 0));
     for (const match of line.matchAll(/\{\{<\s*include\s+([^ >]+).*?>\}\}/g)) includes.push(match[0]);
+    const heading = headingOf(line);
+    if (heading) headings.push({ ...heading, startLine: i });
     const div = DIV_FENCE.exec(line);
     if (div) {
       const info = String(div[2] || "").trim();
       if (!info) {
-        if (stack.length) stack.pop();
+        if (stack.length) stack[stack.length - 1].endLine = i;
+        stack.pop();
       } else {
         const parsed = parseAttributes(info);
-        stack.push({ startLine: i, fence: div[1], info, ...parsed });
-        divs.push(stack[stack.length - 1]);
+        const entry = { startLine: i, endLine: null, depth: stack.length, fence: div[1], info, ...parsed };
+        stack.push(entry);
+        divs.push(entry);
       }
     }
   }
@@ -238,7 +268,7 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
   return {
     schema: "librepaper-quarto-source/v1", path, source,
     frontMatter, metadata: frontMatter.value, cells, divs, diagnostics,
-    inlineExpressions, includes,
+    inlineExpressions, inlineRecords, includes, headings,
     spans: { frontMatter: [frontMatter.start, frontMatter.end], cells: cells.map((cell) => cell.span) },
   };
 }
@@ -258,7 +288,7 @@ function outputFor(bundle, cell) {
     (cell.label && entries.find((entry) => entry.label === cell.label && entry.source_path === cell.path && !entry.ambiguous && entry.coverage !== "ambiguous")) || null;
 }
 
-function outputMarkup(output, assets = {}, cell = null) {
+function outputMarkup(output, assets = {}, cell = null, references = new Map()) {
   if (!output || output.coverage === "hidden" || output.coverage === "unavailable") return "";
   const outputs = Array.isArray(output.outputs) ? output.outputs : [output];
   return outputs.map((item, index) => {
@@ -267,13 +297,17 @@ function outputMarkup(output, assets = {}, cell = null) {
       if (!url) return `<div class="quarto-output-missing">Saved image is unavailable.</div>`;
       const label = index === 0 && cell?.label && /^(?:fig|tbl)-/.test(cell.label) ? ` id="${escapeHtml(cell.label)}"` : "";
       const caption = (outputs.length === 1 && (cell?.options?.["fig-cap"] || cell?.options?.["tbl-cap"])) || item.caption || "";
-      return `<figure class="quarto-cached-output"${label} data-librepaper-generated="quarto"><img src="${escapeHtml(url)}" alt="${escapeHtml(item.alt || cell?.options?.["fig-alt"] || "")}">${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ""}</figure>`;
+      const target = cell?.label ? references.get(cell.label) : null;
+      const number = target && (target.kind === "fig" || target.kind === "tbl") ? `<span class="quarto-figure-number">${target.kind === "fig" ? "Figure" : "Table"} ${target.number}.</span> ` : "";
+      return `<figure class="quarto-cached-output"${label} data-librepaper-generated="quarto"><img src="${escapeHtml(url)}" alt="${escapeHtml(item.alt || cell?.options?.["fig-alt"] || "")}">${caption ? `<figcaption>${number}${escapeHtml(caption)}</figcaption>` : number ? `<figcaption>${number.trim()}</figcaption>` : ""}</figure>`;
     }
     if (item.kind === "table") {
       const label = index === 0 && cell?.label && /^tbl-/.test(cell.label) ? ` id="${escapeHtml(cell.label)}"` : "";
       const html = safeFragment(item.html || item.text || "");
       const caption = (outputs.length === 1 && cell?.options?.["tbl-cap"]) || item.caption || "";
-      return `<div class="quarto-cached-table"${label} data-librepaper-generated="quarto">${html}${caption ? `<div class="quarto-table-caption">${escapeHtml(caption)}</div>` : ""}</div>`;
+      const target = cell?.label ? references.get(cell.label) : null;
+      const number = target?.kind === "tbl" ? `<span class="quarto-figure-number">Table ${target.number}.</span> ` : "";
+      return `<div class="quarto-cached-table"${label} data-librepaper-generated="quarto">${html}${caption || number ? `<div class="quarto-table-caption">${number}${escapeHtml(caption)}</div>` : ""}</div>`;
     }
     if (item.kind === "html") return `<div data-librepaper-generated="quarto">${safeFragment(item.html || item.text || "")}</div>`;
     return `<div class="quarto-cached-text" data-librepaper-generated="quarto"><pre><code>${escapeHtml(item.text ?? item.value ?? "")}</code></pre></div>`;
@@ -289,7 +323,36 @@ function htmlId(value) {
   return /^[A-Za-z][\w:.-]*$/.test(text) ? text : "";
 }
 
-function divMarkup(info, closing = false) {
+function referenceKind(id) {
+  const match = /^(fig|tbl|sec|eq|lst)-/.exec(String(id || "").split("#").pop());
+  return match?.[1] || "";
+}
+
+function referencesFor(parsed) {
+  const targets = [
+    ...(parsed.headings || []),
+    ...(parsed.divs || []),
+    ...(parsed.cells || []).filter((cell) => cell.label),
+  ].filter((item) => item?.id && referenceKind(item.id));
+  targets.sort((left, right) => left.startLine - right.startLine);
+  const counts = new Map();
+  const references = new Map();
+  for (const target of targets) {
+    const id = target.id;
+    if (references.has(id)) continue;
+    const kind = referenceKind(id);
+    const number = (counts.get(kind) || 0) + 1;
+    counts.set(kind, number);
+    references.set(id, { id, kind, number, startLine: target.startLine });
+    // Cell labels are stored without the source path, while div and heading
+    // IDs are already document-local. Resolve both spellings for callers.
+    const short = id.split("#").pop();
+    if (short && !references.has(short)) references.set(short, { id, kind, number, startLine: target.startLine });
+  }
+  return references;
+}
+
+function divMarkup(info, closing = false, references = new Map()) {
   if (closing) return "</div>";
   const attributes = parseAttributes(info);
   const classes = htmlClass(attributes.classes.join(" "));
@@ -297,8 +360,20 @@ function divMarkup(info, closing = false) {
   const callout = attributes.classes.find((item) => /^callout-/.test(item));
   const label = callout ? String(attributes.attributes.title || callout.slice("callout-".length)).replace(/^[a-z]/, (c) => c.toUpperCase()) : "";
   const heading = label ? `<div class="quarto-callout-title">${escapeHtml(label)}</div>` : "";
-  const className = htmlClass([classes, "quarto-div", callout ? "quarto-callout" : ""].filter(Boolean).join(" "));
-  return `<div${id ? ` id="${escapeHtml(id)}"` : ""}${className ? ` class="${escapeHtml(className)}"` : ""}>${heading}`;
+  const semantic = attributes.classes.includes("columns") ? "quarto-columns"
+    : attributes.classes.includes("column") ? "quarto-column"
+      : attributes.classes.includes("panel-tabset") ? "quarto-tabset" : "";
+  const target = id ? references.get(id) : null;
+  const number = target && (target.kind === "fig" || target.kind === "tbl")
+    ? `<span class="quarto-figure-number">${target.kind === "fig" ? "Figure" : "Table"} ${target.number}.</span> ` : "";
+  const className = htmlClass([classes, "quarto-div", semantic, callout ? "quarto-callout" : ""].filter(Boolean).join(" "));
+  const layout = attributes.classes.includes("panel-tabset")
+    ? ` data-quarto-tabset="static" role="group" aria-label="Tabset sections"`
+    : attributes.classes.includes("columns")
+      ? ` data-quarto-layout="columns" role="group" aria-label="Columns" style="display:flex;flex-wrap:wrap;gap:1.5rem"`
+      : attributes.classes.includes("column") ? ` style="flex:1 1 16rem;min-width:0"`
+        : callout ? ` role="note" style="border-inline-start:.25rem solid currentColor;padding:.5rem 1rem;margin-block:1rem"` : "";
+  return `<div${id ? ` id="${escapeHtml(id)}"` : ""}${className ? ` class="${escapeHtml(className)}"` : ""}${layout}>${heading}${number}`;
 }
 
 function metadataMarkup(parsed) {
@@ -318,21 +393,44 @@ function metadataMarkup(parsed) {
   return parts.join("");
 }
 
-function proseLine(line, labels) {
+function inlineValueFor(values, record, currentContext = "") {
+  if (!values || !record) return null;
+  const candidate = Array.isArray(values)
+    ? values.find((item) => item?.id === record.id)
+    : values[record.id];
+  if (!candidate || typeof candidate !== "object" || candidate.expression !== record.expression || Number(candidate.line) !== record.line) return null;
+  if (candidate.source_path != null && candidate.source_path !== record.id.split("#", 1)[0]) return null;
+  if (candidate.column != null && Number(candidate.column) !== record.column) return null;
+  if (!currentContext || candidate.context_sha256 !== currentContext) return null;
+  const value = candidate.text ?? candidate.value;
+  return value == null ? null : String(value);
+}
+
+function proseLine(line, labels, { lineNumber = 0, inlineRecords = [], inlineValues = null, currentContext = "" } = {}) {
   // Keep inline code and links opaque while making the common Quarto cross
   // references readable.  An unresolved reference remains source text.
+  const inlineOrdinals = new Map();
   const chunks = String(line).split(/(`[^`]*`|!?\[[^\]]*\]\([^)]*\))/g);
   return chunks.map((chunk, index) => {
-    if (index % 2) return chunk;
+    if (index % 2) {
+      const expression = chunk.slice(1, -1).trim();
+      const ordinal = inlineOrdinals.get(expression) || 0;
+      inlineOrdinals.set(expression, ordinal + 1);
+      const record = inlineRecords.filter((item) => item.line === lineNumber && item.expression === expression)[ordinal];
+      const value = inlineValueFor(inlineValues, record, currentContext);
+      return value == null ? chunk : `<span class="quarto-inline-value" data-inline-id="${escapeHtml(record.id)}" title="Captured inline result" aria-label="Captured inline result from saved computation">${escapeHtml(value)}</span>`;
+    }
     return chunk.replace(/@(fig|tbl|sec|eq|lst)-([A-Za-z0-9_:-]+(?:\.[A-Za-z0-9_:-]+)*)/g, (whole, kind, label) => {
       const id = `${kind}-${label}`;
-      if (!labels.has(id)) return whole;
-      return `<a class="quarto-crossref" href="#${escapeHtml(id)}">${kind === "fig" ? "Figure" : kind === "tbl" ? "Table" : kind === "sec" ? "Section" : kind === "eq" ? "Equation" : "Listing"} ${escapeHtml(label)}</a>`;
+      const target = labels instanceof Map ? labels.get(id) : null;
+      if (!target && !(labels instanceof Set && labels.has(id))) return whole;
+      const noun = kind === "fig" ? "Figure" : kind === "tbl" ? "Table" : kind === "sec" ? "Section" : kind === "eq" ? "Equation" : "Listing";
+      return `<a class="quarto-crossref" href="#${escapeHtml(id)}">${noun} ${target?.number || escapeHtml(label)}</a>`;
     }).replace(/\[([^\]]+)\]\{#([A-Za-z][\w:.-]*)\}/g, (_, text, id) => `<span id="${escapeHtml(id)}">${text}</span>`);
   }).join("");
 }
 
-export function composeDraft(source, { path = "main.qmd", bundle = null, assets = {}, expandIncludes: includes = {}, maxIncludeDepth = 8, cellFingerprints = {} } = {}) {
+export function composeDraft(source, { path = "main.qmd", bundle = null, assets = {}, expandIncludes: includes = {}, maxIncludeDepth = 8, cellFingerprints = {}, inlineValues = null, currentContext = "" } = {}) {
   const parsed = parseQuarto(source, { path });
   for (const cell of parsed.cells) {
     cell.source_sha256 = cellFingerprints[cell.id]?.sha256 || "";
@@ -342,6 +440,7 @@ export function composeDraft(source, { path = "main.qmd", bundle = null, assets 
   const out = [];
   const lineMap = [];
   const generatedDiagnostics = [];
+  const references = referencesFor(parsed);
   const push = (text, sourceLine = null) => {
     const value = String(text ?? "");
     const parts = value.split("\n");
@@ -359,18 +458,46 @@ export function composeDraft(source, { path = "main.qmd", bundle = null, assets 
   const frontMatterText = parsed.frontMatter.end ? source.slice(0, parsed.frontMatter.end) : "";
   const frontMatterLines = frontMatterText ? frontMatterText.split("\n").length - (frontMatterText.endsWith("\n") ? 1 : 0) : 0;
   const defaults = parsed.metadata.execute && typeof parsed.metadata.execute === "object" ? parsed.metadata.execute : {};
-  const expandedInclude = (name, depth = 0, seen = new Set()) => {
-    if (depth >= maxIncludeDepth || seen.has(name)) {
-      generatedDiagnostics.push({ severity: "warning", generated: true, message: `Include cycle or depth limit: ${name}`, file: path, line: 0, column: 0 });
-      return `<span class="quarto-diagnostic">Include cycle or depth limit: ${escapeHtml(name)}</span>`;
+  const resolveInclude = (name, sourceName) => {
+    const requested = String(name || "").replaceAll("\\", "/");
+    if (!requested || requested.startsWith("/") || /^[A-Za-z]:/.test(requested) || requested.split("/").some((part) => !part)) return null;
+    const base = String(sourceName || path).split("/");
+    base.pop();
+    const parts = [...base, ...requested.split("/")];
+    const normalizedParts = [];
+    for (const part of parts) {
+      if (part === ".") continue;
+      if (part === "..") {
+        if (!normalizedParts.length) return null;
+        normalizedParts.pop();
+      } else normalizedParts.push(part);
     }
-    const value = includes[name];
-    if (value == null) {
-      generatedDiagnostics.push({ severity: "warning", generated: true, message: `Include unavailable: ${name}`, file: path, line: 0, column: 0 });
+    const normalized = normalizedParts.join("/");
+    if (Object.prototype.hasOwnProperty.call(includes, normalized)) return normalized;
+    if (Object.prototype.hasOwnProperty.call(includes, requested)) return requested;
+    return null;
+  };
+  const expandedInclude = (name, depth = 0, seen = new Set(), sourceName = path, sourceLine = 0) => {
+    const normalized = resolveInclude(name, sourceName);
+    if (!normalized) {
+      generatedDiagnostics.push({ severity: "warning", generated: true, message: `Include unavailable or unauthorized: ${name}`, file: sourceName, line: sourceLine, column: 0 });
       return `<span class="quarto-diagnostic">Include unavailable: ${escapeHtml(name)}</span>`;
     }
-    const next = new Set(seen).add(name);
+    if (depth >= maxIncludeDepth || seen.has(normalized)) {
+      generatedDiagnostics.push({ severity: "warning", generated: true, message: `Include cycle or depth limit: ${normalized}`, file: sourceName, line: sourceLine, column: 0 });
+      return `<span class="quarto-diagnostic">Include cycle or depth limit: ${escapeHtml(normalized)}</span>`;
+    }
+    const value = includes[normalized];
+    const next = new Set(seen).add(normalized);
     const includedLines = String(value).split("\n");
+    const includedParsed = parseQuarto(value, {path:normalized});
+    const includedDefaults = {...defaults, ...(includedParsed.metadata.execute || {})};
+    for (const cell of includedParsed.cells) {
+      const visibility = {...includedDefaults, ...cell.options};
+      if (visibility.include === false || visibility.echo === false) {
+        for (let line = cell.startLine; line <= cell.endLine; line++) includedLines[line] = "";
+      }
+    }
     let includedFence = null;
     return includedLines.map((includedLine) => {
       if (includedFence) {
@@ -380,7 +507,7 @@ export function composeDraft(source, { path = "main.qmd", bundle = null, assets 
       }
       const opener = /^ {0,3}(`{3,}|~{3,})/.exec(includedLine);
       if (opener) includedFence = { char: opener[1][0], length: opener[1].length };
-      return includedLine.replace(INCLUDE, (_, child) => expandedInclude(child, depth + 1, next));
+      return includedLine.replace(INCLUDE, (_, child) => expandedInclude(child, depth + 1, next, normalized, 0));
     }).join("\n");
   };
   for (let i = 0; i < lines.length; i += 1) {
@@ -403,18 +530,26 @@ export function composeDraft(source, { path = "main.qmd", bundle = null, assets 
       if (opaque) opaqueFence = { char: opaque[1][0], length: opaque[1].length };
       if (!opaque) {
         const div = DIV_FENCE.exec(line);
-        if (div) line = div[2] ? divMarkup(div[2]) : divMarkup("", true);
-        else line = line.replace(INCLUDE, (_, name) => expandedInclude(name));
-        line = proseLine(line, labels);
+        if (div) line = div[2] ? divMarkup(div[2], false, references) : divMarkup("", true, references);
+        else line = line.replace(INCLUDE, (_, name) => expandedInclude(name, 0, new Set(), path, i + 1));
+        line = proseLine(line, references, {
+          lineNumber: i + 1,
+          inlineRecords: parsed.inlineRecords,
+          inlineValues: inlineValues || bundle?.inline_results || bundle?.inline || bundle?.inline_values || null,
+          currentContext: currentContext || bundle?.context?.computation_sha256 || "",
+        });
       }
-      push(line, i);
+      // Included text has no one-to-one source line in the main qmd. Keep
+      // diagnostics generated from it unmapped instead of attaching them to
+      // the include directive or a nearby authored paragraph.
+      push(line, lines[i].includes("{{<") ? null : i);
       continue;
     }
     const options = { ...defaults, ...cell.options };
     const include = options.include !== false;
     const echo = options.echo !== false && include;
     const outputEntry = options.output !== false && include && options.eval !== false ? outputFor(bundle, cell) : null;
-    const output = outputMarkup(outputEntry, assets, cell);
+    const output = outputMarkup(outputEntry, assets, cell, references);
     if (echo) {
       const fence = lines[i].match(/^\s*(`{3,}|~{3,})/)?.[1] || "```";
       const info = lines[i].trim().slice(fence.length).trim();

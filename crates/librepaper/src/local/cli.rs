@@ -197,6 +197,7 @@ async fn start(port: u16, foreground: bool) {
         eprintln!("error: {err}");
     }
 
+    service.stop_previews().await;
     pairing.remove_service();
     println!("librepaper local stopped");
 }

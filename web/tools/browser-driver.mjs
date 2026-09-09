@@ -69,10 +69,11 @@ export async function browser(name, directory, port) {
         close, evaluate,
         setCookie: (name, value) => evaluate(`document.cookie = ${JSON.stringify(`${name}=${value}; path=/`)}`),
         navigate: (url) => send("browsingContext.navigate", { context, url, wait: "complete" }),
-        frameEvaluate: async (expression) => {
+        frameEvaluate: async (expression, depth = 1) => {
           const tree = await send("browsingContext.getTree", { root: context });
-          const frame = tree.contexts[0].children?.[0]?.context;
-          return frame ? evaluate(expression, frame) : null;
+          let node = tree.contexts[0];
+          for (let level = 0; level < depth; level++) node = node?.children?.[0];
+          return node ? evaluate(expression, node.context) : null;
         },
         text: async () => {
           const tree = await send("browsingContext.getTree", { root: context });

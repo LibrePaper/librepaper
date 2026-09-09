@@ -621,6 +621,12 @@ async function buildQuartoForm({ job, tree, options = {} }) {
   if (!manifest.some((file) => file.path === request.quarto.main)) {
     throw new Error(`Quarto project is missing its entrypoint: ${request.quarto.main}`);
   }
+  if (options.renderScope === "project") request.quarto.render_scope = "project";
+  if (options.executionMode === "isolated-snapshot") {
+    request.quarto.execution_mode = "isolated-snapshot";
+    request.quarto.shared_inventory_complete = true;
+    request.quarto.data_inputs = (options.dataInputs || []).map(relativePath);
+  }
   return formOf(request, files);
 }
 
@@ -882,4 +888,21 @@ export async function cancelQuarto(jobId) {
   if (!jobId) throw new Error("a Quarto job id is required");
   await send("POST", `jobs/${encodeURIComponent(jobId)}/cancel`, { token: pairing.token });
   return true;
+}
+
+export async function startQuartoPreview(input) {
+  const pairing = requirePairing();
+  const form = await buildQuartoForm(input);
+  const request = JSON.parse(await form.get("job").text());
+  const response = await send("POST", "previews", { token:pairing.token, jsonBody:request });
+  return response.json();
+}
+export async function stopQuartoPreview(id) {
+  const pairing = requirePairing();
+  await send("DELETE", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
+}
+export async function quartoPreviewStatus(id) {
+  const pairing = requirePairing();
+  const response = await send("GET", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
+  return response.json();
 }

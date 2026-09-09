@@ -75,9 +75,9 @@ chacha20poly1305 = "0.10"
 # The authoritative local catalogue.  Bundling keeps local deployments and
 # file-backed tests independent of the host's SQLite installation.
 rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 # A font file for the tests to put in a library.
 typst-assets = { version = "=0.15.1", features = ["fonts"] }
 sha1 = "0.10"
