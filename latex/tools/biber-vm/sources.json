@@ -10,10 +10,10 @@
   "biber": {
     "version": "2.21",
     "requirement_evidence": {
-      "browser_release_biblatex": "https://texlive.corca.ai/snapshots/2026-ba38749b8714505a/2026/pdftex/26/biblatex.sty",
+      "browser_release_biblatex": "https://latex.librepaper.workers.dev/engines/3b5c99d5f6da42999565e6bc912fb615d10d892e6a24653316ea0647a9572849/bundles/b/fcac67967a39ffbd537851ff2018664f5bdff8012a17ba6b0e6b9b8fdd7dad0a/tex-latex-biblatex.tar",
       "found": "\\def\\blx@bcfversion{3.11}",
-      "conclusion": "bcf format 3.11 requires Biber 2.21, matching manifest.releases.<id>.bibliography.biber.compatible = [\"2.21\"] in docs/specs/latex-interfaces.md section 1.",
-      "local_texlive_2025_cross_check": "The developer machine's TeX Live 2025 (nixos.org build) also ships biblatex with \\blx@bcfversion{3.11}, so the local fixture .bcf used for vm-smoke.mjs is bit-compatible with the browser release's expectation."
+      "conclusion": "The current manifest pairs BCF format 3.11 with Biber 2.22. This VM's Biber 2.21 receipt belongs to an earlier browser release and must not be used with the current release.",
+      "local_texlive_2025_cross_check": "The developer machine's TeX Live 2025 (nixos.org build) also ships biblatex with \\blx@bcfversion{3.11}; this cross-check documents the old VM pairing, not current-release compatibility."
     },
     "option_evaluation": {
       "a_debian_bookworm_package": {

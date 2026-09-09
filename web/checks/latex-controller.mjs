@@ -91,9 +91,8 @@ FakeWorker.onCreate = (instance) => {
 const worker = () => liveWorker;
 
 // Format 1: `releases[id]` carries `engines`/`files`/`bundles`/
-// `bibliography`/`source` and no per-file TeX Live snapshot -- there is no
-// `texlive`/`bloom`/`initial` section any more, and every release resolves
-// through its `bundles` index. `FakeWorker` above answers `configure`
+// `bibliography`/`source`, and resolves package files through its bundles
+// index. `FakeWorker` above answers `configure`
 // unconditionally, so these fields are for realism against `latex.js`'s own
 // reads of the manifest rather than exercised by `worker.js` itself here;
 // section 15 below drives the real `worker.js` and its `format`/`bundles`
@@ -904,3 +903,84 @@ function nextProject() {
 
 latex._testing.reset();
 console.log("latex controller: queue, bibliography reuse, routing and lifecycle checks passed");
+
+// Unshipped LuaLaTeX must report the release limitation even if a local
+// compiler is available, without downloading any engine.
+{
+  latex._testing.inject({ worker: FakeWorker, fetch: async () => jsonResponse(MANIFEST),
+    local: { capabilities() { throw new Error('must not probe local'); }, runTex() { throw new Error('must not compile locally'); } } });
+  latex.configure({ project: nextProject(), settings: { engine: 'lualatex', release: 'r1' } });
+  const result = await latex.compile(tree('main.tex', 'LuaLaTeX selection'));
+  assert.equal(result.ok, false);
+  assert.match(result.failure.message, /not available in this release/);
+  assert.equal(result.attempts.length, 0);
+  latex._testing.reset();
+}
+
+// Releases that ship Biber use it without probing local LibrePaper or the VM.
+{
+  const browserManifest = structuredClone(MANIFEST);
+  browserManifest.releases.r1.engines.biber = { worker: 'biber.worker.js' };
+  let runs = 0;
+  const browserBiber = { async runBiber(request, { signal, release }) {
+    assert.equal(signal.aborted, false);
+    assert.ok(release.engines.biber);
+    runs++;
+    return { ok: true, bbl: enc.encode('BROWSER-BBL'), blg: '', tool: { backend: 'browser', version: '2.22' } };
+  } };
+  const fetched = [];
+  const fetch = async url => { fetched.push(String(url)); return jsonResponse(browserManifest); };
+  latex._testing.reset();
+  latex._testing.inject({ worker: FakeWorker, fetch, biber: browserBiber,
+    local: { runBiber() { throw new Error('must not invoke local'); } },
+    vm: { runBiber() { throw new Error('must not invoke VM'); } } });
+  latex.configure({ project: nextProject(), settings: { engine: 'pdflatex', release: 'r1' } });
+  const bcf = enc.encode('<bcf:controlfile version="3.11"><bcf:datasource>refs.bib</bcf:datasource></bcf:controlfile>');
+  FakeWorker.nextTexReplies = [
+    { status: 0, pdf: PDF, log: 'Please (re)run Biber', outputs: { 'main.bcf': bcf } },
+    { status: 0, pdf: PDF, log: '', outputs: { 'main.bcf': bcf, 'main.bbl': enc.encode('BROWSER-BBL') } },
+  ];
+  const input = tree('main.tex', 'citations', { 'refs.bib': enc.encode('@book{a,}') });
+  const first = await latex.compile(input);
+  assert.equal(first.ok, true);
+  assert.equal(first.provenance.bibliography, 'browser-biber');
+  assert.equal(runs, 1);
+  assert.ok(fetched.every(url => !url.includes('/api/config')));
+  worker().texReplies = [{ status: 0, pdf: PDF, log: 'Please (re)run Biber', outputs: { 'main.bcf': bcf } }];
+  const second = await latex.compile(tree('main.tex', 'prose edit', input.assets));
+  assert.equal(second.ok, true);
+  assert.equal(second.provenance.bibliography, 'browser-biber');
+  assert.equal(runs, 1, 'same bibliography inputs reuse the Biber cache');
+
+  // TeX can reuse a BBL without noticing that its source .bib changed.
+  // The controller must compare the bibliography inputs even without a
+  // rerun warning, then typeset the newly generated BBL.
+  latex._testing.inject({ biber: { async runBiber() {
+    runs++;
+    return { ok: true, bbl: enc.encode('UPDATED-BBL'), blg: '', tool: { backend: 'browser', version: '2.22' } };
+  } } });
+  worker().texReplies = [
+    { status: 0, pdf: PDF, log: '', outputs: { 'main.bcf': bcf, 'main.bbl': enc.encode('BROWSER-BBL') } },
+    { status: 0, pdf: PDF, log: '', outputs: { 'main.bcf': bcf, 'main.bbl': enc.encode('UPDATED-BBL') } },
+  ];
+  const changed = await latex.compile(tree('main.tex', 'prose edit', { 'refs.bib': enc.encode('@book{a,title={Changed}}') }));
+  assert.equal(changed.ok, true);
+  assert.equal(runs, 2, 'a bibliography edit reruns Biber without a TeX warning');
+  assert.equal(worker().texReplies.length, 1, 'the updated BBL is typeset in another pass');
+
+  let aborted = false;
+  latex.configure({ project: nextProject(), settings: { engine: 'pdflatex', release: 'r1' } });
+  latex._testing.inject({ biber: { runBiber(_request, { signal }) {
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => { aborted = true; reject(new DOMException('canceled', 'AbortError')); }, { once: true }));
+  } } });
+  FakeWorker.nextTexReplies = [{ status: 0, pdf: PDF, log: 'Please (re)run Biber', outputs: { 'main.bcf': bcf } }];
+  const pending = latex.compile(input);
+  const rejected = pending.catch(e => e);
+  assert.ok(await until(() => latex.status().phase === 'browser-biber'));
+  await tick(5);
+  latex.cancel();
+  assert.equal((await rejected).name, 'Superseded');
+  assert.equal(aborted, true);
+  latex._testing.reset();
+  console.log('latex controller: release-provided Biber, cache reuse, provenance, and cancellation checked');
+}

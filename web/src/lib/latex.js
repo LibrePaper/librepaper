@@ -74,6 +74,8 @@ let base = DEFAULT_BASE;
 let WorkerClass = typeof Worker !== "undefined" ? Worker : null;
 let localOverride; // undefined = try the real module; anything else, including null, is used as-is
 let vmOverride;
+let biberOverride;
+let biberModule;
 let resourcesOverride;
 let fetchImpl = (...args) => fetch(...args);
 let nowImpl = () => Date.now();
@@ -455,7 +457,7 @@ function classifyLocalError(error) {
 // --- Small helpers over trees and worker outputs ----------------------------
 
 function stemOf(main) {
-  return String(main || "main.tex").replace(/\.[^./]+$/, "");
+  return String(main || "main.tex").split("/").pop().replace(/\.[^./]+$/, "");
 }
 
 function normalizeOutputs(raw) {
@@ -545,7 +547,27 @@ async function vmEligibility() {
   }
 }
 
-async function runBibliography({ request, attempts, engine }) {
+async function runBibliography({ request, attempts, engine, release, token }) {
+  if (release?.engines?.biber) {
+    statusStore.set({ phase: "browser-biber", message: "Updating bibliography in browser", backend: "browser" });
+    try {
+      const backend = biberOverride !== undefined ? biberOverride : (biberModule ||= await import("./latex/biber.js"));
+      if (token.cancelled) throw supersededError();
+      const outcome = await backend.runBiber(request, {
+        base: absoluteBase(), release, signal: token.abort.signal,
+        onProgress: progress => { if (!token.cancelled) statusStore.set({ progress }); },
+      });
+      if (token.cancelled) throw supersededError();
+      attempts.push({ stage: "browser-biber", backend: "browser", ok: outcome.ok, log: outcome.blg || "", tool: outcome.tool?.version });
+      if (!outcome.ok) return { ok: false, failure: { kind: "bibliography", message: outcome.error || outcome.blg || "Biber failed", stage: "browser-biber" } };
+      return { ok: true, result: outcome };
+    } catch (error) {
+      if (token.cancelled || error?.name === "AbortError") throw supersededError();
+      // A runtime/download failure can still use the existing local fallback.
+      // A Biber input error above is terminal and is never rerun elsewhere.
+      attempts.push({ stage: "browser-biber", backend: "browser", ok: false, reason: "init", log: String(error) });
+    }
+  }
   routeState = { ...routeState, snapshot: request.job.snapshot };
   let decision = route.decide(
     { type: "biber-needed", identity: request.identity, validBcf: Boolean(request.bcf), vmSupported: await vmEligibility() },
@@ -845,6 +867,13 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       provenance: baseProvenance(engine, releaseId),
     });
   }
+  if (engine === "lualatex" && !releaseEntry.engines?.luatex) {
+    return buildResult({
+      job, attempts, startedAt, ok: false,
+      failure: { kind: "resources", message: "LuaLaTeX is not available in this release", stage: "browser" },
+      provenance: baseProvenance(engine, releaseId),
+    });
+  }
   // "Keep that project on the native route for the current editing session."
   if (routeState.route === "native") {
     return runNative({ job, tree, engine, releaseId, attempts, startedAt });
@@ -968,9 +997,13 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       }
     }
 
-    if (inspected.biber || inspected.bibtex || inspected.bibtex8) {
-      const kind = inspected.biber ? "biber" : inspected.bibtex8 ? "bibtex8" : "bibtex";
-      const controlBytes = inspected.biber ? inspected.bcf : outputs[`${stem}.aux`];
+    // A .bib edit need not make TeX request Biber: compare the actual inputs
+    // on the first pass even when an earlier BBL is already staged.
+    const useBiber = inspected.biber || (releaseEntry.engines?.biber && inspected.bcf && passes === 1);
+    let bibliographyChanged = false;
+    if (useBiber || inspected.bibtex || inspected.bibtex8) {
+      const kind = useBiber ? "biber" : inspected.bibtex8 ? "bibtex8" : "bibtex";
+      const controlBytes = useBiber ? inspected.bcf : outputs[`${stem}.aux`];
       const files = {};
       for (const path of [...inspected.bibFiles, ...inspected.styleFiles, ...inspected.configFiles]) {
         const bytes = fileBytes(tree, path);
@@ -980,10 +1013,11 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
       let bibResult = bibCache.get(identity) || null;
       if (bibResult) {
-        bibliographyProvenance = kind === "biber" ? bibliographyProvenance || "local-biber" : "bibtex";
-      } else if (inspected.biber) {
-        const request = { job, stem, bcf: controlBytes, files, identity };
-        const routed = await runBibliography({ request, attempts, engine });
+        bibliographyProvenance = kind === "biber" ? (bibResult.tool?.backend === "browser" ? "browser-biber" : bibResult.tool?.backend === "vm" ? "vm-biber" : "local-biber") : "bibtex";
+        if (bibResult.tool?.version) bibliographyTools = { ...bibliographyTools, biber: bibResult.tool.version };
+      } else if (useBiber) {
+        const request = { job, stem, main: tree.main, bcf: controlBytes, files, identity };
+        const routed = await runBibliography({ request, attempts, engine, release: releaseEntry, token });
         checkpoint();
         if (!routed.ok) {
           if (routed.showBrowser) {
@@ -1005,7 +1039,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         }
         bibResult = routed.result;
         bibCache.set(identity, bibResult);
-        bibliographyProvenance = bibResult.tool?.backend === "vm" ? "vm-biber" : "local-biber";
+        bibliographyProvenance = bibResult.tool?.backend === "browser" ? "browser-biber" : bibResult.tool?.backend === "vm" ? "vm-biber" : "local-biber";
         if (bibResult.tool?.version) bibliographyTools = { ...bibliographyTools, biber: bibResult.tool.version };
       } else {
         let reply2;
@@ -1038,6 +1072,8 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       }
 
       if (bibResult?.bbl) {
+        const previous = toBytes(outputs[`${stem}.bbl`]);
+        bibliographyChanged = !previous || previous.length !== bibResult.bbl.length || previous.some((byte, i) => byte !== bibResult.bbl[i]);
         outputs[`${stem}.bbl`] = bibResult.bbl;
         try {
           await call(target, "write", { path: `${stem}.bbl`, bytes: bibResult.bbl.buffer || bibResult.bbl });
@@ -1050,7 +1086,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
     lastStaged = { project: currentProject, inputs, bibIdentity: bibliographyProvenance ? job.snapshot : lastStaged?.bibIdentity, generated: pickGenerated(outputs) };
 
-    const needsRerun = (inspected.biber || inspected.bibtex || inspected.bibtex8 || logMod.rerun(finalLog)) && passes < MAX_PASSES;
+    const needsRerun = (bibliographyChanged || inspected.biber || inspected.bibtex || inspected.bibtex8 || logMod.rerun(finalLog)) && passes < MAX_PASSES;
     if (!needsRerun) break;
   }
 
@@ -1079,7 +1115,7 @@ function pump() {
   running = true;
   jobGeneration += 1;
   const mine = jobGeneration;
-  const token = { cancelled: false };
+  const token = { cancelled: false, abort: new AbortController() };
   activeToken = token;
   activeCallbacks = { waiting, failing };
   const startedAt = nowImpl();
@@ -1141,6 +1177,7 @@ export function cancel() {
   }
   if (activeToken && !activeToken.cancelled) {
     activeToken.cancelled = true;
+    activeToken.abort.abort();
     if (activeCallbacks) for (const reject of activeCallbacks.failing) reject(error);
     activeCallbacks = null;
     running = false;
@@ -1230,10 +1267,11 @@ export const resources = {
 /// outside. Not part of the public contract -- `latex-controller.mjs` is the
 /// only caller.
 export const _testing = {
-  inject({ worker: WorkerOverride, local: localModule, vm: vmModule, resources: resourcesModule, fetch: fetchOverride, now } = {}) {
+  inject({ worker: WorkerOverride, local: localModule, vm: vmModule, biber: browserBiberModule, resources: resourcesModule, fetch: fetchOverride, now } = {}) {
     if (WorkerOverride !== undefined) WorkerClass = WorkerOverride;
     if (localModule !== undefined) localOverride = localModule;
     if (vmModule !== undefined) vmOverride = vmModule;
+    if (browserBiberModule !== undefined) biberOverride = browserBiberModule;
     if (resourcesModule !== undefined) resourcesOverride = resourcesModule;
     if (fetchOverride !== undefined) {
       fetchImpl = fetchOverride;
@@ -1252,6 +1290,9 @@ export const _testing = {
     WorkerClass = typeof Worker !== "undefined" ? Worker : null;
     localOverride = undefined;
     vmOverride = undefined;
+    biberOverride = undefined;
+    biberModule?.cancel();
+    biberModule = undefined;
     resourcesOverride = undefined;
     fetchImpl = (...args) => fetch(...args);
     nowImpl = () => Date.now();

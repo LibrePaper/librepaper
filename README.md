@@ -392,26 +392,30 @@ the figures. Nothing is compiled on the way: LibrePaper carries no TeX, no build
 embeds one, and there is no `make latex`.
 
 LaTeX is compiled in the browser, by LibrePaper's own pinned release of the
-[WasmTex](https://github.com/corca-ai/wasmtex) engines: pdfTeX, XeTeX,
-LuaTeX and BibTeX built for WebAssembly, with the formats generated for those
-exact binaries and a pinned TeX Live package snapshot. An editor's browser
+browser engines: pdfTeX, XeTeX and BibTeX built for WebAssembly, with
+the formats generated for those exact binaries and a pinned TeX Live package
+set. An editor's browser
 loads the engine the project needs the first time it opens a LaTeX document
 and compiles automatically from then on; readers see the stored PDF and fetch
-no compiler at all. Packages arrive from the deployment's mirror one file at a
-time as a compile asks for them, and verified files stay in browser storage
-so the next document costs nothing to fetch. The engines are GPL works of
-their own, fetched at run time rather than linked into LibrePaper; their notices
-travel with the mirror.
+no compiler at all. Packages arrive as verified, content-addressed bundles
+from the deployment's mirror as a compile asks for them, and stay in browser
+storage so the next document costs nothing to fetch. The TeX engines carry
+their own licences, and Biber is AGPL-3.0. They are fetched at run time;
+their notices travel with the mirror.
 
 The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) and the pinned
 browser release are project settings in the Settings panel. Automatic honours
 a `% !TEX program = xelatex` line in the main file, then looks for packages
-that only a Unicode engine can load, and otherwise uses pdfLaTeX.
+that only a Unicode engine can load, and otherwise uses pdfLaTeX. LuaLaTeX
+remains in the selector for release compatibility, but selecting it with the
+current release reports that it is not available in this release.
 
-BibTeX runs in the browser. Biber does not, and two things stand in for it.
-If LibrePaper's local app is running on your machine, the reader hands it the
+BibTeX and Biber run in the browser when the release provides them. Biber
+documents use the release's bundled biblatex pairing; releases without a
+Biber engine fall back to the local app and then the browser VM.
+In that fallback flow, if LibrePaper's local app is running, the reader hands it the
 `.bcf` and the `.bib` files, runs your own Biber, and continues typesetting
-in the browser. Without the app, the reader boots a small Linux guest in a
+in the browser. Without the app, a deployment configured with `--biber-vm` boots a small Linux guest in a
 worker (a Debian image holding Biber and nothing else, run by v86) and runs
 the real Biber there; slower, but nothing to install.
 
@@ -456,15 +460,12 @@ librepaper serve                                     # LibrePaper always serves 
 
 `make deploy` checks that the selected mirror contains a default engine
 release with its TeX Live bundles (`latex/tools/check-mirror.mjs`; see
-`make latex-check` and `make latex-smoke`, MIRROR=). Older mirrors -- a
-per-file TeX Live snapshot, a bloom filter, or SwiftLaTeX/BusyTeX -- are
-rejected as legacy. `make latex-smoke` compiles `examples/standard-errors.tex`
+`make latex-check` and `make latex-smoke`, MIRROR=). Older per-file mirrors
+and SwiftLaTeX/BusyTeX releases are rejected as legacy. `make latex-smoke` compiles `examples/standard-errors.tex`
 in a fresh Chromium profile against MIRROR= and requires visible PDF pages
 and selectable text before you point a deployment at it.
 
-Without `--latex` a deployment stores and shows `.tex` files and offers no
-LaTeX editor: `/api/config` says so, and the reader offers the source rather
-than a compiler. Whichever you pass, browsers only ever fetch `/latex/` on
+LibrePaper always serves the LaTeX editor and compiler. Browsers only ever fetch `/latex/` on
 your own origin: the server reads from the bucket, the browser never does,
 because the list of packages a document asks for is a description of the
 document and should go no further than the deployment that already has the

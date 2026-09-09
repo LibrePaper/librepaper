@@ -15,10 +15,9 @@
 // merely mentions "xetex" in a comment or a string must not switch engines,
 // which is why every pattern below runs on stripped, commentless text.
 //
-// Reimplemented against `wasmtex`'s own `engine-select.js` (not imported: that
-// package is not a runtime dependency of LibrePaper). The precedence and the
-// package/command lists mirror it because the corpus already encodes "what
-// this document needs" against these rules.
+// The engine lists originated in WasmTex's build layer; the selector is kept
+// local so that package is not a runtime dependency of LibrePaper. The
+// precedence and package/command lists are covered by the corpus below.
 
 export const ENGINES = ["pdflatex", "xelatex", "lualatex"];
 
@@ -104,7 +103,7 @@ const LUATEX_PACKAGES = new Set([
 const XETEX_ONLY_PACKAGES = new Set(["xeCJK", "xetexko", "xecjk"]);
 
 // Packages that need a Unicode-capable engine but work under either XeTeX or
-// LuaTeX; XeTeX is the conservative default for these, matching wasmtex.
+// LuaTeX; XeTeX is the conservative default for these.
 const UNICODE_PACKAGES = new Set([
   "fontspec",
   "unicode-math",

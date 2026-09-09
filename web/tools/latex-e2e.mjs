@@ -11,18 +11,15 @@
 //     fixture  a directory under latex/corpus/e2e (biber, native) or any
 //              directory holding a main.tex
 //
-// Expected: latex/corpus/e2e/biber with `local` stores a PDF whose
-// provenance says `local-biber` in a few seconds; with `vm` it says
-// `vm-biber` after the guest has booted and Biber has run (a minute or two
-// on a cold cache); latex/corpus/e2e/native with `local` says
-// `backend: local`, because the mirror lacks pgfplots and the paired app
-// compiles the project natively. It needs the mirror at latex/mirror and
-// Chromium; it touches no deployment and no data but its own.
+// Releases shipping Biber use browser-biber before either fallback. Older
+// releases can exercise local or VM bibliography routing. Chromium is
+// required; the mirror defaults to the binary's own URL. This check uses
+// only its temporary server and data.
 //
 // Set localStorage `librepaper-latex-debug` (this script does) to see every
 // routing decision on the console, which is what the trace below prints.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,18 +31,23 @@ const BINARY = resolve(process.argv[2] || "dist/librepaper");
 const MODE = process.argv[3] || "local";
 const FIXTURE = resolve(process.argv[4] || join(ROOT, "latex", "corpus", "e2e", "biber"));
 const WAIT = Number(process.argv[5] || 300);
-const MIRROR = process.argv[6] || `${ROOT}/latex/mirror`;
+// A `-` mirror means exercise the binary's compiled-in default. This keeps
+// the e2e harness able to verify the deployed mirror without inventing a
+// local path for `--latex`.
+const MIRROR = process.argv[6] || "-";
 const OUT = mkdtempSync(join(tmpdir(), "librepaper-latex-e2e-"));
 const PORT = 8600 + Math.floor(Math.random() * 200);
 const LOCAL_PORT = 8763;
 const BASE = `http://localhost:${PORT}`;
 const DEBUG = 9500 + Math.floor(Math.random() * 200);
-const HEADERS = { "x-librepaper-client": "1", "sec-fetch-site": "same-origin" };
+const HEADERS = { "x-librepaper-client": "shell", "sec-fetch-site": "same-origin" };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const data = mkdtempSync(join(tmpdir(), "librepaper-e2e-"));
 const config = mkdtempSync(join(tmpdir(), "librepaper-e2e-config-"));
 const profile = mkdtempSync(join(tmpdir(), "librepaper-e2e-profile-"));
-const server = spawn(BINARY, ["serve", "--port", String(PORT), "--data", data, "--publishers", "anyone", "--commenters", "anyone", "--latex", MIRROR], { stdio: ["ignore", "ignore", "ignore"] });
+const serverArgs = ["serve", "--port", String(PORT), "--data", data, "--publishers", "anyone", "--commenters", "anyone"];
+if (MIRROR !== "-") serverArgs.push("--latex", MIRROR);
+const server = spawn(BINARY, serverArgs, { stdio: ["ignore", "ignore", "ignore"] });
 let local = null;
 const localOut = [];
 if (!["local", "vm", "browser"].includes(MODE)) throw new Error(`unknown mode ${MODE}`);
@@ -58,9 +60,65 @@ const chrome = spawn("chromium", ["--headless=new", "--no-sandbox", "--disable-g
 const logs = [];
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(`${BASE}/api/config`)).ok) break; } catch {} await wait(150); }
-  const published = execFileSync(BINARY, ["publish", FIXTURE, "--server", BASE], { encoding: "utf8" });
-  const url = published.trim().split("\n").pop();
-  const slug = new URL(url).pathname.split("/").pop();
+  // Establish the same signed visitor identity a browser would receive. A
+  // cookie-less CLI publish is intentionally ownerless, so it cannot mint an
+  // editor link for the compile phase below.
+  const landing = await fetch(`${BASE}/`);
+  const visitor = landing.headers.getSetCookie()
+    .find(cookie => cookie.startsWith("librepaper_visitor="))?.split(";", 1)[0] || "";
+  if (!visitor) throw new Error("server did not issue a visitor cookie");
+  const uploadHeaders = { ...HEADERS, cookie: visitor };
+  let body;
+  if (statSync(FIXTURE).isDirectory()) {
+    body = new FormData();
+    body.set("title", "LaTeX smoke");
+    body.set("main", "main.tex");
+    function addFiles(directory, prefix = "") {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entry.name === "logs" || entry.name.startsWith(".")) continue;
+        const path = prefix + entry.name;
+        if (entry.isSymbolicLink()) throw new Error("unexpected fixture symlink: " + path);
+        if (entry.isDirectory()) addFiles(join(directory, entry.name), path + "/");
+        else body.append("file", new Blob([readFileSync(join(directory, entry.name))]), path);
+      }
+    }
+    addFiles(FIXTURE);
+  } else {
+    uploadHeaders["content-type"] = "application/json";
+    body = JSON.stringify({ title: "LaTeX smoke", source: readFileSync(FIXTURE, "utf8"), source_format: "latex" });
+  }
+  const uploaded = await fetch(`${BASE}/api/documents`, {
+    method: "POST",
+    headers: uploadHeaders,
+    body,
+  });
+  const publication = await uploaded.json();
+  if (!uploaded.ok || typeof publication.share_url !== "string") {
+    throw new Error(`publish failed: ${JSON.stringify(publication)}`);
+  }
+  const url = new URL(publication.share_url, BASE).href;
+  const publishedUrl = new URL(url);
+  const slug = publishedUrl.pathname.split("/").pop();
+  // `publish` returns a read link, whose key lives in the fragment so it is
+  // never sent during navigation. The browser keeps that key in memory and
+  // sends it as a header for document API requests. The smoke harness makes
+  // the same read-only API calls while polling, so it must carry the key too.
+  const key = new URLSearchParams(publishedUrl.hash.slice(1)).get("k") || "";
+  if (!key) throw new Error(`publish did not return a read link: ${url}`);
+  const READ_HEADERS = { ...HEADERS, "x-librepaper-key": key };
+  // Publishing an anonymous document returns its reader link. Mint a
+  // separate editor link for the compile phase; the final navigation below
+  // deliberately uses the published reader link, exercising the access-key
+  // boundary without granting readers edit rights.
+  const share = await fetch(`${BASE}/api/documents/${slug}/share`, {
+    method: "POST",
+    headers: { ...HEADERS, cookie: visitor, "content-type": "application/json" },
+    body: JSON.stringify({ link: { role: "editor", until: "" } }),
+  });
+  const sharing = await share.json();
+  const editPath = sharing.links?.editor?.url;
+  if (!share.ok || typeof editPath !== "string") throw new Error(`share did not return an edit link (${share.status}): ${JSON.stringify(sharing)}`);
+  const editUrl = new URL(editPath, BASE).href;
   console.log("published", slug, "mode", MODE);
   let token = null;
   if (MODE === "local") {
@@ -110,12 +168,12 @@ try {
   if (token) {
     await send("Runtime.evaluate", { expression: `localStorage.setItem("librepaper-local-pairings", JSON.stringify({ [location.origin + "|" + ${JSON.stringify(slug)}]: ${JSON.stringify(token)} }))` }, sessionId);
   }
-  await send("Page.navigate", { url }, sessionId);
+  await send("Page.navigate", { url: editUrl }, sessionId);
   const t0 = Date.now();
   let latest = null; let stable = 0;
   while (Date.now() - t0 < WAIT * 1000) {
     await wait(5000);
-    latest = await (await fetch(`${BASE}/api/documents/${slug}/renderings/latest`, { headers: HEADERS })).json();
+    latest = await (await fetch(`${BASE}/api/documents/${slug}/renderings/latest`, { headers: READ_HEADERS })).json();
     if (latest.sha) break;
     const status = await send("Runtime.evaluate", { expression: "document.body.innerText.replace(/\\s+/g,' ').slice(0,160)", returnByValue: true }, sessionId).catch(() => null);
     const line = status?.result?.value || "";
@@ -130,7 +188,7 @@ try {
     throw new Error(`No PDF was produced within ${WAIT}s. ${details.result.value}`);
   }
   if (latest.sha) {
-    const pdf = await fetch(`${BASE}/api/documents/${slug}/renderings/${latest.sha}`, { headers: HEADERS });
+    const pdf = await fetch(`${BASE}/api/documents/${slug}/renderings/${latest.sha}`, { headers: READ_HEADERS });
     const bytes = Buffer.from(await pdf.arrayBuffer());
     if (!pdf.ok || bytes.subarray(0, 5).toString() !== "%PDF-") throw new Error("Stored rendering is not a PDF");
     if (MODE === "browser" && latest.provenance?.backend !== "browser") throw new Error("Expected a browser compile, not a local fallback");
@@ -140,6 +198,19 @@ try {
     console.log("pdf bytes", bytes.length, "text:", text.replace(/\s+/g, " ").slice(0, 200));
     console.log("provenance:", JSON.stringify(latest.provenance));
   }
+
+  // The document link is a reader link. Reopen it after the owner compile and
+  // require the app to remain read-only while displaying the stored PDF.
+  await send("Page.navigate", { url: "about:blank" }, sessionId);
+  await wait(200);
+  await send("Page.navigate", { url }, sessionId);
+  await wait(1500);
+  const access = await send("Runtime.evaluate", { expression: "document.body.innerText", returnByValue: true }, sessionId);
+  if (!/Read-only access\./.test(access.result.value)) throw new Error("published read link did not open read-only");
+  const compiler = await send("Runtime.evaluate", {
+    expression: 'performance.getEntriesByType("resource").some(e => new URL(e.name).pathname.startsWith("/latex/"))', returnByValue: true,
+  }, sessionId);
+  if (compiler.result.value) throw new Error("read-only page fetched a LaTeX compiler");
 
   // A stored PDF alone does not prove that the deployed viewer can draw it.
   // Inspect the real document frame, including a cross-origin iframe target.
@@ -167,7 +238,7 @@ try {
   const text = await send("Runtime.evaluate", { expression: "document.body.innerText.replace(/\\s+/g,' ').slice(0,300)", returnByValue: true }, sessionId);
   console.log("page:", text.result.value);
   console.log("--- logs ---");
-  for (const line of logs.filter((l) => !/\/texlive\/[^/]+\/[0-9a-f]{2}\//.test(l)).slice(0, 60)) console.log(line);
+  for (const line of logs.slice(0, 60)) console.log(line);
   if (local) console.log("--- local ---\n" + localOut.join("").slice(0, 1500));
 } catch (error) {
   console.error("E2E FAILED:", error.message);

@@ -3,9 +3,8 @@
 LibrePaper consumes a deployed LaTeX engine mirror -- engines and the TeX Live
 package bundles -- built and pushed from the **wasm-latex** repository
 (`make mirror`, `make push` there; layout and manifest documented in
-`wasm-latex/docs/mirror.md`, format 1, bundled releases only, no per-file
-TeX Live snapshot, no bloom filter). Nothing in this repository builds that
-mirror any more. What is still here:
+`wasm-latex/docs/mirror.md`, format 1, bundled releases only). Nothing in this
+repository builds that mirror any more. What is still here:
 
 ## Consumer-side check
 
@@ -31,13 +30,11 @@ engine mirror:
 
 ```sh
 node latex/tools/biber-vm/build.mjs               # builds the VM (needs Docker)
-node latex/tools/biber-vm/register.mjs latex/mirror/biber-vm/<vmRelease>   # registers it
+node latex/tools/biber-vm/register.mjs <release-dir> <published-vm.json-url>
 ```
 
-`build.mjs` calls `register.mjs` itself once the VM is built. Registration
-writes `releases.<default_release>.vm` into `manifest.json`, per
-`docs/specs/latex-interfaces.md` section 6 -- so the mirror's default release
-must already exist (imported by wasm-latex's tooling) before this can run.
+`register.mjs` only hashes the published descriptor and prints the
+`--biber-vm <url>#<sha256>` flag. It never modifies the engine mirror.
 
 ## Reproduction status
 

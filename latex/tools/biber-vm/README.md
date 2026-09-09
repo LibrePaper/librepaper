@@ -35,15 +35,17 @@ boot, not per Biber call within one boot (see Results below).
 
 ## Pinning Biber to the browser release
 
-The browser release's biblatex (`texlive.corca.ai` snapshot
-`2026-ba38749b8714505a`, `pdftex/26/biblatex.sty`) defines
-`\blx@bcfversion{3.11}`. That bcf format requires **Biber 2.21**, matching
-`manifest.json`'s `releases.<id>.bibliography.biber.compatible = ["2.21"]`.
+The current browser release's biblatex is in the `tex-latex-biblatex.tar`
+bundle in release `3b5c99d5f6da42999565e6bc912fb615d10d892e6a24653316ea0647a9572849`.
+Its manifest pairs biblatex 3.21 and BCF 3.11 with **Biber 2.22**. The VM
+artifact documented here contains Biber 2.21 and preserves the receipt for an
+earlier browser-release pairing; it must only be used with a release whose
+manifest lists 2.21 as compatible.
 The developer machine's local TeX Live 2025 (nixos.org build) independently
 produces the same `\blx@bcfversion{3.11}`, which `vm-smoke.mjs` uses as
-cross-check evidence (see its bcf-compatibility section) — but it is *not*
-proof the browser release itself is bcf-compatible, since that would require
-driving the actual browser-release pdflatex; see Limits below.
+cross-check evidence (see its bcf-compatibility section). That cross-check
+documents the old VM pairing and does not establish compatibility with the
+current 2.22 release.
 
 Three Biber sourcing options were evaluated, in the order docs/specs/latex-compiler.md
 requests, with the full evaluation and evidence in
@@ -72,17 +74,15 @@ node latex/tools/biber-vm/build.mjs     # docker build, export, pack, write late
 ```
 
 `build.mjs --export-only` reuses an already-built `librepaper-biber-vm:build`
-Docker image and repeats only export/pack/registration — useful when only
+Docker image and repeats only export/pack — useful when only
 v86-runtime files or `vm.json` metadata changed. The build is idempotent:
 re-running it with unchanged inputs reproduces the same `<vmRelease>` and
 copies zero new bytes.
 
-Registration in `latex/mirror/manifest.json`
-(`releases.<default_release>.vm = {id, url, sha256, size, biber}`) is done by
-`node latex/tools/biber-vm/register.mjs <dir>`, which `build.mjs` calls
-itself once the VM is built. It edits `manifest.json` additively — it
-touches only `releases.<default_release>.vm` and nothing else — and
-recomputes the release's `digest` so cached namespaces pick up the change.
+After publishing the VM directory, run
+`node latex/tools/biber-vm/register.mjs <dir> <published-vm.json-url>` to
+hash `vm.json` and print the `--biber-vm <url>#<sha256>` deployment flag.
+The command does not edit the engine mirror manifest.
 
 ## Test
 
@@ -149,7 +149,7 @@ device and makes no runtime network access.
   drives the browser engine to produce the `.bcf`, which belongs to
   milestone 6's full acceptance matrix (package B2/B3), not this recipe.
 - **No lazy/lifecycle integration.** This directory only builds and smoke-
-  tests the image and registers it in the manifest. The browser VM client
+  tests the image. The browser VM client
   (`web/src/lib/latex/vm.js` / `vm-worker.js`, package B3), cancellation,
   idle teardown, persistent caching, and the routing/eligibility rules in
   docs/specs/latex-compiler.md are separate work packages and are not implemented here.

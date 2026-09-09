@@ -4,9 +4,8 @@
 // these -- pdfTeX, or XeTeX plus dvipdfm, or LuaTeX, plus BibTeX/BibTeX8/
 // makeindex on demand -- and this file is the class for exactly one of them:
 // a message queue with correlation, init, format preload, and the
-// write/mkdir/read/run vocabulary every controller in
-// WasmTex's `wasm-build/*-worker.js` (at the pinned source revision) answers
-// to. Nothing from WasmTex's own `lib/` is imported; this was written
+// write/mkdir/read/run vocabulary every mirror engine controller answers
+// to. Nothing from the engine build repository is imported; this was written
 // against the controllers' `onmessage` dispatch and reply shapes directly
 // (fetched and read from the pinned upstream release while building this).
 //
@@ -19,7 +18,7 @@
 //     regardless of which one was sent. Because this driver only ever has
 //     one command of a kind in flight (nothing here races two `run()`s),
 //     a per-reply-cmd FIFO queue is enough to correlate correctly -- the
-//     same trick WasmTex's own `postMessageWithResponse` uses.
+//     same FIFO correlation used by the upstream controllers.
 //   - The controllers disagree with each other in small, real ways: BibTeX
 //     and makeindex answer `result: "ok"/"error"` (not "failed") and never
 //     set a numeric `status`; their `readfile` ignores the requested
@@ -47,8 +46,8 @@ async function gunzip(bytes) {
 
 /// The in-worker filename a preloaded format is written under, for the two
 /// engines that take theirs by file (XeTeX, LuaTeX) rather than by command
-/// (pdfTeX's `loadformat`). Matches wasmtex's own `tex-fmt-engine.js`
-/// (`ensureFormat`) exactly, because the compiled-in engine core looks for
+/// (pdfTeX's `loadformat`). Matches the upstream format loader's
+/// (`ensureFormat`) contract exactly, because the compiled-in engine core looks for
 /// this specific name via kpathsea.
 ///
 /// `xetex: "xetex.fmt"` is not a naming choice here: the compiled
@@ -123,7 +122,7 @@ class EngineDriver {
 
   /// A command the controller answers: post it, then wait for the next
   /// reply tagged `replyCmd`. `transfer` is for the one caller
-  /// (`preloadTexlive`) that hands over an ArrayBuffer it will not reuse.
+  /// (`loadformat`) that hands over an ArrayBuffer it will not reuse.
   async _ask(message, replyCmd, transfer) {
     if (!this.worker) throw new Error(`${this.kind} engine is not initialized`);
     const wait = this._enqueue(replyCmd);
@@ -133,7 +132,7 @@ class EngineDriver {
   }
 
   /// A command none of the controllers answer at all (`setmainfile`,
-  /// `settexliveurl`, `loadbloom`, `grace`). Waiting for a reply that never
+  /// `settexliveurl`, `grace`). Waiting for a reply that never
   /// arrives would hang every future compile.
   _tell(message, transfer) {
     if (!this.worker) throw new Error(`${this.kind} engine is not initialized`);

@@ -191,7 +191,7 @@ latex-smoke: $(BIN)  ## Compile and display the seeded LaTeX example in Chromium
 # Use the ordinary sign-in flow: each new account receives four private
 # examples and owns its copies. Guest roles come from links created in Share.
 deploy: latex-check $(BIN)  ## Serve locally; sign in for your four examples and share links to test roles
-	@$(MAKE) serve LATEX_FLAG="--latex $(LATEX)"
+	@$(MAKE) serve
 
 # The deployment keys -- the Cloudflare token, the endpoints, the GitHub app
 # -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the

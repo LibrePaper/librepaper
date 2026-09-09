@@ -8,9 +8,10 @@
 FROM --platform=linux/386 debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 # Pinned Biber 2.21 i386-linux binary from the frozen TeX Live 2025 tlnet-final
-# repository (see sources.json for the exact URL/digest). This matches the
-# `\blx@bcfversion{3.11}` required by the browser release's biblatex, which
-# needs Biber 2.21. Extracted from the upstream .tar.xz on the build host
+# repository (see sources.json for the exact URL/digest).
+# This VM artifact preserves the Biber 2.21 pairing used by an earlier browser
+# release. The current bundled release pairs BCF 3.11 with Biber 2.22.
+# Extracted from the upstream .tar.xz on the build host
 # (assets/biber.i386-linux.tar.xz -> assets/biber) because bookworm-slim ships
 # no xz-utils and pulling one in just to unpack once is unnecessary guest bloat.
 COPY assets/biber /usr/local/bin/biber

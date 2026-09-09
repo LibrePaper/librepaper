@@ -3,7 +3,7 @@
 // The mirror itself -- engines and TeX Live packages -- is built and pushed
 // from the wasm-latex repository (`make mirror`, `make push`; layout and
 // manifest in wasm-latex/docs/mirror.md, format 1, bundled releases only, no
-// per-file TeX Live snapshot and no bloom filter). This check is the
+// per-file TeX Live snapshot). This check is the
 // consumer side: it verifies whatever `--latex <url>` or `MIRROR=` names is
 // actually a complete format-1 mirror before LibrePaper is pointed at it.
 import { readFile } from "node:fs/promises";

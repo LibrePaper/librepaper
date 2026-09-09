@@ -1,5 +1,5 @@
-// A static server for a LaTeX mirror on disk and the harness page that drives
-// it, for the browser checks. Nothing here fetches anything: the mirror is
+// A server for a LaTeX mirror on disk or at a URL and the harness page that drives
+// it, for the browser checks. The mirror is
 // built and deployed by the wasm-latex repository (`make mirror`, `make push`
 // there; layout and manifest in wasm-latex/docs/mirror.md), and this serves it
 // the way the Cloudflare Worker does -- `manifest.json` never cached,
@@ -27,6 +27,7 @@ const flag = (name, fallback) => {
   return at >= 0 && argv[at + 1] !== undefined ? argv[at + 1] : fallback;
 };
 const MIRROR = flag("--mirror", join(REPO, "..", "wasm-latex", "mirror"));
+const REMOTE = /^https?:\/\//i.test(MIRROR) ? MIRROR.replace(/\/?$/, '/') : null;
 
 const TYPES = {
   ".js": "text/javascript; charset=utf-8",
@@ -54,7 +55,7 @@ function count(path, bytes) {
 /// checked to be inside its root, because this reads files off a developer's
 /// disk and a `..` must not walk out of the tree even in a test server.
 const ROOTS = [
-  ["/mirror/", MIRROR],
+  ...(!REMOTE ? [["/mirror/", MIRROR]] : []),
   ["/src/", join(REPO, "web", "src")],
   ["/examples/", join(REPO, "latex", "corpus")],
   ["/", join(REPO, "latex", "harness")],
@@ -77,7 +78,7 @@ function cacheControl(url) {
   return "no-store";
 }
 
-const server = createServer((request, response) => {
+const server = createServer(async (request, response) => {
   const url = request.url.split("?")[0];
   try {
     if (url === "/__bytes") {
@@ -90,6 +91,20 @@ const server = createServer((request, response) => {
       tally.files = {};
       response.writeHead(200, { "content-type": "application/json" });
       response.end("{}");
+      return;
+    }
+    if (REMOTE && url.startsWith('/mirror/')) {
+      const upstream = await fetch(new URL(url.slice('/mirror/'.length), REMOTE), {
+        signal: AbortSignal.timeout(120000),
+      });
+      const bytes = Buffer.from(await upstream.arrayBuffer());
+      count(url, bytes.length);
+      response.writeHead(upstream.status, {
+        'content-type': upstream.headers.get('content-type') || typeOf(url),
+        'access-control-allow-origin': '*',
+        'cache-control': upstream.headers.get('cache-control') || cacheControl(url),
+      });
+      response.end(bytes);
       return;
     }
     const path = resolve(url);

@@ -14,9 +14,9 @@ snapshot on one backend. A **backend** is `browser`, `local` or `vm`.
 
 The mirror -- engines and the TeX Live package bundles -- is built
 and pushed from the wasm-latex repository (`make mirror`, `make push` there).
-Its layout and `manifest.json` shape (format 1, bundled releases only, no
-per-file TeX Live snapshot, no bloom filter, `vm: null` until package F fills
-it) are documented in `wasm-latex/docs/mirror.md`, not here.
+Its layout and `manifest.json` shape (format 1, bundled releases only, with
+`vm: null`; the browser Biber VM is configured separately by the deployment)
+are documented in `wasm-latex/docs/mirror.md`, not here.
 
 What this repository still owns:
 
@@ -29,9 +29,10 @@ What this repository still owns:
   on it, and (given a directory rather than a URL) every engine file and
   bundle tar is on disk with a matching digest and size against
   `bundles.json`.
-- **The Biber VM.** `latex/tools/biber-vm/build.mjs` builds it and registers
-  it into the mirror's manifest with `latex/tools/biber-vm/register.mjs <dir>`
-  (section 6 below) -- deployed separately from the engine mirror itself.
+- **The Biber VM.** `latex/tools/biber-vm/build.mjs` builds it separately from
+  the engine mirror; `register.mjs <dir> <published-url>` hashes its descriptor
+  and prints the `--biber-vm <url>#<sha256>` deployment flag without editing the
+  mirror manifest.
 
 Serving: the browser fetches everything from `<base>/latex/` on its own
 origin; `crates/librepaper/src/server/latex.rs` proxies a configured mirror
@@ -174,8 +175,8 @@ export function needsBiber(source)      // \usepackage[...]{biblatex} without ba
 `worker.js` is the module worker the controller talks to. It owns one release
 at a time and lazily creates the nested engine workers it needs
 (pdftex | xetex+dvipdfm | luatex, bibtex, bibtex8, makeindex) from
-`<base><release.base><worker>` using `<base><release.texlive_base>` as the
-TeX Live endpoint. It restores the engines' execution state between passes
+`<base><release.base><worker>` using the release's bundles directory as the
+package endpoint. It restores the engines' execution state between passes
 exactly as the upstream engine's own drivers do (the controllers snapshot the heap).
 
 Protocol (every request carries `id`; every reply echoes it):
@@ -226,9 +227,8 @@ ArrayBuffers, never strings.
 
 `driver.js` is the host-side driver class the worker uses for each nested
 engine (message queue with ids, init, format preload, write/mkdir/read,
-run). It is written by us against the worker controllers in
-WasmTex's `wasm-build/*-worker.js` at the pinned source revision; nothing
-from WasmTex's `lib/` is imported.
+run). It is written against the worker controllers supplied by the mirror's
+engine build layer; nothing from that build repository is imported.
 
 ### 2.5 Resources: `web/src/lib/latex/resources.js` (package B1)
 
@@ -284,7 +284,7 @@ local network access) is state `denied` with instructions, not an exception.
 
 ```js
 export function supported()                          // { ok, reason } : WebAssembly, SharedArrayBuffer not required, navigator.deviceMemory >= 2 when known, not a known-unsupported UA
-export async function prepare(release, onProgress)   // loads manifest.releases[id].vm descriptor, fetches runtime + boots the guest in a worker; progress scope "bibliography support"; idempotent; rejects with {name:"VmUnsupported"|"VmUnavailable"}
+export async function prepare(vm, onProgress)        // loads the deployment's biberVm descriptor, fetches runtime + boots the guest in a worker; progress scope "bibliography support"; idempotent; rejects with {name:"VmUnsupported"|"VmUnavailable"}
 export async function runBiber(request: BiberRequest, { signal, onProgress }) // BiberResult with tool.backend "vm"; one job at a time; a newer request cancels a queued older one
 export function retire()                             // stop the worker, drop guest memory; static resources stay cached
 export function state()                              // "cold"|"loading"|"ready"|"busy"|"failed"
@@ -459,10 +459,9 @@ libv86.js v86.wasm seabios.bin vgabios.bin bzimage fs.json objects/<sha>...
 ```
 
 `<vmRelease>` is the sha256 (first 16 hex) over `vm.json` without its own
-digest. The build writes `releases.<id>.vm = { "id": "<vmRelease>", "url":
-"biber-vm/<vmRelease>/vm.json", "sha256": "...", "size": 0, "biber": "2.21" }`
-into the manifest through `latex/tools/biber-vm/register.mjs <dir>`. Guest boot
-protocol is the one in
+digest. Publish the VM directory separately and pass its descriptor URL and
+full SHA-256 through `--biber-vm <url>#<sha256>`. The engine mirror's `vm`
+field stays null. Guest boot protocol is the one in
 `latex/tools/biber-vm/worker.js`: serial console, `~% `
 prompt, then a marker line. The guest has no network device.
 

@@ -155,8 +155,9 @@ runs, cancellation, freshness, diagnostics and publishing.
 The upstream release above was the first mirrored input and remains the
 comparison baseline. Engines now come from the wasm-latex repository, which
 builds them from pinned TeX Live sources, generates their formats, and
-stages a release carrying its notices and receipts; `latex/tools/biber-vm/register.mjs
---release` imports a staged release by its manifest digest. Maintain only
+stages a release carrying its notices and receipts. The Biber VM is published
+separately; `latex/tools/biber-vm/register.mjs` computes the descriptor digest
+for a public URL, and deployment supplies it with `--biber-vm`. Maintain only
 the downstream patches that acceptance tests demonstrate are necessary.
 
 ### Coherent releases
@@ -460,9 +461,9 @@ as evidence. Its deployment licence, browser support, startup cost and memory
 requirements must fit LibrePaper. No vendor choice or further research is needed
 to accept this plan.
 
-Serve the runtime and image through the configured static mirror. Record
+Serve the runtime and image at a separately configured VM URL. Record
 digests, sizes, build recipe, source/licence provenance and compatibility in
-the release manifest. Load neither the emulator nor the image on the ordinary
+the VM descriptor; the engine release manifest remains unchanged. Load neither the emulator nor the image on the ordinary
 TeX/BibTeX path. Use compressed/chunked or range-based image delivery as
 appropriate, with integrity verification and persistent caching.
 

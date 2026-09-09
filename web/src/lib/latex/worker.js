@@ -223,8 +223,8 @@ class Worker2 {
     }
     // The worker itself preloads from Cache Storage and unpacks bundles on
     // demand once it has this index (SPEC-latex.md "The resolver"/"Browser
-    // cache") -- there is no bloom filter, negative-cache seed or initial
-    // per-file prefetch left to warm it with beyond this.
+    // cache") -- the index is the only package metadata needed before a
+    // compile; bundles are fetched lazily on demand.
     await engine.loadBundleIndex(this.bundleIndexBytes);
     // XeTeX alone needs its ICU data table: without it, in bundle mode,
     // the worker would try to fetch `icudt68l.dat` by name from the

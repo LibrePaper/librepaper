@@ -171,15 +171,4 @@ console.log(`  total size: ${(totalSize.bytes / (1024 * 1024)).toFixed(1)} MiB a
 console.log(`  objects: ${readdirSync(outDir + '/objects').length}`);
 console.log(`  files newly copied this run: ${copied}`);
 
-// 7. Register in the manifest: the documented, single writer of
-// manifest.json's shape (section 1 of docs/specs/latex-interfaces.md).
-const registerScript = fileURLToPath(new URL('./register.mjs', import.meta.url));
-
-function currentVmEntry() {
-  const m = JSON.parse(readFileSync(mirrorRoot + 'manifest.json', 'utf8'));
-  return m.releases?.[m.default_release]?.vm ?? null;
-}
-
-execFileSync(process.execPath, [registerScript, outDir], { stdio: 'inherit' });
-const registered = currentVmEntry()?.id === vmRelease;
-if (!registered) console.warn('WARNING: the VM release was built but could not be registered in manifest.json');
+console.log('  publish vm.json separately, then run register.mjs with its public URL to print --biber-vm');

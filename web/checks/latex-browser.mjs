@@ -46,6 +46,17 @@ function log(...args) {
 // --- wait for a mirror ------------------------------------------------------
 
 async function waitForMirror() {
+  if (/^https?:\/\//i.test(MIRROR)) {
+    const response = await fetch(new URL('manifest.json', MIRROR.replace(/\/?$/, '/')), {
+      cache: 'no-store', signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok) throw new Error(`mirror manifest: HTTP ${response.status}`);
+    const manifest = await response.json();
+    if (manifest.format !== 1 || !manifest.releases?.[manifest.default_release]) {
+      throw new Error('mirror manifest has no format-1 default release');
+    }
+    return manifest;
+  }
   const manifestPath = join(MIRROR, "manifest.json");
   const deadline = Date.now() + 20 * 60 * 1000;
   for (;;) {
@@ -122,7 +133,7 @@ const PAGE_DRIVER = `
 async function __librepaperInit(base) {
   const manifest = await (await fetch(base + "/mirror/manifest.json")).json();
   const release = manifest.releases[manifest.default_release];
-  // Format 1: bundles only, no per-file snapshot and no bloom filter.
+  // Format 1: bundled releases resolve package files through bundles.json.
   const worker = new Worker("/src/lib/latex/worker.js", { type: "module" });
   let seq = 0;
   const pending = new Map();
@@ -145,6 +156,16 @@ async function __librepaperInit(base) {
   const configured = await send("configure", { base: base + "/mirror/", release, format: manifest.format });
   globalThis.__librepaper = { worker, send, release, configured };
   return { engines: configured.engines };
+}
+
+async function __librepaperControllerCompile(base, tree) {
+  // Exercise the public controller, including its manifest-backed Biber
+  // route.  The hand-written protocol driver below remains useful for the
+  // corpus cases, but it cannot prove browser-biber provenance.
+  const latex = await import("/src/lib/latex.js");
+  latex.at(base + "/mirror/");
+  latex.configure({ project: "browser-biber-check", settings: { engine: "pdflatex" } });
+  return latex.compile(tree, { manual: true });
 }
 
 function __librepaperStem(main) {
@@ -269,6 +290,26 @@ async function main() {
     const init = await driver.evaluate(`__librepaperInit(${JSON.stringify(BASE)})`);
     log("configured:", JSON.stringify(init));
 
+    // The dedicated fixture uses biblatex's Biber backend and cites Knuth.
+    // Run it through latex.js so the check covers browser Biber selection,
+    // the real biber.worker.js protocol, and the result provenance.
+    {
+      const tree = treeOf("e2e/biber", "main.tex");
+      const result = await runJob(
+        driver,
+        `__librepaperControllerCompile(${JSON.stringify(BASE)}, ${JSON.stringify(tree)}).then(r => ({ ...r, pdf: __librepaperBytes(r.pdf), synctex: __librepaperBytes(r.synctex) }))`,
+      );
+      const pdfBytes = result.pdf ? Buffer.from(result.pdf, "base64") : null;
+      const inspected = inspectPdfBytes(pdfBytes, scratch);
+      log(`biber: ok=${result.ok} bibliography=${result.provenance?.bibliography} pages=${inspected.pages}`);
+      if (!result.ok || result.provenance?.bibliography !== "browser-biber") {
+        throw new Error(`biber: controller did not use browser Biber (provenance=${JSON.stringify(result.provenance)}, attempts=${JSON.stringify(result.attempts)})\n${result.log?.slice(-3000) || ""}`);
+      }
+      if (!inspected.pdf || !inspected.text.includes("Knuth") || /undefined citations|Citation .*undefined/i.test(result.log || "")) {
+        throw new Error(`biber: citation was not resolved in the PDF\n${result.log?.slice(-3000) || ""}`);
+      }
+    }
+
     const cases = [
       { id: "article", engine: "pdflatex" },
       { id: "paper", engine: "pdflatex" },
@@ -297,15 +338,7 @@ async function main() {
         throw new Error(`${c.id}: expected ${expected.pages} pages, got ${inspected.pages}`);
       }
       if (expected.synctex && !result.synctex) {
-        // The upstream XeTeX core (xetex.js in the mirror) has no
-        // "synctex" symbol at all -- grep confirms it, unlike the pdfTeX and
-        // LuaTeX cores -- so no SyncTeX is genuinely producible from this
-        // engine build, not a bug in worker.js/driver.js (both of which
-        // already fall back to reading the file directly, per the header
-        // comment above, for the two engines that do write one). Recorded
-        // as a known gap rather than a failure.
-        if (c.id === "xetex") log(`${c.id}: no SyncTeX -- the XeTeX core has no synctex support (verified: 0 matches for "synctex" in the compiled core)`);
-        else throw new Error(`${c.id}: expected a .synctex.gz, got none`);
+        throw new Error(`${c.id}: expected a .synctex.gz, got none`);
       }
       if (c.id === "paper") {
         // The citation must actually be typeset -- BibTeX ran and its .bbl
@@ -313,10 +346,12 @@ async function main() {
         // "the compile succeeded despite an unresolved reference".
         const hasCitationText = inspected.text.includes("Knuth");
         const noUndefined = !/undefined citations|Citation .*undefined/i.test(result.log);
-        if (!hasCitationText && !noUndefined) {
-          const bib = await driver.evaluate("globalThis.__librepaperLastBib && { status: globalThis.__librepaperLastBib.status, blg: globalThis.__librepaperLastBib.blg }");
+        if (!hasCitationText || !noUndefined) {
+          const bib = await driver.evaluate("globalThis.__librepaperLastBib && { status: globalThis.__librepaperLastBib.status, bbl: Boolean(globalThis.__librepaperLastBib.bbl), blg: globalThis.__librepaperLastBib.blg }");
           log("paper bibtex result:", JSON.stringify(bib));
-          throw new Error(`paper: no evidence BibTeX ran (no "Knuth" in text, log warns of undefined citations)`);
+          if (!hasCitationText && !noUndefined) {
+            throw new Error(`paper: no evidence BibTeX ran (no "Knuth" in text, log warns of undefined citations)`);
+          }
         }
         log(`paper: citation text present=${hasCitationText}, no undefined-citation warning=${noUndefined}`);
       }

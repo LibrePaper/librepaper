@@ -1,79 +1,45 @@
-// Registers a Biber VM release into the LaTeX mirror manifest.
+// Compute the deployment flag for a built Biber VM.
 //
 // The mirror itself -- engines and the TeX Live package set -- is built and
 // pushed from the wasm-latex repository (`make mirror`, `make push`; layout
-// and manifest in wasm-latex/docs/mirror.md). This file's only job is the
-// one piece LibrePaper still deploys on its own: the Biber VM, built by
-// `latex/tools/biber-vm/build.mjs`, per docs/specs/latex-interfaces.md
-// section 6 ("The build writes releases.<id>.vm = {...} into the manifest").
+// and manifest in wasm-latex/docs/mirror.md). The engine mirror is immutable
+// and carries no VM metadata. Publish the built directory separately, then
+// pass its public vm.json URL here. This command only reads the descriptor.
 //
-//   node latex/tools/biber-vm/register.mjs <biber-vm-release-dir>
-//     Registers the VM's descriptor under the mirror's default release. The
-//     mirror must already have that release (imported by wasm-latex's
-//     tooling) before this can run.
+//   node latex/tools/biber-vm/register.mjs <release-dir> <published-vm.json-url>
+//     Prints --biber-vm with the local descriptor's digest; it never edits a mirror.
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-const OUT = fileURLToPath(new URL('../../mirror/', import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-/* ------------------------------------------------------------- manifest */
-
-function readManifest() {
-  const path = join(OUT, 'manifest.json');
-  if (!existsSync(path)) return { format: 1, version: 1, releases: {} };
-  return JSON.parse(readFileSync(path, 'utf8'));
-}
-
-function writeManifest(manifest) {
-  mkdirSync(OUT, { recursive: true });
-  writeFileSync(join(OUT, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-}
-
-/// sha256 of a JSON object's canonical form: keys sorted at every level, so
-/// the digest depends on content and not on insertion order or formatting.
-function canonicalDigest(value) {
-  const canon = (v) => {
-    if (Array.isArray(v)) return v.map(canon);
-    if (v && typeof v === 'object') {
-      const out = {};
-      for (const key of Object.keys(v).sort()) out[key] = canon(v[key]);
-      return out;
-    }
-    return v;
-  };
-  return sha256(Buffer.from(JSON.stringify(canon(value))));
-}
-
-/// Registers a Biber VM release built by `latex/tools/biber-vm/build.mjs`
-/// under the mirror's default release: the descriptor's digest is what the
-/// browser verifies before it boots anything.
-export function registerVm(dir) {
+export function describeVm(dir, url) {
   const descriptorPath = join(dir, 'vm.json');
   if (!existsSync(descriptorPath)) throw new Error(`register: no vm.json in ${dir}`);
+  let published;
+  try { published = new URL(url); } catch { throw new Error(`register: invalid published vm.json URL: ${url}`); }
+  if (!['http:', 'https:'].includes(published.protocol) || published.hash) {
+    throw new Error('register: use an HTTP(S) vm.json URL without a fragment');
+  }
   const bytes = readFileSync(descriptorPath);
   const descriptor = JSON.parse(bytes.toString('utf8'));
-  const manifest = readManifest();
-  const release = manifest.releases?.[manifest.default_release];
-  if (!release) throw new Error('register: no default release in the mirror; build it with wasm-latex\'s make mirror/push first');
-  const id = basename(dir);
-  release.vm = { id, url: `biber-vm/${id}/vm.json`, sha256: sha256(bytes), size: bytes.length, biber: descriptor.biber };
-  release.digest = canonicalDigest({ ...release, digest: undefined });
-  writeManifest(manifest);
-  console.log(`register: vm ${id} (biber ${descriptor.biber}) registered on ${manifest.default_release}`);
+  const digest = sha256(bytes);
+  console.log(`register: biber ${descriptor.biber ?? 'unknown'} (manifest remains unchanged)`);
+  console.log(`--biber-vm ${url}#${digest}`);
+  return { url, sha256: digest, size: bytes.length, biber: descriptor.biber };
 }
 
 /* --------------------------------------------------------------------- run */
 
 async function main() {
   const dir = process.argv[2];
-  if (!dir) {
-    console.error('usage: node latex/tools/biber-vm/register.mjs <biber-vm-release-dir>');
+  const url = process.argv[3];
+  if (!dir || !url) {
+    console.error('usage: node latex/tools/biber-vm/register.mjs <release-dir> <published-vm.json-url>');
     process.exit(1);
   }
-  registerVm(dir);
+  describeVm(dir, url);
 }
 
 if (process.argv[1] && process.argv[1].endsWith('register.mjs')) {
