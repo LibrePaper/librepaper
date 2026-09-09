@@ -157,7 +157,9 @@ async fn discovery_finds_tex_live_and_parses_versions() {
     // whichever release this machine has: 2.21 here, 2.19 on the runner.
     let biber_version = caps.tools.biber.version.as_deref().unwrap_or_default();
     assert!(
-        regex::Regex::new(r"^\d+\.\d+$").unwrap().is_match(biber_version),
+        regex::Regex::new(r"^\d+\.\d+$")
+            .unwrap()
+            .is_match(biber_version),
         "{:?}",
         caps.tools.biber
     );
