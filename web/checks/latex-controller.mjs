@@ -104,21 +104,29 @@ function tick(times = 1) {
   return p;
 }
 
+/// Polls `done` once per turn of the event loop until it holds or `ms` have
+/// passed. A turn is microseconds, so a budget counted in turns is a budget
+/// of a few milliseconds: enough on a warm laptop, not on a two-core runner
+/// where `crypto.subtle.digest` waits its turn on the threadpool. Time is
+/// the bound, and the loop keeps spinning so I/O completions are seen.
+async function until(done, ms = 10_000) {
+  const deadline = Date.now() + ms;
+  while (!done() && Date.now() < deadline) await tick();
+  return done();
+}
+
 /// Waits until the worker created for the current compile actually exists.
 /// The path from `compile()` to the first `new Worker(...)` crosses several
 /// real awaits (the manifest fetch, `crypto.subtle.digest` for the job
 /// identity), so a fixed tick count is a race; polling is not.
 async function untilWorker(previous) {
-  for (let i = 0; i < 200 && worker() === previous; i++) await tick();
+  await until(() => worker() !== previous);
   assert.notEqual(worker(), previous, "a worker was created");
   return worker();
 }
 
 async function untilMessage(target, pred) {
-  for (let i = 0; i < 50; i++) {
-    if (target.messages.some(pred)) return;
-    await tick();
-  }
+  if (await until(() => target.messages.some(pred))) return;
   throw new Error("expected message was not observed in time");
 }
 
