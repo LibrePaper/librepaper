@@ -113,7 +113,7 @@ async fn directory(
 #[tokio::test]
 async fn creation_saves_source_or_reports_failure() {
     let dir = tempfile::tempdir().unwrap();
-    let inner: std::sync::Arc<dyn BlobStore> = std::sync::Arc::new(FsStore::new(dir.path()));
+    let inner: std::sync::Arc<dyn BlobStore> = std::sync::Arc::new(FsStore::new(dir.path(), true));
     let hooked = HookStore::new(inner.clone());
     let (url, _server) = server_over_blobs_legacy(hooked.clone(), Configuration::default()).await;
     *hooked.fail.lock().unwrap() = Some("history/".into());
@@ -447,7 +447,7 @@ impl BlobStore for PublicationGate {
 async fn failed_replacement_preserves_concurrent_editor_update() {
     let dir = tempfile::tempdir().expect("temporary store");
     let gate = Arc::new(PublicationGate {
-        inner: Arc::new(FsStore::new(dir.path())),
+        inner: Arc::new(FsStore::new(dir.path(), true)),
         armed: AtomicBool::new(false),
         started: tokio::sync::Notify::new(),
         resume: tokio::sync::Notify::new(),

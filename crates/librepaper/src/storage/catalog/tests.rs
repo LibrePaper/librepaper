@@ -1098,7 +1098,7 @@ async fn checked_production_lookup_propagates_corrupt_authorization_rows() {
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs: std::sync::Arc<dyn crate::storage::blob::BlobStore> =
-        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path()));
+        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path(), true));
     let store = crate::document::store::Store::open_with_catalog(
         blobs,
         std::sync::Arc::new(crate::config::Configuration::default()),
@@ -1119,7 +1119,7 @@ async fn bounded_listing_propagates_catalog_failure() {
     catalog.create_document(&document()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs: std::sync::Arc<dyn crate::storage::blob::BlobStore> =
-        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path()));
+        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path(), true));
     let store = crate::document::store::Store::open_with_catalog(
         blobs,
         std::sync::Arc::new(crate::config::Configuration::default()),

@@ -357,7 +357,7 @@ async fn a_revoked_owner_cannot_transfer_after_recipient_lookup() {
     let slug = text(&document, "slug");
     let config = Arc::new(Configuration::default());
     let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
-        crate::storage::blob::FsStore::new(original.dir.path().join("objects")),
+        crate::storage::blob::FsStore::new(original.dir.path().join("objects"), true),
     );
     let store = crate::document::store::Store::open_with_catalog(
         blobs.clone(),

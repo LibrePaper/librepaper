@@ -489,7 +489,7 @@ async fn concurrent_updates_cannot_pass_the_size_limit() {
 #[tokio::test]
 async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let blobs = Failing::over(Arc::new(FsStore::new(dir.path())));
+    let blobs = Failing::over(Arc::new(FsStore::new(dir.path(), true)));
     let (base, instance) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let slug = text(&publish_with_source(&base).await, "slug");
     let before = crate::document::history::load(blobs.as_ref(), &slug)
@@ -548,7 +548,7 @@ async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
 #[tokio::test]
 async fn a_manifest_missing_its_newest_entry_is_repaired() {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let blobs = Failing::over(Arc::new(FsStore::new(dir.path())));
+    let blobs = Failing::over(Arc::new(FsStore::new(dir.path(), true)));
     let (base, instance) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let slug = text(&publish_with_source(&base).await, "slug");
     let room = instance.rooms.get(&slug).await;
@@ -878,7 +878,7 @@ async fn write_the_old_layout(dir: &std::path::Path, slug: &str) {
     let html = "<!doctype html><html><head><title>My Paper</title></head>\
                 <body><h1>My Paper</h1><p>Hello <em>world</em>.</p></body></html>";
     let digest = crate::document::store::digest_of(html);
-    let blobs = FsStore::new(dir);
+    let blobs = FsStore::new(dir, true);
     blobs
         .put(
             &crate::storage::blob::document_key(slug, &digest),
@@ -945,7 +945,7 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
     let slug = "my-paper-abcdefghij";
     write_the_old_layout(dir.path(), slug).await;
 
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path(), true));
     let (base, instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
     // This entry names a publisher on record, so the bare URL opens it only
     // for them -- exactly the account the old layout recorded here.
@@ -1045,7 +1045,7 @@ async fn a_document_with_an_unversioned_source_keeps_its_own_format() {
     let slug = "old-paper-abcdefghij";
     let html = "<!doctype html><html><body><h1>Old Paper</h1></body></html>";
     let digest = crate::document::store::digest_of(html);
-    let blobs = FsStore::new(dir.path());
+    let blobs = FsStore::new(dir.path(), true);
     blobs
         .put(
             &crate::storage::blob::document_key(slug, &digest),
@@ -1079,7 +1079,7 @@ async fn a_document_with_an_unversioned_source_keeps_its_own_format() {
         .await
         .unwrap();
 
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path(), true));
     let (base, _instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
     let (status, payload) = get_json(&base, &format!("/api/documents/{slug}/source")).await;
     assert_eq!(status, 200, "{payload}");
@@ -1100,7 +1100,7 @@ async fn an_old_html_document_is_seeded_from_its_page() {
     let page =
         "<!doctype html><html><head><title>A Page</title></head><body><p>prose</p></body></html>";
     let digest = crate::document::store::digest_of(page);
-    let blobs = FsStore::new(dir.path());
+    let blobs = FsStore::new(dir.path(), true);
     blobs
         .put(
             &crate::storage::blob::document_key(slug, &digest),
@@ -1126,7 +1126,7 @@ async fn an_old_html_document_is_seeded_from_its_page() {
         .await
         .unwrap();
 
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path(), true));
     let (base, _instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
     // This entry names a publisher on record, so it opens only for them.
     let (status, payload) = get_json_as(
@@ -1647,7 +1647,7 @@ async fn a_former_owner_cannot_write_after_being_taken_over() {
     // This test deliberately edits the old session/lock object keys directly;
     // use the explicit legacy harness so that those writes exercise the same
     // layout as the room under test rather than bypassing the SQLite journal.
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path(), true));
     let (url, stalled) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
     let slug = text(&publish_with_source(&url).await, "slug");
     let old = stalled.rooms.get(&slug).await;
@@ -1722,7 +1722,7 @@ async fn a_former_owner_cannot_write_after_being_taken_over() {
 #[tokio::test]
 async fn deployment_quota_admission_is_serialised_across_documents() {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path(), true));
     // Room for one of these documents and not two.
     let config = Arc::new(Configuration {
         storage: crate::config::StorageLimit {

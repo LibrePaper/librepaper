@@ -21,7 +21,7 @@
 use std::fs::OpenOptions;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -216,6 +216,15 @@ pub fn version_of(body: &[u8]) -> BlobVersion {
 /// compare-and-swap is bookkeeping rather than contention control.
 pub struct FsStore {
     dir: PathBuf,
+    /// Whether a write is pushed to the platter before it is called done.
+    ///
+    /// A deployment always wants durability: the point of the atomic write
+    /// below is that a machine losing power leaves the old bytes or the new
+    /// ones. A throwaway test deployment wants none of it, since each
+    /// `fsync` costs about twenty milliseconds on a journalling filesystem,
+    /// which a case that writes a thousand objects pays a thousand times
+    /// over.
+    durable: bool,
     /// One writer at a time, so a swap cannot be overtaken between reading a
     /// version and writing the next one.
     swapping: Arc<Mutex<()>>,
@@ -229,9 +238,10 @@ pub struct FsStore {
 const FS_BLOCKING_CONCURRENCY: usize = 8;
 
 impl FsStore {
-    pub fn new(dir: impl Into<PathBuf>) -> FsStore {
+    pub fn new(dir: impl Into<PathBuf>, durable: bool) -> FsStore {
         FsStore {
             dir: dir.into(),
+            durable,
             swapping: Arc::new(Mutex::new(())),
             blocking: Arc::new(Semaphore::new(FS_BLOCKING_CONCURRENCY)),
         }
@@ -340,8 +350,9 @@ impl BlobStore for FsStore {
 
     async fn put(&self, key: &str, body: Vec<u8>, _content_type: &str) -> BlobResult<()> {
         let path = self.path_for(key)?;
+        let durable = self.durable;
         self.blocking(move || {
-            write_file_atomically(&path, &body)?;
+            write_file_atomically(&path, &body, durable)?;
             Ok(())
         })
         .await
@@ -362,10 +373,11 @@ impl BlobStore for FsStore {
             .iter()
             .map(|key| self.path_for(key))
             .collect::<BlobResult<_>>()?;
+        let durable = self.durable;
         self.blocking(move || {
             let mut outcomes = Vec::with_capacity(paths.len());
             for name in paths {
-                outcomes.push(remove_one_file(&name));
+                outcomes.push(remove_one_file(&name, durable));
             }
             Ok(outcomes)
         })
@@ -415,6 +427,7 @@ impl BlobStore for FsStore {
         let path = self.path_for(key)?;
         let swapping = self.swapping.clone();
         let expect = expect.to_string();
+        let durable = self.durable;
         self.blocking(move || {
             let _guard = swapping
                 .lock()
@@ -427,7 +440,7 @@ impl BlobStore for FsStore {
             if current != expect {
                 return Err(BlobError::Conflict);
             }
-            write_file_atomically(&path, &body)?;
+            write_file_atomically(&path, &body, durable)?;
             Ok(version_of(&body))
         })
         .await
@@ -447,7 +460,7 @@ impl BlobStore for FsStore {
 /// it could not -- so this never produces an uncertain outcome. One key's
 /// failure no longer abandons the keys after it: each object's accounting is
 /// settled on its own evidence.
-fn remove_one_file(name: &Path) -> DeleteOutcome {
+fn remove_one_file(name: &Path, durable: bool) -> DeleteOutcome {
     let removed = match std::fs::remove_file(name) {
         Ok(()) => true,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
@@ -455,7 +468,7 @@ fn remove_one_file(name: &Path) -> DeleteOutcome {
     };
     if removed {
         if let Some(parent) = name.parent() {
-            if let Err(err) = sync_directory(parent) {
+            if let Err(err) = sync_directory(parent, durable) {
                 // The name is gone from this process's view but the directory
                 // entry may not be on disk yet, so the removal is not durable.
                 return DeleteOutcome::Uncertain(err.to_string());
@@ -469,7 +482,7 @@ fn remove_one_file(name: &Path) -> DeleteOutcome {
         match std::fs::remove_dir(parent) {
             Ok(()) => {
                 if let Some(container) = parent.parent() {
-                    if let Err(err) = sync_directory(container) {
+                    if let Err(err) = sync_directory(container, durable) {
                         return DeleteOutcome::Uncertain(err.to_string());
                     }
                 }
@@ -655,35 +668,9 @@ fn is_atomic_temporary_name(name: &std::ffi::OsStr) -> bool {
         && serial.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// Whether a write is pushed to the platter before it is called done.
-///
-/// A deployment always wants durability: the point of the atomic write below
-/// is that a machine losing power leaves the old bytes or the new ones. A
-/// test wants none of it. It writes to a temporary directory that is deleted
-/// when the case ends, so there is no crash for the sync to survive -- and
-/// each `fsync` costs about twenty milliseconds on a journalling filesystem,
-/// which a case that writes a thousand objects pays a thousand times over.
-///
-/// The choice is made once per process: durable unless `LIBREPAPER_FSYNC` says
-/// otherwise, and relaxed by default when this crate is compiled under test.
-/// The environment variable is what an integration case sets, because those
-/// spawn the real binary, which is not built with `cfg(test)`.
-pub(crate) fn durable() -> bool {
-    #[cfg(test)]
-    const DEFAULT: bool = false;
-    #[cfg(not(test))]
-    const DEFAULT: bool = true;
-
-    static DURABLE: OnceLock<bool> = OnceLock::new();
-    *DURABLE.get_or_init(|| match std::env::var("LIBREPAPER_FSYNC") {
-        Ok(value) => !matches!(value.trim(), "0" | "off" | "false" | "no"),
-        Err(_) => DEFAULT,
-    })
-}
-
 /// `sync_all` on an open file, unless durability is relaxed.
-fn sync_file(file: &std::fs::File) -> std::io::Result<()> {
-    if durable() {
+fn sync_file(file: &std::fs::File, durable: bool) -> std::io::Result<()> {
+    if durable {
         file.sync_all()
     } else {
         Ok(())
@@ -691,9 +678,9 @@ fn sync_file(file: &std::fs::File) -> std::io::Result<()> {
 }
 
 /// `sync_all` on a directory, so that a name created or removed inside it is
-/// itself on disk -- unless durability is relaxed.
-fn sync_directory(path: &Path) -> std::io::Result<()> {
-    if durable() {
+/// itself on disk, unless durability is relaxed.
+fn sync_directory(path: &Path, durable: bool) -> std::io::Result<()> {
+    if durable {
         std::fs::File::open(path)?.sync_all()
     } else {
         Ok(())
@@ -703,9 +690,17 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
 /// Leaves either the old bytes or the new ones, never a half-written file: a
 /// crash mid-write must not turn the index into something that no longer
 /// parses.
-pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
+///
+/// `durable` is the deployment's own choice: true pushes every write to the
+/// platter before it is called done, which is what a deployment always
+/// wants, since the point of the atomic write below is that a machine losing
+/// power leaves the old bytes or the new ones. False is for a throwaway test
+/// deployment, since each `fsync` costs about twenty milliseconds on a
+/// journalling filesystem, which a case that writes a thousand objects pays
+/// a thousand times over.
+pub fn write_file_atomically(name: &Path, body: &[u8], durable: bool) -> std::io::Result<()> {
     if let Some(parent) = name.parent() {
-        durable_create_dir_all(parent)?;
+        durable_create_dir_all(parent, durable)?;
     }
     // A deterministic sibling such as `index.json.tmp` is unsafe when two
     // unconditional puts of one object overlap: one writer can rename or
@@ -719,15 +714,15 @@ pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
         .map(|part| part.to_string_lossy())
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("object"));
     let temporary = name.with_file_name(format!(".{basename}.tmp-{}-{serial}", std::process::id()));
-    let result = write_private_file(&temporary, body)
+    let result = write_private_file(&temporary, body, durable)
         .and_then(|_| {
             let file = std::fs::OpenOptions::new().read(true).open(&temporary)?;
-            sync_file(&file)
+            sync_file(&file, durable)
         })
         .and_then(|_| std::fs::rename(&temporary, name))
         .and_then(|_| {
             if let Some(parent) = name.parent() {
-                sync_directory(parent)?;
+                sync_directory(parent, durable)?;
             }
             Ok(())
         });
@@ -737,7 +732,7 @@ pub fn write_file_atomically(name: &Path, body: &[u8]) -> std::io::Result<()> {
     result
 }
 
-fn write_private_file(path: &Path, body: &[u8]) -> std::io::Result<()> {
+fn write_private_file(path: &Path, body: &[u8], durable: bool) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -745,27 +740,27 @@ fn write_private_file(path: &Path, body: &[u8]) -> std::io::Result<()> {
         options.write(true).create_new(true).mode(0o600);
         let mut file = options.open(path)?;
         std::io::Write::write_all(&mut file, body)?;
-        sync_file(&file)
+        sync_file(&file, durable)
     }
     #[cfg(not(unix))]
     {
         let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
         std::io::Write::write_all(&mut file, body)?;
-        sync_file(&file)
+        sync_file(&file, durable)
     }
 }
 
-fn durable_create_dir_all(path: &Path) -> std::io::Result<()> {
+fn durable_create_dir_all(path: &Path, durable: bool) -> std::io::Result<()> {
     if path.exists() {
         return Ok(());
     }
     if let Some(parent) = path.parent() {
-        durable_create_dir_all(parent)?;
+        durable_create_dir_all(parent, durable)?;
     }
     match std::fs::create_dir(path) {
         Ok(()) => {
             if let Some(parent) = path.parent() {
-                sync_directory(parent)?;
+                sync_directory(parent, durable)?;
             }
             Ok(())
         }
@@ -1163,7 +1158,7 @@ mod tests {
     #[tokio::test]
     async fn existence_distinguishes_missing_objects_from_invalid_reads() {
         let directory = tempfile::tempdir().unwrap();
-        let blobs = FsStore::new(directory.path());
+        let blobs = FsStore::new(directory.path(), true);
         assert!(!blobs.exists("missing").await.unwrap());
         blobs
             .put("nested/object", b"body".to_vec(), "")
@@ -1180,7 +1175,7 @@ mod tests {
     #[tokio::test]
     async fn atomic_temporary_files_are_private_and_not_listed() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let blobs = FsStore::new(directory.path());
+        let blobs = FsStore::new(directory.path(), true);
         blobs
             .put("nested/object", b"body".to_vec(), "")
             .await

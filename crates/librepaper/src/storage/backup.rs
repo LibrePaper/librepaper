@@ -716,26 +716,6 @@ fn acquire_offline_lock(paths: &DeploymentPaths) -> BackupResult<File> {
     Ok(file)
 }
 
-fn local_paths(paths: &DeploymentPaths) -> BackupResult<(&Path, &Path, &Path, &Path)> {
-    let catalog = paths
-        .catalog
-        .as_deref()
-        .ok_or_else(|| BackupError::Invalid("local catalogue path is missing".into()))?;
-    let objects = paths
-        .objects
-        .as_deref()
-        .ok_or_else(|| BackupError::Invalid("local objects path is missing".into()))?;
-    let secrets = paths
-        .secrets
-        .as_deref()
-        .ok_or_else(|| BackupError::Invalid("local secrets path is missing".into()))?;
-    let deployment = paths
-        .deployment
-        .as_deref()
-        .ok_or_else(|| BackupError::Invalid("local deployment path is missing".into()))?;
-    Ok((catalog, objects, secrets, deployment))
-}
-
 fn verify_local_file(root: &Path, record: &LocalFile) -> BackupResult<()> {
     let path = root.join(&record.relative);
     let body = fs::read(&path).map_err(|error| BackupError::Storage(error.to_string()))?;
@@ -1106,7 +1086,12 @@ pub fn create_local_backup(
     backup_id: &str,
     created_at: i64,
 ) -> BackupResult<LocalBackupManifest> {
-    let (catalog_path, objects_path, secrets_path, deployment_path) = local_paths(paths)?;
+    let (catalog_path, objects_path, secrets_path, deployment_path) = (
+        &paths.catalog,
+        &paths.objects,
+        &paths.secrets,
+        &paths.deployment,
+    );
     if !local_backup_id_valid(backup_id) || created_at < 0 {
         return Err(BackupError::Invalid("invalid local backup request".into()));
     }
@@ -1403,14 +1388,9 @@ pub fn restore_local_backup(
 }
 
 pub async fn backup_cli(storage: crate::storage::StorageOptions, output: String, id: String) {
-    let mut storage = storage;
-    storage.fill_from_environment();
-    let (profile, paths) = storage
-        .profile()
+    let paths = storage
+        .paths()
         .unwrap_or_else(|error| crate::util::die(error));
-    if profile != crate::config::DeploymentProfile::Local {
-        crate::util::die("local backup currently supports only SQLite deployments");
-    }
     let backup_id = if id.is_empty() {
         format!("backup-{}", unix_now())
     } else {
@@ -1608,7 +1588,7 @@ mod tests {
     #[tokio::test]
     async fn ownership_excludes_cleanup_and_competing_creation_at_publication() {
         let directory = TempDir::new().expect("temporary directory");
-        let inner = FsStore::new(directory.path());
+        let inner = FsStore::new(directory.path(), true);
         inner
             .put("content/source", b"source".to_vec(), "")
             .await
@@ -1672,7 +1652,7 @@ mod tests {
     #[tokio::test]
     async fn completed_backup_is_unchanged_by_a_cleanup_attempt() {
         let directory = TempDir::new().expect("temporary directory");
-        let blobs = FsStore::new(directory.path());
+        let blobs = FsStore::new(directory.path(), true);
         blobs
             .put("content/source", b"source".to_vec(), "")
             .await
@@ -1711,7 +1691,7 @@ mod tests {
         let deployment = TempDir::new().expect("deployment directory");
         let paths = DeploymentPaths::local(deployment.path());
         let directory = TempDir::new().expect("temporary directory");
-        let blobs = FsStore::new(directory.path());
+        let blobs = FsStore::new(directory.path(), true);
         blobs
             .put("recovery/backup-2/objects/6b6579", b"partial".to_vec(), "")
             .await
@@ -1736,7 +1716,7 @@ mod tests {
     #[tokio::test]
     async fn backup_manifest_is_written_last_and_verifiable() {
         let dir = TempDir::new().expect("tempdir");
-        let blobs = FsStore::new(dir.path());
+        let blobs = FsStore::new(dir.path(), true);
         blobs
             .put("content/sid/trees/a", b"abc".to_vec(), "text/plain")
             .await
@@ -1783,7 +1763,7 @@ mod tests {
     #[tokio::test]
     async fn transient_manifest_read_does_not_delete_existing_backup() {
         let directory = TempDir::new().expect("temporary directory");
-        let inner = FsStore::new(directory.path());
+        let inner = FsStore::new(directory.path(), true);
         inner
             .put("recovery/backup-1/objects/6b6579", b"keep me".to_vec(), "")
             .await
@@ -1807,7 +1787,7 @@ mod tests {
     #[tokio::test]
     async fn transient_manifest_read_aborts_creation_before_copying() {
         let directory = TempDir::new().expect("temporary directory");
-        let inner = FsStore::new(directory.path());
+        let inner = FsStore::new(directory.path(), true);
         inner
             .put("content/source", b"source".to_vec(), "")
             .await
@@ -1855,15 +1835,15 @@ mod tests {
         let paths = DeploymentPaths::local(live.path());
         paths.prepare_state().expect("state");
         let deployment_id = paths.ensure_deployment_identity(false).expect("identity");
-        let catalog_path = paths.catalog.as_ref().expect("catalog path");
+        let catalog_path = &paths.catalog;
         let catalog = Catalog::open(catalog_path).expect("catalog");
-        let secrets = paths.secrets.as_ref().expect("secrets path");
+        let secrets = &paths.secrets;
         let link_key = link_sealing_key_file(&secrets.join("links.key"), false).expect("links");
         session_key_file(&secrets.join("session.key"), false).expect("session");
         catalog
             .set_link_sealing_key(&link_key)
             .expect("sealing key");
-        let objects = FsStore::new(paths.objects.as_ref().expect("objects path"));
+        let objects = FsStore::new(&paths.objects, true);
         objects
             .put(
                 "content/sid/trees/a",
@@ -1919,8 +1899,8 @@ mod tests {
         let paths = DeploymentPaths::local(live.path());
         paths.prepare_state().expect("state");
         let deployment_id = paths.ensure_deployment_identity(false).expect("identity");
-        let catalog = Catalog::open(paths.catalog.as_ref().expect("catalog")).expect("catalog");
-        let secrets = paths.secrets.as_ref().expect("secrets path");
+        let catalog = Catalog::open(&paths.catalog).expect("catalog");
+        let secrets = &paths.secrets;
         link_sealing_key_file(&secrets.join("links.key"), false).expect("links");
         session_key_file(&secrets.join("session.key"), false).expect("session");
 
@@ -1937,7 +1917,7 @@ mod tests {
             segments: Vec::new(),
         };
         let (shard, body) = finalize_manifest_shard(shard).expect("finalize shard");
-        let objects = FsStore::new(paths.objects.as_ref().expect("objects path"));
+        let objects = FsStore::new(&paths.objects, true);
         objects
             .put(&key, body.clone(), "application/json")
             .await
@@ -1983,7 +1963,7 @@ mod tests {
         let paths = DeploymentPaths::local(live.path());
         paths.prepare_state().expect("state");
         paths.ensure_deployment_identity(false).expect("identity");
-        let catalog_path = paths.catalog.as_ref().expect("catalog path");
+        let catalog_path = &paths.catalog;
         let catalog = Catalog::open(catalog_path).expect("catalog");
         let before = catalog_snapshot_digest(catalog_path).expect("digest");
         catalog
@@ -2014,8 +1994,8 @@ mod tests {
         let paths = DeploymentPaths::local(live.path());
         paths.prepare_state().expect("state");
         paths.ensure_deployment_identity(false).expect("identity");
-        let catalog = Catalog::open(paths.catalog.as_ref().expect("catalog")).expect("catalog");
-        let secrets = paths.secrets.as_ref().expect("secrets path");
+        let catalog = Catalog::open(&paths.catalog).expect("catalog");
+        let secrets = &paths.secrets;
         link_sealing_key_file(&secrets.join("links.key"), false).expect("links");
         session_key_file(&secrets.join("session.key"), false).expect("session");
         catalog

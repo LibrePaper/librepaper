@@ -202,7 +202,7 @@ mod tests {
     /// A room seeded and checkpointed once, the shape the room tests use.
     async fn fixture(config: Configuration) -> (tempfile::TempDir, Arc<Store>, RoomSet, Arc<Room>) {
         let directory = tempfile::tempdir().unwrap();
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path()));
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         let config = Arc::new(config);
         let store = Arc::new(Store::open(blobs.clone(), config.clone()).await.unwrap());
         let rooms = RoomSet::new(blobs, config);
@@ -296,7 +296,7 @@ mod tests {
     pub(super) async fn loaded_room() -> (tempfile::TempDir, Arc<crate::room::Room>) {
         let directory = tempfile::tempdir().unwrap();
         let rooms = RoomSet::new(
-            Arc::new(FsStore::new(directory.path())),
+            Arc::new(FsStore::new(directory.path(), true)),
             Arc::new(Configuration::default()),
         );
         let room = rooms.get("doc").await;

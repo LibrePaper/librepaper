@@ -118,7 +118,7 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
     let dir = tempfile::tempdir().unwrap();
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());
@@ -231,7 +231,7 @@ async fn catalog_fixture() -> (
     Arc<room::Room>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());
@@ -283,7 +283,7 @@ async fn catalog_hook_fixture() -> (
     Arc<room::Room>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let raw: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let raw: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let hooked = HookStore::new(raw);
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());

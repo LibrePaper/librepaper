@@ -51,7 +51,7 @@ time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 # The shell, compiled in: real .html, .css and .js files under web/dist.
 include_dir = "0.7"
 # The command line.
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 # The blob store is a trait with async methods behind a pointer.
 async-trait = "0.1"
 url = "2"

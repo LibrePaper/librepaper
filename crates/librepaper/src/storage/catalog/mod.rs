@@ -527,9 +527,7 @@ pub struct JournalSegment {
     pub committed_at: i64,
 }
 
-/// A local SQLite catalogue.  One connection is used per authoritative
-/// deployment; pooled/hosted drivers can implement the same operations using
-/// their primary transaction API.
+/// A local SQLite catalogue. One connection is used per deployment.
 pub struct Catalog {
     #[cfg(test)]
     pub(crate) connection_operations: std::sync::atomic::AtomicUsize,
@@ -568,13 +566,10 @@ impl Catalog {
     fn from_connection(mut connection: Connection) -> CatalogResult<Self> {
         // `FULL` fsyncs the WAL on every commit, which is what a deployment
         // wants and what makes a file-backed test spend its time waiting on
-        // the disk. Under the relaxed policy -- tests, and nothing else --
-        // `OFF` keeps the same SQL semantics without the sync.
-        let synchronous = if crate::storage::blob::durable() {
-            "FULL"
-        } else {
-            "OFF"
-        };
+        // the disk. Under the relaxed policy, tests compiled with `cfg(test)`
+        // and nothing else, `OFF` keeps the same SQL semantics without the
+        // sync.
+        let synchronous = if cfg!(test) { "OFF" } else { "FULL" };
         connection
             .execute_batch(&format!(
                 "PRAGMA foreign_keys = ON;

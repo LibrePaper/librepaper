@@ -39,7 +39,7 @@ async fn server_with_provider_status(status: u16) -> (TestServer, tokio::task::J
     let config = Arc::new(crate::config::Configuration::default());
     let objects = dir.path().join("objects");
     let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-        Arc::new(crate::storage::blob::FsStore::new(&objects));
+        Arc::new(crate::storage::blob::FsStore::new(&objects, true));
     let catalog = Arc::new(
         crate::storage::catalog::Catalog::open(dir.path().join("catalog.sqlite"))
             .expect("catalogue"),

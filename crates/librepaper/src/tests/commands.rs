@@ -117,7 +117,7 @@ fn malformed_anchor_error_keeps_the_target_for_optimistic_rollback() {
 async fn unknown_command_does_not_consume_comment_allowance() {
     let dir = tempfile::tempdir().unwrap();
     let rooms = RoomSet::new(
-        Arc::new(FsStore::new(dir.path())),
+        Arc::new(FsStore::new(dir.path(), true)),
         Arc::new(Configuration::default()),
     );
     let room = rooms.get("command-rate").await;

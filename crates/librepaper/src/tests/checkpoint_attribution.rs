@@ -37,7 +37,7 @@ async fn catalog_room(
     room::RoomSet,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let inner: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects")));
+    let inner: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let blobs = HookStore::new(inner);
     let catalog = Arc::new(Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());

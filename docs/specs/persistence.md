@@ -2,20 +2,16 @@
 
 ## Decision
 
-LibrePaper uses one batching implementation with two storage profiles:
-
-- **Local:** SQLite catalogue and immutable objects in a local directory.
-- **Hosted:** Turso catalogue and immutable objects in R2.
+LibrePaper uses one batching implementation and one storage shape: a SQLite
+catalogue and immutable objects, both in the deployment directory.
 
 Live Yjs edits from many documents are combined into shared segments instead
-of saving one snapshot per document. Both profiles use exactly the same
-coordinator, record format, scheduling, replay, compaction and deletion code.
-Only the `Catalog` and `ObjectStore` drivers differ.
+of saving one snapshot per document. One coordinator, record format,
+scheduling, replay, compaction and deletion code path covers all of it.
 
-A save is acknowledged only after the segment is durable in the selected
-object store and its recovery reference is committed in the selected
-catalogue. In local mode this means the deployment disk; in hosted mode it
-means Turso and R2, so the serving host contains no irreplaceable state.
+A save is acknowledged only after the segment is durable in the object store
+and its recovery reference is committed in the catalogue: the deployment
+disk.
 
 ## Records and batching
 
@@ -59,7 +55,7 @@ delay; unsaved work remains queued and is never reported as saved.
 ## Publication protocol
 
 Segments live under a private, versioned `journal/<deployment-id>/` namespace
-in the local object directory or R2.
+in the local object directory.
 They contain bounded indexes so recovery can find one document's frames without
 scanning unrelated payload. They are never exposed through document routes or
 public URLs because one segment may contain several users' private text.
@@ -74,8 +70,7 @@ Publish a flush as follows:
 3. In one authoritative catalogue transaction, check the expected journal head,
    insert segment descriptors and advance the head. Commit any attached product
    metadata and operation receipts in this same transaction and remove the
-   preparation. Hosted mode also checks the active writer generation at the
-   Turso primary.
+   preparation.
 4. Acknowledge each included sequence only after the transaction is known to
    have committed.
 
@@ -85,9 +80,8 @@ publishing their references. Synchronize newly created directory entries too;
 propagate every write/sync error. Flush directory removals before confirming
 physical reclamation and releasing local capacity. Atomic rename alone does not
 establish crash durability. See the [Linux fsync contract](https://man7.org/linux/man-pages/man2/fsync.2.html).
-A stale hosted writer may create an R2 orphan but cannot publish it. After an
-unknown SQL outcome in either profile, reconcile stable segment ids and the
-head before retrying or acknowledging.
+After an unknown SQL outcome, reconcile stable segment ids and the head before
+retrying or acknowledging.
 
 Do not publish another journal transition while the outcome of the preceding
 one is unknown. Read preparation, head and descriptors in a consistent primary
@@ -144,7 +138,7 @@ nor a cold document open scans historical descriptors below `tail_after`.
 Limits on manifest shard size, retained tail descriptors/bytes, per-document
 replay and retry-index entries are explicit configuration validated by the
 prototype. Stop new admission before exceeding a limit if compaction cannot
-advance. These limits and maintenance capacity apply in both profiles.
+advance.
 
 ## Recovery and compaction
 
@@ -159,9 +153,8 @@ Keep the old graph until the new one commits. A crash must recover either graph
 without losing acknowledged work.
 
 Recovery rebuilds from the committed manifest and bounded tail without
-scanning the lifetime journal. Local process recovery first uses its deployment
-disk; disk-loss recovery uses a completed matched backup. Hosted host recovery
-uses current Turso, R2 and externally supplied credentials and both secret keys.
+scanning the lifetime journal. Process recovery first uses its deployment
+disk; disk-loss recovery uses a completed matched backup.
 Restoring an older catalogue uses a named complete backup under
 [catalog.md](catalog.md#secrets-and-recovery), including its independent object
 copies and matching secrets. It does not depend on the failed host's disk.
@@ -197,38 +190,31 @@ The request model is:
 
 `flush rounds × segments per round + bases + compaction + history + assets + renderings + backups + retries`
 
-This counts object writes. Measure GET/HEAD/LIST/DELETE requests and catalogue
-operations separately, including cleanup, restore and standby traffic. Empty
-flush rounds write no segment.
-
-In hosted mode, one segment every 15 seconds creates 172,800 PUTs in a 30-day
-month regardless of room count, until segment size or throughput forces splits.
-Local mode creates the same segments without cloud request charges. This is a
-baseline, not a complete bill or measured cost.
+This counts object writes. Measure filesystem writes and catalogue operations
+separately, including cleanup and restore traffic. Empty flush rounds write no
+segment. This is a baseline, not a complete measured cost.
 
 Before release, measure a normal workload and 1,000 continuously active
-documents through both drivers. Publish the document-size distribution, edit
-trace, annotations, sockets, configured room count/byte caps and observed peak
-heap/RSS. Start the 1,000-document case with roughly 100 KiB text per document,
-set `rooms_max` to at least 1,000 and measure the required byte cap. This is a
-capacity target for a declared configuration, not a promise that 1,000 maximum
-size documents fit the default 512 MiB. Separately stress the defaults with
-large documents and require bounded memory and explicit admission refusal.
+documents. Publish the document-size distribution, edit trace, annotations,
+sockets, configured room count/byte caps and observed peak heap/RSS. Start the
+1,000-document case with roughly 100 KiB text per document, set `rooms_max` to
+at least 1,000 and measure the required byte cap. This is a capacity target
+for a declared configuration, not a promise that 1,000 maximum size documents
+fit the default 512 MiB. Separately stress the defaults with large documents
+and require bounded memory and explicit admission refusal.
 
 Record segment counts and bytes, queue pressure, save/history latency, replay
-cost, object operations, catalogue writes/reads, hosted sync traffic, recovery
-time, refusal rates and maintenance progress at full ordinary quota. Include
-receipt/index overhead, repeated cold starts, backups and all checkpoint reasons.
+cost, object operations, catalogue writes/reads, recovery time, refusal rates
+and maintenance progress at full ordinary quota. Include receipt/index
+overhead, repeated cold starts, backups and all checkpoint reasons.
 
-Fault tests cover lost and ambiguous R2/SQL responses, duplicate and
-deletion-only updates, stale writers, corrupt or missing segments, crashes
-during compaction and deletion, retries across epoch closure, compound
-source/metadata publication, slug reuse, cross-document privacy, bounded queues
-and replay, local disk-full and directory-entry failures, disposable-cache loss,
-local backup restore after live-object deletion and hosted fresh-host recovery.
-The same behavioral suite runs against both drivers. File-backed local tests
-and hosted primary/replica migration tests are required by `catalog.md`.
+Fault tests cover lost and ambiguous SQL responses, duplicate and
+deletion-only updates, corrupt or missing segments, crashes during compaction
+and deletion, retries across epoch closure, compound source/metadata
+publication, slug reuse, cross-document privacy, bounded queues and replay,
+disk-full and directory-entry failures, disposable-cache loss, and local
+backup restore after live-object deletion. File-backed tests are required by
+`catalog.md`.
 
-Automatic failover remains disabled until [failover.md](failover.md) passes its
-separate fencing and recovery gates. [catalog.md](catalog.md) defines catalogue
-transactions, quotas and lifecycle state.
+[catalog.md](catalog.md) defines catalogue transactions, quotas and lifecycle
+state.

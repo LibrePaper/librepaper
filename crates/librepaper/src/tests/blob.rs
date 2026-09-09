@@ -16,7 +16,7 @@ use crate::util::{format_unix, now_unix};
 #[tokio::test]
 async fn blob_store_contract() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsStore::new(dir.path());
+    let blobs = FsStore::new(dir.path(), true);
 
     assert!(matches!(
         blobs.get("documents/absent/x.html").await,
@@ -126,7 +126,7 @@ async fn blob_store_contract() {
 #[tokio::test]
 async fn swap_is_conditional() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsStore::new(dir.path());
+    let blobs = FsStore::new(dir.path(), true);
 
     // The empty version means "only if it does not exist".
     let first = blobs
@@ -160,7 +160,7 @@ async fn swap_is_conditional() {
 #[tokio::test]
 async fn swap_under_contention() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path(), true));
     // The starting bytes are distinct from every racer's, so a racer that
     // happened to write the same content -- and so leave the version
     // unchanged -- cannot make a second writer look like a winner.
@@ -192,7 +192,7 @@ async fn swap_under_contention() {
 #[tokio::test]
 async fn puts_under_contention_leave_one_complete_value() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path(), true));
     let mut writers = Vec::new();
     for n in 0..32 {
         let blobs = blobs.clone();
@@ -218,7 +218,7 @@ async fn puts_under_contention_leave_one_complete_value() {
 #[tokio::test]
 async fn clearing_leaves_what_is_not_ours() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsStore::new(dir.path());
+    let blobs = FsStore::new(dir.path(), true);
     for key in [
         INDEX_KEY.to_string(),
         document_key("a", "1"),
@@ -250,7 +250,7 @@ async fn clearing_leaves_what_is_not_ours() {
 #[tokio::test]
 async fn legacy_source_is_migrated() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsStore::new(dir.path());
+    let blobs = FsStore::new(dir.path(), true);
     blobs
         .put("documents/a-paper/source.txt", b"# was here".to_vec(), "")
         .await
@@ -278,7 +278,7 @@ async fn a_key_cannot_escape_the_directory() {
     let dir = tempfile::tempdir().unwrap();
     let outside = dir.path().parent().unwrap().join("librepaper-escaped");
     let _ = std::fs::remove_file(&outside);
-    let blobs = FsStore::new(dir.path().join("data"));
+    let blobs = FsStore::new(dir.path().join("data"), true);
     let _ = blobs
         .put("../../librepaper-escaped", b"escaped".to_vec(), "")
         .await;
@@ -308,7 +308,7 @@ async fn filesystem_reads_do_not_block_tokio() {
     let fifo_name = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
     assert_eq!(unsafe { mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
 
-    let blobs = Arc::new(FsStore::new(dir.path()));
+    let blobs = Arc::new(FsStore::new(dir.path(), true));
     let reader = tokio::spawn({
         let blobs = blobs.clone();
         async move { blobs.get("pending").await }
@@ -347,7 +347,7 @@ async fn filesystem_reads_do_not_block_tokio() {
 #[tokio::test]
 async fn a_room_is_held_by_one_server() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsStore::new(dir.path());
+    let blobs = FsStore::new(dir.path(), true);
     let first = take_room_lease(&blobs, "a-paper", "server-one", None).await;
     assert!(first.held, "the first server could not take the lease");
     let second = take_room_lease(&blobs, "a-paper", "server-two", None).await;
@@ -368,7 +368,7 @@ async fn a_room_is_held_by_one_server() {
 #[tokio::test]
 async fn a_stale_lease_is_taken_over_and_raises_the_epoch() {
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsStore::new(dir.path());
+    let blobs = FsStore::new(dir.path(), true);
     let old = RoomLock {
         holder: "server-that-died".into(),
         taken: format_unix(now_unix() - 2 * LOCK_STALE_SECONDS),

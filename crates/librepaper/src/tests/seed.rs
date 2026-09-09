@@ -45,7 +45,7 @@ async fn seeding_locally_is_stable_across_runs() {
     let mut slugs = Vec::new();
     for _ in 0..2 {
         let dir = tempfile::tempdir().unwrap();
-        let blobs = Arc::new(FsStore::new(dir.path()));
+        let blobs = Arc::new(FsStore::new(dir.path(), true));
         seed_into(
             blobs.clone(),
             Arc::new(Configuration::default()),
@@ -99,7 +99,7 @@ async fn seeding_writes_annotations_with_their_state() {
     }];
 
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsStore::new(dir.path()));
+    let blobs = Arc::new(FsStore::new(dir.path(), true));
     let config = Arc::new(Configuration::default());
     seed_into(blobs.clone(), config.clone(), "", &documents).await;
     seed_into(blobs.clone(), config.clone(), "", &documents).await;
@@ -138,7 +138,7 @@ async fn seeding_with_an_owner_makes_the_examples_theirs() {
     let config = Arc::new(Configuration::default());
 
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsStore::new(dir.path()));
+    let blobs = Arc::new(FsStore::new(dir.path(), true));
     seed_into(blobs.clone(), config.clone(), " Alice ", &documents).await;
     let entries = Store::open(blobs, config.clone())
         .await
@@ -166,7 +166,7 @@ async fn seeding_with_an_owner_makes_the_examples_theirs() {
     );
 
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsStore::new(dir.path()));
+    let blobs = Arc::new(FsStore::new(dir.path(), true));
     seed_into(blobs.clone(), config.clone(), "", &documents).await;
     let entries = Store::open(blobs, config).await.unwrap().list().await;
     assert!(entries[0].publisher.is_empty());
@@ -284,7 +284,7 @@ async fn seeding_leaves_no_room_locks_behind() {
     }];
 
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsStore::new(dir.path()));
+    let blobs = Arc::new(FsStore::new(dir.path(), true));
     let config = Arc::new(Configuration::default());
     seed_into(blobs.clone(), config.clone(), "", &documents).await;
 
