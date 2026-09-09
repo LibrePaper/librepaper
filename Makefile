@@ -22,6 +22,8 @@ BIN     := dist/komodoc
 # The markdown renderer, built for the browser: the editor previews with it,
 # and it is embedded in the binary like every other shell file.
 WASM    := web/dist/wasm/markdown.wasm
+BIB     := web/dist/wasm/bibliography.wasm
+CITES   := web/dist/wasm/citations.wasm
 # Optional, and built separately by `make typst`: see the bottom of this file.
 TYPST   := web/dist/wasm/typst.wasm
 MODULE  := target/wasm32-unknown-unknown/wasm/komodoc_engine.wasm
@@ -44,7 +46,7 @@ build: $(BIN)  ## Build dist/komodoc, with the shell and renderers embedded
 # Rebuilt whenever any source, page or renderer changes.
 # Once the optional Typst module has been opted into, keep it in step with the
 # shell and native compiler. Otherwise a new binary can embed an old HTML ABI.
-$(BIN): $(SOURCES) $(WASM) $(wildcard $(TYPST)) $(SHELL_OUT)
+$(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(wildcard $(TYPST)) $(SHELL_OUT)
 	@mkdir -p $(dir $@)
 	@cargo build --release -p komodoc
 	@cp target/release/komodoc $@
@@ -67,7 +69,7 @@ web/dist/README.md: README.md
 
 # The suite reads the built shell -- a test that asserts a page names its own
 # bundle needs that bundle to exist -- so the pages are built first.
-test: $(WASM) $(wildcard $(TYPST)) $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
+test: $(WASM) $(BIB) $(CITES) $(wildcard $(TYPST)) $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cd web && bun run check
 	@cargo fmt --check
 	@cargo clippy --workspace --all-targets -- -D warnings
@@ -98,7 +100,7 @@ FUZZ_SECONDS ?= 60
 FUZZ_TARGETS ?= $(shell cd fuzz && cargo fuzz list)
 # The global export would evaluate this for every recipe, even outside fuzz.
 unexport FUZZ_TARGETS
-fuzz: $(WASM) $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SECONDS (default 60) each
+fuzz: $(WASM) $(BIB) $(CITES) $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SECONDS (default 60) each
 	@command -v cargo-fuzz >/dev/null || { echo "cargo-fuzz is not installed: cargo install cargo-fuzz"; exit 1; }
 	@cd fuzz && for target in $(FUZZ_TARGETS); do \
 		echo "fuzzing $$target for $(FUZZ_SECONDS)s"; \
@@ -107,7 +109,7 @@ fuzz: $(WASM) $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SECONDS (default 6
 
 # Release builds are described in .github/workflows/release.yml and run when a
 # v* tag is pushed. This does the same thing locally, without tagging.
-snapshot: $(WASM) $(TYPST) $(SHELL_OUT)  ## Build the release binary locally, without tagging
+snapshot: $(WASM) $(BIB) $(CITES) $(TYPST) $(SHELL_OUT)  ## Build the release binary locally, without tagging
 	@cargo build --release -p komodoc
 	@echo "target/release/komodoc"
 
@@ -246,7 +248,7 @@ $(SHELL_OUT): $(WEB) web/dist/README.md
 # fonts it sets documents in -- thirty megabytes, fetched only by someone who
 # opens a typst document to edit.
 
-wasm: $(WASM)  ## Build the markdown renderer for the browser
+wasm: $(WASM) $(BIB) $(CITES)  ## Build Markdown and bibliography modules for the browser
 
 $(WASM): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
 	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
@@ -263,3 +265,18 @@ $(TYPST): $(shell find crates/engine/src crates/text/src -type f) crates/engine/
 	@mkdir -p $(dir $@)
 	@cp $(MODULE) $@
 	@echo "$@ ($$(($$(stat -c%s $@) / 1024 / 1024)) MiB)"
+
+# Feature builds share a Cargo cdylib output; copy each before starting the next.
+.NOTPARALLEL:
+
+$(BIB): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
+	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
+		--no-default-features --features bibliography
+	@mkdir -p $(dir $@)
+	@cp $(MODULE) $@
+
+$(CITES): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
+	@cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
+		--no-default-features --features citations
+	@mkdir -p $(dir $@)
+	@cp $(MODULE) $@

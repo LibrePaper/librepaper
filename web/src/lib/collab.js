@@ -470,6 +470,12 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
       paths.observe(watcher);
       assets.observe(watcher);
       meta.observe(watcher);
+      return () => {
+        files.unobserveDeep(watcher);
+        paths.unobserve(watcher);
+        assets.unobserve(watcher);
+        meta.unobserve(watcher);
+      };
     },
 
     /// Says which file this browser's caret is in, so the file list can show

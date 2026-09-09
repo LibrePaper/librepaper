@@ -22,6 +22,8 @@ static SHELL: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../web/dist");
 /// speaks to it. The reader page is told the current URLs when it is served.
 const MODULES: &[(&str, &str)] = &[
     ("markdown", "wasm/markdown.wasm"),
+    ("bibliography", "wasm/bibliography.wasm"),
+    ("citations", "wasm/citations.wasm"),
     // Optional: `make typst` builds it, and a build without it simply does not
     // list typst among its renderers.
     ("typst", "wasm/typst.wasm"),

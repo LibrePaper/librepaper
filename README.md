@@ -516,6 +516,30 @@ stops you running two of these on it by accident. Turn off format-on-save for
 a synced file: a formatter that rewrites every line is a change against
 everyone and re-anchors every comment.
 
+### Bibliographies
+
+Add or upload a BibTeX or BibLaTeX file through Files, or include it when publishing
+a directory. In the source editor, type `@` (or `\cite{` in LaTeX) to search by
+citation key, author, title, or year. Selecting a result inserts its key.
+
+Markdown accepts Pandoc citations such as `[@smith2020]`, `@smith2020`,
+and `[see @smith2020, pp. 3–4; @jones2021]`. Choose resources and a built-in
+citation style in front matter:
+
+```yaml
+---
+bibliography: references.bib
+bibliography-style: apa
+---
+```
+
+With no resource declaration, all `.bib` files in the document form the library.
+The reference list appears at a References heading or at the end. Missing keys,
+malformed entries, and missing files appear in Diagnostics. Parsing and Markdown
+formatting run in separate, lazily loaded WebAssembly modules. LaTeX and Typst
+keep their own bibliography compilers. Zotero exports can be uploaded as
+`.bib` files; live Zotero integration is a later milestone.
+
 ### Agents
 
 Give an agent a Komodoc link and it can work on the document with that link's
@@ -1008,7 +1032,7 @@ nothing under that directory is edited by hand.
 
 ```sh
 make web      # the pages, from web/
-make wasm     # the markdown renderer for the browser (fast)
+make wasm     # Markdown, bibliography parsing, and citation formatting
 make typst    # the typst renderer, ~30 MB (slow, and optional)
 make build    # dist/komodoc, with the pages and renderers embedded
 make test     # rustfmt, clippy and the test suite

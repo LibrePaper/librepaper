@@ -150,7 +150,11 @@ fn from_host(path: &std::path::Path) -> Option<Vec<u8>> {
     }
 }
 
-#[cfg(all(feature = "markdown", not(feature = "typst")))]
+#[cfg(all(
+    feature = "markdown",
+    not(feature = "typst"),
+    not(feature = "citations")
+))]
 fn render(source: &str, title: &str) -> Compiled {
     crate::markdown::compile_with(source, title, &asset_url)
 }
@@ -375,4 +379,59 @@ pub extern "C" fn diagnostics_ptr() -> *const u8 {
             None => std::ptr::null(),
         }
     }
+}
+
+/// Parses the document's bibliography resources into a JSON library.
+///
+/// # Safety
+/// The pointer and length must describe UTF-8 in this module's memory.
+#[cfg(feature = "bibliography")]
+#[no_mangle]
+pub unsafe extern "C" fn bibliography(pointer: *const u8, len: usize) -> usize {
+    DIAGNOSTICS = None;
+    answer(crate::bib::analyze_json(text_at(pointer, len)))
+}
+
+// A worker serializes ABI calls. Keep one prepared library across prose edits;
+// source-dependent citations and diagnostics are recomputed on every render.
+#[cfg(all(feature = "citations", not(feature = "typst")))]
+static mut CITATION_LIBRARY: Option<(u64, crate::citations::PreparedLibrary)> = None;
+
+#[cfg(all(feature = "citations", not(feature = "typst")))]
+fn render(source: &str, title: &str) -> Compiled {
+    let main = unsafe { (*std::ptr::addr_of!(MAIN)).clone() }.unwrap_or_else(|| "main.md".into());
+    let texts = unsafe { (*std::ptr::addr_of!(FILES)).as_ref() }
+        .into_iter()
+        .flatten()
+        .filter_map(|(path, bytes)| {
+            String::from_utf8(bytes.clone())
+                .ok()
+                .map(|text| (path.clone(), text))
+        })
+        .collect();
+    let key = crate::bib::cache_key(&main, "markdown", source, &texts);
+    unsafe {
+        let cache = &mut *std::ptr::addr_of_mut!(CITATION_LIBRARY);
+        if cache.as_ref().is_none_or(|(previous, _)| *previous != key) {
+            let library = crate::bib::library(&main, "markdown", source, &texts);
+            *cache = Some((key, crate::citations::prepare(&library)));
+        }
+        crate::citations::compile_prepared(
+            &main,
+            source,
+            title,
+            &cache.as_ref().unwrap().1,
+            &asset_url,
+        )
+    }
+}
+
+#[cfg(not(any(feature = "markdown", feature = "typst")))]
+fn render(_: &str, _: &str) -> Compiled {
+    Compiled::failed("This module analyzes bibliographies; it does not render documents.")
+}
+
+#[cfg(not(any(feature = "markdown", feature = "typst")))]
+fn heading(_: &str) -> String {
+    String::new()
 }

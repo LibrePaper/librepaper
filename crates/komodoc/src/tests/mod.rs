@@ -62,3 +62,5 @@ mod visitor;
 mod wasmtex_server;
 mod write_errors;
 pub mod yjs;
+
+mod bibliography;

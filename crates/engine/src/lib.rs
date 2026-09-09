@@ -11,6 +11,11 @@ pub mod diagnostic;
 pub mod html;
 pub mod page;
 
+#[cfg(feature = "bibliography")]
+pub mod bib;
+#[cfg(feature = "citations")]
+pub mod citations;
+
 #[cfg(feature = "markdown")]
 pub mod markdown;
 

@@ -48,6 +48,10 @@ jobs:
             --no-default-features --features markdown
           mkdir -p web/dist/wasm
           cp target/wasm32-unknown-unknown/wasm/komodoc_engine.wasm web/dist/wasm/markdown.wasm
+          for feature in bibliography citations; do
+            cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine --no-default-features --features "$feature"
+            cp target/wasm32-unknown-unknown/wasm/komodoc_engine.wasm "web/dist/wasm/$feature.wasm"
+          done
           cargo build --profile wasm --target wasm32-unknown-unknown -p komodoc-engine \
             --no-default-features --features typst
           cp target/wasm32-unknown-unknown/wasm/komodoc_engine.wasm web/dist/wasm/typst.wasm

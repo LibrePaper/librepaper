@@ -1849,8 +1849,10 @@ dependencies = [
 name = "komodoc-engine"
 version = "0.1.0"
 dependencies = [
+ "biblatex",
  "comrak",
  "ecow",
+ "hayagriva",
  "komodoc-text",
  "serde_json",
  "typst",

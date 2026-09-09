@@ -13,13 +13,14 @@ use crate::page;
 /// The one markdown configuration this project has: the command line, the
 /// server and the browser build all render through it, so a document reads the
 /// same whichever of them produced it.
-fn options() -> Options<'static> {
+pub(crate) fn options() -> Options<'static> {
     let extension = Extension {
         table: true,
         strikethrough: true,
         tasklist: true,
         autolink: true,
         footnotes: true,
+        front_matter_delimiter: Some("---".to_string()),
         // Stable anchors for links into the document.
         header_id_prefix: Some(String::new()),
         ..Extension::default()
@@ -94,7 +95,7 @@ pub fn render_with(source: &str, title: &str, assets: Resolve) -> String {
 /// is already the bytes. A path the host has nothing for is left as written,
 /// so a figure that has not arrived yet is a broken image rather than a
 /// rewritten one pointing nowhere.
-fn rewrite_images(html: &str, assets: Resolve) -> String {
+pub(crate) fn rewrite_images(html: &str, assets: Resolve) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(at) = rest.find("src=\"") {

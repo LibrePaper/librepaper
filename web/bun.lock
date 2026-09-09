@@ -5,6 +5,7 @@
     "": {
       "name": "komodoc-web",
       "dependencies": {
+        "@codemirror/autocomplete": "^6.20.3",
         "@codemirror/commands": "^6.9.0",
         "@codemirror/lang-html": "^6.4.12",
         "@codemirror/lang-markdown": "^6.3.4",

@@ -71,6 +71,7 @@
   import { EditorState, Transaction } from "@codemirror/state";
   import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
   import { defaultKeymap, indentWithTab } from "@codemirror/commands";
+  import { autocompletion, completionKeymap, startCompletion } from "@codemirror/autocomplete";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
   import { syntaxHighlighting, HighlightStyle, defaultHighlightStyle, StreamLanguage } from "@codemirror/language";
   import { markdown } from "@codemirror/lang-markdown";
@@ -84,9 +85,62 @@
   import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 
   import { typstLanguage } from "../lib/typst-mode.js";
+  import { analyzeBibliography } from "../lib/bibliography-engine.js";
+  import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext } from "../lib/bibliography.js";
   import { untrack } from "svelte";
 
-  let { session, format, file = "", keys = "default", onchange, oncaret, onfilechange, onsave, onquit } = $props();
+  let { session, format = "", file = "", keys = "default", analyze = analyzeBibliography, onchange, oncaret, onfilechange, onbibliography, onsave, onquit } = $props();
+
+  let parsedBibliography = $state(null);
+  let bibliographyGeneration = 0;
+  let bibliographyTimer = null;
+  let lastBibliographyKey = "";
+  function formatOf(path) {
+    const lower = String(path || "").toLowerCase();
+    if (lower.endsWith(".typ")) return "typst";
+    if (lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".qmd")) return "markdown";
+    if (lower.endsWith(".tex") || lower.endsWith(".ltx")) return "latex";
+    return "";
+  }
+  function bibliographyEntries() { return parsedBibliography?.entries || []; }
+  function bibliographyRequest() {
+    const tree = session?.tree?.() || { main: "", texts: {} };
+    const id = showing || session?.mainId?.() || "";
+    const main = session?.paths?.get(id) || tree.main || "";
+    const activeFormat = formatOf(main);
+    return { main, format: activeFormat, source: session?.textOf?.(id)?.toString?.() ?? tree.texts?.[main] ?? "", texts: tree.texts || {} };
+  }
+  function refreshBibliography() {
+    if (typeof analyze !== "function" || !session) return;
+    const generation = ++bibliographyGeneration;
+    const request = bibliographyRequest();
+    const key = bibliographyCacheKey(request);
+    if (!bibliographyNeedsAnalysis(request)) {
+      parsedBibliography = null; lastBibliographyKey = key;
+      onbibliography?.({ entries: [], diagnostics: [] }, request);
+      return;
+    }
+    if (key !== lastBibliographyKey) parsedBibliography = null;
+    lastBibliographyKey = key;
+    bibliographyCache.get(request, analyze).then((result) => {
+      if (generation !== bibliographyGeneration) return;
+      const newlyAvailable = !parsedBibliography && result.entries.length > 0;
+      parsedBibliography = result;
+      onbibliography?.(result, request);
+      const currentFormat = formatOf(session?.paths?.get(showing));
+      const currentContext = view && citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat);
+      if (newlyAvailable && view?.hasFocus && currentContext) startCompletion(view);
+    }).catch((error) => {
+      if (generation !== bibliographyGeneration) return;
+      parsedBibliography = null;
+      onbibliography?.({ entries: [], diagnostics: [{ severity: "warning", message: `Bibliography unavailable: ${error?.message || "the parser could not be loaded"}`, file: request.main, line: 0 }] }, request);
+    });
+  }
+  function scheduleBibliography() {
+    bibliographyGeneration += 1;
+    clearTimeout(bibliographyTimer);
+    bibliographyTimer = setTimeout(refreshBibliography, 120);
+  }
 
   const sourceHighlightStyle = HighlightStyle.define(
     defaultHighlightStyle.specs.map((rule) =>
@@ -286,6 +340,10 @@
         highlightSelectionMatches(),
         syntaxHighlighting(sourceHighlightStyle, { fallback: true }),
         languageOf(path, format),
+        autocompletion({
+          activateOnTyping: true,
+          override: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(session?.paths?.get(showing)) })],
+        }),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws.
         lintGutter(),
@@ -294,6 +352,7 @@
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
           indentWithTab,
+          ...completionKeymap,
           ...defaultKeymap,
           ...yUndoManagerKeymap,
           ...searchKeymap,
@@ -403,8 +462,14 @@
     untrack(() => viewCallbacks.set(view, { onsave, onquit }));
     syncKeys(view);
     if (initial.first) session.inFile?.(initial.first);
+    const bibliographyWatcher = scheduleBibliography;
+    const unsubscribeBibliography = session.onFiles?.(bibliographyWatcher);
+    refreshBibliography();
     view.focus();
     return () => {
+      bibliographyGeneration += 1;
+      clearTimeout(bibliographyTimer);
+      if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
       if (view) viewCallbacks.delete(view);
       view?.destroy();
       view = null;
@@ -418,7 +483,15 @@
   // separate things: the first happens once, the second whenever somebody
   // chooses a name in the list.
   $effect(() => {
-    if (view && file) show(file);
+    if (view && file) {
+      show(file);
+      scheduleBibliography();
+    }
+  });
+
+  $effect(() => {
+    void format;
+    if (view) scheduleBibliography();
   });
 
   // `:w` and `:q` run through the WeakMap rather than closing over this

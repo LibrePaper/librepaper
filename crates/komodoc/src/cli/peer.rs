@@ -1650,8 +1650,21 @@ fn diagnostics_json_with_files(
         snapshot.source.as_str()
     };
     let format = snapshot.format.to_ascii_lowercase();
-    let compiled = match format.as_str() {
-        "markdown" | "md" => komodoc_engine::markdown::compile(source, &snapshot.title),
+    let texts = snapshot
+        .texts
+        .as_object()
+        .into_iter()
+        .flat_map(|texts| texts.iter())
+        .filter_map(|(path, value)| value.as_str().map(|text| (path.clone(), text.to_owned())))
+        .collect();
+    let mut compiled = match format.as_str() {
+        "markdown" | "md" => komodoc_engine::citations::compile(
+            &path,
+            source,
+            &snapshot.title,
+            &texts,
+            &komodoc_engine::markdown::no_assets,
+        ),
         "html" | "htm" => komodoc_engine::html::compile(source, &snapshot.title),
         "typst" | "typ" => {
             let files: Vec<(String, Vec<u8>)> = snapshot
@@ -1682,6 +1695,11 @@ fn diagnostics_json_with_files(
             ))
         }
     };
+    if !matches!(format.as_str(), "markdown" | "md") {
+        compiled
+            .diagnostics
+            .extend(komodoc_engine::bib::library(&path, &format, source, &texts).diagnostics);
+    }
     let mut output = Vec::with_capacity(compiled.diagnostics.len());
     for diagnostic in compiled.diagnostics {
         let diagnostic_path = if diagnostic.file.is_empty() {

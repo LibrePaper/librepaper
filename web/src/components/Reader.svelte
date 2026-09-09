@@ -1345,6 +1345,8 @@
   // length to it. From clean to red at reading speed, from red to clean at
   // typing speed.
   let diagnostics = $state([]);
+  let renderDiagnostics = [];
+  let bibliographyDiagnostics = [];
   const diagnosticPainter = diagnosticsRule.painter({
     paint: (list) => paintDiagnostics(list),
   });
@@ -1377,8 +1379,26 @@
   // compiled, which is what `everPainted` below keeps on the screen.
   function paintDiagnostics(list) {
     if (!editing) return;
-    diagnostics = list;
-    editor?.setDiagnostics?.(list);
+    renderDiagnostics = list;
+    paintCombinedDiagnostics();
+  }
+
+  function paintCombinedDiagnostics() {
+    if (!editing) return;
+    const seen = new Set();
+    diagnostics = [...renderDiagnostics, ...bibliographyDiagnostics].filter((item) => {
+      const key = JSON.stringify([item.file, item.line, item.column, item.message]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    editor?.setDiagnostics?.(diagnostics);
+  }
+
+  function bibliographyAnalyzed(result, request) {
+    bibliographyDiagnostics = (result?.diagnostics || []).map((item) =>
+      diagnosticContext(item, { main: request?.main || "", texts: request?.texts || {} }, ""));
+    paintCombinedDiagnostics();
   }
 
   function diagnosticFile(item) {
@@ -3155,7 +3175,7 @@
       {:else if Editor}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={sourceFormat} file={openFile} {keys}
-                  oncaret={followCaret} onsave={reportPersistence} onquit={showDocumentAlone}
+                  onbibliography={bibliographyAnalyzed} oncaret={followCaret} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { openFile = id; shownFigure = null; }} />
         {/key}
       {/if}

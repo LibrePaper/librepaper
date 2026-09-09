@@ -21,6 +21,9 @@ export function load(url) {
       const now = new Date();
       if (wasm.set_today) wasm.set_today(now.getFullYear(), now.getMonth() + 1, now.getDate());
       return wasm;
+    }).catch((error) => {
+      delete loads[url];
+      throw error;
     });
   return loads[url];
 }

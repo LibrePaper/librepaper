@@ -22,6 +22,8 @@ fn main() {
     for (file, how) in [
         ("README.md", "cp README.md web/dist/README.md"),
         ("wasm/markdown.wasm", "make wasm"),
+        ("wasm/bibliography.wasm", "make wasm"),
+        ("wasm/citations.wasm", "make wasm"),
     ] {
         if !shell.join(file).exists() {
             println!(

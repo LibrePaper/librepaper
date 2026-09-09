@@ -50,9 +50,9 @@ not fail the document on a malformed entry: a bad entry is skipped, reported
 as a diagnostic at its line, and the rest of the file still parses. An author
 mid-paste should get completion on the entries that are already valid.
 
-The parse is cached against the tree digest that
-`web/src/lib/tree-digest.js` already computes, so editing prose reparses
-nothing and editing the `.bib` reparses once.
+The browser caches parsed libraries against bibliography contents and resource
+configuration, excluding ordinary prose. Changes are debounced, the cache is
+bounded, and stale asynchronous results cannot replace the active library.
 
 ## Completion
 
@@ -84,8 +84,8 @@ as the key in brackets and produces a diagnostic; it does not fail the render.
 
 Rendered citations and the reference list are produced by
 [Hayagriva](https://github.com/typst/hayagriva), the library Typst formats its
-own bibliographies with, so a `.bib` cited from a Markdown file and from a
-Typst file in the same document formats identically. The style is named in
+own bibliographies with, so both use the same formatting library. Output also depends on the selected
+style, locale, and citation context. The style is named in
 front matter (`csl:` for a Quarto document, `bibliography-style:` for plain
 Markdown); the shipped set is Hayagriva's built-in styles, and an arbitrary
 CSL file in the tree is out of scope until someone asks for one.
@@ -107,7 +107,7 @@ The library contributes to the existing diagnostics: a cited key with no
 entry, a duplicate key across files, a malformed entry, and a `.bib` named in
 front matter that is not in the tree. Each carries a path, a line and the
 offending text, so it reaches the Diagnostics panel and, through
-`komodoc agent diagnostics` in [assistant.md](assistant.md), an agent that can
+`komodoc agent diagnostics`, an agent that can
 explain it.
 
 An entry present but uncited is not a diagnostic. Authors keep a library
@@ -172,9 +172,19 @@ keeps working.
   editor. That is a different feature with a different failure mode.
 - No writing back to Zotero. The pull is one-way.
 
+## Delivery scope
+
+The current implementation covers the shared library, source completion,
+Markdown citation rendering, and browser/agent diagnostics (steps 1–3).
+Completion uses `bibliography.wasm`; Markdown formatting uses `citations.wasm`.
+Both ship with the server at content-addressed URLs and are built by `make wasm`.
+The Zotero pull command, local discovery, and add-from-search gesture (step 4)
+remain future work. Quarto citation syntax is supported by the shared helpers;
+registering and rendering `.qmd` documents belongs to the Quarto spec.
+
 ## Order of work
 
-1. The `bib` module in the engine: the parser, the library, the tree-digest
+1. The `bib` module in the engine: the parser, the library, the resource
    cache, and the diagnostics. No rendering, no UI.
 2. Completion in the editor for all four triggers, over the parsed library.
    This alone is the daily improvement, and it needs nothing else.
@@ -188,7 +198,7 @@ citations is a bigger change and should not hold up completion.
 
 ## Tests
 
-Rust, `crates/komodoc/src/tests/bibliography.rs`: parsing BibTeX and BibLaTeX
+Rust, `crates/engine/src/bib.rs`: parsing BibTeX and BibLaTeX
 fields, `@string` macros, cross-references and braced titles; a malformed
 entry skipped with a diagnostic while its file still parses; duplicate keys
 across two files resolved in path order with a diagnostic; a front-matter
@@ -197,13 +207,18 @@ across two files resolved in path order with a diagnostic; a front-matter
 Rust, citation rendering: each Pandoc citation shape against a fixed library
 and a fixed style, including locators, prefixes, suffixes and multiple keys;
 an unresolved key rendering as itself with a diagnostic; the reference list at
-a `# References` heading and at the end without one; the same `.bib` cited
-from Markdown and from Typst formatting identically.
+a `# References` heading and at the end without one; style-specific author,
+year, delimiter, and locator output with bundled locales.
 
 Rust, `crates/komodoc/src/tests/bib_cli.rs`: `bib pull` writing a
 deterministic file, a second pull adding one entry producing a one-entry diff,
 and a pull against an unreachable Zotero failing with setup guidance rather
 than an empty file.
+
+Web, `web/checks/bibliography-wasm.mjs`: compiled ABI parsing and rendering,
+cache invalidation, module sizes, a 1,000-entry timing sample, fetch retries,
+and comment anchoring across citation-style changes. The Chromium check in
+`web/checks/citations-browser.mjs` exercises title search and key insertion.
 
 Web, `web/checks/citations.mjs`, as pure functions: the completion matcher's
 ranking over key, author, title and year; the insertion for each trigger; the
@@ -214,13 +229,6 @@ surviving a change of style, belongs with the existing anchoring tests.
 
 ## Open questions
 
-- **Where the citation module is fetched from.** `typst.wasm` has a
-  distribution story; the citation module needs the same one, and it should
-  reuse it rather than inventing a second.
-- **Hayagriva's size compiled to WebAssembly** is unmeasured. If the module is
-  large enough to be felt on a document with three references, the reference
-  list may be worth rendering at publish time and caching, the way the page
-  itself already is.
 - **Key stability across pulls.** Zotero's own citation keys are a Better
   BibTeX concept, not a Zotero one. Which key a pulled entry gets, and whether
   it can change under an author who has already cited it, needs deciding
@@ -233,6 +241,5 @@ surviving a change of style, belongs with the existing anchoring tests.
   discovery and the bridge protocol.
 - [quarto.md](quarto.md) -- the Quarto dialect, its citation step and the
   injected-text anchoring question.
-- [assistant.md](assistant.md) -- diagnostics an agent can read.
 - [catalog.md](catalog.md) -- secrets, retention and erasure, which a
   server-side sync would have to satisfy.

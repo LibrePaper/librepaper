@@ -1,3 +1,4 @@
+import { needsBibliography } from "./bibliography-engine.js";
 // The renderers, loaded into the editor.
 //
 // Both modules are the engine crate compiled to WebAssembly -- the same crate
@@ -153,7 +154,8 @@ export async function render(tree, title, { manual = false } = {}) {
   }
   // Checkpoints may be Svelte proxies, which cannot cross a worker boundary.
   // Send only the compiler inputs, copied into ordinary maps.
-  return request(format, "render", {
+  const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
+  return request(module, "render", {
     tree: { main: tree.main, texts: { ...tree.texts }, assets: { ...tree.assets }, urls: { ...tree.urls } },
     title,
   }).then((result) => {

@@ -48,3 +48,19 @@ const html = await renderers.render({ main: "main.html", texts: { "main.html": "
 assert.equal(html.html, "<p>HTML</p>");
 assert.equal(workers.length, 2);
 console.log("renderer-worker: cloning, reply routing, errors, recovery and HTML passed");
+
+globalThis.KOMODOC_MODULES.bibliography = "/bibliography.wasm";
+globalThis.KOMODOC_MODULES.citations = "/citations.wasm";
+const { analyzeBibliography } = await import("../src/lib/bibliography-engine.js");
+const analyzing = analyzeBibliography({ main: "paper.md", format: "markdown", source: "@doe", texts: { "refs.bib": "" } });
+const bibliographyWorker = workers.at(-1);
+assert.equal(bibliographyWorker.messages[0].operation, "bibliography");
+assert.equal(bibliographyWorker.messages[0].url, "https://example.org/bibliography.wasm");
+bibliographyWorker.reply(bibliographyWorker.messages[0], { entries: [{ key: "doe" }], diagnostics: [] });
+assert.equal((await analyzing).entries[0].key, "doe");
+const citing = renderers.render({ main: "paper.md", texts: { "paper.md": "See [@doe]." } }, "Paper");
+const citationsWorker = workers.at(-1);
+assert.equal(citationsWorker.messages[0].url, "https://example.org/citations.wasm");
+citationsWorker.reply(citationsWorker.messages[0], { html: "<p>Doe</p>", diagnostics: [] });
+assert.equal((await citing).html, "<p>Doe</p>");
+console.log("bibliography worker analysis and citation routing passed");

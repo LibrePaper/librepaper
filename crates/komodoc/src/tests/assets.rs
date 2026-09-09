@@ -174,7 +174,7 @@ fn the_reader_is_told_where_the_renderers_are() {
         !page.contains("__MODULES__"),
         "the module URLs were not substituted into the reader"
     );
-    for name in ["markdown", "typst"] {
+    for name in ["markdown", "typst", "bibliography", "citations"] {
         let Some(url) = module_url(name) else {
             continue;
         };
@@ -302,5 +302,19 @@ fn the_pages_are_built_from_the_design_system() {
             !css.contains(orphan),
             "{orphan} is back: a control sized from outside the component that draws it"
         );
+    }
+}
+
+#[test]
+fn bibliography_modules_are_bundled_but_are_not_document_formats() {
+    let shell = shell();
+    let formats = renderers();
+    for name in ["bibliography", "citations"] {
+        let url = module_url(name).expect("bibliography module must be built");
+        let module = &shell[&url];
+        assert_eq!(module.kind, "application/wasm");
+        assert!(module.immutable);
+        assert!(module.body.starts_with(b"\0asm"));
+        assert!(!formats.contains(&name.to_string()));
     }
 }

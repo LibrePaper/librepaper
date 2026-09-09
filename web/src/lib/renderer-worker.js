@@ -24,6 +24,11 @@ self.onmessage = ({ data: { id, url, operation, args } }) => {
       const wasm = await load(url);
       let result;
       if (operation === "render") result = render(wasm, args.tree, args.title);
+      else if (operation === "bibliography") {
+        const parsed = call(wasm, "bibliography", JSON.stringify(args));
+        if (!parsed.ok) throw new Error(parsed.text || "Bibliography analysis failed.");
+        result = JSON.parse(parsed.text);
+      }
       else if (operation === "title") result = call(wasm, "title_of", args.source).text;
       else if (operation === "diff") {
         const raw = call(wasm, "word_diff", args.old, args.new).text;
