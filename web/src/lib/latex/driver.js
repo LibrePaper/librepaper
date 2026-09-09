@@ -51,13 +51,13 @@ async function gunzip(bytes) {
 /// (`ensureFormat`) exactly, because the compiled-in engine core looks for
 /// this specific name via kpathsea.
 ///
-/// `xetex: "wasmtex-xetex.fmt"` is not a naming choice here: the compiled
-/// `xetex-entry.c` passes `--fmt=wasmtex-xetex` to the engine at start-up
+/// `xetex: "xetex.fmt"` is not a naming choice here: the compiled
+/// `xetex-entry.c` passes `--fmt=xetex` to the engine at start-up
 /// (kpathsea format 10), so XeTeX asks for a format under that exact name
 /// regardless of what the mirror calls the file it ships (`xetex.fmt.gz`,
 /// per the current file-set contract). This one name stays hardcoded here
 /// until the engine is rebuilt without that compiled-in string.
-const FMT_FILENAME = { xetex: "wasmtex-xetex.fmt", luatex: "luatex.fmt" };
+const FMT_FILENAME = { xetex: "xetex.fmt", luatex: "luatex.fmt" };
 
 /// Kinds whose controller answers `loadbundleindex`/`preloadbundle` (the
 /// engine repository's `bundle-mode.js`, imported by every worker
