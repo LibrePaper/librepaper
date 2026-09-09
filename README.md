@@ -424,6 +424,10 @@ librepaper local status
 librepaper local disconnect --all
 ```
 
+`local start` takes `--code` to fix the pairing code instead of a fresh random
+one each run, and `--tex-path` (colon-separated directories) when a TeX
+installation lives somewhere `start` and `doctor` would not otherwise search.
+
 Enter the code once in the document's Settings panel and later fallbacks are
 automatic. When browser compilation fails outright (an engine that will not
 start, a package the mirror lacks, a crash, a TeX error), the reader asks the
@@ -848,9 +852,6 @@ catalogue (`catalog.db`), the objects it names, private server state, and the
 secrets that keep sessions and share links valid. Back it up if the instance
 holds real work; `librepaper backup` writes a verified recovery point of all
 of it, and `librepaper restore-backup` restores one into a fresh directory.
-A hosted profile that keeps the catalogue in Turso and the objects in an
-S3-compatible bucket is designed and its flags are accepted, but this build
-refuses it at startup.
 
 Six flags bound what a deployment will store:
 
@@ -951,8 +952,8 @@ accounts from either provider. Allowlist contents appear in operator startup
 logs; ordinary API responses show only a summary.
 
 Device sign-in is served by the single local deployment process. Pending codes
-do not survive a restart. Multiple server replicas are not supported by this
-build; the deployment writer lock prevents simultaneous local servers.
+do not survive a restart. The deployment writer lock prevents simultaneous
+local servers.
 
 ### GitHub OAuth
 
@@ -969,15 +970,16 @@ Homepage URL:               https://docs.example.org
 Authorization callback URL: https://docs.example.org/auth/callback
 ```
 
-Pass the credentials to `serve` through the environment, rather than as flags: an argument is visible in `ps` to every process on the machine,
-an environment variable is not.
+Pass the client id to `serve` with `--github-client-id`, or its environment
+variable `LIBREPAPER_GITHUB_CLIENT_ID`; the secret is environment only, since
+an argument is visible in `ps` to every process on the machine and an
+environment variable is not:
 
 ```sh
-export LIBREPAPER_GITHUB_CLIENT_ID="..."
 export LIBREPAPER_GITHUB_CLIENT_SECRET="..."
 ```
 
-Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review, but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
+Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id with `--google-client-id` (or `LIBREPAPER_GOOGLE_CLIENT_ID`) and its secret as `LIBREPAPER_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review, but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
 
 `librepaper logout` deletes the terminal's local token. It does not revoke a
 copy held elsewhere. Rotating the server's session key invalidates issued
@@ -995,24 +997,20 @@ the hosted domain, the account identifier, and the profile name. The address is 
 where a retention notice is sent; it is shown to no other reader anywhere.
 Other readers see the profile name.
 
-Flags take precedence over their corresponding environment variables.
+Every command-line option has exactly one flag and one environment variable of
+the same name: `--foo-bar` is `LIBREPAPER_FOO_BAR`, and the flag wins when both
+are set. `librepaper serve --help` (and every other subcommand's `--help`) is
+the reference for the full list. There is no config file.
+
+The exceptions, which are environment only because they are secrets or belong
+to the installer rather than the binary:
 
 | Variable | Purpose |
 | --- | --- |
-| `LIBREPAPER_SERVER` | Default server for `login`, `publish`, `list`, `export`, and document deletion |
-| `LIBREPAPER_TOKEN` | A token to use instead of the one `librepaper login` stores; a GitHub token works too |
-| `LIBREPAPER_DATA` | Directory `serve` and `seed` use for documents and comments (default `librepaper-data`) |
-| `LIBREPAPER_GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
 | `LIBREPAPER_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
-| `LIBREPAPER_GOOGLE_CLIENT_ID` | Google OAuth client ID, for signing in with Google |
 | `LIBREPAPER_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `LIBREPAPER_PUBLISHERS` | Who may publish: `anyone`, `any`, or a list of logins, addresses and domains |
-| `LIBREPAPER_COMMENTERS` | Who may comment: `anyone`, `any`, or a list of logins, addresses and domains |
-| `LIBREPAPER_EXPIRE_AFTER` | Automatically delete documents after a duration such as `24h` or `30d` |
-| `LIBREPAPER_EXPIRE_FROM` | Start retention at `updated` (default) or `created` |
-| `LIBREPAPER_LATEX` | Where `serve` reads LaTeX distributions from: an https bucket or a directory |
-| `LIBREPAPER_VERSION` | Version selected by the installer |
-| `LIBREPAPER_BIN_DIR` | Installation directory selected by the installer |
+| `LIBREPAPER_VERSION` | Version the installer fetches |
+| `LIBREPAPER_BIN_DIR` | Installation directory the installer uses |
 
 ## Building from source
 

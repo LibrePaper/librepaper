@@ -41,8 +41,11 @@ fn job_lock() -> &'static Semaphore {
 }
 
 /// Runs one job (`kind` `"tex"` or `"biber"`) to completion, cancellation,
-/// or its deadline, and returns the status plus the output bytes.
+/// or its deadline, and returns the status plus the output bytes. `tex_path`
+/// is the resolved `--tex-path` directory list, threaded down from the
+/// service's `NativeRunner` to discovery.
 pub async fn run_job(
+    tex_path: &[PathBuf],
     request: JobRequest,
     workspace: Workspace,
     mut cancel: watch::Receiver<bool>,
@@ -66,11 +69,11 @@ pub async fn run_job(
         return failed(&request, &job_id, &message);
     }
 
-    let tool_paths = discovery::tool_paths().await;
+    let tool_paths = discovery::tool_paths(tex_path).await;
     // Versions come from the same discovery pass as the paths, and only the
     // versions ever leave this process: provenance names what ran, never
     // where it lives on this machine.
-    let versions = discovery::discover(false).await.tools;
+    let versions = discovery::discover(false, tex_path).await.tools;
     let deadline = Instant::now() + Duration::from_secs(request.options.deadline_seconds.max(1));
 
     let mut ctx = Ctx {

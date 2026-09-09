@@ -116,7 +116,7 @@ fn channels() -> (
 /// True, having said which tool is missing, when this machine cannot run a
 /// test that needs every one of `tools` on `PATH`.
 async fn skipped_without(tools: &[&str]) -> bool {
-    let paths = crate::local::discovery::tool_paths().await;
+    let paths = crate::local::discovery::tool_paths(&[]).await;
     match tools.iter().find(|tool| paths.get(tool).is_none()) {
         Some(tool) => {
             eprintln!("skipped: {tool} is not on PATH; install TeX Live to run this test");
@@ -131,7 +131,7 @@ async fn skipped_without(tools: &[&str]) -> bool {
 async fn discovery_finds_tex_live_and_parses_versions() {
     // Rescan first: `tool_paths` answers from the cache, and this is the
     // test that refreshes it.
-    let caps = crate::local::discovery::discover(true).await;
+    let caps = crate::local::discovery::discover(true, &[]).await;
     if skipped_without(&["pdflatex", "biber"]).await {
         return;
     }
@@ -182,7 +182,7 @@ async fn paper_corpus_compiles_cites_and_converges() {
     let request = tex_request("pdflatex", "main.tex", 120, 8);
     let (_cancel_tx, cancel_rx, progress) = channels();
 
-    let outcome = native::run_job(request, workspace.clone(), cancel_rx, progress).await;
+    let outcome = native::run_job(&[], request, workspace.clone(), cancel_rx, progress).await;
 
     assert_eq!(outcome.status.status, "done", "{:#?}", outcome.status);
     assert!(
@@ -230,7 +230,7 @@ async fn broken_corpus_fails_with_the_expected_diagnostic_and_no_pdf() {
     let request = tex_request("pdflatex", "main.tex", 120, 8);
     let (_cancel_tx, cancel_rx, progress) = channels();
 
-    let outcome = native::run_job(request, workspace, cancel_rx, progress).await;
+    let outcome = native::run_job(&[], request, workspace, cancel_rx, progress).await;
 
     assert_eq!(outcome.status.status, "failed", "{:#?}", outcome.status);
     assert!(
@@ -289,7 +289,7 @@ fn biblatex_fixture() -> (Workspace, tempfile::TempDir) {
 /// real system (a WasmTex pass), stood in for here with the real engine
 /// since the point of these two tests is Biber, not TeX.
 async fn produce_bcf(project: &Path) {
-    let tool_paths = crate::local::discovery::tool_paths().await;
+    let tool_paths = crate::local::discovery::tool_paths(&[]).await;
     let pdflatex = tool_paths
         .get("pdflatex")
         .expect("pdflatex discovered")
@@ -332,7 +332,7 @@ async fn biber_job_produces_unicode_intact_bbl_bytes() {
 
     let request = biber_request("main", 60);
     let (_cancel_tx, cancel_rx, progress) = channels();
-    let outcome = native::run_job(request, workspace, cancel_rx, progress).await;
+    let outcome = native::run_job(&[], request, workspace, cancel_rx, progress).await;
 
     assert_eq!(outcome.status.status, "done", "{:#?}", outcome.status);
     assert!(!outcome.status.incompatible);
@@ -369,7 +369,7 @@ async fn a_bcf_with_the_wrong_control_file_version_is_reported_incompatible() {
 
     let request = biber_request("main", 60);
     let (_cancel_tx, cancel_rx, progress) = channels();
-    let outcome = native::run_job(request, workspace, cancel_rx, progress).await;
+    let outcome = native::run_job(&[], request, workspace, cancel_rx, progress).await;
 
     assert!(outcome.status.incompatible, "{:#?}", outcome.status);
     assert_eq!(outcome.status.status, "failed");
@@ -399,7 +399,7 @@ async fn shell_escape_and_path_escape_attempts_are_refused() {
 
     let request = tex_request("pdflatex", "main.tex", 60, 4);
     let (_cancel_tx, cancel_rx, progress) = channels();
-    let outcome = native::run_job(request, workspace, cancel_rx, progress).await;
+    let outcome = native::run_job(&[], request, workspace, cancel_rx, progress).await;
 
     assert!(
         !marker.exists(),
@@ -449,7 +449,13 @@ async fn cancellation_kills_the_process_tree_within_three_seconds() {
     let request = tex_request("pdflatex", "main.tex", 60, 4);
     let (cancel_tx, cancel_rx, progress) = channels();
 
-    let handle = tokio::spawn(native::run_job(request, workspace, cancel_rx, progress));
+    let handle = tokio::spawn(native::run_job(
+        &[],
+        request,
+        workspace,
+        cancel_rx,
+        progress,
+    ));
     tokio::time::sleep(Duration::from_millis(700)).await;
     cancel_tx.send(true).expect("cancel channel open");
 
@@ -516,7 +522,7 @@ async fn a_job_that_exceeds_its_deadline_fails_with_timeout() {
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(15),
-        native::run_job(request, workspace, cancel_rx, progress),
+        native::run_job(&[], request, workspace, cancel_rx, progress),
     )
     .await
     .expect("run_job must return on its own once the deadline passes, not hang");
@@ -541,7 +547,7 @@ Hello from XeLaTeX.
     let request = tex_request("xelatex", "main.tex", 60, 4);
     let (_cancel_tx, cancel_rx, progress) = channels();
 
-    let outcome = native::run_job(request, workspace, cancel_rx, progress).await;
+    let outcome = native::run_job(&[], request, workspace, cancel_rx, progress).await;
 
     assert_eq!(outcome.status.status, "done", "{:#?}", outcome.status);
     assert_eq!(outcome.status.provenance.engine, "xelatex");

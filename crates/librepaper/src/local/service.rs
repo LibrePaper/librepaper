@@ -77,8 +77,11 @@ pub trait Runner: Send + Sync {
 }
 
 /// The real runner: native TeX tools on this machine, through package R1b's
-/// `discovery` and `native` modules.
-pub struct NativeRunner;
+/// `discovery` and `native` modules. `tex_path` is the resolved `--tex-path`
+/// directory list, fixed for the lifetime of one `librepaper local start`.
+pub struct NativeRunner {
+    pub tex_path: Vec<PathBuf>,
+}
 
 #[async_trait::async_trait]
 impl Runner for NativeRunner {
@@ -89,11 +92,11 @@ impl Runner for NativeRunner {
         cancel: watch::Receiver<bool>,
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome {
-        crate::local::native::run_job(request, workspace, cancel, progress).await
+        crate::local::native::run_job(&self.tex_path, request, workspace, cancel, progress).await
     }
 
     async fn capabilities(&self, refresh: bool) -> Capabilities {
-        crate::local::discovery::discover(refresh).await
+        crate::local::discovery::discover(refresh, &self.tex_path).await
     }
 }
 
@@ -277,6 +280,7 @@ impl LocalService {
         config_home: &std::path::Path,
         cache_home: &std::path::Path,
         runner: Arc<dyn Runner>,
+        fixed_code: Option<String>,
     ) -> Self {
         let jobs_root = cache_home.join("librepaper").join("local").join("jobs");
         let _ = std::fs::remove_dir_all(&jobs_root);
@@ -284,7 +288,7 @@ impl LocalService {
         let inner = Arc::new(Inner {
             instance,
             port,
-            pairing: PairingStore::new(config_home),
+            pairing: PairingStore::new(config_home, fixed_code),
             runner,
             jobs: Mutex::new(HashMap::new()),
             queue: Mutex::new(VecDeque::new()),

@@ -25,11 +25,16 @@ use crate::util::die;
 
 pub async fn run(args: LocalArgs) {
     match args.command {
-        LocalCommand::Start { port, foreground } => start(port, foreground).await,
+        LocalCommand::Start {
+            port,
+            foreground,
+            code,
+            tex_path,
+        } => start(port, foreground, code, tex_path).await,
         LocalCommand::Status => status().await,
-        LocalCommand::Doctor => doctor().await,
+        LocalCommand::Doctor { tex_path } => doctor(tex_path).await,
         LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
-        LocalCommand::Rescan => rescan().await,
+        LocalCommand::Rescan { tex_path } => rescan(tex_path).await,
     }
 }
 
@@ -72,7 +77,7 @@ fn process_alive(_pid: u32) -> bool {
     false
 }
 
-async fn start(port: u16, foreground: bool) {
+async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<PathBuf>) {
     if !foreground {
         println!(
             "note: --foreground has no effect yet; librepaper local always stays attached to \
@@ -81,7 +86,7 @@ async fn start(port: u16, foreground: bool) {
     }
 
     let config_home = config_home();
-    let pairing = PairingStore::new(&config_home);
+    let pairing = PairingStore::new(&config_home, code.clone());
     let port = if port == 0 { DEFAULT_PORT } else { port };
 
     if let Some(existing) = pairing.read_service() {
@@ -107,7 +112,9 @@ async fn start(port: u16, foreground: bool) {
     let listener_v6 = TcpListener::bind(("::1", port)).await.ok();
 
     let instance = hex::encode(crate::auth::random_bytes(8));
-    let code = generate_code();
+    let code = code
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(generate_code);
     let state = ServiceState {
         port,
         instance: instance.clone(),
@@ -119,8 +126,15 @@ async fn start(port: u16, foreground: bool) {
         die(format!("could not write service.json: {err}"));
     }
 
-    let runner: Arc<dyn Runner> = Arc::new(NativeRunner);
-    let service = LocalService::new(port, instance, &config_home, &cache_home(), runner);
+    let runner: Arc<dyn Runner> = Arc::new(NativeRunner { tex_path });
+    let service = LocalService::new(
+        port,
+        instance,
+        &config_home,
+        &cache_home(),
+        runner,
+        Some(code.clone()),
+    );
     let router = service.router();
 
     println!(
@@ -156,7 +170,7 @@ async fn start(port: u16, foreground: bool) {
 }
 
 async fn status() {
-    let pairing = PairingStore::new(&config_home());
+    let pairing = PairingStore::new(&config_home(), None);
     let Some(state) = pairing.read_service() else {
         println!("librepaper local is not running");
         return;
@@ -202,8 +216,8 @@ fn print_pairings(pairing: &PairingStore) {
     }
 }
 
-async fn doctor() {
-    let capabilities = crate::local::discovery::discover(true).await;
+async fn doctor(tex_path: Vec<PathBuf>) {
+    let capabilities = crate::local::discovery::discover(true, &tex_path).await;
     println!("librepaper local doctor");
     println!();
     println!("platform: {}", capabilities.platform);
@@ -260,7 +274,7 @@ fn disconnect(origin: Option<String>, all: bool) {
     if !all && origin.is_none() {
         die("pass --origin <URL> or --all");
     }
-    let pairing = PairingStore::new(&config_home());
+    let pairing = PairingStore::new(&config_home(), None);
     let target = if all { None } else { origin.as_deref() };
     let removed = pairing.revoke(target);
     if removed == 0 {
@@ -270,7 +284,7 @@ fn disconnect(origin: Option<String>, all: bool) {
     }
 }
 
-async fn rescan() {
+async fn rescan(tex_path: Vec<PathBuf>) {
     // This refreshes the on-disk cache `discovery.rs` keeps under
     // `<config_home>/librepaper/local/tools.json`, which a running service
     // picks up on its own next capability check since it consults the same
@@ -278,7 +292,7 @@ async fn rescan() {
     // service's `capabilities/rescan` route so the change is visible sooner
     // than that service's next request, but the cache file is the shared
     // source of truth either way.
-    let capabilities = crate::local::discovery::discover(true).await;
+    let capabilities = crate::local::discovery::discover(true, &tex_path).await;
     let found = [
         ("pdflatex", capabilities.tools.pdflatex.available),
         ("xelatex", capabilities.tools.xelatex.available),
