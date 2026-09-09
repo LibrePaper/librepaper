@@ -39,6 +39,9 @@ pub struct ServeOptions {
     /// a directory on this machine, or empty for a deployment that serves no
     /// LaTeX at all. See `crate::server::latex`.
     pub latex: String,
+    /// A directory of font files served to typst documents, or empty. See
+    /// `crate::server::fonts`.
+    pub fonts: String,
     pub config: Configuration,
 }
 
@@ -144,6 +147,12 @@ pub async fn serve(options: ServeOptions) {
     let latex = match first_of(&[&options.latex, &env("LIBREPAPER_LATEX")]).trim() {
         "" => None,
         flag => Some(crate::server::latex::Mirror::open(flag).unwrap_or_else(|err| die(err))),
+    };
+    // The font library likewise: a directory that is not there is a typo,
+    // and every file in one that is gets read now, for the families it holds.
+    let fonts = match first_of(&[&options.fonts, &env("LIBREPAPER_FONTS")]).trim() {
+        "" => None,
+        flag => Some(crate::server::fonts::Library::open(flag).unwrap_or_else(|err| die(err))),
     };
     let expire_from = parse_expire_from(&first_of(&[
         &options.expire_from,
@@ -330,6 +339,7 @@ pub async fn serve(options: ServeOptions) {
     // being listed to people who hold nothing on them.
     instance.listing = !options.no_listing;
     instance.latex = latex;
+    instance.fonts = fonts;
     let instance = Arc::new(instance);
 
     println!("librepaper serving http://localhost{address}");
@@ -341,6 +351,9 @@ pub async fn serve(options: ServeOptions) {
     // anyone will connect the two is here. Unreachable is a warning, never a
     // death: a deployment that serves markdown has no business refusing to
     // start because a bucket is still filling.
+    if let Some(library) = &instance.fonts {
+        println!("  fonts: {}", library.describe());
+    }
     if let Some(mirror) = &instance.latex {
         println!("  latex: {}", mirror.describe());
         if let Some(warning) = mirror.probe().await {

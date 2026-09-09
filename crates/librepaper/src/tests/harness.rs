@@ -195,6 +195,21 @@ pub async fn test_server_latex(mirror: crate::server::latex::Mirror) -> TestServ
     serve_instance(Arc::new(instance), dir).await
 }
 
+/// A deployment started with `--fonts`: one that serves a font library to
+/// typst documents.
+pub async fn test_server_fonts(library: crate::server::fonts::Library) -> TestServer {
+    let TestServerParts { mut instance, dir } = build_test_server(
+        Configuration::default(),
+        Policy::parse(TEST_PUBLISHER),
+        Policy::parse("anyone"),
+        true,
+        true,
+    )
+    .await;
+    instance.fonts = Some(library);
+    serve_instance(Arc::new(instance), dir).await
+}
+
 async fn build_test_server(
     config: Configuration,
     publishers: Policy,

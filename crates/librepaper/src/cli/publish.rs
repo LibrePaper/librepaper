@@ -436,8 +436,23 @@ pub(super) async fn publish_directory(
         if title.is_empty() {
             title = title_from_typst(&source);
         }
-        let (compiled, dependencies) =
-            read_and_note_from_files(&main, &source, &title_or(&title, &main), &files);
+        // Packages the document imports and fonts it names are fetched into
+        // the cache as the compile asks for them -- packages from the
+        // registry, fonts from the deployment -- so the document compiles
+        // here the way the editor previews it.
+        let cache = crate::document::needs::Cache::discover();
+        let noted = crate::document::needs::resolve(cache.as_ref(), Some(&server), |library| {
+            crate::document::render::compile_from_files(
+                &main,
+                &source,
+                &title_or(&title, &main),
+                &files,
+                library,
+                cache.as_ref(),
+            )
+        })
+        .await;
+        let (compiled, dependencies) = (noted.compiled, noted.read);
         typst_dependencies = dependencies;
         typst_inputs = input_digest_for_typst(&main, &files, &rules);
         report(&compiled.diagnostics, &main);
@@ -607,20 +622,40 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
         // Compile that exact tree so a source that refers to its own filename
         // cannot produce a PDF for a different input than the server stores.
         let canonical_main = crate::room::main_path_for("", "typst");
-        let (original, discovered) = read_and_note(path, &html, &title_or(&title, file));
+        // Packages and fonts are fetched into the cache as the compile asks
+        // for them; a package is not a sibling, and does not stop a one-file
+        // publish.
+        let cache = crate::document::needs::Cache::discover();
+        let (root, name) =
+            crate::document::render::root_and_name(path).unwrap_or_else(|err| die(err));
+        let original = crate::document::needs::resolve(cache.as_ref(), Some(&server), |library| {
+            crate::document::render::compile_in_root(
+                &root,
+                &name,
+                &html,
+                &title_or(&title, file),
+                library,
+                cache.as_ref(),
+            )
+        })
+        .await;
+        let discovered = original.read;
         let (compiled, siblings) = if discovered.is_empty() {
-            (
-                read_and_note_from_files(
+            let single = [(canonical_main.clone(), raw.clone())];
+            let noted = crate::document::needs::resolve(cache.as_ref(), Some(&server), |library| {
+                crate::document::render::compile_from_files(
                     &canonical_main,
                     &html,
                     &title_or(&title, file),
-                    &[(canonical_main.clone(), raw.clone())],
+                    &single,
+                    library,
+                    cache.as_ref(),
                 )
-                .0,
-                discovered,
-            )
+            })
+            .await;
+            (noted.compiled, discovered)
         } else {
-            (original, discovered)
+            (original.compiled, discovered)
         };
         // Every diagnostic, where it is, and nothing uploaded if any of them
         // is an error: `publish` exists to make a document readable, and a

@@ -200,6 +200,20 @@ pub(super) async fn handle(
         return mirror.response(rest, method == Method::HEAD).await;
     }
 
+    // --- the font library --------------------------------------------------
+    // The same shape: public bytes, no identity, on the reader's origin
+    // because the compile that asks for a family runs there. `publish` asks
+    // the same route for the same files. See `crate::server::fonts`.
+    if let Some(rest) = path.strip_prefix("/api/fonts/") {
+        if method != Method::GET && method != Method::HEAD {
+            return plain(405, "method not allowed");
+        }
+        let Some(library) = &server.fonts else {
+            return plain(404, "not found");
+        };
+        return library.response(rest, method == Method::HEAD).await;
+    }
+
     // --- api ---------------------------------------------------------------
     if path == "/api/account/erase" && method == Method::POST {
         if cross_site_refused(request.headers(), &arrival) {

@@ -51,6 +51,7 @@ mod assistant;
 mod chat;
 mod documents;
 mod figures;
+pub mod fonts;
 mod history;
 pub mod latex;
 mod onboarding;
@@ -103,6 +104,10 @@ pub struct Server {
     /// do is offer a browser anywhere to fetch a compiler from, which is why
     /// `/api/config` reports whether it is set and `renderers` counts it.
     pub latex: Option<crate::server::latex::Mirror>,
+    /// The fonts this deployment serves to typst documents that name a
+    /// family the compiler does not embed, or nothing. See
+    /// `crate::server::fonts`.
+    pub fonts: Option<crate::server::fonts::Library>,
     sockets: AtomicU64,
     /// How many figures each owner has uploaded this hour, and which hour that
     /// is. Uploading a figure is an upload and counts against
@@ -323,6 +328,7 @@ impl Server {
             onboarding: tokio::sync::Mutex::new(()),
             chat: chat::Hub::default(),
             latex: None,
+            fonts: None,
             sockets: AtomicU64::new(1),
             asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
             connections: tokio::sync::Mutex::new(HashMap::new()),

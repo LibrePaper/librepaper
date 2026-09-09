@@ -1,9 +1,22 @@
-import { load, call, handOver } from "./renderer-wasm.js";
+import { load, call } from "./renderer-wasm.js";
+import { renderResolving } from "./needs.js";
 
-function render(wasm, tree, title) {
-  handOver(wasm, tree);
-  const source = tree.texts?.[tree.main] ?? "";
-  const { bytes, text, kind, ok, diagnostics } = call(wasm, "compile", source, title);
+// What earlier compiles fetched -- packages and fonts -- for the life of
+// this worker. See `needs.js`.
+const fetched = new Map();
+
+function fontsIndex() {
+  try {
+    return new URL("/api/fonts/index.json", self.location.href).href;
+  } catch {
+    return "";
+  }
+}
+
+async function render(wasm, tree, title) {
+  const { bytes, text, kind, ok, diagnostics } = await renderResolving(wasm, tree, title, fetched, {
+    fontsIndex: fontsIndex(),
+  });
   if (ok && kind === "pdf") return { pdf: bytes.buffer, diagnostics };
   if (ok && kind === "html") return { html: text, diagnostics };
   const said = diagnostics.length
@@ -19,7 +32,7 @@ self.onmessage = ({ data: { id, url, operation, args } }) => {
     try {
       const wasm = await load(url);
       let result;
-      if (operation === "render") result = render(wasm, args.tree, args.title);
+      if (operation === "render") result = await render(wasm, args.tree, args.title);
       else if (operation === "bibliography") {
         const parsed = call(wasm, "bibliography", JSON.stringify(args));
         if (!parsed.ok) throw new Error(parsed.text || "Bibliography analysis failed.");

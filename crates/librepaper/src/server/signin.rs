@@ -445,6 +445,10 @@ impl Server {
             "/api/config" => {
                 let mut body = json!(*self.config);
                 if let Some(fields) = body.as_object_mut() {
+                    // Whether there is a font library to ask for a family
+                    // the compiler warned about. The index itself is at
+                    // `/api/fonts/index.json`.
+                    fields.insert("fonts".to_string(), json!(self.fonts.is_some()));
                     // Whether this deployment serves LaTeX distributions at
                     // all, which is what tells the reader to offer the card
                     // rather than "not yet rendered". Only whether, never

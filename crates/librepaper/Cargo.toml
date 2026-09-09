@@ -18,8 +18,13 @@ path = "src/main.rs"
 [dependencies]
 wasm-helpers = { git = "https://github.com/LibrePaper/wasm-helpers", tag = "v0.1.1" }
 wasm-markdown = { git = "https://github.com/LibrePaper/wasm-markdown", tag = "v0.1.1", default-features = false }
-wasm-typst = { git = "https://github.com/LibrePaper/wasm-typst", tag = "v0.1.1", default-features = false }
+wasm-typst = { git = "https://github.com/LibrePaper/wasm-typst", tag = "v0.2.0", default-features = false }
 wasm-bibliography = { git = "https://github.com/LibrePaper/wasm-bibliography", tag = "v0.1.1", default-features = false, features = ["citations"] }
+# The compiler behind wasm-typst, for reading which families a font file in the
+# deployment's library carries. The same version, so it is the same crate.
+typst = "=0.15.1"
+# Package archives from the typst registry are gzip around a tar.
+flate2 = "1"
 
 # The server. WebSockets come with axum, so nothing here frames them by hand.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal", "process", "io-util"] }
@@ -72,4 +77,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"
+# A font file for the tests to put in a library.
+typst-assets = { version = "=0.15.1", features = ["fonts"] }
 sha1 = "0.10"

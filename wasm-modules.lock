@@ -13,4 +13,4 @@
 markdown.wasm        wasm-markdown       v0.1.1    c701483e38f9da1691e752be48c8283119ec78598a296479a4da4986ecaf1114
 bibliography.wasm    wasm-bibliography   v0.1.1    80b419d22478d829ae64eddebfca49766b7e8c87cfd5fd620fe7a11f089f7d59
 citations.wasm       wasm-bibliography   v0.1.1    a5123aecdac6d3c4bdb80750347287f03969aaf201a8c86d89f8d9b7ba79691b
-typst.wasm           wasm-typst          v0.1.1    c0e113b07ad79d505d0517bfb36d2781c0cb544fa627895420be590a07c817e8
+typst.wasm           wasm-typst          v0.2.0    4bc07ab058b1da68cf985605dc57ff0c97c89000a4afd7aab99d9d00f59fe940

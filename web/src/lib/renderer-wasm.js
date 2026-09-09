@@ -123,3 +123,19 @@ export function handOver(wasm, tree) {
   }
   call(wasm, "set_main", tree.main || "");
 }
+
+/// What the last compile went looking for and did not find -- packages and
+/// font families -- from a module that says so, or `null` from one that has
+/// no such export (markdown) or has compiled nothing yet. See `needs.js`.
+export function needsOf(wasm) {
+  if (typeof wasm.needs !== "function" || typeof wasm.needs_ptr !== "function") return null;
+  const size = wasm.needs();
+  if (!(size > 0)) return null;
+  const raw = new Uint8Array(wasm.memory.buffer, wasm.needs_ptr(), size).slice();
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(raw)) || {};
+    return { packages: parsed.packages || [], fonts: parsed.fonts || [] };
+  } catch {
+    return null;
+  }
+}

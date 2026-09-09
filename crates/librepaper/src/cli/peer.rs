@@ -1583,7 +1583,45 @@ fn print_result(result: OperationResult) -> Result<(), String> {
 /// output.
 #[allow(dead_code)]
 pub(crate) fn diagnostics_json(snapshot: &Snapshot) -> Result<String, String> {
-    diagnostics_json_with_files(snapshot, &[])
+    diagnostics_json_with_files(snapshot, &[], None)
+}
+
+/// The main file's path and its source, as the compile is told them.
+fn main_and_source(snapshot: &Snapshot) -> (String, &str) {
+    let path = if snapshot.main.is_empty() {
+        "main".to_string()
+    } else {
+        snapshot.main.clone()
+    };
+    let source = if snapshot.source.is_empty() {
+        snapshot
+            .texts
+            .get(&path)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    } else {
+        snapshot.source.as_str()
+    };
+    (path, source)
+}
+
+/// Every file a typst compile of the snapshot may read: its texts, and the
+/// figures and fonts already fetched as bytes.
+fn typst_files(snapshot: &Snapshot, asset_files: &[(String, Vec<u8>)]) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = snapshot
+        .texts
+        .as_object()
+        .into_iter()
+        .flat_map(|texts| texts.iter())
+        .map(|(name, text)| {
+            (
+                name.clone(),
+                text.as_str().unwrap_or_default().as_bytes().to_vec(),
+            )
+        })
+        .collect();
+    files.extend(asset_files.iter().cloned());
+    files
 }
 
 async fn diagnostics_json_for_peer(
@@ -1606,7 +1644,34 @@ async fn diagnostics_json_for_peer(
             assets.push((path.clone(), peer.asset_bytes(sha).await?));
         }
     }
-    diagnostics_json_with_files(&selected, &assets)
+    // A typst document is compiled here with what it imports and names
+    // fetched first -- packages from the registry, fonts from the deployment
+    // the document lives on -- so the diagnostics are the editor's, not a
+    // list of packages this machine has not seen yet.
+    let resolved = if matches!(
+        selected.format.to_ascii_lowercase().as_str(),
+        "typst" | "typ"
+    ) {
+        let (path, source) = main_and_source(&selected);
+        let files = typst_files(&selected, &assets);
+        let cache = crate::document::needs::Cache::discover();
+        let noted =
+            crate::document::needs::resolve(cache.as_ref(), Some(peer.link.server()), |library| {
+                crate::document::render::compile_from_files(
+                    &path,
+                    source,
+                    &selected.title,
+                    &files,
+                    library,
+                    cache.as_ref(),
+                )
+            })
+            .await;
+        Some(noted.compiled)
+    } else {
+        None
+    };
+    diagnostics_json_with_files(&selected, &assets, resolved)
 }
 
 pub(crate) fn snapshot_for_path(snapshot: &Snapshot, path: &str) -> Result<Snapshot, String> {
@@ -1631,24 +1696,14 @@ pub(crate) fn snapshot_for_path(snapshot: &Snapshot, path: &str) -> Result<Snaps
     Ok(selected)
 }
 
+/// `resolved` is a typst compile already made with its packages and fonts
+/// fetched; without one, typst is compiled with what the cache has.
 fn diagnostics_json_with_files(
     snapshot: &Snapshot,
     asset_files: &[(String, Vec<u8>)],
+    resolved: Option<wasm_helpers::diagnostic::Compiled>,
 ) -> Result<String, String> {
-    let path = if snapshot.main.is_empty() {
-        "main".to_string()
-    } else {
-        snapshot.main.clone()
-    };
-    let source = if snapshot.source.is_empty() {
-        snapshot
-            .texts
-            .get(&path)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-    } else {
-        snapshot.source.as_str()
-    };
+    let (path, source) = main_and_source(snapshot);
     let format = snapshot.format.to_ascii_lowercase();
     let texts = snapshot
         .texts
@@ -1666,29 +1721,19 @@ fn diagnostics_json_with_files(
             &wasm_markdown::markdown::no_assets,
         ),
         "html" | "htm" => crate::document::html::compile(source, &snapshot.title),
-        "typst" | "typ" => {
-            let files: Vec<(String, Vec<u8>)> = snapshot
-                .texts
-                .as_object()
-                .into_iter()
-                .flat_map(|texts| texts.iter())
-                .map(|(name, text)| {
-                    (
-                        name.clone(),
-                        text.as_str().unwrap_or_default().as_bytes().to_vec(),
-                    )
-                })
-                .collect();
-            let mut files = files;
-            files.extend(asset_files.iter().cloned());
-            let (compiled, _) = crate::document::render::read_and_note_from_files(
-                &path,
-                source,
-                &snapshot.title,
-                &files,
-            );
-            compiled
-        }
+        "typst" | "typ" => match resolved {
+            Some(compiled) => compiled,
+            None => {
+                let files = typst_files(snapshot, asset_files);
+                crate::document::render::read_and_note_from_files(
+                    &path,
+                    source,
+                    &snapshot.title,
+                    &files,
+                )
+                .0
+            }
+        },
         other => {
             return Err(format!(
             "unsupported document format {other:?}; diagnostics supports markdown, typst, and html"

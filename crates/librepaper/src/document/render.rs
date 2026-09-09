@@ -10,6 +10,7 @@ use wasm_markdown::markdown;
 use wasm_typst::typst;
 
 use super::html;
+use super::needs::{self, Cache};
 
 pub fn is_markdown(name: &str) -> bool {
     markdown::is_markdown(name)
@@ -207,43 +208,63 @@ pub fn pdf_of(compiled: &Compiled) -> Option<Vec<u8>> {
 /// which files were read is what lets `publish` say so, which is the whole
 /// reason the closure records rather than merely answering.
 pub fn read_and_note(file: &Path, source: &str, title: &str) -> (Compiled, Vec<String>) {
-    // `Path::new("paper.typ").parent()` is `Some("")` rather than `None`, and
-    // an empty path cannot be made absolute -- so `librepaper publish
-    // paper.typ`, run from the directory the file is in, failed with "cannot
-    // make an empty path absolute" and reported the document as not compiling.
-    // The empty parent is the current directory, which is what it always
-    // meant.
-    let beside = file
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty());
-    let root = match std::path::absolute(beside.unwrap_or(Path::new("."))) {
-        Ok(root) => root,
-        Err(err) => return (Compiled::failed(err.to_string()), Vec::new()),
+    let (root, name) = match root_and_name(file) {
+        Ok(found) => found,
+        Err(err) => return (Compiled::failed(err), Vec::new()),
     };
-    let name = file
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
     read_and_note_in_root(&root, &name, source, title)
+}
+
+/// A typst compile, with what it read beside it and what it could not find:
+/// the siblings `publish` warns about, and the packages and fonts the caller
+/// fetches before compiling again.
+#[derive(Debug)]
+pub struct Noted {
+    pub compiled: Compiled,
+    /// The project files the compile read, other than the main one.
+    pub read: Vec<String>,
+    pub needs: typst::Needs,
+}
+
+impl Noted {
+    fn failed(why: String) -> Noted {
+        Noted {
+            compiled: Compiled::failed(why),
+            read: Vec::new(),
+            needs: typst::Needs::default(),
+        }
+    }
 }
 
 /// Compiles a directory publish against the exact project root that will be
 /// uploaded. A nested main file still resolves imports from that root, and the
 /// engine receives its full relative path so dependency discovery matches the
 /// server's canonical tree.
-pub fn read_and_note_in_root(
+///
+/// A package is read from the cache, under the path the compiler asks for it
+/// by, and is not a file the document read: it is not in the tree and will
+/// not be uploaded. The fonts are the root's own font files and `library`,
+/// the ones fetched for the families the document names.
+pub fn compile_in_root(
     root: &Path,
     name: &str,
     source: &str,
     title: &str,
-) -> (Compiled, Vec<String>) {
+    library: &[(String, Vec<u8>)],
+    cache: Option<&Cache>,
+) -> Noted {
     let root = match std::path::absolute(root) {
         Ok(root) => root,
-        Err(err) => return (Compiled::failed(err.to_string()), Vec::new()),
+        Err(err) => return Noted::failed(err.to_string()),
     };
     let asked: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    let compiled = {
+    let mut fonts = fonts_under(&root);
+    fonts.extend(library.iter().cloned());
+    let outcome = {
         let reader = |path: &Path| -> Option<Vec<u8>> {
+            if Cache::is_package_path(path) {
+                return cache.and_then(|cache| cache.package_file(path));
+            }
             let found = read_within(&root, path);
             if found.is_some() {
                 let at = path.to_string_lossy().to_string();
@@ -254,30 +275,62 @@ pub fn read_and_note_in_root(
             }
             found
         };
-        typst::render(source, title, name, &reader, typst::Today::now())
+        typst::render(source, title, name, &reader, &fonts, typst::Today::now())
     };
     let mut read = asked.into_inner().unwrap_or_default();
     read.sort();
-    (compiled, read)
+    Noted {
+        compiled: outcome.compiled,
+        read,
+        needs: outcome.needs,
+    }
+}
+
+/// The same, with only what the cache already holds: no fetching. What
+/// `read_and_note` and its kind answer, for the callers that have nowhere to
+/// fetch from.
+pub fn read_and_note_in_root(
+    root: &Path,
+    name: &str,
+    source: &str,
+    title: &str,
+) -> (Compiled, Vec<String>) {
+    let cache = Cache::discover();
+    let noted = needs::resolve_cached(cache.as_ref(), |library| {
+        compile_in_root(root, name, source, title, library, cache.as_ref())
+    });
+    (noted.compiled, noted.read)
 }
 
 /// The captured-file variant used by native directory publishing. The caller
 /// has already applied ignore and path rules, so compiling from this map keeps
 /// a file changing on disk from making the PDF disagree with the uploaded
-/// tree.
-pub fn read_and_note_from_files(
+/// tree. The font files among `files` are the document's own fonts;
+/// `library` are the ones fetched for the families it names.
+pub fn compile_from_files(
     name: &str,
     source: &str,
     title: &str,
     files: &[(String, Vec<u8>)],
-) -> (Compiled, Vec<String>) {
+    library: &[(String, Vec<u8>)],
+    cache: Option<&Cache>,
+) -> Noted {
     let captured: std::collections::HashMap<String, Vec<u8>> = files
         .iter()
         .map(|(path, bytes)| (crate::document::paths::normalise(path), bytes.clone()))
         .collect();
+    let mut fonts: Vec<(String, Vec<u8>)> = files
+        .iter()
+        .filter(|(path, _)| typst::is_font(path))
+        .cloned()
+        .collect();
+    fonts.extend(library.iter().cloned());
     let asked: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    let compiled = {
+    let outcome = {
         let reader = |path: &Path| -> Option<Vec<u8>> {
+            if Cache::is_package_path(path) {
+                return cache.and_then(|cache| cache.package_file(path));
+            }
             let key = crate::document::paths::normalise(&path.to_string_lossy());
             let found = captured.get(&key).cloned();
             if found.is_some() && key != crate::document::paths::normalise(name) {
@@ -288,11 +341,90 @@ pub fn read_and_note_from_files(
             }
             found
         };
-        typst::render(source, title, name, &reader, typst::Today::now())
+        typst::render(source, title, name, &reader, &fonts, typst::Today::now())
     };
     let mut read = asked.into_inner().unwrap_or_default();
     read.sort();
-    (compiled, read)
+    Noted {
+        compiled: outcome.compiled,
+        read,
+        needs: outcome.needs,
+    }
+}
+
+/// The same, with only what the cache already holds: no fetching.
+pub fn read_and_note_from_files(
+    name: &str,
+    source: &str,
+    title: &str,
+    files: &[(String, Vec<u8>)],
+) -> (Compiled, Vec<String>) {
+    let cache = Cache::discover();
+    let noted = needs::resolve_cached(cache.as_ref(), |library| {
+        compile_from_files(name, source, title, files, library, cache.as_ref())
+    });
+    (noted.compiled, noted.read)
+}
+
+/// Where a file's compile is rooted and what the compiler calls it: the file's
+/// own directory, and its name within it.
+pub fn root_and_name(file: &Path) -> Result<(PathBuf, String), String> {
+    // `Path::new("paper.typ").parent()` is `Some("")` rather than `None`, and
+    // an empty path cannot be made absolute -- so `librepaper publish
+    // paper.typ`, run from the directory the file is in, failed with "cannot
+    // make an empty path absolute" and reported the document as not compiling.
+    // The empty parent is the current directory, which is what it always
+    // meant.
+    let beside = file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let root =
+        std::path::absolute(beside.unwrap_or(Path::new("."))).map_err(|err| err.to_string())?;
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Ok((root, name))
+}
+
+/// The font files under a root, as `--font-path` would find them: what a
+/// document brings beside itself. Hidden directories and build outputs are
+/// skipped, and the walk stops at a few hundred files, since a project is not
+/// a font library.
+fn fonts_under(root: &Path) -> Vec<(String, Vec<u8>)> {
+    const MOST: usize = 256;
+    let mut fonts = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name.starts_with('.') || name == "target" || name == "node_modules" {
+                continue;
+            }
+            if path.is_dir() {
+                pending.push(path);
+            } else if typst::is_font(&name) && fonts.len() < MOST {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    let at = path
+                        .strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .to_string();
+                    fonts.push((at, bytes));
+                }
+            }
+        }
+    }
+    fonts.sort_by(|a, b| a.0.cmp(&b.0));
+    fonts
 }
 
 /// Prints what a compile had to say the way every editor since `grep -n`

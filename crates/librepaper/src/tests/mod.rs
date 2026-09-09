@@ -57,6 +57,7 @@ mod suggestions;
 mod sync;
 mod timeline;
 mod tokens;
+mod typst_needs;
 mod uploads;
 mod visitor;
 mod wasmtex_server;

@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 
 use crate::config::Configuration;
 use crate::document::render::{
-    counted, is_html, is_markdown, is_typst, pdf_of, read_and_note, read_and_note_from_files,
-    report, title_from_html, title_from_markdown, title_from_typst,
+    counted, is_html, is_markdown, is_typst, pdf_of, report, title_from_html, title_from_markdown,
+    title_from_typst,
 };
 use crate::http::{
     detail_of, get_as, get_json, get_with_token, post_directory, post_json, post_json_as,
@@ -110,6 +110,11 @@ pub(crate) struct ServiceFlags {
         default_missing_value = crate::server::latex::DEFAULT_MIRROR
     )]
     latex: Option<String>,
+    /// Serve the font files in this directory to typst documents that name a
+    /// family the compiler does not embed; `publish` fetches the same fonts.
+    /// Without it, such a document is set in the compiler's default faces.
+    #[arg(long, value_name = "DIR")]
+    fonts: Option<String>,
 }
 
 impl ServiceFlags {
@@ -535,6 +540,7 @@ pub async fn main() {
                 expire_after: service.expire_after.unwrap_or_default(),
                 expire_from: service.expire_from.unwrap_or_default(),
                 latex: service.latex.unwrap_or_default(),
+                fonts: service.fonts.unwrap_or_default(),
                 config,
             })
             .await
