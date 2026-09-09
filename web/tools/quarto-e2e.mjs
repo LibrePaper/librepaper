@@ -149,6 +149,79 @@ try {
   await until("draft cached image", async () => tab.frameEvaluate('Boolean(document.querySelector("img[src^=\\"blob:\\"]"))'));
   assert.ok(await tab.frameEvaluate('Boolean(document.querySelector("figure.quarto-cached-output"))'), "Draft renders the cached figure");
 
+  // Context controls select saved computations without a local execution
+  // connection, and keep types/profile identity across a browser reload.
+  const parameters = { seed:42, enabled:true, label:"42", empty:null };
+  const reviewContext = await contextId({ format:"html", profiles:["review"], parameters });
+  const reviewParametersSha = await parameterSha256(parameters);
+  const reviewComputationSha = await contextFingerprint(parsed, {
+    main:"main.qmd", format:"html", profiles:["review"], parametersSha256:reviewParametersSha,
+  });
+  const review = structuredClone(publishBody);
+  review.manifest.render_id = "review-profile-results";
+  review.manifest.context = { ...review.manifest.context, id:reviewContext,
+    profiles:["review"], parameters_sha256:reviewParametersSha, computation_sha256:reviewComputationSha };
+  review.manifest.cells[0].context_sha256 = reviewComputationSha;
+  review.manifest.cells[0].outputs[1].text = "review profile computation";
+  const reviewStatus = await tab.evaluate(`(async () => (await fetch(${publishPath}, { method:"POST", headers:{ "content-type":"application/json", "x-librepaper-client":"1" }, body:${JSON.stringify(JSON.stringify(review))} })).status)()`);
+  assert.ok([200,201].includes(reviewStatus), `review context publication failed: ${reviewStatus}`);
+  const slides = structuredClone(review);
+  slides.manifest.render_id = "review-slides-results";
+  slides.manifest.context.format = "revealjs";
+  slides.manifest.context.id = await contextId({ format:"revealjs", profiles:["review"], parameters });
+  slides.manifest.context.computation_sha256 = await contextFingerprint(parsed, {
+    main:"main.qmd", format:"revealjs", profiles:["review"], parametersSha256:reviewParametersSha,
+  });
+  slides.manifest.cells[0].context_sha256 = slides.manifest.context.computation_sha256;
+  slides.manifest.cells[0].outputs[1].text = "review slides computation";
+  const slidesStatus = await tab.evaluate(`(async () => (await fetch(${publishPath}, { method:"POST", headers:{ "content-type":"application/json", "x-librepaper-client":"1" }, body:${JSON.stringify(JSON.stringify(slides))} })).status)()`);
+  assert.ok([200,201].includes(slidesStatus), `slides context publication failed: ${slidesStatus}`);
+
+  const editOptions = async (profile, values, format = "default") => {
+    await tab.evaluate(`(() => {
+      document.querySelector("details.render-options").open = true;
+      const fields = [
+        ['[aria-label="Quarto profile (optional)"]', ${JSON.stringify(profile)}, 'input'],
+        ['[aria-label="Quarto parameters as JSON"]', ${JSON.stringify(values)}, 'input'],
+        ['[aria-label="Render format"]', ${JSON.stringify(format)}, 'change'],
+      ];
+      for (const [selector,value,type] of fields) {
+        const field = document.querySelector(selector);
+        if (!field) throw new Error('Missing render option: '+selector);
+        field.value = value;
+        field.dispatchEvent(new Event(type,{bubbles:true}));
+      }
+    })()`);
+  };
+  const applyOptions = async () => {
+    await until("render options valid", () => tab.evaluate('!![...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Apply options" && !b.disabled)'));
+    await tab.evaluate('[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Apply options").click()');
+  };
+  await editOptions("review", JSON.stringify(parameters));
+  await applyOptions();
+  await until("profile-specific cached output", async () => (await frameText()).includes("review profile computation"));
+  assert.ok(!(await frameText()).includes("cached computation text"), "different context must not borrow default results");
+  await tab.navigate(`${base}/docs/${slug}`);
+  await until("remembered profile output", async () => (await frameText()).includes("review profile computation"));
+  assert.equal(await tab.evaluate('document.querySelector(\'[aria-label="Quarto profile (optional)"]\').value'), "review");
+  assert.deepEqual(JSON.parse(await tab.evaluate('document.querySelector(\'[aria-label="Quarto parameters as JSON"]\').value')), parameters);
+  await editOptions("review", '{"nested":{"value":1}}');
+  await until("invalid parameters diagnostic", () => tab.evaluate('Boolean(document.querySelector(".render-options-error"))'));
+  assert.ok((await frameText()).includes("review profile computation"), "invalid edits do not change the applied context");
+  await editOptions("review", JSON.stringify(parameters), "revealjs");
+  await applyOptions();
+  await until("explicit format context", async () => (await frameText()).includes("review slides computation"));
+  await editOptions("missing-profile", "{}");
+  await applyOptions();
+  await until("missing context clears cached outputs", async () => {
+    const text = await frameText();
+    return text.includes("Opening prose") && !text.includes("review profile computation") && !text.includes("review slides computation") && !text.includes("cached computation text");
+  });
+  await editOptions("", "{}");
+  await applyOptions();
+  await until("default context restored", async () => (await frameText()).includes("cached computation text"));
+  await tab.evaluate('document.querySelector("details.render-options").open = false');
+
   const proseEdit = source.replace("Opening prose remains visible", "Edited prose remains visible");
   await tab.insert(proseEdit, true);
   await pause(1200);
@@ -248,7 +321,7 @@ try {
   assert.ok(JSON.parse(assetStatuses).every((status) => status === 200), `selected assets are readable after reload: ${assetStatuses}`);
   await until("selected bundle reload", async () => (await frameText()).includes("Replacement artifact"));
   assert.ok((await frameText()).includes("New immutable rendered output."), "reader reload fetches the selected replacement artifact");
-  console.log("quarto-e2e: API publication, draft cached outputs, prose/code freshness, full artifact assets, and reader reload passed");
+  console.log("quarto-e2e: format/profile/parameter contexts, reload preferences, cached outputs, freshness, artifacts, and comments passed");
 } catch (error) {
   if (tab) console.error("quarto-e2e page:", await tab.evaluate("document.body.innerText.slice(-4000)").catch(() => "page unavailable"));
   throw error;

@@ -60,6 +60,8 @@
   import Grip from "./Grip.svelte";
   import Comments from "./Comments.svelte";
   import SavedResults from "./SavedResults.svelte";
+  import QuartoRenderOptions from "./QuartoRenderOptions.svelte";
+  import { loadRenderOptions, saveRenderOptions, parseRenderOptions } from "../lib/quarto-options.js";
   import { resultItems, resultAnchor, inspectResult } from "../lib/results-comments.js";
   import Agent from "./Agent.svelte";
   import Chat from "./Chat.svelte";
@@ -156,6 +158,10 @@
   let quartoObjectUrls = [];
   let quartoArtifactDispose = null;
   let quartoContext = $state("");
+  let quartoOptions = $state(loadRenderOptions(SLUG));
+  let quartoOptionsChanging = $state(false);
+  let quartoLoadSerial = 0;
+  let quartoRequestedContext = "";
   let quartoFreshness = $state({ state: "missing", message: "No saved result" });
   let quartoJob = $state(null);
   let quartoLog = $state("");
@@ -254,12 +260,56 @@
     quartoObjectUrls = [];
   }
   function quartoTargetFormat(tree = null) {
+    if (quartoOptions.format !== "default") return quartoOptions.format;
     const main = tree?.main || session?.mainPath?.() || "main.qmd";
     const source = tree?.texts?.[main] || session?.textOf?.(session.mainId?.())?.toString?.() || session?.text?.toString?.() || "";
     const value = quarto.parseQuarto(source, { path: main }).metadata?.format;
     const named = typeof value === "string" ? value : value && typeof value === "object" ? Object.keys(value)[0] : "html";
     const format = String(named || "html").trim().toLowerCase().split(/[+:]/, 1)[0];
     return ["html", "pdf", "docx", "revealjs"].includes(format) ? format : "html";
+  }
+  function quartoRenderContext(tree = null) {
+    return {
+      format: quartoTargetFormat(tree),
+      profiles: quartoOptions.profile ? [quartoOptions.profile] : [],
+      parameters: { ...quartoOptions.parameters },
+    };
+  }
+
+  function clearQuartoSelection() {
+    releaseQuartoUrls();
+    quartoBundle = null;
+    quartoOutput = null;
+    quartoAssets = {};
+    quartoContext = "";
+    quartoGeneration = 0;
+    quartoFreshnessSerial += 1;
+    quartoFreshness = { state:"missing", message:"No saved result" };
+    quartoArtifactStatus = "No saved output";
+    quartoView = "draft";
+    quartoResultsOpen = false;
+    closeQuartoResults();
+  }
+
+  async function applyQuartoOptions(next) {
+    if (quartoJob || quartoOptionsChanging || viewing) return;
+    const options = parseRenderOptions(next);
+    quartoOptionsChanging = true;
+    try {
+      quartoOptions = options;
+      const saved = saveRenderOptions(SLUG, options);
+      // A different context must never display the previous context's plots,
+      // including when its selected bundle is missing or cannot be fetched.
+      quartoLoadSerial += 1;
+      quartoLoader.invalidate();
+      clearQuartoSelection();
+      void paintPreview();
+      await loadQuartoOutput();
+      if (saved === false) say("Render options apply to this tab; browser storage is unavailable.", true);
+    } finally {
+      quartoOptionsChanging = false;
+      void paintPreview();
+    }
   }
   const tell = (message, transfer) => preview?.tell(message, transfer);
   // Initialized after the derived frame kind is available. The controller's
@@ -942,15 +992,24 @@
 
   async function loadQuartoOutput({ force = false } = {}) {
     if (sourceFormat !== "quarto" || readerDisposed) return null;
-    const context = await quarto.contextId({ format: quartoTargetFormat() });
+    const renderContext = quartoRenderContext();
+    const requested = JSON.stringify(renderContext);
+    if (quartoRequestedContext && requested !== quartoRequestedContext) {
+      quartoLoader.invalidate();
+      clearQuartoSelection();
+    }
+    quartoRequestedContext = requested;
+    const serial = ++quartoLoadSerial;
+    const context = await quarto.contextId(renderContext);
+    if (readerDisposed || serial !== quartoLoadSerial) return null;
     if (!force && quartoOutput?.local && quartoPendingPublish && quartoContext === context) return quartoOutput;
     quartoOutputState = "loading";
     try {
       await quartoLoader.load(context, { force });
-      if (!readerDisposed) quartoOutputState = quartoOutput ? "ready" : "missing";
+      if (!readerDisposed && serial === quartoLoadSerial) quartoOutputState = quartoOutput ? "ready" : "missing";
       return quartoOutput;
     } catch (error) {
-      if (!readerDisposed) quartoOutputState = error.message || "Quarto output unavailable";
+      if (!readerDisposed && serial === quartoLoadSerial) quartoOutputState = error.message || "Quarto output unavailable";
       throw error;
     }
   }
@@ -965,7 +1024,11 @@
   }
 
   async function renderQuartoLocally(policy = "project-defaults") {
-    if (!mayEdit || sourceFormat !== "quarto" || quartoJob) return;
+    if (!mayEdit || sourceFormat !== "quarto" || quartoJob || quartoOptionsChanging || viewing) return;
+    if (policy === "frozen" && (quartoOptions.profile || Object.keys(quartoOptions.parameters).length)) {
+      say("Frozen results require the default profile and no parameter overrides.", true);
+      return;
+    }
     if (quartoPendingPublish) {
       say("A completed render is waiting to be shared; use Retry sharing first.", true);
       return;
@@ -977,8 +1040,9 @@
     localQuarto.configure({ project: SLUG, origin: location.origin });
     try {
       const renderTree = treeNow();
-      const renderFormat = quartoTargetFormat(renderTree);
-      const inputContext = await quarto.contextId({ format: renderFormat });
+      const renderContext = quartoRenderContext(renderTree);
+      const renderFormat = renderContext.format;
+      const inputContext = await quarto.contextId(renderContext);
       const selectedResponse = await previewApi.selectedResults(inputContext);
       const selected = await selectedResponse.json().catch(() => null);
       if (!selectedResponse.ok && selectedResponse.status !== 404) throw new Error("Could not read the current Quarto selection before rendering.");
@@ -993,7 +1057,8 @@
       const result = await localQuarto.runQuarto({
         job: { id, binding: quartoBindingId, inputRevision, inputDigest, sharedTreeSha256: inputDigest },
         tree: renderTree,
-        options: { entrypoint: renderTree.main, format: renderFormat, policy, inputRevision, inputDigest, sharedTreeSha256: inputDigest },
+        options: { entrypoint: renderTree.main, format: renderFormat, profile: renderContext.profiles[0] || null,
+          parameters: renderContext.parameters, policy, inputRevision, inputDigest, sharedTreeSha256: inputDigest },
       }, {
         signal: controller.signal,
         onProgress: (progress) => { if (quartoJob?.id === id) quartoJob = { ...quartoJob, stage: progress.stage || "running" }; },
@@ -1024,7 +1089,7 @@
         }
         return;
       }
-      if (await quarto.contextId({ format:quartoTargetFormat() }) !== inputContext) {
+      if (await quarto.contextId(quartoRenderContext()) !== inputContext) {
         if (receipt) say("Render saved for " + renderFormat.toUpperCase() + ".");
         return;
       }
@@ -2903,15 +2968,19 @@
             {#if quartoJob}
               <button type="button" class="btn btn-sm preset-tonal-error" onclick={cancelQuartoRender}>Cancel render</button>
             {:else}
-              <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void renderQuartoLocally()}>Render locally</button>
-              <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void renderQuartoLocally("refresh-computations")}>Refresh computations</button>
+              <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={quartoOptionsChanging || Boolean(viewing)} onclick={() => void renderQuartoLocally()}>Render locally</button>
+              <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={quartoOptionsChanging || Boolean(viewing)} onclick={() => void renderQuartoLocally("refresh-computations")}>Refresh computations</button>
               {#if quartoLocalStatus.capabilities?.quarto?.policies?.includes("frozen")}
-                <button type="button" class="btn btn-sm preset-outlined-surface-300-700" title="Requires a matching complete local freezer for this source." onclick={() => void renderQuartoLocally("frozen")}>Use frozen results</button>
+                <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
+                  disabled={quartoOptionsChanging || Boolean(viewing) || Boolean(quartoOptions.profile) || Object.keys(quartoOptions.parameters).length > 0}
+                  title="Requires a matching complete local freezer, the default profile, and no parameter overrides."
+                  onclick={() => void renderQuartoLocally("frozen")}>Use frozen results</button>
               {/if}
             {/if}
             {#if quartoPendingPublish}<button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void retryQuartoPublish()}>Retry sharing</button>{/if}
           {/if}
         </div>
+        <QuartoRenderOptions options={quartoOptions} disabled={Boolean(quartoJob) || quartoOptionsChanging || Boolean(viewing)} onapply={applyQuartoOptions} />
         {#if quartoJob}<small class="text-surface-600-400">Quarto: {quartoJob.stage}…</small>{/if}
         {#if quartoLog}<details class="text-xs"><summary>Local render log</summary><pre class="max-h-32 overflow-auto whitespace-pre-wrap">{quartoLog}</pre></details>{/if}
         {#if quartoBundle?.cells?.some((cell) => cell.outputs?.length)}

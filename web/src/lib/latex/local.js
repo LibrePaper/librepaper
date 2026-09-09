@@ -560,8 +560,8 @@ export function quartoRequest({ job = {}, entrypoint, format = "html", profile =
       throw new Error(`Quarto parameter number is outside the portable range: ${key}`);
     }
     if (["string", "number", "boolean"].includes(typeof value) || value === null) {
-      if (String(value).length > 16 * 1024) throw new Error(`Quarto parameter is too long: ${key}`);
-      publicParameters[key] = value;
+      if (new TextEncoder().encode(String(value)).byteLength > 16 * 1024) throw new Error(`Quarto parameter is too long: ${key}`);
+      Object.defineProperty(publicParameters, key, { value, enumerable:true, configurable:true, writable:true });
     } else throw new Error(`invalid Quarto parameter: ${key}`);
   }
   const manifest = [];

@@ -412,6 +412,7 @@ pub fn classify_freshness(
     }
     let format = match old.context.format {
         OutputFormat::Html => "html",
+        OutputFormat::Revealjs => "revealjs",
         OutputFormat::Pdf => "pdf",
         OutputFormat::Docx => "docx",
         OutputFormat::Other => "other",

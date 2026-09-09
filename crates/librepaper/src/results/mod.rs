@@ -174,6 +174,7 @@ pub enum Verification {
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFormat {
     Html,
+    Revealjs,
     Pdf,
     Docx,
     Other,

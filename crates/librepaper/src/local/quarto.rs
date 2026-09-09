@@ -261,7 +261,8 @@ impl QuartoBundle {
             OutputKind, OutputRecord, ProvenanceKind, RenderContext, SourceReference, Verification,
         };
         let format = match self.context.format.as_str() {
-            "html" | "revealjs" => OutputFormat::Html,
+            "html" => OutputFormat::Html,
+            "revealjs" => OutputFormat::Revealjs,
             "pdf" => OutputFormat::Pdf,
             "docx" => OutputFormat::Docx,
             _ => OutputFormat::Other,
@@ -1859,12 +1860,13 @@ fn walk_files(root: &Path, current: &Path, files: &mut Vec<String>) -> Result<()
 }
 
 fn is_artifact(relative: &str, main: &str, format: &str) -> bool {
+    let extension = if format == "revealjs" { "html" } else { format };
     let stem = Path::new(main)
         .file_stem()
         .and_then(|x| x.to_str())
         .unwrap_or("index");
-    relative == format!("{stem}.{format}")
-        || (format == "html" && relative.ends_with(".html") && !relative.contains('/'))
+    relative == format!("{stem}.{extension}")
+        || (extension == "html" && relative.ends_with(".html") && !relative.contains('/'))
 }
 
 fn mime_for(path: &str) -> &'static str {
@@ -1975,7 +1977,19 @@ fn md5_hex(bytes: &[u8]) -> String {
 /// would miss quoted keys and flow mappings, and would accept inherited
 /// metadata or profiles that change the cache identity.
 fn frozen_project_config(project: &Path, main_name: &str) -> Result<(), String> {
-    if std::env::var_os("QUARTO_PROFILE").is_some() {
+    frozen_project_config_with_profile(
+        project,
+        main_name,
+        std::env::var_os("QUARTO_PROFILE").is_some(),
+    )
+}
+
+fn frozen_project_config_with_profile(
+    project: &Path,
+    main_name: &str,
+    profile_present: bool,
+) -> Result<(), String> {
+    if profile_present {
         return Err("frozen Quarto render refuses QUARTO_PROFILE".into());
     }
     let main_path = Path::new(main_name);
@@ -2332,6 +2346,53 @@ mod tests {
     }
 
     #[test]
+    fn revealjs_bundle_preserves_format_and_freshness_context() {
+        let dir = tempdir().expect("tempdir");
+        let source = "```{r}\n1 + 1\n```\n";
+        std::fs::write(dir.path().join("paper.qmd"), source).expect("source");
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).expect("out");
+        std::fs::write(out.join("paper.html"), b"<html></html>").expect("artifact");
+        let options = QuartoJobOptions {
+            binding_id: "b".into(),
+            main: "paper.qmd".into(),
+            format: "revealjs".into(),
+            profile: Some("review".into()),
+            parameters: BTreeMap::from([("seed".into(), serde_json::json!(42))]),
+            shared_tree_sha256: Some(sha256(source.as_bytes())),
+            ..Default::default()
+        };
+        let inventory = inventory_tree(dir.path()).expect("inventory");
+        let bundle = collect_bundle(dir.path(), &options, &out, &inventory, None, Instant::now())
+            .expect("bundle");
+        let manifest = bundle.to_storage_manifest("doc", "revision");
+        manifest.validate().expect("valid bundle");
+        assert_eq!(
+            manifest.context.format,
+            crate::results::OutputFormat::Revealjs
+        );
+        assert_eq!(
+            manifest.artifact.as_ref().expect("artifact").kind,
+            crate::results::ArtifactKind::Html
+        );
+        assert_eq!(
+            serde_json::to_value(&manifest).expect("JSON")["context"]["format"],
+            "revealjs"
+        );
+        let parsed = crate::quarto::parse_qmd(source, "paper.qmd");
+        assert_eq!(
+            crate::quarto::classify_freshness(
+                &manifest,
+                &parsed,
+                "paper.qmd",
+                &["review".into()],
+                manifest.context.parameters_sha256.as_deref()
+            ),
+            crate::quarto::Freshness::MatchesRecordedInputs
+        );
+    }
+
+    #[test]
     fn shared_dependency_hashes_change_computation_context() {
         let dir = tempdir().expect("tempdir");
         let source = "```{r}\nplot(x)\n```\n";
@@ -2591,16 +2652,9 @@ mod tests {
 
     #[test]
     fn frozen_project_config_rejects_selected_environment_profile() {
-        static PROFILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = PROFILE_LOCK.lock().expect("profile lock");
-        let previous = std::env::var_os("QUARTO_PROFILE");
-        std::env::set_var("QUARTO_PROFILE", "default");
         let project = valid_frozen_project();
-        let error = frozen_project_config(project.path(), "paper.qmd").unwrap_err();
-        match previous {
-            Some(value) => std::env::set_var("QUARTO_PROFILE", value),
-            None => std::env::remove_var("QUARTO_PROFILE"),
-        }
+        let error =
+            frozen_project_config_with_profile(project.path(), "paper.qmd", true).unwrap_err();
         assert!(error.contains("QUARTO_PROFILE"));
     }
 

@@ -31,6 +31,17 @@ SHA-256; it is separate from cell identity and source identity. Reads require
 document access even when the caller knows a digest.
 
 The browser uses one selected bundle for each format/profile/parameter context.
+The Render options controls choose an output format, one optional profile, and
+typed scalar JSON parameters. Document default follows the source's format;
+an explicit choice overrides it for local rendering. Choices are remembered
+for this document in this browser, without editing the source or running code.
+Applying them loads that context's saved bundle, and an unavailable context
+does not borrow outputs from another context. Parameter names and values are
+validated before a job is submitted. Profiles and parameter overrides disable
+the restricted frozen operation described below.
+Reveal.js retains its own computation context while using an HTML artifact;
+its preview follows the same static HTML isolation rules as other HTML output.
+
 Unique labelled cells can retain their prior results after a code edit. An
 unlabelled result requires an unambiguous source fingerprint in that file;
 inserting or duplicating an unlabelled cell never transfers a plot by ordinal.

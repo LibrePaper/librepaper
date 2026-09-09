@@ -18,6 +18,9 @@ assert.deepEqual(quartoRequest({
 }).quarto.parameters, { number: 1, text: "1", boolean: true, nothing: null });
 assert.notEqual(await parameterSha256({ value: 1 }), await parameterSha256({ value: "1" }));
 assert.equal(await parameterSha256({ value: 1 }), await parameterSha256({ value: 1.0 }));
+const specialParameters = JSON.parse('{"__proto__":"literal","constructor":true}');
+assert.deepEqual(quartoRequest({ job:{ binding:"binding-1" }, entrypoint:"paper.qmd", parameters:specialParameters }).quarto.parameters, specialParameters);
+assert.throws(() => quartoRequest({ job:{ binding:"binding-1" }, entrypoint:"paper.qmd", parameters:{ large:"é".repeat(8193) } }), /too long/);
 assert.equal(
   await parameterSha256({ A: 1, a: 1e-3, _: true, Z: "é😀", number: 2.5e4 }),
   "aeea5bcdd2f603f88bb8d6387ce656ebe5b6a3560947363a369b736071bb8b3d",
