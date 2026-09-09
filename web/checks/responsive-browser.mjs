@@ -26,7 +26,20 @@ const id = "main"; const text = new Y.Text(); text.insert(0, Array.from({length:
 files.set(id, text); paths.set(id, "main.html"); meta.set("main", id);
 for (let i = 0; i < 70; i++) { const file = new Y.Text(); file.insert(0, 'chapter ' + i); files.set('chapter-' + i, file); paths.set('chapter-' + i, 'chapter-' + i + '.html'); }
 const update = encode(Y.encodeStateAsUpdate(server));
-export function openRoom(slug, {onMessage}) { return { send(message) { if (message.type === "y-open") queueMicrotask(() => onMessage({type:"y-state", update, count:1})); return {ok:true}; }, close() {} }; }
+export function openRoom(slug, {onMessage, onConnected}) {
+  window.roomReceive = onMessage;
+  window.roomSent = [];
+  queueMicrotask(() => onConnected(true));
+  return {
+    send(message) {
+      window.roomSent.push(message);
+      if (message.type === "y-open") queueMicrotask(() => onMessage({type:"y-state", update, count:1}));
+      return {ok:true};
+    },
+    sendLive(message) { window.roomSent.push(message); return {ok:true}; },
+    close() {}
+  };
+}
 `);
 writeFileSync(entry, `
 import ${JSON.stringify(join(root,"web/src/styles/app.css"))};
@@ -109,7 +122,111 @@ try {
   assert.ok(sourceTop > 0);
   const filesTop = await b.evaluate('document.querySelector(".explorer-scroll").scrollTop');
   assert.ok(filesTop > 0);
-  await click('.sidebar-activity [aria-label="Comments"]');
+  await click('.sidebar-activity [aria-label="Collaboration"]');
+  const selectDiscussionTab = async (label) => {
+    await b.evaluate(`Array.from(document.querySelectorAll('.collab-tabs [role="tab"]')).find(node => node.textContent.trim().startsWith(${JSON.stringify(label)})).click()`);
+    await flush();
+  };
+  const frameMessage = async (message) => {
+    await b.evaluate(`window.dispatchEvent(new MessageEvent('message', { origin:location.origin,
+      source:document.querySelector('.viewport iframe').contentWindow,
+      data:{librepaper:true,...${JSON.stringify(message)}} }))`);
+    await flush();
+  };
+  await until('collaboration tabs', () => b.evaluate('document.querySelectorAll(".collab-tabs [role=tab]").length === 3'), 3000);
+  await b.evaluate(`window.roomReceive({type:'hello',comments:[
+    {id:'point',seq:1,motivation:'commenting',exact:'',point:true,position:0,suffix:'A long document',body:'Point discussion',resolved:true,replies:[]},
+    {id:'plain-highlight',seq:2,motivation:'highlighting',exact:'long',position:2,color:'#aabbcc',body:'',replies:[]},
+    {id:'discussed-highlight',seq:3,motivation:'highlighting',exact:'document',position:7,color:'#ddeeff',body:'Discuss this highlight',replies:[]}
+  ]})`);
+  await frameMessage({type:'ready',text:'A long document',images:[]});
+  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Point discussion")'), true);
+  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Discuss this highlight")'), true);
+  assert.equal(await visible('.collaboration article[id$=plain-highlight]'), false);
+  await selectDiscussionTab('Highlights');
+  assert.equal(await b.evaluate('Array.from(document.querySelectorAll(".collaboration article")).filter(node=>node.getClientRects().length).length'), 2);
+  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Point discussion")'), false);
+  await click('#collaboration-highlight-plain-highlight [aria-label="Reply"]');
+  await b.evaluate(`(() => {
+    const field=document.querySelector('#collaboration-highlight-plain-highlight textarea');
+    field.value='Discussion attached to a highlight'; field.dispatchEvent(new Event('input',{bubbles:true}));
+  })()`);
+  await flush();
+  await b.evaluate('document.querySelector("#collaboration-highlight-plain-highlight form").requestSubmit()');
+  await flush();
+  assert.equal(await b.evaluate('window.roomSent.filter(message=>message.type==="reply").at(-1).comment_id'), 'plain-highlight');
+  await selectDiscussionTab('Comments');
+  assert.equal(await visible('#collaboration-comment-plain-highlight'), true, 'adding a discussion shows the same highlight in Comments');
+  assert.equal(await b.evaluate('document.querySelector("#collaboration-comment-plain-highlight").innerText.includes("Discussion attached to a highlight")'), true);
+  await selectDiscussionTab('Chat');
+  await b.evaluate(`(() => {
+    const input=document.querySelector('.collaboration .chat-form textarea');
+    input.value='Draft for co-authors'; input.dispatchEvent(new Event('input',{bubbles:true}));
+  })()`);
+  await selectDiscussionTab('Highlights');
+  await b.evaluate("window.roomReceive({type:'chat',id:'incoming',creator:'Coauthor',text:'A new message',created:'2026-09-09T12:00:00Z'})");
+  await flush();
+  assert.equal(await b.evaluate('Boolean(document.querySelector(".collab-tabs .unread"))'), true);
+  await selectDiscussionTab('Chat');
+  assert.equal(await b.evaluate('document.querySelector(".collaboration .chat-form textarea").value'), 'Draft for co-authors');
+  assert.equal(await b.evaluate('Boolean(document.querySelector(".collab-tabs .unread"))'), false);
+  await frameMessage({type:'focus',id:'point'});
+  assert.equal(await b.evaluate('document.querySelector(".collab-tabs [aria-selected=true]").textContent.trim()'), 'Comments');
+  assert.equal(await b.evaluate('document.querySelector(".collaboration article[id$=point]").classList.contains("collapsed")'), false);
+  assert.equal(await b.evaluate('Array.from(document.querySelectorAll("[id]")).map(node=>node.id).length === new Set(Array.from(document.querySelectorAll("[id]")).map(node=>node.id)).size'), true, 'tab instances never duplicate DOM IDs');
+
+  await click('.collaboration [aria-label="Point comment"]');
+  await frameMessage({type:'selection',selector:{exact:'',point:true,position:0,prefix:'',suffix:'A long document'},rect:{top:80,bottom:80,left:80,right:80}});
+  await click('#selectionbar > button');
+  await b.evaluate(`(() => {
+    const input=document.querySelector('#commentForm textarea');
+    input.value='A new point comment'; input.dispatchEvent(new Event('input',{bubbles:true}));
+  })()`);
+  await flush();
+  await b.evaluate('document.querySelector("#commentForm").requestSubmit()');
+  await flush();
+  const submittedPoint = await b.evaluate('window.roomSent.filter(message=>message.type==="comment").at(-1)');
+  assert.equal(submittedPoint.point, true);
+  assert.equal(submittedPoint.position, 0);
+  assert.equal(submittedPoint.exact, '');
+  assert.equal(submittedPoint.motivation, 'commenting');
+  assert.equal(submittedPoint.body, 'A new point comment');
+  await b.evaluate(`window.roomReceive({type:'submission-failed',temp_id:${JSON.stringify(submittedPoint.temp_id)},message:'Offline'})`);
+  await flush();
+  assert.equal(await visible('.pending-recovery'), true);
+  await b.evaluate(`(() => {
+    const item=Array.from(document.querySelectorAll('.pending-recovery details')).find(node=>node.textContent.includes('A new point comment'));
+    item.open=true;
+    Array.from(item.querySelectorAll('button')).find(node=>node.textContent==='Retry').click();
+  })()`);
+  assert.equal(await b.evaluate(`window.roomSent.filter(message=>message.temp_id===${JSON.stringify(submittedPoint.temp_id)}).length`), 2, 'retry retains the annotation idempotency key');
+  await b.evaluate(`(() => {
+    const item=Array.from(document.querySelectorAll('.pending-recovery details')).find(node=>node.textContent.includes('A new point comment'));
+    Array.from(item.querySelectorAll('button')).find(node=>node.textContent==='Discard draft').click();
+  })()`);
+  await flush();
+  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("A new point comment")'), false);
+
+  await selectDiscussionTab('Highlights');
+  await click('.collaboration [aria-label="Highlight"]');
+  await frameMessage({type:'selection',selector:{exact:'long',position:2,prefix:'A ',suffix:' document'},rect:{top:80,bottom:100,left:80,right:120}});
+  await b.evaluate(`(() => {
+    const picker=document.querySelector('#selectionbar input[type=color]');
+    picker.value='#123abc'; picker.dispatchEvent(new Event('input',{bubbles:true}));
+  })()`);
+  await flush();
+  await click('#selectionbar > button');
+  const submittedHighlight = await b.evaluate('window.roomSent.filter(message=>message.type==="comment").at(-1)');
+  assert.equal(submittedHighlight.motivation, 'highlighting');
+  assert.equal(submittedHighlight.color, '#123abc');
+  assert.equal(submittedHighlight.point, undefined);
+  if (process.env.LIBREPAPER_REVIEW_SCREENSHOT) {
+    const screenshot = await b.command('Page.captureScreenshot', {format:'png'});
+    writeFileSync(process.env.LIBREPAPER_REVIEW_SCREENSHOT, Buffer.from(screenshot.data,'base64'));
+  }
+
+  await click('.sidebar-activity [aria-label="Changes"]');
+  assert.equal(await b.evaluate('document.querySelector(".sidebar").innerText.includes("Suggest a change")'), true);
   await click('.sidebar-activity [aria-label="Files"]');
   assert.equal(await b.evaluate('document.querySelector(".explorer-scroll").scrollTop'), filesTop);
   assert.equal(await b.evaluate('document.querySelector(".filelist .panel-title").getBoundingClientRect().top < document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
@@ -137,6 +254,8 @@ try {
 
   await click(nav('Agent'));
   await until('agent replies',()=>b.evaluate('document.querySelectorAll(".agent-panel .chat-message").length === 40'),10000);
+  await b.evaluate('Array.from(document.querySelectorAll(".agent-tabs [role=tab]")).find(node=>node.textContent.trim()==="Chat").click()');
+  await flush();
   await b.evaluate(`(() => {
     const input = document.querySelector('.agent-panel .chat-form textarea');
     input.value = 'An unsent thought'; input.dispatchEvent(new Event('input',{bubbles:true}));
@@ -173,5 +292,5 @@ try {
     await bounded();
   }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('responsive-browser: viewport bounds, narrow/medium/wide views, source identity, scroll preservation, chat drafts and saved layouts passed');
+  console.log('responsive-browser: collaboration tabs, point comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds and saved layouts passed');
 } finally { await b?.close(); serverHttp?.close(); rmSync(temp,{recursive:true,force:true}); }

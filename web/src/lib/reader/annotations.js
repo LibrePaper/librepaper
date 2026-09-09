@@ -21,19 +21,21 @@ export function createAnnotations({ slug, list, update, anchor, repaint, send, c
     repaint();
   }
 
-  function comment(selection, { motivation, body, proposed }, creator) {
+  function comment(selection, { motivation, body, proposed, color }, creator) {
     const temp_id = crypto.randomUUID();
     const editingFields = motivation === "editing" ? { proposed: proposed ?? "" } : {};
+    const colorFields = motivation !== "editing" && /^#[0-9a-f]{6}$/i.test(color || "")
+      ? { color: color.toLowerCase() } : {};
     const optimistic = {
       id: temp_id, temp_id, seq: Number.MAX_SAFE_INTEGER,
-      ...selection, motivation, body, ...editingFields, creator,
+      ...selection, motivation, body, ...editingFields, ...colorFields, creator,
       created: new Date().toISOString(), resolved: false, resolved_at: null,
       replies: [], pending: true,
     };
     anchor([optimistic]);
     update([...list(), optimistic]);
     repaint();
-    submit({ type: "comment", ...selection, motivation, body, ...editingFields, temp_id });
+    submit({ type: "comment", ...selection, motivation, body, ...editingFields, ...colorFields, temp_id });
   }
 
   function reply(parent, body, creator) {

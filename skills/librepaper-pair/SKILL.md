@@ -19,8 +19,15 @@ wider permissions.
 
 ## Start
 
-Check `librepaper --version`, `librepaper agent connect --help`, and
-`codex --version`. If LibrePaper is missing or too old, follow
+Reuse skills already in context for the installed LibrePaper version. Load
+missing instructions or references as needed; refresh affected instructions
+after an upgrade or a command/version mismatch. Connecting another document
+does not by itself require rereading skills or checking for a newer release.
+
+Reuse recent prerequisite checks from this session if the installation has not
+changed. Otherwise check `librepaper --version`,
+`librepaper agent connect --help`, and `codex --version`.
+If LibrePaper is missing or too old, follow
 [references/install.md](references/install.md). Codex must already be installed
 and authenticated on the user's computer; report a missing prerequisite rather
 than substituting a different provider or collecting API keys.

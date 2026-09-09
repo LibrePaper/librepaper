@@ -89,6 +89,7 @@ import { createMathTypesetter } from "../lib/math.js";
       color: var(--librepaper-proposed-color, inherit);
       margin-inline-start: 0.2em;
     }
+    .librepaper-point-bubble::before { content: "\\1F4AC"; }
   `;
   document.head.appendChild(proposedStyle);
 
@@ -258,6 +259,38 @@ import { createMathTypesetter } from "../lib/math.js";
   // The ranges last asked for, so a repaint of the document can put the marks
   // back in the same breath rather than a round trip later.
   let lastRanges = [];
+  let pointBubbles = [];
+
+  const annotationColor = (item) =>
+    typeof item?.color === "string" && /^#[0-9a-f]{6}$/i.test(item.color)
+      ? item.color.toLowerCase() : null;
+
+  function pointBubble(item, position) {
+    const range = document.createRange();
+    if (!table.nodes.length) return;
+    const at = Math.max(0, Math.min(position, text().length));
+    const index = nodeAt(Math.max(0, Math.min(at, text().length - 1)));
+    const node = table.nodes[index];
+    if (!node) return;
+    const offset = Math.max(0, Math.min(node.data.length, at - table.starts[index]));
+    range.setStart(node, offset);
+    range.setEnd(node, offset);
+    const marker = document.createElement("span");
+    marker.className = "librepaper-point-marker";
+    marker.dataset.librepaper = String(item.id);
+    marker.style.cssText = "position:relative;display:inline-block;width:0;height:0;vertical-align:baseline";
+    const bubble = document.createElement("button");
+    bubble.type = "button";
+    bubble.className = "librepaper-point-bubble";
+    bubble.dataset.librepaper = String(item.id);
+    bubble.setAttribute("aria-label", "Open comment");
+    bubble.style.cssText = `position:absolute;left:0;top:-1.2em;color:${annotationColor(item) || edge(tintOf(item.motivation))};` +
+      "z-index:20;cursor:pointer;background:transparent;border:0;padding:2px;font-size:14px;line-height:1";
+    bubble.onclick = (event) => { event.preventDefault(); event.stopPropagation(); post({ type: "focus", id: item.id }); };
+    marker.appendChild(bubble);
+    range.insertNode(marker);
+    pointBubbles.push(marker);
+  }
 
   // Those ranges are offsets into the text as it was, and the text has just
   // changed. Typing is one edit at one place, so the difference is entirely
@@ -286,11 +319,14 @@ import { createMathTypesetter } from "../lib/math.js";
       document
         .querySelectorAll("mark[data-librepaper]")
         .forEach((mark) => mark.replaceWith(...mark.childNodes));
+      for (const bubble of pointBubbles) bubble.remove();
+      pointBubbles = [];
       document.body.normalize(); // restore the pristine text-node structure
     });
     scan();
 
-    const painted = ranges.filter((item) => item.end > item.start);
+    const points = ranges.filter((item) => item.point === true && Number.isInteger(item.start) && item.start >= 0);
+    const painted = ranges.filter((item) => item.end > item.start && item.point !== true);
     const edges = [...new Set(painted.flatMap((item) => [item.start, item.end]))].sort(
       (a, b) => a - b,
     );
@@ -329,7 +365,10 @@ import { createMathTypesetter } from "../lib/math.js";
         const inner = (live.length ? live : covering).reduce((a, b) =>
           b.end - b.start < a.end - a.start ? b : a,
         );
-        const shade = live.length
+        const custom = live.length && inner.motivation !== "editing" ? annotationColor(inner) : null;
+        const shade = custom
+          ? `color-mix(in srgb, ${custom} 42%, transparent)`
+          : live.length
           ? wash(tintOf(inner.motivation), live.length, 0.42)
           : wash(NEUTRAL, 1, 0.24);
         mark.style.cssText = `background:${shade};color:inherit;cursor:pointer`;
@@ -351,6 +390,17 @@ import { createMathTypesetter } from "../lib/math.js";
         // The same innermost annotation the colour came from is the one a click
         // on this stretch means.
         mark.onclick = () => post({ type: "focus", id: inner.id });
+      }
+    });
+    // Mark wrapping splits text nodes, so point ranges must resolve against
+    // the rebuilt table rather than the pre-paint node offsets.
+    // Work backwards so inserting a point splits only the tail of a node
+    // whose earlier offsets are still needed. One scan serves every point.
+    scan();
+    const length = text().length;
+    quietly(() => {
+      for (const item of points.sort((a, b) => b.start - a.start)) {
+        if (item.start <= length) pointBubble(item, item.start);
       }
     });
     // surroundContents splits the text nodes it wraps, so the table built above
@@ -477,6 +527,7 @@ import { createMathTypesetter } from "../lib/math.js";
   function captureSelection() {
     const selection = document.getSelection();
     if (!selection || selection.isCollapsed) {
+      if (tool === "point") return;
       post({ type: "selection", selector: null });
       return;
     }
@@ -827,7 +878,7 @@ import { createMathTypesetter } from "../lib/math.js";
       // in that figure's region layer. Either one is what "go to it" means.
       const id = CSS.escape(String(message.id));
       document
-        .querySelector(`mark[data-librepaper~="${id}"], .librepaper-regions [data-librepaper~="${id}"]`)
+        .querySelector(`mark[data-librepaper~="${id}"], .librepaper-regions [data-librepaper~="${id}"], .librepaper-point-bubble[data-librepaper="${id}"]`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   });
@@ -845,6 +896,7 @@ import { createMathTypesetter } from "../lib/math.js";
   // the editor can put its caret in the same place. Only the position is sent;
   // a click that lands on nothing textual says nothing.
   document.addEventListener("click", (event) => {
+    if (tool === "point" && event.target.closest("a,button,input,textarea,select,mark[data-librepaper]")) return;
     if (!table.nodes.length) return;
     const caret = document.caretPositionFromPoint
       ? document.caretPositionFromPoint(event.clientX, event.clientY)
@@ -853,7 +905,24 @@ import { createMathTypesetter } from "../lib/math.js";
     if (!node || node.nodeType !== Node.TEXT_NODE) return;
     const index = table.index.get(node);
     if (index === undefined) return;
-    post({ type: "caret", offset: table.starts[index] + (caret.offset || 0) });
+    const offset = table.starts[index] + (caret.offset || 0);
+    if (tool === "point") {
+      event.preventDefault();
+      const all = text();
+      post({
+        type: "selection",
+        selector: {
+          exact: "",
+          prefix: all.slice(Math.max(0, offset - 64), offset),
+          suffix: all.slice(offset, offset + 64),
+          position: Math.max(0, offset),
+          point: true,
+        },
+        rect: { top: event.clientY, left: event.clientX, right: event.clientX, bottom: event.clientY },
+      });
+      return;
+    }
+    post({ type: "caret", offset });
   });
 
   document.addEventListener("mouseup", () => scheduleSelection(0));

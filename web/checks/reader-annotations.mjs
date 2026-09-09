@@ -98,5 +98,35 @@ assert.equal(comments.find((item) => item.id === draft.id)?.pending, false);
 annotations.receive({ type: "delete", comment_id: "remote" });
 assert.equal(comments.length, 1);
 assert.equal(annotations.receive({ type: "y-state" }), false);
+
+// Annotation appearance and zero-width anchors survive the optimistic write,
+// retry payload, and authoritative confirmation without creating a second row.
+annotations.comment({ exact: "", point: true, position: 7, prefix: "Before ", suffix: "after" },
+  { motivation: "commenting", body: "Insert a reference here" }, "Name");
+const point = comments.at(-1);
+assert.equal(point.point, true);
+assert.equal(sent.at(-1).position, 7);
+assert.equal(sent.at(-1).exact, "");
+annotations.receive({ type: "comment", temp_id: point.temp_id,
+  comment: { id: "point", point: true, position: 7, exact: "", replies: [] } });
+assert.equal(comments.at(-1), point);
+assert.equal(point.id, "point");
+
+annotations.comment({ exact: "colored passage" },
+  { motivation: "highlighting", body: "", color: "#AAbbCC" }, "Name");
+const highlight = comments.at(-1);
+assert.equal(highlight.color, "#aabbcc");
+assert.equal(sent.at(-1).color, "#aabbcc");
+const highlightId = sent.at(-1).temp_id;
+annotations.outbox.failed(highlightId, "Connection lost");
+annotations.outbox.retry(highlightId, (message) => sent.push(message));
+assert.equal(sent.at(-1).color, "#aabbcc");
+assert.equal(sent.at(-1).temp_id, highlightId);
+annotations.comment({ exact: "invalid color" },
+  { motivation: "commenting", body: "Note", color: "url(https://example.com)" }, "Name");
+assert.equal(sent.at(-1).color, undefined);
+annotations.comment({ exact: "suggestion" },
+  { motivation: "editing", proposed: "replacement", color: "#aabbcc" }, "Name");
+assert.equal(sent.at(-1).color, undefined, "suggestions keep their own review styling");
 assert.ok(paints > 0);
 console.log("reader-annotations: optimistic writes, authoritative reconciliation, retries and decisions passed");

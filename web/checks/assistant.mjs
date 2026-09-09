@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   captureAttachment, capabilityAllows, composeTaskMessage, diagnosticContext,
-  groupPass, normalizeCapabilities, resultIds, visibleResults,
+  groupPass, normalizeCapabilities, resultIds, visibleResults, checkContextSize,
 } from "../src/lib/assistant.js";
 
 const selection = {
@@ -33,6 +33,20 @@ assert.equal(diagnostic.revision, "sha-9");
 assert.equal(diagnostic.source, "#bad");
 const explain = composeTaskMessage({ id: "m2", text: "Explain this error", task: { kind: "explain", scope: "file" }, diagnostic });
 assert.equal(explain.context.diagnostic.message, "Unknown command");
+
+const warnings = [{ severity: "warning", file: "standard-errors.tex", line: 12,
+  message: "Reference undefined", source: "\\ref{missing}", revision: "render-sha",
+  provenance: { engine: "latex" } }];
+const fixWarnings = composeTaskMessage({ text: "Fix the warnings", revision: "selection-sha", diagnostics: warnings });
+assert.deepEqual(fixWarnings.context.diagnostics, warnings);
+assert.equal(fixWarnings.context.diagnostics_omitted, 0);
+assert.equal(composeTaskMessage({ text: "Hello" }).context.diagnostics.length, 0);
+const crowded = composeTaskMessage({ text: "Fix warnings", task, attachment,
+  diagnostics: [{ message: "x".repeat(20000) }, ...Array(500).fill(warnings[0])] });
+assert.ok(checkContextSize({ task: crowded.task, context: crowded.context }).ok);
+assert.deepEqual(crowded.context.selection, attachment.selection);
+assert.ok(crowded.context.diagnostics.length > 0);
+assert.equal(crowded.context.diagnostics.length + crowded.context.diagnostics_omitted, 501);
 
 const thread = { id: "comment-1", body: "Please clarify this", replies: [{ body: "Could you expand?" }] };
 const response = composeTaskMessage({ id: "m3", text: "I will clarify this.",

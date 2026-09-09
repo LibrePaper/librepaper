@@ -268,6 +268,8 @@ mod tests {
             prefix: String::new(),
             suffix: String::new(),
             position: Some(0),
+            point: false,
+            color: None,
             region: None,
             source: (motivation == "editing").then(|| SourceAnchor {
                 path: "main.md".into(),

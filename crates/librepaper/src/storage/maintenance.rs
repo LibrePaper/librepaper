@@ -1869,6 +1869,8 @@ mod tests {
                 prefix: String::new(),
                 suffix: String::new(),
                 position: None,
+                point: false,
+                color: None,
                 region: None,
                 source_path: None,
                 source_exact: None,

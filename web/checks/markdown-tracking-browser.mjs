@@ -17,7 +17,7 @@ const types = { js: "text/javascript", css: "text/css", woff2: "font/woff2", htm
 // The page is its own parent: the agent takes messages from `parent`, which
 // at the top level is the window itself, so the check plays the sidebar.
 const shell = `<!doctype html><html><head><meta charset="utf-8"></head><body>
-<script>window.published=[];addEventListener("message",e=>{if(e.data&&e.data.librepaper&&e.data.type==="ready")window.published.push(e.data.text)});</script>
+<script>window.published=[];window.events=[];addEventListener("message",e=>{if(!e.data||!e.data.librepaper)return;if(e.data.type==="ready")window.published.push(e.data.text);if(["selection","focus"].includes(e.data.type))window.events.push(e.data)});</script>
 <script src="/agent.js?reader=*"></script>
 </body></html>`;
 
@@ -77,9 +77,44 @@ try {
   await until("redlines cleared", () => page.evaluate('!document.querySelector("mark.librepaper-ins, mark.librepaper-del")'), 5000);
   assert.equal(await page.evaluate('document.querySelectorAll("mark[data-librepaper~=comment]").length'), 1);
   assert.equal(await page.evaluate('document.body.textContent'), original);
+  const readyBeforePoint = await page.evaluate('window.published.length');
+  await page.evaluate(`postMessage({librepaper:true,type:'highlight',ranges:[
+    {id:'point',start:window.trackedStart+2,end:window.trackedStart+2,point:true,motivation:'commenting'},
+    {id:'second-point',start:window.trackedStart+4,end:window.trackedStart+4,point:true,motivation:'commenting'},
+    {id:'custom',start:window.trackedStart,end:window.trackedStart+5,motivation:'commenting',color:'#ff8800'}
+  ]},'*')`);
+  await until("point bubble painted", () => page.evaluate('Boolean(document.querySelector(".librepaper-point-bubble"))'), 5000);
+  assert.equal(await page.evaluate('document.body.textContent'), original, "point marker has no text");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await page.evaluate('window.published.length'), readyBeforePoint, "annotation painting does not republish ready");
+  assert.match(await page.evaluate('getComputedStyle(document.querySelector("mark[data-librepaper~=custom]")).backgroundColor'), /color\(srgb 1 0\.53333\d* 0 \/ 0\.42\)|rgba\(255, 136, 0, 0\.42\)/);
+  const pointOffsets = () => page.evaluate(`['point','second-point'].map(id=>{
+    const marker=document.querySelector('.librepaper-point-marker[data-librepaper="'+id+'"]');
+    const range=document.createRange(); range.selectNodeContents(document.body); range.setEndBefore(marker);
+    return range.toString().length-window.trackedStart;
+  })`);
+  assert.deepEqual(await pointOffsets(), [2,4], 'multiple points survive text-node splitting inside a highlight');
+  await page.resize(390, 844);
+  assert.deepEqual(await pointOffsets(), [2,4], 'point markers remain anchored after reflow');
+  assert.equal(await page.evaluate('document.querySelector(".librepaper-point-bubble").getBoundingClientRect().width > 0'), true);
+  await page.evaluate(`postMessage({librepaper:true,type:'reveal',id:'point'},'*'); document.querySelector('.librepaper-point-bubble').click()`);
+  await until("point bubble focuses thread", () => page.evaluate('window.events.some((e) => e.type === "focus" && e.id === "point")'), 2000);
+  await page.evaluate(`postMessage({librepaper:true,type:'tool',tool:'point'},'*')`);
+  const clickPoint = await page.evaluate(`(() => {
+    const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+    let textNode; while ((textNode=walker.nextNode())) { if(textNode.data.includes('A second paragraph')) break; }
+    const range=document.createRange(); range.setStart(textNode,2); range.setEnd(textNode,3);
+    const rect=range.getBoundingClientRect(); return {x:rect.left+1,y:rect.top+rect.height/2};
+  })()`);
+  await page.command('Input.dispatchMouseEvent',{type:'mousePressed',...clickPoint,button:'left',clickCount:1});
+  await page.command('Input.dispatchMouseEvent',{type:'mouseReleased',...clickPoint,button:'left',clickCount:1});
+  await until("point click selection", () => page.evaluate('window.events.some((e) => e.type === "selection" && e.selector?.point === true)'), 2000);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(await page.evaluate('window.events.filter(e=>e.type==="selection").at(-1).selector?.point'), true, 'collapsed selection events do not erase the point draft');
   await page.evaluate(`postMessage({librepaper:true,type:'highlight',ranges:[]},'*')`);
   await until("suggestions cleared", () => page.evaluate('!document.querySelector("mark[data-librepaper]")'), 5000);
   assert.equal(await page.evaluate('document.body.textContent'), original);
+  assert.equal(await page.evaluate('document.querySelectorAll(".librepaper-point-marker").length'), 0);
   console.log("markdown-tracking: formatted suggestions, one proposal, overlapping comments, inline redlines, stable text and clearing passed");
 } finally {
   await page?.close?.();

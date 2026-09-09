@@ -29,12 +29,13 @@
     // A suggestion's own two verbs. Hidden entirely for any other comment.
     onaccept,
     onreject,
-    onassistant,
+    cardIdPrefix = "comment",
   } = $props();
 
   // A suggestion is a comment whose motivation is `editing` (the W3C term);
   // see `docs/specs/track-changes.md`, "Vocabulary".
   const isSuggestion = $derived(comment.motivation === "editing");
+  const annotationColor = $derived(/^#[0-9a-f]{6}$/i.test(comment.color || "") ? comment.color : null);
 
   // The word-level diff between the quoted passage and its proposal, kept in
   // a rune rather than computed inline: `history.wordDiff` is async (it runs
@@ -95,7 +96,7 @@
   const summary = $derived(
     [
       comment.outcome === "accepted" ? "Accepted" : comment.outcome === "rejected" ? "Rejected" : "",
-      comment.region ? `Figure ${comment.region.image_index + 1}` : (comment.exact || "").trim(),
+      comment.point ? "Point comment" : comment.region ? `Figure ${comment.region.image_index + 1}` : (comment.exact || "").trim(),
       (comment.body || "").trim(),
     ]
       .filter(Boolean)
@@ -128,11 +129,13 @@
      article. The keyboard reaches everything in it through those. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
 <article
-  id="comment-{comment.id}"
+  id="{cardIdPrefix}-{comment.id}"
   class="card cursor-pointer p-3 {comment.resolved || comment.pending
     ? 'preset-outlined-surface-200-800 opacity-70'
     : 'preset-outlined-surface-300-700'}"
   class:collapsed
+  tabindex="-1"
+  onfocus={() => (expanded = true)}
   onclick={click}
 >
   {#if collapsed}
@@ -164,16 +167,18 @@
         <!-- The motivation is the W3C annotation type. Commenting is the
              default, so only the others are worth showing. -->
         {#if comment.motivation && comment.motivation !== "commenting"}
-          <span class="badge preset-tonal-tertiary">{comment.motivation}</span>
+          <span class="badge preset-tonal-tertiary">{isSuggestion ? "Suggested change" : "Highlight"}</span>
         {/if}
       </Row>
 
-      {#if comment.region}
+      {#if comment.point}
+        <p class="panel-muted">Comment at this point</p>
+      {:else if comment.region}
         <blockquote class="figureref panel-muted">
           Figure {comment.region.image_index + 1}
         </blockquote>
       {:else if long}
-        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3">
+        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3" style:border-left-color={annotationColor}>
           <span>{quoteOpen ? `“${comment.exact}”` : `“${short}`}</span>
           <!-- svelte-ignore a11y_invalid_attribute -->
           <a
@@ -189,7 +194,7 @@
           </a>
         </blockquote>
       {:else}
-        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3">
+        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3" style:border-left-color={annotationColor}>
           “{comment.exact}”
         </blockquote>
       {/if}
@@ -258,12 +263,6 @@
 
       {#if comment.body}<p>{comment.body}</p>{/if}
 
-      {#if onassistant && !comment.resolved}
-        <button type="button" class="btn btn-sm preset-tonal-surface assistant-action"
-                onclick={(e) => { e.stopPropagation(); onassistant(comment); }}>
-          {isSuggestion ? "Refine with assistant" : "Address with assistant"}
-        </button>
-      {/if}
 
       <small class="panel-meta">{comment.creator} · {stamp(comment.created)}</small>
 

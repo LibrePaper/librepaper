@@ -44,7 +44,7 @@ include a UUID-shaped `temp_id`, kept unchanged across retries.
 
 | `type` | Required action fields | Optional action fields |
 |---|---|---|
-| `comment` | `body`, `exact` (the selected words) | `motivation` (defaults to commenting), `prefix`, `suffix`, `position`, `source` |
+| `comment` | `body`, `exact` (the selected words) | `motivation` (defaults to commenting), `prefix`, `suffix`, `position`, `point`, `color`, `source` |
 | `reply` | `comment_id`, `body` | — |
 | `resolve` | `comment_id`, `resolved` (boolean; false reopens) | — |
 | `delete` | `comment_id` | — |
@@ -59,6 +59,12 @@ the author, timestamps, and checkpoint references; a submitted `creator`
 does not override attribution. Highlighting may omit `body`. A figure region
 can replace the text selection, as supported by the browser's annotation
 interface. Text limits and allowed motivations are deployment settings.
+
+Set `point: true` for a comment bubble at a single rendered-text position. A
+point comment must use `motivation: "commenting"`, an empty `exact`, and a
+nonnegative `position`; it still requires a nonempty body. `color`, when
+present, must be a six-digit `#RRGGBB` value and is retained for commenting or
+highlighting annotations. `point: false` is omitted from wire responses.
 
 The result is the created or changed event:
 

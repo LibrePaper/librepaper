@@ -11,6 +11,9 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LIBREPAPER_VERSION");
+    let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
+    println!("cargo:rerun-if-changed={}", skills.display());
+    watch(&skills);
 
     let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/dist");
     // Every file, not just the directory: cargo compares the timestamp of what

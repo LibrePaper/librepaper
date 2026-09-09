@@ -50,6 +50,10 @@ pub use figures::*;
 use resident::Measured;
 use text::*;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// One client frame. Every field is optional; `apply` decides which ones a
 /// given type needs.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -70,6 +74,12 @@ pub struct Message {
     pub suffix: String,
     #[serde(default)]
     pub position: Option<i64>,
+    /// A point annotation has no selected text and uses a nonnegative position.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub point: bool,
+    /// Optional six digit RGB highlight color.
+    #[serde(default)]
+    pub color: Option<String>,
     #[serde(default)]
     pub region: Option<Region>,
     /// The source anchor a `comment` arrives with, or that an `anchor`

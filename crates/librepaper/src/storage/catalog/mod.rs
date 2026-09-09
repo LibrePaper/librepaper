@@ -35,7 +35,7 @@ pub use execution::{
 };
 pub use room_edits::RoomEditReservation;
 
-const LATEST_SCHEMA: i64 = 14;
+const LATEST_SCHEMA: i64 = 15;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
 const MIGRATIONS: &[(i64, &str)] = &[
     // Versions are applied in order; append new migrations at the end.
@@ -88,6 +88,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         14,
         include_str!("../../../migrations/0014_checkpoint_attribution.sql"),
+    ),
+    (
+        15,
+        include_str!("../../../migrations/0015_annotation_point_color.sql"),
     ),
 ];
 
@@ -384,6 +388,8 @@ pub struct Comment {
     pub prefix: String,
     pub suffix: String,
     pub position: Option<i64>,
+    pub point: bool,
+    pub color: Option<String>,
     pub region: Option<String>,
     pub source_path: Option<String>,
     pub source_exact: Option<String>,

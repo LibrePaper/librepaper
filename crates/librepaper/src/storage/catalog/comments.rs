@@ -38,8 +38,8 @@ impl Catalog {
             if count >= 500 { return Err(CatalogError::Conflict("comment limit reached".into())); }
             let seq: i64 = tx.query_row("SELECT comment_seq FROM documents WHERE slug=?1 AND status='active'",[&comment.slug],|r|r.get::<_, i64>(0)).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)? + 1;
             tx.execute("UPDATE documents SET comment_seq=?2 WHERE slug=?1",params![comment.slug,seq]).map_err(CatalogError::from)?;
-            tx.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in)
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",params![comment.slug,comment.id,seq,comment.motivation,comment.body,comment.creator,comment.author,comment.via,comment.created,comment.exact,comment.prefix,comment.suffix,comment.position,comment.region,comment.source_path,comment.source_exact,comment.source_prefix,comment.source_suffix,comment.source_position,comment.proposed,comment.outcome,comment.accept_request,comment.revision,comment.pass,comment.resolved as i64,comment.resolved_at,comment.resolved_in]).map_err(CatalogError::from)?;
+            tx.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in,point,color)
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)",params![comment.slug,comment.id,seq,comment.motivation,comment.body,comment.creator,comment.author,comment.via,comment.created,comment.exact,comment.prefix,comment.suffix,comment.position,comment.region,comment.source_path,comment.source_exact,comment.source_prefix,comment.source_suffix,comment.source_position,comment.proposed,comment.outcome,comment.accept_request,comment.revision,comment.pass,comment.resolved as i64,comment.resolved_at,comment.resolved_in,comment.point as i64,comment.color]).map_err(CatalogError::from)?;
             Self::comment_in_tx(tx,&comment.slug,&comment.id)
         })
     }
@@ -125,9 +125,9 @@ impl Catalog {
                 "INSERT INTO comments
                  (slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,
                   position,region,source_path,source_exact,source_prefix,source_suffix,
-                  source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in)
+                  source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in,point,color)
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,
-                        ?20,?21,?22,?23,?24,?25,?26,?27)",
+                        ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)",
                 params![
                     comment.slug,
                     comment.id,
@@ -156,6 +156,8 @@ impl Catalog {
                     comment.resolved as i64,
                     comment.resolved_at,
                     comment.resolved_in,
+                    comment.point as i64,
+                    comment.color,
                 ],
             )
             .map_err(CatalogError::from)?;
@@ -176,7 +178,7 @@ impl Catalog {
         limit: u32,
     ) -> CatalogResult<Vec<Comment>> {
         let limit = i64::from(limit.clamp(1, 500));
-        self.with_connection(|c| { let mut s=c.prepare("SELECT slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in FROM comments WHERE slug=?1 AND (?2 IS NULL OR seq>?2) ORDER BY seq LIMIT ?3").map_err(CatalogError::from)?; let mut rows=s.query(params![slug,after_seq,limit]).map_err(CatalogError::from)?; let mut out=Vec::new(); while let Some(r)=rows.next().map_err(CatalogError::from)? { out.push(Self::read_comment(r).map_err(CatalogError::from)?); } Ok(out) })
+        self.with_connection(|c| { let mut s=c.prepare("SELECT slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in,point,color FROM comments WHERE slug=?1 AND (?2 IS NULL OR seq>?2) ORDER BY seq LIMIT ?3").map_err(CatalogError::from)?; let mut rows=s.query(params![slug,after_seq,limit]).map_err(CatalogError::from)?; let mut out=Vec::new(); while let Some(r)=rows.next().map_err(CatalogError::from)? { out.push(Self::read_comment(r).map_err(CatalogError::from)?); } Ok(out) })
     }
 
     /// Load one comment without scanning the document's complete annotation
@@ -186,7 +188,7 @@ impl Catalog {
         self.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in FROM comments WHERE slug=?1 AND id=?2",
+                    "SELECT slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in,point,color FROM comments WHERE slug=?1 AND id=?2",
                     params![slug, id],
                     Self::read_comment,
                 )
@@ -215,8 +217,9 @@ impl Catalog {
                      created=?8,exact=?9,prefix=?10,suffix=?11,position=?12,region=?13,
                      source_path=?14,source_exact=?15,source_prefix=?16,source_suffix=?17,
                      source_position=?18,proposed=?19,outcome=?20,accept_request=?21,
-                     revision=?22,pass=?23,resolved=?24,resolved_at=?25,resolved_in=?26
-                     WHERE slug=?1 AND id=?2 AND seq=?27",
+                     revision=?22,pass=?23,resolved=?24,resolved_at=?25,resolved_in=?26,
+                     point=?27,color=?28
+                     WHERE slug=?1 AND id=?2 AND seq=?29",
                     params![
                         comment.slug,
                         comment.id,
@@ -244,6 +247,8 @@ impl Catalog {
                         comment.resolved as i64,
                         comment.resolved_at,
                         comment.resolved_in,
+                        comment.point as i64,
+                        comment.color,
                         comment.seq,
                     ],
                 )
@@ -710,7 +715,7 @@ impl Catalog {
         slug: &str,
         id: &str,
     ) -> CatalogResult<Comment> {
-        tx.query_row("SELECT slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in FROM comments WHERE slug=?1 AND id=?2",params![slug,id],Self::read_comment).map_err(CatalogError::from)
+        tx.query_row("SELECT slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in,point,color FROM comments WHERE slug=?1 AND id=?2",params![slug,id],Self::read_comment).map_err(CatalogError::from)
     }
 
     pub(super) fn read_comment(r: &rusqlite::Row<'_>) -> rusqlite::Result<Comment> {
@@ -742,6 +747,8 @@ impl Catalog {
             resolved: r.get::<_, i64>(24)? != 0,
             resolved_at: r.get(25)?,
             resolved_in: r.get(26)?,
+            point: r.get::<_, i64>(27)? != 0,
+            color: r.get(28)?,
         })
     }
 

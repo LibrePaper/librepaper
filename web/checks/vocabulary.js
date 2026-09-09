@@ -26,7 +26,9 @@ const THEME = new Set(["src/styles/theme.css", "src/styles/librepaper.css", "src
 // when somebody joins a session and sent to everyone else, so it has to be a
 // value on the wire, and it has to stay legible against a document nobody
 // here controls.
-const OUTSIDE = [/^src\/agent\//, /^src\/lib\/collab\.js$/];
+// Annotation palette values likewise travel with a document, independently
+// of the application's theme; only this shared palette may define them.
+const OUTSIDE = [/^src\/agent\//, /^src\/lib\/collab\.js$/, /^src\/lib\/annotation-colors\.js$/];
 
 function files(dir) {
   return readdirSync(dir).flatMap((name) => {

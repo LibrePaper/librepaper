@@ -29,3 +29,15 @@ export function scaleFor(width, points) {
   if (!(width > 0) || !(points > 0)) return SCALE;
   return Math.max(MIN_SCALE, Math.min(SCALE, (width - GUTTER) / points));
 }
+
+// PDF.js percentages use CSS pixels (96 dpi); PDF dimensions use 72 dpi.
+export function viewerScale(mode, width, height, pageWidth, pageHeight) {
+  const actual = 96 / 72;
+  const fitWidth = Math.max(1, width - GUTTER) / pageWidth;
+  const fitHeight = Math.max(1, height - 48) / pageHeight;
+  if (mode === "page-width") return fitWidth;
+  if (mode === "page-fit") return Math.min(fitWidth, fitHeight);
+  if (mode === "page-actual") return actual;
+  if (mode === "auto") return Math.min(1.25 * actual, fitWidth);
+  return Math.max(0.1, Math.min(10, Number(mode) || 1)) * actual;
+}

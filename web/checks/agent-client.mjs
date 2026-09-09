@@ -131,7 +131,7 @@ try {
   assert.match(client.current.messages.find((message) => message.context?.task_id === sent.id && message.role === "agent").text, /cancel/i);
   assert.deepEqual(client.current.messages.find((message) => message.id === sent.id), {
     id: sent.id, role: "user", text: "Explain this", task_id: sent.id,
-    context: { file: "paper.md", selection: { path: "paper.md", exact: "A passage", prefix: "", suffix: "", position: null } },
+    context: { file: "paper.md", selection: { path: "paper.md", exact: "A passage", prefix: "", suffix: "", position: null }, diagnostics: [], diagnostics_omitted: 0 },
   });
   await client.previewResult({ id: "preview-result", request_id: "preview-request", task_id: sent.id,
     base_revision: "base", revision: "candidate",

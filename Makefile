@@ -12,6 +12,9 @@
 export
 
 BIN     := dist/librepaper
+PREFIX  ?= $(HOME)/.local
+BINDIR  ?= $(PREFIX)/bin
+DESTDIR ?=
 # The markdown renderer, fetched for the browser: the editor previews with it,
 # and it is embedded in the binary like every other shell file.
 WASM    := web/dist/wasm/markdown.wasm
@@ -24,16 +27,21 @@ TYPST   := web/dist/wasm/typst.wasm
 SHELL_OUT := web/dist/index.html
 WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
-SOURCES := $(shell find crates -type f -not -path '*/target/*') Cargo.toml README.md $(wildcard examples/*.md examples/*.typ examples/*.tex)
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) Cargo.toml README.md $(wildcard examples/*.md examples/*.typ examples/*.tex)
 
 .DEFAULT_GOAL := help
-.PHONY: help build test smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
+.PHONY: help build install test smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
 	@grep -hE '^[a-z.A-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' | sort
 
 build: $(BIN)  ## Build dist/librepaper, with the shell and renderers embedded
+
+install: $(BIN)  ## Build and install to ~/.local/bin (override PREFIX= or BINDIR=)
+	@install -d "$(DESTDIR)$(BINDIR)"
+	@install -m 755 "$(BIN)" "$(DESTDIR)$(BINDIR)/librepaper"
+	@echo "Installed $(DESTDIR)$(BINDIR)/librepaper"
 
 # Rebuilt whenever any source, page or renderer changes.
 # Keep every required renderer in step with the shell and native compiler.

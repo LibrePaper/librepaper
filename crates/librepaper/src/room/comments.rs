@@ -98,6 +98,10 @@ pub struct Comment {
     /// written before it was recorded, rather than claiming offset 0.
     #[serde(default)]
     pub position: Option<i64>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub point: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     /// Set instead of the text selector when the annotation is on part of a
     /// figure rather than on a run of words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -171,12 +175,24 @@ pub struct Comment {
     pub accept_request: String,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 pub(super) fn valid_revision(value: &str) -> bool {
     value.is_empty()
         || (value.len() == 64
             && value
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+}
+
+pub fn valid_color(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    (value.len() == 7
+        && value.starts_with('#')
+        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| value.to_ascii_uppercase())
 }
 
 /// One proposal in an assistant pass. Validation and placement happen while
@@ -561,6 +577,8 @@ impl Room {
                 prefix: source.prefix.clone(),
                 suffix: source.suffix.clone(),
                 position: source.position,
+                point: false,
+                color: None,
                 region: None,
                 source: Some(source),
                 proposed: Some(proposed),
@@ -1214,6 +1232,8 @@ impl Room {
                 prefix: raw_prefix,
                 suffix: raw_suffix,
                 position,
+                point,
+                color: raw_color,
                 region: raw_region,
                 source: raw_source,
                 proposed: raw_proposed,
@@ -1242,9 +1262,28 @@ impl Room {
                 let spot = valid_region(raw_region.as_ref());
                 // An annotation is anchored to words or to part of a figure;
                 // one or the other, never neither.
-                if exact.is_empty() && spot.is_none() {
+                let position = position.filter(|p| *p >= 0);
+                if point {
+                    if motivation != "commenting"
+                        || !exact.is_empty()
+                        || spot.is_some()
+                        || position.is_none()
+                    {
+                        return fail("a point comment requires commenting motivation and a nonnegative position");
+                    }
+                } else if exact.is_empty() && spot.is_none() {
                     return fail("select some text or part of a figure to comment on");
                 }
+                let color = match raw_color {
+                    Some(raw) if matches!(motivation.as_str(), "commenting" | "highlighting") => {
+                        match valid_color(Some(&raw)) {
+                            Some(color) => Some(color),
+                            None => return fail("color must be a #RRGGBB value"),
+                        }
+                    }
+                    Some(_) => None,
+                    None => None,
+                };
                 // A suggestion is its proposal; without one it is an
                 // annotation with nothing to act on. `proposed` on any other
                 // motivation is not something a client meant to send, so it
@@ -1324,7 +1363,9 @@ impl Room {
                     exact,
                     prefix: clean(&raw_prefix, config.caps.context),
                     suffix: clean(&raw_suffix, config.caps.context),
-                    position: position.filter(|p| *p >= 0),
+                    position,
+                    point,
+                    color,
                     // A region comment is anchored to the figure; the source
                     // it might otherwise have carried is not kept.
                     source,
@@ -1366,6 +1407,8 @@ impl Room {
                         "prefix": row.prefix,
                         "suffix": row.suffix,
                         "position": row.position,
+                        "point": row.point,
+                        "color": row.color,
                         "region": row.region,
                         "source_path": row.source_path,
                         "proposed": row.proposed,
@@ -1416,4 +1459,17 @@ impl Room {
     }
 
     /* ---------------------------------------------------------- the document */
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_color;
+
+    #[test]
+    fn colors_are_canonical_six_digit_rgb_values() {
+        assert_eq!(valid_color(Some("#aBc123")), Some("#ABC123".into()));
+        assert!(valid_color(Some("red")).is_none());
+        assert!(valid_color(Some("#12GG00")).is_none());
+        assert!(valid_color(Some("#1234567")).is_none());
+    }
 }

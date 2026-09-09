@@ -32,6 +32,7 @@ pub(crate) mod runner_context;
 mod runner_lifecycle;
 pub(crate) mod runner_preview;
 mod runner_transport;
+mod skills;
 mod suggest;
 pub mod sync;
 mod tokens;
@@ -188,6 +189,11 @@ impl ServiceFlags {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Read or export the agent skills bundled with this version (offline)
+    Skills {
+        #[command(subcommand)]
+        command: skills::SkillsCommand,
+    },
     /// Sign in through a deployment, in a browser
     Login,
     /// Forget the stored sign-in
@@ -549,6 +555,11 @@ pub async fn main() {
     let server = cli.server;
     let token = cli.token;
     match cli.command {
+        Command::Skills { command } => {
+            if let Err(error) = skills::run(command) {
+                die(error);
+            }
+        }
         Command::Login => login(server).await,
         Command::Logout => logout(),
         Command::Publish {

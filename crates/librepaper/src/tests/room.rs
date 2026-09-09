@@ -1072,6 +1072,28 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
     assert_eq!(snapshot.len(), 1);
     assert_eq!(snapshot[0].seq, 1);
 
+    let point = room::Message {
+        kind: "comment".into(),
+        motivation: "commenting".into(),
+        body: "A note at this position".into(),
+        position: Some(2),
+        point: true,
+        color: Some("#12abef".into()),
+        temp_id: "123e4567-e89b-12d3-a456-426614174002".into(),
+        request_id: "point-request-1".into(),
+        ..Default::default()
+    };
+    let (_, point_ok) = room
+        .apply(point, "127.0.0.1", "github:reviewer", "", None, false)
+        .await;
+    assert!(point_ok);
+    let snapshot = room.snapshot().await;
+    assert_eq!(snapshot[1].point, true);
+    assert_eq!(snapshot[1].color.as_deref(), Some("#12ABEF"));
+    let persisted = catalog.comments("comment-receipt", None, 10).unwrap();
+    assert_eq!(persisted[1].point, true);
+    assert_eq!(persisted[1].color.as_deref(), Some("#12ABEF"));
+
     let reply = room::Message {
         kind: "reply".into(),
         comment_id: snapshot[0].id.clone(),
@@ -1108,14 +1130,14 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    assert_eq!(operations, 3); // publication, comment, reply
+    assert_eq!(operations, 4); // publication, two comments, reply
     assert_eq!(
         catalog
             .document("comment-receipt")
             .unwrap()
             .unwrap()
             .comment_seq,
-        1
+        2
     );
 }
 

@@ -57,9 +57,9 @@
   import { problem as toastProblem } from "../lib/toast.svelte.js";
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
-  import Comments from "./Comments.svelte";
+  import Collaboration from "./Collaboration.svelte";
+  import Changes from "./Changes.svelte";
   import Agent from "./Agent.svelte";
-  import Chat from "./Chat.svelte";
   import History from "./History.svelte";
   import Diagnostics from "./Diagnostics.svelte";
   import Settings from "./Settings.svelte";
@@ -69,6 +69,7 @@
   import { createPreviewApi } from "../lib/reader/preview-api.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { createRenderingStore } from "../lib/reader/rendering-store.js";
+  import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -104,6 +105,7 @@
   let canModerate = $derived(Boolean(doc.can_moderate));
   let connected = $state(true);
   let liveChat = $state([]);
+  let unreadChat = $state(false);
   let pendingChat;
   let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
@@ -163,6 +165,7 @@
         .filter((comment) => comment.region)
         .map((comment) => ({
           id: comment.id,
+          point: Boolean(comment.point),
           digest: comment.region.image_digest,
           index: comment.region.image_index,
           x: comment.region.x,
@@ -183,6 +186,7 @@
         .filter((comment) => !comment.orphaned && comment.start != null)
         .map((comment) => ({
           id: comment.id,
+          point: Boolean(comment.point),
           start: comment.start,
           end: comment.end,
           motivation: comment.motivation,
@@ -193,6 +197,7 @@
           // on fields that never change.
           proposed: comment.proposed ?? "",
           outcome: comment.outcome || "",
+          color: comment.color || undefined,
         })),
     );
     if (highlight !== lastHighlight) {
@@ -284,7 +289,7 @@
     const tree = treeNow();
     const open = session?.paths?.get(openFile) || "";
     for (const comment of comments) {
-      if (comment.source || comment.region || comment.pending || comment.temp_id) continue;
+      if (comment.source || comment.region || comment.point || comment.pending || comment.temp_id) continue;
       if (comment.start == null || triedBackfill.has(comment.id)) continue;
       triedBackfill.add(comment.id);
       const source = sync.sourceSelectorFor(
@@ -331,6 +336,7 @@
         // loop.
         const first = framePreview.markReady();
         frameReady = true;
+        tell({ type: "tool", tool });
         // Whatever was painted before is gone with the rebuilt DOM.
         lastRegions = lastHighlight = lastRedlines = null;
         reanchor();
@@ -385,7 +391,7 @@
         followDocumentClick(Number(message.offset) || 0);
         break;
       case "focus":
-        document.getElementById("comment-" + message.id)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        void focusAnnotation(message.id);
         break;
     }
   }
@@ -393,24 +399,29 @@
   /* --------------------------------------------------------------- selection */
 
   let tool = $state("commenting");
+  let highlightColor = $state(HIGHLIGHT_COLORS[0]);
   let pending = $state(null);
   let assistantRequest = $state(null);
   let selectionRevision = Promise.resolve("");
   let bar = $state({ shown: false, left: 0, top: 0 });
 
   function showSelection(selector, rect) {
-    if (!selector || !selector.exact) {
+    const point = selector?.point === true;
+    if (!selector || (point
+      ? Boolean(selector.exact) || !Number.isInteger(selector.position) || selector.position < 0
+      : !selector.exact)) {
       bar = { ...bar, shown: false };
       pending = null;
       return;
     }
     pending = {
-      exact: String(selector.exact),
+      exact: String(selector.exact || ""),
       prefix: String(selector.prefix || ""),
       suffix: String(selector.suffix || ""),
       // A hint, not a claim: the server keeps it, and anchoring uses it only
       // to choose between passages the context cannot separate.
       position: Number.isInteger(selector.position) && selector.position >= 0 ? selector.position : null,
+      ...(point ? { point: true } : {}),
     };
     // The anchor of record, cut from the source at the same moment: a best
     // effort taken here, in the commenter's browser, while the words just
@@ -419,7 +430,7 @@
     // server reads as "no source anchor yet" rather than as a failure.
     let source = null;
     try {
-      if (docText !== null) {
+      if (docText !== null && !point) {
         source = sync.sourceSelectorFor(docText, pending, treeNow(), {
           open: session?.paths?.get(openFile) || "",
           formatOf: renderers.formatOf,
@@ -436,17 +447,6 @@
       captured.revision = revision;
     }).catch(() => { captured.revision = ""; });
     placeBar(rect);
-  }
-
-  async function askAssistant(kind = "explain") {
-    if (!pending?.exact) return;
-    const captured = { ...pending, source: pending.source ? { ...pending.source } : null };
-    const revision = await selectionRevision.catch(() => "");
-    assistantRequest = { id: crypto.randomUUID(), selection: captured, revision,
-      task: { kind, scope: "selection" } };
-    bar = { ...bar, shown: false };
-    showPanel("agent");
-    if (width <= 760) showMobileView("sidebar");
   }
 
   function askDiagnostic(item) {
@@ -505,12 +505,40 @@
       (ids.includes(comment.id) || (pass && comment.pass === pass)));
     const first = matches.find((comment) => !comment.resolved) || matches[0];
     if (!first) { toastProblem("These suggestions are no longer available."); return; }
-    showPanel("comments");
-    if (width <= 760) showMobileView("sidebar");
+    await focusAnnotation(first.id);
+  }
+
+  async function focusAnnotation(id) {
+    const comment = comments.find((item) => item.id === id);
+    if (!comment) return;
+    const suggestion = comment.motivation === "editing";
+    const plainHighlight = comment.motivation === "highlighting" && !comment.body && !comment.replies?.length;
+    if (!suggestion) collaborationTab = plainHighlight ? "highlights" : "comments";
+    void showPanel(suggestion ? "changes" : "collaboration");
+    const targetPanel = panel;
     await tick();
-    const card = document.getElementById(`comment-${first.id}`);
-    card?.scrollIntoView({ block: "nearest" });
-    card?.querySelector("button")?.focus({ preventScroll: true });
+    if (panel !== targetPanel) return;
+    const prefix = suggestion ? "changes" : plainHighlight ? "collaboration-highlight" : "collaboration-comment";
+    const card = document.getElementById(`${prefix}-${id}`);
+    card?.focus({ preventScroll: true });
+    await tick();
+    card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  async function revealAnnotation(comment) {
+    if (comment.start != null || comment.region) {
+      showMobileView("document");
+      await tick();
+      tell({ type: "reveal", id: comment.id });
+    } else if (comment.sourceStart != null && editing) {
+      showMobileView("source");
+      await tick();
+    }
+    if (shown.source && comment.sourceStart != null && editing && editor) {
+      const id = session.idOf(comment.sourcePath);
+      if (id) { openFile = id; editor.goToIn(id, comment.sourceStart); }
+      else editor.goTo(comment.sourceStart);
+    }
   }
 
   function placeBar(rect) {
@@ -529,7 +557,12 @@
   function chooseTool(which) {
     if (!mayChat) return;
     tool = which;
+    if (pending?.point || pending?.region || which === "point" || which === "region") {
+      pending = null;
+      bar = { ...bar, shown: false };
+    }
     tell({ type: "tool", tool: which });
+    if (compact) showMobileView("document");
   }
 
   /* -------------------------------------------------------------- annotating */
@@ -538,7 +571,7 @@
   let identifying = $state(false);
   let deleting = $state(false);
   let draft = $state({ body: "", proposed: "" });
-  let pendingDelete = null;
+  let pendingDelete = $state([]);
 
   // Opening the dialog. The suggest variant starts its proposal textarea
   // with the source slice when the passage was placed, the rendered words
@@ -568,13 +601,13 @@
   function submitAnnotation({ motivation, body, proposed }) {
     if (!pending || !mayChat) return;
     // The server determines the author when it acknowledges the submission.
-    annotations.comment(pending, { motivation, body, proposed }, identity || doc.commenting_as || "Anonymous");
+    annotations.comment(pending, { motivation, body, proposed, color: motivation === "highlighting" ? highlightColor : undefined }, identity || doc.commenting_as || "Anonymous");
     pending = null;
   }
 
   function submitDialog(event) {
     event.preventDefault();
-    const motivation = tool === "region" ? "commenting" : tool;
+    const motivation = tool === "region" || tool === "point" ? "commenting" : tool;
     submitAnnotation({
       motivation,
       body: draft.body,
@@ -643,16 +676,20 @@
   const resolve = annotations.resolve;
 
   function askDelete(comment) {
-    pendingDelete = comment;
+    askDeleteMany([comment]);
+  }
+
+  function askDeleteMany(items) {
+    if (!items.length) return;
+    pendingDelete = items;
     deleting = true;
   }
 
   function confirmDelete() {
-    const comment = pendingDelete;
-    pendingDelete = null;
+    const items = pendingDelete;
+    pendingDelete = [];
     deleting = false;
-    if (!comment) return;
-    annotations.delete(comment);
+    for (const comment of items) annotations.delete(comment);
   }
 
   function reply(comment, body, name) {
@@ -671,7 +708,10 @@
   function receive(event) {
     if (annotations.receive(event)) return;
     if (event.type === "chat") {
-      if (!liveChat.some((message) => message.id === event.id)) liveChat = [...liveChat, event].slice(-200);
+      if (!liveChat.some((message) => message.id === event.id)) {
+        liveChat = [...liveChat, event].slice(-200);
+        if (!chatVisible && !pendingChat?.has(event.temp_id)) unreadChat = true;
+      }
       if (event.temp_id) pendingChat?.acknowledge(event.temp_id, true);
       return;
     }
@@ -919,6 +959,11 @@
   };
   const computeHistoryChanges = (point) => historyController.computeChanges(point);
 
+  // Stepping through the changes. A change is named by its offset into the
+  // text the frame published -- the same offset its redlines were painted at
+  // -- so finding it is asking the frame to scroll there. The frame has to
+  // be showing the compare end of the range for the offset to mean anything;
+  // when it is not, the step waits until it is.
   let pendingHistoryReveal = null;
   function revealPendingHistory() {
     const pending = pendingHistoryReveal;
@@ -1818,8 +1863,8 @@
   // and editor settings remain in the editor workspace.
   const TABS = [
     { id: "files", says: "Files", editorOnly: true },
-    { id: "comments", says: "Comments" },
-    { id: "chat", says: "Chat" },
+    { id: "collaboration", says: "Collaboration" },
+    { id: "changes", says: "Changes", editorOnly: false },
     { id: "agent", says: "Agent" },
     // History is readable by link-holders too: reviewers need the “since”
     // view even when they cannot edit or restore the live source.
@@ -1829,7 +1874,12 @@
     { id: "settings", says: "Settings", editorOnly: true },
   ];
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
-  let panel = $state(PANELS.includes(read(PANEL, null)) ? read(PANEL, null) : "files");
+  const storedPanel = read(PANEL, null);
+  const migratedPanel = storedPanel === "comments" || storedPanel === "chat" ? "collaboration" : storedPanel;
+  let panel = $state(PANELS.includes(migratedPanel) ? migratedPanel : "files");
+  let collaborationTab = $state(storedPanel === "chat" ? "chat" : "comments");
+  const chatVisible = $derived(panel === "collaboration" && collaborationTab === "chat" && shown.comments);
+  $effect(() => { if (chatVisible) unreadChat = false; });
   // Mount panels on their first visit and retain them across view changes.
   // This preserves scroll positions, expanded folders and unsent chat drafts.
   let visitedPanels = $state([]);
@@ -1868,7 +1918,7 @@
   );
   // Where the column goes back to when what it showed is taken away: the
   // files for an editor, the comments for everybody else.
-  const home = $derived(mayEdit ? "files" : "comments");
+  const home = $derived(mayEdit ? "files" : "collaboration");
   // Whether the document has said who this browser is. Until it has, the
   // column is drawn empty rather than as one audience's and then the other's.
   let settled = $state(false);
@@ -2595,7 +2645,7 @@
               </div>
             {:else}
               <IconButton
-                icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "chat" ? "message-square" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
+                icon={tab.id === "files" ? "folder" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
                 label={tab.says} pressed={panel === tab.id}
                 onclick={() => selectPanel(tab.id)} />
             {/if}
@@ -2608,8 +2658,15 @@
       </div>
       {#if settled}
       <div class="sidebar-content">
-      {#each tabs.filter((tab) => visitedPanels.includes(tab.id) || (tab.id === "comments" && unconfirmed.length)) as tab (tab.id)}
+      {#each tabs.filter((tab) => visitedPanels.includes(tab.id) || (tab.id === "collaboration" && unconfirmed.length)) as tab (tab.id)}
       <div class="panel-slot" hidden={panel !== tab.id || !shown.comments}>
+      {#if panel === tab.id && ["collaboration", "changes"].includes(tab.id) && unconfirmed.length}
+        <div class="pending-recovery">
+          <PendingAnnotations items={unconfirmed}
+            onretry={(id) => outbox.retry(id, (message) => collaboration?.send(message))}
+            ondiscard={discardAnnotation} />
+        </div>
+      {/if}
       {#if tab.id === "files" && mayEdit}
         <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
                {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
@@ -2618,12 +2675,24 @@
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
       {:else if tab.id === "agent"}
-        <Agent slug={SLUG} link={linkFor(SLUG)} path={session?.paths?.get(openFile) || ""}
+        <Agent slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"} path={session?.paths?.get(openFile) || ""}
                selection={pending} revision={pending?.revision || ""} request={assistantRequest}
-               {comments} onreview={reviewAssistantResults} onpreview={previewAssistant} />
-      {:else if tab.id === "chat"}
-        <Chat messages={liveChat} {connected} canPost={mayChat}
-              onsend={sendLiveChat} />
+               {comments} {diagnostics} oncommenttask={askCommentAssistant} ondiagnostictask={askDiagnostic}
+               onreview={reviewAssistantResults} onpreview={previewAssistant} />
+      {:else if tab.id === "collaboration"}
+        <Collaboration messages={liveChat} {connected} canPost={mayChat}
+          onsend={sendLiveChat} {unreadChat} bind:tab={collaborationTab}
+          {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
+          canComment={mayChat} hasFigures={figureAt.length > 0} ontool={chooseTool}
+          onreveal={revealAnnotation}
+          onresolve={resolve} ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} />
+      {:else if tab.id === "changes"}
+        <Changes {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
+          canComment={mayChat} ontool={chooseTool} onreveal={revealAnnotation}
+          onresolve={resolve} ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
+          onaccept={(comment) => decideSuggestion(comment, "accept")} onreject={(comment) => decideSuggestion(comment, "reject")}
+          onrejectconfirmed={rejectConfirmed}
+          onhistory={() => { setHistoryRedlines(true); void showPanel("history"); }} />
       {:else if tab.id === "share" && canSeeSharing}
         <Share open={panel === "share" && shown.comments} inline slug={SLUG} onclose={() => showPanel("")} />
       {:else if tab.id === "settings" && mayEdit}
@@ -2635,7 +2704,6 @@
       {:else if tab.id === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
-                     onask={askDiagnostic}
                      provenance={lastLatexResult?.provenance || null} attempts={lastLatexResult?.attempts || []} />
       {:else if tab.id === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
@@ -2651,46 +2719,6 @@
                  onstep={revealHistoryHunk}
                  oncheckpointfile={openCheckpointFile}
                  onfilediff={openFileDiff} onclosefilediff={historyController.closeFileDiff} />
-      {:else}
-        <Comments {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
-                  canComment={mayChat}
-                  hasFigures={figureAt.length > 0}
-                  ontool={chooseTool}
-                  onreveal={async (comment) => {
-                    // The rendered anchor, when there is one, reveals on the
-                    // page as it always did. A comment found only in the
-                    // source has nothing there to reveal, and goes to the
-                    // source instead -- the same jump a click in the document
-                    // makes in `followDocumentClick`.
-                    if (comment.start != null || comment.region) {
-                      showMobileView("document");
-                      await tick();
-                      tell({ type: "reveal", id: comment.id });
-                    } else if (comment.sourceStart != null && editing) {
-                      showMobileView("source");
-                      await tick();
-                    }
-                    if (shown.source && comment.sourceStart != null && editing && editor) {
-                      const id = session.idOf(comment.sourcePath);
-                      if (id) {
-                        openFile = id;
-                        editor.goToIn(id, comment.sourceStart);
-                      } else {
-                        editor.goTo(comment.sourceStart);
-                      }
-                    }
-                  }}
-                  onresolve={resolve} ondelete={askDelete} onreply={reply}
-                  onaccept={(comment) => decideSuggestion(comment, "accept")}
-                  onrejectconfirmed={rejectConfirmed}
-                  onassistant={askCommentAssistant}
-                  onreject={(comment) => decideSuggestion(comment, "reject")}>
-          {#snippet pending()}
-            <PendingAnnotations items={unconfirmed}
-              onretry={(id) => outbox.retry(id, (message) => collaboration?.send(message))}
-              ondiscard={discardAnnotation} />
-          {/snippet}
-        </Comments>
       {/if}
       </div>
       {/each}
@@ -2801,7 +2829,7 @@
     {/if}
     {#each compact ? tabs : [] as tab (tab.id)}
       <IconButton
-        icon={tab.id === "files" ? "folder" : tab.id === "comments" ? "comment" : tab.id === "chat" ? "message-square" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
+        icon={tab.id === "files" ? "folder" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
         label={tab.says} pressed={shown.comments && panel === tab.id}
         onclick={() => selectPanel(tab.id)} />
     {/each}
@@ -2813,20 +2841,28 @@
   {#if guide.shown}<div class="grip-guide" class:held={guide.held} style="left: {guide.left}px"></div>{/if}
 </main>
 
-{#if bar.shown}
+{#if bar.shown && mayChat}
   <div
     id="selectionbar"
     class="flex gap-1"
     style="display: flex; left: {bar.left}px; top: {bar.top}px"
   >
+    {#if tool === "highlighting"}
+      <div class="highlight-colors" role="group" aria-label="Highlight color">
+        {#each HIGHLIGHT_COLORS as color}
+          <button type="button" class:selected={highlightColor === color} class="color-swatch" style="background:{color}"
+            aria-label="Use {color} highlight" aria-pressed={highlightColor === color}
+            onclick={() => (highlightColor = color)}></button>
+        {/each}
+        <label class="custom-color" title="Choose highlight color">
+          <span class="sr-only">Custom highlight color</span>
+          <input type="color" bind:value={highlightColor} />
+        </label>
+      </div>
+    {/if}
     {#if mayChat}<button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={barClicked}>
       {tool === "highlighting" ? "Highlight" : tool === "region" ? "Box" : tool === "editing" ? "Suggest" : "Comment"}
     </button>{/if}
-    {#if pending?.exact}
-      <button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={() => void askAssistant("tighten")}>Tighten</button>
-      <button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={() => void askAssistant("rewrite")}>Rewrite</button>
-      <button class="btn btn-sm preset-tonal-surface shadow-lg" onclick={() => void askAssistant("explain")}>Explain</button>
-    {/if}
   </div>
 {/if}
 
@@ -2836,7 +2872,7 @@
   {#snippet children()}
     <form id="commentForm" class="flex flex-col gap-3" onsubmit={submitDialog}>
       <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3 text-sm">
-        {pending?.region ? `Figure ${pending.region.image_index + 1}` : `“${pending?.exact ?? ""}”`}
+        {pending?.point ? "Comment at this point" : pending?.region ? `Figure ${pending.region.image_index + 1}` : `“${pending?.exact ?? ""}”`}
       </blockquote>
       {#if identity}
         <p class="text-surface-600-400 text-sm">
@@ -2906,8 +2942,10 @@
 <!-- Deleting a thread cannot be undone, so it is confirmed. -->
 <Modal
   bind:open={deleting}
-  title="Delete comment?"
-  description="This removes the comment and its replies for everyone. It cannot be undone."
+  title={pendingDelete.length > 1 ? `Delete ${pendingDelete.length} comments?` : "Delete comment?"}
+  description={pendingDelete.length > 1
+    ? "This removes these comments and their replies for everyone. It cannot be undone."
+    : "This removes the comment and its replies for everyone. It cannot be undone."}
 >
   {#snippet footer()}
     <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (deleting = false)}>
@@ -2999,6 +3037,11 @@
   }
   .panel-slot { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
   .panel-slot[hidden] { display: none; }
+  .pending-recovery { flex-shrink:0; max-height:40%; overflow-y:auto; padding:var(--spacing); }
+  .highlight-colors { display:flex; align-items:center; gap:3px; padding:2px; border-radius:4px; background:var(--color-surface-100-900); }
+  .color-swatch { width:1.25rem; height:1.25rem; border:2px solid transparent; border-radius:50%; }
+  .color-swatch.selected { border-color:var(--color-surface-900-100); box-shadow:0 0 0 1px var(--color-primary-500); }
+  .custom-color input { width:1.35rem; height:1.35rem; padding:0; border:0; background:transparent; }
   @media (max-width: 760px) {
     .sidebar, .sidebar.collapsed { flex-direction: column; }
     .sidebar-activity { display: none; }

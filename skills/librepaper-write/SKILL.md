@@ -82,12 +82,20 @@ proposals when one coherent replacement would express the intended change.
 
 ## Diagnostics and result handoff
 
-For an attached diagnostic, explain the quoted message and source excerpt
-against its captured render revision. If current source differs, distinguish
-that from the reported error. `librepaper agent diagnostics "$LIBREPAPER_DOCUMENT"`
-can independently compile supported source locally. LaTeX logs come from the
-browser/local renderer; ask for that diagnostic instead of claiming a native
-CLI compile covers it.
+Task context includes the browser's available diagnostics in
+`context.diagnostics`, including LaTeX warnings, and an explicitly selected
+diagnostic in `context.diagnostic`. Use these messages, locations and source
+excerpts against each diagnostic's captured render revision. If current source
+differs, distinguish that from the reported error. An empty list means no
+diagnostics were available in the browser when the message was sent, not proof
+that compilation succeeded. `context.diagnostics_omitted` counts entries that
+did not fit in the message.
+
+`librepaper agent diagnostics "$LIBREPAPER_DOCUMENT"` can independently compile
+supported source locally. For LaTeX use the attached browser diagnostics and
+browser preview verification; the native diagnostics command does not compile
+LaTeX. Ask for additional diagnostic output only when the needed information
+is absent from context and cannot be obtained through browser verification.
 
 After successful suggestion creation, report the actual returned IDs in your
 structured task result, with an optional pass ID. The runner forwards these to

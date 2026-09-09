@@ -12,10 +12,13 @@
     -->
     <style>
       html { background: #f6f6f4; }
-      body { margin: 0; }
+      body { margin: 0; padding-top: 40px; }
+      .pdf-toolbar { position: fixed; inset: 0 0 auto; height: 40px; z-index: 100; }
+      .grab-to-pan-grab, .grab-to-pan-grab .textLayer span { cursor: grab !important; }
+      .grab-to-pan-grabbing { position: fixed; inset: 0; z-index: 50000; cursor: grabbing !important; }
       .note { color: #52525b; font: 14px system-ui, sans-serif; padding: 2rem; }
       main { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 24px 16px 48px; }
-      main > .pages { display: flex; flex-direction: column; gap: 24px; }
+      main > .pages { align-self: safe center; display: flex; flex-direction: column; gap: 24px; }
       .page { position: relative; background: #fff; box-shadow: 0 1px 5px rgb(24 31 28 / 0.14); overflow: hidden; }
       .page canvas { display: block; }
       .textLayer {

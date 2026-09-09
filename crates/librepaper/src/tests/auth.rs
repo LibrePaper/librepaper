@@ -802,6 +802,40 @@ async fn annotation_kinds() {
     assert_eq!(status, 200);
     assert_eq!(payload["comment"]["motivation"], "commenting");
     assert!(payload["comment"].get("replacement").is_none());
+
+    let (status, payload) = post(
+        &server.url,
+        &path,
+        json!({"type": "comment", "motivation": "commenting", "body": "At this point", "exact": "", "position": 3, "point": true, "color": "#aBc123"}),
+    )
+    .await;
+    assert_eq!(status, 200, "point comment was refused: {payload}");
+    assert_eq!(payload["comment"]["point"], true);
+    assert_eq!(payload["comment"]["position"], 3);
+    assert_eq!(payload["comment"]["color"], "#ABC123");
+
+    for (message, expected) in [
+        (
+            json!({"type":"comment", "motivation":"commenting", "body":"x", "exact":"", "point":true}),
+            "a point comment requires commenting motivation and a nonnegative position",
+        ),
+        (
+            json!({"type":"comment", "motivation":"commenting", "body":"x", "exact":"", "point":true, "position":-1}),
+            "a point comment requires commenting motivation and a nonnegative position",
+        ),
+        (
+            json!({"type":"comment", "motivation":"highlighting", "body":"x", "exact":"", "point":true, "position":1}),
+            "a point comment requires commenting motivation and a nonnegative position",
+        ),
+        (
+            json!({"type":"comment", "motivation":"highlighting", "body":"", "exact":"hello", "color":"blue"}),
+            "color must be a #RRGGBB value",
+        ),
+    ] {
+        let (status, payload) = post(&server.url, &path, message).await;
+        assert_eq!(status, 400);
+        assert_eq!(text(&payload, "message"), expected);
+    }
 }
 
 #[tokio::test]

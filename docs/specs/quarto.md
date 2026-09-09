@@ -1,5 +1,12 @@
 # SPEC: Quarto in LibrePaper
 
+> Superseded design draft: [SPEC-quarto.md](../../SPEC-quarto.md) now describes
+> the proposed architecture, including optional local execution, cached display
+> outputs, and conservative freshness tracking. In particular, the prohibition
+> on local execution and the per-cell source-hash validity assumptions below
+> are no longer the recommended design. This document is retained as background
+> for the Markdown dialect work.
+
 Quarto is Pandoc Markdown with executable cells. The cells are the only part
 that needs a kernel; the rest is a dialect the Markdown engine can be taught.
 This page specifies a `.qmd` as a LibrePaper source format that no machine ever

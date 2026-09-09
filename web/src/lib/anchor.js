@@ -76,6 +76,21 @@ const flat = (value) => value.replace(/\s+/g, " ").trim();
  * `view` is the flattened text from `flatten`, used only as a fallback.
  */
 export function anchorOne(text, selector, view = null) {
+  // A point has no selected words: the boundary between its surrounding
+  // context locates it after edits, and the old offset breaks repeated ties.
+  if (selector?.point === true) {
+    const position = selector.position;
+    if (!Number.isInteger(position) || position < 0) return null;
+    const prefix = String(selector.prefix || "");
+    const suffix = String(selector.suffix || "");
+    if (prefix || suffix) {
+      const context = search(text, { exact: prefix + suffix, position: position - prefix.length });
+      if (!context) return null;
+      const at = context.start + prefix.length;
+      return { start: at, end: at };
+    }
+    return position <= text.length ? { start: position, end: position } : null;
+  }
   const found = search(text, selector);
   if (found) return found;
   if (!view) return null;

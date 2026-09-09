@@ -8,7 +8,7 @@
 // file, and that it is refused rather than guessed at when two files could
 // both be the answer.
 
-import { anchorSource, anchorAllSources } from "../src/lib/anchor.js";
+import { anchorOne, anchorSource, anchorAllSources } from "../src/lib/anchor.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -63,6 +63,22 @@ const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: 
 {
   const found = anchorSource({ texts: { "chapter.typ": "nothing like it here" } }, source("chapter.typ", "the passage of interest"));
   check("a passage nowhere in its own file, with no other file to try, is refused", found === null);
+}
+
+{
+  const point = { path: "chapter.typ", exact: "", prefix: "before", suffix: " after", position: 6, point: true };
+  const found = anchorOne("before after", point);
+  check("a point selector keeps its nonnegative position", found?.start === 6 && found?.end === 6);
+  const stale = anchorOne("short", { ...point, position: 999 });
+  check("a stale point outside the document is refused", stale === null);
+  const shifted = anchorOne("before new after", point);
+  check("a point whose surrounding context was replaced is refused", shifted === null);
+  check("a point follows an insertion before its context", anchorOne("New paragraph. before after", point)?.start === 21);
+  check("a point follows deletion before its context", anchorOne("before after", { ...point, position: 999 })?.start === 6);
+  check("a null point position is refused", anchorOne("before after", { ...point, position: null }) === null);
+  check("a string point position is refused", anchorOne("before after", { ...point, position: "6" }) === null);
+  check("a point can sit at document start", anchorOne("before after", { point:true, exact:"", position:0, suffix:"before after" })?.start === 0);
+  check("a point can sit at document end", anchorOne("before after", { point:true, exact:"", position:12, prefix:"before after" })?.start === 12);
 }
 
 /* --------------------------------------------------------- anchorAllSources */

@@ -14,7 +14,7 @@
 import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { piecesOf } from "./text.js";
-import { scaleFor } from "./fit.js";
+import { viewerScale } from "./fit.js";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -42,7 +42,7 @@ let generation = 0;
 /// call again while the last one is still rendering: `generation` is the
 /// token that lets a superseded run drop its pages on the floor instead of
 /// appending them under the new document's.
-export async function render(bytes, root) {
+export async function render(bytes, root, mode = "auto") {
   const mine = ++generation;
   const loading = pdfjs.getDocument({
     data: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
@@ -72,10 +72,10 @@ export async function render(bytes, root) {
     // pages, and rescaling halfway down it would read as a mistake.
     const first = await document_.getPage(1);
     if (mine !== generation) return 0;
-    const scale = scaleFor(
-      root.clientWidth || root.parentElement?.clientWidth || 0,
-      first.getViewport({ scale: 1 }).width,
-    );
+    const size = first.getViewport({ scale: 1 });
+    const scale = viewerScale(mode, document.documentElement.clientWidth,
+      document.documentElement.clientHeight - 40, size.width, size.height);
+    staging.dataset.scale = String(scale / (96 / 72));
     first.cleanup();
 
     for (let number = 1; number <= document_.numPages; number++) {
@@ -264,3 +264,5 @@ function gap(text) {
   span.textContent = text;
   return span;
 }
+
+export { createToolbar } from "./toolbar.js";

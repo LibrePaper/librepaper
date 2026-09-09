@@ -55,3 +55,14 @@ for (let width = 100; width <= 2000; width += 37) {
 }
 
 console.log("pdf-fit: page scale fits every frame the reader gets, and never magnifies");
+
+const { viewerScale } = await import("../src/lib/pdf/fit.js");
+assert.equal(viewerScale("page-actual", 800, 600, 612, 792), 96 / 72);
+assert.equal(viewerScale("2", 800, 600, 612, 792), 2 * 96 / 72);
+assert.equal(viewerScale("page-width", 800, 600, 612, 792) * 612, 768);
+for (const [width, height] of [[390, 800], [1000, 500]]) {
+  const scale = viewerScale("page-fit", width, height, 612, 792);
+  assert.ok(scale * 612 <= width - 32 + 1e-9);
+  assert.ok(scale * 792 <= height - 48 + 1e-9);
+}
+console.log("pdf-fit: standard actual-size, percentage, width and page-fit modes pass");

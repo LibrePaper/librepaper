@@ -60,11 +60,12 @@ const HARNESS = `<!doctype html><meta charset="utf-8"><body>
 <script type="module">
 import { anchorOne, flatten } from "/src/lib/anchor.js";
 const frame = document.getElementById("frame");
-window.seen = { ready: [], regions: [] };
+window.seen = { ready: [], regions: [], focus: [] };
 addEventListener("message", (event) => {
   const message = event.data;
   if (!message || message.librepaper !== true) return;
   if (message.type === "ready") window.seen.ready.push(message.text);
+  if (message.type === "focus") window.seen.focus.push(message.id);
   if (message.type === "regions-unplaceable") window.seen.regions.push(message);
 });
 window.sendPdf = async (path) => {
@@ -216,6 +217,42 @@ async function run() {
     return { text, pages: pages.length, marks: window.doc().querySelectorAll('.textLayer span:not(.gap)').length };
   `);
   check("Typst PDF paper is drawn with selectable text", paper.pages > 0 && paper.marks > 0, JSON.stringify(paper));
+  const controls = await tab.eval(`
+    const doc = frame.contentDocument;
+    const win = frame.contentWindow;
+    const toolbar = doc.querySelector('.pdf-toolbar').shadowRoot;
+    const select = toolbar.getElementById('scaleSelect');
+    const originalText = window.text();
+    async function mode(value) {
+      const old = doc.querySelector('.pages');
+      select.value = value;
+      select.dispatchEvent(new Event('change'));
+      for (let i = 0; i < 100 && old === doc.querySelector('.pages'); i++)
+        await new Promise(r => setTimeout(r, 50));
+      if (old === doc.querySelector('.pages')) throw new Error('zoom did not render');
+    }
+    await mode('page-fit');
+    const fit = doc.querySelector('.page').getBoundingClientRect();
+    const fits = fit.width <= doc.documentElement.clientWidth && fit.height <= win.innerHeight - 40;
+    await mode('2');
+    const zoomWidth = doc.querySelector('.page').getBoundingClientRect().width;
+    toolbar.getElementById('cursorHandTool').click();
+    doc.querySelector('.page').dispatchEvent(new MouseEvent('mousedown', {bubbles:true, button:0, clientX:300, clientY:300}));
+    doc.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, buttons:1, clientX:200, clientY:200}));
+    doc.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
+    const panned = doc.documentElement.scrollTop > 0;
+    toolbar.getElementById('cursorSelectTool').click();
+    const selection = !doc.documentElement.classList.contains('grab-to-pan-grab');
+    await mode('page-width');
+    const width = doc.querySelector('.page').getBoundingClientRect().width;
+    const widthFits = Math.abs(width - (doc.documentElement.clientWidth - 32)) <= 1;
+    await mode('auto');
+    win.scrollTo(0,0);
+    await new Promise(r => setTimeout(r, 500));
+    return { fits, panned, selection, widthFits, zoomed: zoomWidth > width, sameText: originalText === window.text() };
+  `);
+  check("PDF controls fit, zoom, pan, and restore selection without changing text",
+    Object.values(controls).every(Boolean), JSON.stringify(controls));
   check("paper text keeps Unicode and the embedded figure caption", paper.text.includes("naïve café") && paper.text.includes("—") && paper.text.includes("An embedded SVG asset."), paper.text.slice(0, 500));
   check("Typst text extraction does not leak presentation ligature code points", paper.text.includes("fixture") && !/[\uFB00-\uFB06]/.test(paper.text), paper.text);
   const columns = await tab.eval(`
@@ -273,7 +310,8 @@ async function run() {
       deletionPosition: doc.defaultView.getComputedStyle(deletion, '::before').position,
       underline: doc.defaultView.getComputedStyle(insertion).textDecorationLine,
       sameText: doc.body.textContent === text,
-      sameBounds: JSON.stringify(bounds()) === before };
+      // Splitting text nodes can round glyph widths by 1/64 CSS pixel at fractional zoom.
+      sameBounds: bounds().every((box, i) => box.every((value, j) => Math.abs(value - JSON.parse(before)[i][j]) < 0.05)) };
     window.frames[0].postMessage({ librepaper: true, type: 'redlines', items: [] }, '*');
     await new Promise(resolve => setTimeout(resolve, 100));
     result.cleared = !doc.querySelector('mark.librepaper-ins, mark.librepaper-del');
@@ -283,10 +321,70 @@ async function run() {
   check("PDF redlines underline insertions without moving selectable text", tracked?.inserted === 'Typst PDF fixture' && tracked.underline.includes('underline') && tracked.sameText && tracked.sameBounds && tracked.deletionPosition === 'absolute', JSON.stringify(tracked));
   check("PDF redlines clear cleanly", tracked?.cleared, JSON.stringify(tracked));
 
+  // Point comments use an empty text quote and a zero-width inline marker. A
+  // custom colour must remain visible in the PDF text layer, while the marker
+  // must not become part of the published text or trigger a ready loop.
+  const point = await tab.eval(`
+    const doc = window.doc();
+    const text = window.text();
+    const at = window.anchor({ exact: 'Typst PDF fixture', prefix: '', suffix: '' });
+    if (!at) return null;
+    const pointAt = at.start + 5;
+    const selector = {
+      exact: '', prefix: text.slice(Math.max(0, pointAt - 12), pointAt),
+      suffix: text.slice(pointAt, pointAt + 12), position: pointAt, point: true,
+    };
+    const anchored = window.anchor(selector);
+    if (!anchored) return { error: 'point failed to anchor' };
+    const readyBefore = window.seen.ready.length;
+    window.seen.focus.length = 0;
+    window.paint([
+      { id: 'pdf-point', ...anchored, point: true, motivation: 'commenting' },
+      { id: 'pdf-colour', start: at.start, end: at.end, motivation: 'highlighting', color: '#ff8800' },
+    ]);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const marker = doc.querySelector('.librepaper-point-marker');
+    const bubble = doc.querySelector('.librepaper-point-bubble');
+    const mark = doc.querySelector('mark[data-librepaper~="pdf-colour"]');
+    const first = marker?.getBoundingClientRect();
+    const before = { text, readyBefore, markers: doc.querySelectorAll('.librepaper-point-marker').length,
+      bubbleText: bubble?.textContent || '', markColour: doc.defaultView.getComputedStyle(mark).backgroundColor,
+      marker: first ? [first.left, first.top, first.width, first.height] : null };
+    bubble?.click();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    before.focused = window.seen.focus.includes('pdf-point');
+    before.textStable = window.text() === text && window.seen.ready.length === readyBefore;
+    return before;
+  `);
+  check("PDF point comment has a textless anchored marker and custom colour", point?.markers === 1 && point.bubbleText === '' && point.textStable && point.markColour && !/transparent|rgba\(0, 0, 0, 0\)/.test(point.markColour), JSON.stringify(point));
+  check("PDF point bubble focuses its comment thread", point?.focused, JSON.stringify(point));
+
+  const pointZoom = await tab.eval(`
+    const doc = window.doc();
+    const toolbar = doc.querySelector('.pdf-toolbar').shadowRoot;
+    const select = toolbar.getElementById('scaleSelect');
+    const marker = () => doc.querySelector('.librepaper-point-marker')?.getBoundingClientRect();
+    const before = marker();
+    select.value = '2'; select.dispatchEvent(new Event('change'));
+    for (let i = 0; i < 100 && !marker(); i++) await new Promise(r => setTimeout(r, 50));
+    await new Promise(r => setTimeout(r, 150));
+    const zoomed = marker();
+    const text = window.text();
+    // Reanchor using the same contextual selector as the parent would after
+    // rerender; then repaint the actual point at its original location.
+    const pointAt = text.indexOf('Typst PDF fixture') + 5;
+    const anchored = window.anchor({ exact: '', prefix: text.slice(pointAt - 12, pointAt), suffix: text.slice(pointAt, pointAt + 12), position: pointAt, point: true });
+    window.paint([{ id: 'pdf-point', ...anchored, point: true, motivation: 'commenting' }, { id: 'pdf-colour', start: pointAt - 5, end: pointAt + 12, motivation: 'highlighting', color: '#ff8800' }]);
+    await new Promise(r => setTimeout(r, 120));
+    const rerendered = marker();
+    return { before: before && [before.left, before.top], zoomed: zoomed && [zoomed.left, zoomed.top], rerendered: rerendered && [rerendered.left, rerendered.top], text, markers: doc.querySelectorAll('.librepaper-point-marker').length };
+  `);
+  check("PDF point marker follows zoom and parent repaint", pointZoom?.markers === 1 && pointZoom?.text.includes('Typst PDF fixture') && pointZoom.rerendered?.every(Number.isFinite), JSON.stringify(pointZoom));
+
   // Empty PDF end-of-line items must leave a separator in the live DOM.
   // Without it, this highlight becomes "parameteris fixed", fails to anchor,
   // and sorts after the comments instead of between them in the sidebar.
-  await tab.eval("await window.sendPdf('/pdf/intervals')");
+  await tab.eval("window.paint([]); await new Promise(r => setTimeout(r, 80)); await window.sendPdf('/pdf/intervals')");
   await settle(tab);
   const positions = await tab.eval(`
     return [

@@ -17,6 +17,8 @@
 
 let viewer = null; // the render module, once something has needed it
 let stage = null;
+let toolbar = null;
+let scaleMode = "auto";
 let paintGeneration = 0;
 // The last PDF drawn, kept so a resize can redraw it. The pages are sized to
 // the width the frame has (see `pdf/render.js`), and the frame's width is not
@@ -30,7 +32,11 @@ function ready() {
   if (stage) return stage;
   document.body.replaceChildren();
   stage = document.createElement("main");
-  document.body.append(stage);
+  toolbar = viewer.createToolbar((mode) => {
+    scaleMode = mode;
+    if (drawn) void paint(drawn);
+  });
+  document.body.append(toolbar.element, stage);
   return stage;
 }
 
@@ -38,6 +44,8 @@ function waiting(message) {
   const note = document.createElement("p");
   note.className = "note";
   note.textContent = message;
+  toolbar?.destroy();
+  toolbar = null;
   document.body.replaceChildren(note);
   stage = null;
   drawn = null;
@@ -55,11 +63,12 @@ async function paint(bytes) {
   const keep = ArrayBuffer.isView(bytes)
     ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).slice()
     : new Uint8Array(bytes).slice();
+  drawn = keep;
   try {
     viewer ??= await import("../lib/pdf/render.js");
-    const pages = await viewer.render(keep.slice(), ready());
+    const pages = await viewer.render(keep.slice(), ready(), scaleMode);
     if (mine !== paintGeneration) return;
-    drawn = keep;
+    toolbar.update(scaleMode, Number(stage.firstElementChild.dataset.scale));
     // The page index for an offset, for the caret lock and SyncTeX. Neither
     // is built here; both need this and nothing else from the viewer, so it
     // is exposed now rather than left for them to reach into the DOM for.
@@ -78,13 +87,16 @@ async function paint(bytes) {
 // full rasterisation, so the redraw waits for the drag to stop. A width that
 // comes back to where it started asks for no work at all.
 let lastWidth = 0;
+let lastHeight = 0;
 let resizeTimer = 0;
 addEventListener("resize", () => {
   if (!drawn) return;
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
     const width = document.documentElement.clientWidth;
-    if (!width || width === lastWidth) return;
+    const height = document.documentElement.clientHeight;
+    if (!width || (width === lastWidth && height === lastHeight)) return;
+    lastHeight = height;
     lastWidth = width;
     void paint(drawn);
   }, 150);

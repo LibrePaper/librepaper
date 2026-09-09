@@ -590,16 +590,26 @@ link also changes source. Signing in supplies attribution and satisfies the
 deployment's sign-in policy; it does not give an agent using a read link the
 owner's editing rights.
 
-LibrePaper ships three agent skills. Install them with:
+LibrePaper bundles three agent skills and their reference files in the binary.
+Read them directly, offline, without installing a separate skills package:
 
 ```sh
-npx skills add LibrePaper/librepaper
+librepaper skills list
+librepaper skills show librepaper-document
+librepaper skills show librepaper-document --file references/editing.md
 ```
 
-That works for Claude Code, opencode, Cursor, and the other agents
-[`skills`](https://github.com/vercel-labs/skills) supports; pass
-`--agent claude-code` to pick one. You can also copy the directories under
-[`skills/`](skills) into your agent's skill directory by hand.
+Updating LibrePaper updates its bundled instructions at the same time. Check
+`librepaper --version` and the required commands' `--help` for compatibility;
+using bundled skills does not require an online latest-release check. The
+sidebar's connection prompt tells the agent how to read them.
+
+For agents that discover skills through directories, export the complete bundle
+with `librepaper skills export --directory ./librepaper-skills`, then copy the
+desired skill directories into your agent's skill directory. The export target
+must be new and its parent must exist; existing files are never overwritten.
+Export again to a fresh directory after upgrading. Installing from the repository
+with `npx skills add LibrePaper/librepaper` remains an optional alternative.
 
 - [`librepaper-document`](skills/librepaper-document/SKILL.md): read, comment on,
   and edit a document from its link.
@@ -1052,6 +1062,7 @@ nothing under that directory is edited by hand.
 make web      # the pages, from web/
 make wasm     # all four pinned browser renderers
 make build    # dist/librepaper, with the pages and renderers embedded
+make install  # build and install to ~/.local/bin (override PREFIX= or BINDIR=)
 make test     # rustfmt, clippy and the test suite
 ```
 

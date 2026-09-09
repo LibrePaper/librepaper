@@ -217,6 +217,8 @@ CREATE TABLE comments (
     resolved INTEGER NOT NULL DEFAULT 0,
     resolved_at TEXT,
     resolved_in TEXT NOT NULL,
+    point INTEGER NOT NULL DEFAULT 0,
+    color TEXT,
     PRIMARY KEY (slug, id)
 );
 CREATE UNIQUE INDEX comments_sequence ON comments (slug, seq);

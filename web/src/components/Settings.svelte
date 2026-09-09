@@ -145,7 +145,7 @@
 
 <section class="panel settings-panel" aria-label="Settings">
   <PanelHeader title="Settings">
-    <p class="panel-muted">These are this browser's own; they change nothing for anyone else.</p>
+    <p class="panel-muted">Editor and layout preferences apply only to this browser.</p>
   </PanelHeader>
 
   <section class="settings-section" aria-labelledby="settings-keys">
@@ -194,10 +194,13 @@
   </section>
 
   {#if showsLatex}
+    <details class="settings-advanced">
+      <summary class="panel-section-title">Advanced LaTeX settings</summary>
+      <p class="panel-muted">Use these if your document needs a specific compiler or you want to build PDFs with LaTeX installed on your computer. The default settings work for most documents.</p>
     <section class="settings-section" aria-labelledby="settings-latex-engine">
-      <h3 id="settings-latex-engine" class="panel-section-title">LaTeX</h3>
+      <h3 id="settings-latex-engine" class="panel-section-title">PDF compiler</h3>
       <label class="settings-row">
-        <span class="settings-label">Project engine</span>
+        <span class="settings-label">Compiler</span>
         <select class="select settings-select" aria-label="Project engine" value={latexSettings.engine || "auto"}
                 onchange={(event) => setEngine(event.currentTarget.value)}>
           <option value="auto">Automatic</option>
@@ -207,28 +210,22 @@
         </select>
       </label>
       <p class="panel-meta">
-        Applies to every collaborator. Automatic follows the document's own
-        <code>%!TEX program</code> line or its packages, and falls back to pdfLaTeX.
+        Leave this on Automatic unless your template requires a particular
+        compiler. This choice applies to everyone working on the document.
       </p>
 
-      <div class="settings-row">
-        <span class="settings-label">Browser release</span>
-        <span class="panel-muted">
-          {latexSettings.release || (releases ? `default (${releases.default})` : "default")}
-        </span>
-      </div>
       {#if releases}
         <div class="settings-row">
           {#if latexSettings.release && latexSettings.release !== releases.default}
             <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
                     onclick={() => pinRelease(releases.default)}>
-              Update to {releases.default}
+              Update browser compiler
             </button>
           {/if}
           {#if previousRelease && previousRelease !== latexSettings.release}
             <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
                     onclick={() => pinRelease(previousRelease)}>
-              Revert
+              Undo compiler update
             </button>
           {/if}
         </div>
@@ -236,14 +233,19 @@
     </section>
 
     <section class="settings-section" aria-labelledby="settings-local">
-      <h3 id="settings-local" class="panel-section-title">Local compilation</h3>
+      <h3 id="settings-local" class="panel-section-title">Compile on your computer</h3>
+      <p class="panel-muted">Optional. Connect the LibrePaper app on this computer to use your installed LaTeX tools, for example when a package is unavailable in the browser.</p>
       <p class="panel-muted">{CONNECTION_WORDS[local?.state] || "Not checked yet."}</p>
 
+      <details>
+        <summary>Connection address</summary>
+        <p class="panel-meta">Keep the default address unless you started the local app on a different address or port.</p>
       <label class="settings-row">
         <span class="settings-label">Address</span>
         <input class="input" type="text" value={address}
                oninput={(event) => (address = event.currentTarget.value)} onblur={setAddress} />
       </label>
+      </details>
 
       {#if local?.state === "connected" || local?.state === "unauthorized" || local?.state === "incompatible"}
         <div class="settings-row">
@@ -258,7 +260,7 @@
         <label class="settings-row">
           <span class="settings-label">Pairing code</span>
           <input class="input" type="text" inputmode="numeric" bind:value={pairingCode}
-                 placeholder="printed by librepaper local start" />
+                 placeholder="Code from the local app" />
         </label>
         <div class="settings-row">
           <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={connecting || !pairingCode}
@@ -270,8 +272,12 @@
           </button>
         </div>
       {/if}
-      <p class="panel-meta">{local?.instructions || "Run `librepaper local start` and enter the pairing code it prints."}</p>
+      <p class="panel-meta">To connect, run <code>librepaper local start</code> in a terminal on your computer, then enter the code it displays here.</p>
+      {#if local?.instructions}<p class="panel-meta">{local.instructions}</p>{/if}
 
+      <details>
+        <summary>Troubleshoot the connection</summary>
+        <p class="panel-meta">Check which LaTeX tools the local app can use. These details can help when reporting a problem.</p>
       {#if local?.capabilities?.tools}
         <table class="settings-capabilities">
           <thead><tr><th>Tool</th><th>Version</th></tr></thead>
@@ -285,29 +291,34 @@
           </tbody>
         </table>
         <p class="panel-meta">
-          Confinement: {local.capabilities.confinement?.kind || "none"}
+          File access protection: {local.capabilities.confinement?.kind || "none"}
           {#if local.capabilities.confinement?.reason}({local.capabilities.confinement.reason}){/if}
         </p>
       {/if}
 
       <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={doctorReport}>
-        librepaper local doctor
+        Check local setup
       </button>
       {#if doctor}<pre class="settings-doctor">{doctor}</pre>{/if}
+      </details>
     </section>
 
     <section class="settings-section" aria-labelledby="settings-cache">
-      <h3 id="settings-cache" class="panel-section-title">Compiler cache</h3>
-      <p class="panel-muted">{megabytes(cacheSize)} of engine and package files cached in this browser.</p>
+      <h3 id="settings-cache" class="panel-section-title">Downloaded LaTeX files</h3>
+      <p class="panel-muted">Storage used: {megabytes(cacheSize)}. This browser saves compiler and package downloads to make future PDF builds faster.</p>
       <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={clearCache}>
-        Clear compiler cache
+        Remove downloaded files
       </button>
-      <p class="panel-meta">Clears only the compiler's own files. Your documents are never touched.</p>
+      <p class="panel-meta">Use this to free space or retry a broken download. Needed files will download again the next time you build a PDF. Your documents are kept.</p>
     </section>
+    </details>
   {/if}
 </section>
 
 <style>
+  .settings-advanced > summary { cursor: pointer; margin-bottom: calc(var(--spacing) * 2); }
+  .settings-advanced > p { margin-bottom: var(--panel-section-gap); }
+  .settings-section summary { cursor: pointer; }
   .settings-section { display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); margin-bottom: var(--panel-section-gap); }
   .settings-row { display: flex; align-items: center; gap: calc(var(--spacing) * 2); flex-wrap: wrap; }
   .settings-label { min-width: calc(var(--spacing) * 12); }

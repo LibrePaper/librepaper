@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "librepaper-document": {
+      "source": "LibrePaper/librepaper",
+      "sourceType": "github",
+      "skillPath": "skills/librepaper-document/SKILL.md",
+      "computedHash": "1464d1eb1114e330ee75d16a33b832d73f751469e3b3398ff975ad0f7e4e4ef7"
+    },
+    "librepaper-pair": {
+      "source": "LibrePaper/librepaper",
+      "sourceType": "github",
+      "skillPath": "skills/librepaper-pair/SKILL.md",
+      "computedHash": "ea8877f78b8460c0106037781ee1d9b573be5227ba34a0673f8d54d4553ccdba"
+    },
+    "librepaper-write": {
+      "source": "LibrePaper/librepaper",
+      "sourceType": "github",
+      "skillPath": "skills/librepaper-write/SKILL.md",
+      "computedHash": "c4580d0ed608ac8474551f0a56362fda12f4effa2045d49dbaea1eedb2d4d2d8"
+    }
+  }
+}

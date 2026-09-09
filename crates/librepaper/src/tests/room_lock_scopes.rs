@@ -27,6 +27,8 @@ fn comment(body: &str, temp_id: &str) -> room::Command {
         prefix: String::new(),
         suffix: String::new(),
         position: None,
+        point: false,
+        color: None,
         region: None,
         source: None,
         proposed: None,

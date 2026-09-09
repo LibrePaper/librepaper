@@ -107,7 +107,7 @@ export function suggestionContext(suggestion) {
   };
 }
 
-export function composeTaskMessage({ id, text: body = "", task, attachment = null, selection = null, path = "", revision = "", diagnostic = null, suggestion = null, thread = null } = {}) {
+export function composeTaskMessage({ id, text: body = "", task, attachment = null, selection = null, path = "", revision = "", diagnostic = null, diagnostics = [], suggestion = null, thread = null } = {}) {
   const context = {};
   const selected = task?.scope === "selection" || !task
     ? (attachment || (selection ? captureAttachment(selection, path, revision) : null))
@@ -122,6 +122,19 @@ export function composeTaskMessage({ id, text: body = "", task, attachment = nul
   const refinement = suggestionContext(suggestion);
   if (refinement) context.suggestion = refinement;
   if (thread && typeof thread === "object") context.thread = thread;
+  // Browser diagnostics include LaTeX warnings that the native CLI cannot
+  // reproduce. Keep each render's revision, independently of the selection.
+  // Reserve space for an explicit omission count without crowding out the
+  // user's selected passage, diagnostic, or comment thread.
+  context.diagnostics = [];
+  context.diagnostics_omitted = diagnostics.length;
+  for (const item of diagnostics) {
+    const entry = diagnosticContext(item, item?.revision || "");
+    if (!entry) continue;
+    context.diagnostics.push(entry);
+    if (!checkContextSize({ task, context }).ok) context.diagnostics.pop();
+    else context.diagnostics_omitted -= 1;
+  }
   return {
     type: "message",
     id: text(id),

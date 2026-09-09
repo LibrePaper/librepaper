@@ -22,7 +22,7 @@ const comments=['one','two'].map((id,seq)=>({id,seq,motivation:'editing',pass:'p
 let component=mount(Comments,{target:document.body,props:{comments,canModerate:true,onrejectconfirmed:async item=>{window.rejected.push(item.id);if(item.id==='one')throw Error('Access changed.');}}});
 window.diagnostics=async()=>{
   await unmount(component);
-  component=mount(Diagnostics,{target:document.body,props:{diagnostics:[{message:'An error',file:'a.md',line:2,revision:'old-sha',source:'old source'}],onask:item=>window.asked=item}});
+  component=mount(Diagnostics,{target:document.body,props:{diagnostics:[{message:'An error',file:'a.md',line:2,revision:'old-sha',source:'old source'}]}});
 };
 `);
 let server, page;
@@ -44,11 +44,9 @@ try {
   await until("partial rejection", () => page.evaluate('document.body.innerText.includes("1 rejected; 1 could not be rejected: Access changed.")'), 1000);
   assert.deepEqual(await page.evaluate("window.rejected"), ["one", "two"]);
   await page.evaluate("window.diagnostics()");
-  await until("diagnostic action", () => page.evaluate('document.body.innerText.includes("Fix with assistant")'), 1000);
-  await page.evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="Fix with assistant").click()');
-  assert.equal(await page.evaluate("window.asked.revision"), "old-sha");
-  assert.equal(await page.evaluate("window.asked.source"), "old source");
-  console.log("assistant-review-browser: grouped review, partial rejection and diagnostic handoff passed");
+  await until("diagnostic content", () => page.evaluate('document.body.innerText.includes("An error")'), 1000);
+  assert.equal(await page.evaluate('document.body.innerText.includes("Fix with assistant")'), false);
+  console.log("assistant-review-browser: grouped review, partial rejection and diagnostics without AI shortcuts passed");
 } finally {
   await page?.close();
   if (server) await new Promise((resolve) => server.close(resolve));
