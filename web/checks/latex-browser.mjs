@@ -122,18 +122,7 @@ const PAGE_DRIVER = `
 async function __librepaperInit(base) {
   const manifest = await (await fetch(base + "/mirror/manifest.json")).json();
   const release = manifest.releases[manifest.default_release];
-  const texlive = manifest.texlive[release.snapshot];
-  // This mirror's bloom filter was built against an earlier, smaller file
-  // index than manifest.texlive[snapshot].files now has (a build-time bug in
-  // package A's artifact, confirmed with latex/tools/bloom.mjs's own
-  // verifyBloom against the live manifest: it disagrees on 9 real keys,
-  // including size11.clo, which every corpus document needs). A bloom "maybe
-  // absent" is read by the engine as "skip the network fetch", so loading a
-  // stale filter here would make every affected file look permanently
-  // missing -- not a bug in this worker/driver.js pathway, which is exactly
-  // what this check exists to exercise, so the filter is left unloaded
-  // rather than worked around in the adapter.
-  delete texlive.bloom;
+  // Format 1: bundles only, no per-file snapshot and no bloom filter.
   const worker = new Worker("/src/lib/latex/worker.js", { type: "module" });
   let seq = 0;
   const pending = new Map();
@@ -153,8 +142,8 @@ async function __librepaperInit(base) {
       worker.postMessage(Object.assign({ id, cmd }, extra || {}));
     });
   }
-  const configured = await send("configure", { base: base + "/mirror/", release, texlive });
-  globalThis.__librepaper = { worker, send, release, texlive, configured };
+  const configured = await send("configure", { base: base + "/mirror/", release, format: manifest.format });
+  globalThis.__librepaper = { worker, send, release, configured };
   return { engines: configured.engines };
 }
 
