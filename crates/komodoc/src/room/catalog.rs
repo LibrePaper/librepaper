@@ -236,24 +236,11 @@ impl Drop for PendingEditReservation {
 /// The gate is keyed by slug so that one test's gate cannot stop another
 /// test's room in the same process.
 #[cfg(test)]
-pub(crate) static AFTER_EDIT_RESERVATION: std::sync::Mutex<
-    Option<(String, Arc<tokio::sync::Semaphore>)>,
-> = std::sync::Mutex::new(None);
+pub(crate) static AFTER_EDIT_RESERVATION: super::TestGate = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 pub(super) async fn pause_after_edit_reservation(slug: &str) {
-    let gate = {
-        let held = match AFTER_EDIT_RESERVATION.lock() {
-            Ok(held) => held,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        held.as_ref()
-            .filter(|(gated, _)| gated == slug)
-            .map(|(_, gate)| gate.clone())
-    };
-    if let Some(gate) = gate {
-        let _ = gate.acquire().await;
-    }
+    super::ReservationGate::park(&AFTER_EDIT_RESERVATION, slug).await;
 }
 
 /// Reserve a complete pending snapshot for one update.

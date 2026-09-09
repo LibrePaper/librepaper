@@ -464,7 +464,45 @@ impl Drop for InFlight<'_> {
 /// Both are the window the completion hook cannot observe, and both are keyed
 /// by slug so tests in one process cannot gate each other's rooms.
 #[cfg(test)]
-type TestGate = std::sync::Mutex<Option<(String, Arc<tokio::sync::Semaphore>)>>;
+pub(crate) struct ReservationGate {
+    pub(crate) slug: String,
+    /// Signalled as a caller enters the window, so a test can act inside it
+    /// rather than wait for a clock.
+    pub(crate) reached: tokio::sync::Notify,
+    /// One permit lets one parked caller out.
+    pub(crate) resume: tokio::sync::Semaphore,
+}
+
+#[cfg(test)]
+impl ReservationGate {
+    pub(crate) fn new(slug: &str) -> Arc<Self> {
+        Arc::new(Self {
+            slug: slug.to_string(),
+            reached: tokio::sync::Notify::new(),
+            resume: tokio::sync::Semaphore::new(0),
+        })
+    }
+
+    /// Park a caller in the window, announcing that it got there.
+    async fn park(gate: &TestGate, slug: &str) {
+        let gate = {
+            let held = match gate.lock() {
+                Ok(held) => held,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            held.as_ref().filter(|gate| gate.slug == slug).cloned()
+        };
+        if let Some(gate) = gate {
+            gate.reached.notify_one();
+            if let Ok(permit) = gate.resume.acquire().await {
+                permit.forget();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+type TestGate = std::sync::Mutex<Option<Arc<ReservationGate>>>;
 
 #[cfg(test)]
 pub(crate) fn after_edit_reservation_gate() -> &'static TestGate {

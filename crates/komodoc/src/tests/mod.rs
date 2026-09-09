@@ -39,6 +39,7 @@ mod room;
 mod room_checkpoint_fixes;
 mod room_figure_fixes;
 mod room_lifecycle_fixes;
+mod room_lock_scopes;
 mod room_suggestion_fixes;
 mod s3;
 mod s3_operations;

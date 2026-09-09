@@ -176,24 +176,11 @@ impl crate::storage::catalog::CatalogServiceCompletion for CheckpointTokenCleanu
 /// the publication-side counterpart of the edit reservation's gate: the
 /// window `Drop` covers rather than the completion hook.
 #[cfg(test)]
-pub(crate) static AFTER_CHECKPOINT_ADMISSION: std::sync::Mutex<
-    Option<(String, Arc<tokio::sync::Semaphore>)>,
-> = std::sync::Mutex::new(None);
+pub(crate) static AFTER_CHECKPOINT_ADMISSION: super::TestGate = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 async fn pause_after_checkpoint_admission(slug: &str) {
-    let gate = {
-        let held = match AFTER_CHECKPOINT_ADMISSION.lock() {
-            Ok(held) => held,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        held.as_ref()
-            .filter(|(gated, _)| gated == slug)
-            .map(|(_, gate)| gate.clone())
-    };
-    if let Some(gate) = gate {
-        let _ = gate.acquire().await;
-    }
+    super::ReservationGate::park(&AFTER_CHECKPOINT_ADMISSION, slug).await;
 }
 
 /// Charge one checkpoint against the hourly budgets, through the execution
