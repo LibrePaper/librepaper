@@ -56,6 +56,8 @@ mod history;
 pub mod latex;
 mod onboarding;
 pub mod origins;
+mod quarto;
+mod quarto_checkpoint;
 mod reply;
 mod routes;
 pub mod serve;

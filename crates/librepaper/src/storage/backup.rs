@@ -1873,6 +1873,90 @@ mod tests {
             .await
             .expect("object");
 
+        let quarto_objects = [
+            ("quarto/blobs/sid/figure", "figure bytes"),
+            (
+                "quarto/bundles/sid/render/manifest.json",
+                "bundle provenance",
+            ),
+            ("quarto/selections/sid/html.json", "selected render"),
+            ("quarto/selections/sid/pdf.json", "selected render"),
+        ];
+        for (key, content) in quarto_objects {
+            objects
+                .put(key, content.as_bytes().to_vec(), "application/octet-stream")
+                .await
+                .expect("Quarto object");
+        }
+
+        catalog
+            .create_document(&crate::storage::catalog::NewDocument {
+                slug: "paper".into(),
+                storage_id: "sid".into(),
+                title: "Paper".into(),
+                sha: "source".into(),
+                created_at: "2026-09-09".into(),
+                published_at: "2026-09-09".into(),
+                updated_at: "2026-09-09".into(),
+                example: false,
+                owner_key: "backup-owner".into(),
+                owner_id: None,
+                status: "active".into(),
+                size: 0,
+                counted_size: 0,
+                maintenance_reserved: 0,
+                last_auto_checkpoint_at: 0,
+                source_format: "quarto".into(),
+                main: "paper.qmd".into(),
+            })
+            .expect("Quarto document");
+        let authority = crate::storage::catalog::MutationAuthority {
+            account_id: "",
+            owner_key: "backup-owner",
+            generation: "",
+            link_hash: "",
+            policy_editor: false,
+            automation: false,
+            unowned_publisher: false,
+        };
+        for context in ["html", "pdf"] {
+            let key = format!("quarto/selections/sid/{context}.json");
+            catalog
+                .reserve_object_change_with_authority(
+                    crate::storage::catalog::ObjectReservationRequest {
+                        slug: "paper",
+                        operation_id: context,
+                        object_key: &key,
+                        kind: "quarto",
+                        new_bytes: "selected render".len() as i64,
+                        owner_limit: -1,
+                        total_limit: -1,
+                    },
+                    authority,
+                )
+                .expect("reserve selection");
+            catalog
+                .commit_quarto_selection_with_authority(
+                    "sid",
+                    context,
+                    &key,
+                    "quarto",
+                    &crate::quarto::sha256(b"selected render"),
+                    &crate::quarto::Selection {
+                        document_id: "paper".into(),
+                        context_id: context.into(),
+                        generation: 1,
+                        render_id: "render".into(),
+                        source_revision: "source".into(),
+                    },
+                    authority,
+                )
+                .expect("commit selection");
+        }
+        catalog
+            .clear_quarto_selection_with_authority("sid", "paper", "pdf", authority)
+            .expect("clear selection while retaining epoch");
+
         let manifest = create_local_backup(&paths, backup_root.path(), "point-1", 10)
             .expect("create local backup");
         assert_eq!(manifest.deployment_id, deployment_id);
@@ -1883,7 +1967,14 @@ mod tests {
         let backup_dir = backup_root.path().join("point-1");
         verify_local_backup(&backup_dir).expect("verify local backup");
 
-        let object = backup_dir.join(&manifest.objects[0].relative);
+        let object = backup_dir.join(
+            &manifest
+                .objects
+                .iter()
+                .find(|object| object.relative == "objects/content/sid/trees/a")
+                .expect("source object")
+                .relative,
+        );
         fs::write(&object, b"tampered").expect("tamper object");
         assert!(matches!(
             verify_local_backup(&backup_dir),
@@ -1909,7 +2000,32 @@ mod tests {
             fs::read(restored.join("secrets/session.key")).expect("restored session key"),
             fs::read(secrets.join("session.key")).expect("source session key")
         );
-        Catalog::open(restored.join("catalog.db")).expect("restored catalog");
+        let restored_catalog =
+            Catalog::open(restored.join("catalog.db")).expect("restored catalog");
+        assert_eq!(
+            restored_catalog
+                .quarto_selection("sid", "paper", "html")
+                .unwrap()
+                .unwrap()
+                .render_id,
+            "render"
+        );
+        assert!(restored_catalog
+            .quarto_selection("sid", "paper", "pdf")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            restored_catalog
+                .quarto_selection_generation("sid", "paper", "pdf")
+                .unwrap(),
+            2
+        );
+        for (key, content) in quarto_objects {
+            assert_eq!(
+                fs::read(restored.join("objects").join(key)).expect("restored Quarto object"),
+                content.as_bytes()
+            );
+        }
     }
 
     #[tokio::test]

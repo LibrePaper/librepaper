@@ -22,9 +22,12 @@
 // module-level variable so checks do not leak into each other.
 
 export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
+export const QUARTO_PROTOCOL = 1;
+export const QUARTO_JOB_KINDS = Object.freeze(["render", "refresh", "frozen"]);
 
 const ADDRESS_KEY = "librepaper-local-address";
 const PAIRINGS_KEY = "librepaper-local-pairings";
+const BINDINGS_KEY = "librepaper-local-quarto-bindings";
 
 const NEGATIVE_MIN_MS = 60 * 1000;
 const NEGATIVE_MAX_MS = 10 * 60 * 1000;
@@ -104,6 +107,20 @@ export function setAddress(url) {
   writeRaw(ADDRESS_KEY, url);
   resetNegativeCache();
   setStatus({ address: url, state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown") });
+}
+
+export function bindingId() {
+  const all = readJSON(BINDINGS_KEY, {});
+  return String(all[pairingKey()] || "");
+}
+
+export function setBindingId(id) {
+  const all = readJSON(BINDINGS_KEY, {});
+  const value = String(id || "").trim();
+  if (value) all[pairingKey()] = value;
+  else delete all[pairingKey()];
+  writeJSON(BINDINGS_KEY, all);
+  return value;
 }
 
 // -------------------------------------------------------------- pairings
@@ -287,6 +304,11 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
   try {
     response = await deps.fetch(url, { method, mode: "cors", credentials: "omit", headers, body, signal });
   } catch (error) {
+    if (signal?.aborted) {
+      const canceled = new Error("Canceled");
+      canceled.name = "Canceled";
+      throw canceled;
+    }
     const wrapped = new Error(String(error?.message || error));
     wrapped.name = "Unreachable";
     throw wrapped;
@@ -477,6 +499,131 @@ function formOf(jobRequest, files) {
   return form;
 }
 
+function relativePath(path) {
+  const value = String(path || "").replaceAll("\\", "/");
+  const parts = value.split("/");
+  if (!value || value.startsWith("/") || /^[A-Za-z]:/.test(value) ||
+      /[\u0000-\u001f\u007f]/.test(value) || parts.some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`invalid project path: ${path}`);
+  }
+  return value;
+}
+
+function boundedString(value, name, max) {
+  const text = String(value || "");
+  if (text.length < 1 || text.length > max) throw new Error(`invalid Quarto ${name}`);
+  return text;
+}
+
+function safeSha256(value, name = "digest") {
+  const text = String(value || "");
+  if (!/^[0-9a-f]{64}$/i.test(text)) throw new Error(`invalid Quarto ${name}`);
+  return text.toLowerCase();
+}
+
+function safeSize(value) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 64 * 1024 * 1024) {
+    throw new Error("invalid Quarto file size");
+  }
+  return value;
+}
+
+function quartoPolicy(kind, policy) {
+  if (!QUARTO_JOB_KINDS.includes(kind)) throw new Error(`unsupported Quarto job kind: ${kind}`);
+  const allowed = ["project-defaults", "refresh-computations", "frozen"];
+  const value = policy || (kind === "refresh" ? "refresh-computations" : kind === "frozen" ? "frozen" : "project-defaults");
+  if (!allowed.includes(value)) throw new Error(`unsupported Quarto render policy: ${value}`);
+  return value;
+}
+
+/** Build the JSON part of a Quarto request without accepting shell fragments. */
+export function quartoRequest({ job = {}, entrypoint, format = "html", profile = null, parameters = {}, policy, kind = "render", inputRevision = "", inputDigest = "", files = [] } = {}) {
+  const main = relativePath(entrypoint || job.entrypoint || "");
+  if (!main.endsWith(".qmd")) throw new Error("Quarto entrypoint must be a .qmd file");
+  if (!["html", "pdf", "docx", "revealjs"].includes(String(format))) throw new Error("invalid Quarto output format");
+  const binding = boundedString(job.binding || job.bindingId || "", "binding");
+  if (!/^[A-Za-z0-9._:-]+$/.test(binding)) throw new Error("invalid Quarto binding");
+  if (profile != null && (!/^[A-Za-z0-9._-]+$/.test(String(profile)) || String(profile).length > 128)) {
+    throw new Error("invalid Quarto profile");
+  }
+  const idempotency = String(job.idempotencyKey || job.id || "");
+  if (idempotency && (idempotency.length > 256 || !/^[A-Za-z0-9._:-]+$/.test(idempotency))) {
+    throw new Error("invalid Quarto idempotency key");
+  }
+  const sourceDigest = inputDigest || job.inputDigest || "";
+  if (sourceDigest) safeSha256(sourceDigest, "shared tree digest");
+  if (Object.keys(parameters || {}).length > 128) throw new Error("too many Quarto parameters");
+  const publicParameters = {};
+  for (const [key, value] of Object.entries(parameters || {})) {
+    if (key.length > 128 || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key)) throw new Error(`invalid Quarto parameter: ${key}`);
+    if (typeof value === "number" && (!Number.isFinite(value) || Object.is(value, -0) || (Number.isInteger(value) && !Number.isSafeInteger(value)))) {
+      throw new Error(`Quarto parameter number is outside the portable range: ${key}`);
+    }
+    if (["string", "number", "boolean"].includes(typeof value) || value === null) {
+      if (String(value).length > 16 * 1024) throw new Error(`Quarto parameter is too long: ${key}`);
+      publicParameters[key] = value;
+    } else throw new Error(`invalid Quarto parameter: ${key}`);
+  }
+  const manifest = [];
+  const seen = new Set();
+  for (const file of files) {
+    const path = relativePath(file.path);
+    if (seen.has(path)) throw new Error(`duplicate Quarto project path: ${path}`);
+    seen.add(path);
+    manifest.push({ path, sha256: safeSha256(file.sha256, "file digest"), size: safeSize(file.size) });
+  }
+  return {
+    protocol: QUARTO_PROTOCOL,
+    kind: "quarto",
+    project: current.project,
+    origin: current.origin,
+    snapshot: String(inputRevision || job.inputRevision || ""),
+    generation: Number.isFinite(job.generation) ? Math.max(0, Math.floor(job.generation)) : 0,
+    manifest,
+    options: {
+      deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
+      max_passes: Number.isFinite(job.maxPasses) ? Math.max(1, Math.floor(job.maxPasses)) : 8,
+    },
+    quarto: {
+      binding_id: binding,
+      main,
+      format: String(format),
+      profile: profile == null ? null : String(profile),
+      // Preserve scalar JSON types. Rust serializes these exact values for
+      // Quarto's -P arguments and hashes the typed map, so 1, true, null and
+      // the string "1" remain distinct cache identities.
+      parameters: publicParameters,
+      policy: quartoPolicy(kind, policy),
+      idempotency_key: idempotency || null,
+      shared_tree_sha256: sourceDigest ? safeSha256(sourceDigest, "shared tree digest") : null,
+    },
+  };
+}
+
+async function buildQuartoForm({ job, tree, options = {} }) {
+  const files = [];
+  const seen = new Set();
+  const add = (path, bytes) => {
+    const safe = relativePath(path);
+    if (seen.has(safe)) throw new Error(`duplicate Quarto project path: ${safe}`);
+    seen.add(safe);
+    files.push([safe, bytes]);
+  };
+  for (const [path, text] of Object.entries(tree?.texts || {})) add(path, bytesOf(text));
+  for (const [path, bytes] of Object.entries(tree?.assets || {})) add(path, bytesOf(bytes));
+  const manifest = await manifestOf(files);
+  const request = quartoRequest({
+    job, entrypoint: options.entrypoint || tree?.main, format: options.format || "html",
+    profile: options.profile, parameters: options.parameters, policy: options.policy,
+    kind: options.kind || "render", inputRevision: options.inputRevision, inputDigest: options.inputDigest,
+    files: manifest,
+  });
+  if (!manifest.some((file) => file.path === request.quarto.main)) {
+    throw new Error(`Quarto project is missing its entrypoint: ${request.quarto.main}`);
+  }
+  return formOf(request, files);
+}
+
 async function manifestOf(files) {
   const manifest = [];
   for (const [path, bytes] of files) {
@@ -532,8 +679,24 @@ async function pollJob(id, token, signal) {
   }
 }
 
-async function submitAndAwait(pairing, form, signal) {
-  const submitted = await send("POST", "jobs", { token: pairing.token, formBody: form }).then((r) => r.json());
+async function submitAndAwait(pairing, form, signal, { retryPost = false } = {}) {
+  let submitted;
+  try {
+    submitted = await send("POST", "jobs", { token: pairing.token, formBody: form }).then((r) => r.json());
+  } catch (error) {
+    // A lost response is the only safe case for retrying a render.  Reuse the
+    // same FormData object: its idempotency key and complete project snapshot
+    // are identical, so the bridge can return the existing job instead of
+    // executing user code a second time.
+    if (!retryPost || error?.name !== "Unreachable" || signal?.aborted) throw error;
+    await deps.wait(250, signal);
+    if (signal?.aborted) {
+      const canceled = new Error("Canceled");
+      canceled.name = "Canceled";
+      throw canceled;
+    }
+    submitted = await send("POST", "jobs", { token: pairing.token, formBody: form }).then((r) => r.json());
+  }
   const status = await pollJob(submitted.id, pairing.token, signal);
   if (status.status === "canceled") {
     const error = new Error("Canceled");
@@ -545,8 +708,14 @@ async function submitAndAwait(pairing, form, signal) {
 
 async function fetchOutput(id, token, name, status) {
   if (!status.outputs?.[name]) return null;
-  const response = await send("GET", `jobs/${id}/files/${name}`, { token });
+  const response = await send("GET", `jobs/${id}/files/${encodeURIComponent(name)}`, { token });
   return bytesOfResponse(response);
+}
+
+function base64Of(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return typeof btoa === "function" ? btoa(binary) : Buffer.from(bytes).toString("base64");
 }
 
 // -------------------------------------------------------------- jobs
@@ -588,4 +757,129 @@ export async function runTex({ job, tree, engine, main }, { signal, onProgress }
     provenance: { ...(status.provenance || {}), backend: "local" },
     ...(status.error ? { error: status.error } : {}),
   };
+}
+
+// Quarto has a separate capability and job contract from TeX.  The bridge
+// receives a structured request and a project snapshot; it never receives a
+// command line, executable path, or arbitrary environment from the browser.
+export async function runQuarto({ job = {}, tree, options = {} }, { signal, onProgress, onLog } = {}) {
+  const pairing = requirePairing();
+  const stableKey = String(job.idempotencyKey || job.id || globalThis.crypto?.randomUUID?.() || `quarto-${deps.now()}`);
+  const stableJob = { ...job, id: job.id || stableKey, idempotencyKey: job.idempotencyKey || stableKey };
+  onProgress?.({ done: 0, total: 1, scope: "local Quarto render", stage: "preparing" });
+  const form = await buildQuartoForm({ job: stableJob, tree, options });
+  const { id, status } = await submitAndAwait(pairing, form, signal, { retryPost: true });
+  if (status.log_tail) for (const line of String(status.log_tail).split("\n")) onLog?.(line);
+  const format = options.format || "html";
+  const artifactName = `artifact.${format}`;
+  const manifestBytes = await fetchOutput(id, pairing.token, "manifest.json", status) ||
+    await fetchOutput(id, pairing.token, "quarto-bundle.json", status);
+  const logBytes = await fetchOutput(id, pairing.token, "log", status);
+  let manifest = null;
+  if (manifestBytes) {
+    try { manifest = JSON.parse(new TextDecoder().decode(manifestBytes)); } catch { onLog?.("Quarto collector returned an invalid manifest"); }
+  }
+  const blobs = new Map();
+  let artifact = null;
+  let closureError = null;
+  if (manifest) {
+    if (!manifest.artifact || typeof manifest.artifact !== "object") {
+      closureError = "Quarto bundle is missing its artifact descriptor";
+    }
+    const descriptors = [];
+    if (!closureError) {
+      try {
+        const artifactPath = relativePath(manifest.artifact.entrypoint);
+        const artifactDigest = safeSha256(manifest.artifact.sha256, "artifact digest");
+        const expectedKind = format === "pdf" ? "pdf" : format === "docx" ? "docx" : "html";
+        if (String(manifest.artifact.kind || "").toLowerCase() !== expectedKind) throw new Error("Quarto artifact kind does not match its requested format");
+        descriptors.push({ artifact: true, path: artifactPath, sha256: artifactDigest, size: safeSize(Number(manifest.artifact.size)), mime: manifest.artifact.mime || (format === "pdf" ? "application/pdf" : format === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "text/html; charset=utf-8") });
+        if (!Array.isArray(manifest.assets)) throw new Error("Quarto bundle assets must be an array");
+        const descriptorPaths = new Set([artifactPath]);
+        for (const asset of manifest.assets) {
+          const path = relativePath(asset?.path);
+          if (descriptorPaths.has(path)) throw new Error(`duplicate Quarto bundle path: ${path}`);
+          descriptorPaths.add(path);
+          descriptors.push({ ...asset, path, artifact: false, sha256: safeSha256(asset?.sha256, "asset digest"), size: safeSize(Number(asset?.size)) });
+        }
+      } catch (error) {
+        closureError = error.message;
+      }
+    }
+    const totalLimit = 64 * 1024 * 1024;
+    let totalBytes = 0;
+    for (const descriptor of descriptors) {
+      if (closureError) break;
+      const outputName = descriptor.artifact ? artifactName : `asset:${descriptor.path}`;
+      const output = status.outputs?.[outputName];
+      if (!output) {
+        closureError = `Quarto bundle is missing required output: ${outputName}`;
+        break;
+      }
+      const advertisedSize = Number(output.size);
+      if (!Number.isSafeInteger(advertisedSize) || advertisedSize < 0 || advertisedSize > totalLimit || totalBytes + advertisedSize > totalLimit) {
+        closureError = `Quarto bundle output exceeds the size limit: ${outputName}`;
+        break;
+      }
+      const bytes = await fetchOutput(id, pairing.token, outputName, status);
+      if (!bytes) {
+        closureError = `Quarto bundle output could not be downloaded: ${outputName}`;
+        break;
+      }
+      if (bytes.byteLength !== advertisedSize) {
+        closureError = `Quarto bundle output has the wrong size: ${outputName}`;
+        break;
+      }
+      if (bytes.byteLength !== descriptor.size) {
+        closureError = `Quarto bundle descriptor has the wrong size: ${outputName}`;
+        break;
+      }
+      totalBytes += bytes.byteLength;
+      if (descriptor.sha256) {
+        const actual = await sha256hex(bytes);
+        if (actual !== descriptor.sha256) {
+          closureError = `Quarto bundle output has the wrong digest: ${outputName}`;
+          break;
+        }
+        if (descriptor.artifact) artifact = bytes;
+        const mime = descriptor.mime || "application/octet-stream";
+        const existing = blobs.get(descriptor.sha256);
+        if (existing && existing.mime !== mime) {
+          closureError = `Quarto bundle digest has conflicting MIME types: ${descriptor.sha256}`;
+          break;
+        }
+        if (!existing) blobs.set(descriptor.sha256, { sha256: descriptor.sha256, mime, data: base64Of(bytes) });
+      }
+    }
+  }
+  if (!manifest && status.status === "done" && status.exit === 0) closureError = "Quarto render did not return a bundle manifest";
+  if (closureError) onLog?.(closureError);
+  onProgress?.({ done: 1, total: 1, scope: "local Quarto render", stage: "collecting" });
+  return {
+    id,
+    ok: status.status === "done" && status.exit === 0 && artifact != null && !closureError,
+    artifact,
+    kind: format === "pdf" ? "pdf" : format === "docx" ? "docx" : "html",
+    manifest,
+    publish: manifest && !closureError ? { manifest, blobs: [...blobs.values()], select: true } : null,
+    diagnostics: status.diagnostics || [],
+    logs: logBytes ? new TextDecoder().decode(logBytes) : status.log_tail || "",
+    exit: status.exit,
+    stage: status.stage || (status.status === "done" ? "published" : status.status),
+    provenance: {
+      ...(status.provenance || {}),
+      backend: "local",
+      policy: options.policy || "project-defaults",
+      input_revision: options.inputRevision || job.inputRevision || null,
+    },
+    ...(status.error ? { error: status.error } : {}),
+    ...(closureError ? { error: closureError } : {}),
+  };
+}
+
+export async function cancelQuarto(jobId) {
+  const pairing = requirePairing();
+  if (!jobId) throw new Error("a Quarto job id is required");
+  await send("POST", `jobs/${encodeURIComponent(jobId)}/cancel`, { token: pairing.token });
+  return true;
 }

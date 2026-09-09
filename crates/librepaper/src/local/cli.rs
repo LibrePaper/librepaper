@@ -20,6 +20,7 @@ use crate::cli::config_home;
 use crate::cli::{LocalArgs, LocalCommand};
 use crate::local::pairing::{generate_code, PairingStore, ServiceState};
 use crate::local::protocol::{self, DEFAULT_PORT};
+use crate::local::quarto::BindingStore;
 use crate::local::service::{LocalService, NativeRunner, Runner};
 use crate::util::die;
 
@@ -30,6 +31,51 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Doctor => doctor().await,
         LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
         LocalCommand::Rescan => rescan().await,
+        LocalCommand::BindQuarto {
+            origin,
+            project,
+            root,
+            main,
+        } => bind_quarto(&origin, &project, &root, &main),
+        LocalCommand::UnbindQuarto { binding } => unbind_quarto(&binding),
+        LocalCommand::QuartoBindings { origin, project } => list_quarto_bindings(&origin, &project),
+    }
+}
+
+/// Grant the local app permission to execute one Quarto project. The caller
+/// should print only the opaque binding id; `ProjectBinding::root` is local
+/// state and must never be sent to a browser.
+pub fn bind_quarto(origin: &str, project: &str, root: &str, main: &str) {
+    let store = BindingStore::new(&config_home());
+    match store.grant(origin, project, std::path::Path::new(root), main) {
+        Ok(binding) => println!("quarto binding: {}", binding.id),
+        Err(error) => die(error),
+    }
+}
+
+pub fn unbind_quarto(binding: &str) {
+    let store = BindingStore::new(&config_home());
+    if store.revoke(binding) {
+        println!("revoked quarto binding {binding}");
+    } else {
+        die("quarto binding not found");
+    }
+}
+
+pub fn list_quarto_bindings(origin: &str, project: &str) {
+    let store = BindingStore::new(&config_home());
+    let bindings = store.list_scoped(origin, project);
+    if bindings.is_empty() {
+        println!("no quarto bindings");
+        return;
+    }
+    for binding in bindings {
+        println!(
+            "{}\t{}\t{}",
+            binding.id,
+            binding.entrypoint,
+            binding.root.display()
+        );
     }
 }
 
@@ -119,7 +165,7 @@ async fn start(port: u16, foreground: bool) {
         die(format!("could not write service.json: {err}"));
     }
 
-    let runner: Arc<dyn Runner> = Arc::new(NativeRunner);
+    let runner: Arc<dyn Runner> = Arc::new(NativeRunner::new(&config_home));
     let service = LocalService::new(port, instance, &config_home, &cache_home(), runner);
     let router = service.router();
 
@@ -224,6 +270,16 @@ async fn doctor() {
     print_tool("bibtex8", &capabilities.tools.bibtex8);
     print_tool("biber", &capabilities.tools.biber);
     print_tool("makeindex", &capabilities.tools.makeindex);
+    print_tool("quarto", &capabilities.quarto.tool);
+    if !capabilities.quarto.formats.is_empty() {
+        println!(
+            "  quarto formats: {}",
+            capabilities.quarto.formats.join(", ")
+        );
+    }
+    for (runtime, tool) in &capabilities.quarto.runtime_checks {
+        print_tool(runtime, tool);
+    }
     println!();
     if capabilities.confinement.available {
         println!("confinement: {}", capabilities.confinement.kind);
@@ -287,6 +343,7 @@ async fn rescan() {
         ("bibtex8", capabilities.tools.bibtex8.available),
         ("biber", capabilities.tools.biber.available),
         ("makeindex", capabilities.tools.makeindex.available),
+        ("quarto", capabilities.quarto.tool.available),
     ]
     .into_iter()
     .filter(|(_, available)| *available)

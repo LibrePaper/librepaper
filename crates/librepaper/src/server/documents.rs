@@ -868,6 +868,7 @@ impl Server {
                     title = match format {
                         "typst" => crate::document::render::title_from_typst(&html),
                         "markdown" => title_from_markdown(&html),
+                        "quarto" => crate::document::render::title_from_quarto(&html),
                         // There is no TeX here to ask, so the `\title` is
                         // scanned for; see `render::title_from_latex`.
                         "latex" => crate::document::render::title_from_latex(&html),

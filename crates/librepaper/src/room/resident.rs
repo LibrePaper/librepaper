@@ -269,6 +269,7 @@ mod tests {
             suffix: String::new(),
             position: Some(0),
             region: None,
+            output_anchor: None,
             source: (motivation == "editing").then(|| SourceAnchor {
                 path: "main.md".into(),
                 exact: "alpha".into(),

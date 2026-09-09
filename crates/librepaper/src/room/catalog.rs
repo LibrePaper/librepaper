@@ -464,25 +464,58 @@ pub(super) struct ObjectChangeGuard {
     catalog: Arc<Catalog>,
     change: ObjectChange,
     slot: Arc<ReservationSlot<()>>,
+    actor: Option<OwnedAuthority>,
+    quarto_selection: Option<crate::quarto::Selection>,
 }
 
 impl ObjectChangeGuard {
+    pub(super) fn with_quarto_selection(mut self, selection: crate::quarto::Selection) -> Self {
+        self.quarto_selection = Some(selection);
+        self
+    }
+
     /// The object is written: turn the reservation into durable accounting.
     /// A failed commit aborts inside the same job, so the reservation is
     /// released even if this caller never sees the answer.
     pub(super) async fn commit(self, at: String) -> Result<(), CatalogExecError> {
         let change = self.change.clone();
         let input_bytes = change.bytes() + at.len();
+        let actor = self.actor.clone();
+        let change_selection = self.quarto_selection.clone();
         let committed = self
             .catalog
             .execute_catalog(input_bytes, move |catalog| {
-                match catalog.commit_object_change(
-                    &change.storage_id,
-                    &change.operation_id,
-                    &change.object_key,
-                    &change.kind,
-                    &at,
-                ) {
+                let result = match (actor.as_ref(), change_selection.as_ref()) {
+                    (Some(actor), Some(selection)) => catalog
+                        .commit_quarto_selection_with_authority(
+                            &change.storage_id,
+                            &change.operation_id,
+                            &change.object_key,
+                            &change.kind,
+                            &at,
+                            selection,
+                            actor.borrow(),
+                        ),
+                    (Some(actor), None) => catalog.commit_object_change_with_authority(
+                        &change.storage_id,
+                        &change.operation_id,
+                        &change.object_key,
+                        &change.kind,
+                        &at,
+                        actor.borrow(),
+                    ),
+                    (None, None) => catalog.commit_object_change(
+                        &change.storage_id,
+                        &change.operation_id,
+                        &change.object_key,
+                        &change.kind,
+                        &at,
+                    ),
+                    (None, Some(_)) => Err(crate::storage::catalog::CatalogError::Invalid(
+                        "Quarto selection requires mutation authority".into(),
+                    )),
+                };
+                match result {
                     Ok(()) => Ok(()),
                     Err(error) => {
                         let _ = catalog.abort_object_change(
@@ -601,6 +634,8 @@ pub(super) async fn reserve_object_change(
         catalog: catalog.clone(),
         change: change.clone(),
         slot: slot.clone(),
+        actor: actor.clone(),
+        quarto_selection: None,
     };
     let cleanup = ObjectChangeCleanup {
         change: change.clone(),
@@ -707,6 +742,7 @@ pub(super) async fn stage_existing_publication_checkpoint(
     catalog: &Arc<Catalog>,
     slug: &str,
     sha: &str,
+    actor: Option<OwnedAuthority>,
 ) -> Result<(), String> {
     let slug = slug.to_string();
     let sha = sha.to_string();
@@ -720,7 +756,11 @@ pub(super) async fn stage_existing_publication_checkpoint(
                 return Ok(());
             }
             if let Some(checkpoint) = catalog.checkpoint(&slug, &sha)? {
-                catalog.stage_publication_checkpoint(&slug, &checkpoint)?;
+                catalog.stage_publication_checkpoint_with_authority(
+                    &slug,
+                    &checkpoint,
+                    actor.as_ref().map(OwnedAuthority::borrow),
+                )?;
             }
             Ok(())
         })
@@ -897,6 +937,121 @@ pub(super) async fn read_catalog_checkpoint(
         .await
 }
 
+/// Read a committed Quarto selection pointer through the catalogue boundary.
+pub(super) async fn read_quarto_selection(
+    catalog: &Arc<Catalog>,
+    storage_id: &str,
+    document_id: &str,
+    context_id: &str,
+) -> Result<Option<crate::storage::catalog::QuartoSelection>, CatalogExecError> {
+    let storage_id = storage_id.to_owned();
+    let document_id = document_id.to_owned();
+    let context_id = context_id.to_owned();
+    catalog
+        .execute_catalog(
+            storage_id.len() + document_id.len() + context_id.len() + DESCRIPTOR_BYTES,
+            move |catalog| catalog.quarto_selection(&storage_id, &document_id, &context_id),
+        )
+        .await
+}
+
+/// Read the durable selection epoch, including when the current pointer was
+/// cleared by a source restore.
+pub(super) async fn read_quarto_selection_generation(
+    catalog: &Arc<Catalog>,
+    storage_id: &str,
+    document_id: &str,
+    context_id: &str,
+) -> Result<u64, CatalogExecError> {
+    let storage_id = storage_id.to_owned();
+    let document_id = document_id.to_owned();
+    let context_id = context_id.to_owned();
+    catalog
+        .execute_catalog(
+            storage_id.len() + document_id.len() + context_id.len() + DESCRIPTOR_BYTES,
+            move |catalog| {
+                catalog.quarto_selection_generation(&storage_id, &document_id, &context_id)
+            },
+        )
+        .await
+}
+
+pub(super) async fn read_quarto_selection_epochs(
+    catalog: &Arc<Catalog>,
+    storage_id: &str,
+    document_id: &str,
+) -> Result<Vec<(String, u64)>, CatalogExecError> {
+    let storage_id = storage_id.to_owned();
+    let document_id = document_id.to_owned();
+    catalog
+        .execute_catalog(
+            storage_id.len() + document_id.len() + DESCRIPTOR_BYTES,
+            move |catalog| catalog.quarto_selection_epochs(&storage_id, &document_id),
+        )
+        .await
+}
+
+pub(super) async fn read_quarto_selections(
+    catalog: &Arc<Catalog>,
+    storage_id: &str,
+    document_id: &str,
+) -> Result<Vec<crate::storage::catalog::QuartoSelection>, CatalogExecError> {
+    let storage_id = storage_id.to_owned();
+    let document_id = document_id.to_owned();
+    catalog
+        .execute_catalog(
+            storage_id.len() + document_id.len() + DESCRIPTOR_BYTES,
+            move |catalog| catalog.quarto_selections(&storage_id, &document_id),
+        )
+        .await
+}
+
+pub(super) async fn clear_quarto_selection_with_authority(
+    catalog: &Arc<Catalog>,
+    storage_id: &str,
+    document_id: &str,
+    context_id: &str,
+    actor: OwnedAuthority,
+) -> Result<usize, CatalogExecError> {
+    let storage_id = storage_id.to_owned();
+    let document_id = document_id.to_owned();
+    let context_id = context_id.to_owned();
+    catalog
+        .execute_catalog(
+            storage_id.len()
+                + document_id.len()
+                + context_id.len()
+                + actor.bytes()
+                + DESCRIPTOR_BYTES,
+            move |catalog| {
+                catalog.clear_quarto_selection_with_authority(
+                    &storage_id,
+                    &document_id,
+                    &context_id,
+                    actor.borrow(),
+                )
+            },
+        )
+        .await
+}
+
+pub(super) async fn quarto_object_committed(
+    catalog: &Arc<Catalog>,
+    storage_id: &str,
+    object_key: &str,
+    version: &str,
+) -> Result<bool, CatalogExecError> {
+    let storage_id = storage_id.to_owned();
+    let object_key = object_key.to_owned();
+    let version = version.to_owned();
+    catalog
+        .execute_catalog(
+            storage_id.len() + object_key.len() + version.len() + DESCRIPTOR_BYTES,
+            move |catalog| catalog.quarto_object_committed(&storage_id, &object_key, &version),
+        )
+        .await
+}
+
 /// The newest rendering this document could show, read through the boundary.
 pub(super) async fn read_newest_rendering_candidate(
     catalog: &Arc<Catalog>,
@@ -1000,6 +1155,16 @@ fn load_catalog_comments_blocking(
             suffix: row.source_suffix.unwrap_or_default(),
             position: row.source_position,
         });
+        let output_anchor = row
+            .quarto_output
+            .map(|raw| {
+                serde_json::from_str::<QuartoOutputAnchor>(&raw).map_err(|err| {
+                    crate::storage::catalog::CatalogError::Invalid(format!(
+                        "comment Quarto output anchor is invalid: {err}"
+                    ))
+                })
+            })
+            .transpose()?;
         let replies = catalog.replies(slug, &row.id, 100)?;
         comments.push(Comment {
             id: row.id,
@@ -1015,6 +1180,7 @@ fn load_catalog_comments_blocking(
             suffix: row.suffix,
             position: row.position,
             region,
+            output_anchor,
             source,
             proposed: row.proposed,
             pass: row.pass,
@@ -1395,6 +1561,12 @@ pub(super) fn catalog_comment_row(
             ),
             None => (None, None, None, None, None),
         };
+    let quarto_output = item
+        .output_anchor
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|err| format!("comment Quarto output anchor is not serializable: {err}"))?;
     Ok(crate::storage::catalog::Comment {
         slug: slug.to_string(),
         id: item.id.clone(),
@@ -1410,6 +1582,7 @@ pub(super) fn catalog_comment_row(
         suffix: item.suffix.clone(),
         position: item.position,
         region,
+        quarto_output,
         source_path,
         source_exact,
         source_prefix,
@@ -1680,6 +1853,7 @@ pub(super) async fn save_catalog_manifest(
     previous: &Manifest,
     manifest: &Manifest,
     durable_seq: i64,
+    actor: Option<OwnedAuthority>,
 ) -> Result<(), WriteError> {
     let rows = manifest_rows_to_write(slug, previous, manifest, durable_seq)?;
     // Reserved from the rows that will actually be written, before they are
@@ -1705,10 +1879,17 @@ pub(super) async fn save_catalog_manifest(
                     .is_some()
                 {
                     if let Some(row) = rows.last() {
-                        catalog.stage_publication_checkpoint(&slug_owned, row)?;
+                        catalog.stage_publication_checkpoint_with_authority(
+                            &slug_owned,
+                            row,
+                            actor.as_ref().map(OwnedAuthority::borrow),
+                        )?;
                     }
                 } else {
-                    catalog.insert_checkpoints_atomic(&rows)?;
+                    catalog.insert_checkpoints_atomic_with_authority(
+                        &rows,
+                        actor.as_ref().map(OwnedAuthority::borrow),
+                    )?;
                 }
                 Ok(())
             },

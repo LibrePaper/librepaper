@@ -1870,6 +1870,7 @@ mod tests {
                 suffix: String::new(),
                 position: None,
                 region: None,
+                quarto_output: None,
                 source_path: None,
                 source_exact: None,
                 source_prefix: None,

@@ -5,6 +5,7 @@
 //! nothing here races another test over `$XDG_CONFIG_HOME`.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,19 +14,25 @@ use sha2::{Digest, Sha256};
 
 use crate::local::pairing::{PairingStore, ServiceState};
 use crate::local::protocol;
+use crate::local::protocol::{JobOutcome, JobRequest, JobStatus, Workspace};
+use crate::local::quarto::BindingStore;
 use crate::local::service::{FakeRunner, LocalService, Runner};
+use tokio::sync::{mpsc, watch};
 
 const ORIGIN: &str = "https://librepaper.example";
 
 struct LocalTest {
     base: String,
     config_home: tempfile::TempDir,
+    cache_home: tempfile::TempDir,
     client: reqwest::Client,
 }
 
-async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
-    let config_home = tempfile::tempdir().expect("config tempdir");
-    let cache_home = tempfile::tempdir().expect("cache tempdir");
+async fn spawn_service(
+    config_home: &std::path::Path,
+    cache_home: &std::path::Path,
+    runner: Arc<dyn Runner>,
+) -> String {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("bind ephemeral port");
@@ -33,8 +40,8 @@ async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
     let service = LocalService::new(
         addr.port(),
         "test-instance".to_string(),
-        config_home.path(),
-        cache_home.path(),
+        config_home,
+        cache_home,
         runner,
     );
     let router = service.router();
@@ -45,9 +52,17 @@ async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
         )
         .await;
     });
+    format!("http://127.0.0.1:{}{}", addr.port(), protocol::BASE_PATH)
+}
+
+async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
+    let config_home = tempfile::tempdir().expect("config tempdir");
+    let cache_home = tempfile::tempdir().expect("cache tempdir");
+    let base = spawn_service(config_home.path(), cache_home.path(), runner).await;
     LocalTest {
-        base: format!("http://127.0.0.1:{}{}", addr.port(), protocol::BASE_PATH),
+        base,
         config_home,
+        cache_home,
         client: reqwest::Client::new(),
     }
 }
@@ -109,13 +124,24 @@ async fn post_job(
     job: Value,
     files: &[(&str, &[u8])],
 ) -> reqwest::Response {
+    post_job_at(&test.client, &test.base, origin, token, job, files).await
+}
+
+async fn post_job_at(
+    client: &reqwest::Client,
+    base: &str,
+    origin: &str,
+    token: &str,
+    job: Value,
+    files: &[(&str, &[u8])],
+) -> reqwest::Response {
     let mut form = reqwest::multipart::Form::new().text("job", job.to_string());
     for (path, bytes) in files {
         let part = reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(path.to_string());
         form = form.part("file", part);
     }
-    test.client
-        .post(format!("{}/jobs", test.base))
+    client
+        .post(format!("{base}/jobs"))
         .header("Origin", origin)
         .bearer_auth(token)
         .multipart(form)
@@ -161,6 +187,29 @@ async fn wait_for_status(test: &LocalTest, token: &str, id: &str, want: &str) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("job {id} never reached status {want}");
+}
+
+struct CountingRunner {
+    calls: Arc<AtomicUsize>,
+    inner: FakeRunner,
+}
+
+#[async_trait::async_trait]
+impl Runner for CountingRunner {
+    async fn run(
+        &self,
+        request: JobRequest,
+        workspace: Workspace,
+        cancel: watch::Receiver<bool>,
+        progress: mpsc::UnboundedSender<JobStatus>,
+    ) -> JobOutcome {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.run(request, workspace, cancel, progress).await
+    }
+
+    async fn capabilities(&self, refresh: bool) -> protocol::Capabilities {
+        self.inner.capabilities(refresh).await
+    }
 }
 
 #[tokio::test]
@@ -484,4 +533,148 @@ async fn one_projects_job_is_not_readable_with_another_projects_token() {
     let id = submit_job(&test, &token_a, "proj-a", 1).await;
     let response = job_status(&test, &token_b, &id).await;
     assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn completed_quarto_job_survives_service_restart_without_rerun() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let runner = Arc::new(CountingRunner {
+        calls: calls.clone(),
+        inner: FakeRunner::default(),
+    });
+    let first = start_test_service(runner.clone()).await;
+    set_code(&first, "123456");
+    let token = connected_token(&first, ORIGIN, "quarto-project", "123456").await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("paper.qmd"), "# Paper\n").unwrap();
+    let binding = BindingStore::new(first.config_home.path())
+        .grant(ORIGIN, "quarto-project", project.path(), "paper.qmd")
+        .unwrap();
+    let source = b"# Paper\n";
+    let job = json!({
+        "protocol": 1, "kind": "quarto", "project": "quarto-project", "origin": ORIGIN,
+        "snapshot": "revision-1", "generation": 1, "main": "paper.qmd", "manifest": manifest_for(&[("paper.qmd", source)]),
+        "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html", "policy": "project-defaults", "idempotency_key": "restart-key", "shared_tree_sha256": "a".repeat(64)}
+    });
+    let response = post_job(
+        &first,
+        ORIGIN,
+        &token,
+        job.clone(),
+        &[("paper.qmd", source)],
+    )
+    .await;
+    assert_eq!(response.status(), 202);
+    let first_id = response.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait_for_status(&first, &token, &first_id, "done").await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let second_base =
+        spawn_service(first.config_home.path(), first.cache_home.path(), runner).await;
+    let second_client = reqwest::Client::new();
+    let response = post_job_at(
+        &second_client,
+        &second_base,
+        ORIGIN,
+        &token,
+        job,
+        &[("paper.qmd", source)],
+    )
+    .await;
+    assert_eq!(response.status(), 202);
+    let second_id = response.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(second_id, first_id);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "restart retry must not execute Quarto again"
+    );
+    let status = second_client
+        .get(format!("{second_base}/jobs/{second_id}"))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status.status(), 200);
+    assert_eq!(status.json::<Value>().await.unwrap()["status"], "done");
+}
+
+#[tokio::test]
+async fn interrupted_quarto_job_is_recovered_as_failed_and_keeps_idempotency() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let runner = Arc::new(CountingRunner {
+        calls: calls.clone(),
+        inner: FakeRunner::with_delay(Duration::from_secs(5)),
+    });
+    let first = start_test_service(runner.clone()).await;
+    set_code(&first, "123456");
+    let token = connected_token(&first, ORIGIN, "quarto-interrupted", "123456").await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("paper.qmd"), "# Paper\n").unwrap();
+    let binding = BindingStore::new(first.config_home.path())
+        .grant(ORIGIN, "quarto-interrupted", project.path(), "paper.qmd")
+        .unwrap();
+    let source = b"# Paper\n";
+    let job = json!({
+        "protocol": 1, "kind": "quarto", "project": "quarto-interrupted", "origin": ORIGIN,
+        "snapshot": "revision-1", "generation": 1, "main": "paper.qmd", "manifest": manifest_for(&[("paper.qmd", source)]),
+        "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html", "policy": "project-defaults", "idempotency_key": "interrupted-key", "shared_tree_sha256": "b".repeat(64)}
+    });
+    let response = post_job(
+        &first,
+        ORIGIN,
+        &token,
+        job.clone(),
+        &[("paper.qmd", source)],
+    )
+    .await;
+    assert_eq!(response.status(), 202);
+    let id = response.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for _ in 0..100 {
+        if calls.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // Admission is durable before the worker starts. A second service sees
+    // the queued/running record and turns it into a terminal interruption;
+    // it must retain the key so a lost response cannot execute again.
+    let second_base =
+        spawn_service(first.config_home.path(), first.cache_home.path(), runner).await;
+    let second_client = reqwest::Client::new();
+    let response = post_job_at(
+        &second_client,
+        &second_base,
+        ORIGIN,
+        &token,
+        job,
+        &[("paper.qmd", source)],
+    )
+    .await;
+    assert_eq!(response.status(), 202);
+    assert_eq!(response.json::<Value>().await.unwrap()["id"], id);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let status = second_client
+        .get(format!("{second_base}/jobs/{id}"))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status.status(), 200);
+    let status = status.json::<Value>().await.unwrap();
+    assert_eq!(status["status"], "failed");
+    assert_eq!(status["stage"], "recovery");
 }

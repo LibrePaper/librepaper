@@ -139,6 +139,10 @@
   {:else}
     <div class="flex flex-col gap-2">
       <Row gap={1} wrap>
+        {#if comment.output_anchor}
+          <span class="badge preset-tonal-surface">Saved result · {comment.output_anchor.render_id}</span>
+          <button class="anchor text-sm" onclick={() => onreveal?.(comment)}>Inspect original result</button>
+        {/if}
         {#if comment.orphaned}
           <!-- "Needs re-anchoring" said what the machine could not do. This
                says what happened to the words, which is what the person who

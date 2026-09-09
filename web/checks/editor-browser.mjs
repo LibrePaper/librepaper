@@ -112,6 +112,14 @@ window.remoteUndoCheck = async () => {
   value.leave();
   return { remoteOnly, localUndone, localRedone };
 };
+window.quartoEditorCheck = async () => {
+  const fence = String.fromCharCode(96).repeat(3);
+  const qmd = session.addText("paper.qmd", ["---", "title: Demo", "---", "", fence + "{r}", "#| label: fig-one", "plot(1)", fence].join("\\n"));
+  component.$set({ file: qmd, format: "quarto" });
+  await tick();
+  const view = EditorView.findFromDOM(document.querySelector(".cm-editor"));
+  return { text: view.state.doc.toString(), lineCount: view.state.doc.lines, mode: document.querySelector(".cm-editor")?.className || "" };
+};
 window.vimUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("vim-undo.md", "alpha");
@@ -400,6 +408,11 @@ try {
   assert.equal(result.before.caret + 7, result.after.caret);
   assert.equal(result.after.text, "REMOTE LOCAL alpha");
   console.log("editor-browser: file state, undo, caret, and inactive remote text preserved");
+  const quarto = await evaluate("quartoEditorCheck()");
+  assert.match(quarto.text, /title: Demo/);
+  assert.match(quarto.text, /fig-one/);
+  assert.ok(quarto.lineCount >= 7);
+  console.log("editor-browser: qmd source opens with Markdown editing and Quarto cell text preserved");
   const remoteUndo = await evaluate("remoteUndoCheck()");
   assert.equal(remoteUndo.remoteOnly, "REMOTE alpha");
   assert.equal(remoteUndo.localUndone, "REMOTE alpha");

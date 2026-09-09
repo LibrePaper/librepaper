@@ -29,10 +29,15 @@ pub const MAX_FILES: usize = 2000;
 pub const MAX_PDF_BYTES: usize = 64 * 1024 * 1024;
 /// Largest log kept per stage.
 pub const MAX_LOG_BYTES: usize = 4 * 1024 * 1024;
+/// Bounded aggregate output returned by one local Quarto render.
+pub const MAX_QUARTO_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_QUARTO_OUTPUT_FILES: usize = 2000;
 /// Default whole-job deadline.
 pub const DEFAULT_DEADLINE_SECONDS: u64 = 300;
 /// Default bounded pass count.
 pub const DEFAULT_MAX_PASSES: u32 = 8;
+/// Version of the LibrePaper Quarto collector manifest.
+pub const QUARTO_COLLECTOR_VERSION: &str = "librepaper-quarto-collector/v1";
 
 /// `GET health`: enough to identify the service and negotiate, and nothing
 /// else. No tool paths, no projects, no jobs.
@@ -80,6 +85,26 @@ pub struct Tools {
     pub bibtex8: Tool,
     pub biber: Tool,
     pub makeindex: Tool,
+    /// The Quarto CLI itself. Its path is deliberately never exposed.
+    #[serde(default)]
+    pub quarto: Tool,
+}
+
+/// A capability reported by a local Quarto installation. Keeping this
+/// separate from `Tools` makes older clients able to ignore the additive
+/// fields while still showing a useful TeX capability response.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct QuartoCapabilities {
+    #[serde(default)]
+    pub tool: Tool,
+    #[serde(default)]
+    pub collector_versions: Vec<String>,
+    #[serde(default)]
+    pub formats: Vec<String>,
+    #[serde(default)]
+    pub policies: Vec<String>,
+    #[serde(default)]
+    pub runtime_checks: BTreeMap<String, Tool>,
 }
 
 /// Whether native execution can be confined on this machine, and how.
@@ -106,6 +131,8 @@ pub struct Capabilities {
     pub platform: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distribution: Option<Distribution>,
+    #[serde(default)]
+    pub quarto: QuartoCapabilities,
 }
 
 /// One input file the browser says it is sending.
@@ -144,7 +171,7 @@ impl Default for JobOptions {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct JobRequest {
     pub protocol: u32,
-    /// `biber` or `tex`.
+    /// `biber`, `tex`, or `quarto`.
     pub kind: String,
     pub project: String,
     pub origin: String,
@@ -160,9 +187,143 @@ pub struct JobRequest {
     /// The job name whose `.bcf` Biber reads; biber jobs only.
     #[serde(default)]
     pub stem: String,
+    /// Quarto-only typed options. Keeping these in a nested value prevents
+    /// shell fragments and environment maps from becoming part of the wire
+    /// protocol while retaining additive decoding for old TeX clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarto: Option<QuartoJobOptions>,
     pub manifest: Vec<ManifestEntry>,
     #[serde(default)]
     pub options: JobOptions,
+}
+
+/// Options accepted by the local Quarto adapter. Every value is validated
+/// before it reaches `Command`; no browser supplied executable or shell text
+/// is accepted.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct QuartoJobOptions {
+    pub binding_id: String,
+    #[serde(default = "default_quarto_main")]
+    pub main: String,
+    #[serde(default = "default_quarto_format")]
+    pub format: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub parameters: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub policy: QuartoRenderPolicy,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    /// Digest of the durable shared source tree supplied by the browser.
+    /// This is distinct from the local working-tree inventory used to detect
+    /// changes during execution.
+    #[serde(default)]
+    pub shared_tree_sha256: Option<String>,
+}
+
+fn default_quarto_main() -> String {
+    "index.qmd".to_string()
+}
+
+fn default_quarto_format() -> String {
+    "html".to_string()
+}
+
+impl Default for QuartoJobOptions {
+    fn default() -> Self {
+        Self {
+            binding_id: String::new(),
+            main: default_quarto_main(),
+            format: default_quarto_format(),
+            profile: None,
+            parameters: BTreeMap::new(),
+            policy: QuartoRenderPolicy::default(),
+            idempotency_key: None,
+            shared_tree_sha256: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuartoRenderPolicy {
+    #[default]
+    ProjectDefaults,
+    RefreshComputations,
+    Frozen,
+}
+
+impl QuartoJobOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.binding_id.is_empty() || self.binding_id.len() > 256 {
+            return Err("quarto binding_id is required and must be at most 256 bytes".into());
+        }
+        if !safe_relative_path(&self.main) || !self.main.ends_with(".qmd") {
+            return Err("quarto main must be a safe project-relative .qmd path".into());
+        }
+        if !matches!(self.format.as_str(), "html" | "pdf" | "docx" | "revealjs") {
+            return Err(format!("unsupported quarto output format: {}", self.format));
+        }
+        if let Some(profile) = &self.profile {
+            if profile.is_empty()
+                || profile.len() > 128
+                || !profile
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+            {
+                return Err("invalid quarto profile".into());
+            }
+        }
+        if self.parameters.len() > 128
+            || self.parameters.keys().any(|key| {
+                key.is_empty()
+                    || key.len() > 128
+                    || !key
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+            })
+        {
+            return Err("invalid quarto parameter name".into());
+        }
+        for value in self.parameters.values() {
+            if !value.is_null() && !value.is_string() && !value.is_boolean() && !value.is_number() {
+                return Err("quarto parameters must be scalar JSON values".into());
+            }
+            if let Some(number) = value.as_f64() {
+                if !number.is_finite()
+                    || (number.fract() == 0.0 && number.abs() > 9_007_199_254_740_991.0)
+                {
+                    return Err("quarto parameter number is outside the portable range".into());
+                }
+            }
+            let size = if let Some(value) = value.as_str() {
+                value.len()
+            } else {
+                serde_json::to_vec(value)
+                    .map_err(|_| "quarto parameter is not valid JSON")?
+                    .len()
+            };
+            if size > 16 * 1024 {
+                return Err("quarto parameter is too large".into());
+            }
+        }
+        if self.idempotency_key.as_deref().is_some_and(|key| {
+            key.is_empty()
+                || key.len() > 256
+                || !key
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._:-".contains(&c))
+        }) {
+            return Err("invalid quarto idempotency key".into());
+        }
+        if self.shared_tree_sha256.as_deref().is_some_and(|digest| {
+            digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err("invalid shared Quarto tree digest".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -252,6 +413,32 @@ pub struct JobStatus {
     /// Biber found a control-file version it does not speak.
     #[serde(default)]
     pub incompatible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<QuartoBundleSummary>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct QuartoBundleSummary {
+    pub schema: String,
+    pub render_id: String,
+    pub artifact: Option<OutputEntry>,
+    pub coverage: QuartoCoverage,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct QuartoCoverage {
+    pub full_artifact: bool,
+    pub cell_outputs: String,
+    #[serde(default)]
+    pub captured: u32,
+    #[serde(default)]
+    pub hidden: u32,
+    #[serde(default)]
+    pub unsupported: u32,
+    #[serde(default)]
+    pub ambiguous: u32,
+    #[serde(default)]
+    pub unavailable: u32,
 }
 
 /// What the runner (`native.rs`) hands back to the service for one job: the
@@ -289,6 +476,9 @@ pub fn safe_relative_path(path: &str) -> bool {
     if path.is_empty() || path.starts_with('/') || path.contains('\\') || path.contains('\0') {
         return false;
     }
+    if path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':' {
+        return false;
+    }
     if path.chars().any(|c| c.is_control()) {
         return false;
     }
@@ -304,6 +494,7 @@ mod tests {
     fn a_relative_path_is_safe_and_an_escaping_one_is_not() {
         assert!(safe_relative_path("main.tex"));
         assert!(safe_relative_path("chapters/01.tex"));
+        assert!(safe_relative_path("asset:figures/plot.png"));
         for bad in [
             "",
             "/etc/passwd",
@@ -314,6 +505,7 @@ mod tests {
             "a\u{0}b",
             "a//b",
             "x\n",
+            "C:/Windows/system32",
         ] {
             assert!(!safe_relative_path(bad), "{bad:?} was allowed");
         }

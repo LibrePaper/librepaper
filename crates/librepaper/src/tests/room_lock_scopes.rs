@@ -28,6 +28,7 @@ fn comment(body: &str, temp_id: &str) -> room::Command {
         suffix: String::new(),
         position: None,
         region: None,
+        output_anchor: None,
         source: None,
         proposed: None,
         revision: String::new(),

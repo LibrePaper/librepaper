@@ -36,7 +36,7 @@ pub use execution::{
 };
 pub use room_edits::RoomEditReservation;
 
-const LATEST_SCHEMA: i64 = 14;
+const LATEST_SCHEMA: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
 const MIGRATIONS: &[(i64, &str)] = &[
     // Versions are applied in order; append new migrations at the end.
@@ -89,6 +89,18 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         14,
         include_str!("../../../migrations/0014_checkpoint_attribution.sql"),
+    ),
+    (
+        15,
+        include_str!("../../../migrations/0015_quarto_publication.sql"),
+    ),
+    (
+        16,
+        include_str!("../../../migrations/0016_quarto_selection_epochs.sql"),
+    ),
+    (
+        17,
+        include_str!("../../../migrations/0017_quarto_comment_anchors.sql"),
     ),
 ];
 
@@ -185,6 +197,22 @@ impl From<rusqlite::Error> for CatalogError {
 }
 
 pub type CatalogResult<T> = Result<T, CatalogError>;
+
+/// The committed selection pointer for one Quarto context.  The physical
+/// selection object is an implementation detail and may be left behind by a
+/// failed object-store CAS; readers follow this catalogue row instead.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuartoSelection {
+    pub storage_id: String,
+    pub document_id: String,
+    pub context_id: String,
+    pub generation: u64,
+    pub render_id: String,
+    pub source_revision: String,
+    pub object_key: String,
+    pub object_version: String,
+    pub updated_at: i64,
+}
 
 /// The request authority carried to a final mutation transaction.  The
 /// account and generation identify a signed-in caller; a link hash is an
@@ -386,6 +414,7 @@ pub struct Comment {
     pub suffix: String,
     pub position: Option<i64>,
     pub region: Option<String>,
+    pub quarto_output: Option<String>,
     pub source_path: Option<String>,
     pub source_exact: Option<String>,
     pub source_prefix: Option<String>,

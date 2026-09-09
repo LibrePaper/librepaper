@@ -1713,6 +1713,9 @@ fn diagnostics_json_with_files(
         .filter_map(|(path, value)| value.as_str().map(|text| (path.clone(), text.to_owned())))
         .collect();
     let mut compiled = match format.as_str() {
+        "quarto" | "qmd" => {
+            crate::document::quarto::compile(&path, source, &snapshot.title, &texts)
+        }
         "markdown" | "md" => wasm_bibliography::citations::compile(
             &path,
             source,
@@ -1736,11 +1739,11 @@ fn diagnostics_json_with_files(
         },
         other => {
             return Err(format!(
-            "unsupported document format {other:?}; diagnostics supports markdown, typst, and html"
+            "unsupported document format {other:?}; diagnostics supports markdown, quarto, typst, and html"
             ))
         }
     };
-    if !matches!(format.as_str(), "markdown" | "md") {
+    if !matches!(format.as_str(), "markdown" | "md" | "quarto" | "qmd") {
         compiled
             .diagnostics
             .extend(wasm_bibliography::bib::library(&path, &format, source, &texts).diagnostics);

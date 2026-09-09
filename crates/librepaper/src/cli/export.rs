@@ -47,7 +47,7 @@ fn bodies_for(item: &Comment) -> Option<Value> {
 /// this: xywh in percentages, so it holds whatever size the image is
 /// displayed at.
 fn selector_for(item: &Comment) -> Value {
-    if let Some(region) = &item.region {
+    let base = if let Some(region) = &item.region {
         let mut selector = Map::new();
         selector.insert("type".into(), json!("FragmentSelector"));
         selector.insert(
@@ -71,37 +71,81 @@ fn selector_for(item: &Comment) -> Value {
             selector.insert("librepaper:image_digest".into(), json!(region.image_digest));
         }
         selector.insert("librepaper:image_index".into(), json!(region.image_index));
-        return Value::Object(selector);
+        Value::Object(selector)
+    } else {
+        let mut selector = Map::new();
+        selector.insert("type".into(), json!("TextQuoteSelector"));
+        selector.insert("exact".into(), json!(item.exact));
+        if !item.prefix.is_empty() {
+            selector.insert("prefix".into(), json!(item.prefix));
+        }
+        if !item.suffix.is_empty() {
+            selector.insert("suffix".into(), json!(item.suffix));
+        }
+        Value::Object(selector)
+    };
+    if let Some(anchor) = &item.output_anchor {
+        let mut selector = quarto_output_selector(anchor);
+        // The region refines this immutable output, never the current page.
+        // A caption retained as display text is not a source quotation.
+        if item.region.is_some() {
+            selector["refinedBy"] = base;
+        }
+        return selector;
     }
-    let mut selector = Map::new();
-    selector.insert("type".into(), json!("TextQuoteSelector"));
-    selector.insert("exact".into(), json!(item.exact));
-    if !item.prefix.is_empty() {
-        selector.insert("prefix".into(), json!(item.prefix));
-    }
-    if !item.suffix.is_empty() {
-        selector.insert("suffix".into(), json!(item.suffix));
-    }
+    let mut selectors = match base {
+        Value::Array(values) => values,
+        value => vec![value],
+    };
     // The rendered quote is what a reader saw; the source anchor beside it is
     // what survives a re-render, so a comment with one targets both -- the
     // page it was written against, and the file that page came from.
-    let Some(source) = &item.source else {
-        return Value::Object(selector);
-    };
-    let mut from_source = Map::new();
-    from_source.insert("type".into(), json!("TextQuoteSelector"));
-    from_source.insert("exact".into(), json!(source.exact));
-    if !source.prefix.is_empty() {
-        from_source.insert("prefix".into(), json!(source.prefix));
+    if let Some(source) = &item.source {
+        let mut from_source = Map::new();
+        from_source.insert("type".into(), json!("TextQuoteSelector"));
+        from_source.insert("exact".into(), json!(source.exact));
+        if !source.prefix.is_empty() {
+            from_source.insert("prefix".into(), json!(source.prefix));
+        }
+        if !source.suffix.is_empty() {
+            from_source.insert("suffix".into(), json!(source.suffix));
+        }
+        from_source.insert("librepaper:path".into(), json!(source.path));
+        if let Some(position) = source.position {
+            from_source.insert("librepaper:position".into(), json!(position));
+        }
+        selectors.push(Value::Object(from_source));
     }
-    if !source.suffix.is_empty() {
-        from_source.insert("suffix".into(), json!(source.suffix));
+    if selectors.len() == 1 {
+        selectors.pop().unwrap_or(Value::Null)
+    } else {
+        Value::Array(selectors)
     }
-    from_source.insert("librepaper:path".into(), json!(source.path));
-    if let Some(position) = source.position {
-        from_source.insert("librepaper:position".into(), json!(position));
+}
+
+fn quarto_output_selector(anchor: &crate::room::QuartoOutputAnchor) -> Value {
+    let mut selector = Map::new();
+    selector.insert("type".into(), json!("librepaper:QuartoOutputSelector"));
+    selector.insert("librepaper:kind".into(), json!("quarto-output"));
+    selector.insert("librepaper:render_id".into(), json!(anchor.render_id));
+    selector.insert(
+        "librepaper:output_ordinal".into(),
+        json!(anchor.output_ordinal),
+    );
+    selector.insert(
+        "librepaper:content_sha256".into(),
+        json!(anchor.content_sha256),
+    );
+    selector.insert(
+        "librepaper:coordinate_system".into(),
+        json!(anchor.coordinate_system),
+    );
+    selector.insert("librepaper:width".into(), json!(anchor.width));
+    selector.insert("librepaper:height".into(), json!(anchor.height));
+    if !anchor.cell_id.is_empty() {
+        selector.insert("librepaper:cell_id".into(), json!(anchor.cell_id));
     }
-    Value::Array(vec![Value::Object(selector), Value::Object(from_source)])
+    Value::Object(selector)
 }
 
 /// A number the way %g prints it: no trailing zeros, no decimal point on a
@@ -264,6 +308,12 @@ pub fn render_jsonld(
             "target".into(),
             json!({"source": source, "selector": selector_for(item)}),
         );
+        if let Some(anchor) = &item.output_anchor {
+            // Keep the immutable result identity outside the selector too,
+            // so consumers that do not understand the W3C selector extension
+            // still know this annotation refers to a previous render.
+            annotation.insert("librepaper:result".into(), quarto_output_value(anchor));
+        }
         // Outside the spec, which has no notion of a thread being settled.
         // Extra properties are permitted, and a reader that does not know
         // them ignores them.
@@ -316,6 +366,18 @@ pub fn render_jsonld(
     )
 }
 
+fn quarto_output_value(anchor: &crate::room::QuartoOutputAnchor) -> Value {
+    json!({
+        "render_id": anchor.render_id,
+        "cell_id": anchor.cell_id,
+        "output_ordinal": anchor.output_ordinal,
+        "content_sha256": anchor.content_sha256,
+        "coordinate_system": anchor.coordinate_system,
+        "width": anchor.width,
+        "height": anchor.height,
+    })
+}
+
 pub fn render_markdown(
     title: &str,
     comments: &[Comment],
@@ -341,6 +403,18 @@ pub fn render_markdown(
             "\n---\n\n## {motivation} by {}{state}\n\n",
             item.creator
         );
+        if let Some(anchor) = &item.output_anchor {
+            let cell = if anchor.cell_id.is_empty() {
+                "whole artifact"
+            } else {
+                anchor.cell_id.as_str()
+            };
+            let _ = write!(
+                out,
+                "**On previous Quarto result:** `{}` ({cell}, output {}), content `{}`.\n\n",
+                anchor.render_id, anchor.output_ordinal, anchor.content_sha256
+            );
+        }
         if let Some(region) = &item.region {
             let _ = write!(
                 out,
@@ -351,7 +425,7 @@ pub fn render_markdown(
                 g(region.width),
                 g(region.height)
             );
-        } else {
+        } else if item.output_anchor.is_none() {
             let _ = write!(out, "> {}\n\n", item.exact.replace('\n', "\n> "));
         }
         if let Some(proposed) = item
@@ -482,6 +556,20 @@ pub fn render_response_with_replacements(
             if !item.body.is_empty() {
                 let _ = write!(out, "> {}\n\n", item.body.replace('\n', "\n> "));
             }
+            if let Some(anchor) = &item.output_anchor {
+                let cell = if anchor.cell_id.is_empty() {
+                    "whole artifact"
+                } else {
+                    anchor.cell_id.as_str()
+                };
+                let _ = write!(
+                    out,
+                    "**Then (previous Quarto result):** render `{}` ({cell}, output {}), content `{}`.\n\n",
+                    anchor.render_id,
+                    anchor.output_ordinal,
+                    anchor.content_sha256
+                );
+            }
             if let Some(region) = &item.region {
                 // A remark on part of a figure has no passage to quote, and
                 // saying where it is beats printing an empty quotation.
@@ -492,7 +580,7 @@ pub fn render_response_with_replacements(
                     g(region.x),
                     g(region.y)
                 );
-            } else {
+            } else if item.output_anchor.is_none() {
                 let _ = write!(out, "**Then:** “{}”\n\n", one_line(&item.exact));
                 if let Some(proposed) = item
                     .proposed
@@ -596,7 +684,14 @@ fn rendered_checkpoint_text(point: &Value) -> Option<String> {
         .cloned()
         .unwrap_or_default();
     let source = texts.get(&main).and_then(Value::as_str)?;
-    let page = if crate::document::render::is_markdown(&main) {
+    let page = if crate::document::render::is_quarto(&main) {
+        let texts = texts
+            .iter()
+            .filter_map(|(path, text)| text.as_str().map(|text| (path.clone(), text.to_string())))
+            .collect();
+        let compiled = crate::document::quarto::compile(&main, source, "", &texts);
+        compiled.output.as_ref()?.html()?.to_string()
+    } else if crate::document::render::is_markdown(&main) {
         crate::document::render::render_markdown_document(source, "")
     } else if crate::document::render::is_html(&main) {
         source.to_string()

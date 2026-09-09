@@ -64,7 +64,25 @@ impl Catalog {
     /// inserting a later row must not leave an earlier row visible without
     /// the corresponding manifest update.
     pub fn insert_checkpoints_atomic(&self, checkpoints: &[Checkpoint]) -> CatalogResult<()> {
+        self.insert_checkpoints_atomic_with_authority(checkpoints, None)
+    }
+
+    pub fn insert_checkpoints_atomic_with_authority(
+        &self,
+        checkpoints: &[Checkpoint],
+        actor: Option<MutationAuthority<'_>>,
+    ) -> CatalogResult<()> {
         self.immediate(|tx| {
+            if let Some(actor) = actor {
+                let Some(checkpoint) = checkpoints.first() else {
+                    return Ok(());
+                };
+                if !Self::mutation_authorized_in_tx(tx, &checkpoint.slug, actor, "editor")? {
+                    return Err(CatalogError::Conflict(
+                        "actor edit rights or session generation changed".into(),
+                    ));
+                }
+            }
             for checkpoint in checkpoints {
                 if checkpoint.slug.is_empty()
                     || checkpoint.sha.is_empty()

@@ -309,6 +309,10 @@ impl Server {
             [point] => point.clone(),
             _ => return write_json(409, &json!({"error": "checkpoint prefix is ambiguous"})),
         };
+        let target_main = match room.checkpoint_texts(&point).await {
+            Ok((tree, _)) => tree.main,
+            Err(error) => return write_json(503, &json!({"error": error})),
+        };
         let by = current_who.attribution();
         let (update, sha) = match room.restore_and_checkpoint(&point, &by).await {
             Ok(result) => result,
@@ -325,11 +329,42 @@ impl Server {
             Ok(point) => point,
             Err(error) => return write_json(503, &json!({"error": error})),
         };
+        let authority = crate::storage::catalog::MutationAuthority {
+            account_id: current_who.id.id.as_str(),
+            owner_key: current_who.key.as_str(),
+            generation: current_who.id.session_generation.as_str(),
+            link_hash: current_who.link.as_str(),
+            policy_editor: self.publishers.allows(&current_who.id.handle),
+            automation: current_who.automation,
+            unowned_publisher: false,
+        };
+        let quarto_selection = match room
+            .reconcile_quarto_selections_after_restore(point.content_sha(), &target_main, authority)
+            .await
+        {
+            Ok((reselected, cleared)) if reselected > 0 => json!({
+                "status": "reselected",
+                "reason": "associated retained Quarto bundle selected for restored source",
+                "reselected": reselected,
+                "cleared": cleared,
+            }),
+            Ok((_, cleared)) => json!({
+                "status": "cleared",
+                "reason": "source restored; no associated retained Quarto bundle was selected",
+                "contexts": cleared,
+            }),
+            Err(error) => json!({
+                "status": "unknown",
+                "reason": "source restored; Quarto selection cleanup will retry",
+                "error": error,
+            }),
+        };
         write_json(
             200,
             &json!({
                 "sha": sha,
                 "checkpoint": checkpoint,
+                "quarto_selection": quarto_selection,
             }),
         )
     }

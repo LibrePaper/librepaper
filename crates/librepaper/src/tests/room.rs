@@ -166,6 +166,7 @@ pub(super) struct HookStore {
     pub(super) inner: Arc<dyn BlobStore>,
     pub(super) pause: Mutex<Option<(String, String)>>,
     pub(super) fail: Mutex<Option<String>>,
+    pub(super) fail_delete: Mutex<Option<String>>,
     pub(super) reached: tokio::sync::Notify,
     pub(super) resume: tokio::sync::Notify,
     pub(super) body_reads: std::sync::atomic::AtomicUsize,
@@ -177,6 +178,7 @@ impl HookStore {
             inner,
             pause: Mutex::new(None),
             fail: Mutex::new(None),
+            fail_delete: Mutex::new(None),
             reached: tokio::sync::Notify::new(),
             resume: tokio::sync::Notify::new(),
             body_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -240,6 +242,15 @@ impl BlobStore for HookStore {
         self.inner.list(p).await
     }
     async fn delete(&self, k: &[String]) -> BlobResult<()> {
+        if self
+            .fail_delete
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|prefix| k.iter().any(|key| key.starts_with(prefix)))
+        {
+            return Err(BlobError::Other("injected delete failure".into()));
+        }
         self.inner.delete(k).await
     }
     fn describe(&self) -> String {

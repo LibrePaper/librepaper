@@ -74,6 +74,7 @@ fn tex_request(engine: &str, main: &str, deadline_seconds: u64, max_passes: u32)
         engine: engine.to_string(),
         main: main.to_string(),
         stem: String::new(),
+        quarto: None,
         manifest: vec![],
         options: JobOptions {
             deadline_seconds,
@@ -93,6 +94,7 @@ fn biber_request(stem: &str, deadline_seconds: u64) -> JobRequest {
         engine: String::new(),
         main: String::new(),
         stem: stem.to_string(),
+        quarto: None,
         manifest: vec![],
         options: JobOptions {
             deadline_seconds,

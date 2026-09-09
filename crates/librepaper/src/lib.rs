@@ -20,6 +20,7 @@ pub mod config;
 mod document;
 mod http;
 mod local;
+pub mod quarto;
 mod room;
 mod seed;
 mod server;

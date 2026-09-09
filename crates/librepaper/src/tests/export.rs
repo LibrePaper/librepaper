@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::cli::export::{render_jsonld, render_markdown, ANNOTATION_CONTEXT};
 use crate::cli::short_ids;
 use crate::config::Configuration;
-use crate::room::{self, Comment, Region, Reply};
+use crate::room::{self, Comment, QuartoOutputAnchor, Region, Reply};
 
 fn sample_comments() -> Vec<Comment> {
     vec![Comment {
@@ -186,6 +186,53 @@ fn export_region_as_fragment_selector() {
     // Which image has no vocabulary in the spec, so it goes under our prefix.
     assert_eq!(selector["librepaper:image_digest"], "abc123");
     assert_eq!(selector["librepaper:image_index"], 2);
+}
+
+#[test]
+fn export_quarto_output_comment_names_previous_immutable_result() {
+    let comment = Comment {
+        id: "quarto-output-comment".into(),
+        body: "The plotted effect is surprising.".into(),
+        output_anchor: Some(QuartoOutputAnchor {
+            render_id: "render-old".into(),
+            cell_id: "cell-plot".into(),
+            output_ordinal: 1,
+            content_sha256: "b".repeat(64),
+            coordinate_system: "percent".into(),
+            width: 800,
+            height: 600,
+        }),
+        ..Comment::default()
+    };
+    let page: Value = serde_json::from_str(&render_jsonld(
+        "Paper",
+        std::slice::from_ref(&comment),
+        "urn:librepaper:test",
+        &Configuration::default(),
+    ))
+    .unwrap();
+    let annotation = &page["items"][0];
+    assert_eq!(annotation["librepaper:result"]["render_id"], "render-old");
+    let selector = &annotation["target"]["selector"];
+    assert_eq!(selector["type"], "librepaper:QuartoOutputSelector");
+    assert_eq!(selector["librepaper:kind"], "quarto-output");
+    assert_eq!(selector["librepaper:content_sha256"], "b".repeat(64));
+    let markdown = render_markdown(
+        "Paper",
+        std::slice::from_ref(&comment),
+        "source.qmd",
+        &Configuration::default(),
+    );
+    assert!(markdown.contains("On previous Quarto result"), "{markdown}");
+    let response = crate::cli::export::render_response(
+        "Paper",
+        &[comment],
+        "source.qmd",
+        &Configuration::default(),
+        "current text",
+    );
+    assert!(response.contains("previous Quarto result"), "{response}");
+    assert!(!response.contains("**Now:**"), "{response}");
 }
 
 /// Builds the shape /api/list returns, so a test can name documents by the

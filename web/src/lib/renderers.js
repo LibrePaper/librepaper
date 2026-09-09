@@ -15,6 +15,7 @@ import { needsBibliography } from "./bibliography-engine.js";
 // that speaks to it.
 
 import * as latex from "./latex.js";
+import * as quarto from "./quarto.js";
 
 import { rendererRequest } from "./renderer-client.js";
 
@@ -40,6 +41,7 @@ function urls() {
 /// is the one format every deployment can edit whatever it was built with.
 export function available(format) {
   if (format === "latex") return latexOffered;
+  if (format === "quarto") return Boolean(urls().markdown);
   return format === "html" || Boolean(urls()[format]);
 }
 
@@ -49,7 +51,7 @@ export function available(format) {
 // accidentally using LaTeX's compiler chooser as a proxy for PDF support.
 export function outputKind(format) {
   if (format === "latex" || format === "typst") return "pdf";
-  if (format === "markdown" || format === "html") return "html";
+  if (format === "markdown" || format === "quarto" || format === "html") return "html";
   return "";
 }
 
@@ -89,6 +91,7 @@ export function diff(oldText, newText, format = "markdown") {
 export function formatOf(path) {
   const lower = (path || "").toLowerCase();
   if (lower.endsWith(".typ")) return "typst";
+  if (lower.endsWith(".qmd")) return "quarto";
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
   if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
   if (lower.endsWith(".tex") || lower.endsWith(".ltx")) return "latex";
@@ -154,11 +157,18 @@ export async function render(tree, title, { manual = false } = {}) {
   }
   // Checkpoints may be Svelte proxies, which cannot cross a worker boundary.
   // Send only the compiler inputs, copied into ordinary maps.
-  const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
+  const quartoTree = format === "quarto" ? await quarto.virtualTree(tree, {
+    bundle: tree.quartoBundle || tree.bundle || null,
+    expandIncludes: tree.texts || {},
+  }) : tree;
+  const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
   return request(module, "render", {
-    tree: { main: tree.main, texts: { ...tree.texts }, assets: { ...tree.assets }, urls: { ...tree.urls } },
+    tree: { main: quartoTree.main, texts: { ...quartoTree.texts }, assets: { ...quartoTree.assets }, urls: { ...quartoTree.urls } },
     title,
   }).then((result) => {
+    if (format === "quarto" && result) {
+      return { ...result, diagnostics: quarto.mapQuartoDiagnostics(result.diagnostics || [], quartoTree) };
+    }
     // The binary worker returns `{pdf, diagnostics}` for Typst. Normalize the
     // owned bytes here so Reader never decodes a PDF through TextDecoder.
     if (format === "typst") {
@@ -183,7 +193,7 @@ export async function failurePage(title, format) {
   // keeps the last one that did, and shows nothing before there was one --
   // which is what the badge and the pane are for.
   if (producesPdf(format)) return null;
-  return request(format, "failure", { title });
+  return request(format === "quarto" ? "markdown" : format, "failure", { title });
 }
 
 /// The document's first heading, which names a document that was never given a
@@ -200,6 +210,13 @@ export async function titleOf(tree) {
   // named the same. Written twice because there is no shared implementation
   // to reach for: the engine crate has no TeX in it.
   if (format === "latex") return latexTitleOf(source);
+  if (format === "quarto") {
+    const parsed = quarto.parseQuarto(source, { path: tree.main });
+    const title = parsed.metadata?.title;
+    if (typeof title === "string" && title.trim()) return title.trim();
+    const heading = source.match(/^ {0,3}#\s+(.+?)\s*#*\s*$/m);
+    return heading ? heading[1].replace(/[*_`]/g, "").trim() : "";
+  }
   if (!format) return "";
   return request(format, "title", { source });
 }
@@ -308,7 +325,7 @@ export function warm(format) {
   // engine release itself, on the editor's side, so there is nothing here to
   // warm.
   if (format === "latex") return;
-  request(format, "warm").catch(() => {
+  request(format === "quarto" ? "markdown" : format, "warm").catch(() => {
     /* reported when something is actually rendered */
   });
 }

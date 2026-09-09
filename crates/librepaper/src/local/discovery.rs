@@ -516,10 +516,12 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
             bibtex8: get("bibtex8"),
             biber: get("biber"),
             makeindex: get("makeindex"),
+            quarto: Tool::default(),
         },
         confinement: cache.confinement.clone(),
         platform: cache.platform.clone(),
         distribution: cache.distribution.clone(),
+        quarto: Default::default(),
     }
 }
 
@@ -541,7 +543,10 @@ fn tool_paths_from(cache: &Cache) -> ToolPaths {
 /// the cache unless `refresh` is set or the cache is stale (a changed
 /// configured path, or a cached tool's executable missing or changed).
 pub async fn discover(refresh: bool) -> Capabilities {
-    capabilities_from(&discover_cache(refresh).await)
+    let mut capabilities = capabilities_from(&discover_cache(refresh).await);
+    capabilities.quarto = crate::local::quarto::discover().await;
+    capabilities.tools.quarto = capabilities.quarto.tool.clone();
+    capabilities
 }
 
 /// The resolved tool paths for `native.rs`, from the same cache `discover`

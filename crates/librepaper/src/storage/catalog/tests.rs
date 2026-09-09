@@ -178,6 +178,147 @@ fn measurement_keeps_maintenance_borrow_releasable() {
 }
 
 #[test]
+fn quarto_selection_pointer_is_atomic_and_rejects_stale_generation() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let authority = MutationAuthority {
+        account_id: "acct-1",
+        owner_key: "",
+        generation: "generation-1",
+        link_hash: "",
+        policy_editor: false,
+        automation: false,
+        unowned_publisher: false,
+    };
+    let selection = crate::quarto::Selection {
+        document_id: "doc".into(),
+        context_id: "html".into(),
+        generation: 1,
+        render_id: "render-a".into(),
+        source_revision: "revision-a".into(),
+    };
+    catalog
+        .reserve_object_change_with_authority(
+            super::ObjectReservationRequest {
+                slug: "doc",
+                operation_id: "quarto-1",
+                object_key: "quarto/selections/storage-1/doc/html.json",
+                kind: "quarto",
+                new_bytes: 10,
+                owner_limit: -1,
+                total_limit: -1,
+            },
+            authority,
+        )
+        .unwrap();
+    catalog
+        .commit_quarto_selection_with_authority(
+            "storage-1",
+            "quarto-1",
+            "quarto/selections/storage-1/doc/html.json",
+            "quarto",
+            "v1",
+            &selection,
+            authority,
+        )
+        .unwrap();
+    assert_eq!(
+        catalog
+            .quarto_selection("storage-1", "doc", "html")
+            .unwrap()
+            .unwrap()
+            .render_id,
+        "render-a"
+    );
+
+    let stale = crate::quarto::Selection {
+        render_id: "render-b".into(),
+        ..selection
+    };
+    catalog
+        .reserve_object_change_with_authority(
+            super::ObjectReservationRequest {
+                slug: "doc",
+                operation_id: "quarto-2",
+                object_key: "quarto/selections/storage-1/doc/html.json",
+                kind: "quarto",
+                new_bytes: 10,
+                owner_limit: -1,
+                total_limit: -1,
+            },
+            authority,
+        )
+        .unwrap();
+    assert!(catalog
+        .commit_quarto_selection_with_authority(
+            "storage-1",
+            "quarto-2",
+            "quarto/selections/storage-1/doc/html.json",
+            "quarto",
+            "v2",
+            &stale,
+            authority,
+        )
+        .is_err());
+    catalog
+        .abort_object_change(
+            "storage-1",
+            "quarto-2",
+            "quarto/selections/storage-1/doc/html.json",
+        )
+        .unwrap();
+    assert_eq!(
+        catalog
+            .quarto_selection("storage-1", "doc", "html")
+            .unwrap()
+            .unwrap()
+            .render_id,
+        "render-a"
+    );
+}
+
+#[test]
+fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let actor = MutationAuthority {
+        account_id: "acct-1",
+        owner_key: "",
+        generation: "generation-1",
+        link_hash: "",
+        policy_editor: false,
+        automation: false,
+        unowned_publisher: false,
+    };
+    let mut point = attributed("quarto-render", "Alice", Some("acct-1"));
+    point.source_format = "quarto".into();
+    point.why = "render".into();
+    catalog.revoke_sessions("acct-1", "generation-2").unwrap();
+    assert!(catalog
+        .insert_checkpoints_atomic_with_authority(&[point.clone()], Some(actor))
+        .is_err());
+    assert!(catalog
+        .checkpoint("doc", "quarto-render")
+        .unwrap()
+        .is_none());
+    catalog
+        .insert_checkpoints_atomic_with_authority(
+            &[point],
+            Some(MutationAuthority {
+                generation: "generation-2",
+                ..actor
+            }),
+        )
+        .unwrap();
+    assert!(catalog
+        .checkpoint("doc", "quarto-render")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
 fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
@@ -320,7 +461,7 @@ fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
 #[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 14);
+    assert_eq!(catalog.schema_version().unwrap(), 17);
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection
@@ -1627,7 +1768,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
         assert_eq!(version, 12, "an interrupted migration does not advance");
     }
     let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 14);
+    assert_eq!(catalog.schema_version().unwrap(), 17);
     let row = catalog.checkpoint("doc", "old").unwrap().unwrap();
     assert_eq!(row.by, "alice");
     assert_eq!(
@@ -1637,7 +1778,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
     // Reopening an already-migrated catalogue is a no-op.
     drop(catalog);
     let reopened = Catalog::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 14);
+    assert_eq!(reopened.schema_version().unwrap(), 17);
 }
 
 /// A local backup is a `VACUUM INTO` image, so the identity distinction has to
@@ -1675,7 +1816,7 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         })
         .unwrap();
     let restored = Catalog::open(&snapshot).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 14);
+    assert_eq!(restored.schema_version().unwrap(), 17);
     assert_eq!(
         attribution_of(&restored, "stable"),
         ("alice".to_string(), Some("acct-writer".to_string()))

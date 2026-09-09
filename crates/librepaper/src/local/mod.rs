@@ -12,5 +12,7 @@ pub mod discovery;
 pub mod native;
 pub mod pairing;
 pub mod protocol;
+pub mod quarto;
+pub mod quarto_capture;
 pub mod service;
 pub mod texlog;

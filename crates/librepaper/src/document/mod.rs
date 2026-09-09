@@ -10,6 +10,7 @@ pub mod history;
 pub mod html;
 pub mod needs;
 pub mod paths;
+pub mod quarto;
 pub mod render;
 pub mod retention;
 pub mod session;
