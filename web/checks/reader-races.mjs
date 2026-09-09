@@ -20,8 +20,6 @@ const body = (start, end) => {
 
 const showCheckpoint = body("  async function showCheckpoint(sha)", "  async function nameCheckpoint");
 const backToNow = body("  function backToNow()", "  async function nameCheckpoint");
-const paintRendering = body("  async function paintRendering()", "  // The PDF this browser compiled");
-const deliverAndReplay = body("  function deliverPreview(payload)", "  // The kind of frame follows");
 const paintPreview = body("  async function paintPreview()", "  // Editors refresh at a bounded cadence");
 
 // Session lifecycle checks use the extracted resource owners directly. The
@@ -98,6 +96,7 @@ const context = (values) => vm.createContext({
   Promise,
   Uint8Array,
   ArrayBuffer,
+  readerDisposed: false,
   diagnosticContext,
   snapshotDigest: async () => "test-render-digest",
   historyDiffGeneration: 0,
@@ -114,6 +113,7 @@ const context = (values) => vm.createContext({
   const ctx = context({
     navigationGeneration: 0, renderingRequest: 0, issued: 0, viewing: null,
     historyController: { invalidateChanges: () => {} },
+    renderingStore: { invalidate: () => {}, cancelPoll: () => {}, reset: () => {}, schedulePoll: () => {} },
     historyProblem: "", frameShowsCheckpoint: false,
     SLUG: "doc", KEY: "key", keyHeaders: () => ({}), dropHeldRendering: () => {},
     paintPreview: () => Promise.resolve(),
@@ -135,6 +135,7 @@ const context = (values) => vm.createContext({
   const ctx = context({
     navigationGeneration: 0, renderingRequest: 0, issued: 0, viewing: null,
     historyController: { invalidateChanges: () => {} },
+    renderingStore: { invalidate: () => {}, cancelPoll: () => {}, reset: () => {}, schedulePoll: () => {} },
     historyProblem: "", frameShowsCheckpoint: false, editing: false,
     sourceFormat: "html", framedSource: "live",
     SLUG: "doc", KEY: "key", keyHeaders: () => ({}), dropHeldRendering: () => {},
@@ -147,63 +148,6 @@ const context = (values) => vm.createContext({
   a.resolve({ sha: "A" });
   await pending;
   assert.equal(ctx.viewing, null);
-}
-
-// The PDF bytes for an older request cannot overwrite a newer request.
-{
-  const first = deferred();
-  const second = deferred();
-  const requests = [];
-  const sent = [];
-  const ctx = context({
-    viewing: { sha: "A", at: "a" }, renderingRequest: 0, renderedSha: null,
-    rendering: null, latestPreview: null, previewTimer: null,
-    frameReady: true, frameReadyEpoch: 0, frameEpoch: 0, frameKind: "pdf",
-    frameShowsCheckpoint: false, everPainted: false, everPaintedShown: false,
-    paintsTheFrame: true, tell: (message) => sent.push(message),
-    deliverPreview: () => {},
-    SLUG: "doc", KEY: "key", SHELL_HEADERS: {}, keyHeaders: () => {},
-    paintPreview: () => {}, RENDERING_POLL: 30_000,
-    fetch: async () => {
-      const response = requests.length ? second : first;
-      requests.push(response);
-      return { ok: true, arrayBuffer: () => response.promise };
-    },
-  });
-  vm.runInContext(paintRendering, ctx);
-  const pa = vm.runInContext("paintRendering()", ctx);
-  await Promise.resolve();
-  ctx.viewing = { sha: "B", at: "b" };
-  const pb = vm.runInContext("paintRendering()", ctx);
-  await Promise.resolve();
-  second.resolve(Uint8Array.of(2).buffer);
-  await pb;
-  first.resolve(Uint8Array.of(1).buffer);
-  await pa;
-  assert.equal(ctx.latestPreview.sha, "B");
-  assert.equal(ctx.latestPreview.bytes[0], 2);
-}
-
-// A stored PDF fetched before iframe readiness is replayed by that iframe.
-{
-  const sent = [];
-  const ctx = context({
-    viewing: { sha: "A", at: "a" }, renderingRequest: 0, renderedSha: null,
-    rendering: null, latestPreview: null, previewTimer: null,
-    frameReady: false, frameReadyEpoch: 0, frameEpoch: 0, frameKind: "pdf",
-    frameShowsCheckpoint: false, everPainted: false, everPaintedShown: false,
-    paintsTheFrame: true, tell: (message) => sent.push(message),
-    SLUG: "doc", KEY: "key", SHELL_HEADERS: {}, keyHeaders: () => {},
-    paintPreview: () => {}, RENDERING_POLL: 30_000,
-    fetch: async () => ({ ok: true, arrayBuffer: async () => Uint8Array.of(7).buffer }),
-  });
-  vm.runInContext(`${deliverAndReplay}\n${paintRendering}`, ctx);
-  await vm.runInContext("paintRendering()", ctx);
-  assert.equal(sent.length, 0);
-  ctx.frameReady = true;
-  assert.equal(vm.runInContext("replayPreview()", ctx), true);
-  assert.equal(sent.length, 1);
-  assert.equal(ctx.renderedSha, "A");
 }
 
 // A compiler result with neither html nor pdf leaves the existing preview up.
@@ -226,7 +170,8 @@ const context = (values) => vm.createContext({
       failurePage: async () => "<p>failure</p>",
     },
     SHELL_HEADERS: {}, KEY: "key", SLUG: "doc", keyHeaders: () => {},
-    deliverPreview: () => {}, holdRendering: () => {},
+    framePreview: { publish: () => {}, clear: () => {} },
+    renderingStore: { cancelPoll: () => {} }, holdRendering: () => {},
     diagnosticPainter: { rendered: () => {} }, tell: (message) => sent.push(message),
     say: () => {},
   });
@@ -276,6 +221,8 @@ console.log("reader-races: all checks passed");
     renderingChecked: false, latestPreview: null, renderedSha: null,
     frameShowsCheckpoint: false, everPainted: false, everPaintedShown: false,
     docsOrigin: null, dropHeldRendering: () => {}, navigateFrame: () => {},
+    framePreview: { clear: () => {} },
+    renderingStore: { reset: () => {} },
     renderers: { formatOf: () => "latex", warm: () => {} },
     configureLatex: () => configured++, sourceChanged: () => {},
   });
@@ -378,7 +325,8 @@ for (const invalidate of [null, "navigation", "main"]) {
         return calls.length === 1 ? first.promise : second.promise;
       },
     },
-    deliverPreview: (payload) => delivered.push(payload.html),
+    framePreview: { publish: (payload) => delivered.push(payload.html), clear: () => {} },
+    renderingStore: { cancelPoll: () => {} },
     diagnosticPainter: { rendered: (value) => diagnostics.push(value) },
     say: (message) => assert.fail(message),
   });
@@ -430,6 +378,7 @@ for (const invalidate of [null, "navigation", "main"]) {
     sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
     previewTimer: null, diagnosticPainter: { typed: () => {} },
     setTimeout: () => ++scheduled, clearTimeout: () => {}, paintPreview: () => {}, dropHeldRendering: () => {},
+    renderingStore: { schedulePoll: () => {}, cancelPoll: () => {} },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
@@ -463,7 +412,8 @@ for (const invalidate of [null, "navigation", "main"]) {
         return calls.length === 1 ? first.promise : second.promise;
       },
     },
-    deliverPreview: (payload) => delivered.push(payload.bytes[0]),
+    framePreview: { publish: (payload) => delivered.push(payload.bytes[0]), clear: () => {} },
+    renderingStore: { cancelPoll: () => {} },
     holdRendering: (...args) => held.push(args),
     diagnosticPainter: { rendered: (value) => diagnostics.push(value) },
     tell: () => {}, say: (message) => assert.fail(message),
@@ -503,7 +453,11 @@ for (const invalidate of [null, "navigation", "main"]) {
       render: async () => ({ pdf: null, diagnostics: [{ severity: "error", message: "broken" }] }),
       failurePage: async () => null,
     },
-    deliverPreview: () => assert.fail("a failed first Typst compile must not deliver a PDF"),
+    framePreview: {
+      publish: () => assert.fail("a failed first Typst compile must not deliver a PDF"),
+      clear: () => {},
+    },
+    renderingStore: { cancelPoll: () => {} },
     holdRendering: () => assert.fail("a failed first Typst compile must not store a PDF"),
     diagnosticPainter: { rendered: () => {} }, tell: () => {}, say: (message) => assert.fail(message),
   });
@@ -646,67 +600,3 @@ for (const latest of [
   assert.equal(await result, false, "teardown settles pending chat");
   assert.equal(timers[0].cleared, true, "teardown clears the chat timer");
 }
-
-// A missing historical PDF clears the old pages and records an honest
-// missing rendering; repeated polls do not reload the frame forever.
-{
-  let navigations = 0;
-  const ctx = context({
-    viewing: { sha: "checkpoint", at: "today" }, renderingRequest: 0,
-    rendering: null, renderedSha: "live", latestPreview: { kind: "pdf", sha: "live" },
-    frameReady: true, frameEpoch: 0, frameReadyEpoch: 0, frameKind: "pdf",
-    everPainted: true, everPaintedShown: true, frameShowsCheckpoint: true,
-    previewTimer: null, RENDERING_POLL: 30_000,
-    SLUG: "doc", KEY: "", SHELL_HEADERS: {}, keyHeaders: () => ({}),
-    fetch: async () => ({ ok: false, arrayBuffer: async () => null }),
-    navigateFrame: () => navigations++, deliverPreview: () => {},
-  });
-  vm.runInContext(paintRendering, ctx);
-  await vm.runInContext("paintRendering()", ctx);
-  assert.equal(ctx.rendering.missing, true);
-  assert.equal(ctx.latestPreview, null);
-  assert.equal(navigations, 1);
-  await vm.runInContext("paintRendering()", ctx);
-  assert.equal(navigations, 1);
-}
-
-// A document's first rendering is stored the moment a compile succeeds; every
-// later one waits for the quiet minute. The server is asked once whether a
-// rendering exists, and an edit while it is being asked drops what was held.
-{
-  const holdRendering = body("  async function noRenderingYet()", "  function dropHeldRendering()");
-  const run = async ({ rendering, latest, current = true, editDuringAsk = false }) => {
-    const stored = [];
-    const timers = [];
-    let asked = 0;
-    const ctx = context({
-      rendering, renderingChecked: false, heldRendering: null, renderingTimer: null,
-      RENDERING_QUIET: 60_000, SLUG: "doc", KEY: "", SHELL_HEADERS: {}, keyHeaders: () => ({}),
-      storeHeldRendering: () => stored.push(ctx.heldRendering),
-      fetch: async () => {
-        asked++;
-        if (editDuringAsk) ctx.heldRendering = null;
-        return { ok: true, json: async () => latest };
-      },
-      setTimeout: (_fn, ms) => timers.push(ms),
-    });
-    vm.runInContext(holdRendering, ctx);
-    await vm.runInContext(`holdRendering("sha1", new ArrayBuffer(4), null, ${current})`, ctx);
-    return { stored, timers, asked };
-  };
-  const first = await run({ rendering: null, latest: { live: "sha1" } });
-  assert.equal(first.stored.length, 1, "the first rendering is stored at once");
-  assert.equal(first.stored[0]?.name, "sha1");
-  assert.equal(first.timers.length, 0);
-  const later = await run({ rendering: null, latest: { live: "sha1", sha: "sha0" } });
-  assert.equal(later.stored.length, 0, "a document with a rendering waits for the quiet minute");
-  assert.deepEqual(later.timers, [60_000]);
-  const known = await run({ rendering: { sha: "sha0" }, latest: { live: "sha1" } });
-  assert.equal(known.asked, 0, "a rendering this page already knows of is not asked about");
-  assert.deepEqual(known.timers, [60_000]);
-  const stale = await run({ rendering: null, latest: { live: "sha1" }, current: false });
-  assert.equal(stale.stored.length, 0, "a compile of a text that has moved on is never the first rendering");
-  const edited = await run({ rendering: null, latest: { live: "sha1" }, editDuringAsk: true });
-  assert.equal(edited.stored[0], null, "an edit while asking drops what was held");
-}
-console.log("reader-races: the first rendering is stored at once, later ones after the quiet minute");

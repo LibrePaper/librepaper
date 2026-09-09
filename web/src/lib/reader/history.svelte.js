@@ -75,6 +75,7 @@ export function createHistoryController({
   }
 
   async function load() {
+    if (disposed) return;
     const generation = ++loadGeneration;
     try {
       const points = await history.load(slug, headers());
@@ -97,12 +98,14 @@ export function createHistoryController({
   }
 
   async function chooseBaseline(sha) {
+    if (disposed) return;
     const generation = ++baselineGeneration;
+    const manifestGeneration = loadGeneration;
     const listed = listedPoint(sha);
     if (!listed) return;
     try {
       const point = listed.texts ? listed : await history.checkpoint(slug, sha, headers());
-      if (!current(generation, "baseline")) return;
+      if (!current(generation, "baseline") || manifestGeneration !== loadGeneration) return;
       state.baseline = point;
       if (state.target?.sha === sha) state.target = null;
       onMerge(null);
@@ -111,12 +114,14 @@ export function createHistoryController({
       rememberBaseline(sha);
       await computeChanges(point);
     } catch (error) {
-      if (current(generation, "baseline")) state.problem = error.message || "that checkpoint could not be read";
+      if (current(generation, "baseline") && manifestGeneration === loadGeneration) state.problem = error.message || "that checkpoint could not be read";
     }
   }
 
   async function chooseTarget(sha) {
+    if (disposed) return;
     const generation = ++baselineGeneration;
+    const manifestGeneration = loadGeneration;
     onMerge(null);
     invalidateFileDiff();
     if (!sha) {
@@ -131,17 +136,18 @@ export function createHistoryController({
     if (!listed) return;
     try {
       const point = listed.texts ? listed : await history.checkpoint(slug, sha, headers());
-      if (!current(generation, "baseline")) return;
+      if (!current(generation, "baseline") || manifestGeneration !== loadGeneration) return;
       state.target = point;
       clearComparison();
       state.problem = "";
       await computeChanges();
     } catch (error) {
-      if (current(generation, "baseline")) state.problem = error.message || "that checkpoint could not be read";
+      if (current(generation, "baseline") && manifestGeneration === loadGeneration) state.problem = error.message || "that checkpoint could not be read";
     }
   }
 
   async function computeChanges(point = state.baseline) {
+    if (disposed) return;
     const liveState = live() || emptyLive();
     const session = liveState.session;
     const liveText = liveState.text;
@@ -218,6 +224,7 @@ export function createHistoryController({
   }
 
   async function openCheckpointFile(point, path) {
+    if (disposed) return;
     if (!state.checkpoints.some((candidate) => candidate.sha === point.parent)) {
       state.problem = "The previous checkpoint is no longer available for this comparison.";
       return;
@@ -229,6 +236,7 @@ export function createHistoryController({
   }
 
   async function openFileDiff(path) {
+    if (disposed) return;
     const base = state.baseline;
     const liveState = live() || emptyLive();
     const session = liveState.session;
@@ -254,7 +262,8 @@ export function createHistoryController({
       if (!mayEdit() || !editing() || newText === undefined) return;
       if (!current(request, "file") || base !== state.baseline || target !== state.target || session !== (live()?.session || null)) return;
       const id = session.idOf(path);
-      state.fileDiff = null;
+      const stillCurrent = () => current(request, "file") && base === state.baseline
+        && target === state.target && session === (live()?.session || null) && mayEdit() && editing();
       await onMerge({
         path,
         oldText: oldText ?? "",
@@ -263,7 +272,8 @@ export function createHistoryController({
         awareness: target ? null : session.awareness,
         editable: !target && Boolean(id),
         targetLabel: target?.label || (target ? history.shortSha(target.sha) : "Live document"),
-      });
+      }, stillCurrent);
+      if (stillCurrent()) state.fileDiff = null;
     } catch (error) {
       if (current(request, "file")) state.fileDiff = { path, problem: error.message || "This comparison is unavailable." };
     }

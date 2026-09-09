@@ -92,6 +92,7 @@
   /* ------------------------------------------------------------ the document */
 
   let doc = $state({});
+  let readerDisposed = false;
   let docsOrigin = $state(null);
   let frameSrc = $state(null);
   let me = $state({});
@@ -1334,7 +1335,6 @@
   });
 
   const navigateFrame = (force = false) => framePreview.navigate(force);
-  const deliverPreview = (payload) => framePreview.deliver(payload);
   const replayPreview = () => paintsTheFrame && framePreview.replay();
 
   // The kind of frame follows the tree being displayed, including a
@@ -1380,7 +1380,8 @@
     getSourceGeneration: () => sourceGeneration,
     getNavigationGeneration: () => navigationGeneration,
     getRenderedSha: () => renderedSha,
-    deliver: (payload) => deliverPreview(payload),
+    getPreview: () => framePreview.preview(),
+    deliver: (payload) => framePreview.publish(payload),
     onRendering: (value) => (rendering = value),
     onMissing: (value) => {
       const hadPages = Boolean(framePreview.preview() || renderedSha || everPaintedShown);
@@ -1400,6 +1401,7 @@
   const dropHeldRendering = () => renderingStore.dropHeld();
 
   async function paintPreview() {
+    if (readerDisposed) return;
     clearTimeout(previewTimer);
     previewTimer = null;
     renderingStore.cancelPoll();
@@ -1421,6 +1423,7 @@
     // this one compiles for itself.
     if (outputIsPdf && !everPainted && !viewing) {
       await paintRendering();
+      if (readerDisposed) return;
       renderingStore.cancelPoll();
     }
     if (!paintsTheFrame) {
@@ -1481,6 +1484,7 @@
       // text, hash this exact immutable tree, after asset bytes have arrived
       // so asset sizes agree with the server's TreeEntry values.
       const renderingName = snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}));
+      if (readerDisposed) return;
       // A manual compile is asked for once; the flag is read here, at the
       // one call site that reaches the compiler, and cleared immediately so
       // it cannot linger onto an edit's ordinary debounced compile.
@@ -1495,12 +1499,15 @@
       manualCompile = false;
       let rendered;
       try {
-        rendered = await renderers.render(tree, await headingOf(tree), manual ? { manual: true } : undefined);
+        const title = await headingOf(tree);
+        if (readerDisposed) return;
+        rendered = await renderers.render(tree, title, manual ? { manual: true } : undefined);
       } finally {
         // Only the newest compile owns the badge. An older one finishing
         // afterwards must not turn the spinner off under a newer one.
         if (paged && mine > painted) compiling = false;
       }
+      if (readerDisposed) return;
       if (format === "latex") lastLatexResult = rendered;
       const { html, pdf, synctex, diagnostics: said, seconds, log, provenance } = rendered;
       const contextualDiagnostics = (said || []).map((item) => diagnosticContext(item, tree, renderingName));
@@ -1576,7 +1583,7 @@
         const page = await renderers
           .failurePage(await headingOf(tree), sourceFormat)
           .catch(() => null);
-        if (page && mine >= painted) tell({ type: "preview", html: page });
+        if (!readerDisposed && page && mine >= painted && snapshotNavigation === navigationGeneration) tell({ type: "preview", html: page });
       }
     } catch (error) {
       // Not a document that did not compile: a renderer that could not be
@@ -1604,15 +1611,8 @@
   // Readers wait for a pause so they do not see every half-written word.
   const READER_DEBOUNCE = 1000;
 
-  // How long a LaTeX document this browser does not compile waits before
-  // asking the server whether a newer rendering has turned up. Long, because
-  // nothing this browser does produces one: the text moving means the
-  // rendering on the screen is now of an earlier version, which is answered
-  // here without a request, and a newer rendering can only come from
-  // somebody else's compile.
-  const RENDERING_POLL = 30_000;
-
   function sourceChanged() {
+    if (readerDisposed) return;
     sourceGeneration += 1;
     const outputIsPdf = pdfOutput;
     // The keystroke, which is what the diagnostic wait is measured from.
@@ -2191,8 +2191,10 @@
   // The source pane. Nothing is fetched here and nothing is seeded: the text
   // is already in the session, and this only shows it.
   async function startEditing() {
-    if (editing || !mayEdit) return;
-    Editor = (await import("./Editor.svelte")).default;
+    if (readerDisposed || editing || !mayEdit) return;
+    const component = (await import("./Editor.svelte")).default;
+    if (readerDisposed || editing || !mayEdit) return;
+    Editor = component;
     editing = true;
     paintPreview();
   }
@@ -2273,7 +2275,7 @@
     // controller which project this is and what it is allowed to do, and the
     // first `paintPreview` (from `startEditing` below, or an edit) is what
     // actually starts loading WasmTex. `session.latexSettings()` needs the
-    // session that `joinSession` just built, which is why this comes after
+    // session that `startCollaboration` just built, which is why this comes after
     // it rather than beside the old restore-a-distribution code above.
     configureLatex(sourceFormat);
     // A document its author may edit opens ready to be worked on: that is what
@@ -2338,13 +2340,18 @@
       // The session on the server ends when the last person in it
       // disconnects, which the socket closing does on its own; this is only
       // this browser letting go of its half.
+      readerDisposed = true;
+      issued += 1;
+      navigationGeneration += 1;
+      clearTimeout(previewTimer);
+      previewTimer = null;
+      boot.dispose();
       passages.clearPassageCache();
       framePreview.dispose();
       renderingStore?.dispose();
       stopLatex();
       pendingChat?.dispose();
       collaboration?.close();
-      boot.dispose();
     };
   });
 

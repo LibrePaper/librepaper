@@ -84,6 +84,7 @@ export function createFramePreview({
   }
 
   function publish(payload) {
+    if (disposed) return false;
     const normalized = normalize(payload);
     if (!normalized) return false;
     latest = normalized;

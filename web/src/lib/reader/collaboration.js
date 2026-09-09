@@ -96,9 +96,10 @@ export function createReaderCollaboration({
   }
 
   async function reconnect(up) {
+    if (disposed) return;
     const current = ++reconnectGeneration;
+    clearRetry();
     if (!up) {
-      clearRetry();
       session?.disconnected();
       onConnected(false);
       return;
@@ -121,7 +122,7 @@ export function createReaderCollaboration({
       clearRetry();
       retryTimer = setTimer(() => {
         retryTimer = null;
-        void reconnect(true);
+        if (!disposed && current === reconnectGeneration && session === active) void reconnect(true);
       }, retryMs);
     }
   }

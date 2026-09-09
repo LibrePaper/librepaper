@@ -1,6 +1,6 @@
 // Fetches server renderings and owns the delayed publication of locally
-// compiled bytes. Requests and timers are cancelled by generation/disposal;
-// a late response cannot replace a newer checkpoint or source.
+// compiled bytes. Generations discard obsolete responses and disposal clears
+// timers; a late response cannot replace a newer checkpoint or source.
 
 export function createRenderingStore({
   api,
@@ -8,6 +8,7 @@ export function createRenderingStore({
   getSourceGeneration,
   getNavigationGeneration,
   getRenderedSha = () => null,
+  getPreview = () => null,
   deliver,
   onRendering,
   onMissing,
@@ -15,8 +16,11 @@ export function createRenderingStore({
   pollDelay = 30_000,
   quietDelay = 60_000,
   now = () => new Date().toISOString(),
+  setTimer = globalThis.setTimeout,
+  clearTimer = globalThis.clearTimeout,
 }) {
   let requestGeneration = 0;
+  let cacheGeneration = 0;
   let checked = false;
   let hasRendering = false;
   let held = null;
@@ -25,7 +29,7 @@ export function createRenderingStore({
   let disposed = false;
 
   const clearPoll = () => {
-    clearTimeout(pollTimer);
+    clearTimer(pollTimer);
     pollTimer = null;
   };
 
@@ -51,6 +55,11 @@ export function createRenderingStore({
     if (!requestedSha || requestedSha === getRenderedSha()) {
       return;
     }
+    const preview = getPreview();
+    if (preview?.kind === "pdf" && preview.sha === requestedSha) {
+      deliver(preview);
+      return;
+    }
     const response = await api.rendering(requestedSha).catch(() => null);
     const bytes = response?.ok ? await response.arrayBuffer().catch(() => null) : null;
     if (disposed || mine !== requestGeneration) return;
@@ -64,9 +73,9 @@ export function createRenderingStore({
   function schedulePoll() {
     if (disposed) return;
     clearPoll();
-    pollTimer = setTimeout(() => {
+    pollTimer = setTimer(() => {
       pollTimer = null;
-      schedulePreview();
+      if (!disposed) schedulePreview();
     }, pollDelay);
   }
 
@@ -74,8 +83,9 @@ export function createRenderingStore({
     if (disposed) return false;
     if (hasRendering) return false;
     if (checked) return true;
+    const generation = cacheGeneration;
     const found = await latest();
-    if (disposed) return false;
+    if (disposed || generation !== cacheGeneration) return false;
     if (!found) return false;
     checked = true;
     hasRendering = Boolean(found.sha);
@@ -84,7 +94,7 @@ export function createRenderingStore({
 
   async function hold(name, bytes, synctex, current = true, provenance = null) {
     if (disposed) return;
-    clearTimeout(quietTimer);
+    clearTimer(quietTimer);
     const source = getSourceGeneration();
     const navigation = getNavigationGeneration();
     const value = { name, bytes, synctex, current, provenance, source, navigation };
@@ -93,16 +103,17 @@ export function createRenderingStore({
       if (held === value) storeHeld();
       return;
     }
-    if (held === value) quietTimer = setTimeout(storeHeld, quietDelay);
+    if (held === value) quietTimer = setTimer(storeHeld, quietDelay);
   }
 
   function dropHeld() {
-    clearTimeout(quietTimer);
+    clearTimer(quietTimer);
     quietTimer = null;
     held = null;
   }
 
   async function store(name, bytes, synctex, current = true, provenance = null) {
+    if (disposed) return;
     const source = getSourceGeneration();
     const navigation = getNavigationGeneration();
     const put = (suffix, body) => api.putRendering(name, suffix, body, provenance)
@@ -110,13 +121,15 @@ export function createRenderingStore({
       .catch(() => false);
     if (!(await put("", bytes)) || disposed) return;
     if (source === getSourceGeneration() && navigation === getNavigationGeneration()) {
+      checked = true;
+      hasRendering = true;
       onRendering({ sha: name, at: now(), current, provenance });
     }
-    if (synctex) await put(".synctex", synctex);
+    if (synctex && !disposed) await put(".synctex", synctex);
   }
 
   function storeHeld() {
-    clearTimeout(quietTimer);
+    clearTimer(quietTimer);
     quietTimer = null;
     const value = held;
     held = null;
@@ -130,7 +143,11 @@ export function createRenderingStore({
   }
 
   function reset() {
+    if (disposed) return;
     invalidate();
+    cacheGeneration += 1;
+    clearPoll();
+    dropHeld();
     checked = false;
     hasRendering = false;
     onRendering(null);
