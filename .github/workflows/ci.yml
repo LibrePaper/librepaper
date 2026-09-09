@@ -21,8 +21,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       # The sync check reads the typst example the way a PDF reader does, by
       # extracting its text with Poppler's pdftotext; check:typst-pdf needs
-      # pdfinfo from the same package.
-      - run: sudo apt-get install -y --no-install-recommends poppler-utils
+      # pdfinfo from the same package. .cargo/config.toml links through mold,
+      # and gcc reports a missing mold as "cannot find 'ld'".
+      - run: sudo apt-get install -y --no-install-recommends poppler-utils mold
       - run: make test
 
   # The fuzz targets, briefly: long enough to catch a regression on an

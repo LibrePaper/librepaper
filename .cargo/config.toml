@@ -4,8 +4,9 @@
 # loop. The default `ld` does that work on one thread. `mold` does it on all
 # of them, which is most of the wait.
 #
-# This is a developer convenience, not a requirement: a machine without mold
-# should still build. Cargo has no "use it if present" switch, so the setting
-# lives here; drop the two lines below if you would rather not install it.
+# Cargo has no "use it if present" switch, so this is a requirement in
+# practice: a machine without mold fails to link, and gcc says "cannot find
+# 'ld'" when it means mold. Install it (`apt install mold`, or the package
+# manager's equivalent; CI does) or drop the two lines below.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
