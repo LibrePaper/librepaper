@@ -48,6 +48,7 @@ const context = (values) => vm.createContext({
   const b = deferred();
   const ctx = context({
     navigationGeneration: 0, renderingRequest: 0, issued: 0, viewing: null,
+    historyController: { invalidateChanges: () => {} },
     historyProblem: "", frameShowsCheckpoint: false,
     SLUG: "doc", KEY: "key", keyHeaders: () => ({}), dropHeldRendering: () => {},
     paintPreview: () => Promise.resolve(),
@@ -68,6 +69,7 @@ const context = (values) => vm.createContext({
   const a = deferred();
   const ctx = context({
     navigationGeneration: 0, renderingRequest: 0, issued: 0, viewing: null,
+    historyController: { invalidateChanges: () => {} },
     historyProblem: "", frameShowsCheckpoint: false, editing: false,
     sourceFormat: "html", framedSource: "live",
     SLUG: "doc", KEY: "key", keyHeaders: () => ({}), dropHeldRendering: () => {},

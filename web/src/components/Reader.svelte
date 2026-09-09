@@ -8,6 +8,7 @@
   import * as collab from "../lib/collab.js";
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
+  import { createHistoryController } from "../lib/reader/history.svelte.js";
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
@@ -563,7 +564,7 @@
       const id = session.idOf(path);
       const component = (await import("./MergeEditor.svelte")).default;
       MergeEditor = component;
-      fileDiff = null;
+      historyController.closeFileDiff();
       mergeTarget = {
         path,
         oldText,
@@ -787,21 +788,42 @@
   // What this document used to say, and when. The manifest is fetched when the
   // panel is opened and not before: a reader who never asks for the history
   // costs no request for it.
-  let checkpoints = $state([]);
-  let historyProblem = $state("");
-  // Comparison state is independent of `viewing`: opening an old page is
-  // navigation, while “since” is a reader preference that survives returning
-  // to the live document.
-  let historyBaseline = $state(null);
-  let historyComparePoint = $state(null);
-  let historyChanges = $state(null);
-  let historyChangedPaths = $state([]);
-  // "Show in document": paints the panel's hunks inline in the frame as
-  // redlines, rather than only listing them here. A reader preference, kept
-  // across baseline changes the way `historyBaseline` itself is not (see
-  // `applyRedlines`, which is what actually decides whether anything is
-  // sent for it).
-  let historyRedlines = $state(false);
+  // The comparison state and its async lifetimes live in the controller. The
+  // aliases keep the existing panel and redline code readable while making
+  // every value a focused controller getter rather than a Reader-owned bag.
+  let mergeTarget = $state(null);
+  // The checkpoint being shown in the document pane, whole -- its tree and its
+  // texts -- or null for the document as it stands.
+  let viewing = $state(null);
+  const historyController = createHistoryController({
+    slug: SLUG,
+    headers: () => keyHeaders(KEY),
+    comments: () => comments,
+    live: () => ({ session, text: docText }),
+    viewing: () => viewing,
+    sourceFormat: () => sourceFormat,
+    mayEdit: () => mayEdit,
+    editing: () => editing,
+    onRedlines: () => applyRedlines(),
+    onMerge: async (target, current) => {
+      if (!target) {
+        mergeTarget = null;
+        return;
+      }
+      const component = (await import("./MergeEditor.svelte")).default;
+      if (!current() || !mayEdit || !editing) return;
+      MergeEditor = component;
+      mergeTarget = target;
+    },
+  });
+  let checkpoints = $derived(historyController.checkpoints);
+  let historyNavigationProblem = $state("");
+  let historyProblem = $derived(historyNavigationProblem || historyController.problem);
+  let historyBaseline = $derived(historyController.baseline);
+  let historyComparePoint = $derived(historyController.target);
+  let historyChanges = $derived(historyController.changes);
+  let historyChangedPaths = $derived(historyController.changedPaths);
+  let historyRedlines = $derived(historyController.redlines);
   // Typst and LaTeX render to a PDF drawn by a browser VM -- the frame has
   // no text there for a mark to land on, so the toggle stays off and says
   // why rather than silently doing nothing.
@@ -811,16 +833,10 @@
       : "",
   );
   function setHistoryRedlines(on) {
-    historyRedlines = Boolean(on) && !redlinesDisabledReason;
-    applyRedlines();
+    historyController.setRedlines(Boolean(on) && !redlinesDisabledReason);
   }
-  let fileDiff = $state(null);
-  let mergeTarget = $state(null);
-  let historyBaselineGeneration = 0;
-  let historyDiffGeneration = 0;
-  // The checkpoint being shown in the document pane, whole -- its tree and its
-  // texts -- or null for the document as it stands.
-  let viewing = $state(null);
+  let fileDiff = $derived(historyController.fileDiff);
+  $effect(() => () => historyController.dispose());
   let navigationGeneration = 0;
   // Which checkpoint the reader arrived asking for, out of the link somebody
   // sent them. Read once, because after that the panel is where the answer is.
@@ -830,144 +846,19 @@
   const ARRIVED_FILE = new URLSearchParams(location.search).get("file") || "";
   let arrivedFileOpened = false;
 
-  async function loadHistory() {
-    try {
-      checkpoints = await history.load(SLUG, keyHeaders(KEY));
-      historyProblem = "";
-      if (!historyBaseline && checkpoints.length) {
-        const remembered = read(`librepaper-history-baseline:${SLUG}`, "");
-        const own = [...comments].reverse().find((comment) =>
-          comment.mine && comment.revision && checkpoints.some((point) => point.sha === comment.revision),
-        );
-        const sha = checkpoints.some((point) => point.sha === remembered)
-          ? remembered
-          : own?.revision || checkpoints[0].sha;
-        await chooseHistoryBaseline(sha);
-      }
-    } catch (error) {
-      historyProblem = error.message || "the history could not be read";
-    }
-  }
-
-  async function chooseHistoryBaseline(sha) {
-    const request = ++historyBaselineGeneration;
-    const point = checkpoints.find((candidate) => candidate.sha === sha);
-    if (!point) return;
-    try {
-      const loaded = point.texts ? point : await history.checkpoint(SLUG, sha, keyHeaders(KEY));
-      if (request !== historyBaselineGeneration) return;
-      historyBaseline = loaded;
-      if (historyComparePoint?.sha === sha) historyComparePoint = null;
-      historyChanges = null;
-      historyChangedPaths = [];
-      applyRedlines();
-      fileDiff = null;
-      fileDiffGeneration += 1;
-      mergeTarget = null;
-      write(`librepaper-history-baseline:${SLUG}`, sha);
-      await computeHistoryChanges(loaded);
-    } catch (error) {
-      if (request === historyBaselineGeneration) historyProblem = error.message || "that checkpoint could not be read";
-    }
-  }
-
-  async function chooseHistoryTarget(sha) {
-    const request = ++historyBaselineGeneration;
-    mergeTarget = null;
-    fileDiff = null;
-    fileDiffGeneration += 1;
-    if (!sha) {
-      historyComparePoint = null;
-      historyChanges = null;
-      applyRedlines();
-      await computeHistoryChanges();
-      return;
-    }
-    const listed = checkpoints.find((candidate) => candidate.sha === sha);
-    if (!listed) return;
-    try {
-      const point = listed.texts ? listed : await history.checkpoint(SLUG, sha, keyHeaders(KEY));
-      if (request !== historyBaselineGeneration) return;
-      historyComparePoint = point;
-      historyChanges = null;
-      fileDiff = null;
-      applyRedlines();
-      await computeHistoryChanges();
-    } catch (error) {
-      if (request === historyBaselineGeneration) historyProblem = error.message || "that checkpoint could not be read";
-    }
-  }
-
-  async function computeHistoryChanges(point = historyBaseline) {
-    if (!point || !session || docText === null || (!historyComparePoint && viewing)) return;
-    const baselineGeneration = historyBaselineGeneration;
-    const targetPoint = historyComparePoint;
-    const liveVisible = docText;
-    const request = ++historyDiffGeneration;
-    try {
-      // Passage hunks use rendered text, keeping the list faithful to what a
-      // reviewer reads rather than exposing source markup as visible prose.
-      const oldVisible = await passages.textAt(SLUG, point.sha, keyHeaders(KEY));
-      const targetVisible = targetPoint
-        ? await passages.textAt(SLUG, targetPoint.sha, keyHeaders(KEY))
-        : liveVisible;
-      if (request !== historyDiffGeneration || baselineGeneration !== historyBaselineGeneration || targetPoint !== historyComparePoint || (!targetPoint && liveVisible !== docText)) return;
-      if (typeof oldVisible !== "string" || typeof targetVisible !== "string") {
-        historyChanges = [];
-        historyProblem = "Changes are unavailable for this checkpoint.";
-        applyRedlines();
-        return;
-      }
-      const edits = await history.wordDiff(oldVisible, targetVisible, sourceFormat);
-      if (request !== historyDiffGeneration || baselineGeneration !== historyBaselineGeneration || targetPoint !== historyComparePoint || (!targetPoint && liveVisible !== docText)) return;
-      let shift = 0;
-      historyChanges = history.hunks(oldVisible, targetVisible, edits).map((hunk) => {
-        const newAt = hunk.at + shift;
-        shift += (hunk.insert || "").length - (hunk.delete || 0);
-        return {
-          ...hunk,
-          path: point.main || "document",
-          new: hunk.insert || "",
-          exact: hunk.insert || "",
-          position: newAt,
-          prefix: hunk.currentBefore || "",
-          suffix: hunk.currentAfter || "",
-          contextBefore: hunk.insert ? (hunk.currentBefore || hunk.before || "") : (hunk.before || ""),
-          contextAfter: hunk.insert ? (hunk.currentAfter || hunk.after || "") : (hunk.after || ""),
-        };
-      });
-      const paths = new Set();
-      const baselineTexts = point.texts || {};
-      // `treeNow` intentionally follows `viewing` for rendering. Diffing must
-      // always compare with the live session, even while an old page is open.
-      const now = targetPoint ? targetPoint : session.tree();
-      for (const path of new Set([...Object.keys(baselineTexts), ...Object.keys(now.texts || {})])) {
-        if ((baselineTexts[path] || "") !== (now.texts?.[path] || "")) paths.add(path);
-      }
-      const oldFiles = point.files || {};
-      const newFiles = now.files || {};
-      for (const path of new Set([...Object.keys(oldFiles), ...Object.keys(newFiles)])) {
-        const oldEntry = oldFiles[path] || null;
-        const newEntry = newFiles[path] || null;
-        if (!oldEntry || !newEntry || oldEntry.kind !== newEntry.kind) {
-          paths.add(path);
-        } else if (oldEntry.kind === "asset" && oldEntry.sha !== newEntry.sha) {
-          paths.add(path);
-        } else if (oldEntry.kind === "text" && (baselineTexts[path] || "") !== (now.texts?.[path] || "")) {
-          paths.add(path);
-        }
-      }
-      historyChangedPaths = [...paths].sort();
-      historyProblem = "";
-      applyRedlines();
-    } catch (error) {
-      if (request === historyDiffGeneration && baselineGeneration === historyBaselineGeneration) {
-        historyChanges = [];
-        historyProblem = error.message || "Changes are unavailable for this checkpoint.";
-        applyRedlines();
-      }
-    }
-  }
+  const loadHistory = () => {
+    historyNavigationProblem = "";
+    return historyController.load();
+  };
+  const chooseHistoryBaseline = (sha) => {
+    historyNavigationProblem = "";
+    return historyController.chooseBaseline(sha);
+  };
+  const chooseHistoryTarget = (sha) => {
+    historyNavigationProblem = "";
+    return historyController.chooseTarget(sha);
+  };
+  const computeHistoryChanges = (point) => historyController.computeChanges(point);
 
   let pendingHistoryReveal = null;
   function revealPendingHistory() {
@@ -1009,54 +900,8 @@
     }
   }
 
-  let fileDiffGeneration = 0;
-  async function openCheckpointFile(point, path) {
-    if (!checkpoints.some((candidate) => candidate.sha === point.parent)) {
-      historyProblem = "The previous checkpoint is no longer available for this comparison.";
-      return;
-    }
-    await chooseHistoryBaseline(point.parent);
-    if (historyBaseline?.sha !== point.parent) return;
-    await chooseHistoryTarget(point.sha);
-    if (historyComparePoint?.sha === point.sha) await openFileDiff(path);
-  }
-
-  async function openFileDiff(path) {
-    if (!historyBaseline || !session) return;
-    const request = ++fileDiffGeneration;
-    const base = historyBaseline;
-    const target = historyComparePoint;
-    const activeSession = session;
-    const targetTree = target || activeSession.tree();
-    const oldText = base.texts?.[path];
-    const newText = targetTree.texts?.[path];
-    mergeTarget = null;
-    fileDiff = { path, loading: true };
-    try {
-      const edits = await history.wordDiff(oldText ?? "", newText ?? "");
-      if (request !== fileDiffGeneration || base !== historyBaseline || target !== historyComparePoint || activeSession !== session) return;
-      fileDiff = {
-        path, old: oldText, new: newText,
-        hunks: history.hunks(oldText ?? "", newText ?? "", edits),
-        oldEntry: base.files?.[path], newEntry: targetTree.files?.[path],
-      };
-      if (!mayEdit || !editing || newText === undefined) return;
-      const component = (await import("./MergeEditor.svelte")).default;
-      if (request !== fileDiffGeneration || base !== historyBaseline || target !== historyComparePoint || activeSession !== session || !mayEdit || !editing) return;
-      const id = activeSession.idOf(path);
-      MergeEditor = component;
-      fileDiff = null;
-      mergeTarget = {
-        path, oldText: oldText ?? "", newText,
-        liveText: target ? null : id ? activeSession.textOf(id) : null,
-        awareness: target ? null : activeSession.awareness,
-        editable: !target && Boolean(id),
-        targetLabel: target?.label || (target ? history.shortSha(target.sha) : "Live document"),
-      };
-    } catch (error) {
-      if (request === fileDiffGeneration) fileDiff = { path, problem: error.message || "This comparison is unavailable." };
-    }
-  }
+  const openCheckpointFile = (point, path) => historyController.openCheckpointFile(point, path);
+  const openFileDiff = (path) => historyController.openFileDiff(path);
 
   // A checkpoint as a renderer takes it. Its texts came with it; its figures
   // did not, because a figure is served immutably by its digest and the ones
@@ -1071,8 +916,7 @@
 
   async function showCheckpoint(sha) {
     const mine = ++navigationGeneration;
-    historyDiffGeneration += 1;
-    if (!historyComparePoint) historyChanges = null;
+    historyController.invalidateChanges();
     renderingStore?.invalidate();
     issued += 1;
     dropHeldRendering();
@@ -1081,10 +925,10 @@
       if (mine !== navigationGeneration) return;
       viewing = point;
       write(`librepaper-history-baseline:${SLUG}`, sha);
-      historyProblem = "";
+      historyNavigationProblem = "";
     } catch (error) {
       if (mine !== navigationGeneration) return;
-      historyProblem = error.message || "that checkpoint could not be read";
+      historyNavigationProblem = error.message || "that checkpoint could not be read";
       return;
     }
     if (mine === navigationGeneration) await paintPreview();
@@ -2795,7 +2639,7 @@
                  onrestore={restoreCheckpoint} oncopy={checkpointLink}
                  onreveal={revealHistoryHunk}
                  oncheckpointfile={openCheckpointFile}
-                 onfilediff={openFileDiff} onclosefilediff={() => { fileDiffGeneration += 1; fileDiff = null; }} />
+                 onfilediff={openFileDiff} onclosefilediff={historyController.closeFileDiff} />
       {:else}
         <Comments {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
                   canComment={mayChat}
