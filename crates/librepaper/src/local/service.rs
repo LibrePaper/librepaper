@@ -106,22 +106,12 @@ impl Runner for NativeRunner {
         cancel: watch::Receiver<bool>,
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome {
-        if request.kind == "quarto" {
-            crate::local::quarto::run_job_with_bindings(
-                request,
-                workspace,
-                cancel,
-                progress,
-                &self.binding_store,
-            )
+        crate::local::engine_adapter::run(request, workspace, cancel, progress, &self.binding_store)
             .await
-        } else {
-            crate::local::native::run_job(request, workspace, cancel, progress).await
-        }
     }
 
     async fn capabilities(&self, refresh: bool) -> Capabilities {
-        crate::local::discovery::discover(refresh).await
+        crate::local::engine_adapter::capabilities(refresh).await
     }
 }
 
@@ -997,8 +987,8 @@ async fn handle_jobs_post(
             &json!({"error": "origin does not match the connected token"}),
         );
     }
-    if job.kind != "biber" && job.kind != "tex" && job.kind != "quarto" {
-        return write_json(400, &json!({"error": "unknown job kind"}));
+    if let Err(error) = crate::local::engine_adapter::select(&job) {
+        return write_json(400, &json!({"error": error}));
     }
     if job.kind == "quarto" {
         let Some(options) = job.quarto.as_ref() else {

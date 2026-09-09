@@ -780,6 +780,8 @@ impl Server {
         let mut main = String::new();
         let mut sent: Vec<(String, Vec<u8>)> = Vec::new();
         let (mut source, mut source_format) = (String::new(), String::new());
+        let mut requested_engine: Option<String> = None;
+        let mut requested_draft_format: Option<String> = None;
 
         if content_type.contains("multipart/form-data") {
             // The whole request is bounded, not just the document: without
@@ -809,6 +811,12 @@ impl Server {
                     // Which file is the document. A directory sends it; a
                     // single file does not, and is named by its own filename.
                     "main" => main = field.text().await.unwrap_or_default(),
+                    "execution_engine" => {
+                        requested_engine = Some(field.text().await.unwrap_or_default())
+                    }
+                    "draft_format" => {
+                        requested_draft_format = Some(field.text().await.unwrap_or_default())
+                    }
                     "file" => {
                         // A directory arrives as several of these, each named
                         // by its path within the document. One of them is the
@@ -906,6 +914,10 @@ impl Server {
                 source: String,
                 #[serde(default)]
                 source_format: String,
+                #[serde(default)]
+                execution_engine: Option<String>,
+                #[serde(default)]
+                draft_format: Option<String>,
             }
             let Ok(bytes) = to_bytes(request.into_body(), ceiling).await else {
                 return Err(write_json(413, &json!({"error": "document too large"})));
@@ -918,6 +930,8 @@ impl Server {
             html = body.html;
             source = body.source;
             source_format = body.source_format;
+            requested_engine = body.execution_engine;
+            requested_draft_format = body.draft_format;
         }
 
         // Nothing derived is stored, so what arrives has to be the document
@@ -935,6 +949,28 @@ impl Server {
                 400,
                 &json!({"error": "this deployment cannot store a document in that format"}),
             ));
+        }
+        let expected_engine = crate::results::document_metadata(&source_format).execution_engine;
+        let expected_draft = crate::results::document_metadata(&source_format).draft_format;
+        if let Some(raw_engine) = requested_engine {
+            let supplied = crate::results::ExecutionEngine::parse(&raw_engine)
+                .map_err(|error| write_json(400, &json!({"error": error})))?;
+            if supplied != expected_engine {
+                return Err(write_json(
+                    400,
+                    &json!({"error": "execution engine does not match source_format"}),
+                ));
+            }
+        }
+        if let Some(raw_draft) = requested_draft_format {
+            let supplied = crate::results::DraftFormat::parse(&raw_draft)
+                .map_err(|error| write_json(400, &json!({"error": error})))?;
+            if supplied != expected_draft {
+                return Err(write_json(
+                    400,
+                    &json!({"error": "draft format does not match source_format"}),
+                ));
+            }
         }
         if source.len() > max_document {
             return Err(write_json(413, &json!({"error": "document too large"})));

@@ -4,7 +4,7 @@
   import { anchorAll, anchorAllSources, anchorOne, flatten } from "../lib/anchor.js";
   import * as sync from "../lib/sync.js";
   import * as renderers from "../lib/renderers.js";
-  import * as quarto from "../lib/quarto.js";
+  import * as quarto from "../lib/engines/quarto.js";
   import * as diagnosticsRule from "../lib/diagnostics.js";
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
@@ -59,8 +59,8 @@
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
   import Comments from "./Comments.svelte";
-  import QuartoResults from "./QuartoResults.svelte";
-  import { resultItems, resultAnchor, inspectResult } from "../lib/quarto-comments.js";
+  import SavedResults from "./SavedResults.svelte";
+  import { resultItems, resultAnchor, inspectResult } from "../lib/results-comments.js";
   import Agent from "./Agent.svelte";
   import Chat from "./Chat.svelte";
   import History from "./History.svelte";
@@ -72,10 +72,11 @@
   import { createPreviewApi } from "../lib/reader/preview-api.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { createRenderingStore } from "../lib/reader/rendering-store.js";
-  import { clearPendingQuarto, loadPendingQuarto, savePendingQuarto } from "../lib/quarto-pending.js";
-  import { prepareQuartoArtifact } from "../lib/quarto-artifact.js";
-  import { createQuartoLoader } from "../lib/quarto-loader.js";
-  import { publishQuartoBundle } from "../lib/quarto-publication.js";
+  import { clearPendingResults, loadPendingResults, savePendingResults } from "../lib/results-pending.js";
+  import { prepareResultsArtifact } from "../lib/results-artifact.js";
+  import { createResultsLoader } from "../lib/results-loader.js";
+  import { publishResultsBundle } from "../lib/results-publication.js";
+  import { documentResultsIdentity } from "../lib/engines/identity.js";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -198,7 +199,7 @@
       openDialog();
     } catch (error) { toastProblem(error.message); }
   }
-  const quartoLoader = createQuartoLoader({ api: previewApi, apply: ({ context, manifest, prepared, generation }) => {
+  const quartoLoader = createResultsLoader({ api: previewApi, apply: ({ context, manifest, prepared, generation }) => {
     if (quartoResultsOpen && !quartoInspected) quartoResultsOpen = false;
     releaseQuartoUrls();
     quartoContext = context;
@@ -978,7 +979,7 @@
       const renderTree = treeNow();
       const renderFormat = quartoTargetFormat(renderTree);
       const inputContext = await quarto.contextId({ format: renderFormat });
-      const selectedResponse = await previewApi.quartoSelected(inputContext);
+      const selectedResponse = await previewApi.selectedResults(inputContext);
       const selected = await selectedResponse.json().catch(() => null);
       if (!selectedResponse.ok && selectedResponse.status !== 404) throw new Error("Could not read the current Quarto selection before rendering.");
       const inputSelectionGeneration = Number(selected?.selection?.generation ?? selected?.generation ?? 0);
@@ -1006,10 +1007,10 @@
         result.publish.expected_generation = inputSelectionGeneration;
         quartoPendingPublish = result.publish;
         try {
-          await savePendingQuarto(SLUG, result.publish).catch((error) => { quartoLog += "Outbox: " + error.message + "\n"; });
-          receipt = await publishQuartoBundle(previewApi, result.publish, knownManifest);
+          await savePendingResults(SLUG, result.publish).catch((error) => { quartoLog += "Outbox: " + error.message + "\n"; });
+          receipt = await publishResultsBundle(previewApi, result.publish, knownManifest);
           quartoPendingPublish = null;
-          await clearPendingQuarto(SLUG, result.publish.manifest.render_id).catch((error) => { quartoLog += "Outbox cleanup: " + error.message + "\n"; });
+          await clearPendingResults(SLUG, result.publish.manifest.render_id).catch((error) => { quartoLog += "Outbox cleanup: " + error.message + "\n"; });
         } catch (error) {
           say("Rendered locally; not yet shared (" + error.message + ")", true);
         }
@@ -1029,7 +1030,7 @@
       }
       if (result.artifact && result.manifest?.artifact) {
         const blobs = new Map((result.publish?.blobs || []).map((blob) => [blob.sha256, blob]));
-        const prepared = await prepareQuartoArtifact(result.manifest, result.artifact, async (asset) => {
+        const prepared = await prepareResultsArtifact(result.manifest, result.artifact, async (asset) => {
           const blob = blobs.get(asset.sha256);
           if (!blob?.data) throw new Error("Local Quarto result is missing: " + asset.path);
           return Uint8Array.from(atob(blob.data), (character) => character.charCodeAt(0));
@@ -1063,9 +1064,9 @@
     if (!quartoPendingPublish || quartoJob) return;
     const pending = quartoPendingPublish;
     try {
-      const receipt = await publishQuartoBundle(previewApi, pending, quartoBundle);
+      const receipt = await publishResultsBundle(previewApi, pending, quartoBundle);
       if (quartoPendingPublish === pending) quartoPendingPublish = null;
-      await clearPendingQuarto(SLUG, pending.manifest.render_id).catch((error) => { quartoLog += "Outbox cleanup: " + error.message + "\n"; });
+      await clearPendingResults(SLUG, pending.manifest.render_id).catch((error) => { quartoLog += "Outbox cleanup: " + error.message + "\n"; });
       try {
         await loadQuartoOutput({ force:true });
         say(receipt.selected === false ? "Render saved; a newer output remains selected." : "Rendered and shared");
@@ -2606,9 +2607,22 @@
       : document_.can_edit === undefined
         ? document_.can_moderate
         : document_.can_edit;
-    // A document published before HTML was a source format has one anyway: the
-    // page itself, through the identity renderer.
-    const format = document_.source_format || "html";
+    // The backend's explicit engine/draft pair is authoritative when present.
+    // Legacy source_format=quarto documents infer Quarto through the adapter
+    // helper, while a bundle without an engine discriminator remains Quarto.
+    let resultsIdentity;
+    try {
+      resultsIdentity = documentResultsIdentity(document_);
+    } catch (error) {
+      say(error.message, true);
+      settled = true;
+      return;
+    }
+    const format = resultsIdentity.execution_engine === "quarto"
+      ? "quarto"
+      : document_.source_format
+        ? resultsIdentity.draft_format
+        : "html";
     sourceFormat = format;
     quartoBundle = document_.quarto_bundle || document_.quartoBundle || null;
     quartoAssets = {};
@@ -2624,7 +2638,7 @@
     if (format === "quarto") {
       localQuarto.configure({ project: SLUG, origin: location.origin });
       quartoBindingId = localQuarto.bindingId();
-      void loadPendingQuarto(SLUG).then((pending) => {
+      void loadPendingResults(SLUG).then((pending) => {
         if (pending && !quartoPendingPublish) {
           quartoPendingPublish = pending;
           say("A completed local render is waiting to be shared.");
@@ -3198,7 +3212,7 @@
 <!-- What a selection becomes, once the reader has said what to call it and
      what they think of it. -->
 <Modal bind:open={quartoResultsOpen} title={quartoInspected ? "Original saved result" : "Saved results"} wide onclose={closeQuartoResults}>
-  <QuartoResults items={quartoInspected?.items || resultItems(quartoBundle)}
+  <SavedResults items={quartoInspected?.items || resultItems(quartoBundle)}
     assets={quartoInspected?.assets || quartoAssets} renderId={quartoInspected?.manifest.render_id || quartoBundle?.render_id || ""}
     selectedRegion={quartoInspected?.region || null}
     canComment={mayChat && !quartoOutput?.local} oncomment={commentQuartoResult} />

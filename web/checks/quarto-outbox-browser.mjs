@@ -9,9 +9,17 @@ import { browser, until } from "../tools/browser-driver.mjs";
 const directory = mkdtempSync(join(tmpdir(), "librepaper-quarto-outbox-"));
 const source = readFileSync(new URL("../src/lib/quarto-pending.js", import.meta.url));
 const artifactSource = readFileSync(new URL("../src/lib/quarto-artifact.js", import.meta.url));
+const resultsPendingSource = readFileSync(new URL("../src/lib/results-pending.js", import.meta.url));
+const resultsArtifactSource = readFileSync(new URL("../src/lib/results-artifact.js", import.meta.url));
+const identitySource = readFileSync(new URL("../src/lib/engines/identity.js", import.meta.url));
 const server = createServer((request, response) => {
   response.setHeader("content-type", request.url.endsWith(".js") ? "text/javascript" : "text/html");
-  response.end(request.url === "/pending.js" ? source : request.url === "/artifact.js" ? artifactSource : '<!doctype html><script type="module">import * as pending from "/pending.js"; import * as artifact from "/artifact.js"; window.pending = pending; window.artifact = artifact;</script>');
+  response.end(request.url === "/pending.js" ? source
+    : request.url === "/artifact.js" ? artifactSource
+      : request.url === "/results-pending.js" ? resultsPendingSource
+        : request.url === "/results-artifact.js" ? resultsArtifactSource
+          : request.url === "/engines/identity.js" ? identitySource
+            : '<!doctype html><script type="module">import * as pending from "/pending.js"; import * as artifact from "/artifact.js"; window.pending = pending; window.artifact = artifact;</script>');
 });
 await new Promise((done) => server.listen(0, "127.0.0.1", done));
 const base = `http://127.0.0.1:${server.address().port}`;

@@ -18,11 +18,15 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
+use super::engine_adapter::{self, QuartoInvocationPlan};
 use super::protocol::{
     self, JobOutcome, JobRequest, JobStatus, OutputEntry, Provenance, QuartoBundleSummary,
     QuartoCoverage, QuartoJobOptions, QuartoRenderPolicy, Tool, ToolVersions, Workspace,
     MAX_LOG_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, QUARTO_COLLECTOR_VERSION,
 };
+
+/// Compatibility name for the adapter-owned normalized inventory.
+pub use super::engine_adapter::SourceInventory;
 
 pub const SUPPORTED_FORMATS: &[&str] = &["html", "pdf", "docx", "revealjs"];
 
@@ -166,7 +170,7 @@ pub struct QuartoBundle {
     #[serde(default)]
     pub assets: Vec<QuartoAsset>,
     #[serde(default)]
-    pub diagnostics: Vec<crate::quarto::Diagnostic>,
+    pub diagnostics: Vec<crate::results::Diagnostic>,
     pub coverage: QuartoCoverage,
 }
 
@@ -250,8 +254,8 @@ impl QuartoBundle {
         &self,
         document_id: &str,
         revision: &str,
-    ) -> crate::quarto::BundleManifest {
-        use crate::quarto::{
+    ) -> crate::results::BundleManifest {
+        use crate::results::{
             ArtifactDescriptor, ArtifactKind, AssetDescriptor, BundleManifest, CellCoverage,
             CellRecord, ComputationEvidence, Coverage, CoverageLevel, ExternalInputs, OutputFormat,
             OutputKind, OutputRecord, ProvenanceKind, RenderContext, SourceReference, Verification,
@@ -310,7 +314,8 @@ impl QuartoBundle {
             })
             .collect();
         BundleManifest {
-            schema: crate::quarto::BUNDLE_SCHEMA.into(),
+            engine: crate::results::ExecutionEngine::Quarto,
+            schema: crate::results::BUNDLE_SCHEMA.into(),
             render_id: self.render_id.clone(),
             document_id: document_id.into(),
             source: SourceReference {
@@ -339,7 +344,7 @@ impl QuartoBundle {
                 parameters_sha256: (!self.context.parameters_sha256.is_empty())
                     .then(|| self.context.parameters_sha256.clone()),
             },
-            provenance: crate::quarto::Provenance {
+            provenance: crate::results::Provenance {
                 kind: if self.provenance.kind.starts_with("imported") {
                     ProvenanceKind::Imported
                 } else {
@@ -366,7 +371,7 @@ impl QuartoBundle {
                 entrypoint: artifact.entrypoint.clone(),
                 sha256: artifact.sha256.clone(),
                 size: artifact.size,
-                mime: crate::quarto::canonical_mime(
+                mime: crate::results::canonical_mime(
                     &artifact.entrypoint,
                     mime_for(&artifact.entrypoint),
                 )
@@ -377,6 +382,7 @@ impl QuartoBundle {
                 .assets
                 .iter()
                 .map(|asset| AssetDescriptor {
+                    role: crate::results::AssetRole::Display,
                     path: asset.path.clone(),
                     sha256: asset.sha256.clone(),
                     mime: asset.mime.clone(),
@@ -394,13 +400,6 @@ impl QuartoBundle {
             },
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct SourceInventory {
-    #[allow(dead_code)]
-    pub tree_sha256: String,
-    pub files: Vec<String>,
 }
 
 pub fn validate_main(main: &str) -> Result<(), String> {
@@ -435,12 +434,12 @@ pub async fn discover() -> protocol::QuartoCapabilities {
         },
         collector_versions: vec![QUARTO_COLLECTOR_VERSION.into()],
         formats: SUPPORTED_FORMATS.iter().map(|s| (*s).into()).collect(),
-        policies: supported_policies(version.as_deref()),
+        policies: engine_adapter::quarto_supported_policies(version.as_deref()),
         runtime_checks: runtime_checks().await,
     }
 }
 
-fn supported_policies(version: Option<&str>) -> Vec<String> {
+pub(crate) fn supported_policies(version: Option<&str>) -> Vec<String> {
     let mut policies = vec!["project-defaults".into()];
     // Quarto 1.3 introduced cache refresh and freezer flags used here. A
     // missing or unparsable version is reported conservatively.
@@ -609,9 +608,10 @@ pub async fn run_job_with_bindings(
     let Some(options) = request.quarto.clone() else {
         return failed(&request, &job_id, "quarto job is missing typed options");
     };
-    if let Err(error) = options.validate() {
-        return failed(&request, &job_id, &error);
-    }
+    let invocation_plan = match QuartoInvocationPlan::from_options(&options) {
+        Ok(plan) => plan,
+        Err(error) => return failed(&request, &job_id, &error),
+    };
     let Some(quarto) = find_quarto() else {
         return failed(&request, &job_id, "Quarto is not installed or not on PATH");
     };
@@ -768,42 +768,11 @@ pub async fn run_job_with_bindings(
         }
     };
     let mut command = Command::new(quarto);
-    command
-        .current_dir(&invocation_project)
-        .arg("render")
-        // Keep the entrypoint project-relative: Quarto's freezer/output-dir
-        // handling treats an absolute source as a single-file render and
-        // rejects project-only flags. The canonical path was rechecked just
-        // above and the child runs with the canonical project as cwd.
-        .arg(main_name)
-        .arg("--to")
-        .arg(&options.format)
-        .arg("--no-execute-daemon")
-        .arg("--output-dir")
-        .arg(&output)
-        .arg("--lua-filter")
-        .arg(&filter);
-    match options.policy {
-        QuartoRenderPolicy::ProjectDefaults => {}
-        QuartoRenderPolicy::RefreshComputations => {
-            command.arg("--cache-refresh");
-        }
-        QuartoRenderPolicy::Frozen => {
-            // `--use-freezer` reuses the cached computation while still
-            // allowing Quarto to materialize the cached display resources.
-            // Combining it with `--no-execute` makes Quarto omit those
-            // displays from the Pandoc AST on Quarto 1.10, producing a
-            // seemingly successful artifact with missing figures.
-            command.arg("--use-freezer");
-        }
-    }
-    if let Some(profile) = options.profile.as_deref() {
-        command.arg("--profile").arg(profile);
-    }
-    for (name, value) in &options.parameters {
-        let value = serde_json::to_string(value).unwrap_or_else(|_| "null".into());
-        command.arg("-P").arg(format!("{name}:{value}"));
-    }
+    command.current_dir(&invocation_project);
+    // Keep the entrypoint project-relative: Quarto's freezer/output-dir
+    // handling treats an absolute source as a single-file render and rejects
+    // project-only flags. The canonical path was rechecked above.
+    invocation_plan.apply(&mut command, &output, &filter);
     command
         .env("LIBREPAPER_QUARTO_CELL_MANIFEST", &cell_manifest)
         .env("QUARTO_LOG_LEVEL", "WARNING")
@@ -928,12 +897,7 @@ pub async fn run_job_with_bindings(
         }
     };
     if cell_manifest.is_file() {
-        match crate::local::quarto_capture::collect(
-            &cell_manifest,
-            main_name,
-            &source_before,
-            &project,
-        ) {
+        match engine_adapter::quarto_capture(&cell_manifest, main_name, &source_before, &project) {
             Ok(capture) => {
                 let capture_had_diagnostics = !capture.diagnostics.is_empty();
                 bundle.cells = capture.cells.into_iter().map(local_cell).collect();
@@ -962,7 +926,7 @@ pub async fn run_job_with_bindings(
                                 bundle.assets.push(QuartoAsset {
                                     path: path.into(),
                                     sha256: sha256(&bytes),
-                                    mime: crate::quarto::canonical_mime(path, mime_for(path))
+                                    mime: crate::results::canonical_mime(path, mime_for(path))
                                         .into(),
                                     size: bytes.len() as u64,
                                 });
@@ -1023,8 +987,8 @@ pub async fn run_job_with_bindings(
                 log.push_str("\nQuarto collector error: ");
                 log.push_str(&error);
                 log.push('\n');
-                bundle.diagnostics.push(crate::quarto::Diagnostic {
-                    severity: crate::quarto::DiagnosticSeverity::Error,
+                bundle.diagnostics.push(crate::results::Diagnostic {
+                    severity: crate::results::DiagnosticSeverity::Error,
                     message: "Quarto collector could not map executed cell outputs".into(),
                     source_path: Some(main_name.into()),
                     start_line: None,
@@ -1038,8 +1002,8 @@ pub async fn run_job_with_bindings(
         }
     } else {
         log.push_str("\nQuarto collector did not produce a capture manifest\n");
-        bundle.diagnostics.push(crate::quarto::Diagnostic {
-            severity: crate::quarto::DiagnosticSeverity::Error,
+        bundle.diagnostics.push(crate::results::Diagnostic {
+            severity: crate::results::DiagnosticSeverity::Error,
             message: "Quarto collector did not produce a cell capture manifest".into(),
             source_path: Some(main_name.into()),
             start_line: None,
@@ -1056,16 +1020,15 @@ pub async fn run_job_with_bindings(
         .as_deref()
         == Some(source_before.as_str());
     if !source_matches {
-        let parameters_sha256 = crate::quarto::parameters_sha256(&options.parameters);
-        let mut parsed_before = crate::quarto::parse_qmd(&source_before, &options.main);
-        parsed_before.dependencies = dependencies.clone();
+        let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
         let profiles: Vec<String> = options.profile.iter().cloned().collect();
-        bundle.context.computation_sha256 = crate::quarto::computation_fingerprint_for_format(
-            &parsed_before,
+        bundle.context.computation_sha256 = engine_adapter::quarto_computation_fingerprint(
+            &source_before,
             &options.main,
             &options.format,
             &profiles,
             Some(&parameters_sha256),
+            &dependencies,
         );
         bundle.source.verification = "working-tree-changed".into();
         bundle.provenance.external_inputs = "unknown".into();
@@ -1327,7 +1290,7 @@ fn collect_bundle_with_dependencies(
             assets.push(QuartoAsset {
                 path: relative.clone(),
                 sha256: digest,
-                mime: crate::quarto::canonical_mime(&relative, mime_for(&relative)).into(),
+                mime: crate::results::canonical_mime(&relative, mime_for(&relative)).into(),
                 size: bytes.len() as u64,
             });
         }
@@ -1357,7 +1320,7 @@ fn collect_bundle_with_dependencies(
             assets.push(QuartoAsset {
                 path: relative.clone(),
                 sha256: sha256(&bytes),
-                mime: crate::quarto::canonical_mime(&relative, mime_for(&relative)).into(),
+                mime: crate::results::canonical_mime(&relative, mime_for(&relative)).into(),
                 size: bytes.len() as u64,
             });
         }
@@ -1386,20 +1349,19 @@ fn collect_bundle_with_dependencies(
     if has_manifest {
         coverage.cell_outputs = "partial".into();
     }
-    let parameters_sha256 = crate::quarto::parameters_sha256(&options.parameters);
-    let mut parsed = crate::quarto::parse_qmd(&source, &options.main);
+    let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
+    let profiles: Vec<String> = options.profile.iter().cloned().collect();
+    let format_name = options.format.as_str();
     // Keep the durable computation identity sensitive to every shared input
     // supplied for this invocation. The path/hash records are public source
     // identity only; private linked-project files remain in provenance.
-    parsed.dependencies = dependencies.to_vec();
-    let profiles: Vec<String> = options.profile.iter().cloned().collect();
-    let format_name = options.format.as_str();
-    let computation_sha256 = crate::quarto::computation_fingerprint_for_format(
-        &parsed,
+    let computation_sha256 = engine_adapter::quarto_computation_fingerprint(
+        &source,
         &options.main,
         format_name,
         &profiles,
         Some(&parameters_sha256),
+        dependencies,
     );
     let context_material = format!(
         "librepaper-quarto-selection-v1\0{format_name}\0{}\0{parameters_sha256}",
@@ -1408,7 +1370,7 @@ fn collect_bundle_with_dependencies(
     let context_id = format!("ctx-{}", &sha256(context_material.as_bytes())[..16]);
     let now = timestamp();
     Ok(QuartoBundle {
-        schema: crate::quarto::BUNDLE_SCHEMA.into(),
+        schema: crate::results::BUNDLE_SCHEMA.into(),
         render_id: opaque_id(),
         source: QuartoSource {
             revision: None,
@@ -1505,7 +1467,7 @@ pub fn import_artifact(
         if total_bytes > MAX_QUARTO_OUTPUT_BYTES {
             return Err("imported artifact exceeds its aggregate size limit".into());
         }
-        let mime = crate::quarto::canonical_mime(&relative, mime_for(&relative)).to_string();
+        let mime = crate::results::canonical_mime(&relative, mime_for(&relative)).to_string();
         assets.push(QuartoAsset {
             path: relative,
             sha256: sha256(&bytes),
@@ -1517,7 +1479,7 @@ pub fn import_artifact(
     let context_material = format!("librepaper-quarto-selection-v1\0{format}\0\0");
     let context = sha256(context_material.as_bytes());
     Ok(QuartoBundle {
-        schema: crate::quarto::BUNDLE_SCHEMA.into(),
+        schema: crate::results::BUNDLE_SCHEMA.into(),
         render_id: opaque_id(),
         source: QuartoSource {
             revision: None,
@@ -1531,7 +1493,7 @@ pub fn import_artifact(
             computation_sha256: context.clone(),
             format: format.into(),
             profiles: Vec::new(),
-            parameters_sha256: crate::quarto::parameters_sha256(&BTreeMap::new()),
+            parameters_sha256: crate::results::parameters_sha256(&BTreeMap::new()),
         },
         provenance: QuartoProvenance {
             kind: "imported-artifact".into(),
@@ -1761,8 +1723,8 @@ fn verify_bound_manifest(root: &Path, manifest: &[protocol::ManifestEntry]) -> R
     Ok(())
 }
 
-fn local_cell(cell: crate::quarto::CellRecord) -> QuartoCell {
-    use crate::quarto::{CellCoverage, OutputKind};
+fn local_cell(cell: crate::results::CellRecord) -> QuartoCell {
+    use crate::results::{CellCoverage, OutputKind};
     let coverage = match cell.coverage {
         CellCoverage::Captured => "captured",
         CellCoverage::IntentionallyHidden => "hidden",
@@ -1802,6 +1764,10 @@ fn local_cell(cell: crate::quarto::CellRecord) -> QuartoCell {
 
 #[allow(dead_code)]
 fn inventory_tree(root: &Path) -> Result<SourceInventory, String> {
+    engine_adapter::quarto_source_tree_inventory(root)
+}
+
+pub(crate) fn inventory_tree_impl(root: &Path) -> Result<SourceInventory, String> {
     let mut files = Vec::new();
     walk_files(root, root, &mut files)?;
     let mut hasher = Sha256::new();
@@ -1825,6 +1791,13 @@ fn inventory_tree(root: &Path) -> Result<SourceInventory, String> {
 }
 
 fn inventory_manifest(
+    root: &Path,
+    manifest: &[protocol::ManifestEntry],
+) -> Result<SourceInventory, String> {
+    engine_adapter::quarto_source_inventory(root, manifest)
+}
+
+pub(crate) fn inventory_manifest_impl(
     root: &Path,
     manifest: &[protocol::ManifestEntry],
 ) -> Result<SourceInventory, String> {

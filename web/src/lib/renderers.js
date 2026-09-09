@@ -15,7 +15,7 @@ import { needsBibliography } from "./bibliography-engine.js";
 // that speaks to it.
 
 import * as latex from "./latex.js";
-import * as quarto from "./quarto.js";
+import * as quarto from "./engines/quarto.js";
 
 import { rendererRequest } from "./renderer-client.js";
 

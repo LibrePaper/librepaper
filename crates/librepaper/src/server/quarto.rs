@@ -5,7 +5,7 @@
 //! when the same bytes occur in several documents.
 
 use super::*;
-use crate::quarto::{decode_uploads, BundleError, PublishRequest, QuartoStore};
+use crate::results::{decode_uploads, BundleError, PublishRequest, ResultsStore};
 
 /// A publication may leave transport objects behind when authority changes or
 /// the catalogue commit fails after the blob swap.  Schedule a bounded sweep
@@ -56,12 +56,12 @@ impl Server {
             .saturating_add(2)
             .saturating_div(3)
             .saturating_mul(4);
-        let descriptor_ceiling = (crate::quarto::MAX_ASSETS + 1).saturating_mul(256);
-        let request_ceiling = crate::quarto::MAX_MANIFEST_BYTES
+        let descriptor_ceiling = (crate::results::MAX_ASSETS + 1).saturating_mul(256);
+        let request_ceiling = crate::results::MAX_MANIFEST_BYTES
             .saturating_add(encoded_ceiling)
             .saturating_add(descriptor_ceiling)
             .saturating_add(1024)
-            .min(crate::quarto::MAX_BUNDLE_BYTES.saturating_mul(2));
+            .min(crate::results::MAX_BUNDLE_BYTES.saturating_mul(2));
         let body = match to_bytes(request.into_body(), request_ceiling).await {
             Ok(body) => body,
             Err(_) => return write_json(413, &json!({"error": "Quarto bundle is too large"})),
@@ -77,6 +77,11 @@ impl Server {
         };
         if publish.manifest.document_id != slug {
             return write_json(400, &json!({"error": "bundle document does not match URL"}));
+        }
+        if let Err(error) = crate::results::document_metadata(&entry.source_format)
+            .validate_bundle_engine(publish.manifest.engine)
+        {
+            return quarto_error(error);
         }
         let decoded = match decode_uploads(&publish.manifest, &publish.blobs) {
             Ok(decoded) => decoded,
@@ -145,7 +150,7 @@ impl Server {
         let _quarto_writer = room.quarto_publication.lock().await;
         if matches!(
             publish.manifest.provenance.kind,
-            crate::quarto::ProvenanceKind::ManagedLocalRender
+            crate::results::ProvenanceKind::ManagedLocalRender
         ) {
             let revision = &publish.manifest.source.revision;
             let checkpoint = match room.checkpoint_by_sha(revision).await {
@@ -186,7 +191,7 @@ impl Server {
             };
             if let Err(error) = room
                 .put_quarto_object(
-                    &crate::quarto::scoped_blob_key(room.quarto_scope(), &blob.sha256),
+                    &crate::results::scoped_blob_key(room.quarto_scope(), &blob.sha256),
                     blob.data,
                     &blob.mime,
                     Some(actor),
@@ -208,13 +213,18 @@ impl Server {
         }) else {
             return write_json(404, &json!({"error": "not found"}));
         };
+        if let Err(error) = crate::results::document_metadata(&current.source_format)
+            .validate_bundle_engine(publish.manifest.engine)
+        {
+            return quarto_error(error);
+        }
         let current_who = self
             .viewer(&current, &headers, arrival, query.as_deref())
             .await;
         if !current_who.at_least(Role::Editor) {
             return write_json(403, &json!({"error": "edit access changed"}));
         }
-        let store = QuartoStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
+        let store = ResultsStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
         let requested_selection = publish.select;
         let expected_generation = publish.expected_generation;
         publish.blobs.clear();
@@ -323,7 +333,7 @@ impl Server {
             }
         }
         {
-            let mut published = crate::quarto::PublishedBundle {
+            let mut published = crate::results::PublishedBundle {
                 manifest: publish.manifest.clone(),
                 selected: false,
                 selection: None,
@@ -462,7 +472,7 @@ impl Server {
                 return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
             }
         };
-        let store = QuartoStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
+        let store = ResultsStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
         if !room
             .quarto_object_committed(&store.manifest_object_key(slug, render))
             .await
@@ -500,7 +510,7 @@ impl Server {
                 return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
             }
         };
-        let store = QuartoStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
+        let store = ResultsStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
         match room.quarto_selection(slug, context).await {
             Ok(Some((selection, _version))) => {
                 // A selection pointer is only useful when its immutable
@@ -562,7 +572,7 @@ impl Server {
                 return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
             }
         };
-        let store = QuartoStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
+        let store = ResultsStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
         if !room
             .quarto_object_committed(&store.manifest_object_key(slug, render))
             .await
@@ -581,7 +591,7 @@ impl Server {
                     .iter()
                     .find(|asset| asset.path == path)
                     .map_or("application/octet-stream", |asset| {
-                        crate::quarto::canonical_mime(&asset.path, &asset.mime)
+                        crate::results::canonical_mime(&asset.path, &asset.mime)
                     });
                 let mut response = Response::new(Body::from(body));
                 set(&mut response, "content-type", mime);
@@ -627,7 +637,7 @@ impl Server {
                 return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
             }
         };
-        let store = QuartoStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
+        let store = ResultsStore::new_scoped(self.store.blobs.clone(), room.quarto_scope());
         if !room
             .quarto_object_committed(&store.manifest_object_key(slug, render))
             .await
@@ -642,9 +652,9 @@ impl Server {
         match store.read_artifact(&manifest).await {
             Ok(body) => {
                 let mime = manifest.artifact.as_ref().map_or("application/octet-stream", |artifact| match artifact.kind {
-                    crate::quarto::ArtifactKind::Html => "text/html; charset=utf-8",
-                    crate::quarto::ArtifactKind::Pdf => "application/pdf",
-                    crate::quarto::ArtifactKind::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    crate::results::ArtifactKind::Html => "text/html; charset=utf-8",
+                    crate::results::ArtifactKind::Pdf => "application/pdf",
+                    crate::results::ArtifactKind::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 });
                 let mut response = Response::new(Body::from(body));
                 set(&mut response, "content-type", mime);

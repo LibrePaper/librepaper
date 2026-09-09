@@ -536,6 +536,34 @@ async fn one_projects_job_is_not_readable_with_another_projects_token() {
 }
 
 #[tokio::test]
+async fn quarto_calepin_engine_is_rejected_at_admission() {
+    let test = start_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "252525");
+    let token = connected_token(&test, ORIGIN, "quarto-calepin", "252525").await;
+    let project = tempfile::tempdir().unwrap();
+    let source = b"# Paper\n";
+    std::fs::write(project.path().join("paper.qmd"), source).unwrap();
+    let binding = BindingStore::new(test.config_home.path())
+        .grant(ORIGIN, "quarto-calepin", project.path(), "paper.qmd")
+        .unwrap();
+    let job = json!({
+        "protocol": 1, "kind": "quarto", "engine": "calepin",
+        "project": "quarto-calepin", "origin": ORIGIN,
+        "snapshot": "revision-1", "generation": 1,
+        "manifest": manifest_for(&[("paper.qmd", source)]),
+        "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html"}
+    });
+    let response = post_job(&test, ORIGIN, &token, job, &[("paper.qmd", source)]).await;
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(status, 400);
+    assert_eq!(
+        body["error"],
+        "unsupported engine \"calepin\" for quarto job"
+    );
+}
+
+#[tokio::test]
 async fn completed_quarto_job_survives_service_restart_without_rerun() {
     let calls = Arc::new(AtomicUsize::new(0));
     let runner = Arc::new(CountingRunner {

@@ -615,6 +615,7 @@ pub(super) async fn handle(
             let files: Vec<String> = room.tree().await.files.into_keys().collect();
             let role = who.role;
             let owned = role.at_least(Role::Editor);
+            let metadata = crate::results::document_metadata(&entry.source_format);
             // What the comment form would sign this caller's name as, if they
             // said something right now: the account name when there is one,
             // otherwise the pseudonym their visitor cookie earns them, or ""
@@ -677,6 +678,8 @@ pub(super) async fn handle(
                     // the reader offers an editor for a document it can render
                     // again.
                     "source_format": entry.source_format,
+                    "execution_engine": metadata.execution_engine,
+                    "draft_format": metadata.draft_format,
                     // Which file in the directory is the document. A reader
                     // that has not joined the session yet has this and not the
                     // maps, which is enough to name what it is rendering.

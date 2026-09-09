@@ -179,6 +179,231 @@ async fn quarto_bundle_publication_round_trips_and_is_idempotent() {
 }
 
 #[tokio::test]
+async fn document_execution_engine_is_validated_on_create_and_update() {
+    let server = new_test_server().await;
+    for (slug, engine) in [("calepin-create", "calepin"), ("none-qmd-create", "none")] {
+        let (status, body) = post(
+            &server.url,
+            "/api/documents",
+            json!({
+                "slug": slug,
+                "title": "Rejected engine",
+                "source": "# Paper\n",
+                "source_format": "quarto",
+                "execution_engine": engine,
+                "draft_format": "markdown"
+            }),
+        )
+        .await;
+        assert_eq!(status, 400, "{engine}: {body}");
+    }
+
+    let (status, created) = post(
+        &server.url,
+        "/api/documents",
+        json!({
+            "slug": "explicit-quarto",
+            "title": "Explicit Quarto",
+            "source": "# Paper\n",
+            "source_format": "quarto",
+            "execution_engine": "quarto",
+            "draft_format": "markdown"
+        }),
+    )
+    .await;
+    assert_eq!(status, 201, "{created}");
+    let slug = text(&created, "slug");
+    let (status, document) = get_json_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
+    assert_eq!(status, 200, "{document}");
+    assert_eq!(document["execution_engine"], "quarto");
+    assert_eq!(document["draft_format"], "markdown");
+
+    for (engine, draft_format) in [
+        ("calepin", "markdown"),
+        ("none", "markdown"),
+        ("quarto", "typst"),
+    ] {
+        let (status, body) = post(
+            &server.url,
+            "/api/documents",
+            json!({
+                "slug": slug,
+                "title": "Explicit Quarto",
+                "source": "# Changed\n",
+                "source_format": "quarto",
+                "execution_engine": engine,
+                "draft_format": draft_format
+            }),
+        )
+        .await;
+        assert_eq!(status, 400, "{engine}/{draft_format}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn invalid_bundle_engines_and_reserved_assets_do_not_change_selection() {
+    use base64::Engine;
+    let server = new_test_server().await;
+    let slug = text(&publish_quarto(&server.url).await, "slug");
+    let route = format!("/api/documents/{slug}/quarto/bundles");
+    let (status, first) = post(
+        &server.url,
+        &route,
+        imported_bundle(&slug, "stable-engine", "<p>Stable</p>"),
+    )
+    .await;
+    assert_eq!(status, 201, "{first}");
+
+    for (render, engine) in [("engine-none", "none"), ("engine-calepin", "calepin")] {
+        let mut payload = imported_bundle(&slug, render, "<p>Rejected</p>");
+        payload["manifest"]["engine"] = json!(engine);
+        let (status, body) = post(&server.url, &route, payload).await;
+        assert_eq!(status, 400, "{engine}: {body}");
+    }
+
+    let css = b".paper { color: red }";
+    let digest = crate::quarto::sha256(css);
+    let mut reserved = imported_bundle(&slug, "draft-dependency", "<p>Rejected</p>");
+    reserved["manifest"]["assets"] = json!([{
+        "path": "runtime.css",
+        "sha256": digest,
+        "mime": "text/css",
+        "size": css.len(),
+        "role": "draft-dependency"
+    }]);
+    reserved["blobs"].as_array_mut().unwrap().push(json!({
+        "sha256": digest,
+        "mime": "text/css",
+        "data": base64::engine::general_purpose::STANDARD.encode(css)
+    }));
+    let (status, body) = post(&server.url, &route, reserved).await;
+    assert_eq!(status, 400, "reserved draft dependency: {body}");
+
+    let (status, selected) = get_json_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("{route}/selected/html"),
+    )
+    .await;
+    assert_eq!(status, 200, "{selected}");
+    assert_eq!(selected["manifest"]["render_id"], "stable-engine");
+    assert_eq!(
+        selected["selection"]["generation"],
+        first["selection"]["generation"]
+    );
+}
+
+#[tokio::test]
+async fn published_bundle_remains_readable_after_document_format_change() {
+    use base64::Engine;
+    let server = new_test_server().await;
+    let document = publish_quarto(&server.url).await;
+    let slug = text(&document, "slug");
+    let route = format!("/api/documents/{slug}/quarto/bundles");
+    let html = "<p>Persisted Quarto result</p>";
+    let css = b".paper { color: blue }";
+    let css_digest = crate::quarto::sha256(css);
+    let mut bundle = imported_bundle(&slug, "before-format-change", html);
+    bundle["manifest"]["assets"] = json!([{
+        "path": "runtime.css",
+        "sha256": css_digest,
+        "mime": "text/css",
+        "size": css.len()
+    }]);
+    bundle["blobs"].as_array_mut().unwrap().push(json!({
+        "sha256": css_digest,
+        "mime": "text/css",
+        "data": base64::engine::general_purpose::STANDARD.encode(css)
+    }));
+    let (status, published) = post(&server.url, &route, bundle).await;
+    assert_eq!(status, 201, "{published}");
+
+    let (status, comment) = post(
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+        json!({
+            "type": "comment",
+            "body": "Keep this output available after a source migration.",
+            "creator": "Reviewer",
+            "temp_id": "22222222-2222-4222-8222-222222222222",
+            "output_anchor": {
+                "render_id": "before-format-change",
+                "cell_id": "",
+                "output_ordinal": 0,
+                "content_sha256": crate::quarto::sha256(html.as_bytes()),
+                "coordinate_system": "pixel",
+                "width": 800,
+                "height": 600
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{comment}");
+
+    let (status, updated) = post(
+        &server.url,
+        "/api/documents",
+        json!({
+            "slug": slug,
+            "title": "Qmd",
+            "source": "# Markdown now\n",
+            "source_format": "markdown",
+            "execution_engine": "none",
+            "draft_format": "markdown"
+        }),
+    )
+    .await;
+    assert_eq!(status, 201, "{updated}");
+
+    let (status, manifest) = get_json_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("{route}/before-format-change"),
+    )
+    .await;
+    assert_eq!(status, 200, "{manifest}");
+    assert_eq!(manifest["render_id"], "before-format-change");
+    let asset = client()
+        .get(format!(
+            "{}/api/documents/{slug}/quarto/bundles/before-format-change/asset?path=runtime.css",
+            server.url
+        ))
+        .header("cookie", session_as(TEST_PUBLISHER))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), 200);
+    assert_eq!(asset.bytes().await.unwrap().as_ref(), css);
+    let response = client()
+        .get(format!(
+            "{}/api/documents/{slug}/quarto/bundles/before-format-change/artifact",
+            server.url
+        ))
+        .header("cookie", session_as(TEST_PUBLISHER))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), html);
+    let (status, comments) = get_json_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}/comments"),
+    )
+    .await;
+    assert_eq!(status, 200, "{comments}");
+    assert_eq!(
+        comments["comments"][0]["output_anchor"]["render_id"],
+        "before-format-change"
+    );
+}
+
+#[tokio::test]
 async fn quarto_unchanged_artifact_bytes_need_no_second_upload() {
     let server = new_test_server().await;
     let slug = text(&publish_quarto(&server.url).await, "slug");

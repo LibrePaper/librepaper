@@ -21,6 +21,7 @@ mod document;
 mod http;
 mod local;
 pub mod quarto;
+pub mod results;
 mod room;
 mod seed;
 mod server;

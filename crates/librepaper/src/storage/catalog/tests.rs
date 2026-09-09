@@ -1,6 +1,6 @@
 use super::{
-    Account, Catalog, Checkpoint, Conversation, JournalPreparation, JournalSegment, Link, Message,
-    MutationAuthority, NewDocument, OperationRequest, Rendering,
+    Account, Catalog, CatalogError, Checkpoint, Conversation, Document, JournalPreparation,
+    JournalSegment, Link, Message, MutationAuthority, NewDocument, OperationRequest, Rendering,
 };
 use sha2::Digest;
 
@@ -461,7 +461,7 @@ fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
 #[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 17);
+    assert_eq!(catalog.schema_version().unwrap(), 18);
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection
@@ -1768,7 +1768,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
         assert_eq!(version, 12, "an interrupted migration does not advance");
     }
     let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 17);
+    assert_eq!(catalog.schema_version().unwrap(), 18);
     let row = catalog.checkpoint("doc", "old").unwrap().unwrap();
     assert_eq!(row.by, "alice");
     assert_eq!(
@@ -1778,7 +1778,123 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
     // Reopening an already-migrated catalogue is a no-op.
     drop(catalog);
     let reopened = Catalog::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 17);
+    assert_eq!(reopened.schema_version().unwrap(), 18);
+}
+
+/// A real schema-17 database is the important legacy case: migration 18 must
+/// derive the typed result metadata from `source_format`, and the metadata
+/// row must follow ordinary source-format updates and document deletion.
+#[test]
+fn result_metadata_migrates_schema17_rows_and_tracks_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog-schema17.db");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        for &(version, sql) in super::MIGRATIONS.iter().take(17) {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute_batch(&format!("PRAGMA user_version = {version}"))
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO documents
+                 (slug, storage_id, title, sha, created_at, published_at, updated_at,
+                  example, owner_key, owner_id, status, size, counted_size,
+                  maintenance_reserved, comment_seq, last_auto_checkpoint_at,
+                  pending_publication, last_publication_id, source_format, main)
+                 VALUES ('legacy-quarto','storage-q','Quarto','sha','now','now','now',
+                         0,'',NULL,'active',0,0,0,0,0,NULL,'','quarto','main.qmd')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO documents
+                 (slug, storage_id, title, sha, created_at, published_at, updated_at,
+                  example, owner_key, owner_id, status, size, counted_size,
+                  maintenance_reserved, comment_seq, last_auto_checkpoint_at,
+                  pending_publication, last_publication_id, source_format, main)
+                 VALUES ('legacy-markdown','storage-m','Markdown','sha','now','now','now',
+                         0,'',NULL,'active',0,0,0,0,0,NULL,'','markdown','README.md')",
+                [],
+            )
+            .unwrap();
+    }
+    let catalog = Catalog::open(&path).unwrap();
+    assert_eq!(catalog.schema_version().unwrap(), 18);
+    let quarto = catalog.document_results_metadata("legacy-quarto").unwrap();
+    assert_eq!(
+        quarto.execution_engine,
+        crate::results::ExecutionEngine::Quarto
+    );
+    assert_eq!(quarto.draft_format, crate::results::DraftFormat::Markdown);
+    let markdown = catalog
+        .document_results_metadata("legacy-markdown")
+        .unwrap();
+    assert_eq!(
+        markdown.execution_engine,
+        crate::results::ExecutionEngine::None
+    );
+    catalog
+        .update_document(&Document {
+            source_format: "quarto".into(),
+            ..catalog.document("legacy-markdown").unwrap().unwrap()
+        })
+        .unwrap();
+    assert_eq!(
+        catalog
+            .document_results_metadata("legacy-markdown")
+            .unwrap()
+            .execution_engine,
+        crate::results::ExecutionEngine::Quarto
+    );
+    for (source, draft) in [
+        ("", "html"),
+        ("typst", "typst"),
+        ("latex", "latex"),
+        ("markdown", "markdown"),
+    ] {
+        catalog
+            .update_document(&Document {
+                source_format: source.into(),
+                ..catalog.document("legacy-markdown").unwrap().unwrap()
+            })
+            .unwrap();
+        let metadata = catalog
+            .document_results_metadata("legacy-markdown")
+            .unwrap();
+        assert_eq!(
+            metadata.execution_engine,
+            crate::results::ExecutionEngine::None
+        );
+        assert_eq!(metadata.draft_format.as_str(), draft);
+    }
+    let snapshot = dir.path().join("results-backup.db");
+    catalog
+        .with_connection(|connection| {
+            connection.execute("VACUUM INTO ?1", [&snapshot.to_string_lossy().to_string()])?;
+            Ok(())
+        })
+        .unwrap();
+    let restored = Catalog::open(&snapshot).unwrap();
+    assert_eq!(
+        restored.document_results_metadata("legacy-quarto").unwrap(),
+        quarto
+    );
+    catalog
+        .with_connection(|connection| {
+            connection.execute("DELETE FROM documents WHERE slug = 'legacy-markdown'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(
+        catalog.document_results_metadata("legacy-markdown"),
+        Err(CatalogError::NotFound)
+    ));
 }
 
 /// A local backup is a `VACUUM INTO` image, so the identity distinction has to
@@ -1816,7 +1932,7 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         })
         .unwrap();
     let restored = Catalog::open(&snapshot).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 17);
+    assert_eq!(restored.schema_version().unwrap(), 18);
     assert_eq!(
         attribution_of(&restored, "stable"),
         ("alice".to_string(), Some("acct-writer".to_string()))

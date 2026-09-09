@@ -4,6 +4,9 @@ This accompanies [SPEC-quarto.md](../SPEC-quarto.md). The specification includes
 both the first release and later presentation work. This document records the
 implementation boundaries rather than treating all Quarto syntax as supported.
 
+The [shared results architecture](results-architecture.md) describes the
+engine boundary and compatibility requirements for future computation engines.
+
 ## Source and publication
 
 `.qmd` is a source format throughout the editor, publication, downloads, native
