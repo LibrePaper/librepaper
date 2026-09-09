@@ -29,6 +29,7 @@
     // A suggestion's own two verbs. Hidden entirely for any other comment.
     onaccept,
     onreject,
+    onassistant,
   } = $props();
 
   // A suggestion is a comment whose motivation is `editing` (the W3C term);
@@ -256,6 +257,13 @@
       {/if}
 
       {#if comment.body}<p>{comment.body}</p>{/if}
+
+      {#if onassistant && !comment.resolved}
+        <button type="button" class="btn btn-sm preset-tonal-surface assistant-action"
+                onclick={(e) => { e.stopPropagation(); onassistant(comment); }}>
+          {isSuggestion ? "Refine with assistant" : "Address with assistant"}
+        </button>
+      {/if}
 
       <small class="panel-meta">{comment.creator} · {stamp(comment.created)}</small>
 

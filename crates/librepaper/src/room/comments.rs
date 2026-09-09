@@ -674,7 +674,10 @@ impl Room {
     /// use an empty author (so every other caller sees `mine: false`), while
     /// the submitting socket or HTTP response asks for its own view.
     pub async fn comment_event_for(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
-        if payload.get("type").and_then(Value::as_str) != Some("comment") {
+        if !matches!(
+            payload.get("type").and_then(Value::as_str),
+            Some("comment" | "refine")
+        ) {
             return payload.clone();
         }
         let Some(id) = payload
@@ -836,7 +839,7 @@ impl Room {
         // caller who is not allowed to decide at all.
         let deciding = match &command {
             Command::Resolve { .. } => is_owner,
-            Command::Delete { .. } => true,
+            Command::Delete { .. } | Command::Refine { .. } => true,
             _ => false,
         };
         if let (Some(catalog), true) = (self.catalog.get(), deciding) {
@@ -857,6 +860,71 @@ impl Room {
         }
 
         match command {
+            Command::Refine {
+                comment_id,
+                proposed,
+                expected_proposed,
+                body,
+                revision,
+                request_id,
+                ..
+            } => {
+                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
+                else {
+                    return fail("unknown comment");
+                };
+                let target = &state.comments[index];
+                if !is_owner && (author.is_empty() || target.author != author) {
+                    return fail("only the suggestion author or an editor may refine it");
+                }
+                if target.motivation != "editing" || target.resolved || !target.outcome.is_empty() {
+                    return fail("only a pending suggestion can be refined");
+                }
+                if target.revision != revision {
+                    return fail("suggestion revision changed; read it again before refining");
+                }
+                if proposed.chars().count() > config.caps.exact
+                    || body.chars().count() > config.caps.body
+                {
+                    return fail("refinement exceeds the suggestion size limit");
+                }
+                let proposed = clean(&proposed, config.caps.exact);
+                let body = clean(&body, config.caps.body).trim().to_string();
+                if target.proposed.as_deref() == Some(&proposed) && target.body == body {
+                    return (
+                        json!({"type":"refine","comment_id":comment_id,"comment":target,"request_id":request_id,"noop":true}),
+                        true,
+                    );
+                }
+                if target.proposed.as_deref() != Some(&expected_proposed) {
+                    return fail("suggestion changed; read it again before refining");
+                }
+                let mut refined = target.clone();
+                refined.proposed = Some(proposed);
+                refined.body = body;
+                let prepared = self.legacy_list_with(&state, index, &refined);
+                let seq = state.seq;
+                drop(state);
+                let persisted = if let Some(catalog) = self.catalog.get() {
+                    match catalog_comment_row(&self.slug, &refined) {
+                        Ok(row) => update_comment_row(catalog, row).await,
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    self.persist_comments(seq, prepared).await
+                };
+                state = self.state.lock().await;
+                if persisted.is_err() {
+                    return fail(UNSAVED);
+                }
+                if self.catalog.get().is_some() {
+                    install_comment(&mut state, refined.clone());
+                }
+                (
+                    json!({"type":"refine","comment_id":comment_id,"comment":refined,"request_id":request_id}),
+                    true,
+                )
+            }
             Command::Resolve {
                 comment_id,
                 resolved,

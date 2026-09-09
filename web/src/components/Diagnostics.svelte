@@ -55,7 +55,7 @@
               </span>
               <p class="whitespace-pre-wrap break-words">{item.message}</p>
               {#if onask}
-                <button type="button" class="btn btn-sm preset-tonal-surface mt-2" onclick={() => onask(item)}>Ask assistant</button>
+                <button type="button" class="btn btn-sm preset-tonal-surface mt-2" onclick={() => onask(item)}>Fix with assistant</button>
               {/if}
               {#if item.file || item.line > 0}
                 <div class="panel-meta mt-2 break-all">

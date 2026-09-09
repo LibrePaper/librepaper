@@ -6,7 +6,7 @@ allowed-tools: Bash(librepaper agent:*), Bash(librepaper suggest:*), Bash(librep
 
 # LibrePaper writing assistant
 
-Use the supplied document link and the `librepaper-pair` listening loop. Check
+Work inside the dedicated session owned by the local runner. Check
 `librepaper agent capabilities "$LIBREPAPER_DOCUMENT"` before document work; consult
 `librepaper-document` for installation, reading and explicit direct edits. The
 link bounds your authority even when your signed-in account has wider access.
@@ -25,7 +25,7 @@ An unknown task kind falls back to the ordinary message text.
 | `rewrite` | One suggestion for the attached passage following the user's instruction. |
 | `explain` | Explain the passage, construct or attached diagnostic in chat; no source change. |
 | `outline` | Answer in chat unless the user explicitly asks for headings in the document, then suggest them. |
-| `respond` | Draft the requested response in the identified thread through `librepaper agent reply`; do not create an unrelated suggestion. |
+| `respond` | Draft the requested thread response in the answer. Use `librepaper agent reply` only when the user explicitly asks to post it. |
 
 Scope is `selection`, `file` or `document`. Do not silently expand a selection
 request into a document-wide pass. Read surrounding material as needed for
@@ -89,18 +89,39 @@ can independently compile supported source locally. LaTeX logs come from the
 browser/local renderer; ask for that diagnostic instead of claiming a native
 CLI compile covers it.
 
-After successful suggestion creation, include actual returned IDs in the
-reply's structured results so the panel can open their review cards:
+After successful suggestion creation, report the actual returned IDs in your
+structured task result, with an optional pass ID. The runner forwards these to
+the browser. Include only IDs confirmed by successful operations. Do not claim
+that proposing a suggestion edited the document.
 
-```sh
-librepaper agent chat post "$LIBREPAPER_DOCUMENT" \
-  --conversation "$LIBREPAPER_CONVERSATION" --message "Two suggestions are ready for review." \
-  --results '{"suggestions":["RETURNED_ID"],"pass":"RETURNED_PASS_ID"}' \
-  --request-id "$REPLY_ID"
-```
+## Refine and address comments
 
-Omit `pass` for a single suggestion and include only IDs confirmed by successful
-results. Use the same reply request ID when retrying an uncertain post. Do not
-claim that posting a suggestion edited the document. Post a brief progress
-message before longer work, then resume watching after the reply; an empty
-watch timeout means watch again while the user still wants the session active.
+When context identifies an existing suggestion, read that suggestion and use
+`librepaper agent refine`, retaining its ID, anchor and revision. Pass its
+current proposal as `--expected-proposed`, the replacement as `--proposed`,
+and the captured revision as `--revision`. Use `--comment-id` and a stable
+`--request-id`; consult `--help` for exact options. Never create a competing
+suggestion merely to refine an existing one. A refusal means the proposal was
+changed or decided; read it again and report the conflict.
+
+For an attached comment thread, inspect the thread, propose the relevant
+source changes, and draft a response in your task result. Publish a reply or
+resolve the thread only when the user asks for that action.
+
+## Focused context and verification
+
+Use `librepaper agent inspect "$LIBREPAPER_DOCUMENT" --help` for targeted reads:
+files, headings, source line ranges, literal passage search, one comment thread,
+bibliography source, and changes since a saved checkpoint. Every read includes
+the revision it describes. Bibliography metadata is not evidence that a cited
+work supports a claim; inspect the work when available or state the limit.
+
+For a candidate patch, request browser verification through
+`librepaper agent preview` before reporting that it compiles. Pass the captured
+base tree SHA as `--revision`, the task ID as `--task-id`, the conversation
+ID as `--conversation`, and a JSON file mapping existing source paths to
+candidate text as `--files`. The command computes the candidate digest and
+checks the browser response against it. Verification renders temporary files
+without applying them to the shared document. Report success only for `ok: true`. If the browser or
+renderer is unavailable, report verification as pending or unavailable; do not
+substitute a successful source write for a successful render.

@@ -11,6 +11,7 @@
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
+  import { capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { attribution, itemsFor } from "../lib/redlines.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
@@ -425,20 +426,66 @@
     placeBar(rect);
   }
 
-  async function askAssistant() {
+  async function askAssistant(kind = "explain") {
     if (!pending?.exact) return;
     const captured = { ...pending, source: pending.source ? { ...pending.source } : null };
     const revision = await selectionRevision.catch(() => "");
-    assistantRequest = { id: crypto.randomUUID(), selection: captured, revision };
+    assistantRequest = { id: crypto.randomUUID(), selection: captured, revision,
+      task: { kind, scope: "selection" } };
     bar = { ...bar, shown: false };
     showPanel("agent");
     if (width <= 760) showMobileView("sidebar");
   }
 
   function askDiagnostic(item) {
-    assistantRequest = { id: crypto.randomUUID(), diagnostic: { ...item }, revision: item.revision || "" };
+    assistantRequest = { id: crypto.randomUUID(), diagnostic: { ...item }, revision: item.revision || "",
+      task: { kind: "fix", scope: item.file || item.path ? "file" : "document" } };
     showPanel("agent");
     if (width <= 760) showMobileView("sidebar");
+  }
+
+  function askCommentAssistant(comment) {
+    if (!comment?.id) return;
+    const source = comment.source || (comment.exact ? {
+      path: comment.sourcePath || session?.paths?.get(openFile) || "",
+      exact: comment.exact,
+      prefix: comment.prefix || "",
+      suffix: comment.suffix || "",
+      position: Number.isInteger(comment.position) ? comment.position : null,
+    } : null);
+    assistantRequest = {
+      id: crypto.randomUUID(),
+      comment: {
+        id: String(comment.id), body: comment.body || "", exact: comment.exact || "",
+        proposed: comment.proposed || "", revision: comment.revision || "",
+        source, replies: (comment.replies || []).map((reply) => ({ body: reply.body, creator: reply.creator })),
+        suggestion: comment.motivation === "editing" ? {
+          id: String(comment.id), proposed: comment.proposed || "", revision: comment.revision || "",
+          path: source?.path || "", exact: source?.exact || "",
+        } : null,
+      },
+      selection: source,
+      revision: comment.revision || "",
+    };
+    showPanel("agent");
+    if (width <= 760) showMobileView("sidebar");
+  }
+
+  // Candidate previews are rendered from the runner's immutable file snapshot
+  // in this browser. Nothing is written to the shared Yjs tree; only the
+  // diagnostics and output kind go back over the private assistant channel.
+  async function previewAssistant(request) {
+    // Capture before the first await. Asset fetching and compilation may take
+    // seconds, and a candidate must be checked against the exact base tree
+    // that the runner used when it proposed its revision.
+    const tree = capturePreviewTree(treeNow());
+    if (Object.keys(tree.digests || {}).length) {
+      const held = await figures.gather(SLUG, tree.digests, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
+      tree.assets = held.assets;
+      tree.urls = held.urls;
+    }
+    return previewCandidate({ request, tree, render: renderers.render,
+      title: headingOf, digest: snapshotDigest });
   }
 
   async function reviewAssistantResults({ suggestions: ids = [], pass = "" }) {
@@ -2538,7 +2585,7 @@
       {:else if tab.id === "agent"}
         <Agent slug={SLUG} link={linkFor(SLUG)} path={session?.paths?.get(openFile) || ""}
                selection={pending} revision={pending?.revision || ""} request={assistantRequest}
-               {comments} onreview={reviewAssistantResults} />
+               {comments} onreview={reviewAssistantResults} onpreview={previewAssistant} />
       {:else if tab.id === "chat"}
         <Chat messages={liveChat} {connected} canPost={mayChat}
               onsend={sendLiveChat} />
@@ -2604,6 +2651,7 @@
                   onresolve={resolve} ondelete={askDelete} onreply={reply}
                   onaccept={(comment) => decideSuggestion(comment, "accept")}
                   onrejectconfirmed={rejectConfirmed}
+                  onassistant={askCommentAssistant}
                   onreject={(comment) => decideSuggestion(comment, "reject")}>
           {#snippet pending()}
             <PendingAnnotations items={unconfirmed}
@@ -2742,7 +2790,11 @@
     {#if mayChat}<button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={barClicked}>
       {tool === "highlighting" ? "Highlight" : tool === "region" ? "Box" : tool === "editing" ? "Suggest" : "Comment"}
     </button>{/if}
-    {#if pending?.exact}<button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={() => void askAssistant()}>Ask assistant</button>{/if}
+    {#if pending?.exact}
+      <button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={() => void askAssistant("tighten")}>Tighten</button>
+      <button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={() => void askAssistant("rewrite")}>Rewrite</button>
+      <button class="btn btn-sm preset-tonal-surface shadow-lg" onclick={() => void askAssistant("explain")}>Explain</button>
+    {/if}
   </div>
 {/if}
 

@@ -47,6 +47,15 @@ pub enum Command {
         temp_id: String,
         request_id: String,
     },
+    Refine {
+        comment_id: String,
+        proposed: String,
+        expected_proposed: String,
+        body: String,
+        revision: String,
+        temp_id: String,
+        request_id: String,
+    },
     Accept {
         comment_id: String,
         temp_id: String,
@@ -128,6 +137,7 @@ impl Command {
             | Self::Resolve { request_id, .. }
             | Self::Delete { request_id, .. }
             | Self::Anchor { request_id, .. }
+            | Self::Refine { request_id, .. }
             | Self::Accept { request_id, .. }
             | Self::Reject { request_id, .. } => request_id,
         }
@@ -139,6 +149,7 @@ impl Command {
             | Self::Resolve { comment_id, .. }
             | Self::Delete { comment_id, .. }
             | Self::Anchor { comment_id, .. }
+            | Self::Refine { comment_id, .. }
             | Self::Accept { comment_id, .. }
             | Self::Reject { comment_id, .. } => comment_id,
             Self::Comment { .. } => "",
@@ -152,6 +163,7 @@ impl Command {
             | Self::Resolve { temp_id, .. }
             | Self::Delete { temp_id, .. }
             | Self::Anchor { temp_id, .. }
+            | Self::Refine { temp_id, .. }
             | Self::Accept { temp_id, .. }
             | Self::Reject { temp_id, .. } => temp_id,
         }
@@ -281,6 +293,29 @@ impl Message {
                 Ok(Command::Anchor {
                     comment_id: self.comment_id,
                     source,
+                    temp_id: self.temp_id,
+                    request_id: self.request_id,
+                })
+            }
+            "refine" => {
+                if self.comment_id.trim().is_empty() {
+                    return missing("refine", "comment_id");
+                }
+                if self.revision.trim().is_empty() {
+                    return missing("refine", "revision");
+                }
+                let Some(proposed) = self.proposed else {
+                    return missing("refine", "proposed");
+                };
+                let Some(expected_proposed) = self.expected_proposed else {
+                    return missing("refine", "expected_proposed");
+                };
+                Ok(Command::Refine {
+                    comment_id: self.comment_id,
+                    proposed,
+                    expected_proposed,
+                    body: self.body,
+                    revision: self.revision,
                     temp_id: self.temp_id,
                     request_id: self.request_id,
                 })

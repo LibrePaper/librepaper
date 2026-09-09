@@ -34,6 +34,16 @@ assert.equal(diagnostic.source, "#bad");
 const explain = composeTaskMessage({ id: "m2", text: "Explain this error", task: { kind: "explain", scope: "file" }, diagnostic });
 assert.equal(explain.context.diagnostic.message, "Unknown command");
 
+const thread = { id: "comment-1", body: "Please clarify this", replies: [{ body: "Could you expand?" }] };
+const response = composeTaskMessage({ id: "m3", text: "I will clarify this.",
+  task: { kind: "respond", scope: "selection" }, attachment, thread });
+assert.deepEqual(response.context.thread, thread);
+
+const refinement = composeTaskMessage({ id: "m4", text: "Make the suggestion more concise.",
+  task: { kind: "refine", scope: "selection" }, attachment,
+  suggestion: { id: "s1", proposed: "A shorter proposal", revision: "sha-1" } });
+assert.deepEqual(refinement.context.suggestion, { id: "s1", proposed: "A shorter proposal", revision: "sha-1" });
+
 const reply = { context: { results: { suggestions: ["s1", "s2"], pass: "p1" } } };
 assert.deepEqual(resultIds(reply), { suggestions: ["s1", "s2"], pass: "p1" });
 const comments = [

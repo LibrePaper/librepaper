@@ -20,7 +20,6 @@ use sha2::Digest;
 
 mod access;
 mod accounts;
-mod chat;
 mod checkpoints;
 mod comments;
 mod documents;
@@ -471,25 +470,6 @@ pub struct PendingDelete {
     pub bytes: i64,
     pub queued_at: i64,
     pub delete_after: i64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Conversation {
-    pub slug: String,
-    pub id: String,
-    pub token_hash: String,
-    pub expires_at: i64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Message {
-    pub slug: String,
-    pub conversation_id: String,
-    pub cursor: i64,
-    pub id: String,
-    pub role: String,
-    pub text: String,
-    pub context: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

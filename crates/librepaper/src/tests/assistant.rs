@@ -6,6 +6,87 @@ use super::*;
 use crate::tests::edit::publish_with_source;
 
 #[tokio::test]
+async fn refinement_preserves_identity_and_refuses_stale_or_decided_proposals() {
+    let server = new_test_server().await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let path = format!("/api/documents/{slug}/comments");
+    let revision = "a".repeat(64);
+    let (status, created) = post(&server.url, &path, json!({
+        "type":"comment","motivation":"editing","body":"Initial proposal",
+        "exact":"world","source":{"path":"main.md","exact":"world","prefix":"hello ","suffix":"","position":7},
+        "proposed":"Earth","revision":revision
+    })).await;
+    assert_eq!(status, 200, "{created}");
+    let id = text(&created["comment"], "id");
+    let request = json!({"type":"refine","comment_id":id,"proposed":"planet Earth",
+        "expected_proposed":"Earth","body":"More explicit","revision":revision,"request_id":"refine-once"});
+    let (status, refined) = post(&server.url, &path, request.clone()).await;
+    assert_eq!(status, 200, "{refined}");
+    assert_eq!(refined["comment"]["id"], id);
+    assert_eq!(refined["comment"]["source"], created["comment"]["source"]);
+    assert_eq!(refined["comment"]["revision"], revision);
+    assert_eq!(refined["comment"]["proposed"], "planet Earth");
+    let (status, retry) = post(&server.url, &path, request.clone()).await;
+    assert_eq!(status, 200, "{retry}");
+    let mut stale = request.clone();
+    stale["proposed"] = json!("the planet");
+    stale["request_id"] = json!("refine-stale");
+    let (status, refused) = post(&server.url, &path, stale).await;
+    assert_ne!(status, 200, "{refused}");
+    let (status, _) = post(
+        &server.url,
+        &path,
+        json!({"type":"resolve","comment_id":id,"resolved":true}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let mut decided = request;
+    decided["expected_proposed"] = json!("planet Earth");
+    decided["request_id"] = json!("refine-decided");
+    let (status, refused) = post(&server.url, &path, decided).await;
+    assert_ne!(status, 200, "{refused}");
+    let (_, listing) = get_json_keyed("", &read_key_of(&document), &server.url, &path).await;
+    assert_eq!(listing["comments"].as_array().unwrap().len(), 1);
+    assert_eq!(listing["comments"][0]["proposed"], "planet Earth");
+}
+
+#[tokio::test]
+async fn refinement_requires_the_author_or_an_editor() {
+    let server = new_test_server().await;
+    let document = publish_with_source(&server.url).await;
+    let room = server.instance.rooms.get(&text(&document, "slug")).await;
+    let (created, ok) = room
+        .apply(
+            serde_json::from_value(json!({
+                "type":"comment","motivation":"editing","exact":"world","proposed":"Earth",
+                "source":{"path":"main.md","exact":"world"},"revision":"a".repeat(64)
+            }))
+            .unwrap(),
+            "",
+            "author-a",
+            "",
+            None,
+            false,
+        )
+        .await;
+    assert!(ok, "{created}");
+    let request: crate::room::Message = serde_json::from_value(json!({
+        "type":"refine","comment_id":created["comment"]["id"],"proposed":"planet Earth",
+        "expected_proposed":"Earth","revision":"a".repeat(64)
+    }))
+    .unwrap();
+    let (denied, ok) = room
+        .apply(request.clone(), "", "author-b", "", None, false)
+        .await;
+    assert!(!ok, "{denied}");
+    let (_, ok) = room.apply(request.clone(), "", "", "", None, false).await;
+    assert!(!ok);
+    let (refined, ok) = room.apply(request, "", "author-a", "", None, false).await;
+    assert!(ok, "{refined}");
+}
+
+#[tokio::test]
 async fn assistant_batch_reports_partial_anchor_results_and_persists_pass() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;

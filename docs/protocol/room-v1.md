@@ -49,6 +49,7 @@ include a UUID-shaped `temp_id`, kept unchanged across retries.
 | `resolve` | `comment_id`, `resolved` (boolean; false reopens) | — |
 | `delete` | `comment_id` | — |
 | `anchor` | `comment_id`, `source` | — |
+| `refine` | `comment_id`, `proposed`, `expected_proposed`, `revision` | `body` |
 
 `source` is `{path, exact, prefix, suffix, position}`: the file path and
 selected source text, with optional surrounding text and a nonnegative
@@ -76,6 +77,14 @@ an unchanged resolve returns noop: true; an ordinary browser retry keeps the
 legacy event shape. Errors use the same request_id, version, and protocol
 fields and have type: error plus a human-readable message. A response with
 HTTP success means the annotation is durable.
+
+`refine` replaces the text of one pending suggestion in place. Its ID, source
+anchor, captured revision and pass remain unchanged. Only its author or an
+editor may refine it. A mismatched `expected_proposed` or `revision`, a decided
+suggestion, or an acceptance still pending is refused. The resulting `refine`
+event carries `comment_id` and the full updated `comment`. Retrying an already
+applied replacement and note returns a no-op. Refining a proposal never changes
+the document source.
 
 ## Checkpoints
 

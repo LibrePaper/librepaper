@@ -19,14 +19,16 @@ writeFileSync(harness, `
 import Agent from ${JSON.stringify(join(root, "src/components/Agent.svelte"))};
 let values=$state({slug:'paper',link:location.origin+'/docs/paper#k=secret',path:'paper.md',selection:{exact:'A passage'}});
 export function updateProps(next){ values={...values,...next}; }
+async function preview(request){ window.previewCalls.push(request); return {ok:true,diagnostics:[],output:'html'}; }
 </script>
-<Agent {...values} />
+<Agent {...values} onpreview={preview} />
 `);
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "src/styles/app.css"))};
 import { mount, unmount } from ${JSON.stringify(join(root, "node_modules/svelte/src/index-client.js"))};
 import Harness from ${JSON.stringify(harness)};
 window.calls = [];
+window.previewCalls = [];
 window.sockets = [];
 window.fetch = async (url, init) => {
   if (new URL(url, location.href).pathname.endsWith('/assistant/capabilities')) {
@@ -45,12 +47,13 @@ window.WebSocket = class {
   constructor(url) { this.url=url; this.sent=[]; window.sockets.push(this); queueMicrotask(()=>this.onopen?.()); }
   send(raw) {
     const frame=JSON.parse(raw); this.sent.push(frame);
-    if (frame.type === 'join') queueMicrotask(()=>{ this.emit({type:'ready',browser:true,listening:false}); this.emit({type:'presence',browser:true,listening:true}); });
+    if (frame.type === 'join') queueMicrotask(()=>{ this.emit({type:'ready',browser:true,agent:true}); this.emit({type:'presence',browser:true,agent:true}); });
     if (frame.type === 'message') queueMicrotask(()=>{
       this.emit({type:'message',message:{id:frame.id,role:'user',text:frame.text,context:frame.context}});
       this.emit({type:'ack',id:frame.id});
       this.emit({type:'message',message:{id:'agent-reply',role:'agent',text:'<img src=x onerror="window.injected=true">'}});
     });
+    if (frame.type === 'input') queueMicrotask(()=>this.emit({type:'ack',id:frame.id}));
   }
   emit(frame) { this.onmessage?.({data:JSON.stringify(frame)}); }
   close() { this.readyState=3; this.onclose?.(); }
@@ -77,7 +80,7 @@ try {
   page=await browser("chromium",join(temporary,"profile"),22000+Math.floor(Math.random()*10000));
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel textarea[aria-label=Message]'))"),10000);
-  await until("agent listening",()=>page.evaluate('document.querySelector("[role=status]")?.textContent.includes("Ready for your message")'),10000);
+  await until("runner connected",()=>page.evaluate('document.querySelector("[role=status]")?.textContent.includes("Assistant ready")'),10000);
   assert.equal(await page.evaluate('window.sockets[0].url.includes("secret-token")'),false);
   assert.equal(await page.evaluate('new URL(window.sockets[0].url).searchParams.get("k")'),"secret");
   assert.deepEqual(await page.evaluate('window.sockets[0].sent[0]'),{type:"join",token:"secret-token",role:"user"});
@@ -89,31 +92,71 @@ try {
   assert.equal(posted.context.file,"paper.md");
   assert.deepEqual(posted.context.selection,{path:"paper.md",exact:"A passage",prefix:"",suffix:"",position:null});
 
+  await page.evaluate("window.sockets[0].emit({type:'preview_request',id:'preview-1',task_id:'task-1',base_revision:'base-revision',revision:'candidate-revision',files:{'paper.md':'candidate'}})");
+  await until("preview response", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.type==='preview_result')"), 1000);
+  const preview = await page.evaluate("window.sockets[0].sent.find(frame=>frame.type==='preview_result')");
+  assert.equal(preview.request_id, "preview-1");
+  assert.equal(preview.task_id, "task-1");
+  assert.equal(preview.base_revision, "base-revision");
+  assert.equal(preview.revision, "candidate-revision");
+  assert.equal(preview.ok, true);
+  await page.evaluate("window.sockets[0].emit({type:'preview_request',id:'preview-1',task_id:'task-1',base_revision:'base-revision',revision:'candidate-revision',files:{'paper.md':'candidate'}})");
+  await until("preview retry", () => page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='preview_result').length===2"), 1000);
+  assert.equal(await page.evaluate("window.previewCalls.length"), 1, "a retried preview reuses its cached browser verification");
+
+  // Approval and multi-question requests remain visible until the runner
+  // reports that it resumed. The browser sends explicit answers and never
+  // silently treats a missing response as approval.
+  await page.evaluate(`window.sockets[0].emit({type:'task',task_id:'input-task',status:'needs_input',context:{input:{request_id:'approval-1',kind:'approval',message:'Run the command?'}}})`);
+  await until("approval request", () => page.evaluate('document.querySelector(".input-request")?.textContent.includes("Run the command?")'), 1000);
+  await page.evaluate('Array.from(document.querySelectorAll(".input-request button")).find(b=>b.textContent==="Deny").click()');
+  await until("approval response", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.type==='input'&&frame.response?.decision==='decline')"), 1000);
+  await page.evaluate("window.sockets[0].emit({type:'task',task_id:'input-task',status:'working',text:'Continuing'})");
+  await until("approval cleared", () => page.evaluate('!document.querySelector(".input-request")'), 1000);
+  await page.evaluate(`window.sockets[0].emit({type:'task',task_id:'question-task',status:'needs_input',context:{input:{request_id:'question-1',kind:'question',message:'Choose values',questions:[{id:'first',question:'First value'},{id:'second',question:'Second value'}]}}})`);
+  await until("question request", () => page.evaluate('document.querySelectorAll(".input-request textarea").length===2'), 1000);
+  await page.evaluate(`(()=>{const fields=document.querySelectorAll('.input-request textarea'); for (const [index,field] of fields.entries()) { field.value='answer-'+index; field.dispatchEvent(new Event('input',{bubbles:true})); }})()`);
+  await page.evaluate('Array.from(document.querySelectorAll(".input-request button")).find(b=>b.textContent==="Send answer").click()');
+  await until("question response", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.type==='input'&&frame.response?.answers?.first?.answers?.[0]==='answer-0'&&frame.response?.answers?.second?.answers?.[0]==='answer-1')"), 1000);
+  await page.evaluate("window.sockets[0].emit({type:'task',task_id:'question-task',status:'completed'})");
+  await until("question cleared", () => page.evaluate('!document.querySelector(".input-request")'), 1000);
+
+  // Opening a read-only comment prepares a response in the composer. It
+  // never submits until the user explicitly sends it, and the whole thread
+  // travels with that response for the external agent.
+  const beforeComment = await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length");
+  await page.evaluate("window.setProps({request:{id:'comment-request',comment:{id:'comment-1',body:'Please clarify this',source:{path:'paper.md',exact:'A passage',prefix:'',suffix:'',position:0},replies:[{body:'Could you expand?'}],revision:'rev-1'}}})");
+  await until("comment response draft", () => page.evaluate('document.querySelector("textarea").value==="Address this comment."'), 1000);
+  assert.equal(await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length"), beforeComment);
+  await page.evaluate('document.querySelector(".chat-form button").click()');
+  await until("comment response sent", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.context?.thread?.id==='comment-1')"), 1000);
+  const response = await page.evaluate("window.sockets[0].sent.find(frame=>frame.context?.thread?.id==='comment-1')");
+  assert.deepEqual(response.context.thread.replies, [{body:"Could you expand?"}]);
+
   await page.evaluate(`(()=>{const clipboard={writeText:value=>{window.copiedInstructions=value;return Promise.resolve();}};Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});document.querySelector('.agent-actions button').click();})()`);
   await until("instructions copied",()=>page.evaluate('typeof window.copiedInstructions==="string"'),1000);
-  assert.match(await page.evaluate("window.copiedInstructions"),/librepaper agent chat watch/);
-  assert.doesNotMatch(await page.evaluate("window.copiedInstructions"),/--after/);
+  assert.match(await page.evaluate("window.copiedInstructions"),/librepaper agent connect/);
+  assert.doesNotMatch(await page.evaluate("window.copiedInstructions"),/chat watch/);
 
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='First';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true}));})()`);
   assert.equal(await page.evaluate("document.querySelector('textarea[placeholder]').value"),"First\n");
 
-  // A listener going away disables Send, not drafting. Shift+Enter is a
+  // A runner going away disables Send, not drafting. Shift+Enter is a
   // newline and IME Enter cannot send the request prematurely.
-  await page.evaluate("window.sockets[0].emit({type:'presence',listening:false,browser:true})");
+  await page.evaluate("window.sockets[0].emit({type:'presence',agent:false,browser:true})");
   await until("draft while away", () => page.evaluate('!document.querySelector("textarea").disabled && document.querySelector(".chat-form button").disabled'), 1000);
   await page.evaluate(`(()=>{const input=document.querySelector('textarea');input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}));})()`);
   assert.equal(await page.evaluate("document.querySelector('textarea').value"), "First\n\n");
-  assert.equal(await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length"), 1);
+  assert.equal(await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length"), 2);
 
-  // Browser loss revokes credentials; both setup buttons must refuse to copy
-  // the old prompt, and recovery must keep a locally drafted request.
+  // Browser loss triggers automatic socket recovery; credentials, transcript
+  // and locally drafted requests remain in the browser session.
   await page.evaluate("window.sockets[0].close()");
-  await until("ended", () => page.evaluate('document.querySelector("[role=status]").textContent.includes("Connection ended")'), 1000);
-  assert.equal(await page.evaluate('Array.from(document.querySelectorAll("button")).filter(b=>/Copy setup prompt|Copied/.test(b.textContent)).every(b=>b.disabled)'), true);
-  await page.evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="Reconnect agent").click()');
+  await until("automatic recovery", () => page.evaluate('window.sockets.length===2'), 3000);
   await until("fresh recovered channel", () => page.evaluate("window.sockets.length===2"), 1000);
   assert.equal(await page.evaluate("document.querySelector('textarea').value"), "First\n\n");
-  assert.equal(await page.evaluate("window.sockets[1].sent.filter(frame=>frame.type==='message').length"), 0);
+  assert.equal(await page.evaluate("window.sockets[1].sent.filter(frame=>frame.type==='message').length"), 2,
+    "relay acknowledgements are replayed until a task event confirms runner admission");
 
   // Explicitly replacing a request discards its old draft and binds the new
   // source anchor; Remove must not immediately reattach it from props.
@@ -133,7 +176,7 @@ try {
   await page.evaluate('Array.from(document.querySelectorAll(".attachment button")).find(b=>b.textContent==="Remove").click()');
   await until("removed attachment", () => page.evaluate('!document.querySelector(".attachment")'), 1000);
   await page.evaluate("window.setProps({request:{id:'diagnostic',diagnostic:{file:'error.typ',line:4,message:'Old error',source:'old source',revision:'old-revision'},revision:'old-revision'}})");
-  await until("diagnostic request", () => page.evaluate('document.querySelector("textarea").value==="Explain this diagnostic."'), 1000);
+  await until("diagnostic request", () => page.evaluate('document.querySelector("textarea").value==="Fix this diagnostic."'), 1000);
   await page.evaluate('document.querySelector(".chat-form button").click()');
   await until("diagnostic sent", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.context?.diagnostic)"), 1000);
   const explained = await page.evaluate("window.sockets[1].sent.find(frame=>frame.context?.diagnostic)");
@@ -162,9 +205,9 @@ try {
 
   await page.evaluate("window.remount()");
   await until("new live channel",()=>page.evaluate("window.sockets.length===3"),10000);
-  assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'),false);
-  assert.equal(await page.evaluate("window.calls.filter(call=>call.suffix==='').length"),3);
-  console.log("agent-browser: context, recovery, draft replacement, keyboard, short layout and no replay passed");
+  assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'),true);
+  assert.equal(await page.evaluate("window.calls.filter(call=>call.suffix==='').length"),1);
+  console.log("agent-browser: context, recovery, draft, keyboard, short layout and local session persistence passed");
 } finally {
   await page?.close();
   if(server) await new Promise(resolve=>server.close(resolve));

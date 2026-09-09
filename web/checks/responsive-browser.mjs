@@ -42,7 +42,7 @@ globalThis.WebSocket = class {
   send(raw) {
     if (JSON.parse(raw).type !== 'join') return;
     queueMicrotask(() => {
-      this.onmessage?.({data:JSON.stringify({type:'ready',listening:true})});
+      this.onmessage?.({data:JSON.stringify({type:'ready',agent:true})});
       for (let i = 0; i < 40; i++) this.onmessage?.({data:JSON.stringify({type:'message',message:{id:'reply-'+i,role:'agent',text:('Reply '+i+' ').repeat(30)}})});
     });
   }

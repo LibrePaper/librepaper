@@ -145,29 +145,6 @@ CREATE TABLE replies (
         REFERENCES comments (slug, id) ON DELETE CASCADE
 );
 
-CREATE TABLE conversations (
-    slug TEXT NOT NULL REFERENCES documents (slug) ON DELETE CASCADE,
-    id TEXT NOT NULL,
-    token_hash TEXT NOT NULL,
-    expires_at INTEGER NOT NULL,
-    PRIMARY KEY (slug, id)
-) WITHOUT ROWID;
-CREATE INDEX conversations_expiry ON conversations (expires_at);
-
-CREATE TABLE messages (
-    slug TEXT NOT NULL,
-    conversation_id TEXT NOT NULL,
-    cursor INTEGER NOT NULL,
-    id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    text TEXT NOT NULL,
-    context TEXT,
-    PRIMARY KEY (slug, conversation_id, cursor),
-    FOREIGN KEY (slug, conversation_id)
-        REFERENCES conversations (slug, id) ON DELETE CASCADE
-);
-CREATE UNIQUE INDEX messages_request ON messages (slug, conversation_id, id);
-
 CREATE TABLE renderings (
     slug TEXT NOT NULL REFERENCES documents (slug) ON DELETE CASCADE,
     tree_sha TEXT NOT NULL,

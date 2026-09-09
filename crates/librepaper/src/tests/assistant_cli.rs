@@ -136,14 +136,6 @@ fn full_document_links_keep_the_slug_and_share_key_for_cli_targets() {
     assert!(link.has_key());
 }
 
-#[test]
-fn result_context_is_structured_before_chat_posting() {
-    let results = json!({"suggestions":["a1"],"pass":"p1"});
-    let payload = crate::cli::peer::chat_post_payload("r1", "ready", Some(results));
-    assert_eq!(payload["context"]["results"]["suggestions"][0], "a1");
-    assert_eq!(payload["context"]["results"]["pass"], "p1");
-}
-
 #[tokio::test]
 async fn anchored_suggest_preserves_the_captured_occurrence_and_revision() {
     let server = new_test_server().await;

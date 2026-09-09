@@ -1,6 +1,6 @@
 <script>
   import { tick } from "svelte";
-  let { messages = [], empty = "No messages yet.", label = "Conversation", roleLabel = (message) => message.creator || message.role } = $props();
+  let { messages = [], empty = "No messages yet.", label = "Conversation", roleLabel = (message) => message.creator || message.role, onresult } = $props();
   let transcript = $state();
   let following = true;
   let unread = $state(false);
@@ -39,6 +39,9 @@
       <article class="chat-message" data-id={message.id}>
         <strong class="panel-meta">{roleLabel(message)}</strong>
         <p>{message.text}</p>
+        {#if message.context?.results && (message.context.results.suggestions?.length || message.context.results.pass)}
+          <button class="btn btn-sm preset-tonal-surface" onclick={() => onresult?.(message.context.results)}>Review changes</button>
+        {/if}
       </article>
     {/each}
     {#if !messages.length}<p class="panel-muted">{empty}</p>{/if}

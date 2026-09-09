@@ -630,36 +630,52 @@ project. A stale SHA refuses the edit so the agent can read again and account
 for other people's changes. Edits synchronize through the same collaborative
 session as the browser and wait for durable acknowledgement.
 
-The robot icon opens a private live channel. Start your preferred
-agent yourself, then give it the connection instructions from that panel;
-`librepaper-pair` is the skill that covers this mode.
-The agent uses `librepaper agent chat watch` to receive messages and
-`librepaper agent chat post` to reply. It uses the same document commands above
-for comments and edits. No local service, pairing, provider adapter, or
-agent launcher is needed.
+The robot icon opens the assistant panel. **Copy setup prompt** gives your
+existing agent instructions to start a local runner. The runner owns a separate
+Codex session and keeps its connection open while the model works. Codex must
+be installed and authenticated locally; LibrePaper does not receive its model
+credentials or run inference on the document server.
 
-Choose **Copy setup prompt** in the Agent panel and paste it into your agent's
-window. Connection settings show the access granted by its document link.
-You can draft while the agent is away; Send becomes available when it is
-listening. If the conversation ends, **Reconnect agent** gives you fresh
-instructions and keeps your draft. The conversation is not saved.
+```sh
+librepaper agent connect "$LIBREPAPER_DOCUMENT" \
+  --conversation "$LIBREPAPER_CONVERSATION" --background
+```
 
-Select a passage and choose **Ask assistant**, then pick Tighten, Rewrite or
-Explain and review the request before sending. Suggestions appear in Comments;
-**Review suggestions** takes you to the returned proposals. A proofreading
-pass groups proposals with Review next and Reject all. Accepting a suggestion
-uses the ordinary checkpoint and stale-change protection. Diagnostics also
-offer **Ask assistant**, carrying the error's original source context.
+The setup prompt supplies `LIBREPAPER_CHAT_TOKEN` separately from the document
+link. Both are required: a conversation token does not widen document access.
+The browser reports queued work, progress, completion, and failures. Follow-up
+requests can be submitted while a task runs; cancellation requests stop active
+work where supported and never undo document changes already made.
 
-The agent must be connected before either side can send. Messages are held only
-in the live clients and server memory: they are not saved, backed up, or replayed
-after refresh or restart. Both document access and a separate conversation
-credential are required. LibrePaper cannot wake or stop an external agent, and an
-agent may send content to its chosen model provider according to its own
-configuration.
+Select a passage to Tighten, Rewrite, or Explain. Address a comment from its
+thread, or ask the assistant to fix a diagnostic. Requests carry their captured
+source context and revision. Suggestions use the ordinary review interface,
+with Accept, Reject, and Refine; refinement updates the existing proposal and
+refuses changes to a proposal that was already decided or modified elsewhere.
 
-See the [live chat interface](docs/protocol/chat.md) and the
-[existing room operations](docs/protocol/room-v1.md) for client integration.
+Focused tools let the assistant inspect files, headings, source sections,
+passages, comment threads, bibliography source, and changes since a checkpoint:
+
+```sh
+librepaper agent inspect "$LIBREPAPER_DOCUMENT" headings
+librepaper agent inspect "$LIBREPAPER_DOCUMENT" search 'selected words'
+librepaper agent inspect "$LIBREPAPER_DOCUMENT" thread COMMENT_ID
+```
+
+Candidate verification uses the browser's renderer on temporary source files.
+It does not apply the candidate to the collaborative document. A render result
+belongs to that candidate revision; unavailable renderers or a disconnected
+browser cannot produce a successful verification.
+
+The runner keeps task continuity and writing preferences locally. The browser
+keeps its assistant history on the same device. The document server relays
+messages without storing transcripts. Reconnection reconciles known task IDs;
+it does not blindly repeat uncertain work. Use the panel's New conversation
+control to clear its history and start a fresh channel, and the runner's
+`status` and `stop` commands to inspect or end the local process.
+
+
+See the [assistant protocol](docs/protocol/chat.md) and [document operations](docs/protocol/room-v1.md).
 
 ### History
 

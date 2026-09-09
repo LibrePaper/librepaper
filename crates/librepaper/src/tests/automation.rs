@@ -399,91 +399,90 @@ async fn live_agent_channel_requires_access_token_and_presence() {
     assert_eq!(chat_frame(&mut stranger, "error").await["status"], 404);
 
     let mut browser = chat_socket(&endpoint, &key, &token, "user").await;
-    assert_eq!(chat_frame(&mut browser, "ready").await["listening"], false);
-    browser
-        .send(Message::Text(
-            json!({"type":"message","id":"early","text":"hi"})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(chat_frame(&mut browser, "error").await["status"], 409);
+    let ready = chat_frame(&mut browser, "ready").await;
+    assert_eq!(ready["browser"], true);
+    assert_eq!(ready["agent"], false);
 
     let mut agent = chat_socket(&endpoint, &key, &token, "agent").await;
-    chat_frame(&mut agent, "ready").await;
-    assert_eq!(
-        chat_frame(&mut browser, "presence").await["listening"],
-        true
-    );
+    let ready = chat_frame(&mut agent, "ready").await;
+    assert_eq!(ready["browser"], true);
+    assert_eq!(ready["agent"], true);
+    let presence = chat_frame(&mut browser, "presence").await;
+    assert_eq!(presence["agent"], true);
+
+    // A user request is relayed with the role established by the join. The
+    // role supplied by an untrusted frame is ignored by the server.
     browser
         .send(Message::Text(
-            json!({"type":"message","id":"one","role":"agent","text":"Hello"})
+            json!({"type":"message","id":"one","role":"agent","text":"Tighten this", "task":{"kind":"tighten","scope":"selection"},"context":{"revision":"r1"}})
                 .to_string()
                 .into(),
         ))
         .await
         .unwrap();
     let delivered = chat_frame(&mut agent, "message").await;
-    assert_eq!(
-        delivered["message"]["role"], "user",
-        "sender role is derived from the joined socket"
-    );
+    assert_eq!(delivered["message"]["role"], "user");
+    assert_eq!(delivered["message"]["task"]["kind"], "tighten");
     assert_eq!(
         chat_frame(&mut browser, "message").await["message"]["text"],
-        "Hello"
+        "Tighten this"
     );
-    chat_frame(&mut browser, "ack").await;
-    agent.close(None).await.unwrap();
-    assert_eq!(
-        chat_frame(&mut browser, "presence").await["listening"],
-        false
-    );
+    assert_eq!(chat_frame(&mut browser, "ack").await["id"], "one");
 
-    // No retained transcript is available to a later agent socket.
-    let mut agent = chat_socket(&endpoint, &key, &token, "agent").await;
-    chat_frame(&mut agent, "ready").await;
-    chat_frame(&mut browser, "presence").await;
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), agent.next())
-            .await
-            .is_err()
-    );
-
-    let response = client()
-        .post(&endpoint)
-        .header("x-librepaper-client", "1")
-        .header("x-librepaper-key", &key)
-        .header("x-librepaper-chat-token", &token)
-        .json(&json!({"id":"reply","text":"Done"}))
-        .send()
+    // Lifecycle and cancellation have strict directionality.
+    agent
+        .send(Message::Text(
+            json!({"type":"task","id":"event-1","task_id":"one","status":"working"})
+                .to_string()
+                .into(),
+        ))
         .await
         .unwrap();
-    assert_eq!(response.status(), 200);
+    assert_eq!(chat_frame(&mut browser, "task").await["status"], "working");
+    assert_eq!(chat_frame(&mut agent, "ack").await["id"], "event-1");
+    browser
+        .send(Message::Text(
+            json!({"type":"cancel","id":"cancel-1","task_id":"one"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(chat_frame(&mut agent, "cancel").await["task_id"], "one");
+    assert_eq!(chat_frame(&mut browser, "ack").await["id"], "cancel-1");
+    agent
+        .send(Message::Text(
+            json!({"type":"cancel","id":"bad-cancel","task_id":"one"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(chat_frame(&mut agent, "error").await["status"], 403);
+
+    // Closing the browser does not revoke its channel. A reconnect can take
+    // the browser slot and continue the same live conversation.
+    browser.close(None).await.unwrap();
+    assert_eq!(chat_frame(&mut agent, "presence").await["browser"], false);
+    let mut browser = chat_socket(&endpoint, &key, &token, "user").await;
+    assert_eq!(chat_frame(&mut browser, "ready").await["agent"], true);
+    assert_eq!(chat_frame(&mut agent, "presence").await["browser"], true);
+    agent
+        .send(Message::Text(
+            json!({"type":"message","id":"reply-1","text":"Done"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
     assert_eq!(
         chat_frame(&mut browser, "message").await["message"]["role"],
         "agent"
     );
-    assert_eq!(
-        chat_frame(&mut agent, "message").await["message"]["text"],
-        "Done"
-    );
+    assert_eq!(chat_frame(&mut agent, "ack").await["id"], "reply-1");
 
-    let (status, _) = post_as(
-        &session_as(TEST_PUBLISHER),
-        &server.url,
-        &format!("/api/documents/{slug}/share"),
-        json!({"revoke":"reader"}),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let next = tokio::time::timeout(std::time::Duration::from_secs(3), browser.next())
-        .await
-        .unwrap();
-    assert!(
-        !matches!(next, Some(Ok(Message::Text(_)))),
-        "revocation closes the channel"
-    );
+    // Messages are WebSocket events; the former HTTP post transport is not a
+    // second way to inject agent output.
     let response = client()
         .post(&endpoint)
         .header("x-librepaper-client", "1")
@@ -493,7 +492,30 @@ async fn live_agent_channel_requires_access_token_and_presence() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 404);
+    assert_eq!(response.status(), 405);
+
+    let (status, _) = post_as(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &format!("/api/documents/{slug}/share"),
+        json!({"revoke":"reader"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let browser_next = tokio::time::timeout(std::time::Duration::from_secs(3), browser.next())
+        .await
+        .unwrap();
+    let agent_next = tokio::time::timeout(std::time::Duration::from_secs(3), agent.next())
+        .await
+        .unwrap();
+    assert!(
+        !matches!(browser_next, Some(Ok(Message::Text(_)))),
+        "revocation closes browser relay"
+    );
+    assert!(
+        !matches!(agent_next, Some(Ok(Message::Text(_)))),
+        "revocation closes agent relay"
+    );
 }
 
 #[tokio::test]

@@ -21,11 +21,17 @@ use crate::http::{
 use crate::storage::StorageFlags;
 use crate::util::{die, is_terminal_stdin, is_terminal_stdout, new_id, read_line};
 
+pub(crate) mod assistant_tools;
 mod documents;
 pub mod export;
 mod history;
 pub mod peer;
 mod publish;
+mod runner;
+pub(crate) mod runner_context;
+mod runner_lifecycle;
+pub(crate) mod runner_preview;
+mod runner_transport;
 mod suggest;
 pub mod sync;
 mod tokens;

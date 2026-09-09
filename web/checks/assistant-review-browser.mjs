@@ -44,8 +44,8 @@ try {
   await until("partial rejection", () => page.evaluate('document.body.innerText.includes("1 rejected; 1 could not be rejected: Access changed.")'), 1000);
   assert.deepEqual(await page.evaluate("window.rejected"), ["one", "two"]);
   await page.evaluate("window.diagnostics()");
-  await until("diagnostic action", () => page.evaluate('document.body.innerText.includes("Ask assistant")'), 1000);
-  await page.evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="Ask assistant").click()');
+  await until("diagnostic action", () => page.evaluate('document.body.innerText.includes("Fix with assistant")'), 1000);
+  await page.evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="Fix with assistant").click()');
   assert.equal(await page.evaluate("window.asked.revision"), "old-sha");
   assert.equal(await page.evaluate("window.asked.source"), "old source");
   console.log("assistant-review-browser: grouped review, partial rejection and diagnostic handoff passed");
