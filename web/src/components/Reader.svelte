@@ -41,7 +41,7 @@
   } from "../lib/storage.js";
   import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
 
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
@@ -64,6 +64,9 @@
   import LatexStatus from "./LatexStatus.svelte";
   import Files from "./Files.svelte";
   import { renderedNoteText } from "../lib/latex/status-text.js";
+  import { createPreviewApi } from "../lib/reader/preview-api.js";
+  import { createFramePreview } from "../lib/reader/frame-preview.js";
+  import { createRenderingStore } from "../lib/reader/rendering-store.js";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -83,6 +86,7 @@
   // is the one part of the URL a link key can safely travel in; from here it
   // is kept under the slug and presented on every request for this document.
   const KEY = takeKeyFromFragment(SLUG);
+  const previewApi = createPreviewApi({ slug: SLUG, key: KEY, shellHeaders: SHELL_HEADERS, keyHeaders });
 
   /* ------------------------------------------------------------ the document */
 
@@ -128,17 +132,17 @@
   const discardAnnotation = annotations.discard;
   let commentsReady = false;
   let frameReady = false;
-  // Readiness belongs to one iframe navigation. A `ready` from the old
-  // document is not a promise that the newly navigated document received the
-  // preview that was posted while it was loading.
-  let frameEpoch = 0;
-  let frameReadyEpoch = -1;
   let docText = null; // the joined visible text, invariant across repaints
   let docView = null; // flatten(docText), so anchoring does not redo it per call
   let figureAt = $state([]); // text offset of each figure, by its index
 
   let preview = $state(null);
   const tell = (message, transfer) => preview?.tell(message, transfer);
+  // Initialized after the derived frame kind is available. The controller's
+  // callbacks still update the small bits of component state used by the
+  // template and annotation code.
+  let framePreview;
+  let renderingStore;
 
   // The agent repaints the whole document on every "regions" or "highlight"
   // message, so a call that changes nothing is not free even though it looks
@@ -310,8 +314,7 @@
         // trigger a second one. Only the first `ready` paints: the agent
         // sends one after every repaint, and painting on each would be a
         // loop.
-        const first = frameReadyEpoch !== frameEpoch;
-        frameReadyEpoch = frameEpoch;
+        const first = framePreview.markReady();
         frameReady = true;
         // Whatever was painted before is gone with the rebuilt DOM.
         lastRegions = lastHighlight = lastRedlines = null;
@@ -1070,7 +1073,7 @@
     const mine = ++navigationGeneration;
     historyDiffGeneration += 1;
     if (!historyComparePoint) historyChanges = null;
-    renderingRequest += 1;
+    renderingStore?.invalidate();
     issued += 1;
     dropHeldRendering();
     try {
@@ -1090,7 +1093,7 @@
   function backToNow() {
     const wasCheckpoint = Boolean(viewing) || frameShowsCheckpoint;
     navigationGeneration += 1;
-    renderingRequest += 1;
+    renderingStore?.invalidate();
     issued += 1;
     dropHeldRendering();
     if (!wasCheckpoint) return;
@@ -1101,7 +1104,6 @@
     // apart, so leaving history always reloads the live page and reruns its
     // scripts.
     if (!editing && sourceFormat === "html") {
-      framedSource = null;
       navigateFrame(true);
     } else {
       void paintPreview();
@@ -1121,7 +1123,7 @@
     if (viewing?.sha === sha) viewing = { ...viewing, label: given };
     // Naming a checkpoint is the editor saying "this one", so a rendering
     // waiting for the text to stay quiet is stored now rather than later.
-    if (given) storeHeldRendering();
+    if (given) renderingStore?.flushHeld();
   }
 
   // The link to a moment: the document's own link with the checkpoint on it.
@@ -1459,90 +1461,32 @@
     !compiling ? "" : lastCompile ? `compiling… (last took ${lastCompile.toFixed(1)}s)` : "compiling…",
   );
 
-  // What the frame was showing the last time it was loaded, so a reload
-  // happens when the document has changed and not merely because somebody's
-  // caret moved. Seeded on the first join: the frame was served from the same
-  // live document a moment earlier.
-  let framedSource = null;
-  let framedGeneration = 0;
-  let frameKind = null;
-  // A preview fetched before the frame announces readiness stays here for the
-  // new frame. PDF bytes are retained as a Uint8Array; delivery gives the
-  // frame a copy so transfer cannot detach this replayable value.
-  let latestPreview = null;
   let frameShowsCheckpoint = false;
+  framePreview = createFramePreview({
+    slug: SLUG,
+    getDocsOrigin: () => docsOrigin,
+    framePath: () => framePath,
+    api: previewApi,
+    setSource: (source) => (frameSrc = source),
+    send: tell,
+    onNavigate: () => {
+      frameReady = false;
+      renderingStore?.invalidate();
+      issued += 1;
+      renderedSha = null;
+      lastRegions = lastHighlight = null;
+    },
+    onDelivered: (payload) => {
+      if (payload.kind === "pdf") renderedSha = payload.sha || null;
+      frameShowsCheckpoint = Boolean(viewing);
+      everPainted = true;
+      everPaintedShown = true;
+    },
+  });
 
-  // Whether the frame's current URL carries a token, and which navigation is
-  // the latest, so a token that arrives for an older one cannot put its URL
-  // in the frame over a newer one's.
-  let frameServed = false;
-  let frameRequest = 0;
-
-  function navigateFrame(force = false) {
-    if (!docsOrigin) return;
-    const kind = framePath;
-    // A page frame is sent an HTML document's bytes by the documents origin
-    // only when its URL carries a short-lived token, since that origin holds
-    // no sign-in and no key of this reader's. The token is fetched here, over
-    // the channel that does, once per navigation, whether or not this page
-    // will paint over what arrives: an editor's frame is served the page as
-    // itself before the previews start, so the document's own scripts have
-    // run once, which is what the frame did before reading took a
-    // credential. The PDF viewer is sent no bytes and needs none.
-    const serves = kind === "raw";
-    if (!kind || (!force && frameSrc && frameKind === kind && (frameServed || !serves))) return;
-    frameKind = kind;
-    frameEpoch += 1;
-    frameReady = false;
-    frameReadyEpoch = -1;
-    renderingRequest += 1;
-    issued += 1;
-    renderedSha = null;
-    lastRegions = lastHighlight = null;
-    const base = `${docsOrigin}/${kind}/${SLUG}/?v=${++framedGeneration}`;
-    const request = ++frameRequest;
-    if (!serves) {
-      frameServed = false;
-      frameSrc = base;
-      return;
-    }
-    fetch(`/api/documents/${SLUG}/frame`, { headers: { ...SHELL_HEADERS, ...keyHeaders(KEY) } })
-      .then((response) => (response.ok ? response.json() : null))
-      .catch(() => null)
-      .then((pass) => {
-        if (request !== frameRequest) return;
-        // Without a token the origin answers the empty shell: a page with
-        // nothing in it rather than a page that never arrives.
-        frameServed = Boolean(pass?.token);
-        frameSrc = frameServed ? `${base}&until=${pass.until}&token=${pass.token}` : base;
-      });
-  }
-
-  function deliverPreview(payload) {
-    const kind = payload?.kind === "html" ? "raw" : payload?.kind;
-    if (!payload || !frameReady || frameReadyEpoch !== frameEpoch || kind !== frameKind) {
-      return false;
-    }
-    if (payload.kind === "pdf") {
-      const bytes = payload.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload.bytes);
-      const buffer = bytes.slice().buffer;
-      tell({ type: "preview", pdf: buffer }, [buffer]);
-      renderedSha = payload.sha || null;
-    } else if (payload.kind === "html") {
-      tell({ type: "preview", html: payload.html });
-    } else {
-      return false;
-    }
-    frameShowsCheckpoint = Boolean(viewing);
-    everPainted = true;
-    everPaintedShown = true;
-    return true;
-  }
-
-  function replayPreview() {
-    if (!paintsTheFrame) return false;
-    return deliverPreview(latestPreview);
-  }
+  const navigateFrame = (force = false) => framePreview.navigate(force);
+  const deliverPreview = (payload) => framePreview.deliver(payload);
+  const replayPreview = () => paintsTheFrame && framePreview.replay();
 
   // The kind of frame follows the tree being displayed, including a
   // historical tree. This effect is also what navigates when the live main
@@ -1550,23 +1494,12 @@
   $effect(() => {
     void docsOrigin;
     void framePath;
-    navigateFrame();
+    untrack(() => navigateFrame());
   });
 
   function refreshFramedPage() {
     if (paintsTheFrame || !session || !docsOrigin) return;
-    const source = session.text.toString();
-    if (framedSource === null) {
-      framedSource = source;
-      return;
-    }
-    if (source === framedSource) return;
-    framedSource = source;
-    // A new URL is what makes the frame load again. The response is `no-store`
-    // and the path is the document's own, so this is the same page from the
-    // same origin under the same CSP -- the scripts it carries run exactly as
-    // they did on the first load.
-    navigateFrame(true);
+    framePreview.refresh(session.text.toString());
   }
 
   // What a paged document's frame is showing: the checkpoint the stored
@@ -1576,7 +1509,6 @@
   // The SHA whose bytes are in the frame, so a poll that finds the same
   // rendering costs one small request rather than a PDF.
   let renderedSha = null;
-  let renderingRequest = 0;
 
   // The line under the badge for a LaTeX document, and the whole of what makes
   // storing a derived thing honest. A rendering is named by the digest of the
@@ -1593,161 +1525,35 @@
         : renderedNoteText(rendering),
   );
 
-  // The PDF an editor's browser compiled, drawn for everybody else.
-  //
-  // A reader is never asked to fetch a TeX distribution to read a paper, so
-  // what they are shown is what the server kept: the newest checkpoint that
-  // has a rendering. `latest` says which one that is in a few bytes; the
-  // rendering itself is named by a digest and cached for a year, so it is
-  // fetched once however often this is called.
-  async function paintRendering() {
-    const request = ++renderingRequest;
-    const headers = { ...SHELL_HEADERS, ...keyHeaders(KEY) };
-    let found;
-    if (viewing) {
-      // A checkpoint picked out of the timeline is shown from its own
-      // rendering, if one was stored. The toolbar already says which version
-      // this is, so the rendering is "current" in the only sense the note
-      // cares about.
-      found = { sha: viewing.sha, at: viewing.at, current: true };
-    } else {
-      found = await fetch(`/api/documents/${SLUG}/renderings/latest`, { headers })
-        .then((response) => (response.ok ? response.json() : null))
-        .catch(() => null);
-      if (!found) return;
-    }
-    if (request !== renderingRequest) return;
-    const requestedSha = found.sha || null;
-    rendering = requestedSha ? found : null;
-    renderingChecked = true;
-    // Nothing this browser does produces a rendering, so the only way a newer
-    // one turns up is that somebody else compiled. Asked again, slowly, until
-    // what is shown is the text as it stands.
-    clearTimeout(previewTimer);
-    if (!viewing && (!rendering || !rendering.current)) {
-      previewTimer = setTimeout(paintPreview, RENDERING_POLL);
-    }
-    if (!requestedSha || requestedSha === renderedSha) return;
-    if (latestPreview?.kind === "pdf" && latestPreview.sha === requestedSha) {
-      deliverPreview(latestPreview);
-      return;
-    }
-    const bytes = await fetch(`/api/documents/${SLUG}/renderings/${requestedSha}`, { headers })
-      .then((response) => (response.ok ? response.arrayBuffer() : null))
-      .catch(() => null);
-    if (request !== renderingRequest) return;
-    // A rendering the manifest names and the store has lost is nothing to
-    // paint over what is already on the screen with; a version nobody
-    // rendered is said in the note instead.
-    if (!bytes) {
-      if (viewing && request === renderingRequest) {
-        const hadPages = Boolean(latestPreview || renderedSha || everPaintedShown);
-        rendering = { ...rendering, current: false, missing: true };
-        latestPreview = null;
-        renderedSha = null;
-        frameShowsCheckpoint = false;
-        everPainted = false;
-        everPaintedShown = false;
-        // The PDF viewer has no "clear" message. Reloading its empty shell
-        // removes the previous checkpoint's pages before the warning says
-        // why this one cannot be shown.
-        if (hadPages) navigateFrame(true);
-      }
-      return;
-    }
-    if (request !== renderingRequest) return;
-    latestPreview = { kind: "pdf", sha: requestedSha, bytes: new Uint8Array(bytes) };
-    deliverPreview(latestPreview);
-  }
+  renderingStore = createRenderingStore({
+    api: previewApi,
+    getViewing: () => viewing,
+    getSourceGeneration: () => sourceGeneration,
+    getNavigationGeneration: () => navigationGeneration,
+    getRenderedSha: () => renderedSha,
+    deliver: (payload) => deliverPreview(payload),
+    onRendering: (value) => (rendering = value),
+    onMissing: (value) => {
+      const hadPages = Boolean(framePreview.preview() || renderedSha || everPaintedShown);
+      rendering = value;
+      framePreview.clear();
+      renderedSha = null;
+      frameShowsCheckpoint = false;
+      everPainted = false;
+      everPaintedShown = false;
+      if (hadPages) navigateFrame(true);
+    },
+    schedulePreview: () => void paintPreview(),
+  });
 
-  // The PDF this browser compiled, kept by the server so that a reader never
-  // has to compile one. Stored under the name of the text it was compiled
-  // from: a name the text has moved past is refused, correctly, and the next
-  // compile stores its own. The SyncTeX file goes beside it when the engine
-  // produced one.
-  // A rendering is not stored after every compile. It is stored when the text
-  // it compiled has stayed quiet for a minute afterwards -- the same idea as
-  // the quiet the server takes a checkpoint after, observed from here -- and
-  // at once when the editor names a checkpoint, which is them saying "this
-  // one". An edit in between drops it: the next compile holds its own.
-  const RENDERING_QUIET = 60_000;
-  let heldRendering = null;
-  let renderingTimer;
-  // Whether the server has been asked which rendering it has. `rendering`
-  // being null means either "asked, and none" or "not asked yet", and the
-  // first rendering rule below needs to tell the two apart.
-  let renderingChecked = false;
-
-  // Whether nobody has rendered this document yet, which is the one case the
-  // quiet minute buys nothing: readers have no pages at all, and a compile
-  // that succeeded is worth more to them now than a quieter one in a minute.
-  // Asked of the server once if this page has not already asked.
-  async function noRenderingYet() {
-    if (rendering) return false;
-    if (renderingChecked) return true;
-    const found = await fetch(`/api/documents/${SLUG}/renderings/latest`, {
-      headers: { ...SHELL_HEADERS, ...keyHeaders(KEY) },
-    })
-      .then((response) => (response.ok ? response.json() : null))
-      .catch(() => null);
-    if (!found) return false; // unknown is not "none"; the quiet rule applies
-    renderingChecked = true;
-    return !found.sha;
-  }
-
-  async function holdRendering(name, bytes, synctex, current = true, provenance = null) {
-    clearTimeout(renderingTimer);
-    heldRendering = { name, bytes, synctex, current, provenance };
-    // A document's first rendering is stored at once; every later one waits
-    // for the text to stay quiet. An edit while the question is being asked
-    // drops the held rendering, and what is stored then is nothing, which
-    // is right: the next compile holds its own.
-    if (current && (await noRenderingYet())) {
-      storeHeldRendering();
-      return;
-    }
-    if (!heldRendering) return;
-    renderingTimer = setTimeout(storeHeldRendering, RENDERING_QUIET);
-  }
-
-  function dropHeldRendering() {
-    clearTimeout(renderingTimer);
-    heldRendering = null;
-  }
-
-  function storeHeldRendering() {
-    clearTimeout(renderingTimer);
-    const held = heldRendering;
-    heldRendering = null;
-    if (held) storeRendering(held.name, held.bytes, held.synctex, held.current, held.provenance);
-  }
-
-  async function storeRendering(name, bytes, synctex, current = true, provenance = null) {
-    const source = sourceGeneration;
-    const navigation = navigationGeneration;
-    // `x-librepaper-provenance` travels on both PUTs of the same job's bytes
-    // -- never a SyncTeX map paired with a different job's PDF -- so the
-    // server can answer a reader's `renderedNote` with what actually produced
-    // this rendering (section 4 of the interfaces doc).
-    const headers = {
-      ...SHELL_HEADERS,
-      ...keyHeaders(KEY),
-      ...(provenance ? { "x-librepaper-provenance": JSON.stringify(provenance) } : {}),
-    };
-    const put = (suffix, body) =>
-      fetch(`/api/documents/${SLUG}/renderings/${name}${suffix}`, { method: "PUT", headers, body })
-        .then((response) => response.ok)
-        .catch(() => false);
-    if (!(await put("", bytes))) return;
-    if (source === sourceGeneration && navigation === navigationGeneration) {
-      rendering = { sha: name, at: new Date().toISOString(), current, provenance };
-    }
-    if (synctex) await put(".synctex", synctex);
-  }
+  const paintRendering = () => renderingStore.paint();
+  const holdRendering = (...args) => renderingStore.hold(...args);
+  const dropHeldRendering = () => renderingStore.dropHeld();
 
   async function paintPreview() {
     clearTimeout(previewTimer);
     previewTimer = null;
+    renderingStore.cancelPoll();
     // A paged document is compiled in an editor's browser and nowhere else,
     // so everybody else is shown the PDF the server kept from the last one
     // who did. See `docs/specs/latex.md`.
@@ -1766,8 +1572,7 @@
     // this one compiles for itself.
     if (outputIsPdf && !everPainted && !viewing) {
       await paintRendering();
-      clearTimeout(previewTimer);
-      previewTimer = null;
+      renderingStore.cancelPoll();
     }
     if (!paintsTheFrame) {
       refreshFramedPage();
@@ -1869,7 +1674,7 @@
         pdfFailure = false;
         pdfFailureReason = "";
         const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
-        latestPreview = { kind: "pdf", sha: renderingName, bytes: new Uint8Array(buffer.slice(0)) };
+        const preview = { kind: "pdf", sha: renderingName, bytes: new Uint8Array(buffer.slice(0)) };
         // Held for the readers, from a copy: the hand-over to the frame below
         // empties this page's own.
         if (renderingName && snapshotSource === sourceGeneration) {
@@ -1881,7 +1686,7 @@
             provenance || null,
           );
         }
-        deliverPreview(latestPreview);
+        framePreview.publish(preview);
         if (snapshotSource === sourceGeneration) {
           diagnosticPainter.rendered({ page: "", diagnostics: contextualDiagnostics });
         }
@@ -1893,8 +1698,7 @@
         // this page are painted on the same slow schedule the errors are, so
         // that a font name half typed does not flash a badge on every
         // keystroke.
-        latestPreview = { kind: "html", html };
-        deliverPreview(latestPreview);
+        framePreview.publish({ kind: "html", html });
         if (snapshotSource === sourceGeneration) {
           diagnosticPainter.rendered({ page: html, diagnostics: contextualDiagnostics });
         }
@@ -1974,7 +1778,7 @@
       // earlier version. That is known here rather than asked: the rendering
       // is named by the digest of the source it was compiled from.
       if (rendering?.current) rendering = { ...rendering, current: false };
-      previewTimer = setTimeout(paintPreview, RENDERING_POLL);
+      renderingStore.schedulePoll();
       return;
     }
     // A rendering waiting for the text to stay quiet is of a text that did
@@ -2362,12 +2166,11 @@
       // render, and reload the viewer even when both formats use pdf.js.
       if (previousFormat && previousFormat !== format) {
         navigationGeneration += 1;
-        renderingRequest += 1;
+        renderingStore?.reset();
         issued += 1;
         dropHeldRendering();
+        framePreview.clear();
         rendering = null;
-        renderingChecked = false;
-        latestPreview = null;
         renderedSha = null;
         frameShowsCheckpoint = false;
         everPainted = false;
@@ -2762,6 +2565,8 @@
       // disconnects, which the socket closing does on its own; this is only
       // this browser letting go of its half.
       passages.clearPassageCache();
+      framePreview.dispose();
+      renderingStore?.dispose();
       stopLatex();
       session?.leave();
       room?.close();
