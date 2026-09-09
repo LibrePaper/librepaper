@@ -11,7 +11,7 @@ async fn peer(server: &TestServer, slug: &str, key: &str) -> crate::cli::peer::A
     let link =
         crate::cli::peer::DocumentLink::parse(&format!("{}/docs/{slug}#k={key}", server.url), "")
             .expect("a document link");
-    crate::cli::peer::AutomationPeer::open(link)
+    crate::cli::peer::AutomationPeer::open(link, None, None)
         .await
         .expect("the automation peer opens")
 }

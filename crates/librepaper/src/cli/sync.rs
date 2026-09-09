@@ -32,7 +32,9 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::cli::{link_key, require_token_for, resolve_identifier, server_from, stored_token_for};
+use crate::cli::{
+    link_key, require_token_for, resolve_identifier, server_or_die, stored_token_for,
+};
 use crate::document::session;
 use crate::http::{detail_of, get_as, text, Credentials, KEY_HEADER};
 use crate::room::{decode_update, encode_update};
@@ -53,20 +55,21 @@ const RECONNECT_MOST: Duration = Duration::from_secs(30);
 pub async fn sync_document(
     identifier: &str,
     file: &str,
-    server_flag: String,
+    server: Option<String>,
+    explicit_token: Option<String>,
     interval: String,
     key: String,
 ) {
-    let server = server_from(&server_flag);
+    let server = server_or_die(server);
     let every = parse_interval(&interval).unwrap_or_else(|err| die(err));
     // A link is a credential in its own right: with one, a sign-in is sent
     // if there is one and not insisted on, since the link authorizes and the
     // account only attributes. Without one, the sign-in is the whole story.
     let key = link_key(&key);
     let token = if key.is_empty() {
-        require_token_for(&server)
+        require_token_for(&server, explicit_token.as_deref())
     } else {
-        stored_token_for(&server)
+        stored_token_for(&server, explicit_token.as_deref())
     };
     let presence_name = if token.is_empty() {
         "librepaper".to_string()
@@ -87,7 +90,7 @@ pub async fn sync_document(
     } else {
         presence_name
     };
-    let slug = resolve_identifier(identifier, &server, &key).await;
+    let slug = resolve_identifier(identifier, &server, &key, explicit_token.as_deref()).await;
 
     // Only an editor may change a document's source, in the browser and here.
     // Asked before anything is opened, because the server drops anyone else's

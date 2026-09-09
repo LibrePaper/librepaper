@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
-use crate::cli::{resolve_identifier, server_from};
+use crate::cli::{resolve_identifier, server_or_die};
 use crate::config::Configuration;
 use crate::http::{get_as, send, Credentials};
 use crate::room::text::{len16 as utf16_len, utf16_slice};
@@ -118,21 +118,25 @@ fn g(value: f64) -> String {
 /// handles `list` prints.
 pub async fn export_document(
     identifier: &str,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     format: &str,
     out: String,
     from: String,
     key: String,
 ) {
-    let server = server_from(&server_flag);
+    let server = server_or_die(server);
     let key = crate::cli::link_key(&key);
-    let slug = resolve_identifier(identifier, &server, &key).await;
+    let slug = resolve_identifier(identifier, &server, &key, token.as_deref()).await;
 
     // Every read here says who is asking: the sign-in if there is one, and
     // the link's key if the export was run from a link. A document answers a
     // stranger as a missing one does, so an owner exporting their own paper
     // would otherwise be told it does not exist.
-    let who = Credentials::new(&crate::cli::stored_token_for(&server), &key);
+    let who = Credentials::new(
+        &crate::cli::stored_token_for(&server, token.as_deref()),
+        &key,
+    );
     let (status, document) = get_as(
         &format!("{server}/api/documents/{slug}"),
         &who,

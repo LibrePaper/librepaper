@@ -244,7 +244,8 @@ async fn native_cli_typst_publish_stores_a_real_pdf() {
         file.to_str().expect("path"),
         String::new(),
         String::new(),
-        server.url.clone(),
+        Some(server.url.clone()),
+        None,
         String::new(),
     )
     .await;

@@ -17,7 +17,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::auth::{link_sealing_key_file, session_key_file};
-use crate::cli::{server_from, stored_token_for};
+use crate::cli::{server_or_die, stored_token_for};
 use crate::config::Configuration;
 use crate::config::DeploymentProfile;
 use crate::document::render::{
@@ -443,8 +443,8 @@ async fn seed_with_store(
 /// seed. It deliberately replaces everything already there: a seed is a known
 /// demonstration state, not an additive publishing operation.
 pub async fn seed_remote(server_flag: String, documents: &[SeedDocument]) {
-    let server = server_from(&server_flag);
-    let token = stored_token_for(&server);
+    let server = server_or_die(Some(server_flag));
+    let token = stored_token_for(&server, None);
     let examples_enabled =
         match get_json(&format!("{server}/api/me"), Duration::from_secs(30)).await {
             Ok((200, capabilities)) => capabilities

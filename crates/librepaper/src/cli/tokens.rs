@@ -26,15 +26,6 @@ pub(super) fn librepaper_dir(base: &Path) -> PathBuf {
     base.join("librepaper")
 }
 
-/// The single unscoped file `login` used to write before tokens were cached
-/// per deployment. It is honoured only for the default server -- see
-/// `stored_token_at` -- and removed once its token has been migrated into the
-/// scoped cache, so it either holds the default server's token or does not
-/// exist.
-pub(crate) fn legacy_token_path(base: &Path) -> PathBuf {
-    librepaper_dir(base).join("token")
-}
-
 /// One JSON object mapping a normalized server origin to the bearer token
 /// `login` received from it. Scoped by origin, not by the literal `--server`
 /// string, so `https://x.example` and `https://x.example/` share a cache
@@ -95,90 +86,54 @@ pub(super) fn save_tokens(
     write_token(&path, &body)
 }
 
-/// The token cached for one server's origin, or "" if there is none. The
-/// legacy unscoped file is consulted only when `server`'s origin is the
-/// default server it predates -- it is never forwarded to a different
-/// deployment, which is the bug this replaces.
-pub(crate) fn stored_token_at(base: &Path, server: &str, default_server: &str) -> String {
+/// The token cached for one server's origin, or "" if there is none.
+pub(crate) fn stored_token_at(base: &Path, server: &str) -> String {
     let origin = origin_of(server);
-    if let Some(token) = load_tokens(base).get(&origin) {
-        let trimmed = token.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    if origin == origin_of(default_server) {
-        if let Ok(raw) = std::fs::read_to_string(legacy_token_path(base)) {
-            let trimmed = raw.trim().to_string();
-            if !trimmed.is_empty() {
-                return trimmed;
-            }
-        }
-    }
-    String::new()
+    load_tokens(base)
+        .get(&origin)
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+        .unwrap_or_default()
 }
 
-/// Caches `token` under `server`'s origin. When that origin is the default
-/// server, the legacy unscoped file -- the only thing that could have been
-/// caching a token for it before -- is migrated away: its content, if any, is
-/// now superseded by this scoped entry, and leaving it in place would let a
-/// stale copy resurface if the scoped cache were ever cleared.
-pub(crate) fn store_token_at(
-    base: &Path,
-    server: &str,
-    default_server: &str,
-    token: &str,
-) -> Result<(), String> {
+/// Caches `token` under `server`'s origin.
+pub(crate) fn store_token_at(base: &Path, server: &str, token: &str) -> Result<(), String> {
     let _lock = lock_tokens(base)?;
     let origin = origin_of(server);
     let mut tokens = read_tokens(base)?;
-    tokens.insert(origin.clone(), token.to_string());
-    save_tokens(base, &tokens)?;
-    if origin == origin_of(default_server) {
-        let legacy = legacy_token_path(base);
-        if legacy.exists() {
-            std::fs::remove_file(&legacy)
-                .map_err(|err| format!("could not remove {}: {err}", legacy.display()))?;
-        }
-    }
-    Ok(())
+    tokens.insert(origin, token.to_string());
+    save_tokens(base, &tokens)
 }
 
-/// The token to send to `server`: `$LIBREPAPER_TOKEN` if it is set, or
-/// whatever `librepaper login` cached for that server's own origin.
+/// The token to send to `server`: an explicit `--token` (or the
+/// `$LIBREPAPER_TOKEN` clap merges into it) if one was given, or whatever
+/// `librepaper login` cached for that server's own origin.
 ///
-/// `LIBREPAPER_TOKEN` is explicit and is sent to whichever server was
-/// selected, wherever that is -- it is a bearer a shell script hands the CLI
-/// on purpose, and there is nothing here to scope it against. The cache, by
-/// contrast, is scoped to the server's origin precisely so that signing in to
-/// one deployment never sends its token to another. A `LIBREPAPER_TOKEN`
-/// holding a GitHub token still works: the server tells the two apart by the
-/// `lp_` prefix and verifies each its own way.
-pub fn stored_token_for(server: &str) -> String {
-    let env_token = std::env::var("LIBREPAPER_TOKEN").ok();
-    if let Some(token) = env_token
-        .as_deref()
-        .filter(|token| !token.trim().is_empty())
-    {
-        return token.trim().to_string();
-    }
-    stored_token_with(
-        &config_home(),
-        server,
-        &default_server(),
-        env_token.as_deref(),
-    )
+/// An explicit token is sent to whichever server was selected, wherever that
+/// is -- it is a bearer given to the CLI on purpose, and there is nothing
+/// here to scope it against. The cache, by contrast, is scoped to the
+/// server's origin precisely so that signing in to one deployment never sends
+/// its token to another. An explicit token holding a GitHub token still
+/// works: the server tells the two apart by the `lp_` prefix and verifies
+/// each its own way.
+pub fn stored_token_for(server: &str, token: Option<&str>) -> String {
+    stored_token_with(&config_home(), server, token)
 }
 
-/// Pasted automation links cannot select the destination of an ambient bearer.
-/// An environment token is used only for the explicitly configured origin;
-/// other deployments may still use their own origin-scoped cached sign-in.
-pub(crate) fn stored_agent_token_for(server: &str) -> String {
+/// Pasted automation links cannot select the destination of an ambient
+/// bearer. An explicit token is used only for the server it was explicitly
+/// configured for; other deployments may still use their own origin-scoped
+/// cached sign-in.
+pub(crate) fn stored_agent_token_for(
+    server: &str,
+    configured_server: Option<&str>,
+    token: Option<&str>,
+) -> String {
     stored_agent_token_with(
         &config_home(),
         server,
-        &default_server(),
-        std::env::var("LIBREPAPER_TOKEN").ok().as_deref(),
+        configured_server.unwrap_or(""),
+        token,
     )
 }
 
@@ -186,42 +141,37 @@ fn stored_agent_token_with(
     base: &Path,
     server: &str,
     configured: &str,
-    env: Option<&str>,
+    token: Option<&str>,
 ) -> String {
     let matches = !configured.is_empty() && origin_of(server) == origin_of(configured);
-    stored_token_with(base, server, configured, if matches { env } else { None })
+    stored_token_with(base, server, if matches { token } else { None })
 }
 
 /// The pure core of `stored_token_for`: everything above it does is read the
-/// environment and the config directory, which is factored out here so the
-/// precedence between an explicit `LIBREPAPER_TOKEN` and the scoped cache can
-/// be tested by passing values in, rather than by mutating the process
-/// environment a test binary's threads share.
-pub(crate) fn stored_token_with(
-    base: &Path,
-    server: &str,
-    default_server: &str,
-    env_token: Option<&str>,
-) -> String {
-    if let Some(token) = env_token {
+/// config directory, which is factored out here so the precedence between an
+/// explicit token and the scoped cache can be tested by passing values in,
+/// rather than by mutating the process environment a test binary's threads
+/// share.
+pub(crate) fn stored_token_with(base: &Path, server: &str, token: Option<&str>) -> String {
+    if let Some(token) = token {
         if !token.trim().is_empty() {
             return token.trim().to_string();
         }
     }
-    stored_token_at(base, server, default_server)
+    stored_token_at(base, server)
 }
 
 /// What every command that writes needs.
-pub fn require_token_for(server: &str) -> String {
-    let token = stored_token_for(server);
-    if token.is_empty() {
+pub fn require_token_for(server: &str, token: Option<&str>) -> String {
+    let resolved = stored_token_for(server, token);
+    if resolved.is_empty() {
         die("not signed in. Run:\n    librepaper login");
     }
-    token
+    resolved
 }
 
-pub async fn login(server_flag: String) {
-    let server = server_from(&server_flag);
+pub async fn login(server: Option<String>) {
+    let server = server_or_die(server);
     let code = request_device_code(&server)
         .await
         .unwrap_or_else(|err| die(format!("could not start the sign-in: {err}")));
@@ -244,7 +194,7 @@ pub async fn login(server_flag: String) {
         };
 
     let base = config_home();
-    store_token_at(&base, &server, &default_server(), &token).unwrap_or_else(|err| die(err));
+    store_token_at(&base, &server, &token).unwrap_or_else(|err| die(err));
     if who.is_empty() {
         println!("signed in");
     } else {
@@ -322,15 +272,12 @@ fn logout_at(base: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     let _lock = lock_tokens(base)?;
-    let mut cleared = false;
-    for path in [tokens_path(base), legacy_token_path(base)] {
-        match std::fs::remove_file(&path) {
-            Ok(()) => cleared = true,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(format!("could not remove {}: {err}", path.display())),
-        }
+    let path = tokens_path(base);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(format!("could not remove {}: {err}", path.display())),
     }
-    Ok(cleared)
 }
 
 pub struct DeviceCode {
@@ -413,13 +360,7 @@ mod cache_tests {
     #[test]
     fn automation_environment_token_requires_configured_origin() {
         let base = tempfile::tempdir().unwrap();
-        store_token_at(
-            base.path(),
-            "https://other.test",
-            "https://home.test",
-            "other-cache",
-        )
-        .unwrap();
+        store_token_at(base.path(), "https://other.test", "other-cache").unwrap();
         assert_eq!(
             stored_agent_token_with(
                 base.path(),
@@ -448,7 +389,7 @@ mod cache_tests {
     fn corrupt_cache_is_preserved_when_login_writes() {
         let base = tempfile::tempdir().unwrap();
         write_token(&tokens_path(base.path()), "{broken").unwrap();
-        assert!(store_token_at(base.path(), "https://new.test", "", "new").is_err());
+        assert!(store_token_at(base.path(), "https://new.test", "new").is_err());
         assert_eq!(
             std::fs::read_to_string(tokens_path(base.path())).unwrap(),
             "{broken\n"
@@ -462,7 +403,7 @@ mod cache_tests {
             for n in 0..8 {
                 let base = base.path();
                 scope.spawn(move || {
-                    store_token_at(base, &format!("https://host{n}.test"), "", "token").unwrap()
+                    store_token_at(base, &format!("https://host{n}.test"), "token").unwrap()
                 });
             }
         });

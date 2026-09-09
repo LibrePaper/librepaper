@@ -109,7 +109,8 @@ async fn suggest_posts_a_comment_and_prints_its_id() {
         "there",
         String::new(),
         "reads better".to_string(),
-        server.url.clone(),
+        Some(server.url.clone()),
+        None,
         key,
     )
     .await;
@@ -145,7 +146,8 @@ async fn suggest_uses_live_text_before_the_next_checkpoint() {
         "new",
         String::new(),
         String::new(),
-        server.url.clone(),
+        Some(server.url.clone()),
+        None,
         key,
     )
     .await;
@@ -338,7 +340,8 @@ async fn accept_suggestion_and_reject_suggestion_print_their_outcome() {
         "there",
         String::new(),
         String::new(),
-        server.url.clone(),
+        Some(server.url.clone()),
+        None,
         key.clone(),
     )
     .await;
@@ -350,7 +353,14 @@ async fn accept_suggestion_and_reject_suggestion_print_their_outcome() {
     .await;
     let comment_id = text(&listing["comments"][0], "id");
 
-    accept_suggestion(&slug, &comment_id, server.url.clone(), key.clone()).await;
+    accept_suggestion(
+        &slug,
+        &comment_id,
+        Some(server.url.clone()),
+        None,
+        key.clone(),
+    )
+    .await;
     let room = server.instance.rooms.get(&slug).await;
     assert!(
         room.source().await.contains("there"),
@@ -365,7 +375,8 @@ async fn accept_suggestion_and_reject_suggestion_print_their_outcome() {
         "world",
         String::new(),
         String::new(),
-        server.url.clone(),
+        Some(server.url.clone()),
+        None,
         key.clone(),
     )
     .await;
@@ -382,7 +393,7 @@ async fn accept_suggestion_and_reject_suggestion_print_their_outcome() {
         .find(|c| c["outcome"].is_null())
         .expect("the pending suggestion");
     let second_id = text(second, "id");
-    reject_suggestion(&slug, &second_id, server.url.clone(), key).await;
+    reject_suggestion(&slug, &second_id, Some(server.url.clone()), None, key).await;
 
     let (_, listing) = get_json_as(
         &session_as(TEST_PUBLISHER),

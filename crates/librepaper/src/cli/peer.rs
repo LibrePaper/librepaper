@@ -254,9 +254,17 @@ impl std::fmt::Debug for AutomationPeer {
 }
 
 impl AutomationPeer {
-    /// Open a link and report the effective role before any write is attempted.
-    pub async fn open(link: DocumentLink) -> Result<Self, String> {
-        let token = stored_agent_token_for(link.server());
+    /// Open a link and report the effective role before any write is
+    /// attempted. `configured_server` is the global `--server` this process
+    /// was given, if any: an explicit `token` is sent only when the link's
+    /// own server matches it, since a pasted link cannot select the
+    /// destination of an ambient bearer.
+    pub async fn open(
+        link: DocumentLink,
+        configured_server: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<Self, String> {
+        let token = stored_agent_token_for(link.server(), configured_server, token);
         let client = new_client()?;
         let mut request = client.get(format!("{}/api/documents/{}", link.server(), link.slug()));
         if !token.is_empty() {
@@ -1326,9 +1334,13 @@ pub enum ChatCommand {
         link: String,
         #[arg(long)]
         conversation: String,
-        /// Conversation credential; defaults to LIBREPAPER_CHAT_TOKEN.
-        #[arg(long)]
-        token: Option<String>,
+        /// Conversation credential; or $LIBREPAPER_CHAT_TOKEN
+        #[arg(
+            long = "chat-token",
+            env = "LIBREPAPER_CHAT_TOKEN",
+            hide_env_values = true
+        )]
+        chat_token: Option<String>,
         #[arg(long)]
         after: Option<u64>,
         #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=300))]
@@ -1339,8 +1351,13 @@ pub enum ChatCommand {
         link: String,
         #[arg(long)]
         conversation: String,
-        #[arg(long)]
-        token: Option<String>,
+        /// Conversation credential; or $LIBREPAPER_CHAT_TOKEN
+        #[arg(
+            long = "chat-token",
+            env = "LIBREPAPER_CHAT_TOKEN",
+            hide_env_values = true
+        )]
+        chat_token: Option<String>,
         #[arg(long)]
         message: String,
         #[arg(long)]
@@ -1361,22 +1378,24 @@ fn validate_conversation(conversation: &str, token: &str) -> Result<(), String> 
         return Err("invalid conversation identifier".into());
     }
     if token.is_empty() {
-        return Err("provide --token or LIBREPAPER_CHAT_TOKEN for this conversation".into());
+        return Err("provide --chat-token or LIBREPAPER_CHAT_TOKEN for this conversation".into());
     }
     Ok(())
 }
 
+/// clap has already merged `--chat-token` and `$LIBREPAPER_CHAT_TOKEN`; this
+/// only rejects the case neither supplied one.
 fn chat_token(token: Option<String>) -> Result<String, String> {
-    let token = token
-        .or_else(|| std::env::var("LIBREPAPER_CHAT_TOKEN").ok())
-        .unwrap_or_default();
-    if token.is_empty() {
-        return Err("provide --token or LIBREPAPER_CHAT_TOKEN for this conversation".into());
-    }
-    Ok(token)
+    token
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| "provide --chat-token or LIBREPAPER_CHAT_TOKEN for this conversation".into())
 }
 
-pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
+pub async fn run_cli(
+    command: AgentCommand,
+    server: Option<String>,
+    token: Option<String>,
+) -> Result<(), String> {
     let link_text = match &command {
         AgentCommand::Chat { command } => match command {
             ChatCommand::Create { link }
@@ -1395,22 +1414,22 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
         | AgentCommand::Edit { link, .. }
         | AgentCommand::Checkpoint { link, .. } => link,
     };
-    let link = DocumentLink::parse(link_text, "")?;
-    let peer = AutomationPeer::open(link).await?;
+    let link = DocumentLink::parse(link_text, server.as_deref().unwrap_or(""))?;
+    let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
     match command {
         AgentCommand::Chat { command } => {
             let value = match command {
                 ChatCommand::Create { .. } => peer.chat_create().await?,
                 ChatCommand::Watch {
                     conversation,
-                    token,
+                    chat_token: watch_token,
                     after,
                     timeout,
                     ..
                 } => {
                     peer.chat_watch(
                         &conversation,
-                        &chat_token(token)?,
+                        &chat_token(watch_token)?,
                         Duration::from_secs(timeout),
                         after,
                     )
@@ -1418,7 +1437,7 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
                 }
                 ChatCommand::Post {
                     conversation,
-                    token,
+                    chat_token: post_token,
                     message,
                     request_id,
                     results,
@@ -1432,7 +1451,7 @@ pub async fn run_cli(command: AgentCommand) -> Result<(), String> {
                         .transpose()?;
                     peer.chat_post_with_results(
                         &conversation,
-                        &chat_token(token)?,
+                        &chat_token(post_token)?,
                         &message,
                         &request_id.unwrap_or_else(random_request_id),
                         results,

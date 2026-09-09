@@ -91,8 +91,9 @@ async fn preserve_revision_title(
     server: &str,
     slug: &str,
     title: &mut String,
+    token: Option<&str>,
 ) -> Result<(), String> {
-    preserve_revision_title_with_token(server, slug, title, &stored_token_for(server)).await
+    preserve_revision_title_with_token(server, slug, title, &stored_token_for(server, token)).await
 }
 
 /// The files of a directory, as the document will know them: relative paths,
@@ -307,18 +308,25 @@ pub fn main_file(files: &[String], asked: &str) -> Result<String, String> {
     ))
 }
 
-pub async fn publish(file: &str, title: String, slug: String, server_flag: String, main: String) {
+pub async fn publish(
+    file: &str,
+    title: String,
+    slug: String,
+    server: Option<String>,
+    token: Option<String>,
+    main: String,
+) {
     let path = Path::new(file);
     let Ok(info) = std::fs::metadata(path) else {
         die(format!("file not found: {file}"))
     };
     if info.is_dir() {
-        return publish_directory(path, title, slug, server_flag, main).await;
+        return publish_directory(path, title, slug, server, token, main).await;
     }
     if !main.is_empty() {
         die("--main names a file inside a directory; publish the directory to use it");
     }
-    publish_file(file, title, slug, server_flag).await
+    publish_file(file, title, slug, server, token).await
 }
 
 /// A directory, as one document: every file in it that belongs, with one of
@@ -327,11 +335,12 @@ pub(super) async fn publish_directory(
     root: &Path,
     mut title: String,
     slug: String,
-    server_flag: String,
+    server: Option<String>,
+    token: Option<String>,
     main: String,
 ) {
     let title_explicit = !title.is_empty();
-    let server = server_from(&server_flag);
+    let server = server_or_die(server);
     let config = publish_limits(&server)
         .await
         .map(config_with_publish_limits)
@@ -475,7 +484,7 @@ pub(super) async fn publish_directory(
         };
     }
     if !title_explicit {
-        preserve_revision_title(&server, &slug, &mut title)
+        preserve_revision_title(&server, &slug, &mut title, token.as_deref())
             .await
             .unwrap_or_else(|err| die(err));
     }
@@ -505,7 +514,7 @@ pub(super) async fn publish_directory(
         &slug,
         &main,
         files,
-        &stored_token_for(&server),
+        &stored_token_for(&server, token.as_deref()),
         Duration::from_secs(600),
     )
     .await
@@ -524,7 +533,7 @@ pub(super) async fn publish_directory(
             .cloned()
             .collect();
         if missing.is_empty() {
-            upload_typst_pdf(&server, &document, pdf, &typst_inputs).await;
+            upload_typst_pdf(&server, &document, pdf, &typst_inputs, token.as_deref()).await;
         } else {
             eprintln!(
                 "warning: source published, but no PDF artifact was uploaded; the local compile read files not in the published tree: {}",
@@ -565,9 +574,15 @@ pub(super) fn report_published(server: &str, document: &Value, path: &str) {
     );
 }
 
-pub(super) async fn publish_file(file: &str, mut title: String, slug: String, server_flag: String) {
+pub(super) async fn publish_file(
+    file: &str,
+    mut title: String,
+    slug: String,
+    server: Option<String>,
+    token: Option<String>,
+) {
     let title_explicit = !title.is_empty();
-    let server = server_from(&server_flag);
+    let server = server_or_die(server);
     let path = Path::new(file);
     let base_name = path
         .file_name()
@@ -750,7 +765,7 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
         // Publishing a revision keeps the existing title even when the new
         // source has a heading of its own. The authenticated lookup matters
         // for private documents, whose metadata is invisible anonymously.
-        preserve_revision_title(&server, &slug, &mut title)
+        preserve_revision_title(&server, &slug, &mut title, token.as_deref())
             .await
             .unwrap_or_else(|err| die(err));
     }
@@ -769,7 +784,7 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
         // readable and a document that does not compile is not one -- but what
         // it produces is a check, not a payload.
         &json!({"title": title, "slug": slug, "source": source, "source_format": source_format}),
-        &stored_token_for(&server),
+        &stored_token_for(&server, token.as_deref()),
         Duration::from_secs(300),
     )
     .await
@@ -788,7 +803,7 @@ pub(super) async fn publish_file(file: &str, mut title: String, slug: String, se
         // PDF must never be attached to a server tree that does not contain
         // those inputs.
         if source_format == "typst" {
-            upload_typst_pdf(&server, &document, pdf, &typst_inputs).await;
+            upload_typst_pdf(&server, &document, pdf, &typst_inputs, token.as_deref()).await;
         }
     }
 }
@@ -802,13 +817,14 @@ pub(super) async fn upload_typst_pdf(
     document: &Value,
     pdf: Vec<u8>,
     expected_inputs: &str,
+    token: Option<&str>,
 ) {
     let slug = text(document, "slug");
     if slug.is_empty() {
         eprintln!("warning: source published, but its PDF artifact has no document slug");
         return;
     }
-    let token = crate::cli::stored_token_for(server);
+    let token = crate::cli::stored_token_for(server, token);
     let (status, latest) = match get_with_token(
         &format!("{server}/api/documents/{slug}/renderings/latest"),
         &token,
