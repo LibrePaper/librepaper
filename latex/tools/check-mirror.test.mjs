@@ -66,7 +66,17 @@ try {
   check({ version: 1, distributions: {} }, 1, /no default WasmTex/);
   let manifest = complete();
   delete manifest.texlive.s1.files["pdftex/11/pdftex.map"];
+  // With bundles the per-file set is optional, but a stale initial entry is
+  // still a lie about what the mirror holds.
+  check(manifest, 1, /initial package .* is absent/);
+  manifest = complete();
+  manifest.releases[manifest.default_release].bundles = null;
+  delete manifest.texlive.s1.files["pdftex/11/pdftex.map"];
   check(manifest, 1, /package set is missing/);
+  // A bundled release needs no per-file snapshot at all.
+  manifest = complete();
+  delete manifest.texlive;
+  check(manifest, 0);
   manifest = complete();
   rmSync(join(directory, "worker.js"));
   check(manifest, 1, /ENOENT/);

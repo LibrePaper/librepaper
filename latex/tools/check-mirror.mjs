@@ -22,7 +22,12 @@ try {
   const release = manifest.releases?.[manifest.default_release];
   if (!release?.engines?.pdftex?.worker) throw new Error("no default WasmTex compiler release (legacy mirrors are incompatible)");
   const snapshot = manifest.texlive?.[release.snapshot];
-  if (!snapshot?.files?.["pdftex/26/article.cls"] || !snapshot?.files?.["pdftex/11/pdftex.map"] || !snapshot?.bloom?.url) {
+  // A release that ships bundles carries its own package set (SPEC-latex.md,
+  // wasm-latex); the per-file snapshot is then only for engines without
+  // bundle mode, and may be absent. Without bundles it is what every compile
+  // reads from, so it must be complete.
+  if (!release.bundles &&
+      (!snapshot?.files?.["pdftex/26/article.cls"] || !snapshot?.files?.["pdftex/11/pdftex.map"] || !snapshot?.bloom?.url)) {
     throw new Error("the default release's TeX Live package set is missing; build it with make latex-mirror");
   }
   // For an upload, verify the actual bytes, not just entries in an index.
@@ -34,7 +39,12 @@ try {
         if (!release.files?.[name]) throw new Error(`engine file ${name} is absent from the manifest`);
       }
     }
-    const files = [...Object.values(release.files || {}), ...Object.values(snapshot.files), ...Object.values(snapshot.root || {}), snapshot.bloom];
+    const files = [
+      ...Object.values(release.files || {}),
+      ...Object.values(snapshot?.files || {}),
+      ...Object.values(snapshot?.root || {}),
+      ...(snapshot?.bloom ? [snapshot.bloom] : []),
+    ];
     for (let i = 0; i < files.length; i += 32) {
       await Promise.all(files.slice(i, i + 32).map(async file => {
         const path = resolve(base, file.url);
@@ -45,11 +55,13 @@ try {
         }
       }));
     }
-    const bloom = await readFile(resolve(base, snapshot.bloom.url));
-    const { ok, missing } = verifyBloom(bloom, Object.keys(snapshot.files));
-    if (!ok) throw new Error(`package lookup filter hides ${missing.length} available files`);
-    for (const key of snapshot.initial || []) {
-      if (!snapshot.files[key]) throw new Error(`initial package ${key} is absent from the manifest`);
+    if (snapshot?.bloom) {
+      const bloom = await readFile(resolve(base, snapshot.bloom.url));
+      const { ok, missing } = verifyBloom(bloom, Object.keys(snapshot.files));
+      if (!ok) throw new Error(`package lookup filter hides ${missing.length} available files`);
+    }
+    for (const key of snapshot?.initial || []) {
+      if (!snapshot.files?.[key]) throw new Error(`initial package ${key} is absent from the manifest`);
     }
     // SPEC-latex.md "The index": a release's `bundles.json` is verified twice
     // -- its own bytes against the digest the release entry pins, and every
