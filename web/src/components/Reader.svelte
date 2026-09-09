@@ -17,7 +17,7 @@
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
   import { openRoom } from "../lib/room.js";
-  import { submissions } from "../lib/submissions.js";
+  import { createAnnotations } from "../lib/reader/annotations.js";
   import PendingAnnotations from "./PendingAnnotations.svelte";
   import {
     SHELL_HEADERS,
@@ -114,20 +114,18 @@
 
   let comments = $state([]);
   let unconfirmed = $state([]);
-  const outbox = submissions({ slug: SLUG, changed: (items) => (unconfirmed = items) });
-
-  function sendAnnotation(message) {
-    outbox.keep(message);
-    room?.send(message);
-  }
-
-  function discardAnnotation(id) {
-    outbox.discard(id);
-    comments = comments.filter((comment) => comment.temp_id !== id).map((comment) => ({
-      ...comment, replies: comment.replies.filter((reply) => reply.temp_id !== id),
-    }));
-    applyHighlights();
-  }
+  const annotations = createAnnotations({
+    slug: SLUG,
+    list: () => comments,
+    update: (next) => (comments = next),
+    anchor: anchorComments,
+    repaint: applyHighlights,
+    send: (message) => room?.send(message),
+    changed: (items) => (unconfirmed = items),
+  });
+  const outbox = annotations.outbox;
+  const sendAnnotation = annotations.submit;
+  const discardAnnotation = annotations.discard;
   let commentsReady = false;
   let frameReady = false;
   // Readiness belongs to one iframe navigation. A `ready` from the old
@@ -505,35 +503,8 @@
 
   function submitAnnotation({ motivation, body, proposed }) {
     if (!pending || !mayChat) return;
-    // The name shown here is only a guess until the broadcast comes back: the
-    // server decides the real creator (the account name, or the per-document
-    // pseudonym), and never trusts anything this browser sends.
-    const creator = identity || doc.commenting_as || "Anonymous";
-    const temp_id = crypto.randomUUID();
-    // `proposed` only ever travels alongside `editing`: the server drops it
-    // on any other motivation, and sending it only here keeps the optimistic
-    // row and the wire message in agreement about what a suggestion is.
-    const editingFields = motivation === "editing" ? { proposed: proposed ?? "" } : {};
-    const optimistic = {
-      id: temp_id,
-      temp_id,
-      seq: Number.MAX_SAFE_INTEGER,
-      ...pending,
-      motivation,
-      body,
-      ...editingFields,
-      creator,
-      created: new Date().toISOString(),
-      resolved: false,
-      resolved_at: null,
-      replies: [],
-      pending: true,
-    };
-    // Drawn before the round trip; the broadcast reconciles it by temp_id.
-    anchorComments([optimistic]);
-    comments = [...comments, optimistic];
-    applyHighlights();
-    sendAnnotation({ type: "comment", ...pending, motivation, body, ...editingFields, temp_id });
+    // The server determines the author when it acknowledges the submission.
+    annotations.comment(pending, { motivation, body, proposed }, identity || doc.commenting_as || "Anonymous");
     pending = null;
   }
 
@@ -605,14 +576,7 @@
     }
   }
 
-  function resolve(comment) {
-    // Optimistic: flip locally, then tell the room. The broadcast that comes
-    // back is idempotent with what we already drew.
-    comment.resolved = !comment.resolved;
-    comments = comments;
-    applyHighlights();
-    room?.send({ type: "resolve", comment_id: comment.id, resolved: comment.resolved });
-  }
+  const resolve = annotations.resolve;
 
   function askDelete(comment) {
     pendingDelete = comment;
@@ -624,22 +588,11 @@
     pendingDelete = null;
     deleting = false;
     if (!comment) return;
-    comments = comments.filter((item) => item !== comment);
-    applyHighlights();
-    room?.send({ type: "delete", comment_id: comment.id });
+    annotations.delete(comment);
   }
 
   function reply(comment, body, name) {
-    if (!mayChat) return;
-    const temp_id = crypto.randomUUID();
-    comment.replies = [
-      ...comment.replies,
-      { id: temp_id, body, creator: name || "Anonymous", created: new Date().toISOString(), temp_id },
-    ];
-    comments = comments;
-    // The server ignores a client-supplied creator for a reply too, so there
-    // is nothing to send here beyond what identifies the comment and its body.
-    sendAnnotation({ type: "reply", comment_id: comment.id, body, temp_id });
+    if (mayChat) annotations.reply(comment, body, name);
   }
 
   /* -------------------------------------------------------------------- room */
@@ -647,7 +600,7 @@
   let room = null;
 
   function receive(event) {
-    outbox.acknowledge(event);
+    if (annotations.receive(event)) return;
     if (event.type === "chat") {
       if (!liveChat.some((message) => message.id === event.id)) liveChat = [...liveChat, event].slice(-200);
       if (event.temp_id) settleChat(event.temp_id, true);
@@ -697,13 +650,7 @@
       outbox.failed(event.temp_id, event.message);
       // Roll the optimistic row back.
       if (event.temp_id) {
-        comments = comments
-          .filter((comment) => comment.temp_id !== event.temp_id)
-          .map((comment) => ({
-            ...comment,
-            replies: comment.replies.filter((reply) => reply.temp_id !== event.temp_id),
-          }));
-        applyHighlights();
+        annotations.removePending(event.temp_id);
       }
       // A refused delete or resolve was applied optimistically before the
       // server had a say; the list is re-fetched so the optimistic change goes
@@ -766,20 +713,6 @@
       return;
     }
 
-    if (event.type === "comment") {
-      const local = comments.find((comment) => comment.temp_id === event.temp_id);
-      // Broadcasts carry no `deletable` field, so the caller's own comment,
-      // reconciled here from its optimistic placeholder, stays deletable by
-      // this browser regardless of what the server sent back.
-      if (local) Object.assign(local, event.comment, { temp_id: undefined, pending: false, deletable: true });
-      else if (!comments.some((comment) => comment.id === event.comment.id)) {
-        anchorComments([event.comment]);
-        comments = [...comments, event.comment];
-      }
-      comments = comments;
-      applyHighlights();
-      return;
-    }
     if (event.type === "anchor") {
       // The server's answer to this browser's own backfill, or somebody
       // else's: either way, a comment that had no anchor of record now does.
@@ -794,41 +727,6 @@
       comments = comments;
       applyHighlights();
       return;
-    }
-    if (event.type === "reply") {
-      const comment = comments.find((item) => item.id === event.comment_id);
-      if (!comment) return;
-      const local = comment.replies.find((reply) => reply.temp_id === event.temp_id);
-      if (local) Object.assign(local, event.reply, { temp_id: undefined });
-      else if (!comment.replies.some((reply) => reply.id === event.reply.id)) {
-        comment.replies = [...comment.replies, event.reply];
-      }
-      comments = comments;
-      return;
-    }
-    if (event.type === "delete") {
-      comments = comments.filter((item) => item.id !== event.comment_id);
-      applyHighlights();
-      return;
-    }
-    if (event.type === "resolve") {
-      const comment = comments.find((item) => item.id === event.comment_id);
-      if (!comment) return;
-      comment.resolved = event.resolved;
-      comment.resolved_at = event.resolved_at;
-      // The only way a suggestion's `resolved` goes back to false is
-      // reopening a rejected one, which clears its outcome too.
-      if (!event.resolved) comment.outcome = "";
-      comments = comments;
-      applyHighlights();
-      return;
-    }
-    if (event.type === "accept" || event.type === "reject") {
-      const comment = comments.find((item) => item.id === event.comment_id);
-      if (!comment) return;
-      suggestions.applyDecision(comment, event, event.type === "accept" ? "accepted" : "rejected");
-      comments = comments;
-      applyHighlights();
     }
   }
 
