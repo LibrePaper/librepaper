@@ -1194,7 +1194,7 @@ impl Room {
                 .saturating_sub(RESIDENT_CATALOG_HISTORY as usize);
             staged.checkpoints.drain(..excess);
             let mut state = self.state.lock().await;
-            state.manifest = staged;
+            *state.manifest = staged;
             return Ok(());
         }
         let body =
@@ -1208,7 +1208,7 @@ impl Room {
         .await?;
         let mut state = self.state.lock().await;
         state.manifest_version = version;
-        state.manifest = staged;
+        *state.manifest = staged;
         Ok(())
     }
 

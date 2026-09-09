@@ -47,6 +47,7 @@ pub use command::Command;
 pub use comments::*;
 pub use error::{FenceReason, FigureLimit, WriteError};
 pub use figures::*;
+use resident::Measured;
 use text::*;
 
 /// One client frame. Every field is optional; `apply` decides which ones a
@@ -274,14 +275,17 @@ impl Session {
 
 pub struct RoomState {
     pub seq: i64,
-    pub comments: Vec<Comment>,
+    /// Wrapped so the admission estimate can cache their serialized size:
+    /// reading them is unchanged, and any mutable borrow drops the cached
+    /// measurement. See `resident::Measured`.
+    pub comments: Measured<Vec<Comment>>,
     pub sockets: HashMap<u64, Peer>,
     /// "address:hour" to count.
     pub rate: HashMap<String, i64>,
     pub session: Session,
     /// The manifest as it stands, so a checkpoint does not re-read it and two
     /// checkpoints cannot interleave halfway through one.
-    pub manifest: Manifest,
+    pub manifest: Measured<Manifest>,
     /// When a socket was last attached or detached, which is what says an idle
     /// room may be evicted.
     pub touched: i64,
@@ -841,7 +845,7 @@ impl RoomSet {
             manifest_write: Mutex::new(()),
             state: Mutex::new(RoomState {
                 seq: 0,
-                comments: Vec::new(),
+                comments: Measured::new(Vec::new()),
                 sockets: HashMap::new(),
                 rate: HashMap::new(),
                 session: Session {
@@ -866,7 +870,7 @@ impl RoomSet {
                     rendering_sizes: HashMap::new(),
                     rendering_written_at: HashMap::new(),
                 },
-                manifest: Manifest::default(),
+                manifest: Measured::new(Manifest::default()),
                 touched: now_unix(),
                 session_version: BlobVersion::new(),
                 manifest_version: BlobVersion::new(),
@@ -1144,7 +1148,7 @@ impl Room {
                 Ok((seq, comments)) => {
                     let mut state = self.state.lock().await;
                     state.seq = seq;
-                    state.comments = comments;
+                    *state.comments = comments;
                 }
                 Err(err) => {
                     eprintln!(
@@ -1160,7 +1164,7 @@ impl Room {
             if let Ok(stored) = serde_json::from_slice::<RoomState_>(&raw) {
                 let mut state = self.state.lock().await;
                 state.seq = stored.seq;
-                state.comments = stored.comments;
+                *state.comments = stored.comments;
                 state.comments.sort_by_key(|item| item.seq);
                 state.comments_version = at;
             }
@@ -1262,7 +1266,7 @@ impl Room {
                     );
                     self.fence(FenceReason::UnreadableState);
                     let mut state = self.state.lock().await;
-                    state.manifest = manifest;
+                    *state.manifest = manifest;
                     state.session.format = format;
                     return;
                 }
@@ -1282,7 +1286,7 @@ impl Room {
                     );
                     self.fence(FenceReason::UnreadableState);
                     let mut state = self.state.lock().await;
-                    state.manifest = manifest;
+                    *state.manifest = manifest;
                     state.session.format = format;
                     return;
                 }
@@ -1295,7 +1299,7 @@ impl Room {
         };
 
         let mut state = self.state.lock().await;
-        state.manifest = manifest;
+        *state.manifest = manifest;
         state.manifest_version = manifest_at;
         state.session.format = format;
         if let Some(point) = state.manifest.latest().cloned() {
