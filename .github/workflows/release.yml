@@ -89,5 +89,5 @@ jobs:
             ## Install
 
             ```
-            curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/librepaper/main/deploy/install.sh | sh
+            curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/main/deploy/install.sh | sh
             ```

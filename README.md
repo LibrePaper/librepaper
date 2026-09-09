@@ -25,11 +25,11 @@ comments and highlights in real time.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/librepaper/main/deploy/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/main/deploy/install.sh | sh
 ```
 
 The installer supports Linux and macOS. Windows binaries are available on the
-[releases page](https://github.com/vincentarelbundock/librepaper/releases).
+[releases page](https://github.com/LibrePaper/librepaper/releases).
 
 ## Web interface: Try it now!
 
@@ -549,7 +549,7 @@ owner's editing rights.
 LibrePaper ships three agent skills. Install them with:
 
 ```sh
-npx skills add vincentarelbundock/librepaper
+npx skills add LibrePaper/librepaper
 ```
 
 That works for Claude Code, opencode, Cursor, and the other agents

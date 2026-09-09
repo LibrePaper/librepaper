@@ -87,8 +87,8 @@
     if (!connection.id || !connection.token || connection.ended || !validDocumentLink()) return "";
     const documentLink = agentLink || link;
     return [
-      "Check the LibrePaper CLI: librepaper --version && librepaper agent --help. If missing or outdated, follow https://github.com/vincentarelbundock/librepaper#install before continuing.",
-      "Load the pairing, document, and writing assistant skills: npx skills add vincentarelbundock/librepaper.",
+      "Check the LibrePaper CLI: librepaper --version && librepaper agent --help. If missing or outdated, follow https://github.com/LibrePaper/librepaper#install before continuing.",
+      "Load the pairing, document, and writing assistant skills: npx skills add LibrePaper/librepaper.",
       `export LIBREPAPER_DOCUMENT=${shell(documentLink)}`,
       `export LIBREPAPER_CHAT_TOKEN=${shell(connection.token)}`,
       `export LIBREPAPER_CONVERSATION=${shell(connection.id)}`,

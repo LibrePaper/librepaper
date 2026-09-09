@@ -2,14 +2,14 @@
 # Install librepaper: fetch the release binary for this machine and put it on
 # the PATH. Nothing else is needed -- the tool is one static file.
 #
-#   curl -fsSL https://raw.githubusercontent.com/vincentarelbundock/librepaper/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/main/deploy/install.sh | sh
 #
 # Environment:
 #   LIBREPAPER_VERSION   version to install, e.g. v0.0.1 (default: latest)
 #   LIBREPAPER_BIN_DIR   where to put the binary (default: ~/.local/bin)
 set -eu
 
-REPO="vincentarelbundock/librepaper"
+REPO="LibrePaper/librepaper"
 VERSION="${LIBREPAPER_VERSION:-latest}"
 BIN_DIR="${LIBREPAPER_BIN_DIR:-$HOME/.local/bin}"
 
