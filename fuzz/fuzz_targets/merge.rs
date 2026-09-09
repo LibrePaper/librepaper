@@ -6,7 +6,7 @@
 #![no_main]
 
 use librepaper_fuzz::{partition, round_trip};
-use librepaper_text::merge;
+use wasm_helpers::text::merge;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: (&str, &str, &str)| {

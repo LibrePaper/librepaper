@@ -697,7 +697,7 @@ impl AutomationPeer {
                     }
                     if old != body {
                         let before = session::encode_vector(&doc);
-                        let edits = librepaper_text::diff(&old, body);
+                        let edits = wasm_helpers::text::diff(&old, body);
                         let applied = if path.is_empty() {
                             session::apply_edits(&doc, &edits);
                             true

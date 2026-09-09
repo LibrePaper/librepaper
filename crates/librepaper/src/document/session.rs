@@ -919,7 +919,7 @@ fn edit_text(txn: &mut TransactionMut, text: &TextRef, wanted: &str) {
 /// is right for a publish -- the whole text is being set -- and wrong for a
 /// merge: a file whose author edited two distant paragraphs would have
 /// everything between them deleted and reinserted, taking the concurrent
-/// insertions in the middle with it. `librepaper-text` says exactly which
+/// insertions in the middle with it. `wasm-helpers` says exactly which
 /// spans moved, so those are the spans that move here.
 ///
 /// Back to front, so that an edit's offsets are still the ones `diff`
@@ -930,7 +930,7 @@ fn edit_text(txn: &mut TransactionMut, text: &TextRef, wanted: &str) {
 /// that already trusts its own offsets -- the diff this file computed against
 /// the text it is about to edit -- can ignore this; one applying edits a
 /// message carried from somewhere else should not.
-pub fn apply_edits(doc: &Doc, edits: &[librepaper_text::Edit]) -> bool {
+pub fn apply_edits(doc: &Doc, edits: &[wasm_helpers::text::Edit]) -> bool {
     let (files, _, _, meta) = maps(doc);
     let mut txn = doc.transact_mut();
     let Some(id) = string_at(&meta, &txn, MAIN) else {
@@ -950,7 +950,11 @@ pub fn apply_edits(doc: &Doc, edits: &[librepaper_text::Edit]) -> bool {
 /// the caller's cue that the anchor no longer applies to anything, and also
 /// when the edits do not fit the text at that path any more -- see
 /// `apply_text_edits`.
-pub fn apply_path_edits(doc: &Doc, path: &str, edits: &[librepaper_text::Edit]) -> Option<Vec<u8>> {
+pub fn apply_path_edits(
+    doc: &Doc,
+    path: &str,
+    edits: &[wasm_helpers::text::Edit],
+) -> Option<Vec<u8>> {
     let (files, path_map, _, _) = maps(doc);
     let id = {
         let txn = doc.transact();
@@ -994,7 +998,7 @@ pub fn offset_of_sticky_index(doc: &Doc, index: &StickyIndex) -> Option<u32> {
 /// unchanged, so a concurrent rename or edit still applies to the same file.
 /// `false` when `path` names no text, or when the edits do not fit the text
 /// there -- see `apply_text_edits`.
-pub fn apply_edits_at(doc: &Doc, path: &str, edits: &[librepaper_text::Edit]) -> bool {
+pub fn apply_edits_at(doc: &Doc, path: &str, edits: &[wasm_helpers::text::Edit]) -> bool {
     let (files, path_map, _, _) = maps(doc);
     let id = {
         let txn = doc.transact();
@@ -1011,7 +1015,7 @@ pub fn apply_edits_at(doc: &Doc, path: &str, edits: &[librepaper_text::Edit]) ->
 }
 
 /// Applies word-level edits to `text`, or none of them at all.
-/// `librepaper-text` measures `edit.at`/`edit.delete` against a copy of this
+/// `wasm-helpers` measures `edit.at`/`edit.delete` against a copy of this
 /// text it holds somewhere else -- the room's last-known body, a merge's base
 /// -- and by the time they arrive here that copy can be stale: a concurrent
 /// edit already changed the length, or the message is simply wrong.
@@ -1031,7 +1035,7 @@ pub fn apply_edits_at(doc: &Doc, path: &str, edits: &[librepaper_text::Edit]) ->
 fn apply_text_edits(
     txn: &mut TransactionMut,
     text: &TextRef,
-    edits: &[librepaper_text::Edit],
+    edits: &[wasm_helpers::text::Edit],
 ) -> bool {
     let len = text.get_string(txn).encode_utf16().count();
     let mut end_of_previous = 0;
@@ -1190,7 +1194,7 @@ fn restore_with(
         let body = body_for(path, entry);
         let id = if let Some(id) = by_path.get(path).cloned() {
             if let Some(text) = text_at(&files, &txn, &id) {
-                let edits = librepaper_text::diff(&text.get_string(&txn), &body);
+                let edits = wasm_helpers::text::diff(&text.get_string(&txn), &body);
                 apply_text_edits(&mut txn, &text, &edits);
             }
             id
@@ -1201,7 +1205,7 @@ fn restore_with(
             // the identity that concurrent peers and their carets still hold.
             let id = entry.id.clone();
             if let Some(text) = text_at(&files, &txn, &id) {
-                let edits = librepaper_text::diff(&text.get_string(&txn), &body);
+                let edits = wasm_helpers::text::diff(&text.get_string(&txn), &body);
                 apply_text_edits(&mut txn, &text, &edits);
             }
             path_map.insert(&mut txn, id.clone(), path.clone());
@@ -1377,7 +1381,7 @@ mod tests {
     fn an_edit_past_the_end_is_refused_and_changes_nothing() {
         let doc = new_doc();
         put_text(&doc, "main.md", "hello");
-        let edits = [librepaper_text::Edit {
+        let edits = [wasm_helpers::text::Edit {
             at: 10,
             delete: 1,
             insert: "x".to_string(),

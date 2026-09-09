@@ -108,7 +108,7 @@ async fn a_yrs_peer_writes_the_document_the_server_holds() {
     let before = crate::document::session::encode_vector(&mine);
     crate::document::session::apply_edits(
         &mine,
-        &librepaper_text::diff(
+        &wasm_helpers::text::diff(
             &crate::document::session::text_of(&mine),
             "# My Paper\n\nTyped by a client that is not a browser.\n",
         ),
@@ -168,7 +168,7 @@ async fn a_peer_joins_on_a_link_key_and_writes_as_the_link_allows() {
     let before = crate::document::session::encode_vector(&mine);
     crate::document::session::apply_edits(
         &mine,
-        &librepaper_text::diff(
+        &wasm_helpers::text::diff(
             &crate::document::session::text_of(&mine),
             "# My Paper\n\nTyped through an edit link.\n",
         ),
@@ -644,7 +644,7 @@ async fn browser_multipart_update_exceeding_one_megabyte_reaches_the_room() {
     let source = "x".repeat(800_000);
     crate::document::session::apply_edits(
         &mine,
-        &librepaper_text::diff(&crate::document::session::text_of(&mine), &source),
+        &wasm_helpers::text::diff(&crate::document::session::text_of(&mine), &source),
     );
     let update = crate::document::session::encode_state(&mine);
     assert!(crate::room::encode_update(&update).len() > 1 << 20);

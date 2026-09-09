@@ -105,7 +105,7 @@ async fn unicode_concurrent_peer_edits_survive_headless_restart() {
     let browser_before = crate::document::session::encode_vector(&browser_doc);
     crate::document::session::apply_edits(
         &browser_doc,
-        &librepaper_text::diff(
+        &wasm_helpers::text::diff(
             &crate::document::session::text_of(&browser_doc),
             browser_target,
         ),

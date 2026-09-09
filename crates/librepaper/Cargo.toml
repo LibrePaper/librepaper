@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 librepaper-engine = { path = "../engine" }
-librepaper-text = { path = "../text" }
+wasm-helpers = { git = "https://github.com/LibrePaper/wasm-helpers", tag = "v0.1.1" }
 
 # The server. WebSockets come with axum, so nothing here frames them by hand.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal", "process", "io-util"] }

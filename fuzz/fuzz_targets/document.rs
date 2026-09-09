@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use arbitrary::Arbitrary;
 use librepaper::session;
 use librepaper_fuzz::{configuration, rules};
-use librepaper_text::diff;
+use wasm_helpers::text::diff;
 use libfuzzer_sys::fuzz_target;
 use yrs::types::text::TextPrelim;
 use yrs::{Map, Transact};

@@ -22,7 +22,7 @@
 //! author in a browser tab, a restore from the reader -- the buffer does not
 //! know, and a diff of the document against the file would delete the words
 //! that arrived. `The merge` below is what answers that, over the three-way
-//! merge in `librepaper-text`.
+//! merge in `wasm-helpers`.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -677,7 +677,7 @@ impl Client {
     /// the file's author is looking at a terminal that can tell them.
     fn reconcile(&mut self, local: &str) -> Result<(), String> {
         let remote = session::text_of(&self.doc);
-        let merged = librepaper_text::merge(&self.base, local, &remote);
+        let merged = wasm_helpers::text::merge(&self.base, local, &remote);
         for conflict in &merged.conflicts {
             println!(
                 "kept the session's words over yours near {:?} (yours: {:?})",
@@ -688,7 +688,7 @@ impl Client {
         // What the file has that the session does not. Empty when the file was
         // merely catching up, which is the case where the author did nothing
         // and nothing is owed to the timeline.
-        let edits = librepaper_text::diff(&remote, &merged.text);
+        let edits = wasm_helpers::text::diff(&remote, &merged.text);
         if !edits.is_empty() {
             let before = session::encode_vector(&self.doc);
             session::apply_edits(&self.doc, &edits);

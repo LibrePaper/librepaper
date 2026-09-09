@@ -24,9 +24,8 @@ BIN     := dist/librepaper
 WASM    := web/dist/wasm/markdown.wasm
 BIB     := web/dist/wasm/bibliography.wasm
 CITES   := web/dist/wasm/citations.wasm
-# Optional, and built separately by `make typst`: see the bottom of this file.
+# Fetched, not built: see wasm-modules.lock and the bottom of this file.
 TYPST   := web/dist/wasm/typst.wasm
-MODULE  := target/wasm32-unknown-unknown/wasm/librepaper_engine.wasm
 # The pages. web/dist is entirely a build output, so it is an input to
 # nothing: what the pages are built from lives in web/src and web/public.
 SHELL_OUT := web/dist/index.html
@@ -35,7 +34,7 @@ WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html 
 SOURCES := $(shell find crates -type f -not -path '*/target/*') Cargo.toml README.md $(wildcard examples/*.md examples/*.typ examples/*.tex)
 
 .DEFAULT_GOAL := help
-.PHONY: help build test smoke serve seed examples kill clean snapshot wasm typst fmt web fuzz
+.PHONY: help build test smoke serve seed examples kill clean snapshot wasm wasm-relock typst fmt web fuzz
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -255,40 +254,29 @@ $(SHELL_OUT): $(WEB) web/dist/README.md
 
 # --- the browser renderers -------------------------------------------------
 #
-# One crate, built twice, each with one renderer: markdown is a few hundred
-# kilobytes and travels with the shell, while typst is the compiler and the
-# fonts it sets documents in -- thirty megabytes, fetched only by someone who
-# opens a typst document to edit.
+# Not built here any more. Each renderer is a repository of its own -- see
+# wasm-modules.lock -- and releases a module built from the same tag this
+# binary pins the crate at, so what the editor previews and what a save stores
+# still come out of one version of one implementation.
+#
+# The fetch verifies every module against the digest in the lock and writes
+# nothing that does not match, so a build either has the renderers it pinned or
+# fails saying which one moved. Files already correct are left alone, which
+# makes this cheap enough to run on every build.
 
-wasm: $(WASM) $(BIB) $(CITES)  ## Build Markdown and bibliography modules for the browser
+wasm: $(WASM) $(BIB) $(CITES) $(TYPST)  ## Fetch the pinned browser renderers
 
-$(WASM): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
-	@cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
-		--no-default-features --features markdown
-	@mkdir -p $(dir $@)
-	@cp $(MODULE) $@
-	@echo "$@ ($$(($$(stat -c%s $@) / 1024)) KiB)"
+$(WASM) $(BIB) $(CITES) $(TYPST) &: wasm-modules.lock web/tools/fetch-modules.mjs
+	@command -v node >/dev/null || { echo "node is needed to fetch the renderers"; exit 1; }
+	@node web/tools/fetch-modules.mjs
 
-typst: $(TYPST)  ## Build the typst renderer for the browser (slow: ~30 MB)
+# Kept as a name people have in their fingers. Typst is no longer the slow
+# optional build: it arrives with the rest, already compiled.
+typst: $(TYPST)  ## Fetch the typst renderer
 
-$(TYPST): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
-	@cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
-		--no-default-features --features typst
-	@mkdir -p $(dir $@)
-	@cp $(MODULE) $@
-	@echo "$@ ($$(($$(stat -c%s $@) / 1024 / 1024)) MiB)"
-
-# Feature builds share a Cargo cdylib output; copy each before starting the next.
-.NOTPARALLEL:
-
-$(BIB): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
-	@cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
-		--no-default-features --features bibliography
-	@mkdir -p $(dir $@)
-	@cp $(MODULE) $@
-
-$(CITES): $(shell find crates/engine/src crates/text/src -type f) crates/engine/Cargo.toml crates/text/Cargo.toml crates/engine/document.css
-	@cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
-		--no-default-features --features citations
-	@mkdir -p $(dir $@)
-	@cp $(MODULE) $@
+# Rewrites wasm-modules.lock from each repository's current release. Run it
+# after moving a tag, then commit the diff -- which is the review of what
+# changed, and the reason the digests live in the repository at all.
+wasm-relock:  ## Re-pin the renderers to their repositories' current releases
+	@node web/tools/relock-modules.mjs
+	@git --no-pager diff --stat wasm-modules.lock

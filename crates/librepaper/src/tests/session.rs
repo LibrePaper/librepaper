@@ -24,7 +24,7 @@ fn restore_keeps_a_disjoint_peer_word() {
     session::apply_update(&doc, &session::encode_state(&peer)).expect("peer update");
 
     let target = "alpha TARGET gamma";
-    let merged = librepaper_text::merge(base, &session::text_of(&doc), target).text;
+    let merged = wasm_helpers::text::merge(base, &session::text_of(&doc), target).text;
     assert_eq!(merged, "alpha TARGET PEER gamma");
     let sha = crate::document::store::digest_of(target);
     let mut files = BTreeMap::new();

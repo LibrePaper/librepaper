@@ -1,15 +1,13 @@
-# The rendering engine: markdown and typst, to the page every LibrePaper
-# document is stored as.
+# What renders on this side of the network.
 #
-# One crate, built twice. Natively it is what `librepaper publish` and
-# `librepaper seed` render with; compiled to WebAssembly it is what the editor
-# previews with, in the browser. The same code in both places is what makes the
-# preview the document a save stores, byte for byte.
+# The renderers themselves live in their own repositories now -- wasm-markdown,
+# wasm-typst, wasm-bibliography, over the shared wasm-helpers -- and are pinned
+# here by tag. This crate is what is left once they are gone: authored HTML,
+# which never had a browser module of its own, and one name for each renderer
+# so that the rest of the binary reaches them where it always did.
 #
-# Each renderer is a feature, so the browser gets two small modules rather than
-# one large one: markdown.wasm is a few hundred kilobytes and travels with the
-# shell; typst.wasm is thirty megabytes of compiler and fonts and is fetched
-# only by someone who opens a typst document to edit. The host enables both.
+# It builds no WebAssembly. The browser modules are built and released by those
+# repositories, and `make wasm` fetches them by digest.
 [package]
 name = "librepaper-engine"
 version = "0.1.0"
@@ -17,31 +15,25 @@ edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+# An rlib now, not a cdylib: the exports moved out with the renderers.
+crate-type = ["rlib"]
 
 [features]
 default = ["markdown", "typst", "citations"]
-bibliography = ["dep:biblatex"]
-citations = ["bibliography", "markdown", "dep:hayagriva"]
-markdown = ["dep:comrak"]
-typst = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-assets", "dep:ecow"]
+# Every renderer is optional, which is what having them in crates of their own
+# finally makes cheap. A build without `typst` does not link the compiler --
+# thirty megabytes of it, and two thirds of this binary's dependency graph.
+markdown = ["dep:wasm-markdown"]
+typst = ["dep:wasm-typst"]
+bibliography = ["dep:wasm-bibliography"]
+citations = ["bibliography", "markdown", "wasm-bibliography?/citations"]
 
 [dependencies]
-librepaper-text = { path = "../text" }
-serde_json = "1"
-biblatex = { version = "0.12.0", optional = true }
-hayagriva = { version = "0.10.1", optional = true }
-# CommonMark plus the GitHub extensions: tables, strikethrough, task lists,
-# autolinks, footnotes. What goldmark rendered before the port.
-comrak = { version = "0.54", default-features = false, optional = true }
-# Pinned together: the editor and whatever renders a typst document elsewhere
-# must be the same compiler, or the same source renders two ways.
-typst = { version = "=0.15.1", optional = true }
-typst-layout = { version = "=0.15.1", optional = true }
-typst-pdf = { version = "=0.15.1", optional = true }
-# Typst's own default fonts, embedded, so a document compiles here exactly as
-# it does under the typst binary: the same faces, and the maths font without
-# which maths does not compile at all.
-typst-assets = { version = "=0.15.1", features = ["fonts"], optional = true }
-# Diagnostics come back from typst in its own vector type.
-ecow = { version = "0.2", optional = true }
+# The shape a compile answers in and the page it produces. Not optional: `html`
+# renders through them, and it is always here.
+wasm-helpers = { git = "https://github.com/LibrePaper/wasm-helpers", tag = "v0.1.1" }
+# `default-features = false` turns off each crate's `exports` feature: their
+# `#[no_mangle]` functions belong to the modules they ship, not to this binary.
+wasm-markdown = { git = "https://github.com/LibrePaper/wasm-markdown", tag = "v0.1.1", default-features = false, optional = true }
+wasm-typst = { git = "https://github.com/LibrePaper/wasm-typst", tag = "v0.1.1", default-features = false, optional = true }
+wasm-bibliography = { git = "https://github.com/LibrePaper/wasm-bibliography", tag = "v0.1.1", default-features = false, optional = true }

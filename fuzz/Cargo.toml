@@ -21,7 +21,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 librepaper = { path = "../crates/librepaper" }
-librepaper-text = { path = "../crates/text" }
+wasm-helpers = { git = "https://github.com/LibrePaper/wasm-helpers", tag = "v0.1.1" }
 # Pinned to what the binary uses, so a peer's raw write into the shared
 # document is made with the same encoder the room decodes.
 yrs = "0.27"

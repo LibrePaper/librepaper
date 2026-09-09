@@ -1,10 +1,13 @@
-# LibrePaper: three crates. `engine` renders markdown and typst, natively and
-# as WebAssembly; `text` holds the word diff and merge that both the binary and
-# the engine need; `librepaper` is the binary -- the command line and the
-# server.
+# LibrePaper: two crates. `engine` is what renders on this side of the network
+# -- authored HTML, and one name for each renderer pinned from its own
+# repository; `librepaper` is the binary, the command line and the server.
+#
+# The renderers themselves, and the word diff both sides share, live in
+# LibrePaper/wasm-* and are pinned by tag. See wasm-modules.lock for the
+# browser modules, which are fetched rather than built.
 [workspace]
 resolver = "2"
-members = ["crates/engine", "crates/text", "crates/librepaper"]
+members = ["crates/engine", "crates/librepaper"]
 # The fuzz targets need libFuzzer and a nightly compiler, so they build on
 # their own: `make fuzz`, or `cargo fuzz run <target>` from fuzz/.
 exclude = ["fuzz"]
@@ -14,16 +17,6 @@ opt-level = 3
 lto = "thin"
 strip = true
 codegen-units = 4
-
-# The browser modules are built with this profile: as small as they can be,
-# because one of them is fetched by every editor and the other is thirty
-# megabytes before compression.
-[profile.wasm]
-inherits = "release"
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
 
 # The edit-test loop rebuilds one very large test binary, and full debuginfo
 # is the bulk of what it writes and links. Line tables keep backtraces

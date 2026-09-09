@@ -1916,7 +1916,6 @@ dependencies = [
  "http-body-util",
  "include_dir",
  "librepaper-engine",
- "librepaper-text",
  "notify",
  "percent-encoding",
  "rand 0.9.5",
@@ -1933,6 +1932,7 @@ dependencies = [
  "tokio-tungstenite",
  "unicode-normalization",
  "url",
+ "wasm-helpers",
  "yrs",
 ]
 
@@ -1940,21 +1940,11 @@ dependencies = [
 name = "librepaper-engine"
 version = "0.1.0"
 dependencies = [
- "biblatex",
- "comrak",
- "ecow",
- "hayagriva",
- "librepaper-text",
- "serde_json",
- "typst",
- "typst-assets",
- "typst-layout",
- "typst-pdf",
+ "wasm-bibliography",
+ "wasm-helpers",
+ "wasm-markdown",
+ "wasm-typst",
 ]
-
-[[package]]
-name = "librepaper-text"
-version = "0.1.0"
 
 [[package]]
 name = "libsqlite3-sys"
@@ -4303,6 +4293,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-bibliography"
+version = "0.1.1"
+source = "git+https://github.com/LibrePaper/wasm-bibliography?tag=v0.1.1#b0ea8ef304ea85fa0e170cf4e8a99e8fde6cc80a"
+dependencies = [
+ "biblatex",
+ "comrak",
+ "hayagriva",
+ "serde_json",
+ "wasm-helpers",
+ "wasm-markdown",
+]
+
+[[package]]
 name = "wasm-bindgen"
 version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4355,6 +4358,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-helpers"
+version = "0.1.0"
+source = "git+https://github.com/LibrePaper/wasm-helpers?tag=v0.1.1#29aeedcca6f8b407bab06952c6ea939e02a1b334"
+
+[[package]]
+name = "wasm-markdown"
+version = "0.1.1"
+source = "git+https://github.com/LibrePaper/wasm-markdown?tag=v0.1.1#152435c858435bd14165e6c7e7f4267490e47bd1"
+dependencies = [
+ "comrak",
+ "wasm-helpers",
+]
+
+[[package]]
+name = "wasm-typst"
+version = "0.1.1"
+source = "git+https://github.com/LibrePaper/wasm-typst?tag=v0.1.1#be4d73556040587d141f747e4951a18583480b4d"
+dependencies = [
+ "ecow",
+ "typst",
+ "typst-assets",
+ "typst-layout",
+ "typst-pdf",
+ "wasm-helpers",
 ]
 
 [[package]]

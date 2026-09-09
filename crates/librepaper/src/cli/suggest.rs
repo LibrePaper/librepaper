@@ -95,7 +95,7 @@ fn target_for(identifier: &str, server_flag: &str, key_flag: &str) -> (String, S
 
 /// Finds `find` in `source`, refusing when it occurs zero or more than once so
 /// the anchor is never ambiguous, and builds the anchor around it: up to 32
-/// characters of prefix and suffix and the UTF-16 position `librepaper_text`
+/// characters of prefix and suffix and the UTF-16 position `wasm_helpers::text`
 /// and the browser both anchor by. Pure and synchronous so it is testable
 /// without a server.
 pub(crate) fn locate_passage(source: &str, path: &str, find: &str) -> Result<Anchor, String> {

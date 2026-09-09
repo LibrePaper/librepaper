@@ -33,28 +33,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }},wasm32-unknown-unknown
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
-      # The editor renders in the browser, from the same crate the binary
-      # renders with, so both modules are built before the binary embeds them.
-      - name: Build the pages and the browser renderers
+      # The renderers are built and released by their own repositories, and
+      # pinned in wasm-modules.lock. Fetching them checks each against its
+      # digest, so a release either embeds the modules it pinned or fails.
+      - name: Build the pages and fetch the browser renderers
         shell: bash
         run: |
           cd web && bun install --frozen-lockfile && bun run build && cd ..
           mkdir -p web/dist
           cp README.md web/dist/README.md
-          cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
-            --no-default-features --features markdown
-          mkdir -p web/dist/wasm
-          cp target/wasm32-unknown-unknown/wasm/librepaper_engine.wasm web/dist/wasm/markdown.wasm
-          for feature in bibliography citations; do
-            cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine --no-default-features --features "$feature"
-            cp target/wasm32-unknown-unknown/wasm/librepaper_engine.wasm "web/dist/wasm/$feature.wasm"
-          done
-          cargo build --profile wasm --target wasm32-unknown-unknown -p librepaper-engine \
-            --no-default-features --features typst
-          cp target/wasm32-unknown-unknown/wasm/librepaper_engine.wasm web/dist/wasm/typst.wasm
+          make wasm
       - name: Build
         shell: bash
         env:

@@ -1320,7 +1320,7 @@ impl Room {
                     (Some(base), Some(live)) if base.kind == "text" && live.kind == "text" => {
                         let base = base_bodies.get(&base.sha).cloned().unwrap_or_default();
                         let live = live_bodies.get(&live.sha).cloned().unwrap_or_default();
-                        librepaper_text::merge(&base, &live, &target).text
+                        wasm_helpers::text::merge(&base, &live, &target).text
                     }
                     _ => target.clone(),
                 };

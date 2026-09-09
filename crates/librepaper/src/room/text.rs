@@ -38,13 +38,13 @@
 //!   into a named helper would not remove any behavioral decision, only add
 //!   an import.
 //!
-//! `librepaper_text::Edit`/`Conflict` offsets, `session::replace_text`'s
+//! `wasm_helpers::text::Edit`/`Conflict` offsets, `session::replace_text`'s
 //! arithmetic and a JavaScript string's own indexing all agree on UTF-16
 //! code units, which is why none of the above ever converts to UTF-8 byte
 //! offsets internally.
 
 /// The length of a string in UTF-16 code units, which is the alphabet
-/// `librepaper_text::Edit` and the document itself count offsets in.
+/// `wasm_helpers::text::Edit` and the document itself count offsets in.
 pub(crate) fn len16(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
 }
@@ -75,7 +75,7 @@ pub(crate) fn utf16_slice(text: &str, start: usize, end: usize) -> String {
     String::from_utf16(&units[start..end]).unwrap_or_default()
 }
 
-/// Applies one `librepaper_text::Edit` to a plain string, for the merge base a
+/// Applies one `wasm_helpers::text::Edit` to a plain string, for the merge base a
 /// suggestion's proposal is rehearsed against -- everywhere else an edit
 /// lands on a `Y.Text`, but the base of a three-way merge is never one.
 /// `edit.at` and `edit.at + edit.delete` are clamped to the text's length
@@ -84,7 +84,7 @@ pub(crate) fn utf16_slice(text: &str, start: usize, end: usize) -> String {
 /// aborting, unlike `document::session::apply_text_edits`, which lands
 /// directly on the live document and must reject a batch it cannot apply
 /// exactly.
-pub(super) fn apply_edit_str(text: &str, edit: &librepaper_text::Edit) -> String {
+pub(super) fn apply_edit_str(text: &str, edit: &wasm_helpers::text::Edit) -> String {
     let units: Vec<u16> = text.encode_utf16().collect();
     let at = edit.at.min(units.len());
     let end = (edit.at + edit.delete).min(units.len());
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn apply_edit_str_replaces_across_a_combining_mark() {
         let text = format!("{COMBINING}rest");
-        let edit = librepaper_text::Edit {
+        let edit = wasm_helpers::text::Edit {
             at: 0,
             delete: 2,
             insert: "E".into(),
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn apply_edit_str_clamps_a_stale_out_of_range_edit() {
         let text = format!("a{EMOJI}");
-        let edit = librepaper_text::Edit {
+        let edit = wasm_helpers::text::Edit {
             at: 1,
             delete: 100,
             insert: "z".into(),

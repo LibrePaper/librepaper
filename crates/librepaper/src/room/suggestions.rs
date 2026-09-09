@@ -91,7 +91,7 @@ impl Room {
                 match session::apply_path_edits(
                     &state.session.doc,
                     &source.path,
-                    &[librepaper_text::Edit {
+                    &[wasm_helpers::text::Edit {
                         at,
                         delete: len16(proposed),
                         insert: source.exact.clone(),
@@ -405,7 +405,7 @@ impl Room {
                             yrs::Assoc::Before,
                         );
                     }
-                    vec![librepaper_text::Edit {
+                    vec![wasm_helpers::text::Edit {
                         at,
                         delete: len16(&source.exact),
                         insert: proposed.clone(),
@@ -421,17 +421,17 @@ impl Room {
                     };
                     let remote = apply_edit_str(
                         base_text,
-                        &librepaper_text::Edit {
+                        &wasm_helpers::text::Edit {
                             at: base_at,
                             delete: len16(&source.exact),
                             insert: proposed.clone(),
                         },
                     );
-                    let merged = librepaper_text::merge(base_text, &live_text, &remote);
+                    let merged = wasm_helpers::text::merge(base_text, &live_text, &remote);
                     if !merged.conflicts.is_empty() {
                         return Err(AcceptError::Stale);
                     }
-                    librepaper_text::diff(&live_text, &merged.text)
+                    wasm_helpers::text::diff(&live_text, &merged.text)
                 };
                 let scratch = session::new_doc();
                 session::apply_update(&scratch, &session::encode_state(&state.session.doc))

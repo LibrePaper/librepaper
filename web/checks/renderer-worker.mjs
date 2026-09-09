@@ -52,15 +52,37 @@ console.log("renderer-worker: cloning, reply routing, errors, recovery and HTML 
 globalThis.LIBREPAPER_MODULES.bibliography = "/bibliography.wasm";
 globalThis.LIBREPAPER_MODULES.citations = "/citations.wasm";
 const { analyzeBibliography } = await import("../src/lib/bibliography-engine.js");
+// Markdown that cites something is rendered by citations.wasm, which carries
+// the same parser and exports the same `bibliography`. Asking the module that
+// is about to be loaded anyway saves fetching and compiling a second one.
 const analyzing = analyzeBibliography({ main: "paper.md", format: "markdown", source: "@doe", texts: { "refs.bib": "" } });
-const bibliographyWorker = workers.at(-1);
-assert.equal(bibliographyWorker.messages[0].operation, "bibliography");
-assert.equal(bibliographyWorker.messages[0].url, "https://example.org/bibliography.wasm");
-bibliographyWorker.reply(bibliographyWorker.messages[0], { entries: [{ key: "doe" }], diagnostics: [] });
+const citing1 = workers.at(-1);
+assert.equal(citing1.messages[0].operation, "bibliography");
+assert.equal(citing1.messages[0].url, "https://example.org/citations.wasm");
+citing1.reply(citing1.messages[0], { entries: [{ key: "doe" }], diagnostics: [] });
 assert.equal((await analyzing).entries[0].key, "doe");
+
+// Every other case still goes to the standalone parser, which is why that
+// module exists: a typst or LaTeX author gets completions too, and neither
+// compiler can read a .bib for the editor.
+const typstBib = analyzeBibliography({ main: "paper.typ", format: "typst", source: '#bibliography("refs.bib")', texts: { "refs.bib": "" } });
+const standalone = workers.at(-1);
+assert.equal(standalone.messages[0].url, "https://example.org/bibliography.wasm");
+standalone.reply(standalone.messages[0], { entries: [{ key: "doe" }], diagnostics: [] });
+assert.equal((await typstBib).entries[0].key, "doe");
+
+// And markdown with no citations in it has no citations module loaded to ask.
+const plain = analyzeBibliography({ main: "paper.md", format: "markdown", source: "plain prose", texts: { "refs.bib": "" } });
+assert.equal(workers.at(-1), standalone, "a second request for one module reuses its worker");
+const plainMessage = standalone.messages.at(-1);
+assert.equal(plainMessage.url, "https://example.org/bibliography.wasm");
+standalone.reply(plainMessage, { entries: [], diagnostics: [] });
+assert.deepEqual((await plain).entries, []);
+const before = workers.length;
 const citing = renderers.render({ main: "paper.md", texts: { "paper.md": "See [@doe]." } }, "Paper");
-const citationsWorker = workers.at(-1);
-assert.equal(citationsWorker.messages[0].url, "https://example.org/citations.wasm");
-citationsWorker.reply(citationsWorker.messages[0], { html: "<p>Doe</p>", diagnostics: [] });
+assert.equal(workers.length, before, "rendering starts no worker: completion already loaded this module");
+const citingMessage = citing1.messages.at(-1);
+assert.equal(citingMessage.url, "https://example.org/citations.wasm");
+citing1.reply(citingMessage, { html: "<p>Doe</p>", diagnostics: [] });
 assert.equal((await citing).html, "<p>Doe</p>");
-console.log("bibliography worker analysis and citation routing passed");
+console.log("bibliography routing (reuse, standalone, fallback) and citation rendering passed");

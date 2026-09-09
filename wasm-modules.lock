@@ -1,0 +1,15 @@
+# The browser renderers this build serves, pinned.
+#
+# Each is built and released by its own repository; `make wasm` fetches them
+# and refuses anything whose bytes do not hash to what is written here. The
+# digest is the contract: the server already addresses a module by the sha256
+# of its own bytes, so if these match, the binary is serving exactly the module
+# that repository released.
+#
+# To move a pin: bump the tag, run `make wasm-relock`, commit the result.
+#
+# module             repository          tag       sha256
+markdown.wasm        wasm-markdown       v0.1.1    c701483e38f9da1691e752be48c8283119ec78598a296479a4da4986ecaf1114
+bibliography.wasm    wasm-bibliography   v0.1.1    80b419d22478d829ae64eddebfca49766b7e8c87cfd5fd620fe7a11f089f7d59
+citations.wasm       wasm-bibliography   v0.1.1    a5123aecdac6d3c4bdb80750347287f03969aaf201a8c86d89f8d9b7ba79691b
+typst.wasm           wasm-typst          v0.1.1    c0e113b07ad79d505d0517bfb36d2781c0cb544fa627895420be590a07c817e8

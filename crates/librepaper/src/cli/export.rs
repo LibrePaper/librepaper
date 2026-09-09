@@ -743,7 +743,7 @@ fn replacement_for_selector(
     })?;
     let start = old[..byte_at].encode_utf16().count();
     let end = start + needle.encode_utf16().count();
-    let edits = librepaper_text::diff(old, new);
+    let edits = wasm_helpers::text::diff(old, new);
     let mut cursor = start;
     let mut replacement = String::new();
     for edit in edits {
