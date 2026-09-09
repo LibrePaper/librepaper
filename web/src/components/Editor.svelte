@@ -452,30 +452,35 @@
 
   $effect(() => {
     if (!host || !session || view) return;
-    const initial = untrack(() => {
-      const first = file || session.mainId?.() || "";
-      showing = first;
-      if (first && !states.has(first)) states.set(first, stateFor(first));
-      return { first, state: states.get(first) || stateFor(first) };
+    // Creating the editor calls reader callbacks that read and update UI
+    // state. Only host/session own this lifecycle; incidental callback reads
+    // must not recreate the editor when a pane or diagnostic changes.
+    return untrack(() => {
+      const initial = untrack(() => {
+        const first = file || session.mainId?.() || "";
+        showing = first;
+        if (first && !states.has(first)) states.set(first, stateFor(first));
+        return { first, state: states.get(first) || stateFor(first) };
+      });
+      view = new EditorView({ state: initial.state, parent: host });
+      untrack(() => viewCallbacks.set(view, { onsave, onquit }));
+      syncKeys(view);
+      if (initial.first) session.inFile?.(initial.first);
+      const bibliographyWatcher = scheduleBibliography;
+      const unsubscribeBibliography = session.onFiles?.(bibliographyWatcher);
+      refreshBibliography();
+      view.focus();
+      return () => {
+        bibliographyGeneration += 1;
+        clearTimeout(bibliographyTimer);
+        if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
+        if (view) viewCallbacks.delete(view);
+        view?.destroy();
+        view = null;
+        states.clear();
+        showing = "";
+      };
     });
-    view = new EditorView({ state: initial.state, parent: host });
-    untrack(() => viewCallbacks.set(view, { onsave, onquit }));
-    syncKeys(view);
-    if (initial.first) session.inFile?.(initial.first);
-    const bibliographyWatcher = scheduleBibliography;
-    const unsubscribeBibliography = session.onFiles?.(bibliographyWatcher);
-    refreshBibliography();
-    view.focus();
-    return () => {
-      bibliographyGeneration += 1;
-      clearTimeout(bibliographyTimer);
-      if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
-      if (view) viewCallbacks.delete(view);
-      view?.destroy();
-      view = null;
-      states.clear();
-      showing = "";
-    };
   });
 
   // Opening another file is a swap, not a rebuild. Kept out of the effect

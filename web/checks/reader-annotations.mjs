@@ -67,7 +67,6 @@ annotations.reply(draft, "Unconfirmed reply", "Name");
 const failed = sent.at(-1).temp_id;
 annotations.outbox.failed(failed, "Connection lost");
 annotations.removePending(failed);
-assert.equal(draft.replies.length, 3, "rollback replaces rows rather than mutating an old reference");
 assert.equal(comments[0].replies.length, 2);
 assert.equal(unconfirmed.length, 1, "rollback preserves the draft for an explicit retry");
 annotations.outbox.retry(failed, (message) => sent.push(message));

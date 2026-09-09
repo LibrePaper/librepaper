@@ -33,6 +33,21 @@ import ${JSON.stringify(join(root,"web/src/styles/app.css"))};
 window.testErrors = [];
 window.addEventListener('error', event => window.testErrors.push(event.message));
 window.addEventListener('unhandledrejection', event => window.testErrors.push(String(event.reason)));
+// Agent chat is delivered by its private socket, rather than HTTP polling.
+globalThis.WebSocket = class {
+  constructor(url) {
+    if (!String(url).includes('/chat/')) throw new Error('Unexpected socket: ' + url);
+    queueMicrotask(() => this.onopen?.());
+  }
+  send(raw) {
+    if (JSON.parse(raw).type !== 'join') return;
+    queueMicrotask(() => {
+      this.onmessage?.({data:JSON.stringify({type:'ready',listening:true})});
+      for (let i = 0; i < 40; i++) this.onmessage?.({data:JSON.stringify({type:'message',message:{id:'reply-'+i,role:'agent',text:('Reply '+i+' ').repeat(30)}})});
+    });
+  }
+  close() { this.onclose?.(); }
+};
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url);
   if (path.endsWith('/me')) return Response.json({name:'Tester',providers:[]});
@@ -40,7 +55,6 @@ globalThis.fetch = async (url, init = {}) => {
   if (path === '/api/documents/paper') return Response.json({title:'Responsive',created_at:'test',role:'editor',source_format:'html',docs_origin:location.origin,can_moderate:true,can_see_sharing:true});
   if (path.endsWith('/frame')) return Response.json({token:'frame-token',until:9999999999});
   if (path.endsWith('/chat')) return Response.json({id:'chat', token:'private'});
-  if (path.includes('/chat/chat')) return Response.json({messages:Array.from({length:40},(_,i)=>({id:'reply-'+i,cursor:i+1,role:'agent',text:('Reply '+i+' ').repeat(30)})),next_cursor:40,listening:true});
   if (path.includes('/comments')) return { ok:true, json:async()=>({comments:[]}) };
   return { ok:false, json:async()=>({}) };
 };
@@ -122,17 +136,17 @@ try {
   assert.equal(await b.evaluate('window.savedFrame.contentWindow.scrollY'),800);
 
   await click(nav('Agent'));
-  await until('agent replies',()=>b.evaluate('document.querySelectorAll(".agent-message").length === 40'),10000);
+  await until('agent replies',()=>b.evaluate('document.querySelectorAll(".agent-panel .chat-message").length === 40'),10000);
   await b.evaluate(`(() => {
-    const input = document.querySelector('.agent-form textarea');
+    const input = document.querySelector('.agent-panel .chat-form textarea');
     input.value = 'An unsent thought'; input.dispatchEvent(new Event('input',{bubbles:true}));
-    document.querySelector('.agent-transcript').scrollTop = 100;
+    document.querySelector('.agent-panel .chat-transcript').scrollTop = 100;
   })()`);
   await flush();
   await click(nav('Source'));
   await click(nav('Agent'));
-  assert.equal(await b.evaluate('document.querySelector(".agent-form textarea").value'), 'An unsent thought');
-  assert.equal(await b.evaluate('document.querySelector(".agent-transcript").scrollTop'),100);
+  assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-form textarea").value'), 'An unsent thought');
+  assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-transcript").scrollTop'),100);
   await bounded();
 
   await b.resize(900,900); await flush();
