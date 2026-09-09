@@ -809,6 +809,24 @@ mod tests {
         }
     }
 
+    /// The snapshot once the executor has recorded that nothing is running.
+    /// A completion hook signals the test from inside the hook, and the
+    /// executor's own bookkeeping -- the executing count, the released
+    /// bytes -- comes after the hook returns, so a snapshot taken on that
+    /// signal can still show the job in flight. On a two-core runner it did.
+    /// Bounded: a job that never settles fails the assertions that follow.
+    async fn settled(catalog: &Catalog) -> CatalogExecutionSnapshot {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let snapshot = catalog.execution_snapshot();
+            let idle = snapshot.executing == 0 && snapshot.queued == 0;
+            if idle || std::time::Instant::now() > deadline {
+                return snapshot;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    }
+
     fn pending_reservation(catalog: &Catalog, storage_id: &str) -> Option<i64> {
         catalog
             .with_connection(|connection| {
@@ -1005,7 +1023,7 @@ mod tests {
         // The service still commits and still runs its completion hook.
         assert!(completed.recv().await.unwrap());
         assert_eq!(pending_reservation(&catalog, "storage-1"), Some(11));
-        let snapshot = catalog.execution_snapshot();
+        let snapshot = settled(&catalog).await;
         assert_eq!(snapshot.completed, 1);
         assert_eq!(snapshot.queued, 0);
         assert_eq!(snapshot.executing, 0);
@@ -1063,7 +1081,7 @@ mod tests {
         release_hook.send(()).unwrap();
         assert!(completed.recv().await.unwrap());
         assert_eq!(pending_reservation(&catalog, "storage-1"), None);
-        let snapshot = catalog.execution_snapshot();
+        let snapshot = settled(&catalog).await;
         assert_eq!(snapshot.completed, 1);
         assert_eq!(snapshot.executing, 0);
         assert_eq!(snapshot.queued_bytes, 0);

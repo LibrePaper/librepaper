@@ -7,6 +7,10 @@
 //! report `confinement: "none"` honestly, when the platform sandbox is
 //! missing.
 //!
+//! A machine without those tools has nothing to run these against: each
+//! test names the tool it is missing and returns, rather than failing on
+//! the absence of TeX Live. CI installs TeX Live so they run there.
+//!
 //! Each test stages a fresh temporary workspace (`project/` + `out/`,
 //! `native::run_job`'s own shape) from a corpus fixture or a small fixture
 //! written inline, and drives `local::native::run_job` the same way the
@@ -109,10 +113,28 @@ fn channels() -> (
     (cancel_tx, cancel_rx, progress_tx)
 }
 
+/// True, having said which tool is missing, when this machine cannot run a
+/// test that needs every one of `tools` on `PATH`.
+async fn skipped_without(tools: &[&str]) -> bool {
+    let paths = crate::local::discovery::tool_paths().await;
+    match tools.iter().find(|tool| paths.get(tool).is_none()) {
+        Some(tool) => {
+            eprintln!("skipped: {tool} is not on PATH; install TeX Live to run this test");
+            true
+        }
+        None => false,
+    }
+}
+
 // (a) discovery finds the real tools and parses their versions.
 #[tokio::test]
 async fn discovery_finds_tex_live_and_parses_versions() {
+    // Rescan first: `tool_paths` answers from the cache, and this is the
+    // test that refreshes it.
     let caps = crate::local::discovery::discover(true).await;
+    if skipped_without(&["pdflatex", "biber"]).await {
+        return;
+    }
 
     assert!(caps.tools.pdflatex.available, "{:?}", caps.tools.pdflatex);
     assert!(
@@ -149,6 +171,9 @@ async fn discovery_finds_tex_live_and_parses_versions() {
 // reports project-relative diagnostics.
 #[tokio::test]
 async fn paper_corpus_compiles_cites_and_converges() {
+    if skipped_without(&["pdflatex", "bibtex"]).await {
+        return;
+    }
     let (workspace, _guard) = stage(&corpus_dir("paper"));
     let request = tex_request("pdflatex", "main.tex", 120, 8);
     let (_cancel_tx, cancel_rx, progress) = channels();
@@ -194,6 +219,9 @@ async fn paper_corpus_compiles_cites_and_converges() {
 // and produces no PDF.
 #[tokio::test]
 async fn broken_corpus_fails_with_the_expected_diagnostic_and_no_pdf() {
+    if skipped_without(&["pdflatex"]).await {
+        return;
+    }
     let (workspace, _guard) = stage(&corpus_dir("broken"));
     let request = tex_request("pdflatex", "main.tex", 120, 8);
     let (_cancel_tx, cancel_rx, progress) = channels();
@@ -292,6 +320,9 @@ async fn produce_bcf(project: &Path) {
 
 #[tokio::test]
 async fn biber_job_produces_unicode_intact_bbl_bytes() {
+    if skipped_without(&["pdflatex", "biber"]).await {
+        return;
+    }
     let (workspace, _guard) = biblatex_fixture();
     produce_bcf(&workspace.project()).await;
 
@@ -312,6 +343,9 @@ async fn biber_job_produces_unicode_intact_bbl_bytes() {
 
 #[tokio::test]
 async fn a_bcf_with_the_wrong_control_file_version_is_reported_incompatible() {
+    if skipped_without(&["pdflatex", "biber"]).await {
+        return;
+    }
     let (workspace, _guard) = biblatex_fixture();
     let project = workspace.project();
     produce_bcf(&project).await;
@@ -392,6 +426,9 @@ fn stage_from_source(source: &str) -> (Workspace, tempfile::TempDir) {
 // within 3 s and leaves no pdflatex child behind.
 #[tokio::test]
 async fn cancellation_kills_the_process_tree_within_three_seconds() {
+    if skipped_without(&["pdflatex"]).await {
+        return;
+    }
     let (workspace, _guard) = stage_from_source(
         r"\documentclass{article}
 \newcount\ctr
@@ -456,6 +493,9 @@ fn any_process_cmdline_contains(needle: &str) -> bool {
 // (h) exceeding the deadline fails the job with a timeout, not a hang.
 #[tokio::test]
 async fn a_job_that_exceeds_its_deadline_fails_with_timeout() {
+    if skipped_without(&["pdflatex"]).await {
+        return;
+    }
     let (workspace, _guard) = stage_from_source(
         r"\documentclass{article}
 \newcount\ctr
@@ -484,6 +524,9 @@ async fn a_job_that_exceeds_its_deadline_fails_with_timeout() {
 // (i) the requested engine is honoured, never substituted.
 #[tokio::test]
 async fn the_requested_engine_is_honoured() {
+    if skipped_without(&["xelatex"]).await {
+        return;
+    }
     let (workspace, _guard) = stage_from_source(
         r"\documentclass{article}
 \begin{document}

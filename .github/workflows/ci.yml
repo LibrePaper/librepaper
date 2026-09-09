@@ -22,8 +22,16 @@ jobs:
       # The sync check reads the typst example the way a PDF reader does, by
       # extracting its text with Poppler's pdftotext; check:typst-pdf needs
       # pdfinfo from the same package. .cargo/config.toml links through mold,
-      # and gcc reports a missing mold as "cannot find 'ld'".
-      - run: sudo apt-get install -y --no-install-recommends poppler-utils mold
+      # and gcc reports a missing mold as "cannot find 'ld'". The native
+      # LaTeX tests drive a real TeX Live -- pdflatex, xelatex, bibtex and
+      # biber, with what the paper corpus and a biblatex fixture load -- and
+      # skip themselves on a machine without one, so it is installed here
+      # rather than let them pass by doing nothing.
+      - run: >-
+          sudo apt-get install -y --no-install-recommends
+          poppler-utils mold
+          texlive-latex-base texlive-latex-recommended texlive-fonts-recommended
+          texlive-bibtex-extra texlive-xetex biber
       - run: make test
 
   # The fuzz targets, briefly: long enough to catch a regression on an
