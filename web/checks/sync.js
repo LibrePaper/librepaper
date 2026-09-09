@@ -9,7 +9,7 @@
 // paragraphs, a formula and a fenced block have no words to find.
 //
 // Run by `make test`, against the examples as they are actually published.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { documentPlaceFor, sourcePlaceFor, sourcePlaceInTree, sourceSelectorFor } from "../src/lib/sync.js";
 import { renderHtml, renderMarkdown, renderTypst } from "../tools/render.js";
 
@@ -53,15 +53,23 @@ function places(source, format) {
   return out;
 }
 
+// The source of an example, or null when it is a rendered file that has not
+// been rendered here. `examples/*.html` is what Quarto makes of the `.qmd`
+// beside it, and CI has no Quarto.
+function sourceOf(file) {
+  const url = new URL(`../../${file}`, import.meta.url);
+  return existsSync(url) ? readFileSync(url, "utf8") : null;
+}
+
 let bad = false;
 for (const [file, render, format] of EXAMPLES) {
-  const source = readFileSync(new URL(`../../${file}`, import.meta.url), "utf8");
-  const rendered = await render(source, file);
-  const prose = places(source, format);
+  const source = sourceOf(file);
+  const rendered = source === null ? null : await render(source, file);
   if (rendered === null) {
     console.log(`sync: ${file} is not built; run \`make examples\``);
     continue;
   }
+  const prose = places(source, format);
 
   let missed = 0;
   let tried = 0;
@@ -162,8 +170,8 @@ function wordsAt(text, at, count) {
 }
 
 for (const [file, render, format] of EXAMPLES) {
-  const source = readFileSync(new URL(`../../${file}`, import.meta.url), "utf8");
-  const rendered = await render(source, file);
+  const source = sourceOf(file);
+  const rendered = source === null ? null : await render(source, file);
   if (rendered === null) continue; // already reported as unbuilt above
 
   const tree = { main: file, texts: { [file]: source } };
