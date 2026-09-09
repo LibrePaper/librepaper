@@ -472,9 +472,9 @@ for (const invalidate of [null, "navigation", "main"]) {
   ctx.displayedFormat = "latex";
   ctx.treeNow = () => ({ main: "main.tex", texts: { "main.tex": "source" }, digests: {} });
   ctx.renderers.formatOf = () => "latex";
-  ctx.renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no WasmTex release" } });
+  ctx.renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no engine release" } });
   await vm.runInContext("paintPreview()", ctx);
-  assert.equal(ctx.pdfFailureReason, "The mirror has no WasmTex release");
+  assert.equal(ctx.pdfFailureReason, "The mirror has no engine release");
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 

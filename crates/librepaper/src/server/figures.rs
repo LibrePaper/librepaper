@@ -5,7 +5,7 @@
 use super::*;
 
 /// The longest an `x-librepaper-provenance` header may be, in bytes. See
-/// `docs/specs/wasmtex-interfaces.md`, section 2.1's `Provenance` shape --
+/// `docs/specs/latex-interfaces.md`, section 2.1's `Provenance` shape --
 /// a backend name, a bibliography route and a handful of tool versions, not
 /// a file.
 pub(super) const MAX_PROVENANCE_BYTES: usize = 2048;

@@ -13,7 +13,7 @@
     "check:typst-pdf": "node checks/typst-pdf.mjs",
     "check:typst-viewer": "node checks/typst-viewer.mjs",
     "check:typst-browser": "node tools/typst-pdf-browser.mjs ../target/release/librepaper",
-    "check:latex-browser": "node checks/latex-wasmtex-browser.mjs",
+    "check:latex-browser": "node checks/latex-browser.mjs",
     "check:agent-browser": "node checks/agent-browser.mjs",
     "check:responsive-browser": "node checks/responsive-browser.mjs",
     "check:assistant-browser": "node checks/agent-browser.mjs && node checks/assistant-review-browser.mjs"

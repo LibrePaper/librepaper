@@ -60,7 +60,7 @@ mod tokens;
 mod typst_needs;
 mod uploads;
 mod visitor;
-mod wasmtex_server;
+mod mirror_server;
 mod write_errors;
 pub mod yjs;
 

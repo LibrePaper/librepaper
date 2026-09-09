@@ -1,6 +1,6 @@
 // Builds the minimal Biber guest image, exports its rootfs, packs it into
 // v86's fs.json + objects, copies the pinned v86 runtime files, and writes
-// latex/mirror/biber-vm/<vmRelease>/ per docs/specs/wasmtex-interfaces.md
+// latex/mirror/biber-vm/<vmRelease>/ per docs/specs/latex-interfaces.md
 // section 6. Idempotent: re-running with unchanged inputs reproduces the
 // same <vmRelease> and does not rewrite unchanged bytes.
 import { execFileSync } from 'node:child_process';
@@ -92,7 +92,7 @@ for (const [destName, srcName] of Object.entries(runtimeFiles)) {
   fileEntries['fs.json'] = { url: 'fs.json', sha256: sha256hex(fsData), size: fsData.length };
 }
 
-// 6. vm.json, exactly as docs/specs/wasmtex-interfaces.md section 6.
+// 6. vm.json, exactly as docs/specs/latex-interfaces.md section 6.
 const licences = sources.licences;
 const vmJson = {
   runtime: 'v86',
@@ -171,12 +171,8 @@ console.log(`  total size: ${(totalSize.bytes / (1024 * 1024)).toFixed(1)} MiB a
 console.log(`  objects: ${readdirSync(outDir + '/objects').length}`);
 console.log(`  files newly copied this run: ${copied}`);
 
-// 7. Register in the manifest. Prefer package A's `wasmtex.mjs --vm`, since
-// that is the documented, single writer of manifest.json's shape (section 1
-// of docs/specs/wasmtex-interfaces.md). Fall back to register.mjs, which
-// edits manifest.json additively, only if that flag is not implemented yet.
-const wasmtexTool = fileURLToPath(new URL('../wasmtex.mjs', import.meta.url));
-const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+// 7. Register in the manifest: the documented, single writer of
+// manifest.json's shape (section 1 of docs/specs/latex-interfaces.md).
 const registerScript = fileURLToPath(new URL('./register.mjs', import.meta.url));
 
 function currentVmEntry() {
@@ -184,24 +180,6 @@ function currentVmEntry() {
   return m.releases?.[m.default_release]?.vm ?? null;
 }
 
-let registered = false;
-if (existsSync(wasmtexTool)) {
-  try {
-    execFileSync(process.execPath, [wasmtexTool, '--vm', outDir], { stdio: 'inherit', cwd: repoRoot });
-    // wasmtex.mjs may exit 0 while silently ignoring an unrecognized flag
-    // (it did, the first time this ran against an early version of that
-    // file), so verify the manifest was actually updated before trusting it.
-    registered = currentVmEntry()?.id === vmRelease;
-    if (registered) console.log('Registered VM release in manifest.json via wasmtex.mjs --vm');
-    else console.log('wasmtex.mjs ran but did not set releases.<default_release>.vm (--vm not implemented yet); using register.mjs instead');
-  } catch (error) {
-    console.log(`wasmtex.mjs --vm failed (${error.message.split('\n')[0]}); using register.mjs instead`);
-  }
-} else {
-  console.log('latex/tools/wasmtex.mjs does not exist yet; using register.mjs instead');
-}
-if (!registered) {
-  execFileSync(process.execPath, [registerScript, outDir], { stdio: 'inherit' });
-  registered = currentVmEntry()?.id === vmRelease;
-}
+execFileSync(process.execPath, [registerScript, outDir], { stdio: 'inherit' });
+const registered = currentVmEntry()?.id === vmRelease;
 if (!registered) console.warn('WARNING: the VM release was built but could not be registered in manifest.json');

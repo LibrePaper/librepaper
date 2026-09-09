@@ -1,11 +1,11 @@
-// The compile, off the main thread -- WasmTex edition.
+// The compile, off the main thread.
 //
 // This is the module worker `latex/route.js` and the controller
 // (`web/src/lib/latex.js`, package B2) talk to. It owns one release at a
-// time and lazily creates the nested WasmTex engine workers it needs
-// (`wasmtex.js`, one per pdfTeX/XeTeX/dvipdfm/LuaTeX/BibTeX/BibTeX8/
+// time and lazily creates the nested engine workers it needs
+// (`driver.js`, one per pdfTeX/XeTeX/dvipdfm/LuaTeX/BibTeX/BibTeX8/
 // makeindex), replacing the old two-message SwiftLaTeX protocol with the one
-// in `docs/specs/wasmtex-interfaces.md` section 2.4:
+// in `docs/specs/latex-interfaces.md` section 2.4:
 //
 //   in  { id, cmd: "configure", base, release, format }
 //   in  { id, cmd: "stage", engine, tree, generated }
@@ -26,9 +26,9 @@
 // longer exactly one request in the air at a time.
 //
 // The GLUE map from the old protocol is gone: there is exactly one adapter
-// now (`wasmtex.js`), selected by engine kind, not by distribution name.
+// now (`driver.js`), selected by engine kind, not by distribution name.
 
-import { createEngine } from "./wasmtex.js";
+import { createEngine } from "./driver.js";
 import { fetchVerified } from "./resources.js";
 
 /// Which underlying engine kinds a project engine name needs, in the order
@@ -44,7 +44,7 @@ const KINDS = {
 };
 
 /// Engine kinds whose worker answers `loadbundleindex` (see the engine
-/// repository's `wasmtex-bundle-mode.js`) -- every engine the mirror ships.
+/// repository's `bundle-mode.js`) -- every engine the mirror ships.
 /// LuaTeX is left out because it is not shipped at all: `ensureEngine` below
 /// fails a request for it with "not available in this release" rather than
 /// reaching for a per-file path that no longer exists in this worker.
@@ -83,7 +83,7 @@ class Worker2 {
   constructor() {
     this.base = null;
     this.release = null;
-    this.engines = new Map(); // kind -> wasmtex engine
+    this.engines = new Map(); // kind -> engine driver
     // SPEC-latex.md "The index": the release's `bundles.json`, fetched once
     // in `configure` below. Bundle mode is the only mode a worker speaks any
     // more -- there is no per-file TeX Live snapshot mirror left to fall
@@ -191,7 +191,7 @@ class Worker2 {
     // directory `bundles.json` itself lives in instead, since bundle URLs
     // in the index are relative paths ("b/<sha256>/<slug>.tar") written by
     // `tools/build-bundles.mjs` alongside it, matching the mirror layout
-    // `latex/tools/wasmtex.mjs` writes them under.
+    // wasm-latex's build tool writes them under.
     const texliveUrl = resolve(this.base, this.release.bundles.index.slice(0, this.release.bundles.index.lastIndexOf("/") + 1));
     let format = null;
     if (spec.format) {
@@ -309,7 +309,7 @@ class Worker2 {
     let status = pass.status;
     let ok = pass.ok;
     // Package files (`.sty`/`.cls`) the bundle index itself says are absent
-    // from the mirror -- see wasmtex.js's `run()` and docs/specs' "Precise
+    // from the mirror -- see driver.js's `run()` and docs/specs' "Precise
     // failure messages" -- surfaced back to the controller alongside the
     // ordinary failure so it can name the package instead of "the document
     // failed to compile".
@@ -317,7 +317,7 @@ class Worker2 {
 
     if (engineName === "xelatex") {
       // XeTeX's own controller hands back the .xdv content in the same
-      // `pdf` field a real PDF would occupy (see wasmtex.js's header note on
+      // `pdf` field a real PDF would occupy (see driver.js's header note on
       // reply-shape quirks); it is not a PDF until dvipdfm has run.
       const xdv = pdf;
       pdf = null;
@@ -339,7 +339,7 @@ class Worker2 {
     if (!pdf) ok = false;
 
     // XeTeX's controller reply never carries a `synctex` field at all
-    // (unlike pdfTeX's and LuaTeX's -- see wasmtex.js's header note), but
+    // (unlike pdfTeX's and LuaTeX's -- see driver.js's header note), but
     // XeTeX still writes the file to /work when run with synctex enabled;
     // read it back directly rather than relying on the reply shape.
     if (!synctexRaw && ok) {

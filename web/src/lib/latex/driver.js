@@ -1,4 +1,4 @@
-// One nested WasmTex engine, driven.
+// One nested engine, driven.
 //
 // `worker.js` (the module worker the controller talks to) owns several of
 // these -- pdfTeX, or XeTeX plus dvipdfm, or LuaTeX, plus BibTeX/BibTeX8/
@@ -31,7 +31,7 @@
 // The nested worker is created from a URL under the mirror -- never from a
 // blob -- because Emscripten's glue finds its `.wasm` beside its own `.js`
 // (relative to the script's own URL), and the controller's own
-// `importScripts('wasmtex-<kind>-resolver-evidence.js')` resolves relative to
+// `importScripts('<kind>-resolver-evidence.js')` resolves relative to
 // that same URL too. A blob URL has no "beside it" for either to find.
 
 import { fetchVerified } from "./resources.js";
@@ -50,18 +50,25 @@ async function gunzip(bytes) {
 /// (pdfTeX's `loadformat`). Matches wasmtex's own `tex-fmt-engine.js`
 /// (`ensureFormat`) exactly, because the compiled-in engine core looks for
 /// this specific name via kpathsea.
-const FMT_FILENAME = { xetex: "wasmtex-xetex.fmt", luatex: "wasmtex-luatex.fmt" };
+///
+/// `xetex: "wasmtex-xetex.fmt"` is not a naming choice here: the compiled
+/// `xetex-entry.c` passes `--fmt=wasmtex-xetex` to the engine at start-up
+/// (kpathsea format 10), so XeTeX asks for a format under that exact name
+/// regardless of what the mirror calls the file it ships (`xetex.fmt.gz`,
+/// per the current file-set contract). This one name stays hardcoded here
+/// until the engine is rebuilt without that compiled-in string.
+const FMT_FILENAME = { xetex: "wasmtex-xetex.fmt", luatex: "luatex.fmt" };
 
 /// Kinds whose controller answers `loadbundleindex`/`preloadbundle` (the
-/// engine repository's `wasmtex-bundle-mode.js`, imported by every worker
+/// engine repository's `bundle-mode.js`, imported by every worker
 /// but LuaTeX today). Kept in sync with `worker.js`'s own `BUNDLE_CAPABLE`.
 const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex"]);
 
 export function createEngine({ kind, url, texliveUrl, format, release, onProgress, onDownload }) {
-  return new WasmTexEngine(kind, url, texliveUrl, format, release, onProgress, onDownload);
+  return new EngineDriver(kind, url, texliveUrl, format, release, onProgress, onDownload);
 }
 
-class WasmTexEngine {
+class EngineDriver {
   constructor(kind, url, texliveUrl, format, release, onProgress, onDownload) {
     this.kind = kind;
     this.url = url;
@@ -148,7 +155,7 @@ class WasmTexEngine {
     });
     this._tell({ cmd: "settexliveurl", url: this.texliveUrl });
     if (this.kind === "pdftex") {
-      // Preamble snapshots are a wasmtex-side speed trick (a cached format
+      // Preamble snapshots are an engine-side speed trick (a cached format
       // for the unchanged part of the document); the controller expects a
       // reply, so this is one round trip before the engine is usable.
       await this._ask({ cmd: "setpreamblesnapshot", enabled: false }, "setpreamblesnapshot");
@@ -204,7 +211,7 @@ class WasmTexEngine {
     if (message.cmd === "resolverready") return;
     if (message.cmd === "resolver") {
       // Resolver telemetry from `*-resolver-evidence.js`. Nothing here reads
-      // most of it (that file feeds wasmtex's own diagnostics, which this
+      // most of it (that file feeds the engine's own diagnostics, which this
       // driver does not reproduce), except the one case a failed compile
       // needs named: a `.sty`/`.cls` (format 26) the bundle index itself
       // says is absent, per docs/specs "Precise failure messages".
@@ -306,7 +313,7 @@ class WasmTexEngine {
   /// serves. This command answers -- the controller awaits it so a first
   /// compile never races the worker's own Cache Storage preload.
   async loadBundleIndex(bytes) {
-    // Every worker but LuaTeX now importScripts()s `wasmtex-bundle-mode.js`
+    // Every worker but LuaTeX now importScripts()s `bundle-mode.js`
     // and answers this command; a kind that does not is a no-op here so a
     // caller need not special-case it (worker.js's `ensureEngine` already
     // gates the call on `BUNDLE_CAPABLE`, but this stays defensive on its

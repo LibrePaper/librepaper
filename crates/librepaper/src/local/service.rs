@@ -1,5 +1,5 @@
 //! The loopback HTTP surface `librepaper local start` binds:
-//! `docs/specs/wasmtex-interfaces.md` section 5, all of it. Every route hangs
+//! `docs/specs/latex-interfaces.md` section 5, all of it. Every route hangs
 //! under `protocol::BASE_PATH`; nothing else answers on this port.
 //!
 //! Bound to loopback only, `Host`-checked against DNS rebinding, CORS-scoped

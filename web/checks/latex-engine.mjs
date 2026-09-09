@@ -1,7 +1,7 @@
 // Engine selection is a pure function of text, so this check runs it over
 // short synthetic sources rather than a real corpus document: what matters
 // here is precedence and false-positive avoidance, not real-world documents
-// (those are exercised end-to-end in latex-wasmtex-browser.mjs).
+// (those are exercised end-to-end in latex-browser.mjs).
 import assert from "node:assert/strict";
 import { ENGINES, directiveOf, detect, resolveEngine, needsBiber } from "../src/lib/latex/engine.js";
 

@@ -128,7 +128,7 @@ export function decide(event, state) {
     // Local Biber exists but cannot read the browser release's control-file
     // version. A complete native build, using its own matching bibliography
     // tool, is preferred over the VM here because it also re-typesets with
-    // packages known to match -- the VM only ever returns a BBL for WasmTex
+    // packages known to match -- the VM only ever returns a BBL for browser TeX
     // to consume, which is exactly the byte stream the incompatible local
     // Biber could not produce.
     case "local-incompatible": {

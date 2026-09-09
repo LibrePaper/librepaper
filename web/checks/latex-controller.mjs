@@ -1,7 +1,7 @@
 // Drives the real `latex.js` -- the actual queue, job identity, bibliography
 // caching and routing logic -- against a scripted worker and scripted
 // local/VM backends, so this check exercises the same code the browser runs
-// with none of a browser, a real WasmTex build, a real local app or a real
+// with none of a browser, a real engine build, a real local app or a real
 // VM anywhere in reach. `latex.js`'s `_testing.inject` hook is what makes
 // that possible; see its doc comment in `src/lib/latex.js`.
 import assert from "node:assert/strict";
@@ -101,7 +101,7 @@ const worker = () => liveWorker;
 const MANIFEST = {
   format: 1,
   default_release: "r1",
-  releases: { r1: { id: "r1", base: "wasmtex/r1/", engines: {}, bundles: { index: "wasmtex/r1/bundles/bundles.json" } } },
+  releases: { r1: { id: "r1", base: "engines/r1/", engines: {}, bundles: { index: "engines/r1/bundles/bundles.json" } } },
 };
 // `/api/config`'s `biberVm` field: the browser bibliography VM's own
 // descriptor URL and the sha256 to verify it against, no longer named by
@@ -673,8 +673,8 @@ function nextProject() {
   const result = await latex.compile(tree("main.tex", "source"));
   assert.equal(result.ok, false);
   assert.equal(result.failure.kind, "resources");
-  assert.match(result.failure.message, /no default WasmTex release/);
-  assert.match(result.failure.message, /make latex-mirror/);
+  assert.match(result.failure.message, /no default engine release/);
+  assert.match(result.failure.message, /make mirror/);
   assert.doesNotMatch(result.failure.message, /undefined/);
 }
 
@@ -682,8 +682,8 @@ function nextProject() {
 // 15. `worker.js`'s `ensureEngine`, driven directly (not through the
 // `FakeWorker` above, which stands in for the whole of `worker.js` and so
 // never exercises it): a fake nested engine `Worker` stands in for a real
-// WasmTex engine controller, and this drives worker.js's own section 2.4
-// protocol by id, the same way `latex-wasmtex-browser.mjs`'s in-page driver
+// engine controller, and this drives worker.js's own section 2.4
+// protocol by id, the same way `latex-browser.mjs`'s in-page driver
 // does against the real thing. Checks SPEC-latex.md's bundle-mode fan-out --
 // every bundle-capable kind receives `loadbundleindex`, and XeTeX alone also
 // receives `loadicudata` with the release's ICU table inflated from the
@@ -704,19 +704,19 @@ function nextProject() {
   const bundlesIndexBytes = enc.encode(JSON.stringify({ bundles: {}, files: {} }));
 
   const files = {
-    "wasmtex-xetex.fmt.gz": { url: "wasmtex/rel1/wasmtex-xetex.fmt.gz", sha256: await sha256Hex(fmtGz), size: fmtGz.length },
-    "icudt68l.dat.gz": { url: "wasmtex/rel1/icudt68l.dat.gz", sha256: await sha256Hex(icuGz), size: icuGz.length },
+    "xetex.fmt.gz": { url: "engines/rel1/xetex.fmt.gz", sha256: await sha256Hex(fmtGz), size: fmtGz.length },
+    "icudt68l.dat.gz": { url: "engines/rel1/icudt68l.dat.gz", sha256: await sha256Hex(icuGz), size: icuGz.length },
   };
   const release = {
     id: "rel1",
     digest: "c".repeat(64),
-    base: "wasmtex/rel1/",
-    bundles: { index: "wasmtex/rel1/bundles/bundles.json" }, // no `sha256`: digest check is skipped, exercised elsewhere
+    base: "engines/rel1/",
+    bundles: { index: "engines/rel1/bundles/bundles.json" }, // no `sha256`: digest check is skipped, exercised elsewhere
     engines: {
-      xetex: { worker: "wasmtex-xetex.worker.js", format: "wasmtex-xetex.fmt.gz", icu: "icudt68l.dat.gz" },
-      dvipdfm: { worker: "wasmtex-dvipdfm.worker.js" },
-      bibtex: { worker: "wasmtex-bibtex.worker.js" },
-      pdftex: { worker: "wasmtex-pdftex.worker.js" },
+      xetex: { worker: "xetex.worker.js", format: "xetex.fmt.gz", icu: "icudt68l.dat.gz" },
+      dvipdfm: { worker: "dvipdfm.worker.js" },
+      bibtex: { worker: "bibtex.worker.js" },
+      pdftex: { worker: "pdftex.worker.js" },
     },
     files,
   };
@@ -731,7 +731,7 @@ function nextProject() {
       this.dead = false;
       engineWorkers.push(this);
       // Emscripten's postRun: the one reply every real controller sends with
-      // no `cmd`, meaning the engine finished starting (wasmtex.js's own
+      // no `cmd`, meaning the engine finished starting (driver.js's own
       // header note). Queued so it fires only after `worker.onmessage` is
       // assigned, matching a real Worker's genuine asynchrony.
       queueMicrotask(() => this.onmessage?.({ data: { result: "ok" } }));
@@ -772,7 +772,7 @@ function nextProject() {
   globalThis.fetch = async (url) => {
     const key = typeof url === "string" ? url : url.toString();
     if (key === new URL(release.bundles.index, BASE).href) return new Response(bundlesIndexBytes, { status: 200 });
-    if (key === new URL(files["wasmtex-xetex.fmt.gz"].url, BASE).href) return new Response(fmtGz, { status: 200 });
+    if (key === new URL(files["xetex.fmt.gz"].url, BASE).href) return new Response(fmtGz, { status: 200 });
     if (key === new URL(files["icudt68l.dat.gz"].url, BASE).href) return new Response(icuGz, { status: 200 });
     return new Response(null, { status: 404 });
   };
@@ -801,8 +801,8 @@ function nextProject() {
     await send("configure", { base: BASE, release, format: 1 });
     await send("stage", { engine: "xelatex", tree: { main: "main.tex", texts: { "main.tex": "x" } }, generated: {} });
 
-    const xetexWorker = engineWorkers.find((w) => w.url === new URL("wasmtex/rel1/wasmtex-xetex.worker.js", BASE).href);
-    const dvipdfmWorker = engineWorkers.find((w) => w.url === new URL("wasmtex/rel1/wasmtex-dvipdfm.worker.js", BASE).href);
+    const xetexWorker = engineWorkers.find((w) => w.url === new URL("engines/rel1/xetex.worker.js", BASE).href);
+    const dvipdfmWorker = engineWorkers.find((w) => w.url === new URL("engines/rel1/dvipdfm.worker.js", BASE).href);
     assert.ok(xetexWorker, "a fake xetex engine worker was created");
     assert.ok(dvipdfmWorker, "a fake dvipdfm engine worker was created");
 
@@ -823,7 +823,7 @@ function nextProject() {
     // BibTeX, through worker.js's own `bibtex` command: reads the primary
     // (xetex) engine's staged .aux, then lazily creates the bibtex engine.
     await send("bibtex", { stem: "main", eight: false });
-    const bibtexWorker = engineWorkers.find((w) => w.url === new URL("wasmtex/rel1/wasmtex-bibtex.worker.js", BASE).href);
+    const bibtexWorker = engineWorkers.find((w) => w.url === new URL("engines/rel1/bibtex.worker.js", BASE).href);
     assert.ok(bibtexWorker, "a fake bibtex engine worker was created");
     assert.ok(
       bibtexWorker.messages.map((m) => m.cmd).includes("loadbundleindex"),
@@ -882,7 +882,7 @@ function nextProject() {
   try {
     const noBundles = await send("configure", {
       base: "https://mirror.example/mirror/",
-      release: { id: "rel-old", base: "wasmtex/rel-old/", engines: {} },
+      release: { id: "rel-old", base: "engines/rel-old/", engines: {} },
       format: 1,
     }).catch((error) => error);
     assert.ok(noBundles instanceof Error, "a release with no bundles is refused");
@@ -890,7 +890,7 @@ function nextProject() {
 
     const wrongFormat = await send("configure", {
       base: "https://mirror.example/mirror/",
-      release: { id: "rel1", base: "wasmtex/rel1/", engines: {}, bundles: { index: "wasmtex/rel1/bundles/bundles.json" } },
+      release: { id: "rel1", base: "engines/rel1/", engines: {}, bundles: { index: "engines/rel1/bundles/bundles.json" } },
       format: 2,
     }).catch((error) => error);
     assert.ok(wrongFormat instanceof Error, "an unsupported manifest format is refused");

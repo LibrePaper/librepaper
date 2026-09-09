@@ -38,7 +38,7 @@ completion is over the tree, which is the whole feature minus the convenience.
 
 The exact loopback endpoint, its version negotiation and what Zotero versions
 expose it belong to the implementation milestone, in the manner
-[wasmtex.md](wasmtex.md) defers local transport research. The capability is
+[latex-compiler.md](latex-compiler.md) defers local transport research. The capability is
 reported like any other local capability: present, absent, or incompatible,
 never assumed.
 
@@ -94,6 +94,6 @@ continues to work when Zotero is unavailable.
 
 ## References
 
-- [wasmtex.md](wasmtex.md) -- local discovery and the bridge protocol.
+- [latex-compiler.md](latex-compiler.md) -- local discovery and the bridge protocol.
 - [quarto.md](quarto.md) -- remaining Quarto support.
 - [catalog.md](catalog.md) -- secrets, retention, and erasure constraints.

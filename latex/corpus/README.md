@@ -38,7 +38,7 @@ them. What each is for:
 
 - **`unicode-fonts/`** — also XeTeX: named Libertinus text and math fonts
   through `fontspec` and `unicode-math`, with Greek and Cyrillic text. Not
-  held to `pages.json`; `latex/tools/wasmtex-record.mjs` compiles it so the
+  held to `pages.json`; wasm-latex's package recorder compiles it so the
   named-font and `unicode-math` package requests reach the mirror.
 
 ## What is generated, and by what

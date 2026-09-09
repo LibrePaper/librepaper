@@ -1,14 +1,14 @@
 # SPEC: LaTeX in LibrePaper
 
 The compiler, its resources, the local fallback and the browser Biber VM are
-specified in [wasmtex.md](wasmtex.md); the module boundaries
-that implement it are in [wasmtex-interfaces.md](wasmtex-interfaces.md). This
+specified in [latex-compiler.md](latex-compiler.md); the module boundaries
+that implement it are in [latex-interfaces.md](latex-interfaces.md). This
 page is the short account of what a person sees, and of what remains.
 
 ## What happens when a LaTeX document opens
 
 A reader sees the stored PDF at once and downloads no compiler. An editor's
-browser loads LibrePaper's own pinned WasmTex release from the deployment's
+browser loads LibrePaper's own pinned engine release from the deployment's
 `/latex/` mirror -- the engine the project needs and nothing else -- and
 compiles automatically after the source has been quiet for a second and a
 half, or at once from Compile now. There is no distribution to choose and no
@@ -75,7 +75,7 @@ XeTeX and LuaTeX documents compile in the browser.
 
 ## Remaining
 
-- The WasmTex XeTeX core writes no SyncTeX, so a XeLaTeX document has no
+- The XeTeX core writes no SyncTeX, so a XeLaTeX document has no
   source mapping until the engine is rebuilt with it; pdfTeX and LuaTeX do.
 - Reproducing every engine from source. The wasm-latex repository rebuilds
   pdfTeX and BibTeX byte-for-byte from pinned TeX Live sources; XeTeX,
@@ -86,7 +86,7 @@ XeTeX and LuaTeX documents compile in the browser.
 - A XeLaTeX document has not yet been compiled in a browser against a
   bundled release -- only in the Node harness on the engine side. The
   LuaTeX worker does not resolve through bundles yet (it will once its
-  release ships `wasmtex-kpse-resolve.js`/`wasmtex-bundle-mode.js` like the
+  release ships `kpse-resolve.js`/`bundle-mode.js` like the
   others), and a bundled release is not yet imported into the shipped
   mirror.
 - Detaching `librepaper local start` from its terminal and registering the

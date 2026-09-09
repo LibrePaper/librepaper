@@ -715,3 +715,24 @@ async fn browser_submission_retries_are_idempotent_and_author_scoped() {
     assert!(ok);
     assert_eq!(first, again);
 }
+
+#[test]
+fn latex_flag_defaults_to_the_project_mirror_when_absent() {
+    // LibrePaper always serves LaTeX: an absent --latex (and an absent
+    // LIBREPAPER_LATEX, both merged into this blank flag by `first_of`
+    // before reaching `resolve_latex_flag`) falls back to the project's own
+    // mirror rather than turning compilation off.
+    assert_eq!(
+        crate::server::serve::resolve_latex_flag(""),
+        crate::server::latex::DEFAULT_MIRROR
+    );
+    assert_eq!(
+        crate::server::serve::resolve_latex_flag("   "),
+        crate::server::latex::DEFAULT_MIRROR
+    );
+    // An explicit flag or environment override still wins.
+    assert_eq!(
+        crate::server::serve::resolve_latex_flag("https://mirror.example.org/"),
+        "https://mirror.example.org/"
+    );
+}

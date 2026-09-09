@@ -1,6 +1,6 @@
 # LaTeX mirror tools
 
-LibrePaper consumes a deployed WasmTex mirror -- engines and the TeX Live
+LibrePaper consumes a deployed LaTeX engine mirror -- engines and the TeX Live
 package bundles -- built and pushed from the **wasm-latex** repository
 (`make mirror`, `make push` there; layout and manifest documented in
 `wasm-latex/docs/mirror.md`, format 1, bundled releases only, no per-file
@@ -13,7 +13,7 @@ mirror any more. What is still here:
 
 ```sh
 node latex/tools/check-mirror.mjs latex/mirror                       # a local directory
-node latex/tools/check-mirror.mjs https://librepaper-latex.<account>.workers.dev/
+node latex/tools/check-mirror.mjs https://latex.librepaper.workers.dev/
 ```
 
 It checks that `manifest.json` parses, `manifest.format === 1`, the default
@@ -27,19 +27,17 @@ seeded LaTeX example in headless Chromium.
 ## The Biber VM
 
 LibrePaper still builds and deploys its own Biber VM, separately from the
-WasmTex mirror:
+engine mirror:
 
 ```sh
 node latex/tools/biber-vm/build.mjs               # builds the VM (needs Docker)
-node latex/tools/wasmtex.mjs --vm latex/mirror/biber-vm/<vmRelease>   # registers it
+node latex/tools/biber-vm/register.mjs latex/mirror/biber-vm/<vmRelease>   # registers it
 ```
 
-`build.mjs` calls `wasmtex.mjs --vm` itself once the VM is built, falling
-back to `latex/tools/biber-vm/register.mjs` if that flag is not yet
-implemented. Registration writes `releases.<default_release>.vm` into
-`manifest.json`, per `docs/specs/wasmtex-interfaces.md` section 6 -- so the
-mirror's default release must already exist (imported by wasm-latex's
-tooling) before this can run.
+`build.mjs` calls `register.mjs` itself once the VM is built. Registration
+writes `releases.<default_release>.vm` into `manifest.json`, per
+`docs/specs/latex-interfaces.md` section 6 -- so the mirror's default release
+must already exist (imported by wasm-latex's tooling) before this can run.
 
 ## Reproduction status
 

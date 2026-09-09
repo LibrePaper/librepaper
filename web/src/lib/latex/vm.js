@@ -4,7 +4,7 @@
 // v86 guest, booted from this deployment's own pinned image (`/api/config`'s
 // `biberVm`, set by `--biber-vm`; the VM is LibrePaper's own artefact, hosted
 // separately from the LaTeX mirror and no longer named by a release), that
-// runs the real `biber` binary on a BCF a successful WasmTex pass already
+// runs the real `biber` binary on a BCF a successful browser TeX pass already
 // produced. It never runs TeX, never touches the network beyond fetching its
 // own pinned image, and is only ever started when local LibrePaper is
 // unavailable and bibliography work remains.

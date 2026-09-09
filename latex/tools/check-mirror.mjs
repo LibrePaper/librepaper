@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 
 // Keep the default in step with
 // crates/librepaper/src/server/latex.rs::DEFAULT_MIRROR.
-const base = process.argv[2] || "https://librepaper-latex.vincentarelbundock.workers.dev/";
+const base = process.argv[2] || "https://latex.librepaper.workers.dev/";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function checkShape(manifest) {

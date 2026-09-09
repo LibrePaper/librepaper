@@ -473,7 +473,7 @@ impl Server {
                     // Where the local bridge listens, so the browser knows
                     // what to probe without guessing a port. The address is
                     // fixed; the local app's own pairing decides whether this
-                    // browser may use it (docs/specs/wasmtex-interfaces.md,
+                    // browser may use it (docs/specs/latex-interfaces.md,
                     // section 2.6).
                     fields.insert(
                         "latex_local".to_string(),

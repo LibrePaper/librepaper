@@ -37,9 +37,9 @@ console.log(`Using VM release ${vmRelease} at ${vmDir}`);
 // --- Fixture: the tracked biblatex document in fixture/ (Unicode author
 // names and titles, sorting, real citations), compiled locally with xelatex
 // to obtain a genuine .bcf. This uses the developer machine's TeX Live, not
-// the browser release itself (running actual WasmTex headlessly for this
-// alone is out of scope here); the bcf-version comparison below makes a
-// mismatch visible.
+// the browser release itself (running the actual browser engine headlessly
+// for this alone is out of scope here); the bcf-version comparison below
+// makes a mismatch visible.
 const fixtureDir = root + 'assets/fixture-run';
 mkdirSync(fixtureDir, { recursive: true });
 const fixtureSrc = root + 'fixture';
@@ -61,7 +61,7 @@ const bcfCompat = {
   localTexLiveBcfVersion: localBcfVersion ?? null,
   browserReleaseBcfVersion: releaseBcfVersion,
   match: releaseBcfVersion == null ? 'unknown (browser release bibliography.control_file not present in manifest.json)' : String(releaseBcfVersion === localBcfVersion),
-  note: 'The .bcf fed to the guest was produced by the developer machine\'s local TeX Live biblatex, not by an actual WasmTex/browser-release run (that would require driving the full browser engine headlessly, out of scope for this smoke test). If browserReleaseBcfVersion differs from localTexLiveBcfVersion this result does not establish browser-release compatibility.',
+  note: 'The .bcf fed to the guest was produced by the developer machine\'s local TeX Live biblatex, not by an actual browser-release run (that would require driving the full browser engine headlessly, out of scope for this smoke test). If browserReleaseBcfVersion differs from localTexLiveBcfVersion this result does not establish browser-release compatibility.',
 };
 console.log('bcf version check:', bcfCompat);
 fixtureLabel += `; local .bcf control-file version ${bcfCompat.bcfInBcfFile}`;

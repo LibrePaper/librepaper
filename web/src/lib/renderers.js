@@ -305,7 +305,7 @@ export function htmlTitleOf(source) {
 export function warm(format) {
   if (format === "html") return; // the identity has nothing to fetch
   // LaTeX is not a renderer-worker format: `latex.js` loads the pinned
-  // WasmTex release itself, on the editor's side, so there is nothing here to
+  // engine release itself, on the editor's side, so there is nothing here to
   // warm.
   if (format === "latex") return;
   request(format, "warm").catch(() => {

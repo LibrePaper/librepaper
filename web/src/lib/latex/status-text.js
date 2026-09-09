@@ -2,13 +2,13 @@
 //
 // `LatexStatus.svelte`, `Diagnostics.svelte` and `Reader.svelte`'s
 // `renderedNote` all need to turn a `Status`, a `Provenance` or an
-// `Attempt[]` (docs/specs/wasmtex-interfaces.md section 2.1) into a sentence
+// `Attempt[]` (docs/specs/latex-interfaces.md section 2.1) into a sentence
 // a reader can act on. None of that needs a DOM, a worker or `latex.js`
 // itself, so it lives here, in plain functions a Node check can call
 // directly (see checks/latex-reader.mjs) -- the same reason `latex/status.js`
 // keeps the store apart from `latex.js`.
 //
-// Every wording below either quotes docs/specs/wasmtex.md's "Failure presentation"
+// Every wording below either quotes docs/specs/latex-compiler.md's "Failure presentation"
 // list verbatim (the `status.message` strings, which this file never
 // invents) or fills in the one line SPEC asks for beside them: why a
 // fallback happened, and what a given failure kind needs from the reader.

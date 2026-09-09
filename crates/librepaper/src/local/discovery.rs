@@ -1,6 +1,6 @@
 //! Local tool discovery: find `pdflatex`, `xelatex`, `lualatex`, `bibtex`,
 //! `bibtex8`, `biber` and `makeindex` as explicit absolute paths, and report
-//! each individually. See `docs/specs/wasmtex.md`, "Local tool discovery".
+//! each individually. See `docs/specs/latex-compiler.md`, "Local tool discovery".
 //!
 //! An installed LibrePaper app does not imply an installed TeX distribution;
 //! finding Biber does not imply finding a complete TeX installation. This

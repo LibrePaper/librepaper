@@ -1,6 +1,6 @@
-# WasmTex implementation: module boundaries and interfaces
+# LaTeX compiler implementation: module boundaries and interfaces
 
-Status: implementation contract for [wasmtex.md](wasmtex.md).
+Status: implementation contract for [latex-compiler.md](latex-compiler.md).
 Every module below is owned by one work package. The shapes here are the
 agreement between packages; a package may add fields but must not rename or
 remove what is listed, and must not edit another package's files.
@@ -12,7 +12,7 @@ snapshot on one backend. A **backend** is `browser`, `local` or `vm`.
 
 ## 1. Mirror layout and manifest
 
-The mirror -- WasmTex engines and the TeX Live package bundles -- is built
+The mirror -- engines and the TeX Live package bundles -- is built
 and pushed from the wasm-latex repository (`make mirror`, `make push` there).
 Its layout and `manifest.json` shape (format 1, bundled releases only, no
 per-file TeX Live snapshot, no bloom filter, `vm: null` until package F fills
@@ -30,8 +30,8 @@ What this repository still owns:
   bundle tar is on disk with a matching digest and size against
   `bundles.json`.
 - **The Biber VM.** `latex/tools/biber-vm/build.mjs` builds it and registers
-  it into the mirror's manifest with `latex/tools/wasmtex.mjs --vm <dir>`
-  (section 6 below) -- deployed separately from the WasmTex mirror itself.
+  it into the mirror's manifest with `latex/tools/biber-vm/register.mjs <dir>`
+  (section 6 below) -- deployed separately from the engine mirror itself.
 
 Serving: the browser fetches everything from `<base>/latex/` on its own
 origin; `crates/librepaper/src/server/latex.rs` proxies a configured mirror
@@ -169,14 +169,14 @@ export function resolveEngine(tree, settings) // settings.engine !== "auto" ? it
 export function needsBiber(source)      // \usepackage[...]{biblatex} without backend=bibtex -> true (early hint only)
 ```
 
-### 2.4 Engine adapter: `web/src/lib/latex/wasmtex.js` + `web/src/lib/latex/worker.js` (package B1)
+### 2.4 Engine adapter: `web/src/lib/latex/driver.js` + `web/src/lib/latex/worker.js` (package B1)
 
 `worker.js` is the module worker the controller talks to. It owns one release
-at a time and lazily creates the nested WasmTex engine workers it needs
+at a time and lazily creates the nested engine workers it needs
 (pdftex | xetex+dvipdfm | luatex, bibtex, bibtex8, makeindex) from
 `<base><release.base><worker>` using `<base><release.texlive_base>` as the
 TeX Live endpoint. It restores the engines' execution state between passes
-exactly as WasmTex's own drivers do (the controllers snapshot the heap).
+exactly as the upstream engine's own drivers do (the controllers snapshot the heap).
 
 Protocol (every request carries `id`; every reply echoes it):
 
@@ -209,13 +209,13 @@ receives `loadbundleindex` with the index bytes and is awaited before the
 first pass; `downloading` then carries `bundle` and `size`. XeTeX additionally
 receives `loadicudata` right after `loadbundleindex`: the release's
 `icudt68l.dat.gz` (gzip; the release payload also lists the plain
-`wasmtex-xetex.fmt.gz`/`wasmtex-xetex.fmt`), fetched through the same
+`xetex.fmt.gz`/`xetex.fmt`), fetched through the same
 digest-verified path as the format, inflated in the browser with
 `DecompressionStream("gzip")` and sent as one ArrayBuffer -- without it, in
 bundle mode, XeTeX would try to fetch `icudt68l.dat` by name from the
 endpoint and fail, and font-by-name lookups would fail too. Every worker's
-file set now also includes `wasmtex-kpse-resolve.js` and
-`wasmtex-bundle-mode.js`, which every worker `importScripts()`s
+file set now also includes `kpse-resolve.js` and
+`bundle-mode.js`, which every worker `importScripts()`s
 unconditionally; a release built before they existed is simply not
 advertised as having that engine at all, by the same `spec.files.every(file
 => artifacts.has(file))` check that already gates every other engine (see
@@ -224,7 +224,7 @@ advertised as having that engine at all, by the same `spec.files.every(file
 disabled (`setpreamblesnapshot false`). Raw bytes cross the boundary as
 ArrayBuffers, never strings.
 
-`wasmtex.js` is the host-side driver class the worker uses for each nested
+`driver.js` is the host-side driver class the worker uses for each nested
 engine (message queue with ids, init, format preload, write/mkdir/read,
 run). It is written by us against the worker controllers in
 WasmTex's `wasm-build/*-worker.js` at the pinned source revision; nothing
@@ -380,7 +380,7 @@ LibrePaper`, `Retry connection`, `Try browser compilation`, `Open LibrePaper`).
   `handle_rendering_latest` answers `provenance` when stored. Readers see it
   in the rendered note.
 - `/api/config` gains `"latex_local": { "address": "http://127.0.0.1:8763/", "protocol": 1 }`.
-- Tests: `crates/librepaper/src/tests/wasmtex_server.rs`.
+- Tests: `crates/librepaper/src/tests/mirror_server.rs`.
 
 ## 5. Local bridge protocol v1 (packages R1a, R1b, B3)
 
@@ -461,7 +461,7 @@ libv86.js v86.wasm seabios.bin vgabios.bin bzimage fs.json objects/<sha>...
 `<vmRelease>` is the sha256 (first 16 hex) over `vm.json` without its own
 digest. The build writes `releases.<id>.vm = { "id": "<vmRelease>", "url":
 "biber-vm/<vmRelease>/vm.json", "sha256": "...", "size": 0, "biber": "2.21" }`
-into the manifest through `latex/tools/wasmtex.mjs --vm <dir>`. Guest boot
+into the manifest through `latex/tools/biber-vm/register.mjs <dir>`. Guest boot
 protocol is the one in
 `latex/tools/biber-vm/worker.js`: serial console, `~% `
 prompt, then a marker line. The guest has no network device.

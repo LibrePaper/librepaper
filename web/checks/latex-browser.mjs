@@ -1,21 +1,19 @@
 // End-to-end: a real headless Chromium, driving the real `worker.js` against
 // the real mirror, compiling real corpus documents through real nested
-// WasmTex engine workers. Nothing here is mocked -- that is the point of a
+// engine workers. Nothing here is mocked -- that is the point of a
 // browser check separate from the Node ones, and why it is not in `bun run
 // check`: it needs a mirror on disk and, if one is not there yet, a network.
 //
 // It reuses `latex/tools/serve.mjs` (package A) rather than reimplementing a
 // mirror server: that file already answers every route
-// `docs/specs/wasmtex-interfaces.md` section 1 describes (the WasmTex
-// name-lookup route, the digest-shaped static route, `/mirror/manifest.json`)
-// and already knows how to `--record` a name it does not have yet from the
-// pinned upstream snapshot, which is exactly the fallback this file would
-// otherwise have to duplicate. If `latex/mirror/manifest.json` has no
-// `releases` yet (package A still building it), this file polls for up to 20
-// minutes before giving up and reporting that the check could not run.
+// `docs/specs/latex-interfaces.md` section 1 describes (the engine
+// name-lookup route, the digest-shaped static route, `/mirror/manifest.json`).
+// If the mirror's `manifest.json` has no `releases` yet (wasm-latex still
+// building it), this file polls for up to 20 minutes before giving up and
+// reporting that the check could not run.
 //
 // The page it drives is `latex/harness/index.html`, already on the mirror's
-// own origin (a same-origin requirement `wasmtex.js`'s header note explains:
+// own origin (a same-origin requirement `driver.js`'s header note explains:
 // a nested engine Worker must be same-origin with the document that creates
 // it). That page imports `latex.js` for its own reasons (a different check's
 // harness); this file ignores that and creates its own `worker.js` Worker
@@ -31,9 +29,9 @@ import { fileURLToPath } from "node:url";
 import { browser, until } from "../tools/browser-driver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO = dirname(HERE.replace(/\/web\/checks$/, "/web/checks")); // .../librepaper-wasmtex
+const REPO = dirname(HERE.replace(/\/web\/checks$/, "/web/checks")); // .../librepaper
 const ROOT = dirname(dirname(HERE));
-const MIRROR = join(ROOT, "latex", "mirror");
+const MIRROR = process.env.MIRROR || join(ROOT, "..", "wasm-latex", "mirror");
 const CORPUS = join(ROOT, "latex", "corpus");
 const PAGES = JSON.parse(readFileSync(join(CORPUS, "pages.json"), "utf8"));
 
@@ -42,7 +40,7 @@ const CDP_PORT = 9813;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 function log(...args) {
-  console.log("latex-wasmtex-browser:", ...args);
+  console.log("latex-browser:", ...args);
 }
 
 // --- wait for a mirror ------------------------------------------------------
@@ -58,7 +56,7 @@ async function waitForMirror() {
       /* not written yet, or mid-write */
     }
     if (Date.now() > deadline) {
-      throw new Error("latex/mirror/manifest.json has no releases after 20 minutes; package A did not finish");
+      throw new Error(`${MIRROR}/manifest.json has no releases after 20 minutes; the mirror was not built in time`);
     }
     await new Promise((r) => setTimeout(r, 5000));
   }
@@ -116,7 +114,7 @@ function inspectPdfBytes(bytesArray, scratch) {
 
 // Defines globalThis.__librepaper: a hand-rolled controller for the section
 // 2.4 protocol (id in, id echoed back; unsolicited progress/downloading have
-// no id). `compileTree` runs the ordinary sequence from docs/specs/wasmtex.md
+// no id). `compileTree` runs the ordinary sequence from docs/specs/latex-compiler.md
 // ("Browser compilation controller"): stage, tex, inspect outputs for
 // bibliography/index work, run the helper, write its output back, rerun until
 // the log stops asking for it or 8 passes are used.
@@ -132,7 +130,7 @@ async function __librepaperInit(base) {
   // including size11.clo, which every corpus document needs). A bloom "maybe
   // absent" is read by the engine as "skip the network fetch", so loading a
   // stale filter here would make every affected file look permanently
-  // missing -- not a bug in this worker/wasmtex.js pathway, which is exactly
+  // missing -- not a bug in this worker/driver.js pathway, which is exactly
   // what this check exists to exercise, so the filter is left unloaded
   // rather than worked around in the adapter.
   delete texlive.bloom;
@@ -168,7 +166,7 @@ async function __librepaperCompile(engineName, tree) {
   const send = globalThis.__librepaper.send;
   // Assets cross from Node to the page as plain JSON arrays of byte values
   // (there is no Uint8Array literal in JSON); the engines' writeFile only
-  // preserves bytes correctly from a real typed array (see wasmtex.js's
+  // preserves bytes correctly from a real typed array (see driver.js's
   // writeFile note), so they are reconstituted here, once, right before
   // staging.
   const assets = {};
@@ -195,7 +193,7 @@ async function __librepaperCompile(engineName, tree) {
     // the aux; biblatex with backend=bibtex does too, but is only certain to
     // need a (re)run of BibTeX once the log says so explicitly ("Please
     // (re)run BibTeX on the file(s): ..."), which is also the authoritative
-    // signal docs/specs/wasmtex.md's controller sequence names.
+    // signal docs/specs/latex-compiler.md's controller sequence names.
     const asksForBibtex = /Please \\(re\\)run BibTeX/i.test(last.log);
     const looksBibtexy = /\\\\bibdata|\\\\citation/.test(auxText);
     const needsBibtex = !ranBibtex && (asksForBibtex ||
@@ -238,8 +236,7 @@ true;
 /// `browser-driver.mjs`, well under what a cold XeTeX engine plus dvipdfmx
 /// plus font resolution can take. This starts the expression in the page
 /// without awaiting it there, and polls a tiny boolean instead -- the same
-/// "job" trick `bench.mjs` and `wasmtex-2026-check.mjs` use for the same
-/// reason.
+/// "job" trick other engine-evaluation harnesses use for the same reason.
 let jobSerial = 0;
 async function runJob(driver, expression, timeoutMs = 240000) {
   const slot = `__job${++jobSerial}`;
@@ -263,8 +260,8 @@ async function main() {
   const manifest = await waitForMirror();
   log(`mirror ready: default_release=${manifest.default_release}`);
 
-  const scratch = mkdtempSync(join(tmpdir(), "librepaper-wasmtex-browser-"));
-  const server = spawn(process.execPath, [join(ROOT, "latex", "tools", "serve.mjs"), "--port", String(PORT), "--mirror", MIRROR, "--record"], {
+  const scratch = mkdtempSync(join(tmpdir(), "librepaper-latex-browser-"));
+  const server = spawn(process.execPath, [join(ROOT, "latex", "tools", "serve.mjs"), "--port", String(PORT), "--mirror", MIRROR], {
     stdio: ["ignore", "pipe", "pipe"],
     cwd: ROOT,
   });
@@ -311,14 +308,14 @@ async function main() {
         throw new Error(`${c.id}: expected ${expected.pages} pages, got ${inspected.pages}`);
       }
       if (expected.synctex && !result.synctex) {
-        // WasmTex's XeTeX core (wasmtex-xetex.js in the mirror) has no
+        // The upstream XeTeX core (xetex.js in the mirror) has no
         // "synctex" symbol at all -- grep confirms it, unlike the pdfTeX and
         // LuaTeX cores -- so no SyncTeX is genuinely producible from this
-        // engine build, not a bug in worker.js/wasmtex.js (both of which
+        // engine build, not a bug in worker.js/driver.js (both of which
         // already fall back to reading the file directly, per the header
         // comment above, for the two engines that do write one). Recorded
         // as a known gap rather than a failure.
-        if (c.id === "xetex") log(`${c.id}: no SyncTeX -- WasmTex's XeTeX core has no synctex support (verified: 0 matches for "synctex" in the compiled core)`);
+        if (c.id === "xetex") log(`${c.id}: no SyncTeX -- the XeTeX core has no synctex support (verified: 0 matches for "synctex" in the compiled core)`);
         else throw new Error(`${c.id}: expected a .synctex.gz, got none`);
       }
       if (c.id === "paper") {

@@ -8,7 +8,7 @@
   // shows and sets what the reader already remembers.
   //
   // The LaTeX section is the replacement for the old distribution chooser
-  // (docs/specs/wasmtex.md "Remove the distribution chooser and its book icon.
+  // (docs/specs/latex-compiler.md "Remove the distribution chooser and its book icon.
   // Settings contains: project engine, pinned release, local connection,
   // compiler cache."). Engine and release are project settings -- they
   // travel with the document through `session.setLatexSettings` and change

@@ -1,6 +1,6 @@
 //! `librepaper local <command>`: the command line front end for the loopback
-//! service. See `docs/specs/wasmtex.md`, "App integration", and
-//! `docs/specs/wasmtex-interfaces.md` section 7.
+//! service. See `docs/specs/latex-compiler.md`, "App integration", and
+//! `docs/specs/latex-interfaces.md` section 7.
 //!
 //! This first version runs `start` in the foreground always: `--foreground`
 //! is accepted and honoured (there is nothing else to do yet) but detaching
@@ -238,7 +238,7 @@ async fn doctor() {
         );
         println!(
             "  a native compile will run unconfined until this is addressed; see \
-             docs/specs/wasmtex-interfaces.md, \"Native execution boundary\""
+             docs/specs/latex-interfaces.md, \"Native execution boundary\""
         );
     }
 }

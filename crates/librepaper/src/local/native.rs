@@ -1,7 +1,7 @@
 //! The bounded native controller: runs a requested TeX engine (and, when
 //! the sources need it, BibTeX/Biber/makeindex) to convergence on a staged
 //! project, or a standalone Biber job, inside the confinement `confine.rs`
-//! provides. See `docs/specs/wasmtex.md`, "Complete native fallback" and "Native
+//! provides. See `docs/specs/latex-compiler.md`, "Complete native fallback" and "Native
 //! execution boundary".
 //!
 //! This module never requires `latexmk`: convergence is decided by reading
@@ -236,7 +236,7 @@ impl Ctx<'_> {
 
     /// Builds the environment every native TeX/BibTeX/Biber/makeindex
     /// invocation runs under: cleared, then exactly the variables
-    /// `docs/specs/wasmtex.md` names.
+    /// `docs/specs/latex-compiler.md` names.
     fn base_env(&self, extra_texinputs_dir: &Path) -> Vec<(String, String)> {
         let project = self.workspace.project();
         let path_dirs = format!("{}//:{}:", project.display(), extra_texinputs_dir.display());

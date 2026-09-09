@@ -1,7 +1,7 @@
 //! The TeX log, read, in Rust.
 //!
 //! This is a direct port of `web/src/lib/latex/log.js`: the browser parses
-//! the WasmTex log in JavaScript because the engine lives in the browser;
+//! the browser engine's log in JavaScript because the engine lives in the browser;
 //! the native runner parses a log a real `pdflatex`/`xelatex`/`lualatex`
 //! wrote to disk, and it must say the same thing about it, so that a reader
 //! cannot tell a native diagnostic from a browser one. See that file's

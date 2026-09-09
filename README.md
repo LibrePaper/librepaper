@@ -345,7 +345,7 @@ The formats, and they are not available in the same places:
 | **Markdown** | `librepaper publish paper.md` | comrak | ~130 KB compressed |
 | **Typst** | `librepaper publish paper.typ` | typst | ~13 MB compressed |
 | **HTML** | `librepaper publish paper.html` | the identity | nothing |
-| **LaTeX** | `librepaper publish paper.tex` | WasmTex, fetched by the browser | ~6 MB for pdfTeX and its format, then the packages a document asks for |
+| **LaTeX** | `librepaper publish paper.tex` | the browser engine, fetched by the browser | ~6 MB for pdfTeX and its format, then the packages a document asks for |
 
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
@@ -443,11 +443,14 @@ make push
 # back here: use that mirror
 make deploy LATEX=../wasm-latex/mirror              # use that mirror locally
 librepaper serve --latex /srv/librepaper/latex          # or a copied mirror
-librepaper serve --latex https://mirror.example.com  # or a bucket serving one
-librepaper serve --latex                             # or the project's own
+librepaper serve --latex https://bucket.example.com  # or a bucket serving one
+librepaper serve                                     # LibrePaper always serves LaTeX; with
+                                                      # no --latex this defaults to the
+                                                      # project's own mirror,
+                                                      # https://latex.librepaper.workers.dev/
 ```
 
-`make deploy` checks that the selected mirror contains a default WasmTex
+`make deploy` checks that the selected mirror contains a default engine
 release with its TeX Live bundles (`latex/tools/check-mirror.mjs`; see
 `make latex-check` and `make latex-smoke`, MIRROR=). Older mirrors -- a
 per-file TeX Live snapshot, a bloom filter, or SwiftLaTeX/BusyTeX -- are

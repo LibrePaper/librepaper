@@ -170,7 +170,7 @@ pub fn main_path(doc: &Doc) -> String {
 
 /// The key in `meta` an editor's browser writes the requested compile engine
 /// under, and the one for the pinned browser release. See
-/// `docs/specs/wasmtex-interfaces.md`, section 3: readers never write these.
+/// `docs/specs/latex-interfaces.md`, section 3: readers never write these.
 pub const LATEX_ENGINE: &str = "latex.engine";
 pub const LATEX_RELEASE: &str = "latex.release";
 

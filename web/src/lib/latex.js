@@ -1,7 +1,7 @@
 // LaTeX, compiled in this browser, with local and Biber-VM fallbacks.
 //
-// This module is the controller docs/specs/wasmtex.md describes: it owns exactly
-// one module worker running WasmTex, speaks the section 2.4 protocol to it,
+// This module is the controller docs/specs/latex-compiler.md describes: it owns exactly
+// one module worker running the browser engine, speaks the section 2.4 protocol to it,
 // and decides -- through `latex/route.js`'s pure state machine -- when a
 // Biber request or a browser failure should instead go to the author's local
 // LibrePaper app or, failing that, to a Biber-only virtual machine in the
@@ -25,7 +25,7 @@
 //     module fetch for it, let alone a download of its guest image.
 //
 // `latex/local.js`, `latex/vm.js` and `latex/worker.js` belong to the
-// packages building the WasmTex adapter and the local/VM bridge clients
+// packages building the engine adapter and the local/VM bridge clients
 // alongside this one. Every reference to the first two goes through a
 // dynamic `import()`, and the worker through a constructor tests can
 // replace, precisely so this file loaded and its own checks ran even before
@@ -743,7 +743,7 @@ async function runNative({ job, tree, engine, releaseId, attempts, startedAt }) 
 /// SPEC-latex.md "Precise failure messages": when the bundle index itself
 /// says a `.sty`/`.cls` a document asked for is not in the browser mirror
 /// (`worker.js`'s `tex()` reads this off the resolver evidence, see
-/// wasmtex.js), name it instead of the generic "the document failed to
+/// driver.js), name it instead of the generic "the document failed to
 /// compile", and show the same one-line pairing instruction the rest of the
 /// interface already uses for "get the local app involved" -- see
 /// `latex/local.js`'s `pairingInstruction()`. `null` when nothing was
@@ -839,7 +839,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         kind: "resources",
         message: releaseId
           ? `LaTeX release "${releaseId}" is not available in this deployment's mirror. Retained releases: ${retained}.`
-          : "This deployment's LaTeX mirror has no default WasmTex release. The operator must build and deploy the current mirror (make latex-mirror, then make latex-push), or serve it with LATEX=latex/mirror.",
+          : "This deployment's LaTeX mirror has no default engine release. The operator must build and deploy the mirror from the wasm-latex repository (make mirror, then make push there), or point --latex at a working one.",
         stage: "browser",
       },
       provenance: baseProvenance(engine, releaseId),
@@ -1030,7 +1030,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
           bbl: toBytes(reply2.bbl),
           blg: reply2.blg || "",
           exit: reply2.status,
-          tool: { name: inspected.bibtex8 ? "bibtex8" : "bibtex", version: "wasmtex", backend: "browser" },
+          tool: { name: inspected.bibtex8 ? "bibtex8" : "bibtex", version: "browser", backend: "browser" },
         };
         bibCache.set(identity, bibResult);
         bibliographyProvenance = "bibtex";

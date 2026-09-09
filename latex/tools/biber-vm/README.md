@@ -1,9 +1,9 @@
 # Biber VM: browser bibliography fallback image
 
 Builds the minimal 32-bit guest that runs real Biber inside a v86 emulator
-worker, for [docs/specs/wasmtex.md](../../../docs/specs/wasmtex.md)'s "Browser Biber VM:
+worker, for [docs/specs/latex-compiler.md](../../../docs/specs/latex-compiler.md)'s "Browser Biber VM:
 final bibliography fallback" and
-[docs/specs/wasmtex-interfaces.md](../../../docs/specs/wasmtex-interfaces.md)
+[docs/specs/latex-interfaces.md](../../../docs/specs/latex-interfaces.md)
 section 6. This is package F. It never runs on the ordinary browser
 TeX/BibTeX path; it is a last-resort fallback for Biber only, loaded lazily.
 
@@ -43,9 +43,9 @@ The developer machine's local TeX Live 2025 (nixos.org build) independently
 produces the same `\blx@bcfversion{3.11}`, which `vm-smoke.mjs` uses as
 cross-check evidence (see its bcf-compatibility section) — but it is *not*
 proof the browser release itself is bcf-compatible, since that would require
-driving the actual WasmTex pdflatex; see Limits below.
+driving the actual browser-release pdflatex; see Limits below.
 
-Three Biber sourcing options were evaluated, in the order docs/specs/wasmtex.md
+Three Biber sourcing options were evaluated, in the order docs/specs/latex-compiler.md
 requests, with the full evaluation and evidence in
 [sources.json](sources.json):
 
@@ -78,17 +78,11 @@ re-running it with unchanged inputs reproduces the same `<vmRelease>` and
 copies zero new bytes.
 
 Registration in `latex/mirror/manifest.json`
-(`releases.<default_release>.vm = {id, url, sha256, size, biber}`) is
-attempted first through `node latex/tools/wasmtex.mjs --vm <dir>` (package
-A's documented interface). At the time of this build that flag exists but is
-not implemented (it runs the ordinary mirror build and silently ignores
-`--vm`), so `build.mjs` detects that the manifest's `vm` field was not
-actually set and falls back to `latex/tools/biber-vm/register.mjs`, which
-edits `manifest.json` additively — it touches only
-`releases.<default_release>.vm` and nothing else. Once package A implements
-`--vm`, `build.mjs` will use it automatically without any change here (it
-verifies the manifest was actually updated, not just that the subprocess
-exited 0).
+(`releases.<default_release>.vm = {id, url, sha256, size, biber}`) is done by
+`node latex/tools/biber-vm/register.mjs <dir>`, which `build.mjs` calls
+itself once the VM is built. It edits `manifest.json` additively — it
+touches only `releases.<default_release>.vm` and nothing else — and
+recomputes the release's `digest` so cached namespaces pick up the change.
 
 ## Test
 
@@ -128,7 +122,7 @@ distribution keeps this guest roughly 6x smaller.
 See [RESULTS.md](RESULTS.md) for the measured boot time, cold/warm Biber
 time, and bytes transferred from the most recent `vm-smoke.mjs` run. These
 are v86-CPU-bound numbers from one desktop
-Chromium session, not a promised product latency; docs/specs/wasmtex.md explicitly
+Chromium session, not a promised product latency; docs/specs/latex-compiler.md explicitly
 expects this route to be slower than native execution and asks that it be
 measured, not assumed fast.
 
@@ -149,16 +143,16 @@ device and makes no runtime network access.
 
 - **Not a real browser-release `.bcf`.** `vm-smoke.mjs` compiles the fixture
   with the developer machine's local TeX Live `xelatex`, not the actual
-  WasmTex/browser engine. Both currently agree on bcf version `3.11`
+  browser engine. Both currently agree on bcf version `3.11`
   (recorded in RESULTS.md), but this smoke test does not itself prove
   browser-release compatibility — that requires an end-to-end test that
-  drives WasmTex in the browser to produce the `.bcf`, which belongs to
+  drives the browser engine to produce the `.bcf`, which belongs to
   milestone 6's full acceptance matrix (package B2/B3), not this recipe.
 - **No lazy/lifecycle integration.** This directory only builds and smoke-
   tests the image and registers it in the manifest. The browser VM client
   (`web/src/lib/latex/vm.js` / `vm-worker.js`, package B3), cancellation,
   idle teardown, persistent caching, and the routing/eligibility rules in
-  docs/specs/wasmtex.md are separate work packages and are not implemented here.
+  docs/specs/latex-compiler.md are separate work packages and are not implemented here.
 - **No reproducibility guarantee for the Debian package set.** The base
   image digest is pinned but Debian's package
   archive is not frozen to a dated snapshot; here that barely matters since

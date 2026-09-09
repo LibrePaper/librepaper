@@ -73,7 +73,7 @@ impl Served {
 /// deployment that passes `--latex` with no value gets this, which is the
 /// sandbox's own and is a self-hoster's to mirror or replace rather than to
 /// depend on.
-pub const DEFAULT_MIRROR: &str = "https://librepaper-latex.vincentarelbundock.workers.dev/";
+pub const DEFAULT_MIRROR: &str = "https://latex.librepaper.workers.dev/";
 
 /// The mirror's index: the one path that is not named by a digest, and so the
 /// one that may not be cached for ever.

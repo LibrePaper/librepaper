@@ -286,7 +286,7 @@ fn biblatex_fixture() -> (Workspace, tempfile::TempDir) {
 /// Runs a first pdfLaTeX pass by hand (outside `native.rs`) to produce
 /// `main.bcf` in the project directory, the shape a `kind: "biber"` job
 /// expects its inputs already in -- this step is the browser's job in the
-/// real system (a WasmTex pass), stood in for here with the real engine
+/// real system (a browser TeX pass), stood in for here with the real engine
 /// since the point of these two tests is Biber, not TeX.
 async fn produce_bcf(project: &Path) {
     let tool_paths = crate::local::discovery::tool_paths().await;

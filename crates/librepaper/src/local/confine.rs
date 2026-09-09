@@ -1,6 +1,6 @@
 //! Platform confinement for a native compile: writes limited to the job
 //! workspace, reads limited to the project and the TeX installation,
-//! network access denied. See `docs/specs/wasmtex.md`, "Native execution
+//! network access denied. See `docs/specs/latex-compiler.md`, "Native execution
 //! boundary": "TeX flags alone are not a filesystem sandbox."
 //!
 //! `detect` says what this machine can do, once, cheaply, at discovery

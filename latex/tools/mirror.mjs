@@ -1,6 +1,6 @@
 // Manifest read/write helpers shared by the mirror-serving dev tools.
 //
-// Building the mirror itself -- WasmTex engines, TeX Live bundles, the
+// Building the mirror itself -- the compiler engines, TeX Live bundles, the
 // SwiftLaTeX/BusyTeX/TeXlyre distribution comparisons this file used to
 // fetch, and the SwiftLaTeX package-fetching endpoint -- moved to the
 // wasm-latex repository (`make mirror`, `make push` there; layout and

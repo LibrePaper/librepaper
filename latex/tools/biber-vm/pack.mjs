@@ -5,7 +5,7 @@
 // Objects are stored as raw bytes:
 // v86 reads each object's bytes directly as file content through its 9p
 // filesystem, so the stored bytes must be the guest file's exact bytes.
-// "Gzip-compressed delivery" (docs/specs/wasmtex.md) happens at the HTTP layer
+// "Gzip-compressed delivery" (docs/specs/latex-compiler.md) happens at the HTTP layer
 // (Content-Encoding: gzip, as the production static mirror does), which the browser's fetch
 // transparently decompresses before v86 ever sees the bytes -- storing
 // pre-gzipped bytes as the object content would corrupt every guest file.

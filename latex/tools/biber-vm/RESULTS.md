@@ -10,7 +10,7 @@ Fixture: hybrid-validation fixture (official biblatex example 91-sorting-schemes
 - Local TeX Live 2025 biblatex \blx@bcfversion: `3.11`
 - Browser release bibliography.control_file (manifest.json): `3.11`
 - Match: true
-- The .bcf fed to the guest was produced by the developer machine's local TeX Live 2025 biblatex, not by an actual WasmTex/browser-release pdflatex run (that would require driving the full browser engine headlessly, out of scope for this smoke test). If browserReleaseBcfVersion differs from localTexLiveBcfVersion this result does not establish browser-release compatibility.
+- The .bcf fed to the guest was produced by the developer machine's local TeX Live 2025 biblatex, not by an actual browser-release pdflatex run (that would require driving the full browser engine headlessly, out of scope for this smoke test). If browserReleaseBcfVersion differs from localTexLiveBcfVersion this result does not establish browser-release compatibility.
 
 ## Timings
 

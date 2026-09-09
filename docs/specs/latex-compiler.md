@@ -1,4 +1,4 @@
-# SPEC: WasmTex compilation with local and Biber VM fallbacks
+# SPEC: browser LaTeX compilation with local and Biber VM fallbacks
 
 Status: implemented, with two exceptions. Milestone 1's independent
 reproduction covers pdfTeX and BibTeX only (in the wasm-latex repository);
@@ -15,7 +15,7 @@ Date: 2026-09-07.
 
 ## Decision
 
-WasmTex is LibrePaper's sole browser LaTeX compiler foundation. LibrePaper owns a
+LibrePaper's browser engine is its sole browser LaTeX compiler foundation. LibrePaper owns a
 pinned distribution of its engines, matching formats, packages and fonts,
 plus the controller that runs them. The product offers one browser
 distribution, with pdfLaTeX, XeLaTeX and LuaLaTeX selected according to the
@@ -29,7 +29,7 @@ work on the author's machine.
 If no usable local route is available and browser TeX can produce the Biber
 inputs, run real Biber in an on-demand virtual machine inside the browser.
 This is the last bibliography fallback and requires no local installation.
-WasmTex still performs all browser typesetting.
+Browser TeX still performs all browser typesetting.
 
 There are two local operations:
 
@@ -81,7 +81,7 @@ permissions may still require a first connection interaction.
 | Local Biber cannot be used with the browser release | Try a complete native build if suitable local TeX exists; otherwise use the compatible browser Biber VM if browser TeX produced usable inputs. |
 | Browser initialization, resource loading or compilation fails | Check the local app and try a complete native build. |
 | Local app is available but the required tool is missing | Use the Biber VM if only bibliography work remains; otherwise explain the missing tool and provide setup/path controls. |
-| Local app is unavailable and Biber is needed | Start the browser Biber VM when its capability checks pass, then resume WasmTex. Keep local connection controls available. |
+| Local app is unavailable and Biber is needed | Start the browser Biber VM when its capability checks pass, then resume browser compilation. Keep local connection controls available. |
 | Local app is unavailable and browser TeX itself failed | Preserve the last valid preview and offer connection/setup controls. The Biber VM cannot replace a failing TeX engine. |
 | Biber VM cannot load or run | Explain the VM limitation and offer local setup/retry controls. Preserve the last valid preview. |
 | Native build also fails | Show its diagnostics alongside the browser failure. Stop retrying that revision automatically. |
@@ -134,7 +134,7 @@ interfaces in this spec are the contract.
 
 ### Starting point
 
-Start from the WasmTex source revision and 2026 release evaluated during
+Start from the upstream source revision and 2026 release evaluated during
 spec development (the evaluation tree was removed once these were pinned;
 the reproduction record is
 [wasm-latex's reproduction notes](../../../wasm-latex/docs/reproduction-2026-pdftex.md)):
@@ -148,14 +148,14 @@ artifacts and preserve their corresponding source and licence notices.
 The production browser must obtain resources from LibrePaper's configured mirror;
 it must not depend on an upstream project's live service.
 
-Use the engine layer rather than importing WasmTex's editor or complete
+Use the engine layer rather than importing the upstream project's editor or complete
 headless application pipeline. LibrePaper controls project state, bibliography
 runs, cancellation, freshness, diagnostics and publishing.
 
 The upstream release above was the first mirrored input and remains the
 comparison baseline. Engines now come from the wasm-latex repository, which
 builds them from pinned TeX Live sources, generates their formats, and
-stages a release carrying its notices and receipts; `latex/tools/wasmtex.mjs
+stages a release carrying its notices and receipts; `latex/tools/biber-vm/register.mjs
 --release` imports a staged release by its manifest digest. Maintain only
 the downstream patches that acceptance tests demonstrate are necessary.
 
@@ -434,7 +434,7 @@ stopped, unreachable or not authorized, or no compatible local tool route
 exists. A successful browser-only document must never download or start it.
 
 The VM requires a valid BCF and its complete bibliography/configuration
-inputs from a successful-enough WasmTex pass. Mere existence of a partial BCF
+inputs from a successful-enough browser TeX pass. Mere existence of a partial BCF
 after a failed run is insufficient. If browser TeX cannot produce those
 inputs, only complete native TeX can provide the fallback in this plan.
 
@@ -478,7 +478,7 @@ immutable snapshot identity, BCF, databases and configuration in; BBL bytes,
 BLG/logs, status and backend/tool identity out.
 
 Run the actual Biber executable. Preserve raw bytes and Unicode, nested input
-paths and output identity. Write the returned BBL into WasmTex and finish
+paths and output identity. Write the returned BBL into browser TeX and finish
 the usual TeX passes; the VM never returns the final PDF.
 
 Keep one bounded VM job active, with only the latest pending snapshot per
@@ -550,7 +550,7 @@ does not bounce back into an automatic browser retry loop.
 
 The Biber VM is attempted at most once automatically for a bibliography
 input identity when no usable local route exists. It may be followed by
-WasmTex continuation, but not by another automatic cycle through the same
+browser TeX continuation, but not by another automatic cycle through the same
 failed backends. An explicit retry, changed inputs or a newly available local
 capability can begin another attempt.
 
@@ -671,7 +671,7 @@ after the VM route succeeds.
 
 ## Migration
 
-Replace browser distribution selection with automatic WasmTex initialization.
+Replace browser distribution selection with automatic engine initialization.
 Migrate old browser-only distribution preferences to the new default and
 remove obsolete chooser state. Preserve source, stored PDFs and history.
 
@@ -681,7 +681,7 @@ entries. The evaluation benchmark tree was removed once the release was
 pinned; its evidence remains in git history.
 There is no production engine-selection fallback to another WASM project.
 
-New projects receive the validated default WasmTex release. Existing projects
+New projects receive the validated default engine release. Existing projects
 without a browser release pin receive one through the normal editable project
 configuration path; readers do not mutate projects merely by opening them.
 Release updates are explicit and can be reverted to retained versions.
@@ -691,7 +691,7 @@ describe the new browser/local behavior.
 
 ## Implementation milestones
 
-### 1. Own the WasmTex release
+### 1. Own the engine release
 
 Mirror the selected 2026 artifacts, preserve source/licence provenance,
 generate a coherent resource manifest and make all browser fetches use the
@@ -703,7 +703,7 @@ on an upstream endpoint; missing resources fail without a giant bundle fetch.
 
 ### 2. Integrate the browser controller
 
-Implement the WasmTex adapter, file lifecycle, helpers, convergence,
+Implement the engine adapter, file lifecycle, helpers, convergence,
 cancellation, release-scoped caching and result identity. Remove distribution
 selection from the author flow and connect SyncTeX to existing viewer gestures.
 
@@ -750,7 +750,7 @@ rules. Add lazy loading, progress, persistent resource caching, cancellation,
 project isolation and capability/resource limits.
 
 Acceptance: without a reachable local app, the real-Biber corpus completes
-through VM Biber and WasmTex, including Unicode, sorting, related entries and
+through VM Biber and browser TeX, including Unicode, sorting, related entries and
 bibliography edits. Prose-only edits reuse valid BBL output without running
 Biber. Ordinary BibTeX projects fetch zero VM resources. VM failures stop
 cleanly and preserve source and the previous preview.
@@ -776,7 +776,7 @@ Required scenarios include:
 - Nested source/auxiliary paths, custom classes/styles, figures and file removal.
 - Browser failure with local success, both failing, and local tools missing.
 - Browser-release/local-Biber mismatch with successful complete native fallback.
-- No local app with successful VM Biber and WasmTex continuation.
+- No local app with successful VM Biber and browser TeX continuation.
 - Local tools missing/incompatible with successful compatible VM Biber.
 - Zero VM downloads for ordinary TeX/BibTeX and zero Biber runs on unchanged
   bibliography inputs during prose edits.
@@ -823,7 +823,7 @@ delay writing or accepting this plan.
 ## References
 
 - [Engine reproduction from source (wasm-latex)](../../../wasm-latex/docs/reproduction-2026-pdftex.md)
-- [WasmTex source](https://github.com/corca-ai/wasmtex)
+- [WasmTex](https://github.com/corca-ai/wasmtex), origin of the browser engine build layer
 - [Existing rendering implementation](../../crates/librepaper/src/server/figures.rs)
 - [Browser local-network permissions](https://developer.chrome.com/blog/local-network-access)
 - [TeX Live security/configuration changes](https://www.tug.org/texlive/bugs.html)

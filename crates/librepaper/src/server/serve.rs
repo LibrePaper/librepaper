@@ -35,9 +35,10 @@ pub struct ServeOptions {
     pub no_listing: bool,
     pub expire_after: String,
     pub expire_from: String,
-    /// Where this deployment reads LaTeX distributions from: an https bucket,
-    /// a directory on this machine, or empty for a deployment that serves no
-    /// LaTeX at all. See `crate::server::latex`.
+    /// Where this deployment reads LaTeX distributions from: an https bucket
+    /// or a directory on this machine. Empty falls back to the project's
+    /// own default mirror -- LibrePaper always serves LaTeX. See
+    /// `crate::server::latex`.
     pub latex: String,
     /// A directory of font files served to typst documents, or empty. See
     /// `crate::server::fonts`.
@@ -46,6 +47,18 @@ pub struct ServeOptions {
     /// empty for a deployment that offers none. See `crate::server::latex::BiberVm`.
     pub biber_vm: String,
     pub config: Configuration,
+}
+
+/// The LaTeX mirror flag LibrePaper actually uses: `flag` is `--latex`/
+/// `LIBREPAPER_LATEX`, already merged by `first_of` and not yet trimmed.
+/// LibrePaper always serves LaTeX, so a blank flag (the value `first_of`
+/// returns when neither was set) falls back to the project's own mirror --
+/// there is no "LaTeX off" mode any more.
+pub(crate) fn resolve_latex_flag(flag: &str) -> &str {
+    match flag.trim() {
+        "" => crate::server::latex::DEFAULT_MIRROR,
+        flag => flag,
+    }
 }
 
 /// Claims a port: the one asked for, or the first free one in the default
@@ -147,10 +160,12 @@ pub async fn serve(options: ServeOptions) {
     // Read before anything is opened or a port is claimed: a mirror flag that
     // cannot work is a typo the operator is still standing in front of, and a
     // plain HTTP one would fail invisibly in every browser rather than here.
-    let latex = match first_of(&[&options.latex, &env("LIBREPAPER_LATEX")]).trim() {
-        "" => None,
-        flag => Some(crate::server::latex::Mirror::open(flag).unwrap_or_else(|err| die(err))),
-    };
+    // LibrePaper always serves LaTeX: an absent --latex and an absent
+    // LIBREPAPER_LATEX both fall back to the project's own mirror -- there
+    // is no "LaTeX off" mode.
+    let latex_flag = first_of(&[&options.latex, &env("LIBREPAPER_LATEX")]);
+    let latex_flag = resolve_latex_flag(&latex_flag);
+    let latex = Some(crate::server::latex::Mirror::open(latex_flag).unwrap_or_else(|err| die(err)));
     // The font library likewise: a directory that is not there is a typo,
     // and every file in one that is gets read now, for the families it holds.
     let fonts = match first_of(&[&options.fonts, &env("LIBREPAPER_FONTS")]).trim() {

@@ -72,7 +72,7 @@
   const SLUG = location.pathname.split("/").pop();
 
   // A one-time migration: the old distribution chooser kept its choice under
-  // this key, in this browser, forever. WasmTex initializes automatically --
+  // this key, in this browser, forever. The engine initializes automatically --
   // there is nothing left to remember here, and a stale entry is only ever
   // read by code that no longer exists.
   try {
@@ -1272,7 +1272,7 @@
 
   // The most recent LaTeX compile result -- success or failure -- kept whole
   // for Diagnostics' "Compiled with" block and "Earlier attempts" list
-  // (docs/specs/wasmtex.md: "Preserve both attempts' logs when a browser failure
+  // (docs/specs/latex-compiler.md: "Preserve both attempts' logs when a browser failure
   // led to a local attempt."). Null for every other format.
   let lastLatexResult = $state(null);
 
@@ -1289,7 +1289,7 @@
 
   // Whether this browser is the one producing the pages. There is no chooser
   // and no "not ready yet" gate any more: an editor's browser initializes
-  // WasmTex automatically the first time it is asked to compile (`paintPreview`
+  // the engine automatically the first time it is asked to compile (`paintPreview`
   // below), and the loading itself is what the status line under the toolbar
   // reports. Everybody else -- a reader, or anyone on a deployment with no
   // mirror -- is shown what the server kept.
@@ -2274,7 +2274,7 @@
     // No chooser and no saved distribution: `latex.configure` tells the
     // controller which project this is and what it is allowed to do, and the
     // first `paintPreview` (from `startEditing` below, or an edit) is what
-    // actually starts loading WasmTex. `session.latexSettings()` needs the
+    // actually starts loading the engine. `session.latexSettings()` needs the
     // session that `startCollaboration` just built, which is why this comes after
     // it rather than beside the old restore-a-distribution code above.
     configureLatex(sourceFormat);
@@ -2681,7 +2681,7 @@
 
   <!-- What stands where the document would be, before there is one to show.
        There is no compiler card any more: an editor's browser initializes
-       WasmTex on its own, automatically, and the status line under the
+       the engine on its own, automatically, and the status line under the
        toolbar carries the loading and failure states. Every paged format
        still gets an explicit not-yet-rendered state until a stored PDF
        arrives -- readers never load a compiler merely to read an existing

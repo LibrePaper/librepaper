@@ -12,7 +12,7 @@
     "requirement_evidence": {
       "browser_release_biblatex": "https://texlive.corca.ai/snapshots/2026-ba38749b8714505a/2026/pdftex/26/biblatex.sty",
       "found": "\\def\\blx@bcfversion{3.11}",
-      "conclusion": "bcf format 3.11 requires Biber 2.21, matching manifest.releases.<id>.bibliography.biber.compatible = [\"2.21\"] in docs/specs/wasmtex-interfaces.md section 1.",
+      "conclusion": "bcf format 3.11 requires Biber 2.21, matching manifest.releases.<id>.bibliography.biber.compatible = [\"2.21\"] in docs/specs/latex-interfaces.md section 1.",
       "local_texlive_2025_cross_check": "The developer machine's TeX Live 2025 (nixos.org build) also ships biblatex with \\blx@bcfversion{3.11}, so the local fixture .bcf used for vm-smoke.mjs is bit-compatible with the browser release's expectation."
     },
     "option_evaluation": {

@@ -131,9 +131,10 @@ COMMENTERS ?= anyone
 comma := ,
 OWNER      ?= $(if $(filter any anyone,$(PUBLISHERS)),,$(if $(findstring $(comma),$(PUBLISHERS)),,$(PUBLISHERS)))
 # Where LaTeX distributions come from: a mirror directory or an https bucket.
-# Empty means no `--latex`, so `.tex` documents are stored and shown but not
-# compiled. `deploy` below passes the bare flag, which is the project's own
-# mirror; `LATEX=` names another for either target.
+# LibrePaper always serves LaTeX -- with no `LATEX=`, the binary's own
+# default applies (the project's own mirror, DEFAULT_MIRROR in
+# crates/librepaper/src/server/latex.rs). `LATEX=` names another for either
+# target.
 LATEX      ?=
 LATEX_FLAG ?= $(if $(LATEX),--latex $(LATEX))
 
@@ -174,7 +175,7 @@ kill:  ## Stop a server started with make serve
 
 .PHONY: deploy latex-check latex-smoke
 
-# The mirror itself -- WasmTex engines and the TeX Live bundles -- is built
+# The mirror itself -- the compiler engines and the TeX Live bundles -- is built
 # and pushed from the wasm-latex repository (`make mirror`, `make push`
 # there; layout and manifest in wasm-latex/docs/mirror.md). MIRROR= below
 # points at that build's output.

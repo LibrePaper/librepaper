@@ -100,9 +100,10 @@ pub(crate) struct ServiceFlags {
     /// Start expiry at 'updated' (default; last publication) or 'created'
     #[arg(long, value_name = "FROM")]
     expire_from: Option<String>,
-    /// Serve LaTeX distributions from this https bucket or directory; bare
-    /// --latex uses the project's own mirror. Without it, .tex documents are
-    /// stored and read but nothing compiles them.
+    /// Serve LaTeX distributions from this https bucket or directory.
+    /// LibrePaper always serves LaTeX: with no --latex (or bare --latex),
+    /// this defaults to the project's own mirror. LIBREPAPER_LATEX
+    /// overrides too.
     #[arg(
         long,
         value_name = "URL-OR-DIR",
