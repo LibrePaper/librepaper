@@ -1,6 +1,6 @@
 # 9. Stable checkpoint attribution
 
-Status: implemented on `refactor/attribution`; schema 13, writer paths, erasure
+Status: implemented and merged; schema 14 (13 became the concurrent comment-pass migration), writer paths, erasure
 stages, and backup compatibility ship together. Inherits
 [umbrella section 9](../../../SPEC-refactor.md#9-persist-stable-checkpoint-author-identities-for-erasure).
 
@@ -48,7 +48,7 @@ were never that account's. `finish_erasure` counted the same mismatched
 predicate, so it could declare an account free of attribution that still
 carried it.
 
-After: schema 13 adds a nullable `checkpoints.by_account` holding the stable
+After: schema 14 adds a nullable `checkpoints.by_account` holding the stable
 `accounts.id`, with a partial index on `(by_account, slug, sha)` for the
 erasure keyset walk. There is deliberately no foreign key: a checkpoint may be
 written where identities are not catalogued, and dropping attribution is the
@@ -135,7 +135,7 @@ barrier holds the tree write while the erasure runs; no timing assertions),
 
 ### Limitations
 
-- Rows written before schema 13 have no `by_account`. Nothing in the catalogue
+- Rows written before schema 14 have no `by_account`. Nothing in the catalogue
   associates them with an account, so the migration backfills nothing. They are
   reachable only through the `checkpoints_legacy` stage, and only when `by`
   literally holds the account id. A legacy row whose `by` is a handle cannot be

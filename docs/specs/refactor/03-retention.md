@@ -1,6 +1,6 @@
 # 3. Shared retention traversal
 
-Status: proposed. Inherits [umbrella section 3](../../../SPEC-refactor.md#3-share-history-traversal-and-tree-loading-during-pruning).
+Status: implemented and merged (`c6e8a72`). Inherits [umbrella section 3](../../../SPEC-refactor.md#3-share-history-traversal-and-tree-loading-during-pruning).
 
 ## Scope and implementation
 

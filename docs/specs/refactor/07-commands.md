@@ -1,6 +1,6 @@
 # 7. Validated internal commands
 
-Status: implemented on `refactor/commands`. Inherits [umbrella section 7](../../../SPEC-refactor.md#7-validate-commands-before-operation-specific-processing).
+Status: implemented and merged (`7237587`, `edf8d5f`). Inherits [umbrella section 7](../../../SPEC-refactor.md#7-validate-commands-before-operation-specific-processing).
 
 ## Scope and implementation
 

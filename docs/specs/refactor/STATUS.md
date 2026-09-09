@@ -1,67 +1,59 @@
 # Refactor implementation status
 
 This checklist tracks the full scope of [the roadmap](../../../SPEC-refactor.md).
-Partial deliveries do not complete their parent track. Update evidence after
-integration; a branch's green tests alone do not establish a safe combined result.
+Every track's own spec file carries its implementation evidence, measurements
+and remaining limitations; this table is the index. Integration evidence below
+is for the combined branch, not for any track's branch alone.
 
 | Track | State | Evidence or remaining work |
 | --- | --- | --- |
-| 1. Catalogue execution | Pending | Execution boundary, lifecycle, bounded inputs/results, and async caller migration all remain. |
-| 2. Lock scopes | Partial, registry merged | `9ec5959`: registry scans release the map, cached lookups bypass admission, eviction revalidates identity/ownership. Legacy comments and catalogue waits remain. |
-| 3. Shared retention | Merged | `c3771e6`, `8ae9b94`, merge `c6e8a72`: one history traversal, four concurrent tree reads, shared references; failure and concurrent source-edit tests pass. |
-| 4. Rendering lookup | Implemented; catalogue migration pending | `4e55fe9`, `5f8e9ea`: one joined candidate query; Fs metadata/S3 HEAD; 131 -> 1 connection operations on 130 events, zero PDF bodies for metadata, one for bytes. |
-| 5. Resident estimates | Baseline committed, implementation pending | `f38cdff` on separate branch: 200 unchanged estimates took 4.092 s in debug for 1,000 comments of 1 KiB and 64 checkpoints. |
-| 6. Write errors | Pending | Explicit mutator results, typed quota/storage/refusal errors, caller and transport mapping. |
-| 7. Validated commands | Merged | `a86fbb7`, `24b0206`, `edf8d5f`: typed dispatch, early discriminator/target validation, preserved retries and correlation. |
-| 8. Shared policies | Partial in progress | Content-identity accessor merged with retention. Other policy/helper inventories and extractions remain. |
-| 9. Stable attribution | Latest fixes await parent review | `9078109` atop `b0471a7` and `81d53e8`; see RESUME.md. Not merged. |
-| 10. Size limits | Latest fixes await parent review | `a120066` atop `f130518`; see RESUME.md. Not merged. |
-| 11. S3 operations | Pending | Retry bounds, ambiguous outcomes, per-object batch deletion and accounting. |
-| 12. Backup ownership | Pending | Establish actual exclusivity mechanism before prescribing a guard API. |
+| 1. Catalogue execution | Merged | Bounded `spawn_blocking` boundary sharing the one connection (`a8c244e`); every asynchronous production caller migrated in room/ (`62e855c`, `c3060ba`, `8bc0da4`) and outside it (`dd616ad`, `a230151`, `35f61a4`, `acea5e6`, `cf51a0a`); reservation lifecycle guards with service-owned completion; `Catalog::shutdown` wired into `serve`. Synchronous exceptions (seed, CLI admin, `backup.rs`'s own connection, `Drop` impls) are listed in the spec. |
+| 2. Lock scopes | Registry merged; comment/catalogue-wait scopes in review | Registry scans (`9ec5959`). The comment persistence split, the release of room state around catalogue waits, and the full lock-order audit are on `refactor/comment-locks`; see RESUME.md. |
+| 3. Shared retention | Merged | `c3771e6`, `8ae9b94`, `c6e8a72`: one history traversal, four concurrent tree reads. |
+| 4. Rendering lookup | Merged | `4e55fe9`, `5f8e9ea`: one joined candidate query; `exists` on the blob contract; now dispatched through the track 1 boundary. |
+| 5. Resident estimates | Merged | `15c2279`, `00c3500`: `resident::Measured` caches comment and manifest sizes with `DerefMut` invalidation. 200 unchanged estimates of 1,000 comments: 3.84 s and 400 serializations before, 22 ms and 2 after, identical byte answer. |
+| 6. Write errors | Merged | `06a4c4b`, `8404a4e`: `room::WriteError`, explicit results for every mutator, one HTTP/socket mapping keyed on variants, substring classification removed from handlers. |
+| 7. Validated commands | Merged | `a86fbb7`, `24b0206`, `7237587`, `edf8d5f`. |
+| 8. Shared policies | Merged | `c3771e6` plus `8bf23cc`, `a02e4d8`, `6ef7076`, `113597e`, `4dd6ea3`, `cbd0b42`, `49e805b`; per-row dispositions in the spec. |
+| 9. Stable attribution | Merged | `6e7a6e0`, `2d8f005`: schema 14 `checkpoints.by_account`, `room::Attribution` through every writer, `checkpoints`/`checkpoints_legacy` erasure stages, attribution decided inside the insert transaction. |
+| 10. Size limits | Merged | `3dfd689`, `322cdc4`, `dcc4c8b`, `3a25d82`, `70eb04d`: `PersistenceLimits` S/E/Q/M validated at startup, `--max-size` capped at 8 MB, encoded ceiling enforced before apply/broadcast, `JournalError::Busy` for capacity, `MemoryBudget`. |
+| 11. S3 operations | Merged | `ee81c59`, `23d932a`: bounded retries with injected clock, byte-reconciled ambiguous writes, batch deletion with per-object outcomes; 250 requests to 1 for bulk retirement. |
+| 12. Backup ownership | Merged | `c9a8719`, `65cd8b3`: `BackupOwnership` capability from the deployment writer lock; concurrent multi-host callers stay unsupported and are documented as such. |
 
 ## Integration evidence
 
-At `edf8d5f`, the combined registry/rendering/command changes passed:
+Integration happened on `refactor/integration` and reached
+`live-markdown-editor` only by fast-forward after a green full suite, because
+the main branch was being committed to concurrently (the writing-assistant
+work at `c812c70`, whose migration 13 forced attribution onto 14).
 
-- `cargo test --workspace --offline`: 782 Komodoc library tests, 1 existing
-  ignored test; all integration and other workspace tests passed.
-- `cargo clippy --workspace --all-targets --all-features --offline -- -D warnings`.
-- Formatting and diff checks.
+- At `9528f21` (tracks 8, 9, 10, 11, 12 and the track 1 machinery):
+  879 library tests passed, 1 failed, 2 ignored; the failure was the known
+  load-induced timeout in `asset_uploaded_and_named_during_prune_survives`,
+  which passed three times alone in 0.3 s.
+- At `dd4a696` (plus track 1 caller migration and track 6): 907 library tests
+  passed, 0 failed, 2 ignored; all other workspace suites passed.
+- Strict Clippy (`--all-targets --all-features -D warnings`) and `cargo fmt
+  --check` were clean at every fast-forward.
 
-Test socket listeners require execution outside the filesystem/network sandbox.
-The first full run also found incomplete ignored `web/dist` assets; rebuilding
-the existing web sources with `npm run build` resolved those five failures.
-No test assertions were weakened to accommodate them.
+Under heavy machine load about ten tokio-timeout tests fail with
+`Elapsed(())`; each passes alone on an idle machine. Treat those as flakes
+and rerun them individually rather than editing them.
 
 ## Review dispositions
 
-The registry change preserves active `Arc<Room>` ownership by counting the scan's
-one temporary reference explicitly and checking pointer identity immediately
-before removal. Its new tests block a state lock deterministically and verify
-cached retrieval and new request pins. No unresolved blocking finding remains
-for that delivered portion.
+Every branch was read in full by the parent before merging. Corrections made
+at integration rather than sent back: three dropped apostrophes in attribution
+comments; migration 13 renumbered to 14 with its schema assertions; the
+size-limit tests adapted to the narrowed `Room::attach`; the two catalogue
+caller halves unified on one lock-free job form, `execute_catalog`, after
+each half had added its own under a different name; and a
+`From<CatalogExecError> for WriteError` conversion so the room migration's
+guards compose with the typed errors.
 
-The rendering change preserves the previous optional endpoint fallback when
-the newest registered object is missing or unreadable. The blob API retains
-error/absence distinctions. Direct PDF serving already downloaded once, so the
-implementation did not add a redundant serving abstraction.
-
-Command review initially requested changes because production converted typed
-commands back into the wire representation. The followup removed those round
-trips, retained receipt lookup before reply-body validation, and added malformed
-target correlation coverage. Parent review additionally retained target IDs on
-unknown-command errors. Verdict: approve the revised integrated contribution.
-
-Size and attribution review findings remain blocking for their respective
-branches until their fixes and deterministic regression evidence are reviewed.
-Full-goal completion, final lock/call-site audit, and integrated failure testing
-remain outstanding.
-
-## Stop checkpoint — 2026-09-08
-
-Paused at user request. All contributions are committed; agents stopped.
-See [RESUME.md](RESUME.md) for branches, review findings, validation, and next steps.
-The retention merge changes no code beyond the tested retention branch; the
-other parent contributes status documentation only. Its full workspace suite
-passed (783 library tests, 1 ignored; all other suites passed), as did strict
-all-target/all-feature Clippy. Full refactor scope remains incomplete.
+Known compromises, all recorded in the track specs: the catalogue's own
+conflict prose is still classified by substring in exactly one pinned
+function (`CatalogError::refusal`); `MaintenanceBorrow::drop` refunds through a
+bare `spawn_blocking` outside admission; the legacy non-catalogue comment
+paths keep their mutate-then-save shape until track 2 lands; a room fenced by
+the encoded-size backstop stays read-only until reopened.

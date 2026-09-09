@@ -1,6 +1,6 @@
 # 4. Rendering lookup and downloads
 
-Status: proposed. Inherits [umbrella section 4](../../../SPEC-refactor.md#4-avoid-redundant-rendering-queries-and-downloads).
+Status: implemented and merged (`4e55fe9`, `5f8e9ea`); its catalogue query now runs on the track 1 boundary. Inherits [umbrella section 4](../../../SPEC-refactor.md#4-avoid-redundant-rendering-queries-and-downloads).
 
 ## Scope and implementation
 

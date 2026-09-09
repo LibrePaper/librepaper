@@ -1,6 +1,6 @@
 # 10. Admission and persistence size limits
 
-Status: implemented on `refactor/size-limits`; awaiting parent review. Inherits
+Status: implemented and merged. Inherits
 [umbrella section 10](../../../SPEC-refactor.md#10-align-document-admission-with-journal-and-recovery-limits).
 
 ## Decision and scope
