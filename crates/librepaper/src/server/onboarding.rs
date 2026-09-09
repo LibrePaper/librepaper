@@ -1,4 +1,4 @@
-//! Every new account starts with four private, normally owned documents.
+//! Every new account starts with private, normally owned starter documents.
 //! The catalogue records each completed copy independently of its lifetime.
 
 use super::*;
@@ -12,7 +12,7 @@ struct Starter {
 }
 
 // Slot order is durable: changing a title or source must not reorder these.
-const STARTERS: [Starter; 4] = [
+const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
     Starter {
         file: "regression-tables.md",
         title: "Markdown: What a Regression Table Is Hiding",
@@ -36,6 +36,12 @@ const STARTERS: [Starter; 4] = [
         title: "LaTeX: What a Standard Error Assumes",
         format: "latex",
         source: include_str!("../../../../examples/standard-errors.tex"),
+    },
+    Starter {
+        file: "getting-started.qmd",
+        title: "Quarto: Your First Reproducible Report",
+        format: "quarto",
+        source: include_str!("../../../../examples/getting-started.qmd"),
     },
 ];
 

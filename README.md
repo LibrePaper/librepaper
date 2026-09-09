@@ -1120,8 +1120,8 @@ name both values explicitly, for example `make wasm-update REPO=wasm-markdown
 TAG=v0.2.0`, then review the resulting Cargo and lockfile diff.
 
 `make deploy` runs the normal application locally. Configure an OAuth app in
-`.env` (see `.env.example`), then sign in: every new account receives four
-private, editable examples, one each in HTML, Markdown, Typst, and LaTeX.
+`.env` (see `.env.example`), then sign in: every new account receives five
+private, editable examples, one each in HTML, Markdown, Typst, LaTeX, and Quarto.
 These are your own documents. In **Share**, create a Read, Comment, or Edit
 link and open it in a separate browser or private window to try that role.
 Use `PUBLISHERS=anyone COMMENTERS=anyone` for links that work without sign-in;
@@ -1129,7 +1129,7 @@ these are the Makefile defaults. An owner opening a link still has owner rights.
 
 Examples are created once per new account, survive restarts, and stay deleted
 if you remove them. Existing accounts are left unchanged. `make deploy` never
-resets or seeds the shared catalogue. The four starter sources ship inside the
+resets or seeds the shared catalogue. The five starter sources ship inside the
 binary; signing in does not require Quarto or a checkout of this repository.
 
 ### The look

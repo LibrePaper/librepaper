@@ -9,6 +9,9 @@
 
 pub mod examples;
 
+/// Durable onboarding slots. Append new starters without reordering old ones.
+pub(crate) const ACCOUNT_EXAMPLE_COUNT: usize = 5;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;

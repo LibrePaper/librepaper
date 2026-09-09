@@ -62,7 +62,7 @@ impl Catalog {
                 ],
             )
             .map_err(CatalogError::from)?;
-            for position in 0..4 {
+            for position in 0..crate::seed::ACCOUNT_EXAMPLE_COUNT {
                 tx.execute(
                     "INSERT INTO account_examples (account_id, position, slug) VALUES (?1, ?2, ?3)",
                     params![

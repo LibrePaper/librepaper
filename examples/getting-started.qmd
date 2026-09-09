@@ -1,0 +1,68 @@
+---
+title: "Your First Reproducible Report"
+format: html
+execute:
+  echo: true
+  warning: false
+---
+
+## Make this report yours
+
+This is your private Quarto starter. Edit this paragraph, rename the report,
+or share it when you are ready. Your writing is saved without running code.
+
+::: {.callout-note}
+### Start with the draft
+
+You can write and read the draft without installing Quarto. The examples below
+produce a table and a figure when you render with Quarto locally. This starter
+does not contain previously computed results.
+:::
+
+## Explore a small dataset
+
+The built-in R dataset `cars` records speed and stopping distance. No data
+download is needed. These first six observations give us a starting point:
+
+```{r}
+#| label: tbl-observations
+#| tbl-cap: "The first six observations in cars."
+knitr::kable(head(cars), col.names = c("Speed (mph)", "Stopping distance (ft)"))
+```
+
+The scatter plot in @fig-stopping shows how stopping distance varies with speed.
+Try changing the point color, then render again to see the change.
+
+```{r}
+#| label: fig-stopping
+#| fig-cap: "Stopping distance and speed in the cars dataset."
+#| fig-alt: "A scatter plot showing stopping distances generally increasing with speed."
+plot(cars$speed, cars$dist,
+     xlab = "Speed (mph)", ylab = "Stopping distance (ft)",
+     pch = 19, col = "steelblue")
+```
+
+## Render and keep the results
+
+1. Download the source as `getting-started.qmd` into a local project folder.
+2. Install Quarto, R, and the R packages `knitr` and `rmarkdown` on your machine.
+3. Link that folder using LibrePaper's local rendering setup. Keep the local
+   source synchronized with this document before requesting a render.
+4. Choose Render to compute the examples and save their results. Switch between
+   the draft and full output to compare your writing with the rendered report.
+
+You can also render the downloaded file directly in a terminal:
+
+```sh
+quarto render getting-started.qmd
+```
+
+Saved results stay available to readers without your local tools. After editing
+code or inputs, check the freshness status and render again when you want new
+results. Refresh asks Quarto to recompute; editing prose alone never runs code.
+
+## Next steps
+
+Replace the example data with your analysis, add a caption that explains the
+finding, and write a paragraph about what the figure cannot establish. Keep
+private data in your local project unless you deliberately choose to share it.

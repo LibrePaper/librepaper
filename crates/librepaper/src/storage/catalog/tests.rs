@@ -100,14 +100,14 @@ fn new_account_examples_resume_without_reenrolling_on_profile_refresh() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     let pending = catalog.pending_account_examples("acct-1").unwrap();
-    assert_eq!(pending.len(), 4);
+    assert_eq!(pending.len(), 5);
     catalog.complete_account_example("acct-1", 0).unwrap();
     catalog.upsert_account(&account()).unwrap();
     assert_eq!(
         catalog.pending_account_examples("acct-1").unwrap(),
         pending[1..]
     );
-    for position in 1..4 {
+    for position in 1..5 {
         catalog
             .complete_account_example("acct-1", position)
             .unwrap();
@@ -461,7 +461,7 @@ fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
 #[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 18);
+    assert_eq!(catalog.schema_version().unwrap(), 19);
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection
@@ -1768,7 +1768,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
         assert_eq!(version, 12, "an interrupted migration does not advance");
     }
     let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 18);
+    assert_eq!(catalog.schema_version().unwrap(), 19);
     let row = catalog.checkpoint("doc", "old").unwrap().unwrap();
     assert_eq!(row.by, "alice");
     assert_eq!(
@@ -1778,7 +1778,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
     // Reopening an already-migrated catalogue is a no-op.
     drop(catalog);
     let reopened = Catalog::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 18);
+    assert_eq!(reopened.schema_version().unwrap(), 19);
 }
 
 /// A real schema-17 database is the important legacy case: migration 18 must
@@ -1825,7 +1825,7 @@ fn result_metadata_migrates_schema17_rows_and_tracks_lifecycle() {
             .unwrap();
     }
     let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 18);
+    assert_eq!(catalog.schema_version().unwrap(), 19);
     let quarto = catalog.document_results_metadata("legacy-quarto").unwrap();
     assert_eq!(
         quarto.execution_engine,
@@ -1932,7 +1932,7 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         })
         .unwrap();
     let restored = Catalog::open(&snapshot).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 18);
+    assert_eq!(restored.schema_version().unwrap(), 19);
     assert_eq!(
         attribution_of(&restored, "stable"),
         ("alice".to_string(), Some("acct-writer".to_string()))
@@ -1946,4 +1946,48 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         ("Deleted user".to_string(), None),
         "attribution refused at the write boundary is refused in the image too"
     );
+}
+
+#[test]
+fn quarto_starter_migration_preserves_existing_account_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog-schema18.db");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        for &(version, sql) in super::MIGRATIONS.iter().take(18) {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute_batch(&format!("PRAGMA user_version = {version}"))
+                .unwrap();
+        }
+        connection.execute_batch("INSERT INTO accounts
+            (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation)
+            VALUES ('acct-1', 'github', 'alice', 'Alice', '', 'now', 'now', 'free', 'active', 'generation');
+            INSERT INTO account_examples VALUES ('acct-1', 0, 'finished-copy', 1);
+            INSERT INTO account_examples VALUES ('acct-1', 3, 'pending-copy', 0);").unwrap();
+    }
+    let catalog = Catalog::open(&path).unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    assert_eq!(
+        catalog.pending_account_examples("acct-1").unwrap(),
+        vec![(3, "pending-copy".into())]
+    );
+    catalog.complete_account_example("acct-1", 3).unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    assert!(catalog
+        .pending_account_examples("acct-1")
+        .unwrap()
+        .is_empty());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let finished: i64 = connection
+        .query_row(
+            "SELECT completed FROM account_examples WHERE slug='finished-copy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(finished, 1);
 }

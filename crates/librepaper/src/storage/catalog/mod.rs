@@ -106,6 +106,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         18,
         include_str!("../../../migrations/0018_document_results_metadata.sql"),
     ),
+    (
+        19,
+        include_str!("../../../migrations/0019_quarto_account_example.sql"),
+    ),
 ];
 
 /// What `by` reads as once an account's identifying attribution has been
