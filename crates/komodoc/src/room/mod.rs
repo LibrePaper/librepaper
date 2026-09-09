@@ -2406,6 +2406,10 @@ impl Room {
         let applied = session::decode_update(update)
             .and_then(|decoded| session::apply_decoded_update(&state.session.doc, decoded));
         if applied.is_err() {
+            // Give the bytes back without room state: a malformed update must
+            // not make every reader of this document wait on a catalogue
+            // rollback it has nothing to do with.
+            drop(state);
             if let Some(pending_edit) = pending_edit {
                 pending_edit.rollback().await;
             }
