@@ -281,9 +281,8 @@ async fn an_edit_cancelled_before_room_completion_releases_its_reservation() {
     let before = room.open_state(None).await.0;
     let update = peer_update(&room, "uncompleted edit").await;
 
-    let gate = Arc::new(tokio::sync::Semaphore::new(0));
-    *room::after_edit_reservation_gate().lock().unwrap() =
-        Some(("cancel-completion".to_string(), gate.clone()));
+    let gate = room::ReservationGate::new("cancel-completion");
+    *room::after_edit_reservation_gate().lock().unwrap() = Some(gate.clone());
     let editor = tokio::spawn({
         let room = room.clone();
         async move { room.receive_update(1, &update, 1, "alice").await }
@@ -297,7 +296,7 @@ async fn an_edit_cancelled_before_room_completion_releases_its_reservation() {
     editor.abort();
     let _ = editor.await;
     *room::after_edit_reservation_gate().lock().unwrap() = None;
-    gate.add_permits(1);
+    gate.resume.add_permits(1);
 
     until("the abandoned reservation to be released", || {
         pending_reservation(&catalog, "cancel-completion").is_none()
@@ -346,9 +345,8 @@ async fn a_checkpoint_cancelled_during_admission_refunds_its_budget() {
     room.set_source("second", "markdown").await.unwrap();
     let spent = charged_checkpoint_budget(&catalog);
 
-    let gate = Arc::new(tokio::sync::Semaphore::new(0));
-    *room::after_checkpoint_admission_gate().lock().unwrap() =
-        Some(("cancel-checkpoint".to_string(), gate.clone()));
+    let gate = room::ReservationGate::new("cancel-checkpoint");
+    *room::after_checkpoint_admission_gate().lock().unwrap() = Some(gate.clone());
     let checkpointing = tokio::spawn({
         let room = room.clone();
         async move { room.checkpoint_now("cancelled", "alice").await }
@@ -362,7 +360,7 @@ async fn a_checkpoint_cancelled_during_admission_refunds_its_budget() {
     checkpointing.abort();
     let _ = checkpointing.await;
     *room::after_checkpoint_admission_gate().lock().unwrap() = None;
-    gate.add_permits(1);
+    gate.resume.add_permits(1);
     until("the cancelled checkpoint's budget to be refunded", || {
         charged_checkpoint_budget(&catalog) == spent
     })

@@ -370,6 +370,20 @@ pub struct Room {
     pub(crate) restore_write: Mutex<()>,
     /// Manifest writers serialize independently of edits and session persistence.
     manifest_write: Mutex<()>,
+    /// Serializes writers of the room's comment list.
+    ///
+    /// A room with no catalogue has nothing narrower to persist than the whole
+    /// list, so a comment mutation prepares the list it wants under state,
+    /// writes it with state released, and installs it afterwards. Two writers
+    /// overlapping in that window would each write a list missing the other's
+    /// change, and the loser's conditional write would fence the room instead
+    /// of merging. This gate is what keeps them apart.
+    ///
+    /// It is deliberately not `restore_write`: source edits and socket traffic
+    /// never take it, and a comment should not wait behind a whole restore.
+    /// It is also what `Room::save` needs and did not have -- the seeding
+    /// command wrote the same object with no gate at all.
+    comment_write: Mutex<()>,
     pub state: Mutex<RoomState>,
 }
 
@@ -455,7 +469,45 @@ impl Drop for InFlight<'_> {
 /// Both are the window the completion hook cannot observe, and both are keyed
 /// by slug so tests in one process cannot gate each other's rooms.
 #[cfg(test)]
-type TestGate = std::sync::Mutex<Option<(String, Arc<tokio::sync::Semaphore>)>>;
+pub(crate) struct ReservationGate {
+    pub(crate) slug: String,
+    /// Signalled as a caller enters the window, so a test can act inside it
+    /// rather than wait for a clock.
+    pub(crate) reached: tokio::sync::Notify,
+    /// One permit lets one parked caller out.
+    pub(crate) resume: tokio::sync::Semaphore,
+}
+
+#[cfg(test)]
+impl ReservationGate {
+    pub(crate) fn new(slug: &str) -> Arc<Self> {
+        Arc::new(Self {
+            slug: slug.to_string(),
+            reached: tokio::sync::Notify::new(),
+            resume: tokio::sync::Semaphore::new(0),
+        })
+    }
+
+    /// Park a caller in the window, announcing that it got there.
+    async fn park(gate: &TestGate, slug: &str) {
+        let gate = {
+            let held = match gate.lock() {
+                Ok(held) => held,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            held.as_ref().filter(|gate| gate.slug == slug).cloned()
+        };
+        if let Some(gate) = gate {
+            gate.reached.notify_one();
+            if let Ok(permit) = gate.resume.acquire().await {
+                permit.forget();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+type TestGate = std::sync::Mutex<Option<Arc<ReservationGate>>>;
 
 #[cfg(test)]
 pub(crate) fn after_edit_reservation_gate() -> &'static TestGate {
@@ -843,6 +895,7 @@ impl RoomSet {
             checkpoint_write: Mutex::new(()),
             restore_write: Mutex::new(()),
             manifest_write: Mutex::new(()),
+            comment_write: Mutex::new(()),
             state: Mutex::new(RoomState {
                 seq: 0,
                 comments: Measured::new(Vec::new()),
@@ -1006,16 +1059,23 @@ impl RoomSet {
                 for document in due {
                     if let Ok(room) = self.try_get(&document.slug).await {
                         let _ = room.tick().await;
-                        let state = room.state.lock().await;
-                        if !state.session.dirty
-                            && state.session.generation == state.session.checkpoint_generation
-                        {
-                            // A manual checkpoint can leave this scheduler clock
-                            // stale. Advance examined, unchanged rows so the next
-                            // page of due documents gets its turn.  The room's
-                            // state guard is still held across this await, as
-                            // it was across the synchronous call it replaces;
-                            // shortening that scope belongs to track 2.
+                        let settled = {
+                            let state = room.state.lock().await;
+                            !state.session.dirty
+                                && state.session.generation == state.session.checkpoint_generation
+                        };
+                        if settled {
+                            // A manual checkpoint can leave this scheduler
+                            // clock stale. Advance examined, unchanged rows so
+                            // the next page of due documents gets its turn.
+                            // The observation above is taken under state and
+                            // the write is made without it: an edit that
+                            // arrives in between only defers this document's
+                            // *automatic* interval by one period, and its own
+                            // quiet-period checkpoint -- a far shorter timer --
+                            // is what actually covers it. Holding state here
+                            // would stall every editor of a document the
+                            // sweeper touches once an interval.
                             let slug = document.slug.clone();
                             let _ = catalog
                                 .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
@@ -1762,29 +1822,73 @@ impl Room {
         }
     }
 
-    /// Persists every comment the room holds: the whole JSON blob for a room
-    /// with no catalogue (there is nothing narrower to write), or, for a
-    /// catalogue-backed room, a full row-by-row reconciliation via
-    /// `save_catalog_comments` -- see that function's documentation for why
-    /// its only production caller is the seeding command and why every
-    /// ordinary comment mutation instead updates its one changed row
-    /// directly and never calls this.
-    pub async fn save(&self, state: &mut RoomState) -> Result<(), String> {
+    /// Adds one prepared comment to the room and persists the list, for the
+    /// seeding command -- the one comment writer outside `room/`, and until
+    /// now the one that took no gate at all while writing the same object
+    /// every comment mutation writes.
+    pub async fn append_comment(&self, mut comment: Comment) -> Result<(), String> {
+        let _comment_writer = self.comment_write.lock().await;
+        let (seq, comments) = {
+            let state = self.state.lock().await;
+            let seq = state.seq.saturating_add(1);
+            comment.seq = seq;
+            let mut comments = state.comments.clone();
+            comments.push(comment);
+            (seq, comments)
+        };
+        self.persist_comments(seq, comments).await
+    }
+
+    /// Persists one prepared comment list with room state released, and
+    /// installs it only once storage has taken it: the whole JSON blob for a
+    /// room with no catalogue (there is nothing narrower to write), or a
+    /// row-by-row reconciliation via `save_catalog_comments` for a
+    /// catalogue-backed one -- every ordinary comment mutation on a
+    /// catalogue-backed room instead updates its one changed row directly and
+    /// never comes here.
+    ///
+    /// The caller holds `comment_write` and prepared `comments` from the list
+    /// the room held under state, so what is written differs from that list by
+    /// exactly the caller's own change and by nothing else. The legacy blob is
+    /// written conditionally on the version observed under state; losing that
+    /// compare-and-swap is proof another process owns the room, which fences
+    /// it here as everywhere else. On any failure nothing is installed, so a
+    /// failed write leaves room state as it was rather than putting an older
+    /// snapshot back over somebody else's change.
+    pub(super) async fn persist_comments(
+        &self,
+        seq: i64,
+        mut comments: Vec<Comment>,
+    ) -> Result<(), String> {
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
         if let Some(catalog) = self.catalog.get() {
-            save_catalog_comments(catalog, &self.slug, &mut state.seq, &mut state.comments).await?;
+            let mut seq = seq;
+            save_catalog_comments(catalog, &self.slug, &mut seq, &mut comments).await?;
+            let mut state = self.state.lock().await;
+            state.seq = state.seq.max(seq);
+            state.comments = comments;
             return Ok(());
         }
-        let raw = json!({"seq": state.seq, "comments": to_stored(&state.comments)});
+        let expected = self.state.lock().await.comments_version.clone();
+        let raw = json!({"seq": seq, "comments": to_stored(&comments)});
         let body = serde_json::to_vec(&raw).map_err(|err| err.to_string())?;
-        let mut version = std::mem::take(&mut state.comments_version);
-        let result = self
-            .write_owned(&room_key(&self.slug), body, &mut version)
-            .await;
+        let mut version = expected.clone();
+        self.write_owned(&room_key(&self.slug), body, &mut version)
+            .await?;
+        let mut state = self.state.lock().await;
+        if state.comments_version != expected {
+            // The gate keeps other comment writers out of this window, so the
+            // only way the fence moves is a reload, and what a reload installed
+            // is the durable list. Report the write rather than putting a list
+            // assembled before it back over the top.
+            return Err("this room's comments were reloaded during that write".into());
+        }
         state.comments_version = version;
-        result
+        state.comments = comments;
+        state.seq = state.seq.max(seq);
+        Ok(())
     }
 
     /// Every comment, for seeding and for the tests that read a room back.
@@ -2118,118 +2222,144 @@ impl Room {
                 return Applied::Refuse(WriteError::RateLimited);
             }
         }
-        let decoded = match session::decode_update(update) {
-            Ok(decoded) => decoded,
-            Err(_) => return Applied::Ignored,
-        };
-        let decoded = match session::admit_decoded_update(
-            &state.session.doc,
-            decoded,
-            update,
-            self.config.max_document,
-            self.config.max_files,
-        ) {
-            session::DecodedAdmission::Malformed => return Applied::Ignored,
-            session::DecodedAdmission::TooLarge => {
-                return Applied::Refuse(WriteError::Document(
-                    crate::room::error::DocumentLimit::Size,
-                ))
-            }
-            session::DecodedAdmission::TooMany => {
-                return Applied::Refuse(WriteError::Document(
-                    crate::room::error::DocumentLimit::Files,
-                ))
-            }
-            session::DecodedAdmission::Fits(decoded) => decoded,
-        };
-        // The quota reservation below is awaited, and a parsed `yrs::Update`
-        // is not `Send`, so it cannot be held across that await: the socket
-        // task's future has to stay spawnable. The parse is therefore dropped
-        // here and repeated once the bytes are reserved. Repeating it is
-        // cheap beside the full document encode this same path already does
-        // to size the reservation, and it is the alternative to reserving
-        // before the size and file ceilings have decided -- which would
-        // charge, however briefly, for updates this room refuses.
-        drop(decoded);
-        // `S` bounds what a person can see; `E` bounds what persistence has
-        // to write, and the two move independently -- a document whose text
-        // never grows still accumulates CRDT history and metadata. A
-        // candidate that would carry the snapshot past `E` is refused here,
-        // before it is applied and before it is relayed, because a snapshot
-        // that cannot be journalled could never be acknowledged and relaying
-        // it would show every peer a document this server cannot save.
-        let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-        let admitted_bound = {
-            let known = match state.session.encoded_bound {
-                Some(bound) => bound,
-                None => {
-                    let exact = session::encode_state(&state.session.doc).len();
-                    state.session.encoded_bound = Some(exact);
+        // Admission, the quota reservation, and the apply are three phases,
+        // and only the first and the last need room state. The reservation is
+        // taken with state released so that a document's readers, its socket
+        // attachments and its checkpoints are not stalled for the length of a
+        // SQLite quota decision; what the release costs is that the document
+        // can move underneath us, so the generation observed during admission
+        // is checked before the update is applied and a reservation that no
+        // longer describes the snapshot it was sized for is given back and
+        // taken again. An unreserved update is still never applied or
+        // relayed: nothing below this loop touches the document until a
+        // reservation matching the current generation is in hand.
+        //
+        // Only `restore_and_checkpoint` and suggestion acceptance can move
+        // the generation here -- every other CRDT mutation takes
+        // `publication_write`, which this call holds -- so the retry is rare
+        // and bounded. Exhausting it is reported as saturation rather than as
+        // a size refusal, because the document is fine and reconnecting works.
+        const RESERVATION_ATTEMPTS: usize = 8;
+        let mut attempts = 0usize;
+        let (pending_edit, admitted_bound) = loop {
+            let decoded = match session::decode_update(update) {
+                Ok(decoded) => decoded,
+                Err(_) => return Applied::Ignored,
+            };
+            let decoded = match session::admit_decoded_update(
+                &state.session.doc,
+                decoded,
+                update,
+                self.config.max_document,
+                self.config.max_files,
+            ) {
+                session::DecodedAdmission::Malformed => return Applied::Ignored,
+                session::DecodedAdmission::TooLarge => {
+                    return Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Size,
+                    ))
+                }
+                session::DecodedAdmission::TooMany => {
+                    return Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Files,
+                    ))
+                }
+                session::DecodedAdmission::Fits(decoded) => decoded,
+            };
+            // The quota reservation below is awaited, and a parsed `yrs::Update`
+            // is not `Send`, so it cannot be held across that await: the socket
+            // task's future has to stay spawnable. The parse is therefore dropped
+            // here and repeated once the bytes are reserved. Repeating it is
+            // cheap beside the full document encode this same path already does
+            // to size the reservation, and it is the alternative to reserving
+            // before the size and file ceilings have decided -- which would
+            // charge, however briefly, for updates this room refuses.
+            drop(decoded);
+            // `S` bounds what a person can see; `E` bounds what persistence has
+            // to write, and the two move independently -- a document whose text
+            // never grows still accumulates CRDT history and metadata. A
+            // candidate that would carry the snapshot past `E` is refused here,
+            // before it is applied and before it is relayed, because a snapshot
+            // that cannot be journalled could never be acknowledged and relaying
+            // it would show every peer a document this server cannot save.
+            let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+            let admitted_bound = {
+                let known = match state.session.encoded_bound {
+                    Some(bound) => bound,
+                    None => {
+                        let exact = session::encode_state(&state.session.doc).len();
+                        state.session.encoded_bound = Some(exact);
+                        exact
+                    }
+                };
+                let bound = known.saturating_add(update.len());
+                if bound <= ceiling {
+                    bound
+                } else {
+                    // The cheap bound cannot decide, so buy the exact answer on a
+                    // scratch copy. That copy is a large allocation, so it is
+                    // admitted against the same memory budget persistence uses.
+                    let _staging = match self.journal.get() {
+                        Some(journal) => {
+                            match journal
+                                .memory()
+                                .try_acquire(crate::config::PersistenceLimits::staging_cost(bound))
+                            {
+                                Ok(permit) => Some(permit),
+                                Err(error) if error.is_temporary() => {
+                                    return Applied::Refuse(WriteError::ServerBusy)
+                                }
+                                Err(_) => {
+                                    return Applied::Refuse(WriteError::Document(
+                                        crate::room::error::DocumentLimit::Encoded,
+                                    ))
+                                }
+                            }
+                        }
+                        None => None,
+                    };
+                    let Some(exact) = session::rehearsed_encoded_len(&state.session.doc, update)
+                    else {
+                        return Applied::Ignored;
+                    };
+                    if exact > ceiling {
+                        return Applied::Refuse(WriteError::Document(
+                            crate::room::error::DocumentLimit::Encoded,
+                        ));
+                    }
                     exact
                 }
             };
-            let bound = known.saturating_add(update.len());
-            if bound <= ceiling {
-                bound
-            } else {
-                // The cheap bound cannot decide, so buy the exact answer on a
-                // scratch copy. That copy is a large allocation, so it is
-                // admitted against the same memory budget persistence uses.
-                let _staging = match self.journal.get() {
-                    Some(journal) => {
-                        match journal
-                            .memory()
-                            .try_acquire(crate::config::PersistenceLimits::staging_cost(bound))
-                        {
-                            Ok(permit) => Some(permit),
-                            Err(error) if error.is_temporary() => {
-                                return Applied::Refuse(WriteError::ServerBusy)
-                            }
-                            Err(_) => {
-                                return Applied::Refuse(WriteError::Document(
-                                    crate::room::error::DocumentLimit::Encoded,
-                                ))
-                            }
-                        }
-                    }
-                    None => None,
-                };
-                let Some(exact) = session::rehearsed_encoded_len(&state.session.doc, update) else {
-                    return Applied::Ignored;
-                };
-                if exact > ceiling {
-                    return Applied::Refuse(WriteError::Document(
-                        crate::room::error::DocumentLimit::Encoded,
-                    ));
-                }
-                exact
-            }
-        };
-        // Reserve the whole next snapshot, not just this message. The SQL
-        // admission view includes unsaved work in every live room and keeps a
-        // separate reservation for a snapshot already being written.
-        //
-        // The reservation is taken through the catalogue's execution
-        // boundary, so the quota decision waits on a blocking thread instead
-        // of parking a Tokio worker on the connection.  What it returns is a
-        // guard rather than a number: a caller cancelled between that
-        // transaction committing and this room accounting for the bytes must
-        // not leave them charged, and only the guard and its completion hook
-        // between them cover both halves of that window.
-        let pending_edit = if let Some(catalog) = self.catalog.get() {
+            // Reserve the whole next snapshot, not just this message. The SQL
+            // admission view includes unsaved work in every live room and keeps a
+            // separate reservation for a snapshot already being written.
+            //
+            // The reservation is taken through the catalogue's execution
+            // boundary, so the quota decision waits on a blocking thread instead
+            // of parking a Tokio worker on the connection.  What it returns is a
+            // guard rather than a number: a caller cancelled between that
+            // transaction committing and this room accounting for the bytes must
+            // not leave them charged, and only the guard and its completion hook
+            // between them cover both halves of that window.
+            let Some(catalog) = self.catalog.get() else {
+                break (None, admitted_bound);
+            };
+            let generation = state.session.generation;
             let bound = session::encode_state(&state.session.doc)
                 .len()
                 .saturating_add(update.len());
-            match reserve_pending_edit(
+            let budget = self.snapshot_budget(bound);
+            drop(state);
+            let reservation = match reserve_pending_edit(
                 catalog,
                 &self.slug,
-                self.snapshot_budget(bound),
+                budget,
                 self.config.storage.per_owner,
                 self.config.storage.total,
             )
             .await
             {
-                Ok(reservation) => Some(reservation),
+                Ok(reservation) => reservation,
                 Err(error) => {
                     // The catalogue said no. Which allowance it was is in the
                     // error; what the peer is told is that this document has
@@ -2239,12 +2369,41 @@ impl Room {
                         crate::room::error::DocumentLimit::Quota,
                     ));
                 }
+            };
+            // The window between the reservation committing and the room taking
+            // it on. Room state is deliberately not held here.
+            #[cfg(test)]
+            pause_after_edit_reservation(&self.slug).await;
+            state = self.state.lock().await;
+            if self.read_only() {
+                drop(state);
+                reservation.rollback().await;
+                return Applied::Refuse(self.fenced());
             }
-        } else {
-            None
+            // The socket may have closed, or lost its right to write, while the
+            // reservation was in SQL. Neither of those may be relayed, and the
+            // bytes go back rather than staying charged to a document that is
+            // not going to grow by them.
+            if !state.sockets.get(&socket).is_some_and(|peer| peer.may_edit) {
+                drop(state);
+                reservation.rollback().await;
+                return Applied::Ignored;
+            }
+            if state.session.generation == generation {
+                break (Some(reservation), admitted_bound);
+            }
+            // The document moved while the quota decision was in flight, so the
+            // ceilings above decided against a document that no longer exists and
+            // the reservation is sized for the wrong snapshot. Give it back and
+            // decide again against what the room now holds.
+            drop(state);
+            reservation.rollback().await;
+            attempts += 1;
+            state = self.state.lock().await;
+            if attempts >= RESERVATION_ATTEMPTS {
+                return Applied::Refuse(WriteError::ServerBusy);
+            }
         };
-        #[cfg(test)]
-        pause_after_edit_reservation(&self.slug).await;
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
         // with this main file.
@@ -2252,6 +2411,10 @@ impl Room {
         let applied = session::decode_update(update)
             .and_then(|decoded| session::apply_decoded_update(&state.session.doc, decoded));
         if applied.is_err() {
+            // Give the bytes back without room state: a malformed update must
+            // not make every reader of this document wait on a catalogue
+            // rollback it has nothing to do with.
+            drop(state);
             if let Some(pending_edit) = pending_edit {
                 pending_edit.rollback().await;
             }
@@ -2364,7 +2527,7 @@ impl Room {
         if !self.hold().await {
             return Err(self.fenced());
         }
-        let (body, generation, durable, mut version, quota) = {
+        let (body, generation, durable, mut version) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
             // `E`, at the last gate before anything durable happens. Room
@@ -2383,26 +2546,6 @@ impl Room {
                     ceiling,
                 }));
             }
-            // The reservation comes back as a guard rather than as a bare
-            // success, so the window between this transaction committing and
-            // the room owning the reservation cannot leak it; the session
-            // writer gate is still held across the await, which is what
-            // serialises the row.
-            let quota = match self.catalog.get() {
-                Some(catalog) => Some(
-                    begin_room_write(
-                        catalog,
-                        &self.slug,
-                        &self.storage_id,
-                        self.snapshot_budget(body.len()),
-                        self.config.storage.per_owner,
-                        self.config.storage.total,
-                    )
-                    .await
-                    .map_err(WriteError::from)?,
-                ),
-                None => None,
-            };
             let generation = state.session.generation;
             state.session.note_encoded_len(generation, body.len());
             let durable: Vec<(u64, i64)> = state
@@ -2410,13 +2553,33 @@ impl Room {
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            (
-                body,
-                generation,
-                durable,
-                state.session_version.clone(),
-                quota,
-            )
+            (body, generation, durable, state.session_version.clone())
+        };
+        // The reservation comes back as a guard rather than as a bare
+        // success, so the window between this transaction committing and
+        // the room owning the reservation cannot leak it. It is taken with
+        // room state released: the session writer gate is what serialises
+        // the reservation row, and holding state as well only stalled every
+        // reader and editor of this document for the length of the quota
+        // decision. Nothing between the encode above and here can invalidate
+        // the reservation -- an edit that lands meanwhile leaves the snapshot
+        // this call writes merely older than the room, which the generation
+        // comparison at the end already accounts for, and the next write
+        // reserves for the newer snapshot.
+        let quota = match self.catalog.get() {
+            Some(catalog) => Some(
+                begin_room_write(
+                    catalog,
+                    &self.slug,
+                    &self.storage_id,
+                    self.snapshot_budget(body.len()),
+                    self.config.storage.per_owner,
+                    self.config.storage.total,
+                )
+                .await
+                .map_err(WriteError::from)?,
+            ),
+            None => None,
         };
         let size = body.len() as i64;
         // `generation` is normally advanced by every mediated CRDT mutation.

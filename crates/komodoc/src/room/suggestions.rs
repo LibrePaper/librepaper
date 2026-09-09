@@ -558,15 +558,38 @@ impl Room {
                 }
             }
         }
-        let mut state = self.state.lock().await;
-        if let Some(index) = state.comments.iter().position(|item| item.id == comment_id) {
-            state.comments[index].resolved = true;
-            state.comments[index].resolved_at = Some(resolved_at.clone());
-            state.comments[index].resolved_in = sha.clone();
-            state.comments[index].outcome = "accepted".to_string();
-            state.comments[index].accept_request = request_id.to_string();
+        // The outcome is prepared on a copy under state. Where the acceptance
+        // has no catalogue receipt of its own, the list it produces is what
+        // gets persisted -- with state released -- and installing it is that
+        // write's last phase. Where the receipt above is already the durable
+        // record, only the in-memory copy is left to update.
+        let prepared = {
+            let state = self.state.lock().await;
+            state
+                .comments
+                .iter()
+                .position(|item| item.id == comment_id)
+                .map(|index| {
+                    let mut done = state.comments[index].clone();
+                    done.resolved = true;
+                    done.resolved_at = Some(resolved_at.clone());
+                    done.resolved_in = sha.clone();
+                    done.outcome = "accepted".to_string();
+                    done.accept_request = request_id.to_string();
+                    let mut list = state.comments.clone();
+                    list[index] = done.clone();
+                    (done, list, state.seq)
+                })
+        };
+        if let Some((done, list, seq)) = prepared {
             if self.catalog.get().is_none() || request_id.is_empty() {
-                self.save(&mut state).await.map_err(AcceptError::Failed)?;
+                let _comment_writer = self.comment_write.lock().await;
+                self.persist_comments(seq, list)
+                    .await
+                    .map_err(AcceptError::Failed)?;
+            } else {
+                let mut state = self.state.lock().await;
+                install_comment(&mut state, done);
             }
         }
 
@@ -584,22 +607,26 @@ impl Room {
     /// the text it proposed is already in the document.
     pub async fn reject_suggestion(&self, comment_id: &str) -> Result<Value, String> {
         let _restore_writer = self.restore_write.lock().await;
+        let _comment_writer = self.comment_write.lock().await;
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
-        let mut state = self.state.lock().await;
-        let Some(index) = state.comments.iter().position(|item| item.id == comment_id) else {
-            return Err("unknown comment".into());
-        };
-        if state.comments[index].motivation != "editing" {
-            return Err("this comment is not a suggestion".into());
-        }
+        // Whether an acceptance is still staged is the catalogue's answer, so
+        // it is asked with room state released; the comment is found again
+        // afterwards. The gates above are what keep it from moving.
         if let Some(catalog) = self.catalog.get() {
             match pending_suggestion_accept(catalog, &self.slug, comment_id).await {
                 Ok(true) => return Err("a suggestion acceptance is still pending".into()),
                 Ok(false) => {}
                 Err(_) => return Err("could not save that comment; try again".into()),
             }
+        }
+        let state = self.state.lock().await;
+        let Some(index) = state.comments.iter().position(|item| item.id == comment_id) else {
+            return Err("unknown comment".into());
+        };
+        if state.comments[index].motivation != "editing" {
+            return Err("this comment is not a suggestion".into());
         }
         if state.comments[index].outcome == "accepted" {
             return Err(
@@ -611,12 +638,6 @@ impl Room {
             .latest()
             .map(|point| point.sha.clone())
             .unwrap_or_default();
-        let (was_resolved, was_resolved_at, was_resolved_in, was_outcome) = (
-            state.comments[index].resolved,
-            state.comments[index].resolved_at.clone(),
-            state.comments[index].resolved_in.clone(),
-            state.comments[index].outcome.clone(),
-        );
         // Prepared on a copy and applied once the row is durable: a caller
         // cancelled at the write must not leave this room showing a rejection
         // that nothing recorded and no peer was told about.
@@ -625,28 +646,28 @@ impl Room {
         rejected.resolved_at = Some(timestamp());
         rejected.resolved_in = current;
         rejected.outcome = "rejected".to_string();
+        let prepared = self.legacy_list_with(&state, index, &rejected);
+        let seq = state.seq;
+        drop(state);
         let persisted = if let Some(catalog) = self.catalog.get() {
             match catalog_comment_row(&self.slug, &rejected) {
                 Ok(row) => update_comment_row(catalog, row).await,
                 Err(error) => Err(error),
             }
         } else {
-            state.comments[index] = rejected.clone();
-            self.save(&mut state).await
+            self.persist_comments(seq, prepared).await
         };
         if persisted.is_err() {
-            state.comments[index].resolved = was_resolved;
-            state.comments[index].resolved_at = was_resolved_at;
-            state.comments[index].resolved_in = was_resolved_in;
-            state.comments[index].outcome = was_outcome;
             return Err("could not save that comment; try again".into());
         }
-        state.comments[index] = rejected;
-        let target = &state.comments[index];
+        if self.catalog.get().is_some() {
+            let mut state = self.state.lock().await;
+            install_comment(&mut state, rejected.clone());
+        }
         Ok(json!({
-            "type": "reject", "comment_id": target.id,
-            "resolved": target.resolved, "resolved_at": target.resolved_at,
-            "resolved_in": target.resolved_in,
+            "type": "reject", "comment_id": rejected.id,
+            "resolved": rejected.resolved, "resolved_at": rejected.resolved_at,
+            "resolved_in": rejected.resolved_in,
         }))
     }
 }
