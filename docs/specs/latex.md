@@ -75,13 +75,13 @@ XeTeX and LuaTeX documents compile in the browser.
 
 - The WasmTex XeTeX core writes no SyncTeX, so a XeLaTeX document has no
   source mapping until the engine is rebuilt with it; pdfTeX and LuaTeX do.
-- Reproducing the engine binaries and their formats from the pinned WasmTex
-  sources, rather than mirroring the verified upstream build; the manifest
-  says `reproduced: false` until that is done.
+- Reproducing every engine from source. The wasm-latex repository rebuilds
+  pdfTeX and BibTeX byte-for-byte from pinned TeX Live sources; XeTeX,
+  LuaTeX, bibtex8 and makeindex are still the mirrored upstream build, and
+  the manifest says `reproduced: false` until all of them are.
 - The compact initial resource set is the union of what the corpus needed
   (about 17 MB); measuring real documents should trim it.
 - Detaching `librepaper local start` from its terminal and registering the
-  `librepaper://` protocol on each desktop platform; `bibtex8` selection in
-  the native controller.
+  `librepaper://` protocol on each desktop platform.
 - The acceptance matrices on Firefox and Safari and on memory-constrained
   devices; the numbers so far are single Chromium runs.

@@ -1,15 +1,12 @@
 // Packs an exported guest rootfs into v86's 9p filesystem.json + content-
-// addressed objects. Same approach as
-// latex/benchmark/candidates/tinytex-v86/pack.mjs (v86's fs2json-style
-// packer), adapted to take explicit source/destination directories so it can
-// be reused for a different guest without touching that experiment's files.
+// addressed objects, the way v86's own fs2json packer lays them out, taking
+// explicit source/destination directories so it can be reused for any guest.
 //
-// Objects are stored as raw bytes, matching tinytex-v86/pack.mjs exactly:
+// Objects are stored as raw bytes:
 // v86 reads each object's bytes directly as file content through its 9p
 // filesystem, so the stored bytes must be the guest file's exact bytes.
 // "Gzip-compressed delivery" (docs/specs/wasmtex.md) happens at the HTTP layer
-// (Content-Encoding: gzip, as latex/benchmark/candidates/tinytex-v86/server.mjs
-// and the production static mirror both do), which the browser's fetch
+// (Content-Encoding: gzip, as the production static mirror does), which the browser's fetch
 // transparently decompresses before v86 ever sees the bytes -- storing
 // pre-gzipped bytes as the object content would corrupt every guest file.
 import { createHash } from 'node:crypto';

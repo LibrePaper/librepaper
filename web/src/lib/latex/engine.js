@@ -17,8 +17,8 @@
 //
 // Reimplemented against `wasmtex`'s own `engine-select.js` (not imported: that
 // package is not a runtime dependency of LibrePaper). The precedence and the
-// package/command lists mirror it because the corpus and the wasmtex
-// benchmark already encode "what this document needs" against these rules.
+// package/command lists mirror it because the corpus already encodes "what
+// this document needs" against these rules.
 
 export const ENGINES = ["pdflatex", "xelatex", "lualatex"];
 

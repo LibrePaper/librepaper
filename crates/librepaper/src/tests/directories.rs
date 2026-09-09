@@ -85,7 +85,7 @@ fn a_migrated_session_still_reads_as_the_old_shape_would_leave_it() {
     // would show is an empty document rather than a broken one. That is the
     // bargain the migration makes, and it is worth stating as a test rather
     // than as a sentence in a file nobody opens: the state stays *readable*,
-    // which is what the caveat in TODO.md promises, and not more than that.
+    // and not more than that.
     let doc = old_session("words\n");
     session::migrate(&doc, "main.md");
     let state = session::encode_state(&doc);

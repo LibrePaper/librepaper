@@ -17,8 +17,8 @@
 //
 // This file has no dependency on the worker source; it reimplements the tiny
 // amount of arithmetic that binary format needs, so it can be required by
-// both the mirror builder and its own self-test without reaching into
-// `latex/benchmark`.
+// both the mirror builder and its own self-test without a WasmTex source
+// checkout.
 
 function fnv1a(str) {
   let h1 = 0x811c9dc5 | 0;

@@ -5,7 +5,7 @@
 // makeindex on demand -- and this file is the class for exactly one of them:
 // a message queue with correlation, init, format preload, and the
 // write/mkdir/read/run vocabulary every controller in
-// `latex/benchmark/candidates/wasmtex/source/wasm-build/*-worker.js` answers
+// WasmTex's `wasm-build/*-worker.js` (at the pinned source revision) answers
 // to. Nothing from WasmTex's own `lib/` is imported; this was written
 // against the controllers' `onmessage` dispatch and reply shapes directly
 // (fetched and read from the pinned upstream release while building this).

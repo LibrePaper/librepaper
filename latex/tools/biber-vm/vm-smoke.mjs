@@ -34,57 +34,37 @@ const vmDir = mirrorRoot + 'biber-vm/' + vmRelease;
 if (!existsSync(vmDir + '/vm.json')) throw new Error(`No vm.json at ${vmDir}`);
 console.log(`Using VM release ${vmRelease} at ${vmDir}`);
 
-// --- Fixture: prefer the real hybrid-validation biblatex sorting example
-// (official biblatex example 91-sorting-schemes.tex, Unicode author names,
-// used already by latex/benchmark/candidates/tinytex-v86's validated run) so
-// this test exercises the same corpus the rest of the benchmark trusts.
+// --- Fixture: the tracked biblatex document in fixture/ (Unicode author
+// names and titles, sorting, real citations), compiled locally with xelatex
+// to obtain a genuine .bcf. This uses the developer machine's TeX Live, not
+// the browser release itself (running actual WasmTex headlessly for this
+// alone is out of scope here); the bcf-version comparison below makes a
+// mismatch visible.
 const fixtureDir = root + 'assets/fixture-run';
 mkdirSync(fixtureDir, { recursive: true });
-let fixtureLabel;
-let bcfCompat = { checked: false };
+const fixtureSrc = root + 'fixture';
+for (const name of readdirSync(fixtureSrc)) writeFileSync(fixtureDir + '/' + name, readFileSync(fixtureSrc + '/' + name));
+let fixtureLabel = 'tracked Unicode fixture (latex/tools/biber-vm/fixture/main.tex)';
+execFileSync('xelatex', ['-interaction=nonstopmode', '-halt-on-error', 'main.tex'], { cwd: fixtureDir, stdio: 'pipe' });
+const bcfText = readFileSync(fixtureDir + '/main.bcf', 'utf8');
+const bcfVersionMatch = bcfText.match(/controlfile version="([^"]+)"/);
+const localBiblatexSty = execFileSync('kpsewhich', ['biblatex.sty'], { encoding: 'utf8' }).trim();
+const localBcfVersion = readFileSync(localBiblatexSty, 'utf8').match(/\\def\\blx@bcfversion\{([^}]+)\}/)?.[1];
+let releaseBcfVersion = null;
 try {
-  const { fixture, inputFiles } = await import('../../benchmark/candidates/hybrid-validation/fixture.mjs');
-  const tree = fixture('first');
-  for (const [path, bytes] of Object.entries(inputFiles(tree))) {
-    const full = fixtureDir + '/' + path;
-    mkdirSync(resolve(full, '..'), { recursive: true });
-    writeFileSync(full, Buffer.isBuffer(bytes) ? bytes : Array.isArray(bytes) ? Buffer.from(bytes) : Buffer.from(bytes, 'utf8'));
-  }
-  fixtureLabel = `hybrid-validation fixture (official biblatex example ${tree.main})`;
-  // Compile it locally with xelatex to obtain a genuine .bcf. This uses the
-  // developer machine's TeX Live 2025, not the browser release itself
-  // (running actual WasmTex headlessly for this alone is out of scope here);
-  // report the bcf-version comparison so a mismatch would be visible.
-  execFileSync('xelatex', ['-interaction=nonstopmode', '-halt-on-error', tree.main], { cwd: fixtureDir, stdio: 'pipe' });
-  const stem = tree.main.replace(/\.tex$/, '');
-  const bcfPath = fixtureDir + '/' + stem + '.bcf';
-  const bcfText = readFileSync(bcfPath, 'utf8');
-  const bcfVersionMatch = bcfText.match(/controlfile version="([^"]+)"/);
-  const localBiblatexSty = execFileSync('kpsewhich', ['biblatex.sty'], { encoding: 'utf8' }).trim();
-  const localBcfVersion = readFileSync(localBiblatexSty, 'utf8').match(/\\def\\blx@bcfversion\{([^}]+)\}/)?.[1];
-  let releaseBcfVersion = null;
-  try {
-    const manifest = JSON.parse(readFileSync(mirrorRoot + 'manifest.json', 'utf8'));
-    releaseBcfVersion = manifest.releases?.[manifest.default_release]?.bibliography?.control_file ?? null;
-  } catch { /* manifest may not have this field yet */ }
-  bcfCompat = {
-    checked: true,
-    bcfInBcfFile: bcfVersionMatch?.[1] ?? null,
-    localTexLiveBcfVersion: localBcfVersion ?? null,
-    browserReleaseBcfVersion: releaseBcfVersion,
-    match: releaseBcfVersion == null ? 'unknown (browser release bibliography.control_file not present in manifest.json)' : String(releaseBcfVersion === localBcfVersion),
-    note: 'The .bcf fed to the guest was produced by the developer machine\'s local TeX Live 2025 biblatex, not by an actual WasmTex/browser-release pdflatex run (that would require driving the full browser engine headlessly, out of scope for this smoke test). If browserReleaseBcfVersion differs from localTexLiveBcfVersion this result does not establish browser-release compatibility.',
-  };
-  console.log('bcf version check:', bcfCompat);
-  fixtureLabel += `; local .bcf control-file version ${bcfCompat.bcfInBcfFile}`;
-} catch (error) {
-  console.log(`hybrid-validation fixture unavailable (${error.message}); falling back to the hand-written Unicode fixture in assets/fixture/`);
-  const src = root + 'assets/fixture';
-  for (const name of readdirSync(src)) {
-    writeFileSync(fixtureDir + '/' + name, readFileSync(src + '/' + name));
-  }
-  fixtureLabel = 'hand-written Unicode fixture (latex/tools/biber-vm/assets/fixture/main.tex)';
-}
+  const manifest = JSON.parse(readFileSync(mirrorRoot + 'manifest.json', 'utf8'));
+  releaseBcfVersion = manifest.releases?.[manifest.default_release]?.bibliography?.control_file ?? null;
+} catch { /* manifest may not have this field yet */ }
+const bcfCompat = {
+  checked: true,
+  bcfInBcfFile: bcfVersionMatch?.[1] ?? null,
+  localTexLiveBcfVersion: localBcfVersion ?? null,
+  browserReleaseBcfVersion: releaseBcfVersion,
+  match: releaseBcfVersion == null ? 'unknown (browser release bibliography.control_file not present in manifest.json)' : String(releaseBcfVersion === localBcfVersion),
+  note: 'The .bcf fed to the guest was produced by the developer machine\'s local TeX Live biblatex, not by an actual WasmTex/browser-release run (that would require driving the full browser engine headlessly, out of scope for this smoke test). If browserReleaseBcfVersion differs from localTexLiveBcfVersion this result does not establish browser-release compatibility.',
+};
+console.log('bcf version check:', bcfCompat);
+fixtureLabel += `; local .bcf control-file version ${bcfCompat.bcfInBcfFile}`;
 
 const stem = readdirSync(fixtureDir).find((f) => f.endsWith('.bcf'))?.replace(/\.bcf$/, '');
 if (!stem) throw new Error('No .bcf produced for the fixture');
@@ -202,9 +182,8 @@ try {
   result.totalBytesFetched = counters.bytes;
 
   // Assertions
-  // Both the official biblatex example and the hand-written fallback fixture
-  // include "Ecclésiastique" and an "Über ... Götter" phrase (with different
-  // wording), so check whichever literal substrings the chosen fixture
+  // The fixture's bibliography carries these literal strings; check
+  // whichever of them the .bbl actually
   // actually contains rather than assuming one exact phrasing.
   const candidateNeedles = ['Ecclésiastique', 'Über das Wesen der Götter', 'Über die Götter und die Welt', 'Åström', 'Žižek'];
   const unicodeNeedles = candidateNeedles.filter((s) => bblText1.includes(s));
@@ -243,7 +222,7 @@ ${result.bcfCompat?.checked ? `- .bcf control-file version in the fixture: \`${r
 - Local TeX Live 2025 biblatex \\blx@bcfversion: \`${result.bcfCompat.localTexLiveBcfVersion}\`
 - Browser release bibliography.control_file (manifest.json): \`${result.bcfCompat.browserReleaseBcfVersion}\`
 - Match: ${result.bcfCompat.match}
-- ${result.bcfCompat.note}` : 'Not checked (fallback hand-written fixture was used).'}
+- ${result.bcfCompat.note}` : 'Not checked.'}
 
 ## Timings
 

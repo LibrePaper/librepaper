@@ -1,0 +1,12 @@
+% Fixture for latex/tools/biber-vm/vm-smoke.mjs: a small biblatex document
+% whose bibliography carries non-ASCII author and title text, so the .bbl
+% Biber writes inside the guest can be checked byte-exact for Unicode.
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage[backend=biber,style=authoryear,sorting=nyt]{biblatex}
+\addbibresource{refs.bib}
+\begin{document}
+A bibliography with Unicode names and titles, sorted by name, year, title:
+\cite{ecclesiastique}, \cite{sallustius}, \cite{astrom}, \cite{zizek}.
+\printbibliography
+\end{document}

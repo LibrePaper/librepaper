@@ -22,8 +22,8 @@ make latex-mirror LATEX_RELEASE=../wasm-latex/staged LATEX_RELEASE_SHA256=<manif
 node latex/tools/wasmtex.mjs --release ../wasm-latex/staged --sha256 <manifest-sha256>
 ```
 
-A downloaded release directory works the same way; no source or benchmark
-checkout is required. There is no default release digest because the new
+A downloaded release directory works the same way; no source checkout is
+required. There is no default release digest because the new
 module has not published a complete release yet. Staging without passing its
 release gate remains inspectable but cannot be imported.
 
@@ -58,14 +58,16 @@ gets it by actually compiling the corpus, in headless Chromium, against the
 real WasmTex engines pointed at our own mirror server instead of upstream:
 
 ```sh
-node latex/tools/wasmtex-record.mjs
+node latex/tools/wasmtex-record.mjs --lib <wasmtex checkout>/lib
 ```
 
-It spawns `serve.mjs --record --lib <source checkout>/lib` (one origin,
+`--lib` (or `WASMTEX_LIB`) names the `lib/` directory of a WasmTex source
+checkout at the pinned revision; this repository does not track one.
+It spawns `serve.mjs --record --lib <that directory>` (one origin,
 because a Worker's script must be same-origin as the page that creates it),
 drives Chromium via `web/tools/browser-driver.mjs` against that server's own
 harness page, and compiles each of `latex/corpus/{article,paper,packages}`
-with pdfTeX, `latex/corpus/xetex` and `latex/benchmark/fixtures/unicode-fonts`
+with pdfTeX, `latex/corpus/xetex` and `latex/corpus/unicode-fonts`
 with XeTeX, and a small inline fontspec document with LuaTeX -- TeX -> BibTeX
 -> TeX -> TeX for the two documents with a plain BibTeX bibliography
 (`article`'s is written by `\begin{filecontents*}` mid-compile and read back
@@ -73,15 +75,6 @@ out of the engine's own filesystem; `paper`'s is an ordinary `.bib` file).
 `packages` uses biblatex/Biber, which WasmTex has no full backend for
 (docs/specs/wasmtex.md), so it is compiled for its package requests only --
 undefined citations in its log are expected, not a recording failure.
-
-The wider corpus this tool was asked to cover --
-`acm-conference`/`biber-related`/`biber-sorting`/`multifile` (and a real
-`thesis` LuaTeX document) under
-`latex/benchmark/.cache/projects/` -- is fetched by
-`latex/benchmark/prepare.mjs` into a cache this checkout did not have
-populated when this tool was written and run. `wasmtex-record.mjs` notices
-and reports when that cache exists, but does not yet compile those cases; see
-"What is left undone" below.
 
 On completion it prints a per-document summary (`tex1=ok bibtex=ok
 tex2=ok tex3=ok`, or `FAILED: <error>`), sets `manifest.texlive[<snapshot>]
@@ -101,7 +94,7 @@ It leaves `source.reproduced` false: importing bytes is not a reproduction
 check.
 
 The recording workflow above and the run history below describe the legacy
-upstream SDK harness. It still needs that SDK checkout for benchmark recording;
+upstream SDK harness. It still needs a WasmTex source checkout for recording;
 normal mirror construction via `make latex-mirror` does not use it.
 
 ## Recording run actually performed here
@@ -139,11 +132,6 @@ their fatal error would have surfaced more requests.
   library issue independent of the mirror.
 - `luatex-mini`'s timeout was not diagnosed; LuaTeX was never confirmed
   working end-to-end against this mirror.
-- The wider corpus (`acm-conference`, `biber-related`, `biber-sorting`,
-  `multifile`, a real `thesis` LuaTeX case) is not compiled: those cases live
-  under `latex/benchmark/.cache/projects/`, populated by
-  `latex/benchmark/prepare.mjs`, and this tool does not call that (outside
-  this package's file allowlist to write, and not run here).
 - Engine reproduction from source, per the "Reproduction status" section
   above.
 - `manifest.releases.<id>.bibliography.biber.compatible` is inferred rather

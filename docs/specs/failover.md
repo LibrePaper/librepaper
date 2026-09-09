@@ -1,5 +1,11 @@
 # SPEC: failover and recovery
 
+Status: the local profile is built (the deployment's OS writer lock, the
+writer generation stored and checked in the journal state, matched
+catalogue, object and secret backups with restore). Hosted recovery, R2
+fencing, warm standby and every automatic-takeover gate below are design,
+not code.
+
 ## Scope
 
 LibrePaper has local and hosted profiles built on the same batching code. Their
@@ -112,4 +118,3 @@ scope.
 
 [catalog.md](catalog.md) defines catalogue security and lifecycle rules.
 [persistence.md](persistence.md) defines the journal and save guarantee.
-[sync.md](sync.md) defines client synchronization.

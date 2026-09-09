@@ -18,7 +18,7 @@ existing `manifest.json` gains two top-level keys and keeps `version: 1`.
 ```
 latex/mirror/
   manifest.json
-  wasmtex/<engineRelease>/                 upstream engine files, upstream names
+  wasmtex/<engineRelease>/                 engine files from a staged wasm-latex release
     wasmtex-pdftex.worker.js wasmtex-pdftex.js wasmtex-pdftex.wasm
     wasmtex-pdftex.fmt wasmtex-pdftex-resolver-evidence.js ...
     wasmtex-bibtex.* wasmtex-bibtex8.* wasmtex-makeindex.*
@@ -31,9 +31,11 @@ latex/mirror/
   biber-vm/<vmRelease>/...                    package F, see section 6
 ```
 
-`<engineRelease>` is the upstream `releaseId` (`2026-8b7946970153c52e`),
-`<snapshot>` the upstream package snapshot id (`2026-ba38749b8714505a`).
-Directories are immutable; a new upstream id is a new directory.
+`<engineRelease>` is `librepaper-<sha256 of the staged MANIFEST.json>` for a
+release imported from wasm-latex (the first mirrored release used the
+upstream `releaseId`, `2026-8b7946970153c52e`); `<snapshot>` is the
+upstream package snapshot id (`2026-ba38749b8714505a`). Directories are
+immutable; a new id is a new directory.
 
 Manifest additions:
 
@@ -290,15 +292,15 @@ false`). Raw bytes cross the boundary as ArrayBuffers, never strings.
 `wasmtex.js` is the host-side driver class the worker uses for each nested
 engine (message queue with ids, init, format preload, write/mkdir/read,
 run). It is written by us against the worker controllers in
-`latex/benchmark/candidates/wasmtex/source/wasm-build/*-worker.js`; nothing
+WasmTex's `wasm-build/*-worker.js` at the pinned source revision; nothing
 from WasmTex's `lib/` is imported.
 
 ### 2.5 Resources: `web/src/lib/latex/resources.js` (package B1)
 
 ```js
 export function namespace(release)                 // `librepaper-latex-${release.digest.slice(0,16)}`
-export async function fetchVerified(url, { sha256, size, signal })   // Cache Storage under the release namespace; verifies sha256 on a miss; discards and refetches a corrupt hit; a network error is thrown, never cached
-export async function prefetch(entries, onProgress)                  // parallel (6 at a time) fetchVerified over [{url, sha256, size}]; progress {done,total,scope}
+export async function fetchVerified(release, url, { sha256, size, signal })   // Cache Storage under the release namespace; verifies sha256 on a miss; discards and refetches a corrupt hit; a network error is thrown, never cached
+export async function prefetch(release, entries, onProgress)                  // parallel (6 at a time) fetchVerified over [{url, sha256, size}]; progress {done,total,scope}
 export async function size()                       // bytes held across all librepaper-latex-* caches
 export async function clear()                      // deletes every librepaper-latex-* cache and the VM caches; never touches project storage
 export async function readiness(release, keys)     // { ready: boolean, missing: string[] } for the keys a project has used
@@ -526,13 +528,13 @@ digest. The build writes `releases.<id>.vm = { "id": "<vmRelease>", "url":
 "biber-vm/<vmRelease>/vm.json", "sha256": "...", "size": 0, "biber": "2.21" }`
 into the manifest through `latex/tools/wasmtex.mjs --vm <dir>`. Guest boot
 protocol is the one in
-`latex/benchmark/candidates/tinytex-v86/worker.js`: serial console, `~% `
+`latex/tools/biber-vm/worker.js`: serial console, `~% `
 prompt, then a marker line. The guest has no network device.
 
 ## 7. CLI (package R1a)
 
 ```
-librepaper local start [--port 8763] [--foreground]   # prints the pairing code and the address; runs until interrupted
+librepaper local start [--port 8763] [--foreground]   # prints the pairing code and the address; runs until interrupted (--foreground is accepted but has no effect yet: start always stays attached)
 librepaper local status                                # reachable? paired origins? code
 librepaper local doctor                                # discovery report, confinement, suggestions
 librepaper local disconnect [--origin URL] [--all]     # revoke pairings

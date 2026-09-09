@@ -1,8 +1,5 @@
 # The LaTeX corpus
 
-For pinned public ACM papers, a thesis, Biber examples, and separate cold/edit/
-reload measurements, see [the browser LaTeX evaluation](../benchmark/README.md).
-
 Four documents, each a directory with a `main.tex`, written for
 `docs/specs/latex.md` step 1. They exist to be compiled by every distribution
 LibrePaper drives and by a TeX Live on a desk, and to disagree with none of
@@ -38,6 +35,11 @@ them. What each is for:
   Cyrillic in the source rather than as macros. It is how a pdfTeX-only
   distribution is shown refusing cleanly, with the error `fontspec`
   gives, rather than producing a wrong page. One page.
+
+- **`unicode-fonts/`** — also XeTeX: named Libertinus text and math fonts
+  through `fontspec` and `unicode-math`, with Greek and Cyrillic text. Not
+  held to `pages.json`; `latex/tools/wasmtex-record.mjs` compiles it so the
+  named-font and `unicode-math` package requests reach the mirror.
 
 ## What is generated, and by what
 

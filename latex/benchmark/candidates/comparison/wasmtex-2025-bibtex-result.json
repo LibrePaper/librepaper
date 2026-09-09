@@ -1,8 +1,0 @@
-{
-  "run": {
-    "success": true,
-    "log": "This is BibTeX, Version 0.99d (TeX Live 2025)\nThe top-level auxiliary file: main.aux\nThe style file: plain.bst\nDatabase file #1: refs.bib\n"
-  },
-  "bbl": "\\begin{thebibliography}{1}\n\n\\bibitem{knuth}\nDonald~E. Knuth.\n\\newblock {\\em The TeXbook}.\n\\newblock Addison-Wesley, 1984.\n\n\\end{thebibliography}\n",
-  "elapsedMs": 347.7649999856949
-}

@@ -8,7 +8,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
-const tinytexAssets = fileURLToPath(new URL('../../benchmark/candidates/tinytex-v86/assets/', import.meta.url));
 mkdirSync(root + 'assets', { recursive: true });
 
 const sources = JSON.parse(readFileSync(root + 'sources.json', 'utf8'));
@@ -28,35 +27,13 @@ function fetchTo(path, url, expectedSha256) {
   return { bytes: data.length, sha256: got };
 }
 
-// v86 runtime files: reuse latex/benchmark/candidates/tinytex-v86's already
-// verified assets when present (same pinned recipe/URLs), otherwise fetch
-// fresh into this recipe's own assets/ directory.
-const v86Files = {
-  'libv86.js': 'https://copy.sh/v86/build/libv86.js',
-  'v86.wasm': 'https://copy.sh/v86/build/v86.wasm',
-  'seabios.bin': 'https://raw.githubusercontent.com/copy/v86/master/bios/seabios.bin',
-  'vgabios.bin': 'https://raw.githubusercontent.com/copy/v86/master/bios/vgabios.bin',
-  'buildroot-bzimage68.bin': 'https://i.copy.sh/buildroot-bzimage68.bin',
-};
-
-let tinytexLock = null;
-try { tinytexLock = JSON.parse(readFileSync(tinytexAssets + '../assets-lock.json', 'utf8')); } catch { /* not built yet */ }
-
+// v86 runtime files: pinned per file by URL and digest in sources.json.
 const results = {};
-for (const [name, url] of Object.entries(v86Files)) {
-  const expected = tinytexLock?.assets?.[name]?.sha256;
-  const reuse = tinytexAssets + name;
+for (const [name, file] of Object.entries(sources.v86_runtime.files)) {
   const local = root + 'assets/' + name;
-  if (existsSync(reuse) && !existsSync(local)) {
-    const data = readFileSync(reuse);
-    const got = sha256(data);
-    if (expected && got !== expected) throw new Error(`Reused asset ${name} digest mismatch`);
-    writeFileSync(local, data);
-    console.log(`reused ${name} from tinytex-v86 (${data.length} bytes)`);
-    results[name] = { url, bytes: data.length, sha256: got, reused: true };
-  } else {
-    results[name] = { url, ...fetchTo(local, url, expected), reused: false };
-  }
+  const got = fetchTo(local, file.url, file.sha256);
+  if (got.bytes !== file.bytes) throw new Error(`Size mismatch for ${name}: expected ${file.bytes} bytes, got ${got.bytes}`);
+  results[name] = { url: file.url, ...got };
 }
 
 // Biber binary: pinned in sources.json.

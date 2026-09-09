@@ -269,8 +269,8 @@ fn backup_prefix(backup_id: &str) -> BackupResult<String> {
 /// owner therefore cannot resume — the process is gone — and the next owner
 /// must acquire the lock before it may reclaim anything the crashed one left
 /// behind. It says nothing about an unrelated process on another host writing
-/// the same bucket, which stays unsupported (see
-/// `docs/specs/refactor/12-backup-ownership.md`).
+/// the same bucket, which stays unsupported: distributed ownership would
+/// need conditional claims, fencing and stale-owner recovery.
 pub struct BackupOwnership {
     /// Held for the lifetime of the capability; dropping it releases the lock.
     _writer_lock: File,

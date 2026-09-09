@@ -1,6 +1,13 @@
 # SPEC: WasmTex compilation with local and Biber VM fallbacks
 
-Status: implementation plan.
+Status: implemented, with three exceptions. Milestone 1's independent
+reproduction covers pdfTeX and BibTeX only (in the wasm-latex repository);
+XeTeX, LuaTeX, bibtex8 and makeindex are still mirrored builds and the
+manifest says `reproduced: false`. Milestone 7's Firefox, Safari and
+memory-constrained matrix has not been run. The legacy SwiftLaTeX package
+route and its mirror tools have not been removed. The rest of this page is
+the design the code in `web/src/lib/latex/`, `crates/librepaper/src/local/`
+and `latex/tools/` cites.
 
 Date: 2026-09-07.
 
@@ -116,7 +123,7 @@ Implementation primarily touches:
   discovery, authenticated local service and native execution.
 - Existing history/rendering structures where compiler settings and
   provenance need to be represented.
-- Existing benchmark and browser-test tooling for acceptance checks.
+- Existing browser-test tooling for acceptance checks.
 
 File boundaries can be adjusted during implementation. The behavior and
 interfaces in this spec are the contract.
@@ -125,8 +132,10 @@ interfaces in this spec are the contract.
 
 ### Starting point
 
-Start from the WasmTex source revision and 2026 release evaluated in
-[the comparison](../../latex/benchmark/candidates/comparison/README.md):
+Start from the WasmTex source revision and 2026 release evaluated during
+spec development (the evaluation tree was removed once these were pinned;
+the reproduction record is
+[wasm-latex's reproduction notes](../../../wasm-latex/docs/reproduction-2026-pdftex.md)):
 
 - Wrapper/source revision: 44c5861fcdf729838205b00b96ac9509bc7fb677.
 - Engine release: 2026-8b7946970153c52e.
@@ -141,10 +150,12 @@ Use the engine layer rather than importing WasmTex's editor or complete
 headless application pipeline. LibrePaper controls project state, bibliography
 runs, cancellation, freshness, diagnostics and publishing.
 
-First mirror the verified existing binaries. Then reproduce the selected
-engine builds and their format generation independently before making the
-distribution the product default. Maintain only the downstream patches that
-acceptance tests demonstrate are necessary.
+The upstream release above was the first mirrored input and remains the
+comparison baseline. Engines now come from the wasm-latex repository, which
+builds them from pinned TeX Live sources, generates their formats, and
+stages a release carrying its notices and receipts; `latex/tools/wasmtex.mjs
+--release` imports a staged release by its manifest digest. Maintain only
+the downstream patches that acceptance tests demonstrate are necessary.
 
 ### Coherent releases
 
@@ -663,7 +674,8 @@ remove obsolete chooser state. Preserve source, stored PDFs and history.
 
 Retain compatibility with existing callers while replacing the compiler
 adapter, then remove legacy browser adapters and their production manifest
-entries. Historical benchmark evidence can remain under the benchmark tree.
+entries. The evaluation benchmark tree was removed once the release was
+pinned; its evidence remains in git history.
 There is no production engine-selection fallback to another WASM project.
 
 New projects receive the validated default WasmTex release. Existing projects
@@ -807,8 +819,7 @@ delay writing or accepting this plan.
 
 ## References
 
-- [Measured comparison and reproduction](../../latex/benchmark/candidates/comparison/README.md)
-- [Existing WasmTex/Biber VM experiment](../../latex/benchmark/candidates/hybrid/REPORT.md)
+- [Engine reproduction from source (wasm-latex)](../../../wasm-latex/docs/reproduction-2026-pdftex.md)
 - [WasmTex source](https://github.com/corca-ai/wasmtex)
 - [Existing rendering implementation](../../crates/librepaper/src/server/figures.rs)
 - [Browser local-network permissions](https://developer.chrome.com/blog/local-network-access)

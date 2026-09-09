@@ -310,9 +310,9 @@ query plans and measure their write and replication cost.
   no row exists. Update `last_seen` conditionally, at most once per active UTC
   day. `erasure_cursor` is bounded, versioned stage/table/primary-key progress
   metadata, NULL outside erasure; committing a batch also advances its cursor.
-  Qualifying activity is authenticated owner use under
-  [retention.md](retention.md), not visits by other readers. Contact delivery
-  and inactivity-warning workflows remain work for that spec.
+  Qualifying activity is authenticated owner use, not visits by other
+  readers. Contact delivery and inactivity-warning workflows are not
+  specified.
 - Signed-in ownership uses `owner_id` and an empty `owner_key`. Visitor ownership
   uses `owner_id = NULL` and a verified visitor key. An empty owner key never
   bypasses a non-null account id.
@@ -649,8 +649,8 @@ Preserve `--expire` and `--expire-from created|updated` for deployments that
 configure document TTL. Select non-example active candidates with a timestamp
 and slug cursor using the corresponding partial index. Under the lifecycle gate,
 recheck the timestamp against the current primary before beginning normal
-deletion. Account-inactivity cleanup instead follows owner activity under
-[retention.md](retention.md); document timestamps cannot substitute for it.
+deletion. Account-inactivity cleanup, if it is ever added, must follow owner
+activity; document timestamps cannot substitute for it.
 
 ## Persistence, history and cost controls
 

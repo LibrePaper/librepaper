@@ -26,9 +26,8 @@ async function start() {
     chunk += char;
     if (stage === 'booting' && output.endsWith('~% ')) {
       stage = 'mounting';
-      // Same boot protocol as latex/benchmark/candidates/tinytex-v86/worker.js:
-      // the Buildroot kernel provides the base shell; the packed guest (this
-      // recipe's minimal Debian + Biber, not TinyTeX) is mounted at /mnt via 9p.
+      // Boot protocol: the Buildroot kernel provides the base shell; the packed
+      // guest (this recipe's minimal Debian + Biber) is mounted at /mnt via 9p.
       send(
         "stty -echo; test -x /mnt/usr/local/bin/biber && mount --bind /dev /mnt/dev && mount -t proc proc /mnt/proc && printf '\\n" +
           readyMarker + "\\n' || printf '\\nLIBREPAPER_VM_FAILED\\n'"

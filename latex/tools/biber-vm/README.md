@@ -59,12 +59,10 @@ requests, with the full evaluation and evidence in
    (`https://mirror.ctan.org/systems/texlive/tlnet/`) does still ship an
    i386-linux `biber` binary, but its `texlive.tlpdb` carries no exact
    upstream version and is not pinned/reproducible. TeX Live **2025**'s
-   frozen `tlnet-final` repository — the same one
-   `latex/benchmark/candidates/tinytex-v86` already pins and validated —
-   ships `biber.i386-linux` revision 75738, and running it reports exactly
+   frozen `tlnet-final` repository ships `biber.i386-linux` revision 75738, and running it reports exactly
    `biber version: 2.21`. Used this.
 3. **CPAN into an i386 Perl** — not attempted; option 2 succeeded and is
-   faster, smaller and already precedented in this repository.
+   faster and smaller.
 
 ## Build
 
@@ -99,19 +97,16 @@ node latex/tools/biber-vm/vm-smoke.mjs [vmRelease]
 ```
 
 Boots the built release in headless Chromium via `web/tools/browser-driver.mjs`,
-using the same mount / `LIBREPAPER_VM_READY` boot protocol as
-`latex/benchmark/candidates/tinytex-v86/worker.js` (Buildroot kernel boots
-first; the packed Debian+Biber rootfs is mounted over 9p at `/mnt` and
-subsequent commands run via `chroot /mnt`). Runs `biber --version`, then a
-real Biber job on the official biblatex sorting example (Unicode author
-names, sorting, real citations) — reused from
-`latex/benchmark/candidates/hybrid-validation/fixture.mjs`, the same fixture
-`tinytex-v86` validated Biber output against. Falls back to a small
-hand-written Unicode fixture (`assets/fixture/`) if that module or the
-`.cache/projects` corpus is unavailable.
+using the mount / `LIBREPAPER_VM_READY` boot protocol in `worker.js`
+(Buildroot kernel boots first; the packed Debian+Biber rootfs is mounted over
+9p at `/mnt` and subsequent commands run via `chroot /mnt`). Runs
+`biber --version`, then a real Biber job on the tracked biblatex document in
+[`fixture/`](fixture/) (Unicode author names and titles, sorting, real
+citations), compiled locally with `xelatex` to obtain its `.bcf`.
 
 Asserts the `.bbl` is non-empty and contains the Unicode author/title text
-byte-exact (`Ecclésiastique`, `Über das Wesen der Götter`). Records boot
+byte-exact (`Ecclésiastique`, `Über die Götter und die Welt`, `Åström`,
+`Žižek`). Records boot
 time, cold and warm Biber time, and bytes fetched from the static server's
 request counter. Writes [RESULTS.md](RESULTS.md).
 
@@ -122,17 +117,17 @@ request counter. Writes [RESULTS.md](RESULTS.md).
 | Docker image (guest content) | ~51 MB |
 | Exported/stripped rootfs | ~109 MB (3105 files) |
 | Packed VM release directory (`latex/mirror/biber-vm/<vmRelease>/`) | see RESULTS.md / build.mjs output at build time |
-| v86 runtime files (libv86.js + v86.wasm + seabios + vgabios + bzimage) | ~11.9 MB, reused byte-for-byte from `latex/benchmark/candidates/tinytex-v86`'s pinned/verified assets |
+| v86 runtime files (libv86.js + v86.wasm + seabios + vgabios + bzimage) | ~11.9 MB, pinned per file by URL and digest in [sources.json](sources.json) |
 
-Compare with `latex/benchmark/candidates/tinytex-v86`'s guest (TinyTeX +
-Biber + ACM packages), whose exported filesystem is about 692 MB: carrying
-only Biber and no TeX distribution keeps this guest roughly 6x smaller.
+A guest carrying TinyTeX, Biber and ACM packages, built during spec
+evaluation, exported to about 692 MB: carrying only Biber and no TeX
+distribution keeps this guest roughly 6x smaller.
 
 ## Timings
 
 See [RESULTS.md](RESULTS.md) for the measured boot time, cold/warm Biber
-time, and bytes transferred from the most recent `vm-smoke.mjs` run. As with
-`tinytex-v86`'s REPORT.md, these are v86-CPU-bound numbers from one desktop
+time, and bytes transferred from the most recent `vm-smoke.mjs` run. These
+are v86-CPU-bound numbers from one desktop
 Chromium session, not a promised product latency; docs/specs/wasmtex.md explicitly
 expects this route to be slower than native execution and asks that it be
 measured, not assumed fast.
@@ -153,7 +148,7 @@ device and makes no runtime network access.
 ## What is not done
 
 - **Not a real browser-release `.bcf`.** `vm-smoke.mjs` compiles the fixture
-  with the developer machine's local TeX Live 2025 `xelatex`, not the actual
+  with the developer machine's local TeX Live `xelatex`, not the actual
   WasmTex/browser engine. Both currently agree on bcf version `3.11`
   (recorded in RESULTS.md), but this smoke test does not itself prove
   browser-release compatibility — that requires an end-to-end test that
@@ -164,8 +159,8 @@ device and makes no runtime network access.
   (`web/src/lib/latex/vm.js` / `vm-worker.js`, package B3), cancellation,
   idle teardown, persistent caching, and the routing/eligibility rules in
   docs/specs/wasmtex.md are separate work packages and are not implemented here.
-- **No reproducibility guarantee for the Debian package set.** Like
-  `tinytex-v86`, the base image digest is pinned but Debian's package
+- **No reproducibility guarantee for the Debian package set.** The base
+  image digest is pinned but Debian's package
   archive is not frozen to a dated snapshot; here that barely matters since
   no `apt-get install` runs at all (the guest is exactly the base image plus
   one copied binary), but it is worth recording for completeness.

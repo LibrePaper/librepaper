@@ -1,5 +1,8 @@
 # SPEC: track changes
 
+Status: implemented. The CLI has since gained `suggest --anchor` and
+`suggest --batch`, which this page does not describe.
+
 Two features, built in this order. Both live on top of what exists: the
 Yjs session, source anchors, checkpoints, the word diff in `crates/text`, and
 the merge editor.

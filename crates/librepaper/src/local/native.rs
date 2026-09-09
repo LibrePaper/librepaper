@@ -7,8 +7,8 @@
 //! This module never requires `latexmk`: convergence is decided by reading
 //! the same log text and the same aux/bcf/idx files a human watching the
 //! terminal would, in `texlog.rs`'s `rerun`/`needs_bibtex` and this file's
-//! own bibliography/index checks -- the rules `latex/benchmark/native.mjs`
-//! delegates to `latexmk` for, done here by hand because a bounded
+//! own bibliography/index checks -- the rules `latexmk` applies, done here
+//! by hand because a bounded
 //! controller cannot spawn an unbounded, unaudited coordinator to compile
 //! code collaborators wrote.
 //!

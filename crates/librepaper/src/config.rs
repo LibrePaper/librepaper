@@ -642,9 +642,9 @@ pub const DEFAULT_MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 ///
 /// It is a policy, not a theorem: nothing proves that eight megabytes of text
 /// can never encode past [`PersistenceLimits::max_encoded_snapshot_bytes`].
-/// It is the largest source ceiling for which the copy inventory recorded in
-/// `docs/specs/refactor/10-size-limits.md` still leaves room for the CRDT
-/// history and metadata that grow beside the visible text.
+/// It is the largest source ceiling for which the snapshot copies counted by
+/// [`SNAPSHOT_COPY_FACTOR`] still leave room for the CRDT history and
+/// metadata that grow beside the visible text.
 pub const SUPPORTED_MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 
 /// `E`: the largest encoded CRDT snapshot this deployment will write. It has
@@ -668,9 +668,9 @@ pub const DEFAULT_MAX_QUEUED_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_MAX_STAGING_BYTES: usize = 512 * 1024 * 1024;
 
 /// How many live copies of one snapshot persistence may hold at its peak.
-/// The inventory behind this number is recorded in
-/// `docs/specs/refactor/10-size-limits.md`; changing either without the
-/// other makes the memory admission a decoration.
+/// The inventory behind this number is the set of transient copies listed
+/// under [`DEFAULT_MAX_STAGING_BYTES`]; changing the factor without
+/// recounting them makes the memory admission a decoration.
 pub const SNAPSHOT_COPY_FACTOR: usize = 8;
 
 /// The one relationship this deployment supports between what a person may

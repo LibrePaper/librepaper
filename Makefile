@@ -221,8 +221,8 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 # directory may still hold. A file named by its digest is cached forever; the
 # manifest is not cached at all. Build the mirror first:
 #
-#     node latex/tools/wasmtex.mjs                      # the engine release
-#     node latex/tools/wasmtex-record.mjs               # the package set the corpus asks for
+#     node latex/tools/wasmtex.mjs --release <staged> --sha256 <digest>   # the engine release
+#     node latex/tools/wasmtex-record.mjs --lib <wasmtex checkout>/lib       # the package set the corpus asks for
 #     node latex/tools/wasmtex.mjs --texlive-root icudt68l.dat
 #     node latex/tools/biber-vm/build.mjs               # the Biber VM (needs Docker)
 #

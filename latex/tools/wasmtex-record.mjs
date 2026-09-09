@@ -22,11 +22,12 @@
 // same-origin as the page that creates it, and the harness creates the
 // engine workers by loading them straight from the mirror.
 //
-//     node latex/tools/wasmtex-record.mjs
+//     node latex/tools/wasmtex-record.mjs --lib <wasmtex checkout>/lib
 //
-// Requires the source checkout at latex/benchmark/candidates/wasmtex/source
-// and a `chromium` on PATH. This legacy recording harness is independent of
-// the staged-release mirror importer.
+// Requires a checkout of the WasmTex source at the pinned revision (see
+// docs/specs/wasmtex.md "Starting point"), named by `--lib` or the
+// WASMTEX_LIB environment variable, and a `chromium` on PATH. This legacy
+// recording harness is independent of the staged-release mirror importer.
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -39,7 +40,10 @@ import { ENGINE_RELEASE, SNAPSHOT } from "./wasmtex.mjs";
 const HERE = dirname(new URL(import.meta.url).pathname);
 const REPO = dirname(dirname(HERE));
 const MIRROR = join(REPO, "latex", "mirror");
-const LIB = join(REPO, "latex", "benchmark", "candidates", "wasmtex", "source", "lib");
+// The WasmTex SDK's `lib/` directory, from a source checkout this repository
+// does not track: an explicit argument, never a path guessed inside the tree.
+const libFlag = process.argv.indexOf("--lib");
+const LIB = libFlag >= 0 ? process.argv[libFlag + 1] : process.env.WASMTEX_LIB;
 
 const MIRROR_PORT = 8710;
 const CDP_PORT = 9712;
@@ -48,10 +52,7 @@ const CDP_PORT = 9712;
 
 // Walks a directory the way a project tree is built: text files as strings,
 // binary assets as bytes, everything else (logs, expected.json, PDFs already
-// committed as fixtures) left out. Deliberately not imported from
-// `latex/benchmark/corpus.mjs` -- this file's only benchmark dependency is
-// its legacy SDK checkout; a few lines of
-// directory-walking are not worth reaching further into that tree for.
+// committed as fixtures) left out.
 function treeOf(directory, main) {
   const texts = {};
   const assets = {};
@@ -82,9 +83,8 @@ const LUATEX_MINI = {
     main: "main.tex",
     texts: {
       "main.tex":
-        "% A tiny fontspec document. The corpus has no LuaTeX case (the thesis\n" +
-        "% fixture `latex/benchmark/.cache/projects/thesis` was not present when this\n" +
-        "% ran); this exists so LuaHBTeX and fontspec/luaotfload are recorded too.\n" +
+        "% A tiny fontspec document. The corpus has no LuaTeX case; this exists\n" +
+        "% so LuaHBTeX and fontspec/luaotfload are recorded too.\n" +
         "\\documentclass{article}\n" +
         "\\usepackage{fontspec}\n" +
         "\\begin{document}\n" +
@@ -104,18 +104,9 @@ function documents() {
     // undefined citations in the log are expected, not a recording failure.
     { id: "packages", engine: "pdftex", bib: false, tree: treeOf(join(REPO, "latex", "corpus", "packages"), "main.tex") },
     { id: "xetex", engine: "xetex", bib: false, tree: treeOf(join(REPO, "latex", "corpus", "xetex"), "main.tex") },
-    { id: "unicode-fonts", engine: "xetex", bib: false, tree: treeOf(join(REPO, "latex", "benchmark", "fixtures", "unicode-fonts"), "main.tex") },
+    { id: "unicode-fonts", engine: "xetex", bib: false, tree: treeOf(join(REPO, "latex", "corpus", "unicode-fonts"), "main.tex") },
     LUATEX_MINI,
   ];
-  // The wider corpus (acm-conference, biber-related, biber-sorting,
-  // multifile, thesis) lives under a cache `prepare.mjs` fills by fetching
-  // upstream document sources; it is not populated in this checkout (no
-  // `latex/benchmark/.cache/projects`), so those cases are skipped here
-  // rather than silently faked. See the tool's final report.
-  const projects = join(REPO, "latex", "benchmark", ".cache", "projects");
-  if (existsSync(projects)) {
-    console.log(`wasmtex-record: NOTE: ${projects} exists but its cases are not wired into this tool yet`);
-  }
   const only = process.env.WASMTEX_RECORD_ONLY?.split(",");
   return only ? docs.filter((d) => only.includes(d.id)) : docs;
 }
@@ -137,9 +128,8 @@ function spawnMirrorServer() {
 
 // Runs inside the page (see `driver.evaluate` below): compiles one project
 // tree with the given engine, TeX -> BibTeX -> TeX -> TeX when `bib` is set.
-// Written as one self-contained function, exactly as
-// `latex/benchmark/candidates/comparison/wasmtex-2026-check.mjs` does it,
-// because it crosses into `Function.prototype.toString()` to reach the page.
+// Written as one self-contained function because it crosses into
+// `Function.prototype.toString()` to reach the page.
 async function compileInPage(doc, opts) {
   const { WasmTexPdftexEngine } = await import("/lib/engine/wasmtex-engine.js");
   const { WasmTexXetexEngine } = await import("/lib/engine/xetex-engine.js");
@@ -211,10 +201,11 @@ async function compileInPage(doc, opts) {
 /* --------------------------------------------------------------------- run */
 
 async function main() {
-  if (!existsSync(LIB)) {
+  if (!LIB || !existsSync(join(LIB, "engine"))) {
     throw new Error(
-      `wasmtex-record: no source checkout lib/ at ${LIB}. See latex/tools/README.md and\n` +
-        "  docs/specs/wasmtex.md \"Starting point\" for the revision to check out.",
+      `wasmtex-record: no WasmTex lib/ directory${LIB ? ` at ${LIB}` : ""}. Pass --lib <checkout>/lib\n` +
+        "  (or set WASMTEX_LIB); see latex/tools/README.md and docs/specs/wasmtex.md\n" +
+        '  "Starting point" for the revision to check out.',
     );
   }
 
