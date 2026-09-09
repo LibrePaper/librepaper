@@ -1,8 +1,8 @@
 //! Renderings: the PDF an editor's browser compiled, kept so that a reader
 //! never has to.
 //!
-//! This is the one exception to `docs/specs/history.md`'s rule that nothing
-//! derived is stored, so most of what is checked here is the bounding that
+//! This is the one exception to the rule that nothing derived is stored, so
+//! most of what is checked here is the bounding that
 //! makes the exception safe. A rendering is named by the SHA of the checkpoint
 //! it was compiled from, which is what makes it unable to disagree with its
 //! source silently: either the live text has that SHA, or the reader is told

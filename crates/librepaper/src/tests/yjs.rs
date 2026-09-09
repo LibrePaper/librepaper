@@ -6,8 +6,8 @@
 //! they run one, through `web/tools/yjs-peer.mjs`, which imports the same
 //! `yjs` and `y-protocols` packages the editor bundles.
 //!
-//! What is checked here is the list `docs/specs/history.md` asks for before Yrs is
-//! committed to: v1 updates in both directions, state vectors, deletions,
+//! What is checked here is what had to hold before Yrs was committed to:
+//! v1 updates in both directions, state vectors, deletions,
 //! concurrent edits, awareness, UTF-16 positions, and a reconnect after the
 //! server restarts.
 

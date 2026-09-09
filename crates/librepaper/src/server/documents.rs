@@ -1378,9 +1378,8 @@ impl Server {
         }
         // The source is readable by anyone who may read the document. It has
         // to be: the browser cannot render what it is not given, and nothing
-        // rendered is stored any more. `docs/specs/history.md` accepts that and
-        // offers no way around it -- a source that must not be seen is not
-        // published here as that source.
+        // rendered is stored any more. There is no way around it: a source that
+        // must not be seen is not published here as that source.
         //
         // What is answered is the live document, not a stored copy of it:
         // there is one version, and this is it.

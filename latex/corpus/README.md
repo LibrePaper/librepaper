@@ -1,7 +1,7 @@
 # The LaTeX corpus
 
-Four documents, each a directory with a `main.tex`, written for
-`docs/specs/latex.md` step 1. They exist to be compiled by every distribution
+Four documents, each a directory with a `main.tex`, written when LaTeX in the
+browser was first specified. They exist to be compiled by every distribution
 LibrePaper drives and by a TeX Live on a desk, and to disagree with none of
 them. What each is for:
 

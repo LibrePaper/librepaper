@@ -107,7 +107,7 @@ It prints an address and an eight-character code:
 ```
 
 Open that page in any browser, on any machine, and sign in there with whichever
-provider the deployment offers â GitHub, Google, or both. The page names the
+provider the deployment offers — GitHub, Google, or both. The page names the
 code and the account it would sign in, and nothing happens until you press
 *Approve*, so a link somebody else sends you cannot put your account on their
 terminal.
@@ -145,7 +145,7 @@ librepaper publish paper/ --title "My Paper"
 ```
 
 Everything in it goes: the chapters, the `.bib`, the figures. Three things are
-left behind â names beginning with a dot, the main file's own `.pdf`, and
+left behind — names beginning with a dot, the main file's own `.pdf`, and
 whatever git ignores, since a `.gitignore` is the author's own statement of
 what is derived. Which file is the document is the one text at the top level
 that LibrePaper renders, or `main.*`; when neither settles it, `--main` does:
@@ -155,7 +155,7 @@ librepaper publish paper/ --main chapters/thesis.typ
 ```
 
 Publishing a single file that reads its neighbours says so rather than
-publishing a document that compiles here and nowhere else â a reader renders
+publishing a document that compiles here and nowhere else — a reader renders
 it themselves, and would get the error you never saw:
 
 ```
@@ -307,7 +307,7 @@ until another file is made the main file.
 
 The editor is offered to whoever may replace the document, and the document
 opens ready to work on. There is nothing to save: what is typed is the
-document, readers see it a moment later, and the comments survive it â as you
+document, readers see it a moment later, and the comments survive it — as you
 type, they re-anchor against the edited text. A comment records its passage in
 the source file as well as on the page, so it can be found in any version and
 in the editor, and one whose passage is gone from both is marked as such
@@ -350,7 +350,7 @@ The formats, and they are not available in the same places:
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
 no `typst` binary on your PATH, because the compiler is inside LibrePaper, and it
-is the same one the editor runs â so a document cannot render one way when it
+is the same one the editor runs — so a document cannot render one way when it
 is published and another way when it is edited.
 
 The Typst module contains the compiler and embedded fonts. Renderer URLs include
@@ -618,45 +618,6 @@ configuration.
 See the [live chat interface](docs/protocol/chat.md) and the
 [existing room operations](docs/protocol/room-v1.md) for client integration.
 
-### Storage
-
-By default a server keeps everything in a directory:
-
-```sh
-librepaper serve --data ./librepaper-data
-```
-
-It can keep it in any S3-compatible bucket instead â R2, AWS, MinIO, Backblaze
-â so a small server holds no durable state of its own and the bytes, the bill
-and the ownership of the data are yours:
-
-```sh
-export LIBREPAPER_S3_ACCESS_KEY=...
-export LIBREPAPER_S3_SECRET_KEY=...
-
-librepaper serve --s3-endpoint https://<account>.r2.cloudflarestorage.com \
-              --s3-bucket librepaper --s3-region auto
-```
-
-Credentials come from the environment by preference: a flag is visible to every
-process on the machine and lands in your shell history, and librepaper says so if
-you pass one.
-
-Everything librepaper writes lives under one prefix (`librepaper/` by default,
-`--s3-prefix` to change it), so a bucket can be shared and deleting a
-document has a bounded blast radius. It never deletes the bucket, and never
-touches a key outside its own prefix.
-
-At startup the bucket is probed. The index is kept correct by conditional
-writes, so a bucket that does not support them is refused rather than run on
-quietly â pass `--single-writer` to assert that only this process writes
-these keys, which is true of a single server, and it will use its own lock
-instead. It is printed at startup either way.
-
-Comments live in the bucket too (`rooms/<slug>.json`), written as they are
-made. A second server pointed at the same bucket finds the room locked and
-serves it read-only rather than interleaving its writes.
-
 ### History
 
 A document is never lost, and its past is never rewritten. The server takes a
@@ -845,11 +806,15 @@ hourly pass, and once at startup.
 
 ### Storage
 
-`librepaper serve` keeps documents, comments and the session key in the directory
-named by `--data` or `LIBREPAPER_DATA`, `librepaper-data` in the working directory by
-default; back it up if the instance holds real work. Point it at a bucket
-instead and the server holds nothing of its own â see
-[Bring your own bucket](#bring-your-own-bucket).
+`librepaper serve` keeps everything in the directory named by `--data` or
+`LIBREPAPER_DATA`, `librepaper-data` in the working directory by default: the
+catalogue (`catalog.db`), the objects it names, private server state, and the
+secrets that keep sessions and share links valid. Back it up if the instance
+holds real work; `librepaper backup` writes a verified recovery point of all
+of it, and `librepaper restore-backup` restores one into a fresh directory.
+A hosted profile that keeps the catalogue in Turso and the objects in an
+S3-compatible bucket is designed and its flags are accepted, but this build
+refuses it at startup.
 
 Six flags bound what a deployment will store:
 
@@ -960,7 +925,7 @@ own, GitHub's or Google's. A server where both `--publishers` and
 `--commenters` are `anyone` never asks, and runs without either.
 
 Create the app at [github.com/settings/developers](https://github.com/settings/developers)
-(New OAuth App). Point its two URLs at the server's own address â the
+(New OAuth App). Point its two URLs at the server's own address — the
 public HTTPS address it sits behind, with the same `/auth/callback` path:
 
 ```text
@@ -976,7 +941,7 @@ export LIBREPAPER_GITHUB_CLIENT_ID="..."
 export LIBREPAPER_GITHUB_CLIENT_SECRET="..."
 ```
 
-Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review â but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
+Readers can sign in with Google instead, or as well: create a *Web application* client at [console.cloud.google.com](https://console.cloud.google.com) under *Credentials*, with the authorised redirect URI set to this server's address plus `/auth/callback/google`, and pass its id and secret as `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`. The consent screen asks for the scopes `openid`, `email` and `profile`.[^google-data] All three are non-sensitive, so the app needs no verification review — but **publish the consent screen**: one left in *Testing* admits at most a hundred named test users, and everybody else is turned away at Google's own page.
 
 `librepaper logout` deletes the terminal's local token. It does not revoke a
 copy held elsewhere. Rotating the server's session key invalidates issued

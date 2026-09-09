@@ -1,6 +1,6 @@
 // The PDF, drawn into the frame a document lives in.
 //
-// This is the "Rendered" state of `docs/specs/latex.md`'s preview: every page's
+// This is the rendered state of the LaTeX preview: every page's
 // canvas and text layer, stacked vertically in one scrolling document, which
 // is what makes the text of a LaTeX document one sequence rather than a pile
 // of pages. pdf.js and its worker come from our own static assets and never

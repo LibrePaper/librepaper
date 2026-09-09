@@ -22,10 +22,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-/// The collections `docs/specs/latex.md` step 3 needs before a document that is
-/// not in the corpus can compile. TeX Live spells them without the hyphen the
-/// spec uses: `latex-recommended` is `latexrecommended` and `science` is
-/// `mathscience`.
+/// The collections a document that is not in the corpus needs before it can
+/// compile. TeX Live spells them without a hyphen: `latex-recommended` is
+/// `latexrecommended` and `science` is `mathscience`.
 export const SCHEME = ["latexrecommended", "latexextra", "fontsrecommended", "mathscience"];
 
 const TLPDB = "https://mirror.ctan.org/systems/texlive/tlnet/tlpkg/texlive.tlpdb.xz";

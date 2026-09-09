@@ -235,8 +235,8 @@ impl Room {
     /// SHA of the checkpoint that now stands for the current text, or None
     /// when the request was deferred.
     ///
-    /// The order of writes is the one `docs/specs/history.md` sets, with the text
-    /// blobs in front of it, so that a crash leaves nothing worse than an
+    /// The order of writes puts every object before anything that names it,
+    /// with the text blobs first, so that a crash leaves nothing worse than an
     /// untidy history: the blobs, then the tree, then the session state, then
     /// the index entry, then the manifest. Nothing ever names an object that
     /// is not there; what a crash can leave is an object nothing names, which

@@ -16,8 +16,8 @@
 // asks about the same moment.
 //
 // This is deliberately not the word-level diff. What replaced the passage is
-// step 8 of `docs/specs/history.md` and needs the diff crate in the browser;
-// what is here needs nothing that is not already built, and it is the half of
+// `history.js`'s `wordDiff` and needs the diff crate in the browser; what is
+// here needs nothing beyond the checkpoints, and it is the half of
 // the question a reviewer actually asks.
 //
 // A comment with a source anchor is searched for in the source file itself,

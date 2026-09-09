@@ -23,9 +23,8 @@ use sha2::{Digest, Sha256};
 
 use crate::storage::blob::{history_index_key, BlobError, BlobStore, BlobVersion};
 
-/// One entry in the manifest. The field names are the ones
-/// `docs/specs/history.md` writes, because the manifest is served to the browser
-/// as it stands.
+/// One entry in the manifest. The field names are wire format: the manifest
+/// is served to the browser as it stands.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Checkpoint {
     pub sha: String,

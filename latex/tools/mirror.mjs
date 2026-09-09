@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // The mirror: every file a distribution needs, under our own name.
 //
-// `docs/specs/latex.md` says the browser never fetches from a distribution's own
-// project site at runtime, for two reasons -- the list of packages a document
+// The browser never fetches from a distribution's own project site at
+// runtime, for two reasons -- the list of packages a document
 // asks for is a description of the document, and a third-party endpoint that
 // goes away takes every LaTeX document on every deployment with it. This
 // script is what makes that true: it fetches each distribution's release

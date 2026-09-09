@@ -93,8 +93,8 @@ export function gapBetween(previous, next) {
 /// A folio, or a running head that is only a number: page furniture, not text.
 ///
 /// This is what a quotation across a page break actually runs into, and it is
-/// worth being exact about, because it is the case `docs/specs/latex.md` names as
-/// the risk of the whole step. A sentence broken over a page boundary does not
+/// worth being exact about, because it is the hardest case the viewer has to
+/// get right. A sentence broken over a page boundary does not
 /// meet a gap in the sequence: it meets the page number. pdf.js reports the
 /// folio as one more text run in reading order, so the joined text reads
 /// `...to re-anchor across, 2 since pdf.js will hand...`, and no context

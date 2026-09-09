@@ -1,7 +1,7 @@
 // The PDF viewer, and a comment anchored into one, in a real browser.
 //
-// `docs/specs/latex.md`'s bet, in one sentence: "a LaTeX document is a hard case
-// for the same anchoring, not a new anchoring". This is what decides whether
+// The bet behind LaTeX in the viewer, in one sentence: a LaTeX document is a
+// hard case for the same anchoring, not a new anchoring. This is what decides whether
 // that is true. It draws the corpus' `article/` -- written to carry a
 // hyphenated line end, a page break inside a sentence, a footnote and an `fi`
 // ligature on purpose -- into the viewer page the server serves on the

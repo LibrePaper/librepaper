@@ -134,7 +134,7 @@ async fn a_document_is_charged_for_its_source_and_its_history() {
 
 // The source is readable by anyone who may read the document. It has to be:
 // the browser cannot render what it is not given, and nothing rendered is
-// stored. `docs/specs/history.md` accepts this and offers no way around it.
+// stored. There is no way around it.
 #[tokio::test]
 async fn the_source_is_readable_by_any_reader() {
     let server = new_test_server().await;

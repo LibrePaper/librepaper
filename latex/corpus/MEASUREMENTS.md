@@ -57,8 +57,8 @@ SwiftLaTeX pdfTeX compile against the mirror it built, on one machine.
 The mirror as `latex-check.mjs --measure` left it held only the package
 files the four corpus documents asked for -- 167 of them -- so any
 document that is not in the corpus failed at compile time on a missing
-`.sty`. `docs/specs/latex.md` step 3 cannot put a card in front of an author
-and then refuse the packages an author uses, so the mirror now takes a
+`.sty`. A compiler that offers itself to an author cannot then refuse the
+packages the author uses, so the mirror now takes a
 package set chosen the way a distribution chooses one: by TeX Live
 collection. `node latex/mirror.mjs --scheme` mirrors
 `latex-recommended`, `latex-extra`, `fonts-recommended` and `science`
@@ -319,9 +319,8 @@ and nothing for `broken`, which is correct. The bytes carry the gzip magic
 
 so the document's own file is input 1 and the rest are the distribution's. The
 paths are the engine's absolute paths inside its filesystem, not the tree's
-paths, which is the one thing whoever builds `docs/specs/latex.md` step 6 will
-have to map. Step 6 was blocked on there being no SyncTeX anywhere; it is not
-blocked any more.
+paths, which is the one thing SyncTeX support has to map. It was blocked on
+there being no SyncTeX anywhere; it is not blocked any more.
 
 **On disk.** The mirror holds 713.5 MB for this distribution alone -- 127.7 MB
 up front (the 32.5 MB engine wasm and the 92.8 MB `texlive-basic.data`),

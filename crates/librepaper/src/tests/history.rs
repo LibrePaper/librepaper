@@ -1,7 +1,7 @@
 //! The document the server holds, and the history it keeps of it.
 //!
-//! Every test here is against the acceptance conditions in
-//! `docs/specs/history.md`: an acknowledged edit survives a restart, an
+//! Every test here is one of the history's acceptance conditions: an
+//! acknowledged edit survives a restart, an
 //! unacknowledged one is still recoverable, a reader cannot write, concurrent
 //! writers cannot talk their way past a quota, a failed write leaves the
 //! current source and the manifest alone, and an idle room is let go of.

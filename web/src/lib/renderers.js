@@ -304,9 +304,9 @@ export function htmlTitleOf(source) {
 /// renderer overlaps with reading the document rather than following it.
 export function warm(format) {
   if (format === "html") return; // the identity has nothing to fetch
-  // Nothing is fetched for LaTeX until a person chooses a distribution. That
-  // is the whole of the first rule in `docs/specs/latex.md`, and warming here
-  // would break it silently.
+  // LaTeX is not a renderer-worker format: `latex.js` loads the pinned
+  // WasmTex release itself, on the editor's side, so there is nothing here to
+  // warm.
   if (format === "latex") return;
   request(format, "warm").catch(() => {
     /* reported when something is actually rendered */

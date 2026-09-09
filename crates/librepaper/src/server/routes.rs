@@ -79,7 +79,7 @@ pub(super) async fn handle(
         // same shell as above in every way that confines a document -- same
         // CSP, same `frame-ancestors`, same agent, same `no-store` -- and
         // differs only in what it can be sent: a `preview` message carrying
-        // PDF bytes rather than HTML. See `docs/specs/latex.md`, "The preview".
+        // PDF bytes rather than HTML.
         if let ["pdf", slug] | ["pdf", slug, ""] = parts[..] {
             return server.serve_viewer(&arrival, slug).await;
         }
@@ -434,7 +434,7 @@ pub(super) async fn handle(
     // checkpoint it was compiled from. Putting one takes an editor, because
     // only somebody who may change the document may say what it looks like;
     // reading one takes whatever reading the document takes, because a
-    // rendering is the document. See `docs/specs/latex.md`, "Renderings, stored".
+    // rendering is the document.
     //
     // `latest` is not a SHA and never can be -- a SHA is sixty-four hex
     // characters -- so it sits in the same shape without ambiguity: it answers

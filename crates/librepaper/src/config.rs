@@ -372,7 +372,7 @@ pub struct SessionLimit {
 /// A checkpoint asked for within this many seconds of the last one waits until
 /// they have passed. A burst of saves is one mark in the timeline, and a sync
 /// client writing all day is two marks a minute at most. A constant rather
-/// than a flag, as `docs/specs/history.md` says.
+/// than a flag, on purpose.
 pub const CHECKPOINT_DEFER_SECONDS: i64 = 30;
 
 /// The maximum length of each free-text field on an annotation.

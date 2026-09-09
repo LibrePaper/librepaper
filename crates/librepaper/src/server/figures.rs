@@ -196,8 +196,8 @@ impl Server {
     /// Stores the PDF an editor's browser compiled, under the SHA of the
     /// checkpoint it was compiled from.
     ///
-    /// This is the one exception to `docs/specs/history.md`'s rule that nothing
-    /// derived is stored, and the acceptance rules are what bound it. The
+    /// This is the one exception to the rule that nothing derived is stored,
+    /// and the acceptance rules are what bound it. The
     /// caller must be an editor. The name must be a checkpoint's SHA, or the
     /// SHA the live text would take -- in which case a checkpoint is taken
     /// first, the way a comment takes one, so that what is stored is a
