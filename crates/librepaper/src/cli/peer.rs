@@ -1165,8 +1165,16 @@ pub enum AgentCommand {
         )]
         chat_token: Option<String>,
         /// Directory for the local thread id and completed task ids.
-        #[arg(long)]
+        #[arg(long, env = "LIBREPAPER_ASSISTANT_STATE_DIR", value_name = "DIR")]
         state_dir: Option<std::path::PathBuf>,
+        /// The Codex executable the runner drives.
+        #[arg(
+            long,
+            env = "LIBREPAPER_CODEX",
+            default_value = "codex",
+            value_name = "EXECUTABLE"
+        )]
+        codex: String,
         /// Start a detached runner and wait until it is ready.
         #[arg(long)]
         background: bool,
@@ -1176,7 +1184,7 @@ pub enum AgentCommand {
         link: String,
         #[arg(long)]
         conversation: String,
-        #[arg(long)]
+        #[arg(long, env = "LIBREPAPER_ASSISTANT_STATE_DIR", value_name = "DIR")]
         state_dir: Option<std::path::PathBuf>,
     },
     /// Ask the local runner to stop through its nonce-bound control file.
@@ -1184,7 +1192,7 @@ pub enum AgentCommand {
         link: String,
         #[arg(long)]
         conversation: String,
-        #[arg(long)]
+        #[arg(long, env = "LIBREPAPER_ASSISTANT_STATE_DIR", value_name = "DIR")]
         state_dir: Option<std::path::PathBuf>,
     },
     /// Inspect structured document context for an assistant task.
@@ -1220,7 +1228,9 @@ pub enum AgentCommand {
         files: std::path::PathBuf,
         #[arg(long)]
         task_id: String,
-        #[arg(long)]
+        /// The runner's state directory; the runner hands it to the tools it
+        /// spawns through the environment.
+        #[arg(long, env = "LIBREPAPER_ASSISTANT_STATE_DIR", value_name = "DIR")]
         state_dir: Option<std::path::PathBuf>,
     },
     /// Print the source and annotations visible through this link.
@@ -1386,16 +1396,19 @@ pub async fn run_cli(
             conversation,
             chat_token,
             state_dir,
+            codex,
             background,
             ..
         } => {
-            let config = runner::config(conversation.clone(), chat_token, state_dir.clone())?;
+            let config =
+                runner::config(conversation.clone(), chat_token, state_dir.clone(), codex)?;
             if background {
                 super::runner_lifecycle::start_background(
                     peer.link(),
                     &conversation,
                     &config.token,
                     config.state_dir.as_deref(),
+                    &config.executable,
                 )?;
                 println!("{}", json!({"started":true,"conversation":conversation}));
             } else {

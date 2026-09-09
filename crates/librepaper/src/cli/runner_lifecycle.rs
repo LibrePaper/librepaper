@@ -217,6 +217,7 @@ pub(crate) fn start_background(
     conversation: &str,
     token: &str,
     state_dir: Option<&Path>,
+    codex: &str,
 ) -> Result<(), String> {
     let location = location(link, conversation, state_dir)?;
     private_directory(&location.directory)?;
@@ -233,6 +234,7 @@ pub(crate) fn start_background(
     // Keep the document key out of the child process command line. `-` is an
     // internal argv sentinel resolved from this short lived environment.
     command.args(["agent", "connect", "-", "--conversation", conversation]);
+    command.args(["--codex", codex]);
     if let Some(path) = state_dir {
         command.args([
             "--state-dir",

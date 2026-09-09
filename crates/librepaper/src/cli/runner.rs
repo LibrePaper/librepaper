@@ -24,12 +24,13 @@ pub fn config(
     conversation: String,
     token: Option<String>,
     state_dir: Option<PathBuf>,
+    executable: String,
 ) -> Result<Config, String> {
     Ok(Config {
         conversation,
         token: chat_token(token)?,
         state_dir,
-        executable: std::env::var("LIBREPAPER_CODEX").unwrap_or_else(|_| "codex".into()),
+        executable,
     })
 }
 fn event_id() -> String {

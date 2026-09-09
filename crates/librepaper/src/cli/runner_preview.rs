@@ -107,14 +107,11 @@ fn preview_dir(
     conversation: &str,
     state_dir: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    let inherited = std::env::var_os("LIBREPAPER_ASSISTANT_STATE_DIR").map(PathBuf::from);
-    Ok(runner_lifecycle::location(
-        peer.link(),
-        conversation,
-        state_dir.or(inherited.as_deref()),
-    )?
-    .directory
-    .join("preview"))
+    Ok(
+        runner_lifecycle::location(peer.link(), conversation, state_dir)?
+            .directory
+            .join("preview"),
+    )
 }
 
 /// Submit an isolated candidate and wait for browser diagnostics.
