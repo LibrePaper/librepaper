@@ -64,7 +64,7 @@ mount(Reader, {target:document.body});
 `);
 let serverHttp, b;
 try {
-  await build({ configFile:false, root:join(root,"web"), plugins:[tailwindcss(), svelte(), {name:"mock-room", enforce:"pre", resolveId(id){ if(id === '../lib/room.js') return room; }}], build:{outDir:out,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"check.js"}}, logLevel:"error" });
+  await build({ configFile:false, root:join(root,"web"), plugins:[tailwindcss(), svelte(), {name:"mock-room", enforce:"pre", resolveId(id){ if(id === '../lib/room.js' || id === '../room.js' || id.endsWith('/src/lib/room.js')) return room; }}], build:{outDir:out,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"check.js"}}, logLevel:"error" });
   serverHttp=createServer((req,res)=>{
     if(req.url==="/docs/paper") {
       res.setHeader("content-type","text/html");

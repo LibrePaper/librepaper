@@ -5,6 +5,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { diagnosticContext } from "../src/lib/assistant-review.js";
+import { createReaderBoot } from "../src/lib/reader/boot.js";
+import { createPendingChat } from "../src/lib/reader/chat.js";
+import { createReaderCollaboration } from "../src/lib/reader/collaboration.js";
 
 const reader = readFileSync(new URL("../src/components/Reader.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -21,11 +24,73 @@ const paintRendering = body("  async function paintRendering()", "  // The PDF t
 const deliverAndReplay = body("  function deliverPreview(payload)", "  // The kind of frame follows");
 const paintPreview = body("  async function paintPreview()", "  // Editors refresh at a bounded cadence");
 
+// Session lifecycle checks use the extracted resource owners directly. The
+// fake room/session expose only the contracts Reader needs, which keeps these
+// checks focused on stale metadata and teardown rather than WebSocket syntax.
+function fakeSession(joinOptions) {
+  const observers = new Set();
+  return {
+    joined: false,
+    awareness: { on: (_name, fn) => observers.add(fn), off: (_name, fn) => observers.delete(fn) },
+    watchSource: () => {}, onSwap: () => {}, onFiles: () => () => {},
+    open: () => ({ type: "y-open" }), disconnected() { this.joined = false; },
+    leave() { this.left = true; observers.clear(); },
+    joinOptions,
+  };
+}
+
+function fakeCollaboration() {
+  let joined;
+  return {
+    module: { join(options) { joined = fakeSession(options); return joined; } },
+    get session() { return joined; },
+  };
+}
+
 const deferred = () => {
   let resolve;
   const promise = new Promise((done) => (resolve = done));
   return { promise, resolve };
 };
+
+// A replaced boot cannot let old identity or document responses populate the
+// new reader, and disposal suppresses both callbacks.
+{
+  const oldDocument = deferred();
+  const newDocument = deferred();
+  const oldIdentity = deferred();
+  const newIdentity = deferred();
+  const documents = [];
+  const identities = [];
+  let documentRequests = 0;
+  let identityRequests = 0;
+  const boot = createReaderBoot({
+    slug: "example",
+    fetcher: () => (++documentRequests === 1 ? oldDocument.promise : newDocument.promise),
+    whoami: () => (++identityRequests === 1 ? oldIdentity.promise : newIdentity.promise),
+    onDocument: (value) => documents.push(value),
+    onIdentity: (value) => identities.push(value),
+  });
+  const first = boot.start();
+  const second = boot.start();
+  oldDocument.resolve({ ok: true, json: async () => ({ id: "old" }) });
+  oldIdentity.resolve({ name: "old" });
+  newDocument.resolve({ ok: true, json: async () => ({ id: "new" }) });
+  newIdentity.resolve({ name: "new" });
+  await Promise.all([first, second]);
+  await new Promise(setImmediate);
+  assert.deepEqual(documents, [{ id: "new" }]);
+  assert.deepEqual(identities, [{ name: "new" }]);
+
+  const late = deferred();
+  let callbacks = 0;
+  const disposed = createReaderBoot({ slug: "example", fetcher: () => late.promise, onDocument: () => callbacks++ });
+  disposed.start();
+  disposed.dispose();
+  late.resolve({ ok: true, json: async () => ({ id: "late" }) });
+  await new Promise(setImmediate);
+  assert.equal(callbacks, 0);
+}
 
 const context = (values) => vm.createContext({
   clearTimeout,
@@ -480,34 +545,106 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.equal(ctx.state, "");
 }
 
-// A reconnect must check the document's creation before sending the old CRDT.
-for (const outcome of ["same", "recreated", "disconnected", "promoted", "downgraded"]) {
-  const metadata = deferred();
+// Reconnect metadata is checked before the old session can send its CRDT.
+// A late response from an older reconnect attempt cannot re-open the room.
+{
+  const first = deferred();
+  const second = deferred();
   const sent = [];
-  let reloads = 0;
-  const active = { joined: true, disconnected() { this.joined = false; }, open: () => ({ type: "y-open" }) };
-  const ctx = context({
-    rejoinRequest: 0, connected: true, session: active,
-    pendingChat: new Map(), settleChat: () => {},
-    passages: { clearPassageCache: () => {} },
-    doc: { created_at: "first", ...((outcome === "promoted" || outcome === "downgraded") ? { role: outcome === "promoted" ? "reader" : "editor" } : {}) }, SLUG: "example", KEY: "", keyHeaders: () => ({}),
-    fetch: () => metadata.promise, location: { reload: () => reloads++ },
-    room: { send: (message) => sent.push(message) }, outbox: { disconnected: () => {} },
+  const states = [];
+  const rooms = [];
+  let fetches = 0;
+  const fake = fakeCollaboration();
+  const collaboration = createReaderCollaboration({
+    slug: "example", fetcher: () => (++fetches === 1 ? first.promise : second.promise),
+    openRoom: (_slug, options) => {
+      rooms.push(options);
+      return { send: (message) => sent.push(message), sendLive: () => ({ ok: true }), close: () => {} };
+    },
+    collab: fake.module,
+    getCanEdit: () => true,
+    onConnected: (up) => states.push(up),
   });
-  vm.runInContext(body("  async function reconnected(up)", "  $effect(() => {\n    markViewed"), ctx);
-  const reconnecting = vm.runInContext("reconnected(true)", ctx);
-  assert.equal(active.joined, false);
-  assert.equal(sent.length, 0);
-  if (outcome === "disconnected") await vm.runInContext("reconnected(false)", ctx);
-  metadata.resolve({ ok: true, json: async () => ({
-    created_at: outcome === "recreated" ? "second" : "first",
-    ...((outcome === "promoted" || outcome === "downgraded") ? {
-      role: outcome === "promoted" ? "editor" : "reader",
-    } : {}),
-  }) });
-  await reconnecting;
-  assert.equal(sent.length, outcome === "same" ? 1 : 0);
-  assert.equal(reloads, ["recreated", "promoted", "downgraded"].includes(outcome) ? 1 : 0);
+  collaboration.start({ created_at: "first", role: "editor" });
+  const active = fake.session;
+  active.joinOptions.send({ type: "y-update", update: "held" });
+  assert.equal(sent.length, 1, "the initial y-open is sent");
+  rooms[0].onConnected(false);
+  const stale = rooms[0].onConnected(true);
+  const current = rooms[0].onConnected(true);
+  second.resolve({ ok: true, json: async () => ({ created_at: "first", role: "editor" }) });
+  await current;
+  first.resolve({ ok: true, json: async () => ({ created_at: "first", role: "editor" }) });
+  await stale;
+  assert.equal(sent.filter((message) => message.type === "y-open").length, 2, "only the current reconnect re-opens");
+  collaboration.close();
+  assert.equal(active.left, true);
+}
+
+// A recreated document or changed capability invalidates the old session and
+// never sends its state vector back to the new server.
+for (const latest of [
+  { created_at: "second", role: "editor" },
+  { created_at: "first", role: "reader" },
+]) {
+  const sent = [];
+  let changed = 0;
+  const fake = fakeCollaboration();
+  let roomOptions;
+  const collaboration = createReaderCollaboration({
+    slug: "example", fetcher: async () => ({ ok: true, json: async () => latest }),
+    openRoom: (_slug, options) => {
+      roomOptions = options;
+      return { send: (message) => sent.push(message), sendLive: () => ({ ok: true }), close: () => {} };
+    },
+    collab: fake.module,
+    getCanEdit: () => true,
+    onDocumentChanged: () => changed++,
+  });
+  collaboration.start({ created_at: "first", role: "editor" });
+  roomOptions.onConnected(false);
+  await roomOptions.onConnected(true);
+  collaboration.close();
+  assert.equal(changed, 1, "changed metadata invalidates the old session");
+  assert.equal(sent.filter((message) => message.type === "y-open").length, 1);
+}
+
+// A metadata retry and a pending chat timeout are both cancelled by teardown.
+{
+  const timers = [];
+  const fake = fakeCollaboration();
+  let roomOptions;
+  const collaboration = createReaderCollaboration({
+    slug: "example", fetcher: async () => { throw new Error("offline"); },
+    openRoom: (_slug, options) => {
+      roomOptions = options;
+      return { send: () => {}, sendLive: () => ({ ok: true }), close: () => {} };
+    },
+    collab: fake.module,
+    retryMs: 1,
+    setTimer: (fn) => { const id = timers.length + 1; timers.push({ id, fn, cleared: false }); return id; },
+    clearTimer: (id) => { const timer = timers.find((item) => item.id === id); if (timer) timer.cleared = true; },
+  });
+  collaboration.start({ created_at: "first", role: "editor" });
+  roomOptions.onConnected(false);
+  await roomOptions.onConnected(true);
+  collaboration.close();
+  assert.equal(timers.length, 1, "metadata failure schedules one retry");
+  assert.equal(timers[0].cleared, true, "teardown clears metadata retry");
+
+  let now = 0;
+  const chat = createPendingChat({
+    createId: () => "chat-1", setTimer: (fn, ms) => { const id = ++now; timers.push({ id, fn, ms }); return id; },
+    clearTimer: (id) => { const timer = timers.find((item) => item.id === id); if (timer) timer.cleared = true; },
+    send: () => ({ ok: true }),
+  });
+  const timed = chat.send("hello");
+  timers.at(-1).fn();
+  assert.equal(await timed, false, "chat acknowledgement timeout settles the send");
+  const result = chat.send("teardown");
+  chat.dispose();
+  assert.equal(await result, false, "teardown settles pending chat");
+  assert.equal(timers[0].cleared, true, "teardown clears the chat timer");
 }
 
 // A missing historical PDF clears the old pages and records an honest

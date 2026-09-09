@@ -5,7 +5,6 @@
   import * as sync from "../lib/sync.js";
   import * as renderers from "../lib/renderers.js";
   import * as diagnosticsRule from "../lib/diagnostics.js";
-  import * as collab from "../lib/collab.js";
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
   import { createHistoryController } from "../lib/reader/history.svelte.js";
@@ -17,14 +16,15 @@
   import * as latex from "../lib/latex.js";
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
-  import { openRoom } from "../lib/room.js";
   import { createAnnotations } from "../lib/reader/annotations.js";
+  import { createReaderBoot } from "../lib/reader/boot.js";
+  import { createPendingChat } from "../lib/reader/chat.js";
+  import { createReaderCollaboration } from "../lib/reader/collaboration.js";
   import PendingAnnotations from "./PendingAnnotations.svelte";
   import {
     SHELL_HEADERS,
     config as loadConfig,
     keyHeaders,
-    me as whoami,
     signInHref,
     uploadAsset,
   } from "../lib/api.js";
@@ -102,7 +102,7 @@
   let canModerate = $derived(Boolean(doc.can_moderate));
   let connected = $state(true);
   let liveChat = $state([]);
-  const pendingChat = new Map();
+  let pendingChat;
   let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
   // named on the document. A reader who arrived by link is offered neither,
@@ -125,7 +125,7 @@
     update: (next) => (comments = next),
     anchor: anchorComments,
     repaint: applyHighlights,
-    send: (message) => room?.send(message),
+    send: (message) => collaboration?.send(message),
     changed: (items) => (unconfirmed = items),
   });
   const outbox = annotations.outbox;
@@ -281,7 +281,7 @@
       );
       if (source) {
         pendingBackfill.add(comment.id);
-        room?.send({ type: "anchor", comment_id: comment.id, source });
+        collaboration?.send({ type: "anchor", comment_id: comment.id, source });
       }
     }
   }
@@ -532,7 +532,7 @@
   function decideSuggestion(comment, action) {
     suggestions.beginDeciding(comment, action);
     comments = comments;
-    room?.send({ type: action, comment_id: comment.id, request_id: crypto.randomUUID() });
+    collaboration?.send({ type: action, comment_id: comment.id, request_id: crypto.randomUUID() });
   }
 
   async function rejectConfirmed(comment) {
@@ -601,17 +601,22 @@
 
   /* -------------------------------------------------------------------- room */
 
-  let room = null;
+  let collaboration = null;
+
+  function sendLiveChat(text) {
+    if (!collaboration || !connected || !mayChat) return Promise.resolve(false);
+    return pendingChat?.send(text) || Promise.resolve(false);
+  }
 
   function receive(event) {
     if (annotations.receive(event)) return;
     if (event.type === "chat") {
       if (!liveChat.some((message) => message.id === event.id)) liveChat = [...liveChat, event].slice(-200);
-      if (event.temp_id) settleChat(event.temp_id, true);
+      if (event.temp_id) pendingChat?.acknowledge(event.temp_id, true);
       return;
     }
     if (event.type === "chat-ack") {
-      settleChat(event.temp_id, true);
+      pendingChat?.acknowledge(event.temp_id, true);
       return;
     }
     if (event.type === "hello") {
@@ -627,8 +632,8 @@
       return;
     }
     if (event.type === "error") {
-      if (event.temp_id && pendingChat.has(event.temp_id)) {
-        settleChat(event.temp_id, false);
+      if (event.temp_id && pendingChat?.has(event.temp_id)) {
+        pendingChat.acknowledge(event.temp_id, false);
         toastProblem(event.message || "Chat message was rejected.");
         return;
       }
@@ -1904,44 +1909,6 @@
 
   /* ------------------------------------------------------------------- boot */
 
-  // Joining the session is what shows the document: there is no stored page to
-  // load, so a reader renders the text with the same module the editor
-  // previews with, on a longer timer. Editing is not a second connection; it
-  // is the source pane unfolding over the document this page already holds.
-  function joinSession(document_) {
-    session = collab.join({
-      send: (message) => {
-        // While reconnecting, keep edits in the local document until the
-        // server's document identity has been checked. start() sends them
-        // together once this session has rejoined the same document.
-        if (message.type.startsWith("y-update") && !session?.joined) return;
-        return room.send(message);
-      },
-      onPeers: (count) => (peers = Math.max(peers, count)),
-      onState: (state_) => (persistence = state_),
-      name: identity || doc.commenting_as || "Anonymous",
-      slug: SLUG,
-      createdAt: document_.created_at,
-      key: KEY,
-      mayEdit,
-    });
-    session.watchSource(() => {
-      // Directory files are already covered by the deep observer below.
-      if (!session.mainId()) sourceChanged();
-    });
-    // The text the editor is bound to is not the text it was bound to when a
-    // migrated document's maps arrive. Re-keying the component is what makes
-    // it bind again; the words do not change, only which type holds them.
-    session.onSwap(() => (sourceEpoch += 1));
-    // The directory, and who is in which file. Both change under this browser
-    // rather than because of it, so both are watched rather than recomputed
-    // after each of this browser's own actions.
-    session.onFiles(filesChanged);
-    session.awareness.on("change", refreshPeers);
-    refreshFiles();
-    room.send(session.open());
-  }
-
   /* ------------------------------------------------------------- the files */
 
   // The directory as the list shows it, and where everyone's caret is. Held
@@ -2230,6 +2197,41 @@
     paintPreview();
   }
 
+  function startCollaboration(document_) {
+    collaboration?.close();
+    collaboration = createReaderCollaboration({
+      slug: SLUG,
+      key: KEY,
+      getIdentity: () => identity,
+      getCanEdit: () => mayEdit,
+      onMessage: receive,
+      onConnected: (up) => {
+        connected = up;
+        if (!up) {
+          pendingChat?.disconnect();
+          outbox.disconnected();
+        }
+      },
+      onPeers: (count) => (peers = Math.max(peers, count)),
+      onState: (state_) => (persistence = state_),
+      onSession: (active) => {
+        session = active;
+        refreshFiles();
+      },
+      onSource: (active) => {
+        if (!active.mainId()) sourceChanged();
+      },
+      onSwap: () => (sourceEpoch += 1),
+      onFiles: filesChanged,
+      onAwareness: refreshPeers,
+      onDocumentChanged: () => {
+        passages.clearPassageCache();
+        location.reload();
+      },
+    });
+    session = collaboration.start(document_);
+  }
+
   // What this browser may do with the document, and whether it can render it
   // at all.
   async function prepare(document_) {
@@ -2266,7 +2268,7 @@
     // Typst is loaded automatically for editors. Readers use the stored PDF
     // and must remain usable on a deployment with no Typst module at all.
     if (mayEdit) renderers.warm(format);
-    joinSession(document_);
+    startCollaboration(document_);
     // No chooser and no saved distribution: `latex.configure` tells the
     // controller which project this is and what it is allowed to do, and the
     // first `paintPreview` (from `startEditing` below, or an edit) is what
@@ -2293,93 +2295,19 @@
     }
   }
 
-  // The socket is up or down. A socket that comes back has to rejoin: the
-  // server hands the document out on `y-open` and nothing else, so without
-  // this the changes made on either side of the gap never reach the other.
-  let rejoinRequest = 0;
-  function settleChat(id, accepted) {
-    const pending = pendingChat.get(id);
-    if (!pending) return;
-    clearTimeout(pending.timeout);
-    pendingChat.delete(id);
-    pending.resolve(accepted);
-  }
-
-  function sendLiveChat(text) {
-    if (!room || !connected || !mayChat) return Promise.resolve(false);
-    const temp_id = crypto.randomUUID();
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => settleChat(temp_id, false), 5000);
-      pendingChat.set(temp_id, { resolve, timeout });
-      if (room.sendLive({ type: "chat", body: text, temp_id })?.ok !== true) settleChat(temp_id, false);
-    });
-  }
-
-  async function reconnected(up) {
-    const request = ++rejoinRequest;
-    connected = up;
-    if (!up) {
-      for (const id of [...pendingChat.keys()]) settleChat(id, false);
-      outbox.disconnected();
-      session?.disconnected();
-      return;
-    }
-    const active = session;
-    if (!active) return;
-    active.disconnected();
-    try {
-      const response = await fetch(`/api/documents/${SLUG}`, { headers: keyHeaders(KEY) });
-      if (request !== rejoinRequest || session !== active) return;
-      if (!response.ok) {
-        // A deleted document or a changed role must go through normal boot.
-        passages.clearPassageCache();
-        location.reload();
-        return;
-      }
-      const latest = await response.json();
-      if (request !== rejoinRequest || session !== active) return;
-      if (doc.created_at && latest.created_at !== doc.created_at) {
-        // Redeployment can recreate an example at the same URL. Its old
-        // session stays in its own cache; boot joins the new document.
-        location.reload();
-        return;
-      }
-      // The CRDT session was created with the old capabilities. Rejoining it
-      // after a role change would either keep a downgraded editor writing
-      // updates the server discards, or leave a promoted reader without the
-      // editor session and LaTeX setup it now needs.
-      const capability = (document_) => JSON.stringify([
-        document_.role ?? null,
-        document_.can_edit ?? null,
-        document_.can_moderate ?? null,
-        document_.can_see_sharing ?? null,
-      ]);
-      if (capability(latest) !== capability(doc)) {
-        passages.clearPassageCache();
-        location.reload();
-        return;
-      }
-      room.send(active.open());
-    } catch {
-      // A temporary metadata failure must not send unchecked CRDT updates.
-      setTimeout(() => {
-        if (request === rejoinRequest && session === active) void reconnected(true);
-      }, 1000);
-    }
-  }
-
   $effect(() => {
     markViewed(SLUG);
-    room = openRoom(SLUG, { onMessage: receive, onConnected: reconnected, key: KEY });
-
-    whoami().then((who) => {
-      me = who;
-      if (who.name) session?.rename(who.name);
+    pendingChat = createPendingChat({
+      send: (message) => collaboration?.sendLive(message) || { ok: false },
     });
-
-    fetch(`/api/documents/${SLUG}`, { headers: keyHeaders(KEY) })
-      .then((response) => (response.ok ? response.json() : Promise.reject(new Error("not found"))))
-      .then((found) => {
+    const boot = createReaderBoot({
+      slug: SLUG,
+      key: KEY,
+      onIdentity: (who) => {
+        me = who;
+        if (who.name) session?.rename(who.name);
+      },
+      onDocument: (found) => {
         doc = found;
         document.title = `${found.title} · LibrePaper`;
         docsOrigin = found.docs_origin || location.origin;
@@ -2389,20 +2317,22 @@
         // frame that can draw one. Set after `prepare`, which is what settles
         // the format and so which frame this document wants.
         void prepare(found);
-      })
+      },
       // A document answers a stranger exactly as a missing one does, which
       // tells a stranger nothing -- and tells an owner who has not signed in
       // nothing either. That is what this line is for: the page was opened
       // at a real URL, so the honest thing to say is both.
-      .catch(() => {
+      onError: () => {
         doc = { title: "Document not found" };
         say(
           me.providers?.length && !identity
             ? "not found — sign in, if this was shared with you"
-            : "not found",
+          : "not found",
           true,
         );
-      });
+      },
+    });
+    boot.start();
 
     return () => {
       // The session on the server ends when the last person in it
@@ -2412,8 +2342,9 @@
       framePreview.dispose();
       renderingStore?.dispose();
       stopLatex();
-      session?.leave();
-      room?.close();
+      pendingChat?.dispose();
+      collaboration?.close();
+      boot.dispose();
     };
   });
 
@@ -2675,7 +2606,7 @@
                   onreject={(comment) => decideSuggestion(comment, "reject")}>
           {#snippet pending()}
             <PendingAnnotations items={unconfirmed}
-              onretry={(id) => outbox.retry(id, (message) => room?.send(message))}
+              onretry={(id) => outbox.retry(id, (message) => collaboration?.send(message))}
               ondiscard={discardAnnotation} />
           {/snippet}
         </Comments>
