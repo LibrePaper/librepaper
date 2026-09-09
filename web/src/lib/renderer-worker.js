@@ -6,10 +6,6 @@ function render(wasm, tree, title) {
   const { bytes, text, kind, ok, diagnostics } = call(wasm, "compile", source, title);
   if (ok && kind === "pdf") return { pdf: bytes.buffer, diagnostics };
   if (ok && kind === "html") return { html: text, diagnostics };
-  // A module built before the second result channel says nothing about why it
-  // failed, and puts its message where the page would be. Rather than show
-  // nothing at all, that message becomes a diagnostic with no place in the
-  // source, which is what such a module can honestly say.
   const said = diagnostics.length
     ? diagnostics
     : [{ severity: "error", message: text || "this document could not be compiled", hints: [], file: "", line: 0, column: 0, end_line: 0, end_column: 0 }];
@@ -34,7 +30,7 @@ self.onmessage = ({ data: { id, url, operation, args } }) => {
         const raw = call(wasm, "word_diff", args.old, args.new).text;
         result = JSON.parse(raw || "[]");
       }
-      else if (operation === "failure") result = wasm.failure_page ? call(wasm, "failure_page", args.title).text : null;
+      else if (operation === "failure") result = call(wasm, "failure_page", args.title).text;
       else if (operation !== "warm") throw new Error(`Unknown renderer operation: ${operation}`);
       const transfer = result?.pdf instanceof ArrayBuffer ? [result.pdf] : [];
       self.postMessage({ id, result }, transfer);

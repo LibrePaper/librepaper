@@ -1658,14 +1658,14 @@ fn diagnostics_json_with_files(
         .filter_map(|(path, value)| value.as_str().map(|text| (path.clone(), text.to_owned())))
         .collect();
     let mut compiled = match format.as_str() {
-        "markdown" | "md" => librepaper_engine::citations::compile(
+        "markdown" | "md" => wasm_bibliography::citations::compile(
             &path,
             source,
             &snapshot.title,
             &texts,
-            &librepaper_engine::markdown::no_assets,
+            &wasm_markdown::markdown::no_assets,
         ),
-        "html" | "htm" => librepaper_engine::html::compile(source, &snapshot.title),
+        "html" | "htm" => crate::document::html::compile(source, &snapshot.title),
         "typst" | "typ" => {
             let files: Vec<(String, Vec<u8>)> = snapshot
                 .texts
@@ -1698,7 +1698,7 @@ fn diagnostics_json_with_files(
     if !matches!(format.as_str(), "markdown" | "md") {
         compiled
             .diagnostics
-            .extend(librepaper_engine::bib::library(&path, &format, source, &texts).diagnostics);
+            .extend(wasm_bibliography::bib::library(&path, &format, source, &texts).diagnostics);
     }
     let mut output = Vec::with_capacity(compiled.diagnostics.len());
     for diagnostic in compiled.diagnostics {

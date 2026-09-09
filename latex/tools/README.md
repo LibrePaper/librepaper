@@ -1,81 +1,54 @@
-# The LaTeX mirror
+# LaTeX mirror tools
 
-`latex/mirror/` is what a browser fetches to compile a document: WasmTex's
-engines and a pinned TeX Live package snapshot, mirrored under LibrePaper's own
-names so the browser never depends on an upstream project's live service.
-The shape is the contract in
-[`docs/specs/wasmtex-interfaces.md`](../../docs/specs/wasmtex-interfaces.md)
-section 1; this file is how to build it and what is and is not verified yet.
-
-## What is pinned where
-
-- `latex/tools/wasmtex.mjs` names the pinned inputs at the top of the file:
-  `ENGINE_RELEASE` (`2026-8b7946970153c52e`, the WasmTex engine release),
-  `SNAPSHOT` (`2026-ba38749b8714505a`, the TeX Live package snapshot) and
-  `WRAPPER_REVISION` (the WasmTex source revision the release was evaluated
-  against, `44c5861fcdf729838205b00b96ac9509bc7fb677`). Changing any of these
-  is a deliberate re-pin -- a new evaluation, a new manifest entry beside the
-  old one, never an automatic follow of upstream.
-- The evaluation record -- byte counts and SHA-256 for every engine file --
-  lives at
-  `latex/benchmark/candidates/wasmtex/downloads/manifest-2026.json`, produced
-  by the comparison described in
-  `latex/benchmark/candidates/comparison/README.md`. `wasmtex.mjs` refuses to
-  mirror if the *live* upstream manifest's `releaseId` disagrees with the
-  pinned one, or if any fetched file's bytes/sha256 disagree with this
-  record.
-- Licence notices (`LICENSE`, `THIRD_PARTY_NOTICES.md`, `docs/licensing.md`,
-  `docs/corresponding-source.md`) and, for `wasmtex-record.mjs`, the host-side
-  driver classes (`lib/engine/*.js`) are read from the WasmTex source
-  checkout at `latex/benchmark/candidates/wasmtex/source` -- untracked,
-  build-time input, not something either script writes to. Check out
-  `WRAPPER_REVISION` there before running either script; a missing checkout
-  fails loudly rather than silently skipping notices a release must carry.
+LibrePaper consumes engine releases from `wasm-latex`. The engine repository
+owns compilation, format generation, notices, and its release gate; this
+repository owns the deployment mirror and the TeX Live package set.
 
 ## Building the mirror
 
+In the wasm-latex repository, stage and check a release:
+
 ```sh
-# 1. The engine release: fetches, verifies against the pinned digests, and
-#    writes latex/mirror/wasmtex/<engineRelease>/ plus the `releases` entry.
-node latex/tools/wasmtex.mjs
+node tools/stage-release.mjs --dist wasm-build/dist --out staged --source-url <published-source-archive-URL>
+node tools/check-release.mjs --dir staged
+```
 
-# 2a. Package files, by key, fetched from the pinned TeX Live snapshot:
-node latex/tools/wasmtex.mjs --texlive pdftex/26/amsmath.sty pdftex/26/article.cls
+Successful staging prints the SHA-256 of `MANIFEST.json`. Review that digest and
+pass it explicitly to LibrePaper:
 
-# 2b. Or from a JSON file: an array of keys, or an object whose values are
-#     arrays of keys (the shape wasmtex-record.mjs's per-document tallies are
-#     in, so the two compose).
-node latex/tools/wasmtex.mjs --texlive-from corpus-keys.json
+```sh
+make latex-mirror LATEX_RELEASE=../wasm-latex/staged LATEX_RELEASE_SHA256=<manifest-sha256>
+# Or import just the engines:
+node latex/tools/wasmtex.mjs --release ../wasm-latex/staged --sha256 <manifest-sha256>
+```
 
-# 2c. Or by TeX Live collection, the way a distribution chooses a package
-#     set: the TLPDB's file lists for basic, latex, latexrecommended,
-#     latexextra, fontsrecommended and mathscience (the default), fetched
-#     from the pinned snapshot sixteen at a time. This is what makes a
-#     document outside the corpus compile; a name the snapshot lacks is
-#     recorded absent. About 12,000 files and 270 MB.
+A downloaded release directory works the same way; no source or benchmark
+checkout is required. There is no default release digest because the new
+module has not published a complete release yet. Staging without passing its
+release gate remains inspectable but cannot be imported.
+
+The importer verifies the pinned manifest and every payload file before
+writing the release, including notices and receipts. The manifest digest names
+the mirror directory, preventing releases from overwriting one another. Only
+complete engine sets are advertised: a pdfTeX/BibTeX release does not advertise
+XeTeX or LuaTeX. Existing mirrors remain readable.
+
+TeX Live packages still use the pinned `2026-ba38749b8714505a` snapshot. Package
+mirroring is separate from engine building:
+
+```sh
 node latex/tools/wasmtex.mjs --scheme
-
-# 2d. Files the workers ask for at the snapshot's root rather than under an
-#     engine/format pair: XeTeX's ICU data.
+node latex/tools/wasmtex.mjs --texlive pdftex/26/amsmath.sty pdftex/26/article.cls
+node latex/tools/wasmtex.mjs --texlive-from corpus-keys.json
 node latex/tools/wasmtex.mjs --texlive-root icudt68l.dat
-
-# 3. The compact initial set the browser prefetches in parallel before a
-#    first compile. Every key must already be fetched; this never fetches.
-node latex/tools/wasmtex.mjs --initial pdftex/26/amsmath.sty pdftex/26/article.cls ...
-
-# 4. The Biber VM release, built by latex/tools/biber-vm/build.mjs (Docker),
-#    registered on the default release so the browser can find it.
+node latex/tools/wasmtex.mjs --initial pdftex/26/amsmath.sty pdftex/26/article.cls
 node latex/tools/wasmtex.mjs --vm latex/mirror/biber-vm/<vmRelease>
 ```
 
-Both fetch forms are idempotent -- a key already present, or already recorded
-absent, is not asked for again -- so re-running costs a manifest read per
-key, not a network round trip. Every `--texlive`/`--texlive-from` run
-regenerates `texlive/<snapshot>/bloom-filter.v2.bin` over every key now
-recorded present, and self-tests it (every present key must test positive
-against the freshly built bytes; see `latex/tools/bloom.mjs`) before writing
-it -- a bloom filter with a false negative would make the browser treat a
-real file as absent forever.
+The package commands regenerate and verify the lookup filter. Initial-package
+and VM registration apply to the current default release. Run the release
+import first. The browser controller and local/VM fallback remain application
+code.
 
 ## Recording the package set from real compiles
 
@@ -122,35 +95,14 @@ names in one run).
 
 ## Reproduction status
 
-The manifest's `releases.<id>.source.reproduced` is `false`, and it should
-stay that way until someone actually does the second half of "Own the
-WasmTex release": rebuilding pdfTeX and BibTeX from source independently,
-not merely mirroring verified upstream binaries (which is all this tool
-does). The upstream build receipts (`BUILD-RECEIPT.<family>.json`, mirrored
-into each release directory) and
-`latex/benchmark/candidates/wasmtex/source/docs/corresponding-source.md`
-describe the recipe:
+Build reproduction and source receipts belong to the wasm-latex repository.
+The mirror retains those receipts and the source URL from its staged release.
+It leaves `source.reproduced` false: importing bytes is not a reproduction
+check.
 
-```sh
-# Illustrative -- the exact commands the upstream Docker build recipe uses,
-# pinned by digest to the base image and Emscripten/TeX Live commits each
-# BUILD-RECEIPT.<family>.json names. NOT run by this checkout: it takes
-# hours, needs the pinned Docker base fetched, and its output has not been
-# diffed against the mirrored binaries above. Read the actual recipe in the
-# source checkout (wasm-build/, and the receipts' `buildId`/`sourceRevision`
-# fields) before running it for real.
-docker build -f wasm-build/Dockerfile.pdftex-bibtex \
-  --build-arg TEXLIVE_COMMIT=<pinned in BUILD-RECEIPT.pdftex.json> \
-  --build-arg EMSCRIPTEN_COMMIT=<pinned in BUILD-RECEIPT.pdftex.json> \
-  -t wasmtex-pdftex-build .
-docker run --rm -v "$PWD/out:/out" wasmtex-pdftex-build
-```
-
-This was deliberately not attempted here -- it takes hours of build time this
-task's budget did not have, and "not attempted" must not read as "done and
-skipped only in the log". Anyone who does run it should diff the result
-against `wasmtex-pdftex.wasm`/`wasmtex-pdftex.fmt`/`wasmtex-bibtex.wasm` in
-the mirrored release, and only then flip `reproduced` to `true`.
+The recording workflow above and the run history below describe the legacy
+upstream SDK harness. It still needs that SDK checkout for benchmark recording;
+normal mirror construction via `make latex-mirror` does not use it.
 
 ## Recording run actually performed here
 

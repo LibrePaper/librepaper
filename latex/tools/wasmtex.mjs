@@ -4,15 +4,12 @@
 // on an upstream project's live service (see `docs/specs/wasmtex-interfaces.md`
 // section 1, the contract this file produces exactly).
 //
-// Three things live here, and each is idempotent -- a file already on disk
-// with the right digest is not refetched, so re-running costs a manifest
-// read and, for the release, one upstream manifest fetch to compare against.
+// Release import and package mirroring are idempotent: verified release
+// files are left alone, and known package keys are not fetched again.
 //
-//   node latex/tools/wasmtex.mjs
-//     Mirrors the pinned 2026 engine release into
-//     latex/mirror/wasmtex/<engineRelease>/, verifies every file against the
-//     pinned bytes/sha256 in the evaluation manifest, copies licence notices,
-//     and writes the release entry into manifest.json.
+//   node latex/tools/wasmtex.mjs --release <staged directory> --sha256 <manifest digest>
+//     Imports a verified wasm-latex release, including its notices and receipts,
+//     into a digest-named directory and registers its complete engines.
 //
 //   node latex/tools/wasmtex.mjs --texlive <key>...
 //   node latex/tools/wasmtex.mjs --texlive-from <file.json>
@@ -52,9 +49,9 @@ import {
   readFileSync,
   writeFileSync,
   statSync,
-  cpSync,
 } from "node:fs";
 import { dirname, join, basename } from "node:path";
+import { readRelease } from "./release.mjs";
 import { buildBloom, verifyBloom } from "./bloom.mjs";
 import { SCHEME, schemeKeys } from "./scheme.mjs";
 
@@ -69,32 +66,7 @@ const REPO = dirname(dirname(HERE));
 // never an overwrite of it.
 export const ENGINE_RELEASE = "2026-8b7946970153c52e";
 export const SNAPSHOT = "2026-ba38749b8714505a";
-export const WRAPPER_REVISION = "44c5861fcdf729838205b00b96ac9509bc7fb677";
-export const RELEASE_ID = `${ENGINE_RELEASE}+${SNAPSHOT}`;
-
-const WASMTEX_UPSTREAM = "https://corca-ai.github.io/wasmtex/wasmtex/2026/";
 const TEXLIVE_UPSTREAM = `https://texlive.corca.ai/snapshots/${SNAPSHOT}/2026/`;
-
-// The evaluation manifest this release was pinned from: `bytes`/`sha256` for
-// every engine file, recorded once by the browser comparison so this script
-// never has to trust a live fetch's digest against itself.
-const PINNED_MANIFEST = join(
-  REPO,
-  "latex",
-  "benchmark",
-  "candidates",
-  "wasmtex",
-  "downloads",
-  "manifest-2026.json",
-);
-
-// Where the licence notices are copied from. This is the upstream source
-// checkout named in docs/specs/wasmtex.md ("Own the WasmTex release"), a build-time
-// input this script reads but never writes -- and, being untracked, it is not
-// guaranteed to exist in every checkout. A missing checkout fails loudly with
-// the revision to fetch, rather than silently skipping notices a release must
-// carry.
-const SOURCE_CHECKOUT = join(REPO, "latex", "benchmark", "candidates", "wasmtex", "source");
 
 const OUT = join(REPO, "latex", "mirror");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -149,154 +121,25 @@ function place(relative, bytes) {
   }
 }
 
-const ENGINE_FILE_SETS = {
-  pdftex: {
-    worker: "wasmtex-pdftex.worker.js",
-    format: "wasmtex-pdftex.fmt",
-    files: [
-      "wasmtex-pdftex.worker.js",
-      "wasmtex-pdftex.js",
-      "wasmtex-pdftex.wasm",
-      "wasmtex-pdftex-resolver-evidence.js",
-      "wasmtex-kpse-resolve.js",
-      "wasmtex-pdftex.fmt",
-    ],
-  },
-  xetex: {
-    worker: "wasmtex-xetex.worker.js",
-    format: "wasmtex-xetex.fmt.gz",
-    files: [
-      "wasmtex-xetex.worker.js",
-      "wasmtex-xetex.js",
-      "wasmtex-xetex.wasm",
-      "wasmtex-xetex-resolver-evidence.js",
-      "wasmtex-xetex.fmt.gz",
-    ],
-  },
-  dvipdfm: {
-    worker: "wasmtex-dvipdfm.worker.js",
-    files: ["wasmtex-dvipdfm.worker.js", "wasmtex-dvipdfm.js", "wasmtex-dvipdfm.wasm"],
-  },
-  luatex: {
-    worker: "wasmtex-luatex.worker.js",
-    format: "wasmtex-luatex.fmt.gz",
-    files: [
-      "wasmtex-luatex.worker.js",
-      "wasmtex-luatex.js",
-      "wasmtex-luatex.wasm",
-      "wasmtex-luatex-resolver-evidence.js",
-      "wasmtex-luatex.fmt.gz",
-    ],
-  },
-  bibtex: {
-    worker: "wasmtex-bibtex.worker.js",
-    files: ["wasmtex-bibtex.worker.js", "wasmtex-bibtex.js", "wasmtex-bibtex.wasm"],
-  },
-  bibtex8: {
-    worker: "wasmtex-bibtex8.worker.js",
-    files: ["wasmtex-bibtex8.worker.js", "wasmtex-bibtex8.js", "wasmtex-bibtex8.wasm"],
-  },
-  makeindex: {
-    worker: "wasmtex-makeindex.worker.js",
-    files: ["wasmtex-makeindex.worker.js", "wasmtex-makeindex.js", "wasmtex-makeindex.wasm"],
-  },
-};
-
-async function mirrorRelease() {
-  if (!existsSync(PINNED_MANIFEST)) {
-    throw new Error(
-      `wasmtex: no pinned evaluation manifest at ${PINNED_MANIFEST}.\n` +
-        "  This is the record of the release the comparison verified; without it there is\n" +
-        "  nothing to check a live fetch's digests against. See\n" +
-        "  latex/benchmark/candidates/comparison/README.md for how it was produced.",
-    );
-  }
-  const pinned = JSON.parse(readFileSync(PINNED_MANIFEST, "utf8"));
-  if (pinned.releaseId !== ENGINE_RELEASE) {
-    throw new Error(
-      `wasmtex: pinned manifest releaseId ${pinned.releaseId} does not match the release this\n` +
-        `  script is built for (${ENGINE_RELEASE}). Update ENGINE_RELEASE in wasmtex.mjs deliberately;\n` +
-        "  this is a decision, not something to paper over.",
-    );
-  }
-  const pinnedFiles = new Map(pinned.files.map((f) => [f.name, f]));
-
-  console.log(`wasmtex: checking upstream release ${WASMTEX_UPSTREAM}manifest.json ...`);
-  const liveManifest = JSON.parse((await fetchBytes(`${WASMTEX_UPSTREAM}manifest.json`)).toString("utf8"));
-  if (liveManifest.releaseId !== ENGINE_RELEASE) {
-    throw new Error(
-      `wasmtex: refusing to mirror. The live upstream manifest's releaseId is\n` +
-        `  ${liveManifest.releaseId}, not the pinned ${ENGINE_RELEASE}. A new release is a deliberate\n` +
-        "  re-pin (new ENGINE_RELEASE, new evaluation), never an automatic follow.",
-    );
-  }
-
-  const releaseDir = `wasmtex/${ENGINE_RELEASE}`;
+export async function mirrorRelease(directory, expectedDigest) {
+  const { manifest: staged, files: payload, digest, engines } = readRelease(directory, expectedDigest);
+  const engineRelease = `librepaper-${digest}`;
+  const releaseId = `${engineRelease}+${SNAPSHOT}`;
+  const releaseDir = `wasmtex/${engineRelease}`;
   const files = {};
-  let totalBytes = 0;
-  for (const spec of liveManifest.files) {
-    const pin = pinnedFiles.get(spec.name);
-    if (!pin) {
-      throw new Error(`wasmtex: upstream lists ${spec.name}, which the pinned manifest never evaluated`);
-    }
-    const path = join(OUT, releaseDir, spec.name);
-    let bytes;
-    if (existsSync(path) && statSync(path).size === pin.bytes) {
-      bytes = readFileSync(path);
-    } else {
-      bytes = await fetchBytes(`${WASMTEX_UPSTREAM}${spec.name}`);
-    }
-    if (bytes.length !== pin.bytes) {
-      throw new Error(`wasmtex: ${spec.name} is ${bytes.length} bytes, pinned manifest says ${pin.bytes}`);
-    }
-    const digest = sha256(bytes);
-    if (digest !== pin.sha256) {
-      throw new Error(`wasmtex: ${spec.name} sha256 ${digest} does not match pinned ${pin.sha256}`);
-    }
-    place(join(releaseDir, spec.name), bytes);
-    files[spec.name] = { url: `${releaseDir}/${spec.name}`, sha256: digest, size: bytes.length };
-    totalBytes += bytes.length;
+  // Verify everything before writing any release bytes. Notices retain their
+  // original paths so relative links and receipts remain usable.
+  for (const [name, bytes] of payload) {
+    const url = `${releaseDir}/${name}`;
+    const path = join(OUT, url);
+    mkdirSync(dirname(path), { recursive: true });
+    if (!existsSync(path) || sha256(readFileSync(path)) !== sha256(bytes)) writeFileSync(path, bytes);
+    files[name] = { url, sha256: sha256(bytes), size: bytes.length };
   }
-
-  // The upstream manifest itself, kept as evidence beside the files it
-  // describes -- the receipt that this mirror once agreed with upstream, not
-  // something anything here reads back.
-  writeFileSync(join(OUT, releaseDir, "upstream-manifest.json"), JSON.stringify(liveManifest, null, 2) + "\n");
-
-  // Notices, copied from the source checkout. A missing checkout is refused
-  // rather than silently producing a release with no NOTICES directory.
-  const notices = [
-    ["LICENSE", "LICENSE"],
-    ["THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"],
-    ["docs/licensing.md", "licensing.md"],
-    ["docs/corresponding-source.md", "corresponding-source.md"],
-  ];
-  if (!existsSync(SOURCE_CHECKOUT)) {
-    throw new Error(
-      `wasmtex: no source checkout at ${SOURCE_CHECKOUT}.\n` +
-        `  Notices cannot be copied without it. Check out WasmTex revision\n` +
-        `  ${WRAPPER_REVISION} there (see docs/specs/wasmtex.md "Starting point").`,
-    );
-  }
-  mkdirSync(join(OUT, releaseDir, "NOTICES"), { recursive: true });
-  for (const [from, to] of notices) {
-    cpSync(join(SOURCE_CHECKOUT, from), join(OUT, releaseDir, "NOTICES", to));
-  }
-
-  // Bibliography identity: read from the mirrored snapshot's biblatex.sty
-  // rather than assumed, per section 1's "read \blx@bcfversion, biblatex
-  // version/date ... from the snapshot's biblatex.sty after mirroring it".
   const bibliography = await bibliographyIdentity();
-
-  const engines = {};
-  for (const [name, spec] of Object.entries(ENGINE_FILE_SETS)) {
-    engines[name] = { worker: spec.worker, files: spec.files };
-    if (spec.format) engines[name].format = spec.format;
-  }
-
   const entry = {
-    id: RELEASE_ID,
-    engine_release: ENGINE_RELEASE,
+    id: releaseId,
+    engine_release: engineRelease,
     snapshot: SNAPSHOT,
     texlive: "2026",
     kernel: "LaTeX2e 2026-06-01",
@@ -307,52 +150,32 @@ async function mirrorRelease() {
     bibliography,
     vm: null,
     source: {
-      wrapper_revision: WRAPPER_REVISION,
-      corresponding_source: {
-        url: liveManifest.legal.correspondingSource.url,
-        sha256: liveManifest.legal.correspondingSource.sha256,
-      },
-      build_receipts: liveManifest.buildReceipts.map((r) => r.name),
-      // Not yet: the second half of "Own the WasmTex release" is
-      // independently reproducing these builds from source, which this
-      // script does not attempt (see latex/tools/README.md).
+      corresponding_source: staged.correspondingSource,
+      manifest: files["MANIFEST.json"],
+      build_receipts: [...payload.keys()].filter((name) => /^(BUILD|FORMAT|SOURCE)-RECEIPT/.test(name)),
       reproduced: false,
     },
     licences: {
-      wrapper: "MIT",
-      pdftex: "GPL-2.0-only",
-      xetex: "GPL-2.0-only AND LicenseRef-XeTeX",
-      luatex: "GPL-2.0-only",
-      bibtex: "LicenseRef-BibTeX-Web2C-Notices AND LGPL-2.1-or-later",
-      notices: `${releaseDir}/NOTICES/`,
+      ...Object.fromEntries(staged.families.map(({ family, combinedTerms }) => [family, combinedTerms])),
+      notices: `${releaseDir}/`,
     },
     sizes: {
-      pdftex: sizeOf(files, engines.pdftex.files),
-      xetex: sizeOf(files, engines.xetex.files),
-      luatex: sizeOf(files, engines.luatex.files),
-      texlive_initial: 0, // filled in by --texlive/--initial runs, below
+      ...Object.fromEntries(Object.entries(engines).map(([name, spec]) => [name, sizeOf(files, spec.files)])),
+      texlive_initial: 0,
     },
   };
-
   const manifest = readManifest();
   manifest.version = 1;
   manifest.releases ||= {};
-  manifest.default_release = RELEASE_ID;
-  // texlive_initial is measured from what --initial names, which may run
-  // after this in the same invocation or in a later one; preserve it rather
-  // than resetting to 0 on a re-run of the release step alone.
-  const previous = manifest.releases[RELEASE_ID];
-  if (previous?.sizes?.texlive_initial) entry.sizes.texlive_initial = previous.sizes.texlive_initial;
-  // The VM release is registered by `--vm` (or the biber-vm build) and is
-  // part of this release's identity; a rebuild of the engine half must not
-  // silently drop it.
+  const previous = manifest.releases[releaseId];
   if (previous?.vm) entry.vm = previous.vm;
+  const initial = manifest.texlive?.[SNAPSHOT]?.initial || [];
+  entry.sizes.texlive_initial = initial.reduce((sum, key) => sum + (manifest.texlive[SNAPSHOT].files[key]?.size || 0), 0);
   entry.digest = canonicalDigest({ ...entry, digest: undefined });
-  manifest.releases[RELEASE_ID] = entry;
+  manifest.releases[releaseId] = entry;
+  manifest.default_release = releaseId;
   writeManifest(manifest);
-
-  console.log(`wasmtex: release ${RELEASE_ID} mirrored, ${Object.keys(files).length} files, ${mb(totalBytes)}`);
-  console.log(`wasmtex: bibliography bibtex ${bibliography.bibtex}, biblatex ${bibliography.biblatex}, bcf ${bibliography.control_file}`);
+  console.log(`wasmtex: release ${releaseId} mirrored (${Object.keys(engines).join(", ")})`);
 }
 
 function sizeOf(files, names) {
@@ -605,13 +428,13 @@ export function registerVm(dir) {
   const bytes = readFileSync(descriptorPath);
   const descriptor = JSON.parse(bytes.toString("utf8"));
   const manifest = readManifest();
-  const release = manifest.releases?.[RELEASE_ID];
+  const release = manifest.releases?.[manifest.default_release];
   if (!release) throw new Error("wasmtex: mirror the release before registering a VM");
   const id = basename(dir);
   release.vm = { id, url: `biber-vm/${id}/vm.json`, sha256: sha256(bytes), size: bytes.length, biber: descriptor.biber };
   release.digest = canonicalDigest({ ...release, digest: undefined });
   writeManifest(manifest);
-  console.log(`wasmtex: vm ${id} (biber ${descriptor.biber}) registered on ${RELEASE_ID}`);
+  console.log(`wasmtex: vm ${id} (biber ${descriptor.biber}) registered on ${manifest.default_release}`);
 }
 
 /// Regenerates `texlive/<snapshot>/bloom-filter.v2.bin` over every key
@@ -646,7 +469,7 @@ function setInitial(keys) {
   }
   entry.initial = [...new Set(keys)];
   const bytes = entry.initial.reduce((sum, key) => sum + entry.files[key].size, 0);
-  const release = manifest.releases?.[RELEASE_ID];
+  const release = manifest.releases?.[manifest.default_release];
   if (release) {
     release.sizes.texlive_initial = bytes;
     release.digest = canonicalDigest({ ...release, digest: undefined });
@@ -672,7 +495,9 @@ async function main() {
   const rootAt = flag(argv, "--texlive-root");
   const vmAt = flag(argv, "--vm");
   const schemeAt = flag(argv, "--scheme");
-  const cuts = [texliveAt, texliveFromAt, initialAt, rootAt, vmAt, schemeAt]
+  const releaseAt = flag(argv, "--release");
+  const shaAt = flag(argv, "--sha256");
+  const cuts = [releaseAt, shaAt, texliveAt, texliveFromAt, initialAt, rootAt, vmAt, schemeAt]
     .filter((i) => i >= 0)
     .sort((a, b) => a - b);
   const restAfter = (at) => {
@@ -681,8 +506,12 @@ async function main() {
     return argv.slice(at + 1, nextCut === undefined ? undefined : nextCut);
   };
 
+  if (releaseAt >= 0 || shaAt >= 0) {
+    await mirrorRelease(restAfter(releaseAt)[0], restAfter(shaAt)[0]);
+  }
+
   if (texliveAt < 0 && texliveFromAt < 0 && initialAt < 0 && rootAt < 0 && vmAt < 0 && schemeAt < 0) {
-    await mirrorRelease();
+    if (releaseAt < 0 && shaAt < 0) await mirrorRelease();
     return;
   }
 

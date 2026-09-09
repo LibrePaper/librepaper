@@ -6,7 +6,8 @@
 # of its own bytes, so if these match, the binary is serving exactly the module
 # that repository released.
 #
-# To move a pin: bump the tag, run `make wasm-relock`, commit the result.
+# To move a pin: run `make wasm-update REPO=wasm-markdown TAG=vX.Y.Z` with an
+# explicit repository and tag, then review the native and browser pin diff.
 #
 # module             repository          tag       sha256
 markdown.wasm        wasm-markdown       v0.1.1    c701483e38f9da1691e752be48c8283119ec78598a296479a4da4986ecaf1114

@@ -1,12 +1,15 @@
 //! Rendering on this side of the network: what `publish` and `seed` do to a
 //! markdown or typst file before it is stored. The browser renders through the
-//! same engine crate, so a document published here and one edited there are
+//! same pinned renderer libraries, so documents published here and edited there are
 //! rendered by the same code.
 
 use std::path::{Path, PathBuf};
 
-use librepaper_engine::diagnostic::{Compiled, Diagnostic};
-use librepaper_engine::{html, markdown, typst};
+use wasm_helpers::diagnostic::{Compiled, Diagnostic};
+use wasm_markdown::markdown;
+use wasm_typst::typst;
+
+use super::html;
 
 pub fn is_markdown(name: &str) -> bool {
     markdown::is_markdown(name)

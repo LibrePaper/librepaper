@@ -12,7 +12,7 @@ import { call, handOver } from "../src/lib/renderer-wasm.js";
 const HERE = dirname(new URL(import.meta.url).pathname);
 const REPO = dirname(dirname(HERE));
 const SHELL = join(REPO, "web", "dist");
-const CORPUS = join(REPO, "crates", "engine", "tests", "typst-corpus");
+const CORPUS = join(HERE, "fixtures", "typst-corpus");
 const WASM = join(SHELL, "wasm", "typst.wasm");
 
 if (!existsSync(join(SHELL, "viewer.html")) || !existsSync(WASM)) {

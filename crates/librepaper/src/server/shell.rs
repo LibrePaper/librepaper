@@ -24,8 +24,6 @@ const MODULES: &[(&str, &str)] = &[
     ("markdown", "wasm/markdown.wasm"),
     ("bibliography", "wasm/bibliography.wasm"),
     ("citations", "wasm/citations.wasm"),
-    // Optional: `make typst` builds it, and a build without it simply does not
-    // list typst among its renderers.
     ("typst", "wasm/typst.wasm"),
 ];
 
@@ -94,7 +92,7 @@ pub fn module_url(name: &str) -> Option<String> {
     Some(module_route(name, file(path)?))
 }
 
-/// The compiled typst renderer, if this build has one.
+/// The Typst module embedded by the build.
 pub fn typst_module() -> Option<&'static [u8]> {
     file("wasm/typst.wasm")
 }
@@ -117,7 +115,7 @@ pub fn renderers() -> Vec<String> {
 fn documentation() -> Result<String, String> {
     let source = file("README.md")
         .ok_or("missing README.md in the shell: run make build, which copies it in")?;
-    let body = librepaper_engine::markdown::render_body(&String::from_utf8_lossy(source));
+    let body = wasm_markdown::markdown::render_body(&String::from_utf8_lossy(source));
     // The page opens with the logo, as the landing page does,
     // so the README's own title would say the name twice.
     let leading = regex::Regex::new(r"(?s)^\s*<h1[^>]*>.*?</h1>").expect("a constant pattern");

@@ -1,14 +1,7 @@
-# The README links its screenshots, so they are copied in beside it and served
-# at the same relative path the page on GitHub uses.
-IMAGES := $(patsubst docs/images/%,web/dist/docs/images/%,$(wildcard docs/images/*.png))
-$(BIN) test: $(IMAGES)
-web/dist/docs/images/%.png: docs/images/%.png
-	@mkdir -p $(dir $@)
-	@cp $< $@
 # LibrePaper. `make` builds the single static binary into dist/.
 #
-# Three crates under crates/: engine (markdown and typst rendering, CLI and WASM),
-# librepaper (server and CLI), text (utilities). The web app in web/ is Svelte,
+# The application crate provides the server and CLI and links the pinned
+# renderer libraries directly. The web app in web/ is Svelte,
 # bundled by vite and installed by bun. The binary embeds the web build (from
 # web/dist) and the WASM renderers, and serves them.
 
@@ -19,7 +12,7 @@ web/dist/docs/images/%.png: docs/images/%.png
 export
 
 BIN     := dist/librepaper
-# The markdown renderer, built for the browser: the editor previews with it,
+# The markdown renderer, fetched for the browser: the editor previews with it,
 # and it is embedded in the binary like every other shell file.
 WASM    := web/dist/wasm/markdown.wasm
 BIB     := web/dist/wasm/bibliography.wasm
@@ -34,7 +27,7 @@ WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html 
 SOURCES := $(shell find crates -type f -not -path '*/target/*') Cargo.toml README.md $(wildcard examples/*.md examples/*.typ examples/*.tex)
 
 .DEFAULT_GOAL := help
-.PHONY: help build test smoke serve seed examples kill clean snapshot wasm wasm-relock typst fmt web fuzz
+.PHONY: help build test smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -43,9 +36,8 @@ help:  ## Display this help screen
 build: $(BIN)  ## Build dist/librepaper, with the shell and renderers embedded
 
 # Rebuilt whenever any source, page or renderer changes.
-# Once the optional Typst module has been opted into, keep it in step with the
-# shell and native compiler. Otherwise a new binary can embed an old HTML ABI.
-$(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(wildcard $(TYPST)) $(SHELL_OUT)
+# Keep every required renderer in step with the shell and native compiler.
+$(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(TYPST) $(SHELL_OUT) | wasm
 	@mkdir -p $(dir $@)
 	@cargo build --release -p librepaper
 	@cp target/release/librepaper $@
@@ -68,9 +60,12 @@ web/dist/README.md: README.md
 
 # The suite reads the built shell -- a test that asserts a page names its own
 # bundle needs that bundle to exist -- so the pages are built first.
-test: $(WASM) $(BIB) $(CITES) $(wildcard $(TYPST)) $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
+test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cd web && bun run check
 	@cargo fmt --check
+	@node web/tools/pin-tools.test.mjs
+	@node latex/tools/release.test.mjs
+	@node latex/tools/check-mirror.test.mjs
 	@cargo clippy --workspace --all-targets -- -D warnings
 # nextest runs each case in its own process, so one crate's failure does not
 # abandon the crates after it and a hung case is named rather than waited on.
@@ -111,7 +106,7 @@ FUZZ_SECONDS ?= 60
 FUZZ_TARGETS ?= $(shell cd fuzz && cargo fuzz list)
 # The global export would evaluate this for every recipe, even outside fuzz.
 unexport FUZZ_TARGETS
-fuzz: $(WASM) $(BIB) $(CITES) $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SECONDS (default 60) each
+fuzz: wasm $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SECONDS (default 60) each
 	@command -v cargo-fuzz >/dev/null || { echo "cargo-fuzz is not installed: cargo install cargo-fuzz"; exit 1; }
 	@cd fuzz && for target in $(FUZZ_TARGETS); do \
 		echo "fuzzing $$target for $(FUZZ_SECONDS)s"; \
@@ -120,7 +115,7 @@ fuzz: $(WASM) $(BIB) $(CITES) $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SE
 
 # Release builds are described in .github/workflows/release.yml and run when a
 # v* tag is pushed. This does the same thing locally, without tagging.
-snapshot: $(WASM) $(BIB) $(CITES) $(TYPST) $(SHELL_OUT)  ## Build the release binary locally, without tagging
+snapshot: wasm $(SHELL_OUT)  ## Build the release binary locally, without tagging
 	@cargo build --release -p librepaper
 	@echo "target/release/librepaper"
 
@@ -142,6 +137,10 @@ OWNER      ?= $(if $(filter any anyone,$(PUBLISHERS)),,$(if $(findstring $(comma
 # mirror; `LATEX=` names another for either target.
 LATEX      ?=
 LATEX_FLAG ?= $(if $(LATEX),--latex $(LATEX))
+# The release input and its reviewed manifest digest are explicit so a mirror
+# build cannot silently pick up a different WasmTex artifact.
+LATEX_RELEASE ?= ../wasm-latex/staged
+LATEX_RELEASE_SHA256 ?=
 
 serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, PUBLISHERS=, COMMENTERS=, LATEX=)
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
@@ -181,7 +180,8 @@ kill:  ## Stop a server started with make serve
 .PHONY: deploy latex-check latex-mirror latex-smoke
 
 latex-mirror:  ## Build the pinned WasmTex release and its TeX package set (requires network)
-	@node latex/tools/wasmtex.mjs
+	@test -n "$(LATEX_RELEASE_SHA256)" || { echo 'LATEX_RELEASE_SHA256 is required (review the release manifest first)' >&2; exit 2; }
+	@node latex/tools/wasmtex.mjs --release "$(LATEX_RELEASE)" --sha256 "$(LATEX_RELEASE_SHA256)"
 	@node latex/tools/wasmtex.mjs --scheme
 	@node latex/tools/check-mirror.mjs latex/mirror
 
@@ -264,19 +264,19 @@ $(SHELL_OUT): $(WEB) web/dist/README.md
 # fails saying which one moved. Files already correct are left alone, which
 # makes this cheap enough to run on every build.
 
-wasm: $(WASM) $(BIB) $(CITES) $(TYPST)  ## Fetch the pinned browser renderers
-
-$(WASM) $(BIB) $(CITES) $(TYPST) &: wasm-modules.lock web/tools/fetch-modules.mjs
-	@command -v node >/dev/null || { echo "node is needed to fetch the renderers"; exit 1; }
+wasm: wasm-check  ## Fetch and verify the pinned browser renderers
 	@node web/tools/fetch-modules.mjs
 
-# Kept as a name people have in their fingers. Typst is no longer the slow
-# optional build: it arrives with the rest, already compiled.
-typst: $(TYPST)  ## Fetch the typst renderer
+wasm-check:  ## Check native and browser renderer tags without network access
+	@node web/tools/check-renderer-pins.mjs
 
-# Rewrites wasm-modules.lock from each repository's current release. Run it
-# after moving a tag, then commit the diff -- which is the review of what
-# changed, and the reason the digests live in the repository at all.
-wasm-relock:  ## Re-pin the renderers to their repositories' current releases
-	@node web/tools/relock-modules.mjs
-	@git --no-pager diff --stat wasm-modules.lock
+# The files are produced by the phony aggregate above. This rule lets Make
+# resolve them as binary prerequisites on a clean checkout while preserving
+# their mtimes so a changed renderer causes the embedding binary to rebuild.
+$(WASM) $(BIB) $(CITES) $(TYPST): | wasm
+
+# Update one explicitly named renderer tag in Cargo.toml and wasm-modules.lock.
+# The command never looks up or selects a latest release implicitly.
+wasm-update:  ## Update one renderer (REPO=wasm-markdown TAG=vX.Y.Z)
+	@test -n "$(REPO)" -a -n "$(TAG)" || { echo 'usage: make wasm-update REPO=wasm-markdown TAG=vX.Y.Z' >&2; exit 2; }
+	@node web/tools/update-module-pin.mjs --repo "$(REPO)" --tag "$(TAG)"

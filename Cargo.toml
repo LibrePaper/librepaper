@@ -1,13 +1,13 @@
-# LibrePaper: two crates. `engine` is what renders on this side of the network
-# -- authored HTML, and one name for each renderer pinned from its own
-# repository; `librepaper` is the binary, the command line and the server.
+# LibrePaper's workspace contains the application crate. Renderer implementations
+# and the shared text algorithms live in the sibling wasm-* repositories and are
+# consumed here through their pinned releases.
 #
 # The renderers themselves, and the word diff both sides share, live in
 # LibrePaper/wasm-* and are pinned by tag. See wasm-modules.lock for the
 # browser modules, which are fetched rather than built.
 [workspace]
 resolver = "2"
-members = ["crates/engine", "crates/librepaper"]
+members = ["crates/librepaper"]
 # The fuzz targets need libFuzzer and a nightly compiler, so they build on
 # their own: `make fuzz`, or `cargo fuzz run <target>` from fuzz/.
 exclude = ["fuzz"]

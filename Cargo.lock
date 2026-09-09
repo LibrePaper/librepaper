@@ -1915,7 +1915,6 @@ dependencies = [
  "html-escape",
  "http-body-util",
  "include_dir",
- "librepaper-engine",
  "notify",
  "percent-encoding",
  "rand 0.9.5",
@@ -1932,18 +1931,11 @@ dependencies = [
  "tokio-tungstenite",
  "unicode-normalization",
  "url",
- "wasm-helpers",
- "yrs",
-]
-
-[[package]]
-name = "librepaper-engine"
-version = "0.1.0"
-dependencies = [
  "wasm-bibliography",
  "wasm-helpers",
  "wasm-markdown",
  "wasm-typst",
+ "yrs",
 ]
 
 [[package]]

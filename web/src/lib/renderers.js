@@ -1,8 +1,8 @@
 import { needsBibliography } from "./bibliography-engine.js";
 // The renderers, loaded into the editor.
 //
-// Both modules are the engine crate compiled to WebAssembly -- the same crate
-// the command line renders with -- so the preview is the document a save would
+// The modules come from the same pinned renderer releases the native command
+// line links, so the preview is the document a save would
 // store, byte for byte, and an edit made here renders exactly as one made from
 // the terminal. The deployment renders nothing: it stores what this browser
 // produced.
@@ -33,8 +33,8 @@ function urls() {
   return globalThis.LIBREPAPER_MODULES || {};
 }
 
-/// Whether this deployment serves a renderer for this format at all. The typst
-/// module is thirty megabytes and optional, so a build may not have one.
+/// Whether this deployment advertises a renderer for this format. All four
+/// browser modules are required build inputs; LaTeX depends on the deployment.
 ///
 /// HTML is the exception, and always true: its renderer is the identity, so it
 /// is the one format every deployment can edit whatever it was built with.

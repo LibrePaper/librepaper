@@ -803,14 +803,13 @@ async fn a_history_is_as_readable_as_the_document_it_belongs_to() {
 // external URL must be left untouched.
 #[test]
 fn markdown_image_path_with_space_resolves_to_the_asset() {
-    let html =
-        librepaper_engine::markdown::render_with("![plot](<fig/my plot.png>)", "", &|path| {
-            if path == "fig/my plot.png" {
-                Some("data:image/png;base64,AAAA".into())
-            } else {
-                None
-            }
-        });
+    let html = wasm_markdown::markdown::render_with("![plot](<fig/my plot.png>)", "", &|path| {
+        if path == "fig/my plot.png" {
+            Some("data:image/png;base64,AAAA".into())
+        } else {
+            None
+        }
+    });
     assert!(
         html.contains("src=\"data:image/png;base64,AAAA\""),
         "the encoded image path was not resolved: {html}"
@@ -820,7 +819,7 @@ fn markdown_image_path_with_space_resolves_to_the_asset() {
 
 #[test]
 fn markdown_external_image_is_left_alone() {
-    let html = librepaper_engine::markdown::render_with(
+    let html = wasm_markdown::markdown::render_with(
         "![plot](https://example.test/plot.png)",
         "",
         &|_path| Some("data:image/png;base64,SHOULD-NOT-BE-USED".into()),

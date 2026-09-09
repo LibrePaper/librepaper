@@ -1,5 +1,5 @@
 // Integration check against the actual built WASM, using Poppler as an
-// independent PDF parser. Run after `make typst`; requires pdfinfo/pdftotext.
+// independent PDF parser. Run after `make wasm`; requires pdfinfo/pdftotext.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { call, handOver } from "../src/lib/renderer-wasm.js";
 
-const corpus = new URL("../../crates/engine/tests/typst-corpus/", import.meta.url);
+const corpus = new URL("fixtures/typst-corpus/", import.meta.url);
 const { instance } = await WebAssembly.instantiate(readFileSync(new URL("../dist/wasm/typst.wasm", import.meta.url)), {});
 const wasm = instance.exports;
 const directory = mkdtempSync(join(tmpdir(), "librepaper-typst-corpus-"));

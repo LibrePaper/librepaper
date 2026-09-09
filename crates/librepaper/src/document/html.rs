@@ -9,7 +9,7 @@
 //! it: an HTML document is shown as it was published, which it always was, and
 //! now for the same reason a markdown document is shown as its markdown says.
 
-use crate::diagnostic::Compiled;
+use wasm_helpers::diagnostic::Compiled;
 
 /// Says whether a filename is one this renders.
 pub fn is_html(name: &str) -> bool {

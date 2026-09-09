@@ -25,7 +25,8 @@
 //     node latex/tools/wasmtex-record.mjs
 //
 // Requires the source checkout at latex/benchmark/candidates/wasmtex/source
-// (see wasmtex.mjs's SOURCE_CHECKOUT) and a `chromium` on PATH.
+// and a `chromium` on PATH. This legacy recording harness is independent of
+// the staged-release mirror importer.
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -49,7 +50,7 @@ const CDP_PORT = 9712;
 // binary assets as bytes, everything else (logs, expected.json, PDFs already
 // committed as fixtures) left out. Deliberately not imported from
 // `latex/benchmark/corpus.mjs` -- this file's only benchmark dependency is
-// the pinned manifest JSON `wasmtex.mjs` already reads; a few lines of
+// its legacy SDK checkout; a few lines of
 // directory-walking are not worth reaching further into that tree for.
 function treeOf(directory, main) {
   const texts = {};
@@ -212,7 +213,7 @@ async function compileInPage(doc, opts) {
 async function main() {
   if (!existsSync(LIB)) {
     throw new Error(
-      `wasmtex-record: no source checkout lib/ at ${LIB}. See wasmtex.mjs's SOURCE_CHECKOUT and\n` +
+      `wasmtex-record: no source checkout lib/ at ${LIB}. See latex/tools/README.md and\n` +
         "  docs/specs/wasmtex.md \"Starting point\" for the revision to check out.",
     );
   }
