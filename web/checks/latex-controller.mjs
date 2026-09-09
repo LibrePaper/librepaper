@@ -574,8 +574,8 @@ function nextProject() {
   const messagesBefore = w0.messages.length;
   w0.texReplies = [() => new Promise(() => {})]; // never resolves; the crash is what ends it
   const crashing = latex.compile(tree("main.tex", "about to crash"));
-  for (let i = 0; i < 200 && !(w0.messages.length > messagesBefore && w0.messages.at(-1).cmd === "tex"); i++) await tick();
-  assert.equal(w0.messages.at(-1).cmd, "tex", "this compile's own tex command was posted");
+  const posted = () => w0.messages.length > messagesBefore && w0.messages.at(-1).cmd === "tex";
+  assert.ok(await until(posted), "this compile's own tex command was posted");
   w0.crash("the compiler worker died");
   const crashed = await crashing;
   assert.equal(crashed.ok, false);
