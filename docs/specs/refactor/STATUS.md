@@ -33,6 +33,8 @@ work at `c812c70`, whose migration 13 forced attribution onto 14).
   which passed three times alone in 0.3 s.
 - At `dd4a696` (plus track 1 caller migration and track 6): 907 library tests
   passed, 0 failed, 2 ignored; all other workspace suites passed.
+- At `352281f` (all twelve tracks): 922 library tests passed, 0 failed,
+  3 ignored; all other workspace suites passed.
 - Strict Clippy (`--all-targets --all-features -D warnings`) and `cargo fmt
   --check` were clean at every fast-forward.
 
