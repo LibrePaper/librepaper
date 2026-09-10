@@ -8,6 +8,14 @@
   // reflects a Quarto connection immediately, even before a LaTeX controller
   // has ever been configured on this page.
   import * as localBridge from "../lib/latex/local.js";
+  // Dictation is offered to every reader who can chat or comment, not just
+  // an editor, so this section (unlike the LaTeX/Quarto ones above) is never
+  // gated on `mayEdit`.
+  import { getDictation } from "../lib/dictation/service.js";
+  import { readSettings, writeSettings } from "../lib/dictation/settings.js";
+  import { MODELS, modelById } from "../lib/dictation/models.js";
+  import { removeCachedModel } from "../lib/dictation/purge.js";
+  import { done } from "../lib/toast.svelte.js";
 
   let {
     keys = "default",
@@ -127,6 +135,75 @@
     const mb = bytes / (1024 * 1024);
     return mb < 0.1 ? "nothing" : mb < 10 ? `${mb.toFixed(1)} MB` : `${Math.round(mb)} MB`;
   }
+
+  /* ------------------------------------------------------------ dictation */
+
+  // Storage read the way service.js reads it: a plain global that a locked
+  // down frame can refuse to hand back, tolerated once here rather than at
+  // every call site below.
+  const dictationStorage = (() => {
+    try {
+      return typeof localStorage !== "undefined" ? localStorage : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  function loadDictationSettings() {
+    try {
+      return readSettings(dictationStorage);
+    } catch {
+      return { backend: "local", model: "whisper-small", language: "auto", confirmed: [] };
+    }
+  }
+
+  let dictation = $state(loadDictationSettings());
+  const LOCAL_MODELS = MODELS.filter((entry) => entry.kind === "local");
+  const selectedModel = $derived(modelById(dictation.model) || LOCAL_MODELS[0]);
+
+  function setBackend(backend) {
+    dictation = { ...dictation, backend };
+    writeSettings(dictationStorage, { backend });
+  }
+
+  function setModel(id) {
+    dictation = { ...dictation, model: id, language: "auto" };
+    writeSettings(dictationStorage, { model: id, language: "auto" });
+  }
+
+  function setLanguage(language) {
+    dictation = { ...dictation, language };
+    writeSettings(dictationStorage, { language });
+  }
+
+  function languageName(tag) {
+    try {
+      return new Intl.DisplayNames([navigator.language || "en"], { type: "language" }).of(tag) || tag;
+    } catch {
+      return tag;
+    }
+  }
+
+  // The live service, so this panel shows the model and device actually
+  // running rather than only what settings asks for -- the two can differ
+  // right after a change, until the next dictation start picks it up.
+  let dictationStatus = $state({ state: "idle", model: null, device: null });
+  $effect(() => getDictation().subscribe((snapshot) => (dictationStatus = snapshot)));
+
+  const deviceLabel = $derived(
+    dictationStatus.device === "webgpu" ? "WebGPU" : dictationStatus.device === "wasm" ? "CPU (wasm)" : null
+  );
+  const dictationStatusLine = $derived(
+    dictationStatus.model && deviceLabel ? `${dictationStatus.model.label} — ${deviceLabel}` : "Not loaded"
+  );
+
+  async function removeDictationModel() {
+    if (!selectedModel) return;
+    await removeCachedModel(selectedModel, { caches: typeof caches !== "undefined" ? caches : undefined });
+    const confirmed = loadDictationSettings().confirmed.filter((id) => id !== selectedModel.id);
+    writeSettings(dictationStorage, { confirmed });
+    done("Model removed");
+  }
 </script>
 
 <section class="panel settings-panel" aria-label="Settings">
@@ -142,6 +219,55 @@
       <span>Vim keys</span>
     </label>
     <p class="panel-meta">Applies to the source pane.</p>
+  </section>
+
+  <section class="settings-section" aria-labelledby="settings-dictation">
+    <h3 id="settings-dictation" class="panel-section-title">Dictation</h3>
+    <label class="settings-row">
+      <span class="settings-label">Backend</span>
+      <select class="select settings-select" aria-label="Dictation backend" value={dictation.backend}
+              onchange={(event) => setBackend(event.currentTarget.value)}>
+        <option value="local">On this device</option>
+        <option value="browser">Browser built-in (may send audio to the browser vendor)</option>
+      </select>
+    </label>
+
+    {#if dictation.backend === "local"}
+      <label class="settings-row">
+        <span class="settings-label">Model</span>
+        <select class="select settings-select" aria-label="Dictation model" value={dictation.model}
+                onchange={(event) => setModel(event.currentTarget.value)}>
+          {#each LOCAL_MODELS as entry (entry.id)}
+            <option value={entry.id}>{entry.label} — {megabytes(entry.sizeBytes)}, {entry.languages.length} languages</option>
+          {/each}
+        </select>
+      </label>
+
+      <label class="settings-row">
+        <span class="settings-label">Language</span>
+        <select class="select settings-select" aria-label="Dictation language" value={dictation.language}
+                onchange={(event) => setLanguage(event.currentTarget.value)}>
+          <option value="auto">Detect automatically</option>
+          {#if selectedModel}
+            {#each selectedModel.languages as tag (tag)}
+              <option value={tag}>{languageName(tag)}</option>
+            {/each}
+          {/if}
+        </select>
+      </label>
+    {/if}
+
+    <p class="panel-muted">{dictationStatusLine}</p>
+
+    <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
+            disabled={!selectedModel} onclick={removeDictationModel}>
+      Remove downloaded model
+    </button>
+    <p class="panel-meta">
+      Speech recognition runs on this device once its model has downloaded;
+      your audio never leaves it. This forgets the download, freeing space --
+      it downloads again, with the same confirmation, the next time you dictate.
+    </p>
   </section>
 
   {#if showsLatex}

@@ -57,6 +57,7 @@
   import Share from "./Share.svelte";
   import Modal from "./Modal.svelte";
   import Toasts from "./Toasts.svelte";
+  import DictationDownload from "./DictationDownload.svelte";
   import Row from "./layout/Row.svelte";
   import { problem as toastProblem } from "../lib/toast.svelte.js";
   import Preview from "./Preview.svelte";
@@ -3658,6 +3659,7 @@
   {/snippet}
 </Modal>
 
+<DictationDownload />
 <Toasts />
 
 <style>
