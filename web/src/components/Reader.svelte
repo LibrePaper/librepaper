@@ -62,7 +62,7 @@
   import Row from "./layout/Row.svelte";
   import { problem as toastProblem, said as toastSaid } from "../lib/toast.svelte.js";
   import { getDictation } from "../lib/dictation/service.js";
-  import { targetForActiveElement } from "../lib/dictation/targets.js";
+  import { targetForActiveElement, textareaTarget } from "../lib/dictation/targets.js";
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
   import Collaboration from "./Collaboration.svelte";
@@ -89,7 +89,6 @@
   import { publishResultsBundle } from "../lib/results-publication.js";
   import { documentResultsIdentity } from "../lib/engines/identity.js";
   import DictationButton from "./DictationButton.svelte";
-  import { textareaTarget } from "../lib/dictation/targets.js";
 
   const SLUG = location.pathname.split("/").pop();
 
