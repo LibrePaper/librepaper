@@ -23,6 +23,8 @@
   import { onDestroy, onMount } from "svelte";
   import IconButton from "./IconButton.svelte";
   import { getDictation } from "../lib/dictation/service.js";
+  import { setNotifier } from "../lib/dictation/notify.js";
+  import { problem, said } from "../lib/toast.svelte.js";
 
   // `onlistening` is optional: a caller that wants to change its own copy
   // (the composer's footer hint, SPEC 4.8) while this particular button is
@@ -40,6 +42,7 @@
   let owns = $state(false);
 
   const dictation = getDictation();
+  setNotifier((message, level) => (level === "error" ? problem : said)(message));
   let unsubscribe = null;
 
   onMount(() => {

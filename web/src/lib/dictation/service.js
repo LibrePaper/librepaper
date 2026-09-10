@@ -17,6 +17,7 @@ import { readSettings, confirm as confirmModel, isConfirmed } from "./settings.j
 import { assemble } from "./assemble.js";
 import { DEFAULT_MODEL, VAD, modelById, pickLanguage } from "./models.js";
 import { openMicrophone } from "./capture.js";
+import { notify } from "./notify.js";
 import { createWebSpeechSession } from "./webspeech.js";
 
 const STATES = Object.freeze({
@@ -565,10 +566,7 @@ function defaultDeps() {
     hasWebAssembly: () => typeof WebAssembly !== "undefined",
     hasMediaDevices: () => typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia,
     confirmDownload: (entry) => downloadConfirmation(entry),
-    // Lazy on purpose: the toast store drags Skeleton's Svelte components in,
-    // which Node cannot load, and the checks import this module.
-    notify: (message, level) =>
-      import("../toast.svelte.js").then(({ problem, said }) => (level === "error" ? problem : said)(message)),
+    notify,
     persist: async () => {
       try {
         await navigator.storage?.persist?.();

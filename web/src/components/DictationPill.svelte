@@ -7,9 +7,14 @@
   import { onDestroy } from "svelte";
   import { getDictation } from "../lib/dictation/service.js";
   import IconButton from "./IconButton.svelte";
+  import { setNotifier } from "../lib/dictation/notify.js";
+  import { problem, said } from "../lib/toast.svelte.js";
 
   let snapshot = $state({ state: "idle", progress: null, model: null, device: null, reason: null, speaking: false });
 
+  // Any dictation component may fill the service's toast slot; this one is
+  // mounted for the whole reader, so it is the one that reliably does.
+  setNotifier((message, level) => (level === "error" ? problem : said)(message));
   const unsubscribe = getDictation().subscribe((value) => { snapshot = value; });
   onDestroy(unsubscribe);
 
