@@ -1,5 +1,7 @@
 <script>
   import { tick } from "svelte";
+  import DictationButton from "./DictationButton.svelte";
+  import { textareaTarget } from "../lib/dictation/targets.js";
   let { placeholder = "Message…", disabled = false, canSend = !disabled, onsend, draft: controlledDraft = undefined, initialDraft = "", ondraft } = $props();
   let draft = $state("");
   let initialized = false;
@@ -92,13 +94,17 @@
       onpointercancel={endResize} onlostpointercapture={() => resize = null} onkeydown={resizeKey}>
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 2h7v7M5 2l5 5M8 2l2 2" /></svg>
     </button>
+    <span class="composer-mic">
+      <DictationButton target={() => textareaTarget(input)} label="Dictate" size="btn-icon-sm" />
+    </span>
   </div>
 </form>
 <style>
   .chat-form { display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); }
   .composer-input { position: relative; }
-  .composer-input textarea { display: block; width: 100%; min-height: 80px; max-height: 60dvh; resize: none; padding-right: 24px; }
+  .composer-input textarea { display: block; width: 100%; min-height: 80px; max-height: 60dvh; resize: none; padding-right: 36px; }
   .resize-handle { position: absolute; top: 1px; right: 1px; width: 24px; height: 24px; display: grid; place-items: center; cursor: ns-resize; touch-action: none; color: var(--color-surface-500-500); border-radius: 3px; }
   .resize-handle:focus-visible { outline: 2px solid var(--color-primary-500); }
+  .composer-mic { position: absolute; right: 1px; bottom: 1px; }
   .resize-handle svg { fill: none; stroke: currentColor; stroke-width: 1; }
 </style>

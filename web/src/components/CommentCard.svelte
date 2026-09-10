@@ -2,6 +2,8 @@
   import { tick } from "svelte";
   import IconButton from "./IconButton.svelte";
   import Avatar from "./Avatar.svelte";
+  import DictationButton from "./DictationButton.svelte";
+  import { textareaTarget } from "../lib/dictation/targets.js";
   import Row from "./layout/Row.svelte";
   import * as history from "../lib/history.js";
   import { runsFor } from "../lib/suggestions.js";
@@ -329,6 +331,9 @@
         bind:value={replyBody}
         onkeydown={replyKey}
       ></textarea>
+      <Row gap={2} justify="end">
+        <DictationButton target={() => textareaTarget(replyField)} label="Dictate reply" size="btn-icon-sm" />
+      </Row>
     </form>
   {/if}
 </article>

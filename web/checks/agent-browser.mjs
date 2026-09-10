@@ -4,7 +4,7 @@ import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,10 +77,24 @@ let server, page;
 try {
   await build({ configFile:false, root, plugins:[svelte(),tailwindcss()], logLevel:"error",
     build:{ outDir:join(temporary,"build"), lib:{entry,formats:["es"],fileName:()=>"panel.js"} } });
+  // Beyond the entry chunk and its stylesheet, a component reachable from
+  // the panel can carry its own dynamic import -- dictation/service.js
+  // reaches the toast store that way, so it never has to load Skeleton's
+  // components for a check that never triggers a toast -- and that import
+  // lands as its own file next to panel.js. Anything under the build
+  // directory is served by name rather than special-cased one file at a
+  // time, so a new chunk here does not mean a new line in this server.
+  const CONTENT_TYPES = { ".js": "text/javascript", ".css": "text/css", ".map": "application/json" };
   server=createServer((request,response)=>{
-    if(request.url==='/librepaper-web.css'){response.setHeader('content-type','text/css');response.end(readFileSync(join(temporary,'build/librepaper-web.css')));return;}
-    response.setHeader("content-type",request.url==="/panel.js"?"text/javascript":"text/html");
-    response.end(request.url==="/panel.js"?readFileSync(join(temporary,"build/panel.js")):'<!doctype html><html data-theme="librepaper"><head><link rel="stylesheet" href="/librepaper-web.css"><style>body{display:flex;height:700px;width:360px;overflow:hidden}</style></head><body><script type="module" src="/panel.js"></script></body></html>');
+    const path = join(temporary, "build", decodeURIComponent(request.url.split("?")[0]));
+    if (request.url !== "/" && existsSync(path)) {
+      const ext = path.slice(path.lastIndexOf("."));
+      response.setHeader("content-type", CONTENT_TYPES[ext] || "application/octet-stream");
+      response.end(readFileSync(path));
+      return;
+    }
+    response.setHeader("content-type", "text/html");
+    response.end('<!doctype html><html data-theme="librepaper"><head><link rel="stylesheet" href="/librepaper-web.css"><style>body{display:flex;height:700px;width:360px;overflow:hidden}</style></head><body><script type="module" src="/panel.js"></script></body></html>');
   });
   await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve);});
   page=await browser("chromium",join(temporary,"profile"),22000+Math.floor(Math.random()*10000));
