@@ -84,6 +84,8 @@
   import { createResultsLoader } from "../lib/results-loader.js";
   import { publishResultsBundle } from "../lib/results-publication.js";
   import { documentResultsIdentity } from "../lib/engines/identity.js";
+  import DictationButton from "./DictationButton.svelte";
+  import { textareaTarget } from "../lib/dictation/targets.js";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -794,6 +796,7 @@
   let deleting = $state(false);
   let draft = $state({ body: "", proposed: "" });
   let pendingDelete = $state([]);
+  let commentBodyField = $state(null);
 
   // Opening the dialog. The suggest variant starts its proposal textarea
   // with the source slice when the passage was placed, the rendered words
@@ -3598,8 +3601,12 @@
           <span class="label-text">Comment</span>
           <!-- svelte-ignore a11y_autofocus -->
           <textarea class="textarea" rows="5" maxlength="5000" required autofocus bind:value={draft.body}
+            bind:this={commentBodyField}
           ></textarea>
         </label>
+        <Row justify="end">
+          <DictationButton target={() => textareaTarget(commentBodyField)} label="Dictate comment" size="btn-icon-sm" />
+        </Row>
       {/if}
     </form>
   {/snippet}
