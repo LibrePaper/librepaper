@@ -1,8 +1,9 @@
 # SPEC: Dictation
 
-Status: design contract. This document specifies intended behavior, records
-the alternatives that were rejected and why, and lists the implementation
-gates. Nothing here is implemented. Written 2026-09-09.
+Status: implemented on 2026-09-09 on the `feature/dictation` branch, in the
+five gates of section 9. Deviations from the text below are listed in
+section 12; the interface contract in section 11 is what the code follows.
+Written 2026-09-09.
 
 ## 1. Product objective
 
@@ -383,3 +384,25 @@ are written in [docs/dictation-interfaces.md](docs/dictation-interfaces.md).
 One deliberate deviation from sections 4.3 and 4.4: the voice activity
 detector and the segmenter run inside the recognizer worker, which receives
 raw frames, so the main thread only forwards audio and inserts text.
+
+## 12. What shipped differently
+
+- The voice activity detector and the segmenter run inside the recognizer
+  worker (section 11), not on the main thread.
+- The Vim normal mode refusal happens in two places: the shortcut refuses to
+  start, and an insertion that finds the editor in normal mode stops with the
+  toast, since the mode can change mid-session.
+- Clicking a microphone button while another field is being dictated into
+  moves dictation to the new field rather than stopping it. The service stops
+  the previous target first, so the rule in section 3 holds.
+- "Transcribing" in the pill means "silence after speech": the worker cannot
+  tell the page when a segment closes without another message, and the
+  detector's own transitions are close enough.
+- The browser built-in backend is implemented through the Web Speech API in
+  `webspeech.js`. It restarts recognition when the browser ends it on its
+  own, which Chrome does after about a minute.
+- The dictation section of the settings panel is inside the reader's settings
+  tab, which only editors can open. Readers who only comment cannot change
+  the model yet. That is a follow-up.
+- The ONNX Runtime wasm binary is about 23 MB and ships in `web/dist`, so
+  the release binary grows by that much. It is fetched only on first use.

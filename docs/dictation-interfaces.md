@@ -205,6 +205,7 @@ export function createDictationService(deps);
 //   _testing: { reset() },
 // }
 export function getDictation();  // page-wide singleton built from real deps
+export function setDownloadConfirmation(fn); // fn(entry) -> Promise<boolean>; the SPEC 5 dialog registers here
 ```
 
 State transitions, from SPEC 4.1 and 6:
@@ -221,3 +222,21 @@ State transitions, from SPEC 4.1 and 6:
   any last text, then `idle`. The worker stays loaded for the next start.
 - Worker `onerror`: terminate, toast, `idle`.
 - The pipeline's `progress` messages are mirrored into `progress`.
+
+## webspeech.js
+
+```js
+export function createWebSpeechSession({ SpeechRecognition, language, onText, onSpeech, onError });
+// -> { stop(): Promise<void> }
+```
+
+The browser built-in backend. The service uses it instead of the worker and
+the microphone when the resolved catalog entry has `kind: "browser"`, and
+reports `device: "browser"`. Final results go through the same assembly
+and insertion path as worker text.
+
+## purge.js
+
+```js
+export async function removeCachedModel(entry, { caches }); // -> number of cache entries removed
+```
