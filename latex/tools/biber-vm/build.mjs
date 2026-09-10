@@ -1,6 +1,6 @@
 // Builds the minimal Biber guest image, exports its rootfs, packs it into
 // v86's fs.json + objects, copies the pinned v86 runtime files, and writes
-// latex/mirror/biber-vm/<vmRelease>/ per docs/specs/latex-interfaces.md
+// latex/mirror/biber-vm/<vmRelease>/ for the browser VM client
 // section 6. Idempotent: re-running with unchanged inputs reproduces the
 // same <vmRelease> and does not rewrite unchanged bytes.
 import { execFileSync } from 'node:child_process';
@@ -92,7 +92,7 @@ for (const [destName, srcName] of Object.entries(runtimeFiles)) {
   fileEntries['fs.json'] = { url: 'fs.json', sha256: sha256hex(fsData), size: fsData.length };
 }
 
-// 6. vm.json, exactly as docs/specs/latex-interfaces.md section 6.
+// 6. vm.json, the VM release manifest.
 const licences = sources.licences;
 const vmJson = {
   runtime: 'v86',

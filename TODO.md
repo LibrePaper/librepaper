@@ -70,4 +70,7 @@ says which.
 
 ## LaTeX
 
-- See the "Remaining" list in [docs/specs/latex.md](docs/specs/latex.md).
+- The LaTeX browser acceptance scripts (`web/tools/latex-e2e.mjs` and
+  `web/checks/latex-browser.mjs`) run Chromium. Other workflows already have
+  Firefox checks, but LaTeX still needs Firefox and Safari coverage and
+  validation on memory-constrained devices.

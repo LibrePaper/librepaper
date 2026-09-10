@@ -26,15 +26,16 @@ import { join as joinSession } from ${imp("src/lib/collab.js")};
 const session = joinSession({send: () => {}, mayEdit: true});
 const entries = [{key:'smith2020',author:['Jane Smith'],title:'A Study of Rivers',year:'2020'}, {key:'jones2021',author:['Alice Jones'],title:'Mountains',year:'2021'}];
 let component, menu, file;
-window.setupInsert = async (format, source = 'Before AFTER') => {
+window.setupInsert = async (format, source = null) => {
   menu?.$destroy(); component?.$destroy();
+  source ??= format === 'latex' ? ${JSON.stringify('\\documentclass{article}\n\\begin{document}\nBefore AFTER\n\\end{document}')} : 'Before AFTER';
   const extension = {latex:'tex',typst:'typ',markdown:'md',quarto:'qmd'}[format];
   file = session.addText('paper-' + Date.now() + '.' + extension, source);
   session.setMain(file);
   component = createClassComponent({component:Editor,target:document.getElementById('editor'),props:{session,format,file,analyze:async()=>({entries,diagnostics:[]})}});
   await tick();
   menu = createClassComponent({component:InsertMenu,target:document.getElementById('menu'),props:{
-    getContext:()=>({...component.getInsertContext(),bibliography:entries,files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers},author={Smith, Jane},year={2020}}'}]}),
+    getContext:()=>({...component.getInsertContext(),bibliography:entries,files:[{path:file.name,text:session.textOf(file)},{path:'refs.bib',text:'@article{smith2020,title={Rivers},author={Smith, Jane},year={2020}}'},{path:'images/river.png',url:'data:image/png;base64,preview'}]}),
     oninsert:(result,context)=>{ const ok=component.applyInsertResult(result,context); if(!ok) throw Error('Insertion target changed'); return ok; },
     onupload:async()=> 'images/upload.png'
   }});
@@ -73,26 +74,55 @@ try {
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("Insert test loaded",()=>page.evaluate("window.insertReady"),10000);
   const evaluate=(code)=>page.evaluate(code);
-  const click=async(selector)=>{ await until(selector,()=>evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`),5000); await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); };
-  const choose=async(id)=>{ await click('[data-scope="menu"][data-part="trigger"]'); await click(`[data-scope="menu"][data-part="item"][data-value="${id}"]`); };
-  const confirm=async()=>{ await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(x=>x.textContent.trim()==='Insert').click()`); await until("dialog closed",()=>evaluate(`!document.querySelector('[role="dialog"]')`),5000); };
-  const field=async(label,value)=>evaluate(`(()=>{const parent=[...document.querySelectorAll('[role="dialog"] label')].find(x=>x.textContent.trim().startsWith(${JSON.stringify(label)}));const input=parent?.querySelector('input,select');if(!input)throw Error('Missing field '+${JSON.stringify(label)});input.value=${JSON.stringify(String(value))};input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  const click=async(selector)=>{ await until(selector,()=>evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`),5000); await evaluate(`document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new PointerEvent("pointermove",{bubbles:true,pointerType:"mouse"}));document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerType:"mouse"}));document.querySelector(${JSON.stringify(selector)}).click()`); };
+  const choose=async(id)=>{ await click('[data-scope="menu"][data-part="trigger"]'); await until("menu ready",()=>evaluate(`document.querySelector('[data-scope="menu"][data-part="trigger"]')?.getAttribute('data-state')==='open'`),5000); await click(`[data-scope="menu"][data-part="item"][data-value="${id}"]`); };
+  const dialogTitle=async()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim() || ''`);
+  const confirm=async()=>{ await evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find(x=>x.textContent.trim()==='Insert').click()`); await until("dialog closed",()=>evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`),5000); };
+  const cancel=async()=>{ await evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find(x=>x.textContent.trim()==='Cancel').click()`); await until("dialog cancelled",()=>evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`),5000); };
+  const field=async(label,value)=>evaluate(`(()=>{const dialog=document.querySelector('[role="dialog"][data-state="open"]');const wanted=${JSON.stringify(label.toLowerCase())};const parent=[...dialog.querySelectorAll('label')].find(x=>x.textContent.trim().toLowerCase().startsWith(wanted));const input=parent?.querySelector('input,select') || [...dialog.querySelectorAll('input,select')].find(x=>x.getAttribute('aria-label')?.toLowerCase().includes(wanted));if(!input)throw Error('Missing field '+${JSON.stringify(label)}+' labels='+[...dialog.querySelectorAll('label')].map(x=>x.textContent.trim()).join('|')+' html='+dialog.innerHTML.slice(0,1000));input.value=${JSON.stringify(String(value))};input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  const checkCitation=async(key)=>evaluate(`(()=>{const input=document.querySelector('[role="dialog"][data-state="open"] input[type="checkbox"][value=${JSON.stringify(key)}]');if(!input)throw Error('Missing citation '+${JSON.stringify(key)});input.click();})()`);
 
   for (const [format,expected] of [["latex",/\\begin\{tabular\}/],["typst",/#table\(/],["markdown",/\|/],["quarto",/\|/]]) {
     await evaluate(`setupInsert(${JSON.stringify(format)})`);
-    await evaluate("selectInsert(7)");
+    await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");
     await choose("table");
-    await until("table dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"]'))`),5000);
+    await until("table dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Table'`),5000);
     await field("Rows",2);await field("Columns",2);
     await confirm();
     assert.match((await evaluate("insertState()")).text,expected,format+" generates its own table syntax");
   }
   await evaluate("setupInsert('markdown')");await evaluate("selectInsert(7)");
-  await choose("table");await until("dialog visible",()=>evaluate(`Boolean(document.querySelector('[role="dialog"]'))`),5000);
+  await choose("table");await until("dialog visible",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
   await evaluate("remoteInsert()");await confirm();
   assert.match((await evaluate("insertState()")).text,/^REMOTE Before [\s\S]*AFTER$/, "dialog inserts at peer-adjusted caret");
   await evaluate("undoInsert()");
   assert.equal((await evaluate("insertState()")).text,"REMOTE Before AFTER","one undo removes insertion and preserves peer edit");
+  // Cancellation must release the captured target without mutating source.
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");
+  await choose("table");
+  await until("cancellable table dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Table'`),5000);
+  await cancel();
+  assert.equal((await evaluate("insertState()" )).text,"Before AFTER","cancelling an insertion leaves source unchanged");
+
+  // Citation search supports multiple selections and narrative style.
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");
+  await choose("citation");await until("citation dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Citation'`),5000);
+  await field("Search bibliography","Rivers");await checkCitation("smith2020");
+  await field("Search bibliography","");await checkCitation("jones2021");await field("Citation style","narrative");await confirm();
+  assert.match((await evaluate("insertState()")).text,/\[?@smith2020; @jones2021\]?/,"citation inserts both selected references in narrative form");
+
+  // Cross-reference and label dialogs use actual gathered target ids.
+  await evaluate("setupInsert('markdown','# Intro\n\nBefore AFTER')");await evaluate("selectInsert(15)");
+  await choose("cross-reference");await until("cross-reference dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Cross-reference'`),5000);
+  const target=await evaluate(`document.querySelector('[role="dialog"][data-state="open"] select')?.options[1]?.value`);assert.ok(target,"cross-reference target is available");await field("Reference",target);await confirm();
+  assert.match((await evaluate("insertState()" )).text,/\[[^\]]+\]\(#.+\)/,"cross-reference inserts a link");
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await choose("label");await until("label dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Label / anchor'`),5000);await field("Label","sec-intro");await confirm();assert.match((await evaluate("insertState()" )).text,/sec-intro/);
+
+  // Invalid dimensions are reported in the dialog and do not close it.
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await choose("table");await until("invalid table dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Table'`),5000);await field("Rows",0);await evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find(x=>x.textContent.trim()==='Insert').click()`);await until("dimension error",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [role="alert"], .insert-error')?.textContent.includes('Rows')`),5000);assert.equal(await dialogTitle(),"Table");await cancel();
+
+  // Project image selection provides a preview and inserts the chosen source.
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await choose("figure");await until("figure dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Image / figure'`),5000);await field("Project image","images/river.png");assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"] img.insert-image-preview'))`),true);await confirm();assert.match((await evaluate("insertState()" )).text,/images\/river\.png/);
   await evaluate("setupInsert('markdown','alpha\\nbeta')");await evaluate("selectInsert(0,10)");
   await choose("bulleted-list");
   await until("selection converted to list",async()=>/^\s*- alpha\n- beta/.test((await evaluate("insertState()")).text),5000);

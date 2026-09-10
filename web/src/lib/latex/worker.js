@@ -5,7 +5,7 @@
 // time and lazily creates the nested engine workers it needs
 // (`driver.js`, one per pdfTeX/XeTeX/dvipdfm/LuaTeX/BibTeX/BibTeX8/
 // makeindex), replacing the old two-message SwiftLaTeX protocol with the one
-// in `docs/specs/latex-interfaces.md` section 2.4:
+// shown below:
 //
 //   in  { id, cmd: "configure", base, release, format }
 //   in  { id, cmd: "stage", engine, tree, generated }

@@ -1,5 +1,5 @@
 //! The loopback HTTP surface `librepaper local start` binds:
-//! `docs/specs/latex-interfaces.md` section 5, all of it. Every route hangs
+//! every route hangs
 //! under `protocol::BASE_PATH`; nothing else answers on this port.
 //!
 //! Bound to loopback only, `Host`-checked against DNS rebinding, CORS-scoped
@@ -34,12 +34,12 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch, Mutex, Notify};
 
 use crate::local::pairing::{self, PairingStore};
+use crate::local::preview;
 use crate::local::protocol::{
     self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, PreviewRequest,
     Workspace, BASE_PATH, MAX_FILES, MAX_JSON_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_UPLOAD_BYTES,
     PROTOCOL_VERSIONS,
 };
-use crate::local::preview;
 
 /// The last slice of a preview's combined stdout+stderr surfaced in its
 /// status JSON -- enough to show why a render failed, not the whole log.

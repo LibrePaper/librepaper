@@ -1,16 +1,57 @@
-import assert from "node:assert/strict";
-import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertTargets } from "../src/lib/insert.js";
-assert.ok(INSERT_ACTIONS.length >= 30);
-for (const format of ["latex", "typst", "markdown", "quarto"]) {
-  const c = { format, text: "# Existing {#existing}\n", selection: { from: 0, to: 0, text: "" }, bibliography: [{ key: "smith2020", title: "A paper" }] };
-  assert.equal(insertionAvailability("heading", c).enabled, true);
-  assert.ok(buildInsertion("heading", { title: "Methods", level: 2 }, c).text.length);
-  assert.ok(buildInsertion("table", { rows: 2, columns: 2 }, c).text.includes(format === "latex" ? "tabular" : format === "typst" ? "#table" : "|"));
-  assert.ok(buildInsertion("citation", { keys: ["smith2020"] }, c).text.includes(format === "latex" ? "cite" : "@smith2020"));
+import assert from 'node:assert/strict';
+import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertTargets, gatherInsertEnvironments, insertSyntaxContext } from '../src/lib/insert.js';
+const latex='\\documentclass{article}\n\\begin{document}\n\nContent\n\\end{document}';
+const contexts=Object.fromEntries(['latex','typst','markdown','quarto'].map(format=>{
+  const text=format==='latex'?latex:format==='typst'?'= Intro <intro>\n':'# Intro\n';
+  return [format,{format,path:'main.'+({latex:'tex',typst:'typ',markdown:'md',quarto:'qmd'})[format],text,mainText:text,selection:{from:format==='latex'?latex.indexOf('Content'):text.length,to:format==='latex'?latex.indexOf('Content'):text.length,text:''},files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers}}'}],bibliography:[{key:'smith2020'}]}];
+}));
+assert.equal(new Set(INSERT_ACTIONS.map(a=>a.id)).size,35);
+for(const [format,c] of Object.entries(contexts)) {
+  const table=buildInsertion('table',{rows:2,columns:2,alignment:'right',caption:'Results',label:'results'},c);
+  assert.match(table.text,format==='latex'?/tabular\}\{rr/:format==='typst'?/columns: 2, align: right/:/Results/);
+  assert.ok(table.selection.head>table.selection.anchor || format==='latex');
+  const code=buildInsertion('inline-math',{},c);assert.match(code.text,/\$x = y\$/);
+  assert.match(buildInsertion('citation',{keys:['smith2020']},c).text,/smith2020/);
+  assert.throws(()=>buildInsertion('table',{rows:-1},c),/Rows/);
+  assert.throws(()=>buildInsertion('figure',{src:'x.png',width:'1);danger'},c),/width/);
+  assert.throws(()=>buildInsertion('citation',{keys:[]},c),/reference|entry/i);
+  const body={...c,selection:{...c.selection,text:'one\ntwo'}};
+  assert.match(buildInsertion('bulleted-list',{},body).text,/one[\s\S]*two/);
 }
-assert.equal(insertionAvailability("abstract", { format: "markdown" }).enabled, false);
-assert.match(buildInsertion("display-math", {}, { format: "latex" }).text, /equation/);
-assert.match(buildInsertion("display-math", {}, { format: "typst" }).text, /\$/);
-assert.match(buildInsertion("numbered-list", { }, { format: "markdown", selection: { text: "one\ntwo" } }).text, /1\. one/);
-assert.deepEqual(gatherInsertTargets({ format: "markdown", text: "# Intro {#intro}" })[0].id, "intro");
-console.log("insert: registry, capabilities, generators, targets passed");
+assert.equal(insertionAvailability('heading',{format:'html'}).enabled,false);
+const md=contexts.markdown;
+assert.match(buildInsertion('matrix',{rows:2,columns:3,brackets:'brackets'},md).text,/\\begin\{bmatrix\}\n0 & 0 & 0 \\\\\n0 & 0 & 0/);
+assert.match(buildInsertion('footnote',{},md).text,/\[\^note-1\]/);
+assert.match(buildInsertion('footnote',{},md).additionalEdits[0].insert,/\[\^note-1\]: Note/);
+assert.match(buildInsertion('bibliography',{file:'refs.bib'},md).additionalEdits[0].insert,/bibliography: "refs.bib"/);
+assert.match(buildInsertion('cross-reference',{target:'intro'},md).text,/\]\(#intro\)/);
+assert.match(buildInsertion('label',{label:'foo'},md).text,/<a id="foo"><\/a>/);
+const q=contexts.quarto;
+assert.match(buildInsertion('theorem',{title:'Result'},q).text,/\{#thm-theorem\}/);
+assert.match(buildInsertion('table',{caption:'Data',label:'data'},q).text,/\{#tbl-data\}/);
+assert.match(buildInsertion('display-math',{numbered:true,label:'model'},q).text,/\{#eq-model\}/);
+assert.match(buildInsertion('toc',{},q).additionalEdits[0].insert,/toc: true/);
+const tex=contexts.latex;
+assert.ok(buildInsertion('table',{},tex).additionalEdits.some(e=>e.insert.includes('booktabs')));
+assert.ok(buildInsertion('theorem',{},tex).additionalEdits.some(e=>e.insert.includes('newtheorem')));
+assert.match(buildInsertion('figure',{src:'plot.png',width:'80%',caption:'Caption'},tex).text,/width=0.8\\linewidth/);
+assert.match(buildInsertion('display-math',{numbered:false},tex).text,/equation\*/);
+assert.match(buildInsertion('heading',{title:'A & B',label:'sec-results'},tex).text,/A \\& B.*\\label\{sec-results\}/);
+assert.match(buildInsertion('matrix',{brackets:'braces'},tex).text,/Bmatrix/);
+const typ=contexts.typst;
+assert.match(buildInsertion('heading',{numbered:true,label:'h'},typ).text,/numbering: "1.1".*<h>/);
+assert.match(buildInsertion('citation',{keys:['smith2020'],style:'narrative'},typ).text,/form: "prose"/);
+assert.match(buildInsertion('display-math',{numbered:true,label:'eq'},typ).text,/block: true, numbering: "\(1\)"/);
+assert.match(buildInsertion('table',{header:true},typ).text,/table.header\(/);
+for(const format of ['markdown','quarto','typst']) {
+  const text='```python\nx = 1\n';const c={format,text,selection:{from:text.length,to:text.length,text:''}};
+  assert.equal(insertSyntaxContext(c),'code');assert.equal(insertionAvailability('table',c).enabled,false);
+}
+const math={...md,text:'$ x + ',selection:{from:6,to:6,text:''}};
+assert.equal(insertSyntaxContext(math),'math');assert.equal(insertionAvailability('heading',math).enabled,false);
+assert.ok(!buildInsertion('matrix',{},math).text.includes('$$'));
+assert.deepEqual(gatherInsertTargets({format:'latex',text:'\\section{No label}\n\\label{real}'}).map(t=>t.id),['real']);
+assert.deepEqual(gatherInsertTargets({format:'markdown',text:'# Intro\n# Intro'}).map(t=>t.id),['intro','intro-1']);
+assert.deepEqual(gatherInsertEnvironments({format:'typst',text:'#let boxed(body) = block(body)'}),['boxed']);
+assert.throws(()=>buildInsertion('custom-environment',{environment:'unknown'},tex),/not defined/);
+console.log('insert: all format adapters, nondefault options, dependencies, validation, syntax contexts and target discovery passed');

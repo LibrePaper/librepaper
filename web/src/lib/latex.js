@@ -1,7 +1,7 @@
 // LaTeX, compiled in this browser, with local and Biber-VM fallbacks.
 //
-// This module is the controller docs/specs/latex-compiler.md describes: it owns exactly
-// one module worker running the browser engine, speaks the section 2.4 protocol to it,
+// This controller owns exactly
+// one module worker running the browser engine, speaks the worker message protocol to it,
 // and decides -- through `latex/route.js`'s pure state machine -- when a
 // Biber request or a browser failure should instead go to the author's local
 // LibrePaper app or, failing that, to a Biber-only virtual machine in the

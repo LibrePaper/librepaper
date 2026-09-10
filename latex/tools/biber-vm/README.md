@@ -1,10 +1,7 @@
 # Biber VM: browser bibliography fallback image
 
 Builds the minimal 32-bit guest that runs real Biber inside a v86 emulator
-worker, for [docs/specs/latex-compiler.md](../../../docs/specs/latex-compiler.md)'s "Browser Biber VM:
-final bibliography fallback" and
-[docs/specs/latex-interfaces.md](../../../docs/specs/latex-interfaces.md)
-section 6. This is package F. It never runs on the ordinary browser
+worker as the final bibliography fallback. It never runs on the ordinary browser
 TeX/BibTeX path; it is a last-resort fallback for Biber only, loaded lazily.
 
 ## What is in the guest
@@ -47,8 +44,7 @@ cross-check evidence (see its bcf-compatibility section). That cross-check
 documents the old VM pairing and does not establish compatibility with the
 current 2.22 release.
 
-Three Biber sourcing options were evaluated, in the order docs/specs/latex-compiler.md
-requests, with the full evaluation and evidence in
+Three Biber sourcing options were evaluated, with the full evaluation and evidence in
 [sources.json](sources.json):
 
 1. **Debian bookworm's `biber` package** — rejected. `apt-cache policy biber`
@@ -122,9 +118,8 @@ distribution keeps this guest roughly 6x smaller.
 See [RESULTS.md](RESULTS.md) for the measured boot time, cold/warm Biber
 time, and bytes transferred from the most recent `vm-smoke.mjs` run. These
 are v86-CPU-bound numbers from one desktop
-Chromium session, not a promised product latency; docs/specs/latex-compiler.md explicitly
-expects this route to be slower than native execution and asks that it be
-measured, not assumed fast.
+Chromium session, not a promised product latency. This route is slower than
+native execution.
 
 ## Licences
 
@@ -151,8 +146,7 @@ device and makes no runtime network access.
 - **No lazy/lifecycle integration.** This directory only builds and smoke-
   tests the image. The browser VM client
   (`web/src/lib/latex/vm.js` / `vm-worker.js`, package B3), cancellation,
-  idle teardown, persistent caching, and the routing/eligibility rules in
-  docs/specs/latex-compiler.md are separate work packages and are not implemented here.
+  idle teardown, persistent caching, and the routing/eligibility rules are implemented outside this directory.
 - **No reproducibility guarantee for the Debian package set.** The base
   image digest is pinned but Debian's package
   archive is not frozen to a dated snapshot; here that barely matters since

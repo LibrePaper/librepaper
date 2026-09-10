@@ -1,6 +1,6 @@
 //! The compiler work package's server-side surface: rendering provenance,
 //! `/api/config`'s `latex_local` entry, and checkpoint trees that carry
-//! compile settings. See `docs/specs/latex-interfaces.md`, section 4.
+//! compile settings.
 //!
 //! Provenance and settings share one property with every other thing this
 //! server stores: neither may be silently wrong. A rendering's provenance
@@ -105,8 +105,7 @@ async fn get_rendering(cookie: &str, base: &str, slug: &str, name: &str) -> u16 
 /* -------------------------------------------------------------- provenance */
 
 /// Provenance sent beside a PDF is stored, and a reader asking for the latest
-/// rendering is told it. The exact `Provenance` shape from
-/// `docs/specs/latex-interfaces.md` round-trips unchanged.
+/// rendering is told it. The exact `Provenance` shape round-trips unchanged.
 #[tokio::test]
 async fn provenance_round_trips_through_upload_and_latest() {
     let server = new_test_server().await;

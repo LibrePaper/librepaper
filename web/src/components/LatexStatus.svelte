@@ -1,7 +1,7 @@
 <script>
-  // The compile status line: docs/specs/latex-compiler.md's "An unobtrusive compile
+  // The compile status line: an unobtrusive compile
   // status distinguishes browser and local output and identifies VM-backed
-  // bibliography work when used." This is the only place that status is
+  // bibliography work when used. This is the only place that status is
   // drawn -- there is no chooser and no card any more, so what a person sees
   // while a document loads and compiles is this line, under the toolbar
   // badges, plus whatever contextual action the moment calls for.

@@ -113,7 +113,7 @@
     setDiagnostics as setLintDiagnostics,
     openLintPanel,
   } from "@codemirror/lint";
-  import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
+  import { yCollab, yUndoManagerKeymap, ySyncFacet } from "y-codemirror.next";
   import * as Y from "yjs";
 
   import { typstLanguage } from "../lib/typst-mode.js";
@@ -387,7 +387,7 @@
     if (!target || !view) return null;
     const path = session.paths?.get(showing) || "";
     const lower = path.toLowerCase();
-    const insertFormat = lower.endsWith(".qmd") ? "quarto" : formatOf(path) || format;
+    const insertFormat = formatOf(path) || (!path ? format : "");
     const tree = session.tree?.() || { main: "", texts: {} };
     const mainPath = tree.main || session.mainPath?.() || path;
     const mainText = session.textOf?.(session.idOf?.(mainPath))?.toString?.() || tree.texts?.[mainPath] || "";
@@ -397,73 +397,81 @@
       text: view.state.doc.toString(),
       selection: { from: view.state.selection.main.from, to: view.state.selection.main.to, text: target.capturedText },
       mainText,
+      mainPath,
       files: Object.entries(tree.texts || {}).map(([filePath, text]) => ({ path: filePath, text: String(text ?? "") })),
       bibliography: bibliographyEntries(),
       targetId: (() => {
         const id = `insert-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         target.snapshotText = view.state.doc.toString();
+        insertTargets.clear();
         insertTargets.set(id, target);
         return id;
       })(),
     };
   }
 
-  // Apply a generator result in one CodeMirror transaction. Relative Yjs
-  // positions are resolved at commit time, so remote edits made during the
-  // dialog are included in the right place and remain one local undo step.
+  export function releaseInsertContext(context) {
+    if (context?.targetId) insertTargets.delete(context.targetId);
+  }
+
+  // Validate every change before touching shared text. Main-file setup and the
+  // snippet share the active editor's Yjs transaction and undo entry.
   export function applyInsertResult(result, capturedContext = null) {
-    if (!result || typeof result.text !== "string" || !view || !session || editable === false) return false;
-    const target = insertTargets.get(capturedContext?.targetId) || capturedContext?.target || capturedContext || null;
-    if (!target || target.session !== session || target.file !== showing) return false;
-    const ytext = session.textOf?.(showing) || session.text;
-    if (!ytext?.doc) return false;
-    const absolute = (relative) => Y.createAbsolutePositionFromRelativePosition(relative, ytext.doc);
-    const start = absolute(target.from);
-    const end = absolute(target.to);
+    if (!result || typeof result.text !== "string" || !view || !session || !editable) return false;
+    const target = insertTargets.get(capturedContext?.targetId);
+    if (!target || target.session !== session || target.file !== showing || session.paths.get(showing) !== capturedContext.path) return false;
+    const ytext = session.textOf(showing);
+    const start = Y.createAbsolutePositionFromRelativePosition(target.from, session.doc);
+    const end = Y.createAbsolutePositionFromRelativePosition(target.to, session.doc);
     if (!start || !end || start.type !== ytext || end.type !== ytext) return false;
-    const from = Math.min(start.index, end.index);
-    const to = Math.max(start.index, end.index);
-    // A collaborator may have edited inside the selected range while the
-    // dialog was open. Refusing here preserves that work; the relative
-    // anchors still make ordinary caret insertions safe across remote edits.
-    if (ytext.toString().slice(from, to) !== String(target.capturedText || "")) return false;
-    const currentText = ytext.toString();
-    const snapshotText = capturedContext?.text || target.snapshotText || currentText;
-    const mapSnapshotOffset = (offset) => {
-      if (snapshotText === currentText) return offset;
-      let prefix = 0;
-      while (prefix < snapshotText.length && prefix < currentText.length && snapshotText[prefix] === currentText[prefix]) prefix += 1;
-      let suffix = 0;
-      while (suffix < snapshotText.length - prefix && suffix < currentText.length - prefix
-        && snapshotText[snapshotText.length - 1 - suffix] === currentText[currentText.length - 1 - suffix]) suffix += 1;
-      const oldChangedEnd = snapshotText.length - suffix;
+    const from = Math.min(start.index, end.index), to = Math.max(start.index, end.index);
+    if (ytext.toString().slice(from, to) !== target.capturedText) return false;
+    const plans = new Map([[ytext, []]]);
+    const mapOffset = (offset, snapshot, current) => {
+      if (snapshot === current) return offset;
+      let prefix = 0, suffix = 0;
+      while (prefix < snapshot.length && prefix < current.length && snapshot[prefix] === current[prefix]) prefix++;
+      while (suffix < snapshot.length - prefix && suffix < current.length - prefix && snapshot[snapshot.length - suffix - 1] === current[current.length - suffix - 1]) suffix++;
       if (offset < prefix) return offset;
-      if (offset > oldChangedEnd) return offset + (currentText.length - snapshotText.length);
+      if (offset > snapshot.length - suffix) return offset + current.length - snapshot.length;
       return null;
     };
-    const changes = [];
     for (const edit of result.additionalEdits || []) {
-      if (!Number.isInteger(edit?.from) || !Number.isInteger(edit?.to) || typeof edit.insert !== "string") continue;
-      const editFrom = mapSnapshotOffset(edit.from), editTo = mapSnapshotOffset(edit.to);
-      // Additional edits are absolute offsets in the captured source. An
-      // overlap with the primary replacement or an un-mappable concurrent
-      // edit is unsafe, so fail the whole insertion instead of dropping it.
-      if (editFrom == null || editTo == null || editFrom > editTo || editFrom < to && editTo > from) return false;
-      changes.push({ from: editFrom, to: editTo, insert: edit.insert });
+      if (!Number.isInteger(edit?.from) || !Number.isInteger(edit?.to) || typeof edit.insert !== "string") return false;
+      const path = edit.path || capturedContext.path;
+      const fileText = session.textOf(session.idOf(path));
+      const snapshot = path === capturedContext.path ? capturedContext.text : capturedContext.files?.find(file => file.path === path)?.text;
+      if (!fileText || typeof snapshot !== "string" || edit.from < 0 || edit.to < edit.from || edit.to > snapshot.length) return false;
+      const editFrom = mapOffset(edit.from, snapshot, fileText.toString()), editTo = mapOffset(edit.to, snapshot, fileText.toString());
+      if (editFrom == null || editTo == null || (fileText === ytext && editFrom < to && editTo > from)) return false;
+      if (!plans.has(fileText)) plans.set(fileText, []);
+      plans.get(fileText).push({ from: editFrom, to: editTo, insert: edit.insert });
     }
+    const changes = plans.get(ytext);
+    const shift = changes.filter(edit => edit.to <= from).reduce((sum, edit) => sum + edit.insert.length - (edit.to - edit.from), 0);
     changes.push({ from, to, insert: result.text });
-    changes.sort((a, b) => a.from - b.from || a.to - b.to);
-    for (let i = 1; i < changes.length; i += 1) if (changes[i - 1].to > changes[i].from) return false;
+    for (const edits of plans.values()) {
+      edits.sort((a, b) => a.from - b.from || a.to - b.to);
+      for (let i = 1; i < edits.length; i++) if (edits[i - 1].to > edits[i].from) return false;
+    }
     const selection = result.selection;
-    const anchor = selection && Number.isInteger(selection.anchor)
-      ? from + Math.max(0, Math.min(result.text.length, selection.anchor)) : from + result.text.length;
-    const head = selection && Number.isInteger(selection.head)
-      ? from + Math.max(0, Math.min(result.text.length, selection.head)) : anchor;
-    undoManagers.get(ytext)?.stopCapturing?.();
-    view.dispatch({ changes, selection: { anchor, head }, effects: EditorView.scrollIntoView(head) });
-    undoManagers.get(ytext)?.stopCapturing?.();
+    const offset = value => from + shift + Math.max(0, Math.min(result.text.length, Number.isInteger(value) ? value : result.text.length));
+    const anchor = offset(selection?.anchor), head = offset(selection?.head);
+    const manager = undoManagers.get(ytext);
+    for (const text of plans.keys()) manager.addToScope(text);
+    manager.stopCapturing();
+    session.doc.transact(() => {
+      view.dispatch({ changes, selection: { anchor, head }, effects: EditorView.scrollIntoView(head) });
+      for (const [text, edits] of plans) if (text !== ytext) {
+        for (const edit of [...edits].reverse()) {
+          if (edit.to > edit.from) text.delete(edit.from, edit.to - edit.from);
+          if (edit.insert) text.insert(edit.from, edit.insert);
+        }
+      }
+    }, view.state.facet(ySyncFacet));
+    manager.stopCapturing();
+    releaseInsertContext(capturedContext);
     view.focus();
-    if (capturedContext?.targetId) insertTargets.delete(capturedContext.targetId);
     return true;
   }
 

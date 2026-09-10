@@ -37,8 +37,7 @@ entry to the pulled `.bib` and inserts the key in one gesture. Without it,
 completion is over the tree, which is the whole feature minus the convenience.
 
 The exact loopback endpoint, its version negotiation and what Zotero versions
-expose it belong to the implementation milestone, in the manner
-[latex-compiler.md](latex-compiler.md) defers local transport research. The capability is
+expose it belong to the implementation milestone. The capability is
 reported like any other local capability: present, absent, or incompatible,
 never assumed.
 
@@ -94,6 +93,6 @@ continues to work when Zotero is unavailable.
 
 ## References
 
-- [latex-compiler.md](latex-compiler.md) -- local discovery and the bridge protocol.
+- [Local bridge protocol](../../crates/librepaper/src/local/protocol.rs) -- local service wire contract.
 - [quarto.md](quarto.md) -- remaining Quarto support.
 - [catalog.md](catalog.md) -- secrets, retention, and erasure constraints.

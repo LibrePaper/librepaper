@@ -1,9 +1,7 @@
 // Behavioural checks for the reader's LaTeX status text -- the pure mapping
-// from a `Status`/`Provenance`/`Attempt[]` (docs/specs/latex-interfaces.md
-// section 2.1) to what a reader sees, kept in
+// from a `Status`/`Provenance`/`Attempt[]` to what a reader sees, kept in
 // web/src/lib/latex/status-text.js so it can be checked without a Svelte
-// runtime and without `latex.js` itself, which is mid-rewrite by another
-// package (see docs/specs/latex-compiler.md and section 3 of the interfaces doc).
+// runtime and without `latex.js` itself.
 import assert from "node:assert/strict";
 import {
   actionsFor,

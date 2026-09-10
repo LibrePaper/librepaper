@@ -5,8 +5,7 @@
 // check`: it needs a mirror on disk and, if one is not there yet, a network.
 //
 // It reuses `latex/tools/serve.mjs` (package A) rather than reimplementing a
-// mirror server: that file already answers every route
-// `docs/specs/latex-interfaces.md` section 1 describes (the engine
+// mirror server: that file already answers every mirror route (the engine
 // name-lookup route, the digest-shaped static route, `/mirror/manifest.json`).
 // If the mirror's `manifest.json` has no `releases` yet (wasm-latex still
 // building it), this file polls for up to 20 minutes before giving up and
@@ -123,10 +122,9 @@ function inspectPdfBytes(bytesArray, scratch) {
 
 // --- the in-page driver, injected once ---------------------------------------
 
-// Defines globalThis.__librepaper: a hand-rolled controller for the section
-// 2.4 protocol (id in, id echoed back; unsolicited progress/downloading have
-// no id). `compileTree` runs the ordinary sequence from docs/specs/latex-compiler.md
-// ("Browser compilation controller"): stage, tex, inspect outputs for
+// Defines globalThis.__librepaper: a hand-rolled controller for the worker
+// message protocol (id in, id echoed back; unsolicited progress/downloading have
+// no id). `compileTree` runs the ordinary controller sequence: stage, tex, inspect outputs for
 // bibliography/index work, run the helper, write its output back, rerun until
 // the log stops asking for it or 8 passes are used.
 const PAGE_DRIVER = `
@@ -203,7 +201,7 @@ async function __librepaperCompile(engineName, tree) {
     // the aux; biblatex with backend=bibtex does too, but is only certain to
     // need a (re)run of BibTeX once the log says so explicitly ("Please
     // (re)run BibTeX on the file(s): ..."), which is also the authoritative
-    // signal docs/specs/latex-compiler.md's controller sequence names.
+    // signal the controller uses.
     const asksForBibtex = /Please \\(re\\)run BibTeX/i.test(last.log);
     const looksBibtexy = /\\\\bibdata|\\\\citation/.test(auxText);
     const needsBibtex = !ranBibtex && (asksForBibtex ||

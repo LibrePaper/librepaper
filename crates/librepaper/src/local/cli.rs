@@ -1,6 +1,5 @@
 //! `librepaper local <command>`: the command line front end for the loopback
-//! service. See `docs/specs/latex-compiler.md`, "App integration", and
-//! `docs/specs/latex-interfaces.md` section 7.
+//! service.
 //!
 //! This first version runs `start` in the foreground always: `--foreground`
 //! is accepted and honoured (there is nothing else to do yet) but detaching
@@ -320,10 +319,7 @@ async fn doctor(tex_path: Vec<PathBuf>) {
                 capabilities.confinement.reason.as_str()
             }
         );
-        println!(
-            "  a native compile will run unconfined until this is addressed; see \
-             docs/specs/latex-interfaces.md, \"Native execution boundary\""
-        );
+        println!("  a native compile will run unconfined until this is addressed");
     }
 }
 
