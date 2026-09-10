@@ -103,7 +103,10 @@
   function keydown(event) {
     if (event.key !== "Escape" || !owns) return;
     if (snapshot.state !== "listening" && snapshot.state !== "transcribing" && snapshot.state !== "loading") return;
+    // Escape means "stop dictating" first: the field underneath may also
+    // close on Escape (a reply form does), and one press should not do both.
     event.preventDefault();
+    event.stopPropagation();
     dictation.stop();
   }
 
