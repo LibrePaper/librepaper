@@ -14,11 +14,18 @@
   // right away, with nothing to await.
   let vimPromise = null;
   let resolvedVim = null;
+  // `getCM` is the only way to reach the vim-specific state (`insertMode`,
+  // `visualMode`, ...) that `vimMode()` below reads; it comes from the same
+  // module as `vim`/`Vim`, so it is captured alongside them rather than
+  // imported at the top of the file, which would pull the package in before
+  // anyone had asked for Vim keys.
+  let resolvedGetCM = null;
   function loadVim() {
     if (!vimPromise) {
-      vimPromise = import("@replit/codemirror-vim").then(({ Vim, vim }) => {
+      vimPromise = import("@replit/codemirror-vim").then(({ Vim, vim, getCM }) => {
         defineExCommands(Vim);
         resolvedVim = vim({ status: true });
+        resolvedGetCM = getCM;
         return resolvedVim;
       });
     }
@@ -306,6 +313,61 @@
 
   export function focus() {
     view?.focus();
+  }
+
+  /// Dictation's landing spot (SPEC-dictation.md 4.7, docs/dictation-interfaces.md
+  /// "targets.js"): replaces the main selection with `text` through an
+  /// ordinary CodeMirror transaction, so collaborators, undo history, and
+  /// track changes see it the same as a keystroke. Returns false rather than
+  /// throwing when there is no view, since the service checks `alive()`
+  /// first but a target can still race a teardown between that check and
+  /// this call.
+  export function insertAtCaret(text) {
+    if (!view) return false;
+    const { from, to } = view.state.selection.main;
+    const at = from + text.length;
+    view.dispatch({
+      changes: { from, to, insert: text },
+      selection: { anchor: at },
+      effects: EditorView.scrollIntoView(at),
+    });
+    return true;
+  }
+
+  /// What `assemble()` looks at to decide spacing and capitalization for the
+  /// next dictated segment (SPEC-dictation.md 4.6): the document text just
+  /// before the caret, capped so a huge file does not get copied on every
+  /// segment.
+  export function textBeforeCaret(limit = 200) {
+    if (!view) return "";
+    const head = view.state.selection.main.head;
+    return view.state.sliceDoc(Math.max(0, head - limit), head);
+  }
+
+  /// `null` when Vim keys are not the live compartment's content -- either
+  /// nobody has turned Vim on, or the package is still downloading -- and
+  /// otherwise "insert" or "normal" from the vim state's own `insertMode`
+  /// flag. Visual and replace read as "normal" here: SPEC 6 only cares
+  /// whether typed characters land as text, and only insert mode does that.
+  export function vimMode() {
+    if (!view || !resolvedGetCM) return null;
+    const cm = resolvedGetCM(view);
+    const vim = cm?.state?.vim;
+    if (!vim) return null;
+    return vim.insertMode ? "insert" : "normal";
+  }
+
+  /// Whether this editor is still a live target: the service checks this
+  /// before every insertion (SPEC 4.7) so a pane closed mid-dictation drops
+  /// the text with a toast instead of writing nowhere.
+  export function alive() {
+    return !!view && !!view.dom && view.dom.isConnected;
+  }
+
+  /// Lets the reader map a focused element back to this editor instance
+  /// (targets.js's `editorFor`) without reaching into `host` itself.
+  export function contains(element) {
+    return !!view && !!element && view.dom.contains(element);
   }
 
   /// What a document is written in decides how the *file being edited* is
