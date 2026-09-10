@@ -9,6 +9,7 @@
 // `getDictation()` does, lazily, and this check never calls `getDictation()`.
 
 import { createDictationService } from "../src/lib/dictation/service.js";
+import { createWebSpeechSession } from "../src/lib/dictation/webspeech.js";
 
 let failures = 0;
 function check(what, condition, detail = "") {
@@ -84,6 +85,66 @@ function makeMicFactory() {
     nextError = error;
   };
   return factory;
+}
+
+/* --------------------------------------------------------- fakes: SpeechRecognition */
+
+// A fake Web Speech API constructor, in the shape `webspeech.js` expects:
+// `addEventListener`, `start()`, `stop()`, and the settable properties it
+// configures. A scenario drives it by calling `instance.fire(name, payload)`,
+// which runs every listener registered for that event name -- there is only
+// ever one live instance per session since `createWebSpeechSession` makes
+// exactly one `new SpeechRecognition()`.
+function makeFakeSpeechRecognition() {
+  const instances = [];
+  function FakeSpeechRecognition() {
+    const listeners = new Map();
+    const instance = {
+      continuous: false,
+      interimResults: true,
+      lang: "",
+      maxAlternatives: 1,
+      startCalls: 0,
+      stopCalls: 0,
+      addEventListener(name, fn) {
+        if (!listeners.has(name)) listeners.set(name, new Set());
+        listeners.get(name).add(fn);
+      },
+      removeEventListener(name, fn) {
+        listeners.get(name)?.delete(fn);
+      },
+      start() {
+        instance.startCalls += 1;
+      },
+      // A real `recognition.stop()` is asynchronous and eventually fires
+      // `end`; the fake mirrors that on a microtask so `session.stop()`
+      // resolves through the `end` event rather than its 1-second fallback.
+      stop() {
+        instance.stopCalls += 1;
+        Promise.resolve().then(() => instance.fire("end"));
+      },
+      fire(name, payload) {
+        for (const fn of listeners.get(name) || []) fn(payload);
+      },
+    };
+    instances.push(instance);
+    return instance;
+  }
+  FakeSpeechRecognition.instances = instances;
+  return FakeSpeechRecognition;
+}
+
+// A `SpeechRecognition` result list, shaped like the Web Speech API's
+// `SpeechRecognitionResultList`: array-like, each entry array-like of
+// alternatives, only the final ones carrying `isFinal: true`.
+function makeResultEvent(transcripts) {
+  const results = transcripts.map(({ text, isFinal = true }) => {
+    const alt = [{ transcript: text }];
+    alt.isFinal = isFinal;
+    return Object.assign(alt, { isFinal });
+  });
+  results.length = transcripts.length;
+  return { results };
 }
 
 /* --------------------------------------------------------- fakes: storage */
@@ -175,6 +236,10 @@ function makeDeps(overrides = {}) {
   const mic = overrides.mic || makeMicFactory();
   const storage = overrides.storage !== undefined ? overrides.storage : makeStorage();
   const models = overrides.models || makeModels();
+  // `SpeechRecognition` defaults to undefined -- the same as a browser
+  // without the API -- so only scenarios that opt in exercise the browser
+  // backend; every other scenario is unaffected by its existence.
+  const SpeechRecognition = "SpeechRecognition" in overrides ? overrides.SpeechRecognition : undefined;
   const deps = {
     createWorker: overrides.createWorker || (() => worker),
     openMicrophone: overrides.openMicrophone || mic,
@@ -183,6 +248,9 @@ function makeDeps(overrides = {}) {
     hasWebAssembly: overrides.hasWebAssembly || (() => true),
     hasMediaDevices: overrides.hasMediaDevices || (() => true),
     confirmDownload: overrides.confirmDownload || (() => Promise.resolve(true)),
+    SpeechRecognition,
+    createWebSpeechSession:
+      overrides.createWebSpeechSession || ((args) => createWebSpeechSession({ ...args, SpeechRecognition })),
     notify: (message, level) => notifications.push({ message, level }),
     persist: async () => {
       persistCalls.count += 1;
@@ -230,14 +298,114 @@ async function testPreconditions() {
   }
 }
 
-async function testBrowserBackendOutOfScope() {
+async function testBrowserBackendMissingSpeechRecognition() {
+  // No `SpeechRecognition` constructor at all (the default in `makeDeps`) is
+  // the "this browser has no built-in dictation" precondition failure, not a
+  // crash -- SPEC 6's table of failure modes.
   const models = makeModels({ defaultId: MODEL_BROWSER.id });
   const { deps, notifications } = makeDeps({ models });
   const service = createDictationService(deps);
   await service.start(makeTarget());
-  check("browser-kind model -> unavailable", service.state === "unavailable", service.state);
-  check("browser-kind model -> reason", /not available yet/i.test(service.reason || ""), service.reason);
-  check("browser-kind model -> toast", notifications.length === 1);
+  check("browser-kind model without SpeechRecognition -> unavailable", service.state === "unavailable", service.state);
+  check("browser-kind model without SpeechRecognition -> reason", /no built-in dictation/i.test(service.reason || ""), service.reason);
+  check("browser-kind model without SpeechRecognition -> toast", notifications.length === 1);
+}
+
+async function testBrowserBackendSetting() {
+  // The stored backend setting, not an explicit model request, picks the
+  // browser catalog entry (SPEC 4.10, service.js contract). No download
+  // confirmation and no worker are involved.
+  const storage = makeStorage();
+  storage.setItem("librepaper-dictation-backend", "browser");
+  let confirmCalls = 0;
+  let workerCalls = 0;
+  const { deps } = makeDeps({
+    storage,
+    confirmDownload: () => {
+      confirmCalls += 1;
+      return Promise.resolve(true);
+    },
+    createWorker: () => {
+      workerCalls += 1;
+      return makeFakeWorker();
+    },
+    SpeechRecognition: makeFakeSpeechRecognition(),
+  });
+  const service = createDictationService(deps);
+  await service.start(makeTarget());
+
+  check("backend=browser setting reaches listening", service.state === "listening", service.state);
+  check("backend=browser setting picks the browser model", service.model?.id === "browser", JSON.stringify(service.model));
+  check("backend=browser setting reports the browser device", service.device === "browser", service.device);
+  check("backend=browser setting skips the download confirmation", confirmCalls === 0, `confirmCalls=${confirmCalls}`);
+  check("backend=browser setting never creates a worker", workerCalls === 0, `workerCalls=${workerCalls}`);
+
+  await service.stop();
+}
+
+async function testBrowserBackendFinalResultInserted() {
+  const FakeSpeechRecognition = makeFakeSpeechRecognition();
+  const { deps } = makeDeps({ models: makeModels({ defaultId: MODEL_BROWSER.id }), SpeechRecognition: FakeSpeechRecognition });
+  const service = createDictationService(deps);
+  const target = makeTarget("Hello");
+
+  await service.start(target);
+  check("browser session listening", service.state === "listening", service.state);
+  const instance = FakeSpeechRecognition.instances[0];
+  check("recognition started", instance.startCalls === 1, instance.startCalls);
+  check("recognition configured continuous", instance.continuous === true);
+  check("recognition configured non-interim", instance.interimResults === false);
+
+  instance.fire("speechstart");
+  check("speaking flag set from speechstart", service.speaking === true);
+  instance.fire("speechend");
+  check("speaking flag cleared from speechend", service.speaking === false);
+
+  instance.fire("result", makeResultEvent([{ text: "world" }]));
+  await flush();
+  check("final result assembled and inserted", target.inserted[0] === " world", JSON.stringify(target.inserted));
+
+  await service.stop();
+  check("stop() stops the recognition and returns to idle", instance.stopCalls === 1 && service.state === "idle", `${instance.stopCalls} ${service.state}`);
+}
+
+async function testBrowserBackendNotAllowedRemembered() {
+  const FakeSpeechRecognition = makeFakeSpeechRecognition();
+  const { deps, notifications } = makeDeps({ models: makeModels({ defaultId: MODEL_BROWSER.id }), SpeechRecognition: FakeSpeechRecognition });
+  const service = createDictationService(deps);
+
+  await service.start(makeTarget());
+  const instance = FakeSpeechRecognition.instances[0];
+  instance.fire("error", { error: "not-allowed" });
+  await flush();
+
+  check("not-allowed error returns to idle", service.state === "idle", service.state);
+  check("not-allowed error toasts the permission message", notifications.some((n) => n.level === "error" && /denied/i.test(n.message)), JSON.stringify(notifications));
+
+  await service.start(makeTarget());
+  check("denial is remembered for the session", service.state === "idle" && FakeSpeechRecognition.instances.length === 1, `instances=${FakeSpeechRecognition.instances.length} state=${service.state}`);
+}
+
+async function testBrowserBackendRestartsOnEnd() {
+  const FakeSpeechRecognition = makeFakeSpeechRecognition();
+  const { deps } = makeDeps({ models: makeModels({ defaultId: MODEL_BROWSER.id }), SpeechRecognition: FakeSpeechRecognition });
+  const service = createDictationService(deps);
+
+  await service.start(makeTarget());
+  const instance = FakeSpeechRecognition.instances[0];
+  check("started once", instance.startCalls === 1, instance.startCalls);
+
+  // Chrome ends a continuous recognition on its own well before stop() is
+  // called; the session must restart rather than leave dictation listening
+  // with a dead recognizer.
+  instance.fire("end");
+  await flush();
+
+  check("recognition restarted after an unrequested end", instance.startCalls === 2, instance.startCalls);
+  check("still listening after the restart", service.state === "listening", service.state);
+
+  await service.stop();
+  check("stop() after restart still ends cleanly", service.state === "idle", service.state);
 }
 
 async function testDownloadConfirmation() {
@@ -545,7 +713,11 @@ async function testTestingReset() {
 
 const tests = [
   testPreconditions,
-  testBrowserBackendOutOfScope,
+  testBrowserBackendMissingSpeechRecognition,
+  testBrowserBackendSetting,
+  testBrowserBackendFinalResultInserted,
+  testBrowserBackendNotAllowedRemembered,
+  testBrowserBackendRestartsOnEnd,
   testDownloadConfirmation,
   testLoadingThenListening,
   testTextInsertionAndTranscribing,
