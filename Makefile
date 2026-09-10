@@ -48,7 +48,10 @@ install: $(BIN)  ## Build and install to ~/.local/bin (override PREFIX= or BINDI
 $(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(TYPST) $(SHELL_OUT) | wasm
 	@mkdir -p $(dir $@)
 	@cargo build --release -p librepaper
-	@cp target/release/librepaper $@
+	@# Copied beside and renamed over: a server running from the old binary
+	@# keeps its file open, which makes an overwrite fail with "text file
+	@# busy" while a rename just leaves it holding the old inode.
+	@cp target/release/librepaper $@.tmp && mv -f $@.tmp $@
 	@echo "$@ ($$(($$(stat -c%s $@) / 1024 / 1024)) MiB) -- deploys on its own"
 
 # The documentation page is the README, so it is copied in to be embedded. The

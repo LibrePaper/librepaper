@@ -80,13 +80,24 @@ function store() {
 function readRaw(key) {
   const s = store();
   if (!s) return null;
-  try { return s.getItem(key); } catch { return null; }
+  // Only a string is a stored value: a storage shim that answers with a
+  // promise or an object would otherwise be read as an address.
+  try {
+    const value = s.getItem(key);
+    return typeof value === "string" ? value : null;
+  } catch { return null; }
 }
 
 function writeRaw(key, value) {
   const s = store();
   if (!s) return;
   try { s.setItem(key, value); } catch { /* quota or a disabled store; not fatal */ }
+}
+
+function removeRaw(key) {
+  const s = store();
+  if (!s) return;
+  try { s.removeItem(key); } catch { /* a disabled store; not fatal */ }
 }
 
 function readJSON(key, fallback) {
@@ -99,14 +110,31 @@ function writeJSON(key, value) {
   writeRaw(key, JSON.stringify(value));
 }
 
+// A stored address is used only when it is one: an http(s) URL with a host,
+// ending in a slash so paths append to it. Anything else -- including the
+// "[object Promise]" an earlier Settings panel once saved after rendering an
+// async facade into its field -- is ignored, and the default stands.
+function validAddress(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (!/^https?:$/.test(url.protocol) || !url.host) return null;
+    return url.pathname.endsWith("/") ? url.href : `${url.href}/`;
+  } catch {
+    return null;
+  }
+}
+
 export function address() {
-  return readRaw(ADDRESS_KEY) || DEFAULT_ADDRESS;
+  return validAddress(readRaw(ADDRESS_KEY)) || DEFAULT_ADDRESS;
 }
 
 export function setAddress(url) {
-  writeRaw(ADDRESS_KEY, url);
+  const value = validAddress(url);
+  if (value) writeRaw(ADDRESS_KEY, value);
+  else removeRaw(ADDRESS_KEY);
   resetNegativeCache();
-  setStatus({ address: url, state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown") });
+  setStatus({ address: address(), state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown") });
 }
 
 // The binding every document has without anyone granting one: the local app
@@ -178,7 +206,7 @@ function requirePairing() {
 function instructionsFor(state) {
   switch (state) {
     case "unreachable":
-      return "Local LibrePaper is unavailable. Run `librepaper local start` on this computer, or set a custom address in Settings.";
+      return `No local LibrePaper at ${address()}. Start it with \`librepaper local start\`, or fix the address in Settings.`;
     case "denied":
       return "Your browser blocked access to the local app. Allow local network access for this site and retry.";
     case "unauthorized":
@@ -650,7 +678,10 @@ export function quartoRequest({ job = {}, entrypoint, format = "html", profile =
   };
 }
 
-async function buildQuartoForm({ job, tree, options = {} }) {
+// Turn a shared tree's `texts`/`assets` maps into `[relativePath, bytes]`
+// pairs, validating and de-duplicating paths the same way for every caller
+// that walks a tree -- the Quarto job/preview form, and `syncWorkspace`.
+function collectTreeFiles(tree) {
   const files = [];
   const seen = new Set();
   const add = (path, bytes) => {
@@ -661,6 +692,11 @@ async function buildQuartoForm({ job, tree, options = {} }) {
   };
   for (const [path, text] of Object.entries(tree?.texts || {})) add(path, bytesOf(text));
   for (const [path, bytes] of Object.entries(tree?.assets || {})) add(path, bytesOf(bytes));
+  return files;
+}
+
+async function buildQuartoForm({ job, tree, options = {} }) {
+  const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
   const request = quartoRequest({
     job, entrypoint: options.entrypoint || tree?.main, format: options.format || "html",
@@ -954,5 +990,33 @@ export async function stopQuartoPreview(id) {
 export async function quartoPreviewStatus(id) {
   const pairing = requirePairing();
   const response = await send("GET", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
+  return response.json();
+}
+
+// -------------------------------------------------------------- workspace sync
+
+/** The manifest entries `syncWorkspace` uploads for a shared tree: the same
+ * `{path, sha256, size}` triples `buildQuartoForm` computes for a job. */
+export async function workspaceManifest(tree) {
+  return manifestOf(collectTreeFiles(tree));
+}
+
+async function buildWorkspaceForm(tree) {
+  const files = collectTreeFiles(tree);
+  const manifest = await manifestOf(files);
+  const form = new FormData();
+  form.append("manifest", new Blob([JSON.stringify(manifest)], { type: "application/json" }), "manifest.json");
+  for (const [path, bytes] of files) form.append("file", new Blob([toArrayBuffer(bytes)]), path);
+  return form;
+}
+
+// Pushes the shared tree into the local app's hosted workspace so a
+// `quarto preview` running there sees the current files, without going
+// through the job queue. Same file layout as a job's multipart body, but the
+// JSON part is named `manifest` (a bare array) rather than `job`.
+export async function syncWorkspace({ tree } = {}) {
+  const pairing = requirePairing();
+  const form = await buildWorkspaceForm(tree);
+  const response = await send("PUT", "workspace", { token: pairing.token, formBody: form });
   return response.json();
 }

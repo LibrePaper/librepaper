@@ -28,7 +28,13 @@ const longCell = "````{r}\n#| label: long\nplot(1)\n```\n````\n";
 assert.equal(parseQuarto(longCell, { path: "paper.qmd" }).cells.length, 1, "a long executable fence closes only at its own length");
 const knitrComma = parseQuarto("```{r,echo=FALSE}\nhidden_one()\n```\n```{r, echo=FALSE}\nhidden_two()\n```\n```{r , echo=FALSE}\nhidden_three()\n```\n", { path: "paper.qmd" });
 assert.deepEqual(knitrComma.cells.map((cell) => [cell.language, cell.options.echo]), [["r", false], ["r", false], ["r", false]]);
-assert.doesNotMatch(composeDraft("```{r,echo=FALSE}\nhidden_one()\n```\n").markdown, /hidden_one/);
+// The draft never guesses at echo/include/eval semantics: with no saved
+// output it shows the whole cell verbatim, fence lines included, wrapped in
+// an outer fence longer than any fence run already inside the cell text.
+const echoFalseDraft = composeDraft("```{r,echo=FALSE}\nhidden_one()\n```\n").markdown;
+assert.match(echoFalseDraft, /hidden_one/);
+assert.match(echoFalseDraft, /```\{r,echo=FALSE\}/);
+assert.match(echoFalseDraft, /^~~~\n/);
 const paritySource = [
   "---", "title: Parity", "---", "", "A {{< include appendix.qmd >}} value.", "",
   "```r", "plot(x)", "```", "", "```{r #fig-a echo=false}", "#| fig-cap: A", "x <- 1", "plot(x)", "```", "",
@@ -71,7 +77,9 @@ const cycleDraft = composeDraft("{{< include a.qmd >}}", {
 });
 assert.match(cycleDraft.markdown, /Include cycle or depth limit/);
 assert.ok(cycleDraft.diagnostics.some((diagnostic) => diagnostic.generated && diagnostic.line === 0));
-assert.match(composeDraft(source, { bundle: { cells: [{ id: "paper.qmd#plot", coverage: "captured", outputs: [{ kind: "text", text: "result" }] }] } }).markdown, /No saved result/);
+// Both #plot cells are ambiguous (duplicate label), so neither maps to the
+// saved output; the draft falls back to showing each cell verbatim.
+assert.match(composeDraft(source, { bundle: { cells: [{ id: "paper.qmd#plot", coverage: "captured", outputs: [{ kind: "text", text: "result" }] }] } }).markdown, /```\{r #plot\}\nplot\(2\)\n```/);
 const dialect = [
   "---", "title: Draft title", "authors:", "  - name: Ada Lovelace", "date: 1843", "abstract: A short abstract", "---", "",
   "::: {.callout-note #intro}", "See @fig-trend.", ":::", "",
@@ -79,7 +87,11 @@ const dialect = [
 ].join("\n");
 const dialectDraft = composeDraft(dialect, { bundle: { cells: [{ id: "main.qmd#fig-trend", outputs: [{ kind: "image", url: "/trend.png" }] }] } }).markdown;
 assert.match(dialectDraft, /quarto-title-block/);
-assert.match(dialectDraft, /quarto-callout/);
+// Fenced divs are never interpreted: the `:::` lines carry through verbatim,
+// with no callout class or wrapper markup.
+assert.match(dialectDraft, /^::: \{\.callout-note #intro\}$/m);
+assert.match(dialectDraft, /^:::$/m);
+assert.doesNotMatch(dialectDraft, /quarto-callout/);
 assert.match(dialectDraft, /href="#fig-trend"/);
 assert.match(dialectDraft, /id="fig-trend"/);
 assert.doesNotMatch(dialectDraft, /\n---\n/);
@@ -94,18 +106,20 @@ const nestedDialect = [
 const nestedParsed = parseQuarto(nestedDialect, { path: "paper.qmd" });
 assert.equal(nestedParsed.divs.find((div) => div.id === "inner").depth, 1);
 const nestedDraft = composeDraft(nestedDialect, { path: "paper.qmd" }).markdown;
-assert.match(nestedDraft, /quarto-callout/);
-assert.match(nestedDraft, /quarto-columns/);
-assert.match(nestedDraft, /quarto-column/);
-assert.match(nestedDraft, /quarto-tabset/);
-assert.match(nestedDraft, /data-quarto-tabset="static"/);
-assert.match(nestedDraft, /Figure 1/);
-assert.match(nestedDraft, /Table 1/);
+// All fenced div lines carry through verbatim, including nested ones; no
+// callout/columns/tabset class or wrapper markup is generated.
+for (const fenceLine of [
+  "::: {.callout-note #note}", "::: {.callout-warning #inner}",
+  "::: {.columns}", "::: {.column}", "::: {.panel-tabset}",
+  "::: {#fig-one}", "::: {#tbl-one}",
+]) assert.match(nestedDraft, new RegExp(`^${fenceLine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+assert.doesNotMatch(nestedDraft, /quarto-callout|quarto-columns|quarto-column\b|quarto-tabset|data-quarto-tabset/);
+// Crossref resolution still works: it is independent of div rendering and
+// reads figure/table numbering straight from the parsed div labels.
 assert.match(nestedDraft, /href="#fig-one">Figure 1/);
 assert.match(nestedDraft, /href="#tbl-one">Table 1/);
 const compactCallout = composeDraft(":::{.callout-note}\nCompact note.\n:::\n").markdown;
-assert.match(compactCallout, /quarto-callout/);
-assert.equal((compactCallout.match(/<\/div>/g) || []).length, 2, "compact div opener must pair with its title and content closers");
+assert.equal(compactCallout, ":::{.callout-note}\nCompact note.\n:::\n", "a compact div fence carries through verbatim with no interpretation");
 const nestedAuthors = parseQuarto([
   "---", "authors:", "  - name: Ada Lovelace", "    affiliation: Analytical Engine", "  - name: Grace Hopper", "    affiliation: Navy", "---", "", "Text",
 ].join("\n"), { path: "paper.qmd" });
@@ -170,7 +184,10 @@ const inserted = "```{r}\nother()\n```\n" + original;
 const movedDraft = await virtualTree({ main:"main.qmd", texts:{"main.qmd":inserted,"main.md":"Companion source"} }, { bundle:saved });
 assert.equal(movedDraft.texts["main.md"], "Companion source");
 assert.match(movedDraft.quarto.markdown, /original result/);
-assert.ok(movedDraft.quarto.markdown.indexOf("No saved result") < movedDraft.quarto.markdown.indexOf("original result"));
+// The inserted cell has no matching saved output, so it renders verbatim
+// (fence lines included) ahead of the matched cell's saved output.
+assert.match(movedDraft.quarto.markdown, /```\{r\}\nother\(\)\n```/);
+assert.ok(movedDraft.quarto.markdown.indexOf("other()") < movedDraft.quarto.markdown.indexOf("original result"));
 const duplicatedDraft = await virtualTree({ main:"main.qmd", texts:{"main.qmd":original+original} }, { bundle:saved });
 assert.doesNotMatch(duplicatedDraft.quarto.markdown, /original result/);
 const multiOutput = outputMarkup({ outputs: [

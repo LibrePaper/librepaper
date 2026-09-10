@@ -516,11 +516,18 @@ librepaper publish paper.qmd
 librepaper sync <document> paper.qmd
 ```
 
-The **Draft** view renders prose without running code. Saved figures, tables,
-and text results can remain visible while you edit. **Quarto output** shows the
-complete saved render, which has its own source revision. Changes to computation
-inputs mark saved results as potentially outdated; a matching source fingerprint
-does not prove that external data or packages have stayed unchanged.
+The pane is live, like Markdown, whenever your browser is paired with a local
+app that has Quarto installed: it shows Quarto's own preview page for the
+document, kept in sync as you type, and Quarto itself re-renders and reloads
+it. Otherwise, and for readers, the pane shows the annotated **draft**: prose
+without running code, with saved figures, tables, and text results shown in
+place where a saved render provides them, and chunks without results simply
+absent. Tools, **Show rendered output**, opens the complete saved render
+instead, which has its own source revision; changes to computation inputs mark
+saved results as potentially outdated, and a matching source fingerprint does
+not prove that external data or packages have stayed unchanged. Comments and
+highlights live on the draft and the rendered output, not on Quarto's own
+preview page.
 
 Open **Saved results** to discuss a particular figure or table, or draw a region
 on a saved image. **Inspect original result** returns to the exact result that
@@ -547,11 +554,14 @@ installed there. Start the local app once:
 librepaper local start
 ```
 
-Then choose **Render locally** from the reader's Tools menu. The first time, a
-small window from the local app asks whether to allow that site to use this
-computer's tools; click **Allow**. That is the whole setup: the local app
-renders each document in a workspace of its own, written from the files the
-browser sends with the request, so nothing has to be linked or bound. **Refresh
+The first time, a small window from the local app asks whether to allow that
+site to use this computer's tools; click **Allow**. That is the whole setup:
+once paired, the pane switches to Quarto's own live preview automatically,
+kept in sync with a workspace of its own, written from the files your browser
+sends as you edit, so nothing has to be linked or bound. Turn it off per
+document with Tools, **Live preview**. Choose **Share results** from the
+Tools menu to render on the local app and publish a results bundle so readers
+see the figures, tables, and text results in the draft. **Refresh
 computations** asks Quarto to rerun its caches. Both run the document's code,
 filters, and scripts on your machine, so allow only sites you trust. The
 pairing code the app prints still works as a fallback under Tools, Local app

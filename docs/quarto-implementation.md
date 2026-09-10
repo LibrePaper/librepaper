@@ -64,7 +64,13 @@ and renders there. A machine-local project grant made with
 the runner then checks the inventory against that project and never overwrites
 it with browser uploads, so differences must be synchronized before rendering.
 `librepaper serve` also runs the local app in-process for browsers on its own
-machine (`--no-local` disables it).
+machine (`--no-local` disables it). While the "Live preview" toggle is on and
+the pane shows Quarto's own preview page for the document, the browser keeps
+the hosted workspace current with `PUT /librepaper/local/v1/workspace`
+(multipart `manifest` plus `file` parts) on every edit instead of requesting a
+render, and Quarto's own `quarto preview` process re-renders and reloads the
+page on its own; the pane falls back to the annotated draft whenever the
+browser is unpaired or the toggle is off.
 
 Project-default rendering preserves engine cache behavior. Refresh requests
 ask Quarto to refresh computations. Neither successful exit nor a requested

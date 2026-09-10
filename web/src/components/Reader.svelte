@@ -167,6 +167,23 @@
   let quartoDataInputs = $state("");
   let quartoPreview = $state(null);
   let quartoPreviewStarting = $state(false);
+  // The Quarto live-preview switch, per document: whether the draft pane
+  // shows Quarto's own live-reloading page while paired, rather than the
+  // draft rendering this browser paints itself. Defaults on.
+  const QUARTO_LIVE_KEY = `librepaper-quarto-live:${SLUG}`;
+  let quartoLiveEnabled = $state(read(QUARTO_LIVE_KEY, true) !== false);
+  let quartoLiveErrorShown = false;
+  // Held while a render is using the local app: the managed preview and a
+  // render cannot share it, and without this the effect that keeps the
+  // preview running would restart it the instant the render stopped it.
+  let quartoLiveSuspended = $state(false);
+  let quartoLiveSyncTimer = null;
+  let quartoLiveSyncBusy = false;
+  let quartoLiveSyncQueued = false;
+  function setQuartoLiveEnabled(on) {
+    quartoLiveEnabled = on;
+    write(QUARTO_LIVE_KEY, on);
+  }
   let quartoOutput = $state(null);
   let quartoOutputState = $state("");
   let quartoBundle = $state(null);
@@ -485,7 +502,7 @@
   // whatever is given it since only a comment that already has a `source`
   // does anything there.
   function anchorComments(list) {
-    const artifactView = sourceFormat === "quarto" && quartoView === "output";
+    const artifactView = sourceFormat === "quarto" && (quartoView === "output" || quartoLiveShowing);
     const renderAnchors = artifactView ? [] : list.filter((comment) => !comment.region && !comment.output_anchor);
     if (artifactView) {
       for (const comment of list) {
@@ -587,11 +604,11 @@
         // The immutable full Quarto artifact currently has no source map or
         // render-id selector. Keep a user from attaching an artifact quote to
         // a plausible but wrong .qmd passage until that identity is carried.
-        if (sourceFormat === "quarto" && quartoView === "output") return;
+        if (sourceFormat === "quarto" && (quartoView === "output" || quartoLiveShowing)) return;
         showSelection(message.selector, message.rect);
         break;
       case "region":
-        if (sourceFormat === "quarto" && quartoView === "output") return;
+        if (sourceFormat === "quarto" && (quartoView === "output" || quartoLiveShowing)) return;
         // A rectangle drawn on a figure anchors the same way a quotation
         // does, but it has no words to look up in the source: a region has
         // no source anchor and never will.
@@ -1182,7 +1199,14 @@
       void localQuarto.quartoPreviewStatus(active.id).then(status => {
         if (quartoPreview?.id === active.id && quartoPreview.state !== status.state) quartoPreview = {...quartoPreview, state:status.state};
       }).catch(error => {
-        if (quartoPreview?.id === active.id) { quartoPreview = null; say("Live preview ended: " + error.message, true); }
+        if (quartoPreview?.id === active.id) {
+          quartoPreview = null;
+          say("Live preview ended: " + error.message, true);
+          // No retry loop: falls back to the draft now and waits for the
+          // next connected transition, which is what re-arms the effect
+          // that starts the managed preview.
+          void paintPreview();
+        }
       });
     }, 5000);
     return () => clearInterval(timer);
@@ -1213,32 +1237,19 @@
     return true;
   }
 
-  async function toggleQuartoPreview() {
-    if (quartoPreviewStarting || quartoJob || viewing || !mayEdit) return;
-    quartoPreviewStarting = true;
-    localQuarto.configure({ project: SLUG, origin: location.origin });
-    try {
-      if (!quartoPreview && !(await ensureLocalApp())) return;
-      if (quartoPreview) { await localQuarto.stopQuartoPreview(quartoPreview.id); quartoPreview = null; }
-      else {
-        const tree = treeNow();
-        const context = quartoRenderContext(tree);
-        const started = await localQuarto.startQuartoPreview({ job:{binding:quartoBindingId}, tree,
-          options:{entrypoint:tree.main, format:context.format, profile:context.profiles[0] || null, parameters:context.parameters} });
-        if (readerDisposed || sourceFormat !== "quarto") await localQuarto.stopQuartoPreview(started.id);
-        else quartoPreview = started;
-      }
-    } catch (error) { say(error.message, true); }
-    finally { quartoPreviewStarting = false; }
-  }
-
   async function renderQuartoLocally(policy = "project-defaults") {
     if (!mayEdit || sourceFormat !== "quarto" || quartoJob || quartoOptionsChanging || viewing) return;
-    if (quartoPreview || quartoPreviewStarting) { say("Stop live preview before rendering saved results.", true); return; }
+    if (quartoPreviewStarting) { say("Live preview is starting; try again in a moment.", true); return; }
     if (quartoPendingPublish) {
       say("A completed render is waiting to be shared; use Retry sharing first.", true);
       return;
     }
+    // The managed preview and a render both reach the local app; pausing it
+    // for the render's duration (the effect restarts it once the suspension
+    // lifts in `finally`) is simpler than asking whoever clicked "Share
+    // results" to turn a switch that defaults to on back off first.
+    quartoLiveSuspended = true;
+    if (quartoPreview) await stopLivePreview();
     const controller = new AbortController();
     const id = crypto.randomUUID();
     quartoJob = { id, controller, stage: "preparing" };
@@ -1319,8 +1330,12 @@
         quartoAssets = prepared.assets || {};
         quartoOutput = quartoPreparedOutput(quartoBundle, prepared, !receipt);
         quartoOutputState = "ready";
-        quartoView = "output";
+        // The draft is the document: it stays live and takes the new
+        // results in place, the way a Markdown preview takes a new
+        // paragraph. The full artifact is there under Tools for whoever
+        // wants to inspect exactly what Quarto produced.
         await refreshQuartoFreshness();
+        if (quartoView === "draft") void paintPreview();
         if (receipt) say("Rendered and shared");
         else if (!result.publish) say("Rendered locally; not yet shared");
       }
@@ -1329,7 +1344,10 @@
       else say(error.message || "Quarto render failed", true);
     } finally {
       quartoJob = null;
-      void paintPreview();
+      // Lifting the suspension re-arms the effect that starts the preview
+      // when the mode still holds; otherwise the draft is painted here.
+      quartoLiveSuspended = false;
+      if (!quartoLiveActive) void paintPreview();
     }
   }
 
@@ -1368,6 +1386,81 @@
   // The checkpoint being shown in the document pane, whole -- its tree and its
   // texts -- or null for the document as it stands.
   let viewing = $state(null);
+
+  // Whether the draft pane should be showing Quarto's own live preview
+  // rather than this browser's own draft rendering: paired, connected,
+  // editable, not looking at history, and the switch is on. `editing` (the
+  // source pane) is not required -- an editor who has not opened it yet
+  // still gets the live pane the moment they are able to edit.
+  const quartoLiveActive = $derived(
+    sourceFormat === "quarto" && mayEdit && !viewing && quartoLiveEnabled && !quartoLiveSuspended &&
+      quartoLocalStatus.state === "connected",
+  );
+
+  // True while the frame is actually showing Quarto's own live page: it has
+  // no source map or render-id selector any more than the immutable output
+  // view does, so selection/comment tools bail out the same way.
+  const quartoLiveShowing = $derived(sourceFormat === "quarto" && quartoLiveActive && Boolean(quartoPreview));
+
+  async function startLivePreview() {
+    if (!quartoLiveActive || quartoPreview || quartoPreviewStarting || readerDisposed) return;
+    quartoPreviewStarting = true;
+    localQuarto.configure({ project: SLUG, origin: location.origin });
+    try {
+      const tree = treeNow();
+      await localQuarto.syncWorkspace({ tree });
+      if (readerDisposed || !quartoLiveActive) return;
+      const context = quartoRenderContext(tree);
+      const started = await localQuarto.startQuartoPreview({
+        job: { binding: quartoBindingId }, tree,
+        options: { entrypoint: tree.main, format: context.format, profile: context.profiles[0] || null, parameters: context.parameters },
+      });
+      if (readerDisposed || !quartoLiveActive) { await localQuarto.stopQuartoPreview(started.id).catch(() => {}); return; }
+      quartoPreview = started;
+      quartoLiveErrorShown = false;
+      framePreview.publish({ kind: "url", url: started.url });
+    } catch (error) {
+      if (!quartoLiveErrorShown) { say(error.message || "Live preview unavailable", true); quartoLiveErrorShown = true; }
+    } finally {
+      quartoPreviewStarting = false;
+    }
+  }
+
+  async function stopLivePreview() {
+    const active = quartoPreview;
+    if (!active) return;
+    quartoPreview = null;
+    await localQuarto.stopQuartoPreview(active.id).catch(() => {});
+  }
+
+  // Serialized: at most one sync in flight, and a source change arriving
+  // mid-sync is coalesced into a single trailing retry rather than queued
+  // one-for-one. Quarto's own file watcher does the rest once the workspace
+  // has the new bytes.
+  async function syncQuartoLive() {
+    if (!quartoLiveActive || !quartoPreview || readerDisposed) return;
+    if (quartoLiveSyncBusy) { quartoLiveSyncQueued = true; return; }
+    quartoLiveSyncBusy = true;
+    try {
+      await localQuarto.syncWorkspace({ tree: treeNow() });
+    } catch (error) {
+      if (!quartoLiveErrorShown) { say(error.message || "Live preview could not sync", true); quartoLiveErrorShown = true; }
+      await stopLivePreview();
+      void paintPreview();
+    } finally {
+      quartoLiveSyncBusy = false;
+      if (quartoLiveSyncQueued) { quartoLiveSyncQueued = false; void syncQuartoLive(); }
+    }
+  }
+
+  // Drives the whole automatic mode: starts the managed preview the moment
+  // the conditions are met, and tears it down (falling back to the ordinary
+  // draft, no retry) the moment any of them stop holding.
+  $effect(() => {
+    if (quartoLiveActive) { void startLivePreview(); }
+    else if (quartoPreview) { void stopLivePreview().then(() => void paintPreview()); }
+  });
+
   const historyController = createHistoryController({
     slug: SLUG,
     headers: () => keyHeaders(KEY),
@@ -2035,6 +2128,20 @@
       }
       return;
     }
+    // The live preview owns the pane while it is running (or starting): the
+    // frame shows Quarto's own page, kept current by `syncQuartoLive` and
+    // Quarto's own file watcher, not by a draft rendered here. Only the
+    // freshness badge for a saved bundle, if any, still needs refreshing.
+    // `typeof` rather than a bare read: checks/reader-races.mjs runs this
+    // function's body in isolation against a context that does not declare
+    // `quartoLiveActive` for its non-Quarto (and some Quarto) cases.
+    // Keyed to a preview actually running or starting, not to the mode
+    // being on: a mode whose preview failed to start still paints the
+    // draft, rather than leaving the pane at whatever it showed last.
+    if (sourceFormat === "quarto" && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
+      void refreshQuartoFreshness();
+      return;
+    }
     // Draft preview work is already debounced by sourceChanged. If front
     // matter changed the target format, refresh the selected context before
     // hashing freshness so an older bundle cannot remain associated with the
@@ -2258,6 +2365,10 @@
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
+    if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && quartoPreview) {
+      clearTimeout(quartoLiveSyncTimer);
+      quartoLiveSyncTimer = setTimeout(() => void syncQuartoLive(), 500);
+    }
     if (sourceFormat === "quarto") quartoFreshnessSerial += 1;
     if (sourceFormat === "quarto" && session) {
       const main = session.mainPath() || "main.qmd";
@@ -2620,7 +2731,8 @@
     if (value === "render") return void renderQuartoLocally();
     if (value === "refresh") return void renderQuartoLocally("refresh-computations");
     if (value === "frozen") return void renderQuartoLocally("frozen");
-    if (value === "preview") return void toggleQuartoPreview();
+    if (value === "live-preview") return setQuartoLiveEnabled(!quartoLiveEnabled);
+    if (value === "artifact") return void selectQuartoView(quartoView === "output" ? "draft" : "output");
     if (value === "retry") return void retryQuartoPublish();
     if (value === "results") { closeQuartoResults(); quartoResultsOpen = true; }
   }
@@ -3240,12 +3352,11 @@
          app and asks it to allow this site on the way, so there is no
          separate connect step to find first. The settings item stays for
          the fallbacks: another address, or the pairing code. -->
-    <Menu.Item value="render" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Render locally</Menu.Item>
+    <Menu.Item value="render" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Share results</Menu.Item>
     <Menu.Item value="refresh" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Refresh computations</Menu.Item>
     {#if quartoLocalStatus.capabilities?.quarto?.policies?.includes("frozen")}
       <Menu.Item value="frozen" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Use frozen results</Menu.Item>
     {/if}
-    <Menu.Item value="preview" class="menuitem" disabled={Boolean(quartoJob) || quartoPreviewStarting}>{quartoPreview ? "Stop live preview" : "Start live preview"}</Menu.Item>
     {#if quartoLocalStatus.state !== "connected"}
       <Menu.Item value="connect" class="menuitem">Local app settings…</Menu.Item>
     {/if}
@@ -3254,6 +3365,10 @@
     {#if compilesHere}<Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>{/if}
   {/if}
   {#if sourceFormat === "quarto"}
+    <Menu.Item value="live-preview" class="menuitem">
+      <span class="w-4">{quartoLiveEnabled ? "✓" : ""}</span>Live preview
+    </Menu.Item>
+    <Menu.Item value="artifact" class="menuitem">{quartoView === "output" ? "Show live draft" : "Show rendered output"}</Menu.Item>
     {#if quartoBundle?.cells?.some((cell) => cell.outputs?.length)}
       <Menu.Item value="results" class="menuitem">Saved results</Menu.Item>
     {/if}
@@ -3340,16 +3455,12 @@
     <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
   </div>
 {/if}
-{#if sourceFormat === "quarto"}
+{#if sourceFormat === "quarto" && (quartoFreshness.state !== "missing" || quartoLiveActive)}
   <div class="workspace-banner" role="region" aria-label="Quarto preview">
-    <button type="button" class="btn btn-sm {quartoView === 'draft' ? 'preset-filled-primary-500' : 'preset-outlined-surface-300-700'}" aria-pressed={quartoView === "draft"} onclick={() => void selectQuartoView("draft")}>Draft</button>
-    <button type="button" class="btn btn-sm {quartoView === 'output' ? 'preset-filled-primary-500' : 'preset-outlined-surface-300-700'}" aria-pressed={quartoView === "output"} onclick={() => void selectQuartoView("output")}>Quarto output</button>
-      {#if quartoView === "draft" && quartoFreshness.state !== "missing"}
-        <small class="badge {quartoFreshness.state === 'potentially-stale' ? 'preset-tonal-warning' : 'preset-tonal-surface'}" title="Saved computation results do not verify current external data or package environments.">{quartoFreshness.message}</small>
-      {:else if quartoView === "output"}
-        <small class="badge preset-tonal-surface">{quartoArtifactStatus}</small>
-        {#if quartoOutput?.local}<small class="badge preset-tonal-warning">Local output; not shared</small>{/if}
-      {/if}
+    {#if quartoFreshness.state !== "missing"}
+      <small class="badge {quartoFreshness.state === 'potentially-stale' ? 'preset-tonal-warning' : 'preset-tonal-surface'}" title="Saved computation results do not verify current external data or package environments.">{quartoFreshness.message}</small>
+    {/if}
+    {#if quartoLiveActive}<small class="badge preset-tonal-secondary">Live preview</small>{/if}
   </div>
 {/if}
 

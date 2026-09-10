@@ -23,6 +23,11 @@ export function createFramePreview({
   let framedSource = null;
   let latest = null;
   let disposed = false;
+  // True while the frame's `src` points at an external page (Quarto's own
+  // live preview server) rather than the docs-origin document agent. The
+  // next html/pdf publish must force a real navigation back to that agent
+  // before anything can be delivered to it by postMessage again.
+  let urlMode = false;
 
   function navigate(force = false) {
     const docsOrigin = getDocsOrigin();
@@ -85,14 +90,31 @@ export function createFramePreview({
 
   function publish(payload) {
     if (disposed) return false;
+    if (payload?.kind === "url") {
+      if (!payload.url) return false;
+      urlMode = true;
+      latest = null;
+      source = payload.url;
+      setSource(source);
+      return true;
+    }
     const normalized = normalize(payload);
     if (!normalized) return false;
     latest = normalized;
+    if (urlMode) {
+      // The frame's `src` is an external page; postMessage cannot reach the
+      // docs-origin agent that is no longer there. Navigate for real -- the
+      // usual "ready" handshake redelivers `latest` once the agent is back.
+      urlMode = false;
+      navigate(true);
+      return false;
+    }
     return deliver(normalized);
   }
 
   function clear() {
     latest = null;
+    urlMode = false;
   }
 
   function refresh(sourceText) {
@@ -116,6 +138,7 @@ export function createFramePreview({
     disposed = true;
     requestId += 1;
     latest = null;
+    urlMode = false;
     readyEpoch = -1;
   }
 

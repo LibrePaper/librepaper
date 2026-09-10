@@ -328,15 +328,6 @@ function outputMarkup(output, assets = {}, cell = null, references = new Map()) 
   }).filter(Boolean).join("\n");
 }
 
-function htmlClass(value) {
-  return String(value || "").split(/\s+/).filter((item) => /^[A-Za-z][\w-]*$/.test(item)).join(" ");
-}
-
-function htmlId(value) {
-  const text = String(value || "");
-  return /^[A-Za-z][\w:.-]*$/.test(text) ? text : "";
-}
-
 function referenceKind(id) {
   const match = /^(fig|tbl|sec|eq|lst)-/.exec(String(id || "").split("#").pop());
   return match?.[1] || "";
@@ -366,29 +357,10 @@ function referencesFor(parsed) {
   return references;
 }
 
-function divMarkup(info, closing = false, references = new Map()) {
-  if (closing) return "</div>";
-  const attributes = parseAttributes(info);
-  const classes = htmlClass(attributes.classes.join(" "));
-  const id = htmlId(attributes.id);
-  const callout = attributes.classes.find((item) => /^callout-/.test(item));
-  const label = callout ? String(attributes.attributes.title || callout.slice("callout-".length)).replace(/^[a-z]/, (c) => c.toUpperCase()) : "";
-  const heading = label ? `<div class="quarto-callout-title">${escapeHtml(label)}</div>` : "";
-  const semantic = attributes.classes.includes("columns") ? "quarto-columns"
-    : attributes.classes.includes("column") ? "quarto-column"
-      : attributes.classes.includes("panel-tabset") ? "quarto-tabset" : "";
-  const target = id ? references.get(id) : null;
-  const number = target && (target.kind === "fig" || target.kind === "tbl")
-    ? `<span class="quarto-figure-number">${target.kind === "fig" ? "Figure" : "Table"} ${target.number}.</span> ` : "";
-  const className = htmlClass([classes, "quarto-div", semantic, callout ? "quarto-callout" : ""].filter(Boolean).join(" "));
-  const layout = attributes.classes.includes("panel-tabset")
-    ? ` data-quarto-tabset="static" role="group" aria-label="Tabset sections"`
-    : attributes.classes.includes("columns")
-      ? ` data-quarto-layout="columns" role="group" aria-label="Columns" style="display:flex;flex-wrap:wrap;gap:1.5rem"`
-      : attributes.classes.includes("column") ? ` style="flex:1 1 16rem;min-width:0"`
-        : callout ? ` role="note" style="border-inline-start:.25rem solid currentColor;padding:.5rem 1rem;margin-block:1rem"` : "";
-  return `<div${id ? ` id="${escapeHtml(id)}"` : ""}${className ? ` class="${escapeHtml(className)}"` : ""}${layout}>${heading}${number}`;
-}
+// The draft is a rough view only; Quarto's own preview is authoritative.
+// Fenced divs are not semantically interpreted here — the `:::` lines are
+// carried through verbatim as ordinary text, and the content between them
+// is left to normal Markdown handling (see composeDraft).
 
 function metadataMarkup(parsed) {
   const meta = parsed.metadata || {};
@@ -442,6 +414,20 @@ function proseLine(line, labels, { lineNumber = 0, inlineRecords = [], inlineVal
       return `<a class="quarto-crossref" href="#${escapeHtml(id)}">${noun} ${target?.number || escapeHtml(label)}</a>`;
     }).replace(/\[([^\]]+)\]\{#([A-Za-z][\w:.-]*)\}/g, (_, text, id) => `<span id="${escapeHtml(id)}">${text}</span>`);
   }).join("");
+}
+
+// Pick a fence for showing a code cell verbatim (fence lines included) that
+// cannot be closed early by anything already inside the cell text: longer
+// than the longest run of backticks, or of tildes, found in it.
+function verbatimFence(text) {
+  const longestRun = (pattern) => {
+    let max = 0;
+    for (const match of String(text).matchAll(pattern)) max = Math.max(max, match[0].length);
+    return max;
+  };
+  const backtick = Math.max(3, longestRun(/`+/g) + 1);
+  const tilde = Math.max(3, longestRun(/~+/g) + 1);
+  return backtick <= tilde ? { char: "`", length: backtick } : { char: "~", length: tilde };
 }
 
 export function composeDraft(source, { path = "main.qmd", bundle = null, assets = {}, expandIncludes: includes = {}, maxIncludeDepth = 8, cellFingerprints = {}, inlineValues = null, currentContext = "" } = {}) {
@@ -544,14 +530,18 @@ export function composeDraft(source, { path = "main.qmd", bundle = null, assets 
       if (opaque) opaqueFence = { char: opaque[1][0], length: opaque[1].length };
       if (!opaque) {
         const div = DIV_FENCE.exec(line);
-        if (div) line = div[2] ? divMarkup(div[2], false, references) : divMarkup("", true, references);
-        else line = line.replace(INCLUDE, (_, name) => expandedInclude(name, 0, new Set(), path, i + 1));
-        line = proseLine(line, references, {
-          lineNumber: i + 1,
-          inlineRecords: parsed.inlineRecords,
-          inlineValues: inlineValues || bundle?.inline_results || bundle?.inline || bundle?.inline_values || null,
-          currentContext: currentContext || bundle?.context?.computation_sha256 || "",
-        });
+        // Fenced div lines carry through verbatim: the draft never guesses
+        // at callout/columns/tabset semantics. Only non-div prose lines are
+        // rewritten (includes expanded, inline results and crossrefs shown).
+        if (!div) {
+          line = line.replace(INCLUDE, (_, name) => expandedInclude(name, 0, new Set(), path, i + 1));
+          line = proseLine(line, references, {
+            lineNumber: i + 1,
+            inlineRecords: parsed.inlineRecords,
+            inlineValues: inlineValues || bundle?.inline_results || bundle?.inline || bundle?.inline_values || null,
+            currentContext: currentContext || bundle?.context?.computation_sha256 || "",
+          });
+        }
       }
       // Included text has no one-to-one source line in the main qmd. Keep
       // diagnostics generated from it unmapped instead of attaching them to
@@ -559,34 +549,23 @@ export function composeDraft(source, { path = "main.qmd", bundle = null, assets 
       push(line, lines[i].includes("{{<") ? null : i);
       continue;
     }
-    const options = { ...defaults, ...cell.options };
-    const include = options.include !== false;
-    const echo = options.echo !== false && include;
-    const outputEntry = options.output !== false && include && options.eval !== false ? outputFor(bundle, cell) : null;
+    // The draft never guesses at include/echo/eval/output semantics: a cell
+    // shows its saved result when the bundle maps one, and otherwise renders
+    // exactly as written — fence lines included — inside a verbatim block
+    // whose own fence outruns any run of the same fence character within it.
+    const outputEntry = outputFor(bundle, cell);
     const output = outputMarkup(outputEntry, assets, cell, references);
-    if (echo) {
-      const fence = lines[i].match(/^\s*(`{3,}|~{3,})/)?.[1] || "```";
-      const info = lines[i].trim().slice(fence.length).trim();
-      push(`${fence}${info}`, i);
-      i += 1;
-      while (i < lines.length && !new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`).test(lines[i])) {
-        // Option declarations control presentation and are not useful code.
-        if (!OPTION.test(lines[i])) push(lines[i], i);
-        i += 1;
-      }
-      if (i < lines.length) push(lines[i], i);
+    i = cell.endLine;
+    if (output) {
+      push(output);
     } else {
-      // Consume through the closing fence while retaining a source location
-      // independent placeholder. Hidden code is never copied into output.
-      i = cell.endLine;
-      if (i < lines.length) {
-        if (output) push(output);
-        else if (include && options.output !== false && options.eval !== false) push(`<div class="quarto-output-missing" data-cell="${escapeHtml(cell.id)}">No saved result for this cell.</div>`);
-      }
-      continue;
+      const cellText = cell.source.replace(/\n$/, "");
+      const { char, length } = verbatimFence(cellText);
+      const outerFence = char.repeat(length);
+      push(outerFence);
+      push(cellText, cell.startLine);
+      push(outerFence);
     }
-    if (output) push(output);
-    else if (include && options.output !== false && options.eval !== false) push(`<div class="quarto-output-missing" data-cell="${escapeHtml(cell.id)}">No saved result for this cell.</div>`);
   }
   return { ...parsed, markdown: out.join("\n"), lineMap, diagnostics: [...parsed.diagnostics, ...generatedDiagnostics], source, assets, bundle };
 }

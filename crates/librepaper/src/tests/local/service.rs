@@ -68,6 +68,63 @@ async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
     }
 }
 
+/// Same as `spawn_service`, but the service also admits the hosted binding,
+/// executing it under `base` -- the shape `librepaper serve` runs with.
+async fn spawn_hosted_service(
+    state_home: &std::path::Path,
+    cache_home: &std::path::Path,
+    runner: Arc<dyn Runner>,
+    base: std::path::PathBuf,
+) -> String {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local_addr");
+    let service = LocalService::with_hosted_workspaces_and_code(
+        addr.port(),
+        "test-instance".to_string(),
+        state_home,
+        cache_home,
+        runner,
+        None,
+        base,
+    );
+    let router = service.router();
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
+    });
+    format!("http://127.0.0.1:{}{}", addr.port(), protocol::BASE_PATH)
+}
+
+/// A test service with hosted workspaces under a fresh temporary directory,
+/// returned alongside it so tests can resolve the same hosted binding root
+/// the service itself computed.
+async fn start_hosted_test_service(runner: Arc<dyn Runner>) -> (LocalTest, tempfile::TempDir) {
+    let state_home = tempfile::tempdir().expect("state tempdir");
+    let cache_home = tempfile::tempdir().expect("cache tempdir");
+    let workspaces = tempfile::tempdir().expect("workspaces tempdir");
+    let base = spawn_hosted_service(
+        state_home.path(),
+        cache_home.path(),
+        runner,
+        workspaces.path().to_path_buf(),
+    )
+    .await;
+    (
+        LocalTest {
+            base,
+            state_home,
+            cache_home,
+            client: reqwest::Client::new(),
+        },
+        workspaces,
+    )
+}
+
 /// Sets the pairing code a running instance expects, by writing
 /// `service.json` directly rather than through a fixed `--code` --
 /// `start_test_service` never passes one, so the service falls back to
@@ -150,6 +207,28 @@ async fn post_job_at(
         .send()
         .await
         .expect("jobs post")
+}
+
+async fn put_workspace(
+    test: &LocalTest,
+    origin: &str,
+    token: &str,
+    manifest: Value,
+    files: &[(&str, &[u8])],
+) -> reqwest::Response {
+    let mut form = reqwest::multipart::Form::new().text("manifest", manifest.to_string());
+    for (path, bytes) in files {
+        let part = reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(path.to_string());
+        form = form.part("file", part);
+    }
+    test.client
+        .put(format!("{}/workspace", test.base))
+        .header("Origin", origin)
+        .bearer_auth(token)
+        .multipart(form)
+        .send()
+        .await
+        .expect("workspace put")
 }
 
 async fn submit_job(test: &LocalTest, token: &str, project: &str, generation: u64) -> String {
@@ -298,6 +377,19 @@ async fn preflight_carries_the_private_network_header() {
             .get("access-control-allow-private-network")
             .expect("private network header"),
         "true"
+    );
+    // PUT (workspace sync) and DELETE (stopping a preview) are not simple
+    // methods: a preflight that does not name them makes the browser refuse
+    // them before they are sent.
+    let methods = response
+        .headers()
+        .get("access-control-allow-methods")
+        .expect("allow-methods")
+        .to_str()
+        .unwrap();
+    assert!(
+        methods.contains("PUT") && methods.contains("DELETE"),
+        "{methods}"
     );
     assert_eq!(
         response
@@ -1057,4 +1149,178 @@ async fn quarto_managed_preview_starts_serves_and_stops() {
         test.client.get(url).send().await.is_err(),
         "stopped preview URL must no longer serve"
     );
+}
+
+#[tokio::test]
+async fn workspace_put_syncs_hosted_files_and_removes_dropped_ones() {
+    use crate::local::quarto::{BindingStore, HOSTED_BINDING};
+    let (test, workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "111111");
+    let token = connected_token(&test, ORIGIN, "paper", "111111").await;
+
+    let manifest = manifest_for(&[("main.qmd", b"# one"), ("data/a.csv", b"1,2")]);
+    let response = put_workspace(
+        &test,
+        ORIGIN,
+        &token,
+        manifest,
+        &[("main.qmd", b"# one"), ("data/a.csv", b"1,2")],
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.json::<Value>().await.unwrap()["synced"], json!(2));
+
+    let binding = BindingStore::new(test.state_home.path())
+        .with_hosted_workspaces(workspaces.path().to_path_buf())
+        .get_scoped(HOSTED_BINDING, ORIGIN, "paper")
+        .expect("hosted binding");
+    assert_eq!(
+        std::fs::read(binding.root.join("main.qmd")).unwrap(),
+        b"# one"
+    );
+    assert_eq!(
+        std::fs::read(binding.root.join("data/a.csv")).unwrap(),
+        b"1,2"
+    );
+
+    // A second sync that drops `data/a.csv` removes it from the workspace.
+    let manifest2 = manifest_for(&[("main.qmd", b"# one")]);
+    let response = put_workspace(&test, ORIGIN, &token, manifest2, &[("main.qmd", b"# one")]).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.json::<Value>().await.unwrap()["synced"], json!(1));
+    assert!(
+        !binding.root.join("data/a.csv").exists(),
+        "dropped file should have been removed"
+    );
+}
+
+#[tokio::test]
+async fn workspace_put_without_hosted_workspaces_is_not_found() {
+    let test = start_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "222222");
+    let token = connected_token(&test, ORIGIN, "paper", "222222").await;
+
+    let manifest = manifest_for(&[("main.qmd", b"# one")]);
+    let response = put_workspace(&test, ORIGIN, &token, manifest, &[("main.qmd", b"# one")]).await;
+    assert_eq!(response.status(), 404);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"], "this local app keeps no hosted workspace");
+}
+
+#[tokio::test]
+async fn workspace_put_tampered_digest_is_rejected() {
+    let (test, _workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "333333");
+    let token = connected_token(&test, ORIGIN, "paper", "333333").await;
+
+    let manifest = manifest_for(&[("main.qmd", b"# one")]);
+    let response = put_workspace(
+        &test,
+        ORIGIN,
+        &token,
+        manifest,
+        &[("main.qmd", b"not the same bytes")],
+    )
+    .await;
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn workspace_put_requires_authentication() {
+    let (test, _workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
+    let manifest = manifest_for(&[("main.qmd", b"# one")]);
+    let response = test
+        .client
+        .put(format!("{}/workspace", test.base))
+        .header("Origin", ORIGIN)
+        .multipart(
+            reqwest::multipart::Form::new()
+                .text("manifest", manifest.to_string())
+                .part(
+                    "file",
+                    reqwest::multipart::Part::bytes(b"# one".to_vec()).file_name("main.qmd"),
+                ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+}
+
+/// A hosted-binding preview names its own entrypoint per job rather than a
+/// binding-fixed one, and only starts once the hosted workspace has been
+/// synced with that entrypoint's bytes: this exercises the same admission
+/// path as a granted binding, without ever writing uploads at preview-start
+/// time (Task 2's workspace sync is what fills the workspace here).
+#[tokio::test]
+async fn hosted_binding_preview_starts_after_workspace_sync() {
+    let (test, _workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "777777");
+    let token = connected_token(&test, ORIGIN, "paper", "777777").await;
+
+    let source: &[u8] = b"# Hosted preview\n\nAuthor-only text.\n";
+    let manifest = manifest_for(&[("paper.qmd", source)]);
+    let synced = put_workspace(
+        &test,
+        ORIGIN,
+        &token,
+        manifest.clone(),
+        &[("paper.qmd", source)],
+    )
+    .await;
+    assert_eq!(synced.status(), 200);
+
+    let body = json!({
+        "protocol":1,"kind":"quarto","origin":ORIGIN,"project":"paper",
+        "snapshot":"revision","generation":1,"manifest":manifest,
+        "quarto":{"binding_id":"hosted","main":"paper.qmd","format":"html"},
+    });
+    let response = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let preview: Value = response.json().await.unwrap();
+    assert_eq!(
+        status, 201,
+        "hosted preview should not be refused for binding reasons: {preview}"
+    );
+    let id = preview["id"].as_str().unwrap().to_string();
+    let endpoint = format!("{}/previews/{id}", test.base);
+
+    let mut ready = false;
+    for _ in 0..100 {
+        let state: Value = test
+            .client
+            .get(&endpoint)
+            .header("Origin", ORIGIN)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if state["state"] == "running" {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(ready, "hosted preview did not become ready");
+
+    let stop = test
+        .client
+        .delete(&endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stop.status(), 200);
 }

@@ -52,12 +52,20 @@ impl Previews {
         if self.0.values().any(|p| p.root == binding.root) {
             return Err("Another managed preview already watches this project directory".into());
         }
-        if options.main != binding.entrypoint
-            || !request
-                .manifest
-                .iter()
-                .any(|f| f.path == binding.entrypoint)
-        {
+        let hosted = BindingStore::is_hosted(&binding);
+        // A hosted binding names no fixed entrypoint: each job (and each
+        // preview) names its own `.qmd`, already validated as a safe
+        // relative path by `options.validate()` above. A granted binding
+        // still refuses any entrypoint but the one it was granted for.
+        let entrypoint = if hosted {
+            options.main.clone()
+        } else {
+            binding.entrypoint.clone()
+        };
+        if !hosted && options.main != binding.entrypoint {
+            return Err("quarto entrypoint does not match the granted project binding".into());
+        }
+        if !request.manifest.iter().any(|f| f.path == entrypoint) {
             return Err("Preview inventory must contain the bound entrypoint".into());
         }
         if std::fs::canonicalize(&binding.root).map_err(|e| e.to_string())? != binding.root {
@@ -75,8 +83,8 @@ impl Previews {
                 );
             }
         }
-        let main = std::fs::canonicalize(binding.root.join(&binding.entrypoint))
-            .map_err(|e| e.to_string())?;
+        let main =
+            std::fs::canonicalize(binding.root.join(&entrypoint)).map_err(|e| e.to_string())?;
         if !main.starts_with(&binding.root) {
             return Err("Preview entrypoint escapes bound root".into());
         }
@@ -87,7 +95,7 @@ impl Previews {
         command
             .current_dir(&binding.root)
             .arg("preview")
-            .arg(&binding.entrypoint)
+            .arg(&entrypoint)
             .args([
                 "--no-browser",
                 "--host",

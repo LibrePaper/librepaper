@@ -38,7 +38,7 @@ use crate::local::protocol::{
     self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace, BASE_PATH,
     MAX_FILES, MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
 };
-use crate::local::quarto::BindingStore;
+use crate::local::quarto::{sync_hosted_workspace, BindingStore, HOSTED_BINDING};
 
 type Reply = Response<Body>;
 
@@ -852,6 +852,9 @@ async fn dispatch(
         ["previews", id] if *method == Method::DELETE || *method == Method::GET => {
             handle_preview(inner, headers, origin, Some(id), request).await
         }
+        ["workspace"] if *method == Method::PUT => {
+            handle_workspace_put(inner, headers, origin, request).await
+        }
         ["jobs"] if *method == Method::POST => {
             handle_jobs_post(inner, headers, origin, request).await
         }
@@ -1185,6 +1188,137 @@ async fn handle_capabilities(
 }
 
 /* ---------------------------------------------------------------- jobs */
+
+/* ------------------------------------------------------------ workspace */
+
+/// `PUT workspace`: sync the hosted workspace for this (origin, project)
+/// scope from a fresh multipart upload, the same shape as `jobs`'s own
+/// `manifest`/`file` parts but named `manifest` here since there is no job
+/// to describe. Only ever touches the hosted workspace `get_scoped` returns
+/// for `HOSTED_BINDING`; a granted (non-hosted) root is never written here.
+async fn handle_workspace_put(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    let project = match authenticate(inner, headers, origin) {
+        Ok(project) => project,
+        Err(response) => return response,
+    };
+    let origin = origin.unwrap_or_default().to_string();
+
+    let content_type = header_str(headers, "content-type").unwrap_or_default();
+    if !content_type.contains("multipart/form-data") {
+        return write_json(400, &json!({"error": "expected a multipart upload"}));
+    }
+
+    let ceiling = MAX_UPLOAD_BYTES + MAX_JSON_BYTES + 64 * 1024;
+    let (parts, body) = request.into_parts();
+    let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
+    let mut multipart = match Multipart::from_request(limited, &()).await {
+        Ok(multipart) => multipart,
+        Err(_) => return write_json(400, &json!({"error": "bad upload"})),
+    };
+
+    let mut manifest_text: Option<String> = None;
+    let mut uploads: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total: u64 = 0;
+
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(err) => {
+                return if err.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                    write_json(413, &json!({"error": "that upload is too large"}))
+                } else {
+                    write_json(400, &json!({"error": "bad upload"}))
+                };
+            }
+        };
+        match field.name().unwrap_or_default() {
+            "manifest" => {
+                let text = match field.text().await {
+                    Ok(text) => text,
+                    Err(_) => return write_json(400, &json!({"error": "bad manifest part"})),
+                };
+                if text.len() > MAX_JSON_BYTES {
+                    return write_json(413, &json!({"error": "manifest is too large"}));
+                }
+                manifest_text = Some(text);
+            }
+            "file" => {
+                let name = field.file_name().unwrap_or_default().to_string();
+                let bytes = match field.bytes().await {
+                    Ok(bytes) => bytes,
+                    Err(_) => return write_json(400, &json!({"error": "bad upload"})),
+                };
+                total += bytes.len() as u64;
+                if total > MAX_UPLOAD_BYTES as u64 {
+                    return write_json(413, &json!({"error": "that upload is too large"}));
+                }
+                if uploads.len() >= MAX_FILES {
+                    return write_json(413, &json!({"error": "too many files"}));
+                }
+                uploads.push((name, bytes.to_vec()));
+            }
+            _ => {}
+        }
+    }
+
+    let Some(manifest_text) = manifest_text else {
+        return write_json(400, &json!({"error": "missing the manifest part"}));
+    };
+    let manifest: Vec<ManifestEntry> = match serde_json::from_str(&manifest_text) {
+        Ok(manifest) => manifest,
+        Err(_) => return write_json(400, &json!({"error": "bad manifest"})),
+    };
+    if manifest.len() > MAX_FILES {
+        return write_json(413, &json!({"error": "too many files"}));
+    }
+    if let Err(response) = validate_manifest(&manifest, &uploads) {
+        return response;
+    }
+
+    let Some(binding) = inner
+        .quarto_bindings
+        .get_scoped(HOSTED_BINDING, &origin, &project)
+    else {
+        return write_json(
+            404,
+            &json!({"error": "this local app keeps no hosted workspace"}),
+        );
+    };
+
+    let staged = match tempfile::tempdir() {
+        Ok(dir) => dir,
+        Err(_) => return write_json(500, &json!({"error": "could not create a workspace"})),
+    };
+    for (path, bytes) in &uploads {
+        let dest = staged.path().join(path);
+        // Same `create_new` staging as `jobs`: a path colliding with one
+        // already staged fails here instead of quietly following it.
+        let write = dest
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| {
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                let mut file = options.open(&dest)?;
+                use std::io::Write;
+                file.write_all(bytes)
+            });
+        if write.is_err() {
+            return write_json(400, &json!({"error": format!("could not stage {path}")}));
+        }
+    }
+
+    match sync_hosted_workspace(staged.path(), &binding.root, &manifest) {
+        Ok(()) => write_json(200, &json!({"synced": manifest.len()})),
+        Err(error) => write_json(400, &json!({"error": error})),
+    }
+}
 
 async fn handle_jobs_post(
     inner: &Arc<Inner>,
@@ -1781,6 +1915,14 @@ fn apply_common_headers(
                 "authorization, content-type",
             );
             if is_preflight {
+                // Without this a preflight allows only the simple methods,
+                // and the browser refuses the PUT that syncs a workspace and
+                // the DELETE that stops a preview before sending either.
+                set(
+                    &mut response,
+                    "access-control-allow-methods",
+                    "GET, POST, PUT, DELETE, OPTIONS",
+                );
                 set(
                     &mut response,
                     "access-control-allow-private-network",

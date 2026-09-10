@@ -355,7 +355,7 @@
           </button>
         </div>
       {/if}
-      <p class="panel-meta">Run <code>librepaper local start</code> in a terminal on your computer. Choosing Render locally then asks the app to allow this site in a window; entering the code it prints here does the same.</p>
+      <p class="panel-meta">Run <code>librepaper local start</code> in a terminal on your computer; a LibrePaper server running on this computer already provides it. Choosing Render locally then asks the app to allow this site in a window; entering the code it prints here does the same. If this site is not on localhost, allow it to reach the local network when the browser asks.</p>
       {#if local?.instructions}<p class="panel-meta">{local.instructions}</p>{/if}
 
       <details>

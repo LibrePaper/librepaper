@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus } from "../src/lib/latex/local.js";
+import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus, syncWorkspace } from "../src/lib/latex/local.js";
 import { parameterSha256 } from "../src/lib/quarto.js";
 
 const digest = "a".repeat(64);
@@ -141,3 +141,31 @@ await stopQuartoPreview(preview.id);
 assert.equal(previewCalls[2].init.method, "DELETE");
 assert.ok(previewCalls[2].url.endsWith("/previews/preview-1"));
 console.log("quarto-local: snapshot inventory and managed preview lifecycle requests passed");
+
+let syncRequest = null;
+setup(async (url, init = {}) => {
+  assert.equal(init.method, "PUT");
+  assert.ok(url.endsWith("/librepaper/local/v1/workspace"));
+  assert.equal(init.headers.Authorization, "Bearer token");
+  syncRequest = init;
+  return response({ synced: 2 });
+});
+const tree = { main: "paper.qmd", texts: { "paper.qmd": "# Paper" }, assets: { "figures/plot.png": new Uint8Array([1, 2, 3]) } };
+const syncResult = await syncWorkspace({ tree });
+assert.deepEqual(syncResult, { synced: 2 });
+const manifestPart = syncRequest.body.get("manifest");
+const manifestEntries = JSON.parse(await manifestPart.text());
+assert.deepEqual(
+  manifestEntries.map((entry) => entry.path).sort(),
+  ["figures/plot.png", "paper.qmd"],
+);
+for (const entry of manifestEntries) {
+  const bytes = entry.path === "paper.qmd" ? new TextEncoder().encode("# Paper") : new Uint8Array([1, 2, 3]);
+  assert.equal(entry.sha256, await sha(bytes));
+  assert.equal(entry.size, bytes.byteLength);
+}
+const filesInForm = syncRequest.body.getAll("file");
+assert.equal(filesInForm.length, 2);
+const fileNames = filesInForm.map((part) => part.name).sort();
+assert.deepEqual(fileNames, ["figures/plot.png", "paper.qmd"]);
+console.log("quarto-local: syncWorkspace uploads a manifest and file parts to the workspace endpoint");
