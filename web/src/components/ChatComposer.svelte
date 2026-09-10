@@ -1,5 +1,7 @@
 <script>
   import { tick } from "svelte";
+  import DictationButton from "./DictationButton.svelte";
+  import { textareaTarget } from "../lib/dictation/targets.js";
   let { placeholder = "Message…", disabled = false, canSend = !disabled, onsend, draft: controlledDraft = undefined, initialDraft = "", ondraft } = $props();
   let draft = $state("");
   let initialized = false;
@@ -7,6 +9,14 @@
   let input;
   let height = $state(null);
   let resize = null;
+  // Whether dictation is currently listening into *this* composer's
+  // textarea, so the footer hint can say so (SPEC-dictation.md 4.8). The
+  // textarea target itself carries the words into `draft` through the same
+  // `oninput={update}` below -- `textareaTarget.insert` dispatches a
+  // bubbling `input` event on the element, which is exactly what that
+  // handler is already listening for, so dictation needs no extra wiring
+  // into the draft/ondraft mechanics.
+  let dictating = $state(false);
 
   function setHeight(value) {
     height = Math.max(80, Math.min(value, window.innerHeight * 0.6));
@@ -91,7 +101,8 @@
     </button>
   </div>
   <div class="composer-footer">
-    <span class="panel-meta">Enter to send · Shift+Enter for a new line</span>
+    <span class="panel-meta">{dictating ? "Listening… click the microphone or press Escape to stop" : "Enter to send · Shift+Enter for a new line"}</span>
+    <DictationButton target={() => textareaTarget(input)} label="Dictate" onlistening={(value) => (dictating = value)} />
     <button type="submit" class="btn preset-filled-primary-500" disabled={disabled || !canSend || sending || !draft.trim()}>Send</button>
   </div>
 </form>

@@ -141,6 +141,13 @@
       ["path", "M22 21v-2a4 4 0 0 0-3-3.87"],
       ["path", "M16 3.13a4 4 0 0 1 0 7.75"],
     ],
+    // Lucide's mic, for dictation (SPEC-dictation.md 4.8): the composer,
+    // comment, and reply buttons that hand text to the recognizer.
+    mic: [
+      ["path", "M12 19v3"],
+      ["path", "M19 10v2a7 7 0 0 1-14 0v-2"],
+      ["rect", { x: 9, y: 2, width: 6, height: 13, rx: 3 }],
+    ],
     trash: [
       ["path", "M3 6h18"],
       ["path", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"],
