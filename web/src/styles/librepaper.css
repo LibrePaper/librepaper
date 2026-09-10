@@ -785,9 +785,11 @@ main.reader.source-right .editorpane {
 
 /* ------------------------------------------------------------------- brand */
 
-/* The logo is the word itself, drawn as paths that take their colours from
-   the theme; see Logo.svelte. There is no wordmark set in type, and so no
-   brand font to serve: a page still reaches out to nobody. */
+/* The mark is a page in two puzzle pieces, pine and ink, and the word beside
+   it on the landing page is Gotham HTF outlined into paths in the file, so
+   there is no brand font to serve: a page still reaches out to nobody. The
+   sources are librepaper-logo.svg and librepaper-icon.svg at the root of the
+   repository; see Logo.svelte. */
 
 /* ---------------------------------------------------------- documentation */
 
