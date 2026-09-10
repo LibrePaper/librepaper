@@ -166,6 +166,7 @@ export function createLocalPreview({
 
   async function start() {
     const mine = lifecycle;
+    if (pendingStop) await pendingStop;
     if (pendingStart) await pendingStart;
     if (mine !== lifecycle || session || isDisposed()) return;
     pendingStart = runStart();

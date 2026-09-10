@@ -101,6 +101,7 @@ const context = (values) => vm.createContext({
   readerDisposed: false,
   sourceFormat: "",
   previewMain: "",
+  previewFile: "",
   session: null,
   diagnosticContext,
   snapshotDigest: async () => "test-render-digest",
@@ -678,8 +679,8 @@ for (const latest of [
   assert.equal(timers[0].cleared, true, "teardown clears the chat timer");
 }
 
-// Selecting a source file changes the local preview and options without
-// mutating the shared main. Same-format switches also invalidate old pages.
+// Opening an auxiliary file leaves the preview alone. Explicit preview
+// selection changes its format without mutating the shared main.
 {
   const texts = { 'paper.qmd': '# Quarto', 'notes.typ': '= Typst', 'other.typ': '= Other' };
   const files = Object.keys(texts).map(path => ({ id: path, path, kind: 'text' }));
@@ -688,6 +689,7 @@ for (const latest of [
   const ctx = context({
     session: { mainPath: () => 'paper.qmd', paths: new Map(files.map(f => [f.id, f.path])) },
     files, openFile: 'paper.qmd', previewMain: 'paper.qmd', sourceFormat: 'quarto',
+    previewFile: '', canPreviewFile: true, compact: false, layout: 'split',
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({main:'paper.qmd',texts,digests:{}}),
     renderers: { formatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', warm: () => {} },
@@ -701,8 +703,11 @@ for (const latest of [
   vm.runInContext(body('  function updatePreviewTarget()', '  // A file added'), ctx);
   vm.runInContext(body('  function treeNow()', '  // Painting the preview'), ctx);
   for (const path of ['notes.typ', 'other.typ', 'paper.qmd']) {
+    const previous = ctx.previewMain;
     ctx.openFile = path;
     vm.runInContext('updatePreviewTarget()', ctx);
+    assert.equal(ctx.previewMain, previous, 'opening a file does not change the preview');
+    vm.runInContext('previewThisFile()', ctx);
     assert.equal(ctx.previewMain, path);
     assert.equal(ctx.sourceFormat, path.endsWith('.typ') ? 'typst' : 'quarto');
     assert.equal(vm.runInContext('treeNow().main', ctx), path);
@@ -713,5 +718,62 @@ for (const latest of [
   assert.equal(cleared, 3);
   assert.equal(painted, 3);
   assert.equal(texts['paper.qmd'], '# Quarto');
+  ctx.canPreviewFile = false;
+  ctx.openFile = 'data.csv';
+  vm.runInContext('previewThisFile()', ctx);
+  assert.equal(ctx.previewMain, 'paper.qmd', 'unsupported files cannot become preview targets');
+
+  // A selected file keeps its identity through a rename and falls back to
+  // the shared main when deleted.
+  ctx.previewFile = 'notes.typ';
+  files[1].path = 'renamed.typ';
+  vm.runInContext('updatePreviewTarget()', ctx);
+  assert.equal(ctx.previewMain, 'renamed.typ');
+  ctx.files = files.filter(f => f.id !== 'notes.typ');
+  vm.runInContext('updatePreviewTarget()', ctx);
+  assert.equal(ctx.previewMain, 'paper.qmd');
 }
-console.log('reader-races: mixed-format and same-format file selection changes the local preview');
+console.log('reader-races: explicit preview selection, auxiliary files, rename and deletion passed');
+
+// A secondary file's PDF must not overwrite or replay the shared main's PDF.
+{
+  let fetched = 0, held = 0;
+  const ctx = context({
+    viewing: null, previewMain: 'notes.typ',
+    session: {mainPath: () => 'paper.qmd'},
+    renderingStore: {paint: () => fetched++, hold: () => held++},
+  });
+  vm.runInContext(body('  const previewsSharedMain =', '  const dropHeldRendering'), ctx);
+  await vm.runInContext('paintRendering()', ctx);
+  vm.runInContext('holdRendering("secondary", new ArrayBuffer(1))', ctx);
+  assert.equal(fetched, 0);
+  assert.equal(held, 0);
+  ctx.previewMain = 'paper.qmd';
+  await vm.runInContext('paintRendering()', ctx);
+  vm.runInContext('holdRendering("main", new ArrayBuffer(1))', ctx);
+  assert.equal(fetched, 1);
+  assert.equal(held, 1);
+}
+
+// Desktop View and the compact menu dispatch the same preview commands.
+{
+  const commands = [];
+  const ctx = context({
+    previewThisFile: () => commands.push('file'),
+    setQuartoPreviewMode: mode => commands.push(mode),
+    setTypstPreviewMode: mode => commands.push(mode),
+    chose: value => commands.push(value),
+    FILE_COMMANDS: [], chooseToolCommand: () => { throw Error('preview dispatched to Tools'); },
+  });
+  vm.runInContext(body('  function chooseViewCommand(value)', '  // The File menu.'), ctx);
+  vm.runInContext(body('  function chooseCompactCommand(value)', '  /* ------------------------------------------------------------------- boot */'), ctx);
+  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("preview-quarto"); chooseCompactCommand("preview-markdown"); chooseCompactCommand("preview-typst"); chooseCompactCommand("preview-calepin"); chooseViewCommand("layout-split")', ctx);
+  assert.deepEqual(commands, ['file','quarto','markdown','typst','calepin','layout-split']);
+  const view = body('{#snippet viewItems()}', '{#snippet toolItems()}');
+  const tools = body('{#snippet toolItems()}', '<Nav {me}>');
+  assert.match(view, /Preview this file/);
+  assert.match(view, /@render previewItems\(\)/);
+  assert.doesNotMatch(tools, /preview-/);
+  assert.match(reader, /icon="eye" label="Preview this file"/);
+}
+console.log('reader-races: View and compact menus expose the same explicit preview controls');

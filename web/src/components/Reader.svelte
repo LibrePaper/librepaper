@@ -2427,10 +2427,15 @@
   function chooseToolCommand(value) {
     if (value === "settings") return openSettings();
     if (value === "compile") return compileNow();
+  }
+
+  function chooseViewCommand(value) {
+    if (value === "preview-file") return previewThisFile();
     if (value === "preview-markdown") return void setQuartoPreviewMode("markdown");
     if (value === "preview-quarto") return void setQuartoPreviewMode("quarto");
     if (value === "preview-typst") return void setTypstPreviewMode("typst");
     if (value === "preview-calepin") return void setTypstPreviewMode("calepin");
+    return chose(value);
   }
 
   // The File menu. Its first three items are what the Files panel's toolbar
@@ -2506,7 +2511,7 @@
   // The one menu a narrow screen has stands in for all of them.
   function chooseCompactCommand(value) {
     if (FILE_COMMANDS.includes(value)) return void chooseFileCommand(value);
-    if (value.startsWith("layout-") || value.startsWith("side-") || value.startsWith("ratio-") || value === "linked") return chose(value);
+    if (value.startsWith("preview-") || value.startsWith("layout-") || value.startsWith("side-") || value.startsWith("ratio-") || value === "linked") return chooseViewCommand(value);
     return chooseToolCommand(value);
   }
 
@@ -2521,10 +2526,14 @@
   let folders = $state([]);
   let openFile = $state("");
   let previewMain = $state("");
-  // Editor navigation (including comment jumps) also selects the preview.
-  $effect(() => { void openFile; untrack(() => updatePreviewTarget()); });
+  // Pin an explicitly previewed file by identity so renames keep it selected.
+  // Empty means follow the shared main file; opening an include never pins it.
+  let previewFile = $state("");
   let handledFileTransactions = new WeakSet();
   const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
+  const editorFormat = $derived(renderers.formatOf(toolbarPath) || sourceFormat);
+  const canPreviewFile = $derived(!viewing && files.some((file) =>
+    file.id === openFile && file.kind === "text" && Boolean(renderers.formatOf(file.path))));
   let peersByFile = $state(new Map());
   // The deployment's rules, which say what a path may be and what may sit at
   // one. Fetched rather than compiled in, so a deployment that widens its
@@ -2574,7 +2583,8 @@
 
   function updatePreviewTarget() {
     if (!session) return;
-    const selected = files.find((file) => file.id === openFile);
+    const selected = files.find((file) => file.id === previewFile);
+    if (!selected || selected.kind !== "text" || !renderers.formatOf(selected.path)) previewFile = "";
     const path = selected?.kind === "text" && renderers.formatOf(selected.path)
       ? selected.path : session.mainPath();
     const format = renderers.formatOf(path);
@@ -2609,6 +2619,17 @@
     void tick().then(() => {
       if (!readerDisposed && mine === navigationGeneration) void paintPreview();
     });
+  }
+
+  function previewThisFile() {
+    if (!canPreviewFile) return;
+    previewFile = openFile;
+    updatePreviewTarget();
+    if (!compact && layout === "source") {
+      layout = "split";
+      write(LAYOUT, layout);
+    }
+    if (compact) showMobileView("document");
   }
 
   // A file added, renamed, removed, or made the main one: the list is redrawn
@@ -3126,7 +3147,7 @@
   </Menu.Item>
 {/snippet}
 
-{#snippet toolItems()}
+{#snippet previewItems()}
   {#if sourceFormat === "quarto" && !viewing}
     <!-- Nothing rendered is ever uploaded: choosing "Quarto preview" runs
          the document's code with Quarto on this computer, through the local
@@ -3153,8 +3174,19 @@
       <span class="w-4">{typstPreviewMode === "calepin" ? "✓" : ""}</span>Calepin preview
     </Menu.Item>
     <hr class="hr my-1" />
-  {:else if sourceFormat === "latex" && !viewing}
-    {#if compilesHere}<Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>{/if}
+  {/if}
+{/snippet}
+
+{#snippet viewItems()}
+  <Menu.Item value="preview-file" class="menuitem" disabled={!canPreviewFile}>Preview this file</Menu.Item>
+  <hr class="hr my-1" />
+  {@render previewItems()}
+  {@render layoutItems()}
+{/snippet}
+
+{#snippet toolItems()}
+  {#if sourceFormat === "latex" && !viewing && compilesHere}
+    <Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>
   {/if}
   <Menu.Item value="settings" class="menuitem">Settings…</Menu.Item>
 {/snippet}
@@ -3174,9 +3206,9 @@
     {/if}
     {#if editing}
       <div class="desktop-workspace-menu">
-        <Menu onSelect={(chosen) => chose(chosen.value)}>
+        <Menu onSelect={(chosen) => chooseViewCommand(chosen.value)}>
           <Menu.Trigger class="menubar-item">View</Menu.Trigger>
-          <ExplorerMenu>{@render layoutItems()}</ExplorerMenu>
+          <ExplorerMenu>{@render viewItems()}</ExplorerMenu>
         </Menu>
       </div>
     {/if}
@@ -3194,7 +3226,7 @@
           <Menu.Trigger class="menubar-item" aria-label="File, view and tools">Menu</Menu.Trigger>
           <ExplorerMenu>
             {#if mayEdit}{@render fileItems()}<hr class="hr my-1" />{/if}
-            {#if editing}{@render layoutItems()}<hr class="hr my-1" />{/if}
+            {#if editing}{@render viewItems()}<hr class="hr my-1" />{/if}
             {#if mayEdit}{@render toolItems()}{/if}
           </ExplorerMenu>
         </Menu>
@@ -3205,6 +3237,10 @@
     <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
       {toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
     </span>
+    {#if editing}
+      <IconButton icon="eye" label="Preview this file" disabled={!canPreviewFile}
+                  pressed={!viewing && toolbarPath === previewMain} onclick={previewThisFile} />
+    {/if}
   {/snippet}
 </Nav>
 
@@ -3405,7 +3441,7 @@
         </div>
       {:else if Editor}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={sourceFormat} file={openFile} {keys} editable={mayEdit && !viewing}
+          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit && !viewing}
                   onbibliography={bibliographyAnalyzed} oncaret={followCaret} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { openFile = id; shownFigure = null; }} />
         {/key}
@@ -3462,6 +3498,7 @@
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
+           path={viewing?.main || previewMain}
            away={!shown.document || unrendered || failedBeforeRender} />
 
   <nav class="mobile-pane-nav" aria-label="Workspace view">
