@@ -58,8 +58,11 @@
   import Modal from "./Modal.svelte";
   import Toasts from "./Toasts.svelte";
   import DictationDownload from "./DictationDownload.svelte";
+  import DictationPill from "./DictationPill.svelte";
   import Row from "./layout/Row.svelte";
-  import { problem as toastProblem } from "../lib/toast.svelte.js";
+  import { problem as toastProblem, said as toastSaid } from "../lib/toast.svelte.js";
+  import { getDictation } from "../lib/dictation/service.js";
+  import { targetForActiveElement } from "../lib/dictation/targets.js";
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
   import Collaboration from "./Collaboration.svelte";
@@ -1355,6 +1358,11 @@
   }
   let fileDiff = $derived(historyController.fileDiff);
   $effect(() => () => historyController.dispose());
+  // Kept here, not read off the pill, so Escape can stop dictation from
+  // anywhere in the reader (SPEC-dictation.md 4.8) even while the pill has
+  // not mounted yet or has scrolled out of view.
+  let dictationSnapshot = $state({ state: "idle", progress: null, model: null, device: null, reason: null, speaking: false });
+  $effect(() => getDictation().subscribe((value) => { dictationSnapshot = value; }));
   let navigationGeneration = 0;
   // Which checkpoint the reader arrived asking for, out of the link somebody
   // sent them. Read once, because after that the panel is where the answer is.
@@ -3104,10 +3112,43 @@
     if (atRisk) event.preventDefault();
   }
 
+  // Ctrl-Shift-D (Cmd on macOS) toggles dictation into whatever text input
+  // has focus, including the editor -- SPEC-dictation.md 4.8. It works in
+  // both reading and editing mode, since comments and chat exist in both;
+  // Escape below stops it from anywhere, including a pane that has scrolled
+  // the pill out of view.
+  async function toggleDictation() {
+    const dictation = getDictation();
+    if (dictation.state !== "idle" && dictation.state !== "unavailable") {
+      await dictation.stop();
+      return;
+    }
+    const target = targetForActiveElement(document, (element) => (editor?.contains?.(element) ? editor : null));
+    if (!target) {
+      toastSaid("Click into a text field first");
+      return;
+    }
+    if (target.kind === "editor" && editor?.vimMode?.() === "normal") {
+      toastProblem("Enter insert mode to dictate into the editor");
+      return;
+    }
+    await dictation.start(target);
+  }
+
   // The arrangement is changed often enough to be worth a key. Ctrl-\ is what
   // an editor usually puts a split on, and nothing here or in CodeMirror wants
   // it.
   function shortcut(event) {
+    if (!event.isComposing && (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "d") {
+      event.preventDefault();
+      toggleDictation();
+      return;
+    }
+    if (event.key === "Escape" && dictationSnapshot.state !== "idle" && dictationSnapshot.state !== "unavailable") {
+      event.preventDefault();
+      getDictation().stop();
+      return;
+    }
     if (editing && (event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === "l") {
       event.preventDefault();
       setLinked(!linked);
@@ -3661,6 +3702,7 @@
 
 <DictationDownload />
 <Toasts />
+<DictationPill />
 
 <style>
   .nav-document {
