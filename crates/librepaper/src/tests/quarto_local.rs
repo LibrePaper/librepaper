@@ -317,7 +317,10 @@ async fn quarto_hosted_workspace_renders_from_uploads_without_a_grant() {
         .expect("hosted binding")
         .root;
     assert!(workspace.starts_with(std::fs::canonicalize(&workspaces).unwrap()));
-    assert!(workspace.join("paper.qmd").is_file(), "the upload became the workspace");
+    assert!(
+        workspace.join("paper.qmd").is_file(),
+        "the upload became the workspace"
+    );
 
     let second = run("---\ntitle: Hosted\n---\n\nSecond *version*.\n", "job-2").await;
     assert_eq!(second.status.status, "done", "{:?}", second.status);

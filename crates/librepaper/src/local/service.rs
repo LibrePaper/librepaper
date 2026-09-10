@@ -988,7 +988,19 @@ fn html(status: u16, body: String) -> Reply {
         StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     set(&mut response, "content-type", "text/html; charset=utf-8");
     set(&mut response, "cache-control", "no-store");
-    set(&mut response, "referrer-policy", "no-referrer");
+    // Same-origin, not no-referrer: under no-referrer a browser serialises
+    // the Origin of the page's own form post as "null", and the consent
+    // handler would refuse the page it just served.
+    set(&mut response, "referrer-policy", "same-origin");
+    // The page is a decision, so it is never shown inside another site's
+    // frame, where a hostile page could dress the Allow button up as
+    // something else. The reader opens it as a window of its own.
+    set(&mut response, "x-frame-options", "DENY");
+    set(
+        &mut response,
+        "content-security-policy",
+        "frame-ancestors 'none'; default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'",
+    );
     response
 }
 
@@ -1051,15 +1063,20 @@ async fn handle_pair_consent(
     {
         return plain(
             403,
-            "the pairing form must be submitted from this app's own page",
+            &format!(
+                "the pairing form must be submitted from this app's own page (origin {})",
+                sent.as_deref().unwrap_or("missing")
+            ),
         );
     }
-    if header_str(request.headers(), "sec-fetch-site")
-        .is_some_and(|site| !site.is_empty() && site != "same-origin")
+    if let Some(site) = header_str(request.headers(), "sec-fetch-site")
+        .filter(|site| !site.is_empty() && *site != "same-origin")
     {
         return plain(
             403,
-            "the pairing form must be submitted from this app's own page",
+            &format!(
+                "the pairing form must be submitted from this app's own page (sec-fetch-site {site})"
+            ),
         );
     }
     let body = match axum::body::to_bytes(request.into_body(), 4096).await {
@@ -1094,8 +1111,7 @@ async fn handle_pair_consent(
 <h1>Allowed</h1><p>This site can now render with the tools on this computer. \
 You can close this window.</p>\
 <script>(function(){{var m={message};var t={target};\
-var w=window.opener||(window.parent!==window?window.parent:null);\
-if(w){{try{{w.postMessage(m,t);}}catch(e){{}}\
+if(window.opener){{try{{window.opener.postMessage(m,t);}}catch(e){{}}\
 setTimeout(function(){{window.close();}},150);}}}})();</script>\
 </body></html>"
     );

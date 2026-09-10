@@ -117,6 +117,24 @@ export async function browser(name, directory, port) {
         if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
         return result.result.value;
       },
+      // A window the page opened -- a popup -- found by a substring of its
+      // URL; null while there is none. Same attach-once pattern as a frame.
+      popupEvaluate: async (urlPart, expression) => {
+        const { targetInfos } = await send("Target.getTargets");
+        const target = targetInfos.find((one) => one.type === "page" && one.targetId !== targetId && one.url.includes(urlPart));
+        if (!target) return null;
+        if (!frames.has(target.targetId)) frames.set(target.targetId, (await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId);
+        const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, frames.get(target.targetId));
+        if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+        return result.result.value;
+      },
+      // Evaluate as if a person had just clicked: what a popup blocker needs
+      // to see before `window.open` is allowed.
+      evaluateWithGesture: async (expression) => {
+        const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true });
+        if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+        return result.result.value;
+      },
       resize: (width, height) => command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }),
       navigate: (url) => command("Page.navigate", { url }),
       text: async () => {

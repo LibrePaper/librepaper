@@ -40,16 +40,6 @@ window.local = local;
 window.errors = [];
 addEventListener("error", (event) => window.errors.push(String(event.message)));
 addEventListener("unhandledrejection", (event) => window.errors.push(String(event.reason)));
-// The popup, as an iframe the test can reach into.
-window.open = (url) => {
-  const frame = document.createElement("iframe");
-  frame.id = "consent";
-  frame.src = url;
-  frame.style.width = "480px";
-  frame.style.height = "400px";
-  document.body.appendChild(frame);
-  return { closed: false, close() { this.closed = true; frame.remove(); } };
-};
 local.configure({ project: "paper-check", origin: location.origin });
 local.setAddress(${JSON.stringify(appAddress)});
 window.pairing = null;
@@ -103,12 +93,15 @@ try {
   const before = await b.evaluate("window.local.retry().then((s) => s.state)");
   assert.equal(before, "unauthorized", `before consent: ${before}`);
 
-  await b.evaluate("window.startPairing()");
-  await until("consent page shown", () => b.frameEvaluate("Boolean(document.querySelector('button.allow'))"), 10000);
-  const shown = await b.frameEvaluate("document.body.innerText");
+  // The reader opens the consent page as a popup from a click; the gesture
+  // is what lets the popup through, as it does for a person.
+  await b.evaluateWithGesture("window.startPairing()");
+  const PAIR = "/librepaper/local/v1/pair";
+  await until("consent page shown", () => b.popupEvaluate(PAIR, "Boolean(document.querySelector('button.allow'))"), 10000);
+  const shown = await b.popupEvaluate(PAIR, "document.body.innerText");
   assert.match(shown, /localhost:\d+/, "the page names the site asking");
   assert.match(shown, /paper-check/, "the page names the document");
-  await b.frameEvaluate("document.querySelector('button.allow').click()");
+  await b.popupEvaluate(PAIR, "document.querySelector('button.allow').click()");
 
   // Wait on the client's status rather than the pairing promise, so a
   // failure reports what the page saw instead of hanging on a promise.
@@ -116,7 +109,7 @@ try {
     await until("pairing arrives", () => b.evaluate("window.local.status().state === 'connected'"), 15000);
   } catch (error) {
     const messages = await b.evaluate("JSON.stringify(window.messages)");
-    const frame = await b.frameEvaluate("document.body.innerText + ' | ' + location.href").catch((e) => `frame: ${e.message}`);
+    const frame = await b.popupEvaluate(PAIR, "document.body.innerText + ' | ' + location.href").catch((e) => `popup: ${e.message}`);
     const status = await b.evaluate("JSON.stringify(window.local.status())");
     throw new Error(`${error.message}\nmessages: ${messages}\nframe: ${frame}\nstatus: ${status}\napp log: ${appLog}`);
   }
