@@ -1,6 +1,9 @@
 <script>
+  import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
   import Logo from "./Logo.svelte";
   import IconButton from "./IconButton.svelte";
+  import Icon from "./Icon.svelte";
   import { signInHref, signOut } from "../lib/api.js";
 
   // The bar every page wears: the logo, whatever the page puts in the middle,
@@ -9,7 +12,7 @@
   // One row, centred, with a gap: the vertical rhythm is decided here and
   // nowhere else, so a control added later cannot land half a line above its
   // neighbours.
-  let { me = {}, children, tools, status, documentation = true } = $props();
+  let { me = {}, children, menus, tools, status, documentation = true } = $props();
 </script>
 
 <nav class="flex items-center justify-between gap-4">
@@ -26,6 +29,7 @@
         {@render children()}
       </span>
     {/if}
+    {#if menus}<div class="flex shrink-0 items-center gap-2">{@render menus()}</div>{/if}
   </div>
 
   {#if status}<div class="nav-status" role="status">{@render status()}</div>{/if}
@@ -44,12 +48,15 @@
          one; its email is its handle and is shown to nobody, here least of
          all. -->
     {#if me.name}
-      <small class="text-surface-600-400 whitespace-nowrap"
-        >{me.provider === "github" ? `@${me.name}` : me.name}</small
-      >
-      <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={signOut}>
-        Sign out
-      </button>
+      <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(); }}>
+        <Menu.Trigger class="btn btn-sm preset-outlined-surface-300-700" aria-label="Account menu">
+          <span class="account-name">{me.provider === "github" ? `@${me.name}` : me.name}</span>
+          <span class="account-compact" aria-hidden="true"><Icon name="users" /></span><span aria-hidden="true">▾</span>
+        </Menu.Trigger>
+        <ExplorerMenu>
+          <Menu.Item value="signout" class="menuitem">Sign out</Menu.Item>
+        </ExplorerMenu>
+      </Menu>
     {:else if me.providers?.length}
       <a role="button" class="btn btn-sm preset-filled-primary-500" href={signInHref()}>Sign in</a>
     {/if}
@@ -57,6 +64,7 @@
 </nav>
 
 <style>
+  .account-compact { display: none; }
   .nav-divider { color: var(--color-surface-400-600); user-select: none; flex: none; }
   /* The logo is not allowed to shrink, so without this it paints over
      whatever the bar puts beside it as soon as the row runs out of room.
@@ -67,12 +75,15 @@
   @media (max-width: 760px) {
     .nav-identity { flex: 0 1 auto; }
     .nav-actions { gap: var(--spacing); }
-    .nav-actions > small { display: none; }
+    .account-name { display: none; }
+    .account-compact { display: inline; }
   }
   /* Narrower than this the bar carries the logo, the status and the tools and
      nothing else: the file name is squeezed to nothing here anyway, and both
      the Files panel and the mobile bar still name it. */
   @media (max-width: 600px) {
+    nav { gap: var(--spacing); padding-inline: calc(var(--spacing) * 2); }
+    .nav-identity { gap: var(--spacing); flex-shrink: 0; }
     .nav-trail { display: none; }
   }
 </style>

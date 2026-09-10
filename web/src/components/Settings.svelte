@@ -1,21 +1,7 @@
 <script>
-  // This browser's own preferences, in one place -- plus, for a LaTeX
-  // document an editor may change, the project's own compile settings and
-  // this device's local-compilation connection. Everything above the LaTeX
-  // section is unchanged: the keys the editor answers to, whether a click in
-  // one pane takes the other along, how the window is divided. Each of those
-  // lives in localStorage under the reader's existing keys; this panel only
-  // shows and sets what the reader already remembers.
-  //
-  // The LaTeX section is the replacement for the old distribution chooser
-  // (docs/specs/latex-compiler.md "Remove the distribution chooser and its book icon.
-  // Settings contains: project engine, pinned release, local connection,
-  // compiler cache."). Engine and release are project settings -- they
-  // travel with the document through `session.setLatexSettings` and change
-  // the compile for every collaborator. Local connection and cache are this
-  // device's own, read straight from `latex.js`.
+  // Editor preferences belong to this browser. Compiler choices are shared
+  // with the project, while local-app pairing belongs to this device.
   import PanelHeader from "./PanelHeader.svelte";
-  import { RATIOS } from "../lib/panes.js";
   import * as latex from "../lib/latex.js";
   // Quarto uses the same paired local service as LaTeX, but its status is a
   // separate store. Subscribe to that store directly so opening Settings
@@ -25,16 +11,10 @@
 
   let {
     keys = "default",
-    linked = false,
-    sourceSide = "left",
-    ratio = 1 / 2,
     sourceFormat = "",
     mayEdit = false,
     latexSettings = { engine: "auto", release: null },
     onkeys,
-    onlinked,
-    onside,
-    onratio,
     onlatexsettings,
   } = $props();
 
@@ -151,7 +131,7 @@
 
 <section class="panel settings-panel" aria-label="Settings">
   <PanelHeader title="Settings">
-    <p class="panel-muted">Editor and layout preferences apply only to this browser.</p>
+    <p class="panel-muted">Editor preferences apply only to this browser.</p>
   </PanelHeader>
 
   <section class="settings-section" aria-labelledby="settings-keys">
@@ -162,41 +142,6 @@
       <span>Vim keys</span>
     </label>
     <p class="panel-meta">Applies to the source pane.</p>
-  </section>
-
-  <section class="settings-section" aria-labelledby="settings-linked">
-    <h3 id="settings-linked" class="panel-section-title">Keep in step</h3>
-    <label class="settings-row">
-      <input type="checkbox" class="checkbox" checked={linked}
-             onchange={(event) => onlinked?.(event.currentTarget.checked)} />
-      <span>Keep in step</span>
-    </label>
-    <p class="panel-meta">A click in the document opens the place in the source it came from.</p>
-  </section>
-
-  <section class="settings-section" aria-labelledby="settings-panes">
-    <h3 id="settings-panes" class="panel-section-title">Source pane</h3>
-    <label class="settings-row">
-      <span class="settings-label">Side</span>
-      <select class="select settings-select" aria-label="Which side the source is on" value={sourceSide}
-              onchange={(event) => onside?.(event.currentTarget.value)}>
-        <option value="left">Left</option>
-        <option value="right">Right</option>
-      </select>
-    </label>
-    <label class="settings-row">
-      <span class="settings-label">Split</span>
-      <!-- The same ratios a drag sticks to, for anyone who never finds that
-           it does. A split left somewhere between them shows as none. -->
-      <select class="select settings-select" aria-label="How the source and the document share the window"
-              value={RATIOS.some((one) => one.share === ratio) ? String(ratio) : ""}
-              onchange={(event) => onratio?.(Number(event.currentTarget.value))}>
-        {#if !RATIOS.some((one) => one.share === ratio)}<option value="" disabled>Custom</option>{/if}
-        {#each RATIOS as one}
-          <option value={String(one.share)}>{one.says}</option>
-        {/each}
-      </select>
-    </label>
   </section>
 
   {#if showsLatex}

@@ -48,10 +48,11 @@
 
   import { tick, untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-  import ControlGroup from "./ControlGroup.svelte";
+  import PanelHeader from "./PanelHeader.svelte";
   import CopyLink from "./CopyLink.svelte";
   import Share from "./Share.svelte";
   import Modal from "./Modal.svelte";
@@ -2388,6 +2389,7 @@
     { id: "diagnostics", says: "Diagnostics", editOnly: true },
     { id: "share", says: "Share", sharingOnly: true },
     { id: "settings", says: "Settings", editorOnly: true },
+    { id: "render", says: "Render settings", editorOnly: true, quartoOnly: true },
   ];
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
   const storedPanel = read(PANEL, null);
@@ -2399,6 +2401,7 @@
   // Mount panels on their first visit and retain them across view changes.
   // This preserves scroll positions, expanded folders and unsent chat drafts.
   let visitedPanels = $state([]);
+  let workspaceBannerHeight = $state(0);
   $effect(() => {
     if (settled && shown.comments && panel && !visitedPanels.includes(panel)) visitedPanels = [...visitedPanels, panel];
   });
@@ -2429,7 +2432,7 @@
   const tabs = $derived(
     TABS.filter(
       (tab) =>
-        (!tab.editorOnly || mayEdit) && (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing),
+        (!tab.editorOnly || mayEdit) && (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing) && (!tab.quartoOnly || sourceFormat === "quarto"),
     ),
   );
   // Where the column goes back to when what it showed is taken away: the
@@ -2544,9 +2547,27 @@
   // reports the value of the line rather than each line calling back, so this
   // is the one place those names are read.
   function chose(what) {
+    if (what.startsWith("layout-")) {
+      layout = what.slice(7);
+      write(LAYOUT, layout);
+      if (compact) showMobileView(layout === "source" ? "source" : "document");
+      return;
+    }
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
     if (what.startsWith("ratio-")) return setSize(PANES.editor, Number(what.slice(6)));
     if (what === "linked") return setLinked(!linked);
+  }
+
+  function chooseToolCommand(value) {
+    if (value === "connect" || value === "settings") return showPanel("settings");
+    if (value === "render-settings") return showPanel("render");
+    if (value === "compile") return compileNow();
+    if (value === "render") return void renderQuartoLocally();
+    if (value === "refresh") return void renderQuartoLocally("refresh-computations");
+    if (value === "frozen") return void renderQuartoLocally("frozen");
+    if (value === "preview") return void toggleQuartoPreview();
+    if (value === "retry") return void retryQuartoPublish();
+    if (value === "results") { closeQuartoResults(); quartoResultsOpen = true; }
   }
 
   /* ------------------------------------------------------------------- boot */
@@ -3099,54 +3120,97 @@
 
 <svelte:window bind:innerWidth={width} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
 
-{#snippet layoutControl()}
-  <!-- Right-click, or hold, for which side the source is on: an order set once
-       does not belong in a control flipped hourly. -->
-  <Menu onSelect={(chosen) => chose(chosen.value)}>
-    <Menu.ContextTrigger>
-      {#snippet element(attributes)}
-        <span {...attributes} class="contents">
-          <IconButton
-            icon={ARRANGEMENTS[layout].icon}
-            label="Layout: {ARRANGEMENTS[layout].says}. Click for {ARRANGEMENTS[
-              ARRANGEMENTS[layout].next
-            ].says}."
-            pressed={layout !== "split"}
-            onclick={cycleLayout}
-          />
-        </span>
-      {/snippet}
-    </Menu.ContextTrigger>
-    <Menu.Positioner class="z-50">
-      <Menu.Content class="card bg-surface-50-950 w-52 p-1 shadow-xl">
-        {#each [["left", "Source on left"], ["right", "Source on right"]] as [side, says]}
-          <Menu.Item value="side-{side}" class="menuitem">
-            <span class="w-4">{sourceSide === side ? "✓" : ""}</span>
-            {says}
-          </Menu.Item>
-        {/each}
-        <hr class="hr my-1" />
-        <!-- The same ratios a drag sticks to, for anyone who never finds that
-             it does. -->
-        {#each RATIOS as ratio}
-          <Menu.Item value="ratio-{ratio.share}" class="menuitem">
-            <span class="w-4">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>
-            {ratio.says}
-          </Menu.Item>
-        {/each}
-        <hr class="hr my-1" />
-        <!-- A preference rather than a mode: set once, and only about this
-             arrangement. It is also available from Settings. -->
-        <Menu.Item value="linked" class="menuitem">
-          <span class="w-4">{linked ? "✓" : ""}</span>
-          Keep in step
-        </Menu.Item>
-      </Menu.Content>
-    </Menu.Positioner>
-  </Menu>
+{#snippet layoutItems()}
+  {#each [["source", "Source"], ["document", "Preview"], ["split", "Split"]] as [value, label]}
+    <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"}>
+      <span class="w-4">{(compact ? activeMobileView === value : layout === value) ? "✓" : ""}</span>{label}
+    </Menu.Item>
+  {/each}
+  <hr class="hr my-1" />
+  {#each [["left", "Source on left"], ["right", "Source on right"]] as [side, label]}
+    <Menu.Item value="side-{side}" class="menuitem" disabled={compact}>
+      <span class="w-4">{sourceSide === side ? "✓" : ""}</span>{label}
+    </Menu.Item>
+  {/each}
+  {#each RATIOS as ratio}
+    <Menu.Item value="ratio-{ratio.share}" class="menuitem" disabled={compact}>
+      <span class="w-4">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>{ratio.says}
+    </Menu.Item>
+  {/each}
+  <hr class="hr my-1" />
+  <Menu.Item value="linked" class="menuitem">
+    <span class="w-4">{linked ? "✓" : ""}</span>Keep in step
+  </Menu.Item>
 {/snippet}
 
-<Nav {me} documentation={false}>
+{#snippet toolItems()}
+  {#if sourceFormat === "quarto" && !viewing}
+    {#if quartoLocalStatus.state !== "connected"}
+      <Menu.Item value="connect" class="menuitem">Connect local app…</Menu.Item>
+    {:else}
+      <Menu.Item value="render" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Render locally</Menu.Item>
+      <Menu.Item value="refresh" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Refresh computations</Menu.Item>
+      {#if quartoLocalStatus.capabilities?.quarto?.policies?.includes("frozen")}
+        <Menu.Item value="frozen" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Use frozen results</Menu.Item>
+      {/if}
+      <Menu.Item value="preview" class="menuitem" disabled={Boolean(quartoJob) || quartoPreviewStarting}>{quartoPreview ? "Stop live preview" : "Start live preview"}</Menu.Item>
+    {/if}
+    {#if quartoPendingPublish}<Menu.Item value="retry" class="menuitem">Retry sharing</Menu.Item>{/if}
+  {:else if sourceFormat === "latex" && !viewing}
+    {#if compilesHere}<Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>{/if}
+  {/if}
+  {#if sourceFormat === "quarto"}
+    {#if quartoBundle?.cells?.some((cell) => cell.outputs?.length)}
+      <Menu.Item value="results" class="menuitem">Saved results</Menu.Item>
+    {/if}
+    <Menu.Item value="render-settings" class="menuitem">Render settings…</Menu.Item>
+    <hr class="hr my-1" />
+  {/if}
+  <Menu.Item value="settings" class="menuitem">Settings…</Menu.Item>
+{/snippet}
+
+<Nav {me}>
+  {#snippet menus()}
+    {#if editing && mayEdit && !viewing}
+      <Menu>
+        <Menu.Trigger class="btn btn-sm preset-tonal-surface">
+          Insert <span aria-hidden="true">▾</span>
+        </Menu.Trigger>
+        <ExplorerMenu>
+          <Menu.Item value="figure" class="menuitem" disabled>
+            Insert Figure… <small class="text-surface-600-400">Coming soon</small>
+          </Menu.Item>
+        </ExplorerMenu>
+      </Menu>
+    {/if}
+    {#if editing}
+      <div class="desktop-workspace-menu">
+        <Menu onSelect={(chosen) => chose(chosen.value)}>
+          <Menu.Trigger class="btn btn-sm preset-tonal-surface">Layout <span aria-hidden="true">▾</span></Menu.Trigger>
+          <ExplorerMenu>{@render layoutItems()}</ExplorerMenu>
+        </Menu>
+      </div>
+    {/if}
+    {#if mayEdit}
+      <div class="desktop-workspace-menu">
+        <Menu onSelect={(chosen) => chooseToolCommand(chosen.value)}>
+          <Menu.Trigger class="btn btn-sm preset-tonal-surface">Tools <span aria-hidden="true">▾</span></Menu.Trigger>
+          <ExplorerMenu>{@render toolItems()}</ExplorerMenu>
+        </Menu>
+      </div>
+    {/if}
+    {#if editing || mayEdit}
+      <div class="compact-workspace-menu">
+        <Menu onSelect={(chosen) => { if (chosen.value.startsWith("layout-") || chosen.value.startsWith("side-") || chosen.value.startsWith("ratio-") || chosen.value === "linked") chose(chosen.value); else chooseToolCommand(chosen.value); }}>
+          <Menu.Trigger class="btn btn-sm preset-tonal-surface" aria-label="Layout and tools">⋯</Menu.Trigger>
+          <ExplorerMenu>
+            {#if editing}{@render layoutItems()}<hr class="hr my-1" />{/if}
+            {#if mayEdit}{@render toolItems()}{/if}
+          </ExplorerMenu>
+        </Menu>
+      </div>
+    {/if}
+  {/snippet}
   {#snippet children()}
     <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
       {toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
@@ -3154,7 +3218,6 @@
   {/snippet}
   {#snippet status()}
     {#if !connected}<small class="badge preset-tonal-warning" title="Reconnecting">reconnecting…</small>{/if}
-    {#if viewing}<small class="badge preset-tonal-warning" title={new Date(viewing.at).toLocaleString()}>Showing {viewingName}</small>{/if}
     {#if renderedNote}<small class="badge preset-tonal-surface" title={renderedNote}>{renderedNote}</small>{/if}
     {#if editing}
       {#if persistenceBadge}<small class="badge preset-tonal-warning" title={persistenceBadge}>{persistenceBadge}</small>{/if}
@@ -3166,97 +3229,56 @@
       {/if}
       {#if state}<small class="badge {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}" title={state}>{state}</small>{/if}
     {/if}
-    {#if sourceFormat === "quarto"}
-      <small class="badge preset-tonal-surface">{quartoView === "draft" ? "Draft" : "Quarto output"}</small>
+  {/snippet}
+  {#snippet tools()}
+    {#if quartoJob}
+      <small class="text-surface-600-400">{quartoJob.stage}…</small>
+      <button type="button" class="btn btn-sm preset-tonal-error" onclick={cancelQuartoRender}>Cancel</button>
+    {/if}
+    {#if canSeeSharing}
+      <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => showPanel("share")}>Share</button>
+    {:else}
+      <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
+    {/if}
+  {/snippet}
+</Nav>
+
+<div bind:clientHeight={workspaceBannerHeight}>
+{#if viewing}
+  <div class="workspace-banner preset-tonal-warning" role="region" aria-label="Historical version">
+    <span title={new Date(viewing.at).toLocaleString()}>Showing {viewingName}</span>
+    <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={backToNow}>Back to now</button>
+    {#if mayEdit}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restoreCheckpoint(viewing.sha)}>Restore this version</button>{/if}
+    <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
+  </div>
+{/if}
+{#if sourceFormat === "quarto"}
+  <div class="workspace-banner" role="region" aria-label="Quarto preview">
+    <button type="button" class="btn btn-sm {quartoView === 'draft' ? 'preset-filled-primary-500' : 'preset-outlined-surface-300-700'}" aria-pressed={quartoView === "draft"} onclick={() => void selectQuartoView("draft")}>Draft</button>
+    <button type="button" class="btn btn-sm {quartoView === 'output' ? 'preset-filled-primary-500' : 'preset-outlined-surface-300-700'}" aria-pressed={quartoView === "output"} onclick={() => void selectQuartoView("output")}>Quarto output</button>
       {#if quartoView === "draft" && quartoFreshness.state !== "missing"}
         <small class="badge {quartoFreshness.state === 'potentially-stale' ? 'preset-tonal-warning' : 'preset-tonal-surface'}" title="Saved computation results do not verify current external data or package environments.">{quartoFreshness.message}</small>
       {:else if quartoView === "output"}
         <small class="badge preset-tonal-surface">{quartoArtifactStatus}</small>
         {#if quartoOutput?.local}<small class="badge preset-tonal-warning">Local output; not shared</small>{/if}
       {/if}
-    {/if}
-  {/snippet}
-  {#snippet tools()}
-    <Row gap={2}>
-      <div class="mobile-workspace-tools">
-        {#if editing}
-          <ControlGroup label="Layout">
-            {#snippet children()}{@render layoutControl()}{/snippet}
-          </ControlGroup>
-        {/if}
-        <IconButton icon="help" label="Documentation" href="/documentation" />
-      </div>
-      {#if sourceFormat === "quarto"}
-        <div class="flex gap-1" role="group" aria-label="Quarto preview">
-          <button type="button" class="btn btn-sm {quartoView === 'draft' ? 'preset-filled-primary-500' : 'preset-outlined-surface-300-700'}" aria-pressed={quartoView === "draft"} onclick={() => void selectQuartoView("draft")}>Draft</button>
-          <button type="button" class="btn btn-sm {quartoView === 'output' ? 'preset-filled-primary-500' : 'preset-outlined-surface-300-700'}" aria-pressed={quartoView === "output"} onclick={() => void selectQuartoView("output")}>Quarto output</button>
-          {#if editing && mayEdit}
-            <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => showPanel("settings")}>{quartoLocalStatus.state === "connected" ? "Local app connected" : "Connect local app"}</button>
-            <input class="input input-sm w-36" aria-label="Local Quarto binding ID" placeholder="binding ID" value={quartoBindingId}
-                   onchange={(event) => { quartoBindingId = event.currentTarget.value.trim(); localQuarto.setBindingId(quartoBindingId); }} />
-            <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={Boolean(quartoJob) || Boolean(viewing) || quartoPreviewStarting} onclick={() => void toggleQuartoPreview()}>{quartoPreview ? "Stop live preview" : "Start live preview"}</button>
-            {#if quartoPreview?.state === "starting"}<small>Starting local preview…</small>{:else if quartoPreview}<a class="anchor" href={quartoPreview.url} target="_blank" rel="noopener noreferrer">Open local preview (not shared)</a>{/if}
-            {#if quartoJob}
-              <button type="button" class="btn btn-sm preset-tonal-error" onclick={cancelQuartoRender}>Cancel render</button>
-            {:else}
-              <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={quartoOptionsChanging || Boolean(viewing)} onclick={() => void renderQuartoLocally()}>Render locally</button>
-              <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={quartoOptionsChanging || Boolean(viewing)} onclick={() => void renderQuartoLocally("refresh-computations")}>Refresh computations</button>
-              {#if quartoLocalStatus.capabilities?.quarto?.policies?.includes("frozen")}
-                <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
-                  disabled={quartoOptionsChanging || Boolean(viewing)}
-                  title="Requires a complete local freezer matching this render context."
-                  onclick={() => void renderQuartoLocally("frozen")}>Use frozen results</button>
-              {/if}
-            {/if}
-            {#if quartoPendingPublish}<button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void retryQuartoPublish()}>Retry sharing</button>{/if}
-          {/if}
-        </div>
-        {#if editing && mayEdit}
-          <details><summary>Execution workspace</summary>
-            <label><input type="checkbox" bind:checked={quartoProjectScope} disabled={Boolean(quartoJob)} /> Render all pages of a website or book (HTML)</label>
-            <label><input type="checkbox" bind:checked={quartoSnapshot} disabled={Boolean(quartoJob)} /> Render an isolated copy of all shared files</label>
-            {#if quartoSnapshot}<label>Additional local data files (one relative path per line)<textarea class="textarea" bind:value={quartoDataInputs} disabled={Boolean(quartoJob)}></textarea></label><small>Only shared files and these declared inputs are copied. Install required packages in the local environment.</small>{/if}
-          </details>
-        {/if}
-        <QuartoRenderOptions options={quartoOptions} disabled={Boolean(quartoJob) || quartoOptionsChanging || Boolean(viewing)} onapply={applyQuartoOptions} />
-        {#if quartoJob}<small class="text-surface-600-400">Quarto: {quartoJob.stage}…</small>{/if}
-        {#if quartoLog}<details class="text-xs"><summary>Local render log</summary><pre class="max-h-32 overflow-auto whitespace-pre-wrap">{quartoLog}</pre></details>{/if}
-        {#if quartoBundle?.cells?.some((cell) => cell.outputs?.length)}
-          <button class="btn btn-sm preset-tonal-surface" onclick={() => { closeQuartoResults(); quartoResultsOpen = true; }}>Saved results</button>
-        {/if}
-      {/if}
-      {#if viewing}
-        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={backToNow}>Back to now</button>
-        {#if mayEdit}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restoreCheckpoint(viewing.sha)}>Restore this version</button>{/if}
-        <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
-      {/if}
-      {#if editing && sourceFormat === "latex" && compilesHere}
-        <!-- Automatic compilation covers every edit; this is only for asking
-             again right now -- after fixing an error, or after connecting
-             local LibrePaper -- without waiting for the debounce or typing a
-             fresh keystroke. No "play" icon exists in Icon.svelte's set, so
-             this reuses "check": the label carries the meaning. -->
-        <IconButton icon="check" label="Compile now" title="Compile now" onclick={compileNow} />
-      {/if}
-      {#if !canSeeSharing}
-        <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
-      {/if}
-    </Row>
-  {/snippet}
-</Nav>
+  </div>
+{/if}
+
+</div>
 
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact || (splitTight && layout === "split")}
-      style="--librepaper-activity: {ACTIVITY_WIDTH}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar) - {workspaceBannerHeight}px); --librepaper-activity: {ACTIVITY_WIDTH}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- The column, first: the files, the comments or the history, chosen by
        the activity bar. A file dropped anywhere on it joins the project. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
     <aside class="sidebar" class:collapsed={!shown.comments} ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <div class="sidebar-activity">
         <div class="activity-sections" role="group" aria-label="Sidebar sections">
-          {#each tabs as tab (tab.id)}
+          {#each tabs.filter((tab) => !["share", "settings", "render"].includes(tab.id)) as tab (tab.id)}
             {#if tab.id === "diagnostics"}
               <!-- The counts sit under the icon, in the colour of what they
                    count, so the bar says at a glance whether the document
@@ -3281,10 +3303,7 @@
             {/if}
           {/each}
         </div>
-        <div class="activity-utilities" role="group" aria-label="Workspace controls">
-          {#if editing}{@render layoutControl()}{/if}
-          <IconButton icon="help" label="Documentation" href="/documentation" />
-        </div>
+
       </div>
       {#if settled}
       <div class="sidebar-content">
@@ -3327,11 +3346,26 @@
       {:else if tab.id === "share" && canSeeSharing}
         <Share open={panel === "share" && shown.comments} inline slug={SLUG} onclose={() => showPanel("")} />
       {:else if tab.id === "settings" && mayEdit}
-        <Settings {keys} {linked} {sourceSide} ratio={sizes[PANES.editor.key]}
+        <Settings {keys}
                   {sourceFormat} {mayEdit} latexSettings={latexSettingsState}
-                  onkeys={setKeys} onlinked={setLinked} onside={putSourceOn}
-                  onratio={(share) => setSize(PANES.editor, share)}
+                  onkeys={setKeys}
                   onlatexsettings={(next) => session?.setLatexSettings(next)} />
+      {:else if tab.id === "render" && sourceFormat === "quarto" && mayEdit}
+        <section class="panel render-settings-panel" aria-label="Render settings">
+          <PanelHeader title="Render settings" />
+          <label>Local Quarto binding ID
+            <input class="input input-sm" aria-label="Local Quarto binding ID" placeholder="binding ID" value={quartoBindingId}
+              onchange={(event) => { quartoBindingId = event.currentTarget.value.trim(); localQuarto.setBindingId(quartoBindingId); }} />
+          </label>
+          {#if quartoPreview?.state === "starting"}<small>Starting local preview…</small>{:else if quartoPreview}<a class="anchor" href={quartoPreview.url} target="_blank" rel="noopener noreferrer">Open local preview (not shared)</a>{/if}
+          <details><summary>Execution workspace</summary>
+            <label><input type="checkbox" bind:checked={quartoProjectScope} disabled={Boolean(quartoJob)} /> Render all pages of a website or book (HTML)</label>
+            <label><input type="checkbox" bind:checked={quartoSnapshot} disabled={Boolean(quartoJob)} /> Render an isolated copy of all shared files</label>
+            {#if quartoSnapshot}<label>Additional local data files (one relative path per line)<textarea class="textarea" bind:value={quartoDataInputs} disabled={Boolean(quartoJob)}></textarea></label><small>Only shared files and these declared inputs are copied. Install required packages in the local environment.</small>{/if}
+          </details>
+        <QuartoRenderOptions options={quartoOptions} disabled={Boolean(quartoJob) || quartoOptionsChanging || Boolean(viewing)} onapply={applyQuartoOptions} />
+        {#if quartoLog}<details class="text-xs"><summary>Local render log</summary><pre class="max-h-32 overflow-auto whitespace-pre-wrap">{quartoLog}</pre></details>{/if}
+        </section>
       {:else if tab.id === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
@@ -3465,7 +3499,7 @@
       <IconButton icon="file-text" label="Source" pressed={shown.source}
                   onclick={() => showMobileView("source")} />
     {/if}
-    {#each compact ? tabs : [] as tab (tab.id)}
+    {#each compact ? tabs.filter((tab) => !["share", "settings", "render"].includes(tab.id)) : [] as tab (tab.id)}
       <IconButton
         icon={tab.id === "files" ? "folder" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
         label={tab.says} pressed={shown.comments && panel === tab.id}
@@ -3644,18 +3678,20 @@
     width: var(--librepaper-activity);
     padding-block: calc(var(--spacing) * 3);
   }
-  .activity-sections, .activity-utilities {
+  .activity-sections {
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: var(--spacing);
   }
-  .activity-utilities {
-    margin-top: auto;
-    padding-top: calc(var(--spacing) * 2);
-    border-top: 1px solid var(--color-surface-200-800);
+  .compact-workspace-menu { display: none; }
+  .workspace-banner { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); border-bottom: 1px solid var(--color-divider); }
+  .render-settings-panel { display: flex; flex-direction: column; gap: calc(var(--spacing) * 3); }
+  .render-settings-panel label { display: flex; flex-wrap: wrap; gap: var(--spacing); }
+  @media (max-width: 600px) {
+    .desktop-workspace-menu { display: none; }
+    .compact-workspace-menu { display: block; }
   }
-  .mobile-workspace-tools { display: none; align-items: center; gap: var(--spacing); }
   .activity-diagnostics {
     display: flex;
     flex-direction: column;
@@ -3691,8 +3727,6 @@
     .sidebar, .sidebar.collapsed { flex-direction: column; }
     .sidebar-activity { display: none; }
     .activity-sections { flex-direction: row; }
-    .activity-utilities { display: none; }
-    .mobile-workspace-tools { display: flex; }
     .sidebar-content { overflow: hidden; }
   }
 </style>
