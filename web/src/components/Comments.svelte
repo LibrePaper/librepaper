@@ -47,6 +47,8 @@
     onhistory,
     cardIdPrefix = "comment",
     tools = null,
+    // The id of the annotation the page has singled out, if any.
+    selected = "",
   } = $props();
 
   function place(comment) {
@@ -203,6 +205,7 @@
         {canComment}
         {comment}
         cardIdPrefix={cardIdPrefix}
+        selected={String(comment.id) === String(selected)}
         {identity}
         {commentingAs}
         {canModerate}

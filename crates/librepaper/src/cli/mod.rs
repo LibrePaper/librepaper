@@ -152,6 +152,12 @@ pub(crate) struct ServiceFlags {
     /// bibliography VM is configured" once browser TeX itself has run.
     #[arg(long, env = "LIBREPAPER_BIBER_VM", value_name = "URL#SHA256")]
     biber_vm: Option<String>,
+    /// Do not run the local app for this machine. By default `serve` also
+    /// starts the loopback service that lets an editor whose browser is on
+    /// this host render Quarto documents with the tools installed here, with
+    /// no pairing code and no project grant.
+    #[arg(long, env = "LIBREPAPER_NO_LOCAL")]
+    no_local: bool,
 }
 
 impl ServiceFlags {
@@ -628,6 +634,7 @@ pub async fn main() {
                 latex: service.latex,
                 fonts: service.fonts,
                 biber_vm: service.biber_vm,
+                no_local: service.no_local,
                 config,
             })
             .await

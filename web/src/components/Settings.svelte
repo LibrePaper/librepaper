@@ -229,7 +229,7 @@
           </button>
         </div>
       {/if}
-      <p class="panel-meta">To connect, run <code>librepaper local start</code> in a terminal on your computer, then enter the code it displays here.</p>
+      <p class="panel-meta">Run <code>librepaper local start</code> in a terminal on your computer. Choosing Render locally then asks the app to allow this site in a window; entering the code it prints here does the same.</p>
       {#if local?.instructions}<p class="panel-meta">{local.instructions}</p>{/if}
 
       <details>

@@ -253,6 +253,86 @@ cat('typed-parameters-ok')
     assert!(!directory.path().join("project/marker.txt").exists());
 }
 
+/// The hosted binding, end to end with real Quarto: no grant, the uploads
+/// staged by the service become the workspace, the render succeeds, and a
+/// second job with new source updates the same workspace in place.
+#[tokio::test]
+#[ignore = "requires installed Quarto"]
+async fn quarto_hosted_workspace_renders_from_uploads_without_a_grant() {
+    let directory = tempfile::Builder::new()
+        .prefix("librepaper-quarto-hosted-")
+        .tempdir()
+        .unwrap();
+    let workspaces = directory.path().join("workspaces");
+    let bindings = BindingStore::new(&directory.path().join("config"))
+        .with_hosted_workspaces(workspaces.clone());
+    let run = |source: &str, job: &str| {
+        let source = source.to_string();
+        let workspace = Workspace {
+            root: directory.path().join(job),
+        };
+        let bindings = bindings.clone();
+        async move {
+            // What the service does at admission: the uploads, staged under
+            // the job's own `project/`.
+            std::fs::create_dir_all(workspace.project()).unwrap();
+            std::fs::write(workspace.project().join("paper.qmd"), &source).unwrap();
+            let request = JobRequest {
+                protocol: 1,
+                kind: "quarto".into(),
+                project: "document".into(),
+                origin: "https://paper.example".into(),
+                snapshot: "saved-revision".into(),
+                generation: 1,
+                engine: String::new(),
+                main: "paper.qmd".into(),
+                stem: String::new(),
+                quarto: Some(QuartoJobOptions {
+                    binding_id: HOSTED_BINDING.into(),
+                    main: "paper.qmd".into(),
+                    ..Default::default()
+                }),
+                manifest: vec![ManifestEntry {
+                    path: "paper.qmd".into(),
+                    sha256: crate::quarto::sha256(source.as_bytes()),
+                    size: source.len() as u64,
+                }],
+                options: JobOptions {
+                    deadline_seconds: 60,
+                    ..Default::default()
+                },
+            };
+            let (_sender, cancel) = tokio::sync::watch::channel(false);
+            let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+            run_job_with_bindings(request, workspace, cancel, progress, &bindings).await
+        }
+    };
+
+    let first = run("---\ntitle: Hosted\n---\n\nHello *hosted*.\n", "job-1").await;
+    assert_eq!(first.status.status, "done", "{:?}", first.status);
+    let html = String::from_utf8_lossy(first.files.get("artifact.html").expect("artifact"));
+    assert!(html.contains("hosted"));
+    let workspace = bindings
+        .get_scoped(HOSTED_BINDING, "https://paper.example", "document")
+        .expect("hosted binding")
+        .root;
+    assert!(workspace.starts_with(std::fs::canonicalize(&workspaces).unwrap()));
+    assert!(workspace.join("paper.qmd").is_file(), "the upload became the workspace");
+
+    let second = run("---\ntitle: Hosted\n---\n\nSecond *version*.\n", "job-2").await;
+    assert_eq!(second.status.status, "done", "{:?}", second.status);
+    let html = String::from_utf8_lossy(second.files.get("artifact.html").expect("artifact"));
+    assert!(html.contains("Second"));
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("paper.qmd")).unwrap(),
+        "---\ntitle: Hosted\n---\n\nSecond *version*.\n"
+    );
+    // A granted binding was never involved.
+    assert!(bindings
+        .list_scoped("https://paper.example", "document")
+        .is_empty());
+}
+
 #[tokio::test]
 #[ignore = "requires installed Quarto"]
 async fn quarto_changed_shared_input_is_refused_before_execution() {

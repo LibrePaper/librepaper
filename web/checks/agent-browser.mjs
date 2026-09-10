@@ -165,7 +165,7 @@ try {
   await page.evaluate("window.setProps({request:{id:'comment-request',comment:{id:'comment-1',body:'Please clarify this',source:{path:'paper.md',exact:'A passage',prefix:'',suffix:'',position:0},replies:[{body:'Could you expand?'}],revision:'rev-1'}}})");
   await until("comment response draft", () => page.evaluate('document.querySelector("textarea").value==="Address this comment."'), 1000);
   assert.equal(await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length"), beforeComment);
-  await page.evaluate('document.querySelector(".chat-form button[type=submit]").click()');
+  await page.evaluate('document.querySelector(".chat-form").requestSubmit()');
   await until("comment response sent", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.context?.thread?.id==='comment-1')"), 1000);
   const response = await page.evaluate("window.sockets[0].sent.find(frame=>frame.context?.thread?.id==='comment-1')");
   assert.deepEqual(response.context.thread.replies, [{body:"Could you expand?"}]);
@@ -182,11 +182,11 @@ try {
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='First';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true}));})()`);
   assert.equal(await page.evaluate("document.querySelector('textarea[placeholder]').value"),"First\n");
 
-  // A runner going away disables Send, not drafting. Shift+Enter is a
+  // A runner going away stops sending, not drafting. Shift+Enter is a
   // newline and IME Enter cannot send the request prematurely.
   await page.evaluate("window.sockets[0].emit({type:'presence',agent:false,browser:true})");
-  await until("draft while away", () => page.evaluate('!document.querySelector("textarea").disabled && document.querySelector(".chat-form button[type=submit]").disabled'), 1000);
-  await page.evaluate(`(()=>{const input=document.querySelector('textarea');input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}));})()`);
+  await until("draft while away", () => page.evaluate('!document.querySelector("textarea").disabled && document.querySelector(".chat-form").dataset.cansend==="false"'), 1000);
+  await page.evaluate(`(()=>{const input=document.querySelector('textarea');input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
   assert.equal(await page.evaluate("document.querySelector('textarea').value"), "First\n\n");
   assert.equal(await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length"), 2);
 
@@ -208,7 +208,7 @@ try {
   await page.evaluate('Array.from(document.querySelectorAll(".task-chips button")).find(b=>b.textContent==="Tighten").click()');
   await until("tighten task", () => page.evaluate('document.querySelector("textarea").value==="Tighten the selected passage."'), 1000);
   await page.evaluate("window.setProps({path:'b.md'})");
-  await page.evaluate('document.querySelector(".chat-form button[type=submit]").click()');
+  await page.evaluate('document.querySelector(".chat-form").requestSubmit()');
   await until("anchored request", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.task?.kind==='tighten')"), 1000);
   const anchored = await page.evaluate("window.sockets[1].sent.find(frame=>frame.task?.kind==='tighten')");
   assert.equal(anchored.context.file, "a.md");
@@ -218,7 +218,7 @@ try {
   await until("removed attachment", () => page.evaluate('!document.querySelector(".attachment")'), 1000);
   await page.evaluate("window.setProps({request:{id:'diagnostic',diagnostic:{file:'error.typ',line:4,message:'Old error',source:'old source',revision:'old-revision'},revision:'old-revision'}})");
   await until("diagnostic request", () => page.evaluate('document.querySelector("textarea").value==="Fix this diagnostic."'), 1000);
-  await page.evaluate('document.querySelector(".chat-form button[type=submit]").click()');
+  await page.evaluate('document.querySelector(".chat-form").requestSubmit()');
   await until("diagnostic sent", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.context?.diagnostic)"), 1000);
   const explained = await page.evaluate("window.sockets[1].sent.find(frame=>frame.context?.diagnostic)");
   assert.equal(explained.context.file, "error.typ");

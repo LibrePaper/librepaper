@@ -8,11 +8,11 @@
     canModerate = false, canComment = true, tool = "commenting", hasFigures = false,
     went = {}, replacements = {}, ontool, onreveal, oninspectresult, onresolve, ondelete,
     ondeletemany, onreply, onaccept, onreject, onrejectconfirmed, pending,
-    unreadChat = false, tab = $bindable("comments"),
+    unreadChat = false, selected = "", tab = $bindable("comments"),
   } = $props();
   const common = () => ({ figureAt, identity, commentingAs, canModerate, canComment, tool,
     hasFigures, went, replacements, ontool, onreveal, oninspectresult, onresolve, ondelete, ondeletemany,
-    onreply, onaccept, onreject, onrejectconfirmed, pending });
+    onreply, onaccept, onreject, onrejectconfirmed, pending, selected });
 </script>
 
 <section class="collaboration panel" aria-label="Collaboration">

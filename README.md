@@ -540,21 +540,36 @@ Review the publication inventory. Shared source and assets are readable by
 collaborators with document access. Files needed only for local execution can
 remain in the author's project.
 
-With Quarto and the required R or Python environment installed, grant the local
-app access to a specific project, then start the local service:
+Rendering runs on your own computer, with the Quarto and R or Python
+installed there. Start the local app once:
+
+```sh
+librepaper local start
+```
+
+Then choose **Render locally** from the reader's Tools menu. The first time, a
+small window from the local app asks whether to allow that site to use this
+computer's tools; click **Allow**. That is the whole setup: the local app
+renders each document in a workspace of its own, written from the files the
+browser sends with the request, so nothing has to be linked or bound. **Refresh
+computations** asks Quarto to rerun its caches. Both run the document's code,
+filters, and scripts on your machine, so allow only sites you trust. The
+pairing code the app prints still works as a fallback under Tools, Local app
+settings.
+
+When `librepaper serve` runs on the machine you browse from, it runs the local
+app itself: nothing to start. Pass `--no-local` to turn that off.
+
+A project that keeps data the document does not share can still be linked
+explicitly, and that link then takes precedence for the document:
 
 ```sh
 librepaper local doctor
 librepaper local bind-quarto --origin https://your-librepaper-server.example \
   --project <document-slug> --root /path/to/project --main paper.qmd
-librepaper local start
 ```
 
-Use the returned binding ID in the reader and pair with the local service using
-its connection code. **Render locally** follows the project's execution settings;
-**Refresh computations** requests a cache refresh. These actions run the
-document's code, filters, and scripts on the bound machine. Pairing and the local
-project grant are separate requirements. Revoke a project grant with
+Enter the returned binding ID under Tools, Render settings. Revoke it with
 `librepaper local unbind-quarto <binding>`.
 
 To share an output you rendered yourself, import it explicitly:

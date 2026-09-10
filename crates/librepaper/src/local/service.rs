@@ -92,10 +92,16 @@ pub struct NativeRunner {
 }
 
 impl NativeRunner {
-    pub fn new(tex_path: Vec<PathBuf>, state_home: &std::path::Path) -> Self {
+    /// A runner that executes granted projects and, under `base`, the hosted
+    /// workspace every document has without a grant.
+    pub fn with_hosted_workspaces(
+        tex_path: Vec<PathBuf>,
+        state_home: &std::path::Path,
+        base: PathBuf,
+    ) -> Self {
         Self {
             tex_path,
-            binding_store: BindingStore::new(state_home),
+            binding_store: BindingStore::new(state_home).with_hosted_workspaces(base),
         }
     }
 }
@@ -316,6 +322,11 @@ impl LocalService {
     /// process-wide environment state. Completed Quarto records are restored
     /// for bounded retry/recovery; interrupted and unknown workspaces are
     /// removed here and are never resumed.
+    ///
+    /// A service with no hosted workspaces, which only the tests build now:
+    /// both `librepaper local start` and the one inside `serve` use
+    /// `with_hosted_workspaces_and_code`.
+    #[allow(dead_code)]
     pub fn new(
         port: u16,
         instance: String,
@@ -324,14 +335,57 @@ impl LocalService {
         runner: Arc<dyn Runner>,
         fixed_code: Option<String>,
     ) -> Self {
+        Self::build(
+            port, instance, state_home, cache_home, runner, fixed_code, None,
+        )
+    }
+
+    /// The same service, additionally admitting the hosted binding for every
+    /// document and executing it in a workspace under `base`. The runner
+    /// handed in must have been built with the same base. `fixed_code` is
+    /// the pairing code as for `new`; the service inside `librepaper serve`
+    /// passes none, since it pairs through its consent page alone.
+    pub fn with_hosted_workspaces_and_code(
+        port: u16,
+        instance: String,
+        state_home: &std::path::Path,
+        cache_home: &std::path::Path,
+        runner: Arc<dyn Runner>,
+        fixed_code: Option<String>,
+        base: PathBuf,
+    ) -> Self {
+        Self::build(
+            port,
+            instance,
+            state_home,
+            cache_home,
+            runner,
+            fixed_code,
+            Some(base),
+        )
+    }
+
+    fn build(
+        port: u16,
+        instance: String,
+        state_home: &std::path::Path,
+        cache_home: &std::path::Path,
+        runner: Arc<dyn Runner>,
+        fixed_code: Option<String>,
+        hosted: Option<PathBuf>,
+    ) -> Self {
         let jobs_root = cache_home.join("librepaper").join("local").join("jobs");
         let _ = std::fs::create_dir_all(&jobs_root);
         let recovered = recover_quarto_jobs(&jobs_root);
+        let mut quarto_bindings = BindingStore::new(state_home);
+        if let Some(base) = hosted {
+            quarto_bindings = quarto_bindings.with_hosted_workspaces(base);
+        }
         let inner = Arc::new(Inner {
             instance,
             port,
             pairing: PairingStore::new(state_home, fixed_code),
-            quarto_bindings: BindingStore::new(state_home),
+            quarto_bindings,
             previews: Mutex::new(Default::default()),
             runner,
             jobs: Mutex::new(recovered),
@@ -781,6 +835,8 @@ async fn dispatch(
     match segs {
         ["health"] if *method == Method::GET => handle_health(inner),
         ["connect"] if *method == Method::POST => handle_connect(inner, peer, request).await,
+        ["pair"] if *method == Method::GET => handle_pair_page(&request),
+        ["pair"] if *method == Method::POST => handle_pair_consent(inner, peer, request).await,
         ["disconnect"] if *method == Method::POST => {
             handle_disconnect(inner, headers, origin).await
         }
@@ -874,6 +930,176 @@ async fn handle_connect(inner: &Arc<Inner>, peer: SocketAddr, request: Request<B
             &json!({"error": format!("could not store the pairing: {err}")}),
         ),
     }
+}
+
+/* ------------------------------------------------------------ pair page */
+
+// The one-click alternative to typing the pairing code. The reader opens
+// this page in a popup; it names the site that wants to use the tools on
+// this computer and offers Allow. The page is served from the service's own
+// loopback origin, so the click is a decision taken on this machine by the
+// person sitting at it -- the same fact the six digits proved -- and the
+// pairing is posted back only to the exact origin the page named.
+
+fn pair_query(query: &str) -> Option<(String, String)> {
+    let mut origin = None;
+    let mut project = None;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match &*key {
+            "origin" => origin = valid_pair_origin(&value),
+            "project" => project = valid_pair_project(&value),
+            _ => {}
+        }
+    }
+    Some((origin?, project?))
+}
+
+/// An origin as a browser would send it: an http(s) scheme and a host, and
+/// nothing else -- no path, credentials, query or fragment -- normalised
+/// the way the pairing store keys it.
+fn valid_pair_origin(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    Some(pairing::normalize_origin(raw.trim()))
+}
+
+fn valid_pair_project(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let ok = !value.is_empty()
+        && value.len() <= 256
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
+    ok.then(|| value.to_string())
+}
+
+fn html(status: u16, body: String) -> Reply {
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() =
+        StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    set(&mut response, "content-type", "text/html; charset=utf-8");
+    set(&mut response, "cache-control", "no-store");
+    set(&mut response, "referrer-policy", "no-referrer");
+    response
+}
+
+const PAIR_STYLE: &str = "body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:28px;color:#1c1c1c;background:#fff}\
+h1{font-size:18px;margin:0 0 12px}p{margin:0 0 12px}code{font-size:14px;background:#f2f2f2;padding:1px 5px;border-radius:4px}\
+.site{font-weight:600;word-break:break-all}.row{display:flex;gap:10px;margin-top:20px}\
+button{font:inherit;padding:8px 18px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}\
+button.allow{background:#1f6f43;border-color:#1f6f43;color:#fff}";
+
+fn handle_pair_page(request: &Request<Body>) -> Reply {
+    let Some((origin, project)) = pair_query(request.uri().query().unwrap_or("")) else {
+        return plain(400, "pair needs an origin and a project");
+    };
+    let site = html_escape::encode_text(&origin);
+    let name = html_escape::encode_text(&project);
+    let origin_attr = html_escape::encode_double_quoted_attribute(&origin);
+    let project_attr = html_escape::encode_double_quoted_attribute(&project);
+    let page = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+<title>Allow LibrePaper?</title><style>{PAIR_STYLE}</style></head><body>\
+<h1>Use this computer's tools?</h1>\
+<p><span class=\"site\">{site}</span> wants to render the document <code>{name}</code> \
+with the Quarto and TeX tools installed on this computer.</p>\
+<p>Allowing runs that document's code here whenever an editor of it asks. \
+Only allow sites you trust.</p>\
+<form method=\"post\" action=\"{BASE_PATH}/pair\">\
+<input type=\"hidden\" name=\"origin\" value=\"{origin_attr}\">\
+<input type=\"hidden\" name=\"project\" value=\"{project_attr}\">\
+<div class=\"row\"><button type=\"submit\" class=\"allow\" autofocus>Allow</button>\
+<button type=\"button\" onclick=\"window.close()\">Cancel</button></div></form>\
+</body></html>"
+    );
+    html(200, page)
+}
+
+async fn handle_pair_consent(
+    inner: &Arc<Inner>,
+    peer: SocketAddr,
+    request: Request<Body>,
+) -> Reply {
+    if rate_limited(inner, peer).await {
+        return plain(
+            429,
+            "too many pairing attempts; wait a minute and try again",
+        );
+    }
+    // Only the consent page itself may submit this: a form post from any
+    // other origin carries that origin, and one from the page carries the
+    // service's own. Browsers always send Origin on a POST.
+    let own = [
+        format!("http://127.0.0.1:{}", inner.port),
+        format!("http://localhost:{}", inner.port),
+        format!("http://[::1]:{}", inner.port),
+    ];
+    let sent = header_str(request.headers(), "origin").map(pairing::normalize_origin);
+    if !sent
+        .as_deref()
+        .is_some_and(|sent| own.iter().any(|o| pairing::normalize_origin(o) == sent))
+    {
+        return plain(
+            403,
+            "the pairing form must be submitted from this app's own page",
+        );
+    }
+    if header_str(request.headers(), "sec-fetch-site")
+        .is_some_and(|site| !site.is_empty() && site != "same-origin")
+    {
+        return plain(
+            403,
+            "the pairing form must be submitted from this app's own page",
+        );
+    }
+    let body = match axum::body::to_bytes(request.into_body(), 4096).await {
+        Ok(body) => body,
+        Err(_) => return plain(413, "pairing form is too large"),
+    };
+    let Some((origin, project)) = pair_query(std::str::from_utf8(&body).unwrap_or("")) else {
+        return plain(400, "pair needs an origin and a project");
+    };
+    let (token, expires) = match inner.pairing.issue(&origin, &project, "consent page") {
+        Ok(issued) => issued,
+        Err(err) => return plain(500, &format!("could not store the pairing: {err}")),
+    };
+    // The pairing goes to the window that opened this one and to that
+    // window only: postMessage's target origin is the origin that was
+    // allowed, so a page anywhere else never receives it.
+    let message = json!({
+        "type": "librepaper-local-pairing",
+        "origin": origin,
+        "project": project,
+        "token": token,
+        "expires": expires,
+        "instance": inner.instance,
+        "address": format!("http://127.0.0.1:{}/", inner.port),
+    })
+    .to_string()
+    .replace("</", "<\\/");
+    let target = serde_json::to_string(&origin).unwrap_or_else(|_| "\"\"".into());
+    let page = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+<title>LibrePaper allowed</title><style>{PAIR_STYLE}</style></head><body>\
+<h1>Allowed</h1><p>This site can now render with the tools on this computer. \
+You can close this window.</p>\
+<script>(function(){{var m={message};var t={target};\
+var w=window.opener||(window.parent!==window?window.parent:null);\
+if(w){{try{{w.postMessage(m,t);}}catch(e){{}}\
+setTimeout(function(){{window.close();}},150);}}}})();</script>\
+</body></html>"
+    );
+    html(200, page)
 }
 
 async fn rate_limited(inner: &Inner, peer: SocketAddr) -> bool {

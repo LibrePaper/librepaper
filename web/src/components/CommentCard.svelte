@@ -1,6 +1,7 @@
 <script>
   import { tick } from "svelte";
   import IconButton from "./IconButton.svelte";
+  import Avatar from "./Avatar.svelte";
   import Row from "./layout/Row.svelte";
   import * as history from "../lib/history.js";
   import { runsFor } from "../lib/suggestions.js";
@@ -31,6 +32,9 @@
     onaccept,
     onreject,
     cardIdPrefix = "comment",
+    // The card the sidebar has singled out: its passage is ringed in the
+    // document, and the card wears the same ring so the two read as one.
+    selected = false,
   } = $props();
 
   // A suggestion is a comment whose motivation is `editing` (the W3C term);
@@ -59,15 +63,10 @@
     });
   });
 
-  // A passage can be a paragraph long, which would bury the comment made about
-  // it. The card shows the opening words and expands on request.
-  const QUOTE_WORDS = 8;
-
   // A resolved note is settled business: it collapses to one line and stays
   // out of the way until someone clicks it open again. Resolving it again
   // closes it, however it was left.
   let expanded = $state(false);
-  let quoteOpen = $state(false);
   let replying = $state(false);
   let replyBody = $state("");
   let replyField = $state(null);
@@ -77,10 +76,6 @@
   $effect(() => {
     if (!comment.resolved) expanded = false;
   });
-
-  const words = $derived((comment.exact || "").split(/\s+/));
-  const long = $derived(words.length > QUOTE_WORDS + 2);
-  const short = $derived(words.slice(0, QUOTE_WORDS).join(" "));
 
   // The Delete button is only ever real for a comment the server says this
   // caller may delete, one they just posted and is still waiting to be
@@ -115,6 +110,20 @@
     if (!comment.orphaned && !comment.regionUnplaceable) onreveal?.(comment);
   }
 
+  // No buttons under the reply box: Enter sends, Shift+Enter breaks the line
+  // and Escape puts the box away, as in the chat composer.
+  function replyKey(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      replyBody = "";
+      replying = false;
+      return;
+    }
+    if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }
+
   function submitReply(event) {
     event.preventDefault();
     if (!replyBody.trim()) return;
@@ -135,6 +144,7 @@
     ? 'preset-outlined-surface-200-800 opacity-70'
     : 'preset-outlined-surface-300-700'}"
   class:collapsed
+  class:selected
   tabindex="-1"
   onfocus={() => (expanded = true)}
   onclick={click}
@@ -176,38 +186,15 @@
         {/if}
       </Row>
 
+      <!-- The passage itself is not repeated here: it is painted in the
+           document, and ringed there while this card is the selected one.
+           Only a note with no words to point at says what it is on. -->
       {#if comment.point}
         <p class="panel-muted">Comment at this point</p>
       {:else if comment.region}
         <blockquote class="figureref panel-muted">
           Figure {comment.region.image_index + 1}
         </blockquote>
-      {:else if long}
-        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3" style:border-left-color={annotationColor}>
-          <span>{quoteOpen ? `“${comment.exact}”` : `“${short}`}</span>
-          <!-- svelte-ignore a11y_invalid_attribute -->
-          <a
-            href="#"
-            class="anchor"
-            onclick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              quoteOpen = !quoteOpen;
-            }}
-          >
-            {quoteOpen ? " less" : "… ”"}
-          </a>
-        </blockquote>
-      {:else}
-        <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3" style:border-left-color={annotationColor}>
-          “{comment.exact}”
-        </blockquote>
-      {/if}
-
-      {#if comment.source}
-        <!-- The anchor of record, quietly: which file the quotation above
-             was actually cut from. -->
-        <div class="text-surface-500 text-xs">{comment.source.path}</div>
       {/if}
 
       {#if isSuggestion}
@@ -269,14 +256,17 @@
       {#if comment.body}<p>{comment.body}</p>{/if}
 
 
-      <small class="panel-meta">{comment.creator} · {stamp(comment.created)}</small>
+      <div class="byline">
+        <Avatar name={comment.creator} size={5} title={`${comment.creator} · ${stamp(comment.created)}`} />
+        <small class="panel-meta">{stamp(comment.created)}</small>
+      </div>
 
       {#if comment.replies?.length}
         <ul class="border-surface-200-800 flex flex-col gap-2 border-l pl-3">
           {#each comment.replies as reply (reply.id)}
-            <li>
-              <span>{reply.body}</span><br />
-              <small class="panel-meta">{reply.creator} · {stamp(reply.created)}</small>
+            <li class="reply">
+              <Avatar name={reply.creator} size={5} title={`${reply.creator} · ${stamp(reply.created)}`} />
+              <span>{reply.body}</span>
             </li>
           {/each}
         </ul>
@@ -331,24 +321,21 @@
       <textarea
         class="textarea"
         aria-label="Reply"
-        placeholder="Reply"
+        placeholder="Reply · Enter sends · Esc cancels"
         rows="2"
         maxlength="5000"
         required
         bind:this={replyField}
         bind:value={replyBody}
+        onkeydown={replyKey}
       ></textarea>
-      <Row gap={2} justify="end">
-        <button
-          type="button"
-          class="btn btn-sm preset-outlined-surface-300-700"
-          onclick={() => {
-            replyBody = "";
-            replying = false;
-          }}
-        >Cancel</button>
-        <button type="submit" class="btn btn-sm preset-filled-primary-500">Submit</button>
-      </Row>
     </form>
   {/if}
 </article>
+
+<style>
+  .selected { border-color: var(--color-primary-500); box-shadow: 0 0 0 1px var(--color-primary-500); }
+  .byline { display: flex; align-items: center; gap: var(--spacing); }
+  .reply { display: flex; align-items: flex-start; gap: var(--spacing); }
+  .reply > span { min-width: 0; overflow-wrap: anywhere; }
+</style>

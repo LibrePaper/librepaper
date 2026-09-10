@@ -109,9 +109,16 @@ export function setAddress(url) {
   setStatus({ address: url, state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown") });
 }
 
+// The binding every document has without anyone granting one: the local app
+// renders it in a workspace of its own, written from the files the browser
+// sends with each job. An explicit `bind-quarto` id, entered in the render
+// settings, replaces it for a project that keeps data the document does not
+// share.
+export const HOSTED_BINDING = "hosted";
+
 export function bindingId() {
   const all = readJSON(BINDINGS_KEY, {});
-  return String(all[pairingKey()] || "");
+  return String(all[pairingKey()] || HOSTED_BINDING);
 }
 
 export function setBindingId(id) {
@@ -175,7 +182,7 @@ function instructionsFor(state) {
     case "denied":
       return "Your browser blocked access to the local app. Allow local network access for this site and retry.";
     case "unauthorized":
-      return "Run `librepaper local start` on this computer and enter the pairing code it prints.";
+      return "Local LibrePaper is running but has not allowed this site yet. Choose Render locally and click Allow in the window that opens, or enter the pairing code it printed.";
     case "connected":
       return "Local LibrePaper is connected.";
     case "reachable":
@@ -444,6 +451,49 @@ export async function connect(code) {
   setPairing({ token: data.token, expires: data.expires, instance: lastInstance });
   resetNegativeCache();
   return probe({ force: true });
+}
+
+// The one-click pairing: the local app serves a consent page on its own
+// loopback origin, this opens it in a popup naming this site and document,
+// and the pairing comes back by postMessage once the person clicks Allow.
+// Nothing to read off a terminal. Resolves with the status after the pairing
+// is stored and verified, or the unchanged status if the window was closed
+// without allowing.
+export function pairViaApp({ timeoutMs = 5 * 60 * 1000 } = {}) {
+  const addr = address();
+  const appOrigin = new URL(addr).origin;
+  const url = `${addr}librepaper/local/v1/pair?origin=${encodeURIComponent(current.origin)}&project=${encodeURIComponent(current.project)}`;
+  const sameOrigin = (a, b) => String(a || "").replace(/\/+$/, "").toLowerCase() === String(b || "").replace(/\/+$/, "").toLowerCase();
+  return new Promise((resolve, reject) => {
+    const popup = window.open(url, "librepaper-local-pair", "popup,width=480,height=400");
+    if (!popup) {
+      reject(new Error("The browser blocked the window that asks the local app for permission. Allow popups for this site and try again."));
+      return;
+    }
+    let settled = false;
+    let watch = null;
+    let timer = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("message", onMessage);
+      clearInterval(watch);
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const onMessage = (event) => {
+      if (event.origin !== appOrigin) return;
+      const data = event.data;
+      if (!data || data.type !== "librepaper-local-pairing") return;
+      if (data.project !== current.project || !sameOrigin(data.origin, current.origin)) return;
+      setPairing({ token: data.token, expires: data.expires, instance: data.instance || null });
+      resetNegativeCache();
+      finish(probe({ force: true }));
+    };
+    window.addEventListener("message", onMessage);
+    watch = setInterval(() => { if (popup.closed) setTimeout(() => finish(currentStatus), 300); }, 400);
+    timer = setTimeout(() => finish(currentStatus), timeoutMs);
+  });
 }
 
 export async function disconnect() {

@@ -336,6 +336,212 @@ async fn connect_with_the_right_code_returns_a_working_token_stored_hashed() {
     assert!(!raw.contains(&token), "the plaintext token leaked to disk");
 }
 
+/// The consent page: opened in a popup by the reader, it names the site and
+/// document and offers Allow. Only a form posted from the page's own origin
+/// pairs, and the pairing goes back by postMessage to the allowed origin.
+#[tokio::test]
+async fn the_consent_page_pairs_on_allow_and_refuses_foreign_posts() {
+    let test = start_test_service(Arc::new(FakeRunner::default())).await;
+    // No code was ever set: the page must pair regardless, since the click
+    // on this machine is the proof the code stood for.
+    let page = test
+        .client
+        .get(format!(
+            "{}/pair?origin={}&project=proj-a",
+            test.base,
+            percent_encoding::utf8_percent_encode(ORIGIN, percent_encoding::NON_ALPHANUMERIC)
+        ))
+        .send()
+        .await
+        .expect("pair page");
+    assert_eq!(page.status(), 200);
+    let html = page.text().await.expect("page body");
+    assert!(html.contains("librepaper.example"), "names the site asking");
+    assert!(html.contains("proj-a"), "names the document");
+    assert!(html.contains("<form method=\"post\""));
+
+    // Malformed asks are refused before any page is drawn.
+    for bad in [
+        "origin=javascript:alert(1)&project=p",
+        "origin=https://a.example/path&project=p",
+        "project=p",
+        "origin=https://a.example&project=../x",
+    ] {
+        let response = test
+            .client
+            .get(format!("{}/pair?{bad}", test.base))
+            .send()
+            .await
+            .expect("bad pair page");
+        assert_eq!(response.status(), 400, "{bad}");
+    }
+
+    let own_origin = test.base.trim_end_matches(protocol::BASE_PATH).to_string();
+    // A form posted from anywhere but the page itself carries a foreign
+    // Origin and is refused; the reader cannot pair itself behind the
+    // person's back.
+    let foreign = test
+        .client
+        .post(format!("{}/pair", test.base))
+        .header("Origin", ORIGIN)
+        .form(&[("origin", ORIGIN), ("project", "proj-a")])
+        .send()
+        .await
+        .expect("foreign post");
+    assert_eq!(foreign.status(), 403);
+
+    let allowed = test
+        .client
+        .post(format!("{}/pair", test.base))
+        .header("Origin", &own_origin)
+        .form(&[("origin", ORIGIN), ("project", "proj-a")])
+        .send()
+        .await
+        .expect("consent post");
+    assert_eq!(allowed.status(), 200);
+    let html = allowed.text().await.expect("consent body");
+    assert!(html.contains("window.opener.postMessage"));
+    let token = html
+        .split("\"token\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("token in the message")
+        .to_string();
+    assert!(
+        html.contains(&format!("var t={:?}", ORIGIN)),
+        "targets the allowed origin only"
+    );
+
+    // The pairing it minted works like one made with the code, and nothing
+    // was issued for the origin that was refused.
+    let caps = test
+        .client
+        .get(format!("{}/capabilities", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("capabilities request");
+    assert_eq!(caps.status(), 200);
+    let pairing = PairingStore::new(test.state_home.path(), None);
+    assert_eq!(
+        pairing.authenticate(ORIGIN, &token).as_deref(),
+        Some("proj-a")
+    );
+}
+
+/// The hosted binding: a service started with workspaces answers it for any
+/// origin and project, with a directory of its own for each; a plain service
+/// never does, and the id is still refused when the project would not make a
+/// directory name.
+#[test]
+fn the_hosted_binding_resolves_only_with_workspaces() {
+    let state_home = tempfile::tempdir().expect("state tempdir");
+    let plain = BindingStore::new(state_home.path());
+    assert!(plain
+        .get_scoped(crate::local::quarto::HOSTED_BINDING, ORIGIN, "proj-a")
+        .is_none());
+
+    let workspaces = tempfile::tempdir().expect("workspaces tempdir");
+    let hosted = BindingStore::new(state_home.path())
+        .with_hosted_workspaces(workspaces.path().to_path_buf());
+    let a = hosted
+        .get_scoped(crate::local::quarto::HOSTED_BINDING, ORIGIN, "proj-a")
+        .expect("hosted binding");
+    assert!(BindingStore::is_hosted(&a));
+    assert!(a.root.is_dir());
+    assert!(a
+        .root
+        .starts_with(std::fs::canonicalize(workspaces.path()).unwrap()));
+    let b = hosted
+        .get_scoped(crate::local::quarto::HOSTED_BINDING, ORIGIN, "proj-b")
+        .expect("second hosted binding");
+    assert_ne!(a.root, b.root, "one workspace per document");
+    let elsewhere = hosted
+        .get_scoped(
+            crate::local::quarto::HOSTED_BINDING,
+            "https://other.example",
+            "proj-a",
+        )
+        .expect("hosted binding for another deployment");
+    assert_ne!(a.root, elsewhere.root, "one workspace per deployment");
+    for bad in ["", "../x", ".hidden", "a/b", "sp ace"] {
+        assert!(
+            hosted
+                .get_scoped(crate::local::quarto::HOSTED_BINDING, ORIGIN, bad)
+                .is_none(),
+            "{bad:?}"
+        );
+    }
+    // An ordinary id still goes through the granted store.
+    assert!(hosted.get_scoped("q-nope", ORIGIN, "proj-a").is_none());
+}
+
+/// Syncing a hosted workspace writes the uploads through, leaves what it
+/// did not write alone, and removes only what an earlier sync had written.
+#[test]
+fn syncing_a_hosted_workspace_tracks_its_own_files() {
+    use crate::local::quarto::sync_hosted_workspace;
+    let staged = tempfile::tempdir().expect("staged");
+    let root = tempfile::tempdir().expect("root");
+    let write = |dir: &std::path::Path, path: &str, bytes: &[u8]| {
+        let full = dir.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, bytes).unwrap();
+    };
+    let entry = |path: &str, bytes: &[u8]| protocol::ManifestEntry {
+        path: path.to_string(),
+        sha256: hex::encode(Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    };
+    // Quarto's own cache is already there and is not the sync's business.
+    write(root.path(), "_freeze/main/execute-results/html.json", b"{}");
+
+    write(staged.path(), "main.qmd", b"# one");
+    write(staged.path(), "data/a.csv", b"1,2");
+    sync_hosted_workspace(
+        staged.path(),
+        root.path(),
+        &[entry("main.qmd", b"# one"), entry("data/a.csv", b"1,2")],
+    )
+    .expect("first sync");
+    assert_eq!(
+        std::fs::read(root.path().join("main.qmd")).unwrap(),
+        b"# one"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("data/a.csv")).unwrap(),
+        b"1,2"
+    );
+
+    // Second sync: one file changed, one gone, the cache untouched.
+    let staged2 = tempfile::tempdir().expect("staged2");
+    write(staged2.path(), "main.qmd", b"# two");
+    sync_hosted_workspace(staged2.path(), root.path(), &[entry("main.qmd", b"# two")])
+        .expect("second sync");
+    assert_eq!(
+        std::fs::read(root.path().join("main.qmd")).unwrap(),
+        b"# two"
+    );
+    assert!(
+        !root.path().join("data/a.csv").exists(),
+        "dropped file removed"
+    );
+    assert!(root
+        .path()
+        .join("_freeze/main/execute-results/html.json")
+        .exists());
+
+    // An upload the manifest names but the stage lacks is an error, not a
+    // silent gap, and an unsafe path never reaches the disk.
+    assert!(
+        sync_hosted_workspace(staged2.path(), root.path(), &[entry("missing.qmd", b"")]).is_err()
+    );
+    assert!(
+        sync_hosted_workspace(staged2.path(), root.path(), &[entry("../escape.qmd", b"")]).is_err()
+    );
+}
+
 #[tokio::test]
 async fn disconnect_revokes_the_token() {
     let test = start_test_service(Arc::new(FakeRunner::default())).await;

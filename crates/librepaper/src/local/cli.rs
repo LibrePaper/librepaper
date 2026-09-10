@@ -172,14 +172,27 @@ async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<
         die(format!("could not write service.json: {err}"));
     }
 
-    let runner: Arc<dyn Runner> = Arc::new(NativeRunner::new(tex_path, &state_home));
-    let service = LocalService::new(
+    // Every document renders in a workspace of its own under the cache,
+    // written from the files the browser sends with each job: nothing has
+    // to be bound by hand. A `bind-quarto` grant still wins for a project
+    // that keeps data the document does not share.
+    let workspaces = cache_home()
+        .join("librepaper")
+        .join("local")
+        .join("workspaces");
+    let runner: Arc<dyn Runner> = Arc::new(NativeRunner::with_hosted_workspaces(
+        tex_path,
+        &state_home,
+        workspaces.clone(),
+    ));
+    let service = LocalService::with_hosted_workspaces_and_code(
         port,
         instance,
         &state_home,
         &cache_home(),
         runner,
         Some(code.clone()),
+        workspaces,
     );
     let router = service.router();
 

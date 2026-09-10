@@ -51,11 +51,21 @@ struct BindingFile {
     bindings: Vec<ProjectBinding>,
 }
 
+/// The one binding id that needs no grant: a document the serving deployment
+/// itself hosts, rendered inside a workspace the server owns. Only a service
+/// started with `with_hosted_workspaces` resolves it; a standalone
+/// `librepaper local start` never does.
+pub const HOSTED_BINDING: &str = "hosted";
+
 /// The store intentionally takes an explicit config root so tests never need
 /// to alter process-wide XDG variables.
 #[derive(Clone, Debug)]
 pub struct BindingStore {
     path: PathBuf,
+    /// Where hosted workspaces live, one directory per project slug, when
+    /// this service belongs to a running `librepaper serve`. None for the
+    /// standalone local app, which executes only explicitly granted roots.
+    hosted: Option<PathBuf>,
 }
 
 impl BindingStore {
@@ -65,7 +75,48 @@ impl BindingStore {
                 .join("librepaper")
                 .join("local")
                 .join("quarto-bindings.json"),
+            hosted: None,
         }
+    }
+
+    /// The same store, also answering `HOSTED_BINDING` with a workspace
+    /// under `base`. The workspace is the server's own copy of the shared
+    /// tree, written from the job's uploads before each render, so nothing
+    /// of the user's machine is exposed and nothing has to be bound by hand.
+    pub fn with_hosted_workspaces(mut self, base: PathBuf) -> Self {
+        self.hosted = Some(base);
+        self
+    }
+
+    /// Whether `binding` is a hosted workspace rather than a granted root.
+    pub fn is_hosted(binding: &ProjectBinding) -> bool {
+        binding.id == HOSTED_BINDING
+    }
+
+    fn hosted_binding(&self, origin: &str, project: &str) -> Option<ProjectBinding> {
+        let base = self.hosted.as_ref()?;
+        if !hosted_project_name_ok(project) {
+            return None;
+        }
+        // One workspace per deployment and document: two deployments can
+        // mint the same slug, and their trees must never share caches.
+        let origin = super::pairing::normalize_origin(origin);
+        let deployment = hex::encode(&Sha256::digest(origin.as_bytes())[..8]);
+        let root = base.join(deployment).join(project);
+        std::fs::create_dir_all(&root).ok()?;
+        let root = std::fs::canonicalize(&root).ok()?;
+        Some(ProjectBinding {
+            id: HOSTED_BINDING.to_string(),
+            origin,
+            project: project.to_string(),
+            root,
+            // Decided by each job: the workspace holds whatever the document
+            // holds, and the entrypoint the browser names has already been
+            // validated as a relative `.qmd` inside that tree.
+            entrypoint: String::new(),
+            created_at: 0,
+            execution_granted: true,
+        })
     }
 
     fn load(&self) -> BindingFile {
@@ -135,6 +186,9 @@ impl BindingStore {
     }
 
     pub fn get_scoped(&self, id: &str, origin: &str, project: &str) -> Option<ProjectBinding> {
+        if id == HOSTED_BINDING {
+            return self.hosted_binding(origin, project);
+        }
         let origin = super::pairing::normalize_origin(origin);
         self.load().bindings.into_iter().find(|binding| {
             binding.id == id
@@ -657,13 +711,19 @@ pub async fn run_job_with_bindings(
             "quarto binding is missing, revoked, or outside its authorized root",
         );
     };
-    if options.main != binding.entrypoint {
+    let hosted = BindingStore::is_hosted(&binding);
+    if !hosted && options.main != binding.entrypoint {
         return failed(
             &request,
             &job_id,
             "quarto entrypoint does not match the granted project binding",
         );
     }
+    let entrypoint = if hosted {
+        options.main.clone()
+    } else {
+        binding.entrypoint.clone()
+    };
     if request.snapshot.is_empty() {
         return failed(
             &request,
@@ -674,7 +734,7 @@ pub async fn run_job_with_bindings(
     if !request
         .manifest
         .iter()
-        .any(|entry| entry.path == binding.entrypoint)
+        .any(|entry| entry.path == entrypoint)
     {
         return failed(
             &request,
@@ -697,6 +757,17 @@ pub async fn run_job_with_bindings(
     // against the user's linked project so local data and environments remain
     // available, while a stale upload is refused visibly. Resolve the root
     // first so a replaced binding path cannot be used for this check.
+    // A hosted workspace is the server's own copy of the shared tree, so the
+    // uploads are exactly what belongs in it: they are written through here,
+    // and the inventory check below then holds by construction. A granted
+    // project is never written to.
+    if hosted {
+        if let Err(error) =
+            sync_hosted_workspace(&workspace.project(), &bound_project, &request.manifest)
+        {
+            return failed(&request, &job_id, &error);
+        }
+    }
     let mut effective_manifest = request.manifest.clone();
     if let Err(error) = add_declared_inputs(
         &bound_project,
@@ -1887,6 +1958,84 @@ fn resolve_resource_path(current: &str, reference: &str) -> Option<String> {
     }
     let path = components.join("/");
     protocol::safe_relative_path(&path).then_some(path)
+}
+
+/// A project slug fit to be a directory name under the hosted base: the
+/// slugs the server mints are lowercase letters, digits and dashes, and
+/// anything wider is refused rather than mapped.
+fn hosted_project_name_ok(project: &str) -> bool {
+    !project.is_empty()
+        && project.len() <= 128
+        && !project.starts_with('.')
+        && project
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// The record of which paths the last sync wrote into a hosted workspace, so
+/// a file the document no longer holds is removed rather than left to be
+/// rendered as part of the project. Everything else in the workspace --
+/// `_freeze`, engine caches, environments -- is Quarto's and is kept.
+const HOSTED_TRACKED: &str = ".librepaper-hosted.json";
+
+#[derive(Default, Serialize, Deserialize)]
+struct HostedTracked {
+    #[serde(default)]
+    files: Vec<String>,
+}
+
+/// Write the staged uploads into the hosted workspace and drop what the
+/// previous sync wrote that is no longer in the inventory. Unchanged files
+/// are left untouched so their timestamps, and Quarto's caches keyed on
+/// them, survive.
+pub(crate) fn sync_hosted_workspace(
+    staged: &Path,
+    root: &Path,
+    manifest: &[protocol::ManifestEntry],
+) -> Result<(), String> {
+    let tracked_path = root.join(HOSTED_TRACKED);
+    let previous: HostedTracked = std::fs::read(&tracked_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let mut written = Vec::with_capacity(manifest.len());
+    for entry in manifest {
+        if !protocol::safe_relative_path(&entry.path) {
+            return Err("quarto input inventory contains an unsafe path".into());
+        }
+        let bytes = std::fs::read(staged.join(&entry.path))
+            .map_err(|_| format!("hosted workspace is missing upload: {}", entry.path))?;
+        let target = root.join(&entry.path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("prepare hosted workspace: {error}"))?;
+        }
+        let same = std::fs::symlink_metadata(&target)
+            .ok()
+            .filter(|meta| meta.is_file())
+            .and_then(|_| std::fs::read(&target).ok())
+            .is_some_and(|current| current == bytes);
+        if !same {
+            if std::fs::symlink_metadata(&target).is_ok() {
+                let _ = std::fs::remove_file(&target);
+            }
+            let temporary = root.join(format!("{}.librepaper-tmp", entry.path));
+            std::fs::write(&temporary, &bytes)
+                .and_then(|()| std::fs::rename(&temporary, &target))
+                .map_err(|error| format!("write hosted workspace {}: {error}", entry.path))?;
+        }
+        written.push(entry.path.clone());
+    }
+    for stale in previous.files.iter().filter(|path| !written.contains(path)) {
+        if protocol::safe_relative_path(stale) {
+            let _ = std::fs::remove_file(root.join(stale));
+        }
+    }
+    let record = serde_json::to_vec_pretty(&HostedTracked { files: written })
+        .map_err(|error| format!("record hosted workspace: {error}"))?;
+    std::fs::write(&tracked_path, record)
+        .map_err(|error| format!("record hosted workspace: {error}"))?;
+    Ok(())
 }
 
 pub(crate) fn verify_bound_manifest(

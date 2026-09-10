@@ -355,6 +355,17 @@
   let lastRegions = null;
   let lastHighlight = null;
   let lastRedlines = null;
+  // The annotation singled out last, from either side: a card clicked in the
+  // sidebar or a mark clicked in the document. Its card wears a ring and the
+  // frame rings its passage, and both stay until another one is chosen.
+  let selectedAnnotation = $state("");
+  let lastSelected = null;
+  function applySelection() {
+    if (!frameReady || selectedAnnotation === lastSelected) return;
+    lastSelected = selectedAnnotation;
+    tell({ type: "select", id: selectedAnnotation });
+  }
+  $effect(() => { void selectedAnnotation; applySelection(); });
 
   function applyHighlights() {
     if (!frameReady) return;
@@ -551,8 +562,9 @@
         frameReady = true;
         tell({ type: "tool", tool });
         // Whatever was painted before is gone with the rebuilt DOM.
-        lastRegions = lastHighlight = lastRedlines = null;
+        lastRegions = lastHighlight = lastRedlines = lastSelected = null;
         reanchor();
+        applySelection();
         revealPendingHistory();
         // A repaint rebuilds the frame's document from scratch, so redlines
         // need resending here just as highlights do in `reanchor` -- the
@@ -729,6 +741,7 @@
   async function focusAnnotation(id) {
     const comment = comments.find((item) => item.id === id);
     if (!comment) return;
+    selectedAnnotation = String(comment.id);
     const suggestion = comment.motivation === "editing";
     const plainHighlight = comment.motivation === "highlighting" && !comment.body && !comment.replies?.length;
     if (!suggestion) collaborationTab = plainHighlight ? "highlights" : "comments";
@@ -744,6 +757,7 @@
   }
 
   async function revealAnnotation(comment) {
+    selectedAnnotation = String(comment.id);
     if (comment.output_anchor) {
       await inspectQuartoComment(comment);
       return;
@@ -1079,7 +1093,10 @@
   let Editor = $state(null);
   let MergeEditor = $state(null);
   let editor = $state(null);
-  let session = $state(null);
+  // Raw on purpose: the session is a bag of Yjs types and functions, and the
+  // collaboration module hands the same object back in its callbacks, which
+  // are compared to this by identity. A deep proxy would never be equal to it.
+  let session = $state.raw(null);
   let editing = $state(false);
   // Which text the editor is bound to. It changes once on a document migrated
   // from before there were directories: the words arrive in the retired text
@@ -1165,11 +1182,37 @@
     return () => clearInterval(timer);
   });
 
+  // The whole connection story, on demand and with nothing to type: reach
+  // the local app, and when it is there but has not allowed this site yet,
+  // ask in a popup. What remains for the person is to have started the app
+  // and to click Allow once; the status text says which when it fails.
+  async function ensureLocalApp() {
+    localQuarto.configure({ project: SLUG, origin: location.origin });
+    let status = await localQuarto.retry();
+    if (status.state === "unreachable") {
+      // A registered `librepaper://` handler starts the app; without one
+      // this is a no-op and the retry below says so.
+      localQuarto.openApp();
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      status = await localQuarto.retry();
+    }
+    if (status.state === "unauthorized" || status.state === "reachable") {
+      try { status = await localQuarto.pairViaApp(); }
+      catch (error) { say(error.message, true); return false; }
+    }
+    if (status.state !== "connected") {
+      say(status.instructions || "Local LibrePaper is unavailable.", true);
+      return false;
+    }
+    return true;
+  }
+
   async function toggleQuartoPreview() {
     if (quartoPreviewStarting || quartoJob || viewing || !mayEdit) return;
     quartoPreviewStarting = true;
     localQuarto.configure({ project: SLUG, origin: location.origin });
     try {
+      if (!quartoPreview && !(await ensureLocalApp())) return;
       if (quartoPreview) { await localQuarto.stopQuartoPreview(quartoPreview.id); quartoPreview = null; }
       else {
         const tree = treeNow();
@@ -1196,6 +1239,7 @@
     quartoLog = "";
     localQuarto.configure({ project: SLUG, origin: location.origin });
     try {
+      if (!(await ensureLocalApp())) return;
       const renderTree = treeNow();
       const renderContext = quartoRenderContext(renderTree);
       const renderFormat = renderContext.format;
@@ -2952,6 +2996,9 @@
     if (format === "quarto") {
       localQuarto.configure({ project: SLUG, origin: location.origin });
       quartoBindingId = localQuarto.bindingId();
+      // A pairing this browser already holds is verified now, so the Tools
+      // menu shows the app's policies without a first failed render.
+      void localQuarto.probe();
       void loadPendingResults(SLUG).then((pending) => {
         if (pending && !quartoPendingPublish) {
           quartoPendingPublish = pending;
@@ -3145,15 +3192,18 @@
 
 {#snippet toolItems()}
   {#if sourceFormat === "quarto" && !viewing}
+    <!-- The render verbs are always here: choosing one reaches the local
+         app and asks it to allow this site on the way, so there is no
+         separate connect step to find first. The settings item stays for
+         the fallbacks: another address, or the pairing code. -->
+    <Menu.Item value="render" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Render locally</Menu.Item>
+    <Menu.Item value="refresh" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Refresh computations</Menu.Item>
+    {#if quartoLocalStatus.capabilities?.quarto?.policies?.includes("frozen")}
+      <Menu.Item value="frozen" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Use frozen results</Menu.Item>
+    {/if}
+    <Menu.Item value="preview" class="menuitem" disabled={Boolean(quartoJob) || quartoPreviewStarting}>{quartoPreview ? "Stop live preview" : "Start live preview"}</Menu.Item>
     {#if quartoLocalStatus.state !== "connected"}
-      <Menu.Item value="connect" class="menuitem">Connect local app…</Menu.Item>
-    {:else}
-      <Menu.Item value="render" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Render locally</Menu.Item>
-      <Menu.Item value="refresh" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Refresh computations</Menu.Item>
-      {#if quartoLocalStatus.capabilities?.quarto?.policies?.includes("frozen")}
-        <Menu.Item value="frozen" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Use frozen results</Menu.Item>
-      {/if}
-      <Menu.Item value="preview" class="menuitem" disabled={Boolean(quartoJob) || quartoPreviewStarting}>{quartoPreview ? "Stop live preview" : "Start live preview"}</Menu.Item>
+      <Menu.Item value="connect" class="menuitem">Local app settings…</Menu.Item>
     {/if}
     {#if quartoPendingPublish}<Menu.Item value="retry" class="menuitem">Retry sharing</Menu.Item>{/if}
   {:else if sourceFormat === "latex" && !viewing}
@@ -3173,9 +3223,7 @@
   {#snippet menus()}
     {#if editing && mayEdit && !viewing}
       <Menu>
-        <Menu.Trigger class="btn btn-sm preset-tonal-surface">
-          Insert <span aria-hidden="true">▾</span>
-        </Menu.Trigger>
+        <Menu.Trigger class="menubar-item">Insert</Menu.Trigger>
         <ExplorerMenu>
           <Menu.Item value="figure" class="menuitem" disabled>
             Insert Figure… <small class="text-surface-600-400">Coming soon</small>
@@ -3186,7 +3234,7 @@
     {#if editing}
       <div class="desktop-workspace-menu">
         <Menu onSelect={(chosen) => chose(chosen.value)}>
-          <Menu.Trigger class="btn btn-sm preset-tonal-surface">Layout <span aria-hidden="true">▾</span></Menu.Trigger>
+          <Menu.Trigger class="menubar-item">Layout</Menu.Trigger>
           <ExplorerMenu>{@render layoutItems()}</ExplorerMenu>
         </Menu>
       </div>
@@ -3194,7 +3242,7 @@
     {#if mayEdit}
       <div class="desktop-workspace-menu">
         <Menu onSelect={(chosen) => chooseToolCommand(chosen.value)}>
-          <Menu.Trigger class="btn btn-sm preset-tonal-surface">Tools <span aria-hidden="true">▾</span></Menu.Trigger>
+          <Menu.Trigger class="menubar-item">Tools</Menu.Trigger>
           <ExplorerMenu>{@render toolItems()}</ExplorerMenu>
         </Menu>
       </div>
@@ -3202,7 +3250,7 @@
     {#if editing || mayEdit}
       <div class="compact-workspace-menu">
         <Menu onSelect={(chosen) => { if (chosen.value.startsWith("layout-") || chosen.value.startsWith("side-") || chosen.value.startsWith("ratio-") || chosen.value === "linked") chose(chosen.value); else chooseToolCommand(chosen.value); }}>
-          <Menu.Trigger class="btn btn-sm preset-tonal-surface" aria-label="Layout and tools">⋯</Menu.Trigger>
+          <Menu.Trigger class="menubar-item" aria-label="Layout and tools">Menu</Menu.Trigger>
           <ExplorerMenu>
             {#if editing}{@render layoutItems()}<hr class="hr my-1" />{/if}
             {#if mayEdit}{@render toolItems()}{/if}
@@ -3235,11 +3283,7 @@
       <small class="text-surface-600-400">{quartoJob.stage}…</small>
       <button type="button" class="btn btn-sm preset-tonal-error" onclick={cancelQuartoRender}>Cancel</button>
     {/if}
-    {#if canSeeSharing}
-      <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => showPanel("share")}>Share</button>
-    {:else}
-      <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
-    {/if}
+    <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
   {/snippet}
 </Nav>
 
@@ -3278,7 +3322,7 @@
     <aside class="sidebar" class:collapsed={!shown.comments} ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <div class="sidebar-activity">
         <div class="activity-sections" role="group" aria-label="Sidebar sections">
-          {#each tabs.filter((tab) => !["share", "settings", "render"].includes(tab.id)) as tab (tab.id)}
+          {#each tabs.filter((tab) => !["settings", "render"].includes(tab.id)) as tab (tab.id)}
             {#if tab.id === "diagnostics"}
               <!-- The counts sit under the icon, in the colour of what they
                    count, so the bar says at a glance whether the document
@@ -3334,11 +3378,11 @@
           {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
           canComment={mayChat} hasFigures={figureAt.length > 0} ontool={chooseTool}
           oninspectresult={inspectQuartoComment}
-          onreveal={revealAnnotation}
+          onreveal={revealAnnotation} selected={selectedAnnotation}
           onresolve={resolve} ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} />
       {:else if tab.id === "changes"}
         <Changes {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
-          canComment={mayChat} ontool={chooseTool} onreveal={revealAnnotation}
+          canComment={mayChat} ontool={chooseTool} onreveal={revealAnnotation} selected={selectedAnnotation}
           onresolve={resolve} ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
           onaccept={(comment) => decideSuggestion(comment, "accept")} onreject={(comment) => decideSuggestion(comment, "reject")}
           onrejectconfirmed={rejectConfirmed}
@@ -3499,7 +3543,7 @@
       <IconButton icon="file-text" label="Source" pressed={shown.source}
                   onclick={() => showMobileView("source")} />
     {/if}
-    {#each compact ? tabs.filter((tab) => !["share", "settings", "render"].includes(tab.id)) : [] as tab (tab.id)}
+    {#each compact ? tabs.filter((tab) => !["settings", "render"].includes(tab.id)) : [] as tab (tab.id)}
       <IconButton
         icon={tab.id === "files" ? "folder" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
         label={tab.says} pressed={shown.comments && panel === tab.id}

@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod confine;
 pub mod discovery;
+pub mod embedded;
 pub mod engine_adapter;
 pub mod native;
 pub mod pairing;

@@ -80,19 +80,18 @@
   }
 </script>
 
-<form class="chat-form" onsubmit={submit}>
+<!-- No Send button: Enter sends and Shift+Enter breaks the line, the way every
+     messaging app now works. The form is still a form so that a submit event
+     is what sends, whichever key or assistive tool raised it. -->
+<form class="chat-form" onsubmit={submit} data-cansend={canSend && !disabled && !sending}>
   <div class="composer-input">
-    <textarea bind:this={input} class="textarea" rows="4" style:height={height === null ? undefined : `${height}px`} value={draft} {placeholder} aria-label="Message"
+    <textarea bind:this={input} class="textarea" rows="4" style:height={height === null ? undefined : `${height}px`} value={draft} {placeholder} aria-label="Message" title="Enter to send · Shift+Enter for a new line"
       {disabled} required oninput={update} onkeydown={keydown}></textarea>
     <button type="button" class="resize-handle" aria-label="Resize message input" title="Drag up to expand · Arrow keys to resize"
       onpointerdown={startResize} onpointermove={moveResize} onpointerup={endResize}
       onpointercancel={endResize} onlostpointercapture={() => resize = null} onkeydown={resizeKey}>
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 2h7v7M5 2l5 5M8 2l2 2" /></svg>
     </button>
-  </div>
-  <div class="composer-footer">
-    <span class="panel-meta">Enter to send · Shift+Enter for a new line</span>
-    <button type="submit" class="btn preset-filled-primary-500" disabled={disabled || !canSend || sending || !draft.trim()}>Send</button>
   </div>
 </form>
 <style>
@@ -102,5 +101,4 @@
   .resize-handle { position: absolute; top: 1px; right: 1px; width: 24px; height: 24px; display: grid; place-items: center; cursor: ns-resize; touch-action: none; color: var(--color-surface-500-500); border-radius: 3px; }
   .resize-handle:focus-visible { outline: 2px solid var(--color-primary-500); }
   .resize-handle svg { fill: none; stroke: currentColor; stroke-width: 1; }
-  .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing); flex-wrap: wrap; }
 </style>

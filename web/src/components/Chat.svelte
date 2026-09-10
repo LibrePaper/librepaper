@@ -5,9 +5,7 @@
   let { messages = [], connected = false, canPost = false, onsend } = $props();
 </script>
 <section class="panel live-chat" aria-label="Chat">
-  <PanelHeader title="Chat" meta={connected ? "Live" : "Offline"}>
-    <p>Messages are visible only to people here now. They are not saved.</p>
-  </PanelHeader>
+  <PanelHeader title="Chat" meta={connected ? "Live" : "Offline"} />
   <ChatTranscript {messages} empty="No live messages yet." roleLabel={(message) => message.creator || "Anonymous"} />
   <ChatComposer placeholder="Message everyone here…" disabled={!connected || !canPost} {onsend} />
   {#if !canPost}<p class="panel-muted">Comment access is required to chat.</p>{/if}

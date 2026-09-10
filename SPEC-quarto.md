@@ -485,9 +485,23 @@ instructions and a retry action, not an incorrect “Quarto is not installed.”
 
 ### 9.2 Bind to a local project
 
-A local binding maps a remote document ID and origin to a locally selected
-project root and entrypoint. The browser receives an opaque binding ID, not a
-filesystem capability to choose arbitrary absolute paths.
+Every document has a binding without anyone granting one: the hosted
+workspace. The local app keeps a directory of its own per deployment origin and
+document, under its cache, and writes the files the browser uploads with each
+job into it before rendering, removing what an earlier job wrote that the
+document no longer holds and leaving Quarto's own caches alone. The browser
+names this binding with the fixed id `hosted`. It exposes no path of the
+author's machine and reaches nothing the document does not share, which is
+why it needs no grant. A standalone `librepaper local start` and the local app
+embedded in `librepaper serve` both serve it; a service constructed without a
+workspace base refuses the id.
+
+An explicit local binding maps a remote document ID and origin to a locally
+selected project root and entrypoint, for a project that keeps data or an
+environment the document does not share. The browser receives an opaque binding
+ID, not a filesystem capability to choose arbitrary absolute paths, and enters
+it in the render settings, where it replaces the hosted workspace for that
+document.
 
 Keep machine-specific paths, environment configuration, credentials, and
 execution grants local. Project settings shared with collaborators contain
@@ -528,11 +542,17 @@ without replacing newer text with the old render snapshot.
 
 ### 9.4 Execution authority
 
-Grant Quarto execution separately from pairing for TeX compilation. A local
-user authorizes a particular project binding. The Render action executes the
-captured shared revision, including collaborators' changes visible at launch.
-An editor elsewhere cannot cause execution on that machine merely by editing
-the document or sending an ordinary server message.
+Pairing is the execution grant for the hosted workspace: a person at the
+machine allows a named site and document, either by clicking Allow on the
+consent page the local app serves on its own loopback origin (the reader opens
+it in a popup, and the pairing returns by `postMessage` to the allowed origin
+only) or by entering the code the app printed. The consent form is accepted
+only when posted from the app's own origin, so no site can pair itself. An
+explicit project binding is granted separately, by the local user, for a
+particular root. In both cases the Render action executes the captured shared
+revision, including collaborators' changes visible at launch. An editor
+elsewhere cannot cause execution on that machine merely by editing the document
+or sending an ordinary server message.
 
 Execution can involve code cells, filters, project scripts, and access allowed
 by the local environment. Structured arguments prevent command injection at

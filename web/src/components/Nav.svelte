@@ -29,7 +29,7 @@
         {@render children()}
       </span>
     {/if}
-    {#if menus}<div class="flex shrink-0 items-center gap-2">{@render menus()}</div>{/if}
+    {#if menus}<div class="menubar">{@render menus()}</div>{/if}
   </div>
 
   {#if status}<div class="nav-status" role="status">{@render status()}</div>{/if}

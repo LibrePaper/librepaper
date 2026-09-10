@@ -50,6 +50,10 @@ pub struct ServeOptions {
     /// The browser bibliography VM's descriptor, as `<url>#<sha256>`, or
     /// nothing for a deployment that offers none. See `crate::server::latex::BiberVm`.
     pub biber_vm: Option<String>,
+    /// Do not run the local app for this machine. Without it, `serve` also
+    /// starts the loopback service that renders Quarto documents for an
+    /// editor whose browser is on this host; see `crate::local::embedded`.
+    pub no_local: bool,
     pub config: Configuration,
 }
 
@@ -355,6 +359,23 @@ pub async fn serve(options: ServeOptions) {
     instance.latex = latex;
     instance.fonts = fonts;
     instance.biber_vm = biber_vm;
+    // The local app for this machine: only a browser on this host can reach
+    // it, and it lives under the deployment's private state so it shares
+    // nothing with a standalone `librepaper local start`. Failing to start it
+    // is a warning, not a death: the deployment serves documents regardless.
+    let local = if options.no_local {
+        None
+    } else {
+        match crate::local::embedded::start(&deployment_paths.state.join("local-app"), Vec::new())
+            .await
+        {
+            Ok(local) => Some(local),
+            Err(error) => {
+                eprintln!("warning: local app not started: {error}");
+                None
+            }
+        }
+    };
     let instance = Arc::new(instance);
 
     println!("librepaper serving http://localhost{address}");
@@ -377,6 +398,12 @@ pub async fn serve(options: ServeOptions) {
     }
     if let Some(vm) = &instance.biber_vm {
         println!("  biber vm: {}", vm.url);
+    }
+    if let Some(local) = &local {
+        println!(
+            "  local app: {} (for browsers on this machine)",
+            local.address
+        );
     }
     if retention > 0 {
         println!(

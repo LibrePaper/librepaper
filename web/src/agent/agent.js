@@ -90,6 +90,20 @@ import { createMathTypesetter } from "../lib/math.js";
       margin-inline-start: 0.2em;
     }
     .librepaper-point-bubble::before { content: "\\1F4AC"; }
+    /* The annotation the sidebar has singled out: a ring around every piece
+       of its passage, its figure box, or its point bubble, so that it stands
+       out from the wash the others sit under. */
+    mark[data-librepaper][data-librepaper-selected] {
+      outline: 2px solid hsl(220 85% 50%);
+      outline-offset: 1px;
+      border-radius: 2px;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+    .librepaper-regions [data-librepaper-selected], .librepaper-point-bubble[data-librepaper-selected] {
+      outline: 2px solid hsl(220 85% 50%);
+      outline-offset: 2px;
+    }
   `;
   document.head.appendChild(proposedStyle);
 
@@ -260,6 +274,21 @@ import { createMathTypesetter } from "../lib/math.js";
   // back in the same breath rather than a round trip later.
   let lastRanges = [];
   let pointBubbles = [];
+  // The annotation singled out, by either side. Marks are rebuilt on every
+  // repaint, so the ring is put back after each one rather than kept on a node.
+  let selectedId = "";
+  function applySelected() {
+    document.querySelectorAll("[data-librepaper-selected]").forEach((node) => delete node.dataset.librepaperSelected);
+    if (!selectedId) return;
+    const id = CSS.escape(selectedId);
+    document
+      .querySelectorAll(`mark[data-librepaper~="${id}"], .librepaper-regions [data-librepaper~="${id}"], .librepaper-point-bubble[data-librepaper="${id}"]`)
+      .forEach((node) => (node.dataset.librepaperSelected = ""));
+  }
+  function select(id) {
+    selectedId = id == null ? "" : String(id);
+    quietly(applySelected);
+  }
 
   const annotationColor = (item) =>
     typeof item?.color === "string" && /^#[0-9a-f]{6}$/i.test(item.color)
@@ -286,7 +315,7 @@ import { createMathTypesetter } from "../lib/math.js";
     bubble.setAttribute("aria-label", "Open comment");
     bubble.style.cssText = `position:absolute;left:0;top:-1.2em;color:${annotationColor(item) || edge(tintOf(item.motivation))};` +
       "z-index:20;cursor:pointer;background:transparent;border:0;padding:2px;font-size:14px;line-height:1";
-    bubble.onclick = (event) => { event.preventDefault(); event.stopPropagation(); post({ type: "focus", id: item.id }); };
+    bubble.onclick = (event) => { event.preventDefault(); event.stopPropagation(); select(item.id); post({ type: "focus", id: item.id }); };
     marker.appendChild(bubble);
     range.insertNode(marker);
     pointBubbles.push(marker);
@@ -389,7 +418,7 @@ import { createMathTypesetter } from "../lib/math.js";
         range.surroundContents(mark);
         // The same innermost annotation the colour came from is the one a click
         // on this stretch means.
-        mark.onclick = () => post({ type: "focus", id: inner.id });
+        mark.onclick = () => { select(inner.id); post({ type: "focus", id: inner.id }); };
       }
     });
     // Mark wrapping splits text nodes, so point ranges must resolve against
@@ -402,6 +431,7 @@ import { createMathTypesetter } from "../lib/math.js";
       for (const item of points.sort((a, b) => b.start - a.start)) {
         if (item.start <= length) pointBubble(item, item.start);
       }
+      applySelected();
     });
     // surroundContents splits the text nodes it wraps, so the table built above
     // no longer describes the document. A selection made after a highlight
@@ -694,7 +724,7 @@ import { createMathTypesetter } from "../lib/math.js";
           `border:2px solid ${edge(item.resolved ? NEUTRAL : tintOf(item.motivation))};` +
           `background:${wash(item.resolved ? NEUTRAL : tintOf(item.motivation), 1, 0.35)};` +
           "pointer-events:auto;cursor:pointer;box-sizing:border-box";
-        box.onclick = () => post({ type: "focus", id: item.id });
+        box.onclick = () => { select(item.id); post({ type: "focus", id: item.id }); };
         layerFor(image).appendChild(box);
         if (item.id != null) placed.push(String(item.id));
       }
@@ -708,6 +738,7 @@ import { createMathTypesetter } from "../lib/math.js";
       post({ type: "regions-unplaceable", ids: unplaceable, reason: pdf ? "pdf" : "figure-unavailable" });
     }
     if (placed.length) post({ type: "regions-placeable", ids: placed });
+    quietly(applySelected);
   }
 
   // Dragging a rectangle on a figure, while the region tool is chosen.
@@ -887,7 +918,9 @@ import { createMathTypesetter } from "../lib/math.js";
       return;
     }
 
+    if (message.type === "select") select(message.id);
     if (message.type === "reveal") {
+      select(message.id);
       // A note on a passage is painted as a <mark>; a note on a figure is a box
       // in that figure's region layer. Either one is what "go to it" means.
       const id = CSS.escape(String(message.id));

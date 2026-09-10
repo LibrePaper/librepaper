@@ -52,12 +52,19 @@ inserting or duplicating an unlabelled cell never transfers a plot by ordinal.
 Known input changes invalidate the computational result set together. Imported
 HTML cannot establish a computational source revision and remains unknown.
 
-Local execution requires both ordinary loopback pairing and a machine-local
-project grant made with `librepaper local bind-quarto`. The request contains a
-binding ID, an entrypoint, typed options, and a shared-input inventory. The
-runner checks those files against the bound project, then invokes the installed
-Quarto in that project's environment. It does not overwrite the local project
-with browser uploads. Synchronize differences before rendering.
+Local execution requires loopback pairing, made either on the consent page the
+local app serves (`GET /librepaper/local/v1/pair`, opened by the reader in a
+popup, which posts the pairing back to the allowed origin) or with the printed
+code. The request contains a binding ID, an entrypoint, typed options, and a
+shared-input inventory. The default binding id `hosted` names the workspace
+the local app keeps per origin and document: the runner writes the uploads
+into it, removes what an earlier job wrote that the inventory no longer lists,
+and renders there. A machine-local project grant made with
+`librepaper local bind-quarto` replaces the workspace with a linked project;
+the runner then checks the inventory against that project and never overwrites
+it with browser uploads, so differences must be synchronized before rendering.
+`librepaper serve` also runs the local app in-process for browsers on its own
+machine (`--no-local` disables it).
 
 Project-default rendering preserves engine cache behavior. Refresh requests
 ask Quarto to refresh computations. Neither successful exit nor a requested

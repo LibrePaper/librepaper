@@ -997,3 +997,35 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .icon-standard { --btn-size: 1.0625rem; }
 .icon-plain:hover:not(:disabled) { background: var(--color-row-hover); }
 .icon-control:focus-visible { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
+
+/* ------------------------------------------------------------- menubar */
+
+/* The row of menus in the bar reads like the File, Edit, View row of a
+   desktop window: words with air around them and nothing else, until one is
+   hovered or open, when it takes a light tint. The menus themselves are the
+   same panels the explorer uses. */
+.menubar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: --spacing(0.5);
+}
+.menubar-item {
+  padding: --spacing(1) --spacing(2);
+  border-radius: var(--radius-base);
+  font-size: var(--text-sm);
+  line-height: var(--panel-line-height);
+  color: var(--color-surface-800-200);
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+.menubar-item:hover,
+.menubar-item[data-state="open"] {
+  background: var(--color-primary-100-900);
+  color: var(--color-surface-950-50);
+}
+.menubar-item:focus-visible {
+  outline: 2px solid var(--color-primary-500);
+  outline-offset: -1px;
+}
