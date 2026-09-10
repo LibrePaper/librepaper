@@ -77,15 +77,20 @@
           : label,
   );
 
+  // This button stops the session only when it is the one that started it.
+  // A click on any other microphone moves dictation to that field: the
+  // service stops the running target itself before starting the new one, so
+  // the reader never has to press twice to change where the words land.
   async function click() {
-    if (loading) {
+    const running = snapshot.state === "loading" || snapshot.state === "listening" || snapshot.state === "transcribing";
+    if (running && owner === self) {
       await dictation.stop();
       return;
     }
     const built = target();
     owner = self;
     owns = true;
-    await dictation.toggle(built);
+    await dictation.start(built);
   }
 
   // Escape stops dictation from the field it is typing into (SPEC 4.8). This

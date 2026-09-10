@@ -39,6 +39,11 @@ export default defineConfig({
     // previous build cannot be handed it, and the server can cache them for a
     // year without ever serving one that has moved on.
     assetsDir: "assets",
+    // Small assets are inlined as data: URLs, which is right for an icon and
+    // wrong for the dictation audio worklet: AudioWorklet.addModule() wants
+    // a same-origin script it can fetch, and a data: URL would also be the
+    // one script on the page that a script-src 'self' policy cannot allow.
+    assetsInlineLimit: (path) => (path.endsWith("capture-worklet.js") ? false : undefined),
     rollupOptions: {
       input: {
         index: resolve(import.meta.dirname, "pages/index.html"),
