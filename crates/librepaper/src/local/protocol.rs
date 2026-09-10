@@ -1,6 +1,6 @@
 //! The local bridge protocol, version 1: the shapes that cross between the
 //! browser and the local LibrePaper service, and between the service and the
-//! native runner. See `docs/specs/latex-interfaces.md`, section 5.
+//! native runner.
 //!
 //! Shared by `service.rs` (the loopback HTTP surface), `native.rs` (the
 //! runner) and `discovery.rs` (the tools). Field names are the wire names.
@@ -490,7 +490,10 @@ impl CalepinJobOptions {
             return Err("entrypoint must be a safe project-relative .typ path".into());
         }
         if !matches!(self.format.as_str(), "html" | "pdf") {
-            return Err(format!("unsupported calepin output format: {}", self.format));
+            return Err(format!(
+                "unsupported calepin output format: {}",
+                self.format
+            ));
         }
         Ok(())
     }

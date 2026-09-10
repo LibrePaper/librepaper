@@ -1184,7 +1184,11 @@ fn looks_complete_accepts_only_a_fully_embedded_page() {
     // An absolute or data URL image reference is fine.
     let remote_image =
         b"<!doctype html><html><body><img src=\"https://example.com/plot.png\"></body></html>";
-    assert!(looks_complete(ArtifactKind::Html, "paper.qmd", remote_image));
+    assert!(looks_complete(
+        ArtifactKind::Html,
+        "paper.qmd",
+        remote_image
+    ));
 }
 
 #[test]
@@ -1559,4 +1563,338 @@ async fn preview_render_failure_reports_no_page_and_logs_the_error() {
         .await
         .unwrap();
     assert_eq!(stop.status(), 200);
+}
+
+/// A managed preview watched by Calepin/Typst instead of Quarto: the same
+/// hosted-binding admission path, a different rendering engine and artifact
+/// shape. Skipped (with a note, not a failure) on a machine without Calepin
+/// installed, so CI without it still passes.
+#[tokio::test]
+async fn calepin_html_preview_starts_serves_and_updates() {
+    if crate::local::preview::calepin::find_calepin().is_none() {
+        eprintln!("skipping calepin_html_preview_starts_serves_and_updates: calepin not on PATH");
+        return;
+    }
+    let (test, _workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "434343");
+    let token = connected_token(&test, ORIGIN, "typst-paper", "434343").await;
+
+    let source_v1: &[u8] = b"= Title\n\nVersion one paragraph text.\n";
+    let manifest = manifest_for(&[("doc.typ", source_v1)]);
+    let synced = put_workspace(
+        &test,
+        ORIGIN,
+        &token,
+        manifest.clone(),
+        &[("doc.typ", source_v1)],
+    )
+    .await;
+    assert_eq!(synced.status(), 200);
+
+    let body = json!({
+        "protocol":1,"kind":"quarto","origin":ORIGIN,"project":"typst-paper",
+        "snapshot":"revision","generation":1,"manifest":manifest,
+        "engine":"calepin",
+        "calepin":{"binding_id":"hosted","main":"doc.typ","format":"html"},
+    });
+    let response = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let preview: Value = response.json().await.unwrap();
+    assert_eq!(status, 201, "calepin preview should start: {preview}");
+    let id = preview["id"].as_str().unwrap().to_string();
+    let endpoint = format!("{}/previews/{id}", test.base);
+    let page_endpoint = format!("{endpoint}/page");
+
+    let mut page_body = None;
+    let mut etag = None;
+    for _ in 0..120 {
+        let response = test
+            .client
+            .get(&page_endpoint)
+            .header("Origin", ORIGIN)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        if response.status() == 200 {
+            assert_eq!(response.headers().get("x-librepaper-kind").unwrap(), "html");
+            let response_etag = response
+                .headers()
+                .get("etag")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let text = response.text().await.unwrap();
+            if text.contains("Title") {
+                etag = response_etag;
+                page_body = Some(text);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let first_body = page_body.expect("calepin html preview did not render within 30s");
+    assert!(first_body.contains("Title"));
+    assert!(
+        first_body.trim_end().to_lowercase().ends_with("</html>"),
+        "rendered page must end with </html>: {first_body}"
+    );
+    let etag = etag.expect("page response carried an etag");
+    let etag_hex = etag.trim_matches('"');
+    assert_eq!(
+        etag.len(),
+        66,
+        "etag should be a quoted 64-hex digest: {etag}"
+    );
+    assert!(
+        etag_hex.len() == 64 && etag_hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "etag is not 64 hex characters: {etag}"
+    );
+
+    let cached = test
+        .client
+        .get(&page_endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .header("If-None-Match", &etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cached.status(), 304);
+
+    let status: Value = test
+        .client
+        .get(&endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["engine"], "calepin");
+    assert_eq!(status["kind"], "html");
+
+    // A workspace update reaches the same watched document: the page
+    // eventually reflects it.
+    let source_v2: &[u8] = b"= Title\n\nVersion two paragraph text.\n";
+    let manifest_v2 = manifest_for(&[("doc.typ", source_v2)]);
+    let synced_v2 = put_workspace(
+        &test,
+        ORIGIN,
+        &token,
+        manifest_v2,
+        &[("doc.typ", source_v2)],
+    )
+    .await;
+    assert_eq!(synced_v2.status(), 200);
+
+    let mut updated = false;
+    for _ in 0..120 {
+        let response = test
+            .client
+            .get(&page_endpoint)
+            .header("Origin", ORIGIN)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        if response.status() == 200 {
+            let text = response.text().await.unwrap();
+            if text.contains("Version two paragraph text") {
+                updated = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        updated,
+        "calepin preview did not pick up the workspace update within 30s"
+    );
+
+    let stop = test
+        .client
+        .delete(&endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stop.status(), 200);
+}
+
+/// The same managed preview, watched for a PDF artifact instead of HTML.
+#[tokio::test]
+async fn calepin_pdf_preview_starts_and_serves_pdf() {
+    if crate::local::preview::calepin::find_calepin().is_none() {
+        eprintln!("skipping calepin_pdf_preview_starts_and_serves_pdf: calepin not on PATH");
+        return;
+    }
+    let (test, _workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "545454");
+    let token = connected_token(&test, ORIGIN, "typst-pdf", "545454").await;
+
+    let source: &[u8] = b"= PDF Title\n\nSome paragraph text.\n";
+    let manifest = manifest_for(&[("doc.typ", source)]);
+    let synced = put_workspace(
+        &test,
+        ORIGIN,
+        &token,
+        manifest.clone(),
+        &[("doc.typ", source)],
+    )
+    .await;
+    assert_eq!(synced.status(), 200);
+
+    let body = json!({
+        "protocol":1,"kind":"quarto","origin":ORIGIN,"project":"typst-pdf",
+        "snapshot":"revision","generation":1,"manifest":manifest,
+        "engine":"calepin",
+        "calepin":{"binding_id":"hosted","main":"doc.typ","format":"pdf"},
+    });
+    let response = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let preview: Value = response.json().await.unwrap();
+    assert_eq!(status, 201, "calepin pdf preview should start: {preview}");
+    let id = preview["id"].as_str().unwrap().to_string();
+    let page_endpoint = format!("{}/previews/{id}/page", test.base);
+
+    let mut page_bytes = None;
+    for _ in 0..120 {
+        let response = test
+            .client
+            .get(&page_endpoint)
+            .header("Origin", ORIGIN)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        if response.status() == 200 {
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "application/pdf"
+            );
+            assert_eq!(response.headers().get("x-librepaper-kind").unwrap(), "pdf");
+            let bytes = response.bytes().await.unwrap();
+            if bytes.starts_with(b"%PDF") {
+                page_bytes = Some(bytes.to_vec());
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let bytes = page_bytes.expect("calepin pdf preview did not render within 30s");
+    assert!(
+        bytes.starts_with(b"%PDF"),
+        "pdf must start with %PDF header"
+    );
+    let tail = &bytes[bytes.len().saturating_sub(32)..];
+    assert!(
+        tail.windows(5).any(|w| w == b"%%EOF"),
+        "pdf must end with %%EOF trailer"
+    );
+
+    let endpoint = format!("{}/previews/{id}", test.base);
+    let stop = test
+        .client
+        .delete(&endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stop.status(), 200);
+}
+
+#[tokio::test]
+async fn calepin_preview_rejects_qmd_entrypoint_or_missing_options_block() {
+    let (test, _workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "656565");
+    let token = connected_token(&test, ORIGIN, "typst-bad", "656565").await;
+
+    let source: &[u8] = b"# Not Typst\n";
+    let manifest = manifest_for(&[("paper.qmd", source)]);
+    let synced = put_workspace(
+        &test,
+        ORIGIN,
+        &token,
+        manifest.clone(),
+        &[("paper.qmd", source)],
+    )
+    .await;
+    assert_eq!(synced.status(), 200);
+
+    // A `.qmd` entrypoint is refused for the Calepin engine.
+    let body = json!({
+        "protocol":1,"kind":"quarto","origin":ORIGIN,"project":"typst-bad",
+        "snapshot":"revision","generation":1,"manifest":manifest.clone(),
+        "engine":"calepin",
+        "calepin":{"binding_id":"hosted","main":"paper.qmd","format":"html"},
+    });
+    let response = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+
+    // The `calepin` engine named without its options block is also refused.
+    let body = json!({
+        "protocol":1,"kind":"quarto","origin":ORIGIN,"project":"typst-bad",
+        "snapshot":"revision","generation":1,"manifest":manifest,
+        "engine":"calepin",
+    });
+    let response = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+}
+
+/// `discovery::discover` is what `NativeRunner::capabilities` calls in the
+/// real app (`FakeRunner`, used by the rest of this file's tests, hardcodes
+/// a fixed `Capabilities::default()` precisely so those tests need no real
+/// tool on the machine -- so this test goes straight at discovery instead of
+/// through the HTTP layer, the same way it would have to for Quarto).
+#[tokio::test]
+async fn capabilities_report_calepin_availability() {
+    let capabilities = crate::local::discovery::discover(true, &[]).await;
+    let encoded = serde_json::to_value(&capabilities).unwrap();
+    let calepin = &encoded["calepin"];
+    assert!(
+        calepin.is_object(),
+        "capabilities must carry a calepin entry: {encoded}"
+    );
+    assert!(calepin["available"].is_boolean());
+    if crate::local::preview::calepin::find_calepin().is_some() {
+        assert!(capabilities.calepin.available, "{calepin}");
+        assert!(capabilities.calepin.version.is_some(), "{calepin}");
+        assert!(calepin["version"].is_string(), "{calepin}");
+    }
 }

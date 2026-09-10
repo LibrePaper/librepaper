@@ -98,8 +98,7 @@ pub(crate) fn plan(
         return Err("Bound root changed".into());
     }
     verify_bound_manifest(&binding.root, &request.manifest)?;
-    let main =
-        std::fs::canonicalize(binding.root.join(&entrypoint)).map_err(|e| e.to_string())?;
+    let main = std::fs::canonicalize(binding.root.join(&entrypoint)).map_err(|e| e.to_string())?;
     if !main.starts_with(&binding.root) {
         return Err("Preview entrypoint escapes bound root".into());
     }
@@ -139,9 +138,13 @@ pub(crate) fn plan(
 /// explicitly -- the same shape as `local::quarto::find_quarto`.
 pub(crate) fn find_calepin() -> Option<PathBuf> {
     let configured = std::env::var_os("LIBREPAPER_CALEPIN_PATH").map(PathBuf::from);
-    configured
-        .filter(|path| path.is_file())
-        .or_else(|| executable(if cfg!(windows) { "calepin.exe" } else { "calepin" }))
+    configured.filter(|path| path.is_file()).or_else(|| {
+        executable(if cfg!(windows) {
+            "calepin.exe"
+        } else {
+            "calepin"
+        })
+    })
 }
 
 fn executable(name: &str) -> Option<PathBuf> {
@@ -191,8 +194,14 @@ async fn bounded_version_output(path: &Path) -> Option<(String, String)> {
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let mut child = command.spawn().ok()?;
-    let stdout = child.stdout.take().map(|pipe| tokio::spawn(read_bounded(pipe)));
-    let stderr = child.stderr.take().map(|pipe| tokio::spawn(read_bounded(pipe)));
+    let stdout = child
+        .stdout
+        .take()
+        .map(|pipe| tokio::spawn(read_bounded(pipe)));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|pipe| tokio::spawn(read_bounded(pipe)));
     let status = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
         Ok(Ok(status)) => status,
         _ => {

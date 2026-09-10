@@ -20,7 +20,9 @@ pub(crate) struct QuartoWatch {
 
 impl Watch for QuartoWatch {
     fn rendering_started(&self, line: &str) -> bool {
-        line.contains("processing file:") || line.starts_with("pandoc") || line.contains("Rendering")
+        line.contains("processing file:")
+            || line.starts_with("pandoc")
+            || line.contains("Rendering")
     }
 
     fn render_finished(&self, line: &str) -> bool {
@@ -122,13 +124,10 @@ pub(crate) fn plan(
             crate::local::quarto::inventory_manifest_impl(&binding.root, &request.manifest)?
                 .tree_sha256;
         if actual != expected {
-            return Err(
-                "preview source inventory is stale; synchronize before previewing".into(),
-            );
+            return Err("preview source inventory is stale; synchronize before previewing".into());
         }
     }
-    let main =
-        std::fs::canonicalize(binding.root.join(&entrypoint)).map_err(|e| e.to_string())?;
+    let main = std::fs::canonicalize(binding.root.join(&entrypoint)).map_err(|e| e.to_string())?;
     if !main.starts_with(&binding.root) {
         return Err("Preview entrypoint escapes bound root".into());
     }

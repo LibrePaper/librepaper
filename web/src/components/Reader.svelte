@@ -1619,8 +1619,8 @@
 
   // The most recent LaTeX compile result -- success or failure -- kept whole
   // for Diagnostics' "Compiled with" block and "Earlier attempts" list
-  // (docs/specs/latex-compiler.md: "Preserve both attempts' logs when a browser failure
-  // led to a local attempt."). Null for every other format.
+  // (preserve both attempts' logs when a browser failure
+  // led to a local attempt). Null for every other format.
   let lastLatexResult = $state(null);
 
   // Set by the "Compile now" button and read once, at the next
@@ -1672,12 +1672,25 @@
       localAppStatus.state !== "connected",
   );
 
+  // The same two banner cases, for a Typst document with Calepin preview
+  // chosen: not yet connected to the local app, or connected but without the
+  // calepin command itself.
+  const typstNeedsLocalApp = $derived(
+    sourceFormat === "typst" && typstPreviewMode === "calepin" && mayEdit && !viewing &&
+      localAppStatus.state !== "connected",
+  );
+  const typstNeedsCalepinCommand = $derived(
+    sourceFormat === "typst" && typstPreviewMode === "calepin" && mayEdit && !viewing &&
+      localAppStatus.state === "connected" && !localQuarto.calepinAvailable(),
+  );
+
   // Whether the status row under the toolbar has a reason to exist.
   const statusRow = $derived(Boolean(
     connectionNote
       || renderedNote
       || (editing && (peers > 1 || (sourceFormat === "latex" ? latexPhase !== "idle" : compileBadge)))
-      || quartoRendering || quartoNeedsLocalApp,
+      || quartoRendering || quartoNeedsLocalApp
+      || calepinRendering || typstNeedsLocalApp || typstNeedsCalepinCommand,
   ));
 
   let frameShowsCheckpoint = false;
@@ -1794,13 +1807,19 @@
         typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
       return;
     }
+    // Same guard, for a Typst document currently showing what Calepin
+    // delivers rather than this browser's own compile.
+    if (sourceFormat === "typst" && typeof calepinActive !== "undefined" && calepinActive &&
+        typeof calepinPreview !== "undefined" && (calepinPreview || calepinPreviewStarting)) {
+      return;
+    }
     // Not live: nothing rendered is ever uploaded, so there is no shared
     // bundle to fall back to -- a Quarto document not showing its own live
     // preview shows this browser's Markdown draft, the same as every other
     // draft format, painted below.
     // A paged document is compiled in an editor's browser and nowhere else,
     // so everybody else is shown the PDF the server kept from the last one
-    // who did. See `docs/specs/latex.md`.
+    // who did.
     const outputIsPdf = pdfOutput;
     if (outputIsPdf && (Boolean(viewing) || !compilesHere)) {
       await paintRendering();
@@ -2012,7 +2031,11 @@
     sourceGeneration += 1;
     if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && quartoPreview) {
       clearTimeout(quartoLiveSyncTimer);
-      quartoLiveSyncTimer = setTimeout(() => void syncQuartoLive(), 500);
+      quartoLiveSyncTimer = setTimeout(() => void quartoPreviewController.sync(), 500);
+    }
+    if (typeof calepinActive !== "undefined" && calepinActive && typeof calepinPreview !== "undefined" && calepinPreview) {
+      clearTimeout(calepinSyncTimer);
+      calepinSyncTimer = setTimeout(() => void calepinPreviewController.sync(), 500);
     }
     if (sourceFormat === "quarto" && session) {
       const main = session.mainPath() || "main.qmd";
@@ -2350,6 +2373,8 @@
     if (value === "compile") return compileNow();
     if (value === "preview-markdown") return void setQuartoPreviewMode("markdown");
     if (value === "preview-quarto") return void setQuartoPreviewMode("quarto");
+    if (value === "preview-typst") return void setTypstPreviewMode("typst");
+    if (value === "preview-calepin") return void setTypstPreviewMode("calepin");
   }
 
   // The File menu. Its first three items are what the Files panel's toolbar
@@ -2614,26 +2639,27 @@
     return path;
   }
 
-  // InsertMenu captures the active editor target before opening a dialog. The
-  // editor owns the CRDT anchors; the reader only supplies project metadata
-  // and reports any generator notes to the existing toast channel.
   function insertContext() {
-    return editor?.getInsertContext?.() || null;
+    if (!mayEdit || viewing) return null;
+    const context = editor?.getInsertContext?.();
+    if (!context) return null;
+    const assets = session.list().filter(file => file.kind === "asset");
+    return { ...context, files: [...context.files, ...assets] };
   }
   function applyInsertion(result, context) {
-    if (!result?.text) {
-      for (const note of result?.notes || []) say(note, true);
-      return;
+    if (!mayEdit || viewing || !editor?.applyInsertResult?.(result, context)) {
+      throw new Error("The document or selected text changed. Close this dialog and choose the insertion point again.");
     }
-    if (!editor?.applyInsertResult?.(result, context)) {
-      say("The insertion target is no longer available.", true);
-      return;
-    }
-    for (const note of result.notes || []) say(note, true);
+    return true;
   }
   async function uploadInsertAsset(file) {
-    const path = await addFigure(file);
-    return path;
+    return await addFigure(file);
+  }
+  async function previewInsertAsset(path) {
+    const sha = session?.tree?.().digests?.[path];
+    if (!sha) return "";
+    const held = await figures.gather(SLUG, { [path]: sha }, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
+    return held.urls[path] || "";
   }
 
   /// The whole directory, as a zip. Built here rather than by a route,
@@ -2803,7 +2829,7 @@
         ? resultsIdentity.draft_format
         : "html";
     sourceFormat = format;
-    if (format === "quarto") {
+    if (format === "quarto" || format === "typst") {
       localQuarto.configure({ project: SLUG, origin: location.origin });
       quartoBindingId = localQuarto.bindingId();
       // A pairing this browser already holds is verified now, so the
@@ -2910,8 +2936,8 @@
       previewTimer = null;
       boot.dispose();
       passages.clearPassageCache();
-      stopQuartoPreviewPagePoll();
-      if (quartoPreview) void localQuarto.stopQuartoPreview(quartoPreview.id).catch(() => {});
+      void quartoPreviewController.stop();
+      void calepinPreviewController.stop();
       framePreview.dispose();
       renderingStore?.dispose();
       stopLatex();
@@ -3044,6 +3070,19 @@
       <span class="w-4">{quartoPreviewMode === "quarto" ? "✓" : ""}</span>Quarto preview
     </Menu.Item>
     <hr class="hr my-1" />
+  {:else if sourceFormat === "typst" && !viewing}
+    <!-- The same two-way choice, for a Typst document: "Typst preview" is
+         this browser's own rendering (unchanged from before this choice
+         existed); "Calepin preview" runs the document's chunks with Calepin
+         on this computer, through the local app, and shows the PDF it
+         delivers. -->
+    <Menu.Item value="preview-typst" class="menuitem">
+      <span class="w-4">{typstPreviewMode === "typst" ? "✓" : ""}</span>Typst preview
+    </Menu.Item>
+    <Menu.Item value="preview-calepin" class="menuitem">
+      <span class="w-4">{typstPreviewMode === "calepin" ? "✓" : ""}</span>Calepin preview
+    </Menu.Item>
+    <hr class="hr my-1" />
   {:else if sourceFormat === "latex" && !viewing}
     {#if compilesHere}<Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>{/if}
   {/if}
@@ -3061,7 +3100,7 @@
       </div>
     {/if}
     {#if editing && mayEdit && !viewing}
-      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} />
+      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor || !!viewing} />
     {/if}
     {#if editing}
       <div class="desktop-workspace-menu">
@@ -3132,13 +3171,28 @@
       {/if}
     {/if}
     {#if sourceFormat === "quarto"}
-      {#if quartoRendering}
-        <span title="Quarto is re-rendering the live preview."><span class="spinner" aria-hidden="true"></span>Rendering the live preview…</span>
-      {/if}
-      {#if quartoNeedsLocalApp}
-        <span class="status-warning">Quarto preview needs the local app on this computer.</span>
-        <button type="button" class="btn btn-sm preset-tonal-primary" onclick={ensureLocalApp}>Connect</button>
-      {/if}
+      <span aria-label="Quarto preview">
+        {#if quartoRendering}
+          <span title="Quarto is re-rendering the live preview."><span class="spinner" aria-hidden="true"></span>Rendering the live preview…</span>
+        {/if}
+        {#if quartoNeedsLocalApp}
+          <span class="status-warning">Quarto preview needs the local app on this computer.</span>
+          <button type="button" class="btn btn-sm preset-tonal-primary" onclick={ensureLocalApp}>Connect</button>
+        {/if}
+      </span>
+    {/if}
+    {#if sourceFormat === "typst"}
+      <span aria-label="Calepin preview">
+        {#if calepinRendering}
+          <span title="Calepin is re-rendering the preview."><span class="spinner" aria-hidden="true"></span>Rendering the preview…</span>
+        {/if}
+        {#if typstNeedsLocalApp}
+          <span class="status-warning">Calepin preview needs the local app on this computer.</span>
+          <button type="button" class="btn btn-sm preset-tonal-primary" onclick={ensureLocalApp}>Connect</button>
+        {:else if typstNeedsCalepinCommand}
+          <span class="status-warning">Calepin preview needs the calepin command on this computer.</span>
+        {/if}
+      </span>
     {/if}
   </div>
 {/if}
@@ -3282,8 +3336,7 @@
         </div>
       {:else if Editor}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={sourceFormat} file={openFile} {keys}
-                  editable={mayEdit}
+          <Editor bind:this={editor} {session} format={sourceFormat} file={openFile} {keys} editable={mayEdit && !viewing}
                   onbibliography={bibliographyAnalyzed} oncaret={followCaret} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { openFile = id; shownFigure = null; }} />
         {/key}
