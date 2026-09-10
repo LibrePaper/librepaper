@@ -67,6 +67,12 @@ let recognizerModel = null; // the catalog entry passed to `load`
 let vadModel = null;
 let segmenter = null;
 let language = null;
+// Segments are transcribed off the frame chain so the segmenter keeps judging
+// frames while the recognizer works, but strictly one after another so their
+// text arrives in the order it was spoken. `stop` waits on this chain before
+// replying, which is what lets the service insert the final sentence before
+// it goes idle (contract: "stopped after the flushed segment's text").
+let transcriptions = Promise.resolve();
 
 function post(message, transfer) {
   self.postMessage(message, transfer);
@@ -137,9 +143,14 @@ async function handleStart(id, data) {
   language = data.language ?? null;
   segmenter = createSegmenter({
     classify: makeClassifier(),
-    onSegment: async ({ audio, reason }) => {
-      const result = await recognizer(audio, callOptionsFor(recognizerModel.id, language));
-      post({ id: null, kind: "text", text: extractText(result), language, reason });
+    onSegment: ({ audio, reason }) => {
+      const spokenIn = language;
+      transcriptions = transcriptions
+        .then(async () => {
+          const result = await recognizer(audio, callOptionsFor(recognizerModel.id, spokenIn));
+          post({ id: null, kind: "text", text: extractText(result), language: spokenIn, reason });
+        })
+        .catch((error) => post({ id: null, kind: "error", message: error?.message || String(error) }));
     },
     onSpeech: (speaking) => post({ id: null, kind: "speech", speaking }),
   });
@@ -153,6 +164,7 @@ async function handleFrame(data) {
 
 async function handleStop(id) {
   if (segmenter) await segmenter.flush();
+  await transcriptions;
   reply(id, "stopped");
 }
 
@@ -162,6 +174,8 @@ async function handleTranscribe(id, data) {
 }
 
 async function handleUnload(id) {
+  await transcriptions;
+  await recognizer?.dispose?.();
   recognizer = null;
   recognizerModel = null;
   vadModel = null;
