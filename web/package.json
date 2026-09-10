@@ -19,7 +19,9 @@
     "check:latex-browser": "node checks/latex-browser.mjs",
     "check:agent-browser": "node checks/agent-browser.mjs",
     "check:responsive-browser": "node checks/responsive-browser.mjs",
-    "check:assistant-browser": "node checks/agent-browser.mjs && node checks/assistant-review-browser.mjs"
+    "check:assistant-browser": "node checks/agent-browser.mjs && node checks/assistant-review-browser.mjs",
+    "check:insert": "node checks/insert.mjs && node checks/insert-markdown-render.mjs && node checks/insert-browser.mjs",
+    "check:insert-renderers": "node checks/insert-latex-render.mjs && node checks/insert-typst-render.mjs && node checks/insert-quarto-render.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

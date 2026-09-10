@@ -32,7 +32,7 @@ function table(options) {
   const alignment = ["left", "center", "right"].includes(options.alignment) ? `, align: ${options.alignment}` : "";
   const body = `#table(columns: ${columns}${alignment},\n  ${header ? "table.header(" + cells.splice(0, columns).join(", ") + "),\n  " : ""}${cells.join(",\n  ")}\n)`;
   if (!options.caption && !options.label) return finish(body, header ? "Header 1" : "Cell 1,1");
-  const caption = markup(options.caption, "Table");
+  const caption = markup(options.caption || "Table");
   const label = identifier(options.label, "table");
   return finish(`#figure(${body.slice(1)}, caption: [${caption}]) <${label}>`, header ? "Header 1" : "Cell 1,1");
 }
@@ -90,7 +90,10 @@ export function buildTypst(id, options = {}, context = {}) {
       if (!options.file) throw Error("Choose a bibliography file.");
       return finish('#bibliography("' + string(options.file) + '")');
     }
-    case "cross-reference": return finish(`@${identifier(options.target, "label")}`, `@${identifier(options.target, "label")}`);
+    case "cross-reference": {
+      const target=identifier(options.target, "label");
+      return finish('#context { let target = query(<'+target+'>).first(); if target.has("numbering") and target.numbering != none { ref(<'+target+'>) } else { link(<'+target+'>)['+markup(target)+'] } }');
+    }
     case "label": return finish(`<${label}>`, label);
     case "inline-math":
     case "display-math":
@@ -135,7 +138,15 @@ export function buildTypst(id, options = {}, context = {}) {
       if (!/^[A-Za-z][\w-]*$/.test(name)) throw Error("Choose a defined content function.");
       const source = [context.text, context.mainText, ...(context.files || []).map(file => file.text)].filter(Boolean).join('\n');
       if (!new RegExp('#let\\s+' + name + '\\s*\\([^)]*\\bbody\\b[^)]*\\)').test(source)) throw Error("Define this content function before inserting it.");
-      return finish(`#${name}[${content}]`, choice || "Content.");
+      const signature=source.match(new RegExp('#let\\s+'+name+'\\s*\\(([^)]*)\\)'));
+      let index=0;
+      const args=signature[1].split(',').map(part=>part.trim()).filter(part=>part&&!part.includes(':')).map(part=>{
+        if(part==='body')return '['+content+']';
+        const value=options.arguments?.[index++];
+        if(!value)throw Error('Enter the '+part+' argument for '+name+'.');
+        return value;
+      });
+      return finish('#'+name+'('+args.join(', ')+')',choice||'Content.');
     }
     default: return finish("", "", ["Unsupported Typst insertion."]);
   }

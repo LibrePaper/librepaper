@@ -18,10 +18,12 @@ try {
     const edits=[...result.additionalEdits,{from:text.length,to:text.length,insert:result.text+'\n\n'}];
     for(const edit of edits.sort((a,b)=>b.from-a.from))text=text.slice(0,edit.from)+edit.insert+text.slice(edit.to);
   }
+  const headerless=buildInsertion('table',{rows:2,columns:2,header:false,caption:'Headerless',label:'headerless'},{format:'quarto',path:'main.qmd',text,selection:{from:text.length,to:text.length,text:''}});
+  text+=headerless.text+'\n';
   await writeFile(join(dir,'main.qmd'),text);
   const result=await run('quarto',['render','main.qmd','--to','html','--no-execute'],{cwd:dir,maxBuffer:2e6});
   assert.doesNotMatch(result.stderr,/ERROR|Unable to resolve|undefined cross-reference/i);
   const html=await readFile(join(dir,'main.html'),'utf8');
-  for(const pattern of [/id="TOC"/,/class="citation"/,/class="csl-entry"/,/id="tbl-sample/,/id="thm-sample/,/class="math display"/,/<table/,/plot.svg/])assert.match(html,pattern);
+  for(const pattern of [/id="TOC"/,/class="citation"/,/class="csl-entry"/,/id="tbl-sample/,/id="thm-sample/,/class="math display"/,/<table/,/Headerless/,/plot.svg/])assert.match(html,pattern);
   console.log('insert-quarto-render: all 35 shared actions rendered; TOC, bibliography, citations, tables, theorems and math verified');
 } catch(error) { console.error(error.stdout, error.stderr); throw error; } finally {await rm(dir,{recursive:true,force:true});}

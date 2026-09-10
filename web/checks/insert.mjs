@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertTargets, gatherInsertEnvironments, insertSyntaxContext } from '../src/lib/insert.js';
-const latex='\\documentclass{article}\n\\begin{document}\n\nContent\n\\end{document}';
+const latex='\\documentclass{article}\n\\bibliography{refs}\n\\begin{document}\n\nContent\n\\end{document}';
 const contexts=Object.fromEntries(['latex','typst','markdown','quarto'].map(format=>{
-  const text=format==='latex'?latex:format==='typst'?'= Intro <intro>\n':'# Intro\n';
+  const text=format==='latex'?latex:format==='typst'?'#bibliography("refs.bib")\n= Intro <intro>\n':'# Intro\n';
   return [format,{format,path:'main.'+({latex:'tex',typst:'typ',markdown:'md',quarto:'qmd'})[format],text,mainText:text,selection:{from:format==='latex'?latex.indexOf('Content'):text.length,to:format==='latex'?latex.indexOf('Content'):text.length,text:''},files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers}}'}],bibliography:[{key:'smith2020'}]}];
 }));
 assert.equal(new Set(INSERT_ACTIONS.map(a=>a.id)).size,35);
@@ -10,7 +10,7 @@ for(const [format,c] of Object.entries(contexts)) {
   const table=buildInsertion('table',{rows:2,columns:2,alignment:'right',caption:'Results',label:'results'},c);
   assert.match(table.text,format==='latex'?/tabular\}\{rr/:format==='typst'?/columns: 2, align: right/:/Results/);
   assert.ok(table.selection.head>table.selection.anchor || format==='latex');
-  const code=buildInsertion('inline-math',{},c);assert.match(code.text,/\$x = y\$/);
+  const code=buildInsertion('inline-math',{},c);assert.match(code.text,format==='markdown'?/data-math-style="inline">x = y/:/\$x = y\$/);
   assert.match(buildInsertion('citation',{keys:['smith2020']},c).text,/smith2020/);
   assert.throws(()=>buildInsertion('table',{rows:-1},c),/Rows/);
   assert.throws(()=>buildInsertion('figure',{src:'x.png',width:'1);danger'},c),/width/);
@@ -20,9 +20,9 @@ for(const [format,c] of Object.entries(contexts)) {
 }
 assert.equal(insertionAvailability('heading',{format:'html'}).enabled,false);
 const md=contexts.markdown;
-assert.match(buildInsertion('matrix',{rows:2,columns:3,brackets:'brackets'},md).text,/\\begin\{bmatrix\}\n0 & 0 & 0 \\\\\n0 & 0 & 0/);
+assert.match(buildInsertion('matrix',{rows:2,columns:3,brackets:'brackets'},md).text.replaceAll('&amp;','&'),/\\begin\{bmatrix\}\n0 & 0 & 0 \\\\\n0 & 0 & 0/);
 assert.match(buildInsertion('footnote',{},md).text,/\[\^note-1\]/);
-assert.match(buildInsertion('footnote',{},md).additionalEdits[0].insert,/\[\^note-1\]: Note/);
+assert.match(buildInsertion('footnote',{},md).text,/\[\^note-1\]: Note/);
 assert.match(buildInsertion('bibliography',{file:'refs.bib'},md).additionalEdits[0].insert,/bibliography: "refs.bib"/);
 assert.match(buildInsertion('cross-reference',{target:'intro'},md).text,/\]\(#intro\)/);
 assert.match(buildInsertion('label',{label:'foo'},md).text,/<a id="foo"><\/a>/);
@@ -54,4 +54,9 @@ assert.deepEqual(gatherInsertTargets({format:'latex',text:'\\section{No label}\n
 assert.deepEqual(gatherInsertTargets({format:'markdown',text:'# Intro\n# Intro'}).map(t=>t.id),['intro','intro-1']);
 assert.deepEqual(gatherInsertEnvironments({format:'typst',text:'#let boxed(body) = block(body)'}),['boxed']);
 assert.throws(()=>buildInsertion('custom-environment',{environment:'unknown'},tex),/not defined/);
+const envContext={...tex,text:tex.text,mainText:tex.text.replace('\\begin{document}','\\newenvironment{boxer}[2][Default]{}{}\n\\begin{document}')};
+assert.match(buildInsertion('custom-environment',{environment:'boxer',arguments:['Title','12pt']},envContext).text,/\\begin\{boxer\}\[Title\]\{12pt\}/);
+assert.throws(()=>buildInsertion('custom-environment',{environment:'boxer'},envContext),/argument 2/);
+const typEnv={...typ,text:'#let boxed(width, body) = block(width: width, body)\n'};
+assert.match(buildInsertion('custom-environment',{environment:'boxed',arguments:['80%']},typEnv).text,/#boxed\(80%, \[Content\.\]\)/);
 console.log('insert: all format adapters, nondefault options, dependencies, validation, syntax contexts and target discovery passed');

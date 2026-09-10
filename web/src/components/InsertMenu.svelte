@@ -3,7 +3,7 @@
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import Modal from "./Modal.svelte";
   import { rankEntries, entryLabel } from "../lib/bibliography.js";
-  import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertEnvironments, gatherInsertTargets } from "../lib/insert.js";
+  import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertEnvironments, gatherInsertTargets, insertEnvironmentFields } from "../lib/insert.js";
 
   let { getContext, oninsert, onupload, onpreview, onfocus, oncancel, disabled = false } = $props();
 
@@ -56,10 +56,10 @@
     dialog = null;
     oncancel?.(target);
   }
-  function insertionOptions() { return { ...draft, title: draft.title || draft.text, src: draft.path }; }
+  function insertionOptions() { return { ...draft, title: draft.title || draft.text, src: draft.path, arguments: draft.argumentsText ? draft.argumentsText.split("\n") : [] }; }
   function safeBuild(id, options, context) {
     try { error = ""; return buildInsertion(id, options, context); }
-    catch (cause) { error = cause?.message || "This insertion is not valid yet."; return { text: "", notes: [error], additionalEdits: [] }; }
+    catch (cause) { const message = cause?.message || "This insertion is not valid yet."; error = message; return { text: "", notes: [message], additionalEdits: [] }; }
   }
   function startsDialog(id) {
     const context = contextNow();
@@ -83,7 +83,7 @@
     const state = availability(id, context);
     if (!state.enabled) return;
     captured = context;
-    const needsDialog = actionById(id).dialog || ["label", "footnote"].includes(id);
+    const needsDialog = actionById(id).dialog;
     if (needsDialog) startsDialog(id);
     else {
       const result = safeBuild(id, {}, captured);
@@ -104,7 +104,8 @@
     try { result = buildInsertion(id, options, context); }
     catch (cause) { error = cause?.message || "This insertion is not valid yet."; return; }
     if (result?.error) { error = result.error; return; }
-    oninsert?.(result, context);
+    try { oninsert?.(result, context); }
+    catch (cause) { error = cause?.message || "The insertion target changed."; dialog = id; dialogOpen = true; return; }
     dialogGeneration += 1;
     dialogOpen = false;
     dialog = null;
@@ -129,13 +130,14 @@
     catch (cause) { error = cause?.message || "Could not upload the image."; }
     finally { if (generation === dialogGeneration && dialog === "figure") busy = false; }
   }
-  function entries() { return captured?.bibliography?.entries || captured?.bibliography || []; }
+  function entries() { return Array.isArray(captured?.bibliography) ? captured.bibliography : captured?.bibliography?.entries || []; }
   const filteredEntries = $derived(rankEntries(entries(), query).slice(0, 30));
-  const files = $derived((captured?.files || []).map((file) => typeof file === "string" ? file : file.path).filter((path) => /\.(bib|json|ya?ml)$/i.test(path || "")));
+  const files = $derived((captured?.files || []).map((file) => typeof file === "string" ? file : file.path).filter((path) => (captured?.format === "latex" ? /\.bib$/i : captured?.format === "typst" ? /\.(bib|ya?ml)$/i : /\.(bib|json|ya?ml)$/i).test(path || "")));
   const selectedImage = $derived((captured?.files || []).find((file) => (typeof file === "string" ? file : file.path) === draft.path));
   const references = $derived(gatherInsertTargets(captured || {}).map((ref) => ref));
+  const environmentFields = $derived(insertEnvironmentFields(draft.environment, captured || {}));
   const environments = $derived(gatherInsertEnvironments(captured || {}).map((env) => typeof env === "string" ? env : env.name));
-  const needsText = (id) => ["heading", "footnote", "link", "code-block", "custom-environment"].includes(id);
+  const needsText = (id) => ["heading", "link"].includes(id);
   $effect(() => {
     if (dialog && captured && dialogOpen) preview = safeBuild(dialog, insertionOptions(), captured);
   });
@@ -151,7 +153,7 @@
       {#each ids as id}
         {@const state = availability(id, menuContext || {})}
         <Menu.Item value={id} class="menuitem" disabled={!state.enabled}>
-          <span>{actionLabel(id)}</span>{#if actionById(id).dialog || defaults[id]}<span class="insert-ellipsis">…</span>{/if}
+          <span>{actionLabel(id)}</span>{#if actionById(id).dialog}<span class="insert-ellipsis">…</span>{/if}
           {#if state.reason}<span class="insert-reason">{state.reason}</span>{/if}
         </Menu.Item>
       {/each}
@@ -162,7 +164,7 @@
 
 {#snippet footer()}
   <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={closeDialog}>Cancel</button>
-  <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={busy || Boolean(error) || !preview?.text} onclick={submit}>Insert</button>
+  <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={busy || Boolean(error) || !(preview?.text || preview?.additionalEdits?.length)} onclick={submit}>Insert</button>
 {/snippet}
 
 <Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : "Insert"} description={captured?.format ? `Generated for ${captured.format}` : null} {footer} onclose={closeDialog} wide>
@@ -176,7 +178,7 @@
     <label class="label">Citation style <select class="select" bind:value={draft.style}><option value="default">Default</option><option value="narrative">Narrative / textual</option><option value="parenthetical">Parenthetical</option></select></label>
     <label class="label">Page or locator <input class="input" placeholder="optional" bind:value={draft.locator} /></label>
   {:else if dialog === "figure"}
-    <label class="label">Project image <select class="select" bind:value={draft.path}><option value="">Choose an image…</option>{#each (captured?.files || []) as file}{@const path = typeof file === "string" ? file : file.path}{#if /\.(png|jpe?g|gif|svg|pdf|webp)$/i.test(path || "")}<option value={path}>{path}</option>{/if}{/each}</select></label>
+    <label class="label">Project image <select class="select" bind:value={draft.path}><option value="">Choose an image…</option>{#if draft.path && !selectedImage}<option value={draft.path}>{draft.path}</option>{/if}{#each (captured?.files || []) as file}{@const path = typeof file === "string" ? file : file.path}{#if /\.(png|jpe?g|gif|svg|pdf|webp)$/i.test(path || "")}<option value={path}>{path}</option>{/if}{/each}</select></label>
     <label class="label">Upload image <input type="file" accept="image/*,.pdf" onchange={upload} /></label>
     {#if draft.path}<p class="panel-muted">{draft.path}</p>{/if}
     {#if draft.path && onpreview}
@@ -196,13 +198,13 @@
     <label class="label">Reference <select class="select" bind:value={draft.target}><option value="">Choose a heading, figure, table, or equation…</option>{#each references as ref}{@const value = typeof ref === "string" ? ref : (ref.id || ref.label || ref.key)}<option value={value}>{value}</option>{/each}</select></label>
   {:else if dialog === "matrix"}
     <div class="grid grid-cols-2 gap-3"><label class="label">Rows <input class="input" type="number" min="1" max="20" bind:value={draft.rows} /></label><label class="label">Columns <input class="input" type="number" min="1" max="20" bind:value={draft.columns} /></label></div>
-    <label class="label">Brackets <select class="select" bind:value={draft.brackets}><option value="parentheses">( )</option><option value="brackets">Square brackets</option><option value="braces">Curly braces</option><option value="none">None</option></select></label>
+    <label class="label">Brackets <select class="select" bind:value={draft.brackets}><option value="parentheses">( )</option><option value="brackets">Square brackets</option><option value="braces">Curly braces</option><option value="bars">Vertical bars</option><option value="doublebars">Double bars</option><option value="none">None</option></select></label>
   {:else if dialog === "cases"}
     <label class="label">Rows <input class="input" type="number" min="1" max="20" bind:value={draft.rows} /></label>
     <label class="label">Label <input class="input" placeholder="eq:cases" bind:value={draft.label} /></label>
-    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} /> Numbered</label>
+    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> Numbered</label>
   {:else if ["display-math", "aligned-math", "gather-math"].includes(dialog)}
-    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} /> Numbered</label>
+    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> Numbered</label>
     <label class="label">Label <input class="input" placeholder="eq:example" bind:value={draft.label} /></label>
   {:else if dialog === "code-block"}
     <label class="label">Language <input class="input" placeholder="e.g. r, python, bash" bind:value={draft.language} /></label>
@@ -211,11 +213,12 @@
   {:else if ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"].includes(dialog)}
     <label class="label">Title <input class="input" placeholder="optional" bind:value={draft.title} /></label><label class="label">Label <input class="input" placeholder="thm:example" bind:value={draft.label} /></label>
   {:else if dialog === "columns"}
-    <div class="grid grid-cols-2 gap-3"><label class="label">Columns <input class="input" type="number" min="2" max="6" bind:value={draft.columns} /></label><label class="label">Gap <input class="input" placeholder="optional" bind:value={draft.gap} /></label></div>
+    <div class="grid grid-cols-2 gap-3"><label class="label">Columns <input class="input" type="number" min="2" max="6" bind:value={draft.columns} /></label>{#if captured?.format !== "quarto"}<label class="label">Gap <input class="input" placeholder="optional" bind:value={draft.gap} /></label>{/if}</div>
   {:else}
     {#if dialog === "custom-environment"}<label class="label">Environment <input class="input" placeholder="e.g. important" bind:value={draft.environment} />{#if environments.length}<select class="select mt-2" aria-label="Defined environments" onchange={(event) => draft.environment = event.currentTarget.value}><option value="">Choose a defined environment…</option>{#each environments as name}<option value={name}>{name}</option>{/each}</select>{/if}</label>{/if}
+    {#if dialog === "custom-environment" && environmentFields.length}<label class="label">Arguments (one per line)<textarea class="textarea" rows={environmentFields.length} placeholder={environmentFields.map(field => field.label + (field.optional ? " (optional)" : "")).join("\n")} bind:value={draft.argumentsText}></textarea><span class="panel-muted">Enter source expressions in this order: {environmentFields.map(field => field.label).join(", ")}.</span></label>{/if}
     {#if needsText(dialog)}<label class="label">Text <input class="input" bind:value={draft.text} /></label>{/if}
-    {#if dialog === "heading"}<div class="grid grid-cols-2 gap-3"><label class="label">Level <input class="input" type="number" min="1" max="6" bind:value={draft.level} /></label><label class="flex items-center gap-2 mt-6"><input type="checkbox" bind:checked={draft.numbered} /> Numbered</label></div><label class="label">Label <input class="input" placeholder="sec:example" bind:value={draft.label} /></label>{/if}
+    {#if dialog === "heading"}<div class="grid grid-cols-2 gap-3"><label class="label">Level <input class="input" type="number" min="1" max={captured?.format === "latex" ? 5 : 6} bind:value={draft.level} /></label><label class="flex items-center gap-2 mt-6"><input type="checkbox" bind:checked={draft.numbered} /> Numbered</label></div><label class="label">Label <input class="input" placeholder="sec:example" bind:value={draft.label} /></label>{/if}
     {#if dialog === "label"}<label class="label">Label <input class="input" placeholder="sec:example" bind:value={draft.label} /></label>{/if}
   {/if}
   {#if preview}
@@ -232,7 +235,7 @@
   .insert-results { max-height: 16rem; overflow-y: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
   .insert-result { display: flex; gap: .6rem; padding: .55rem .7rem; cursor: pointer; }
   .insert-result:hover { background: var(--color-surface-100-900); }
-  .insert-error { position: fixed; right: 1rem; bottom: 1rem; z-index: 60; max-width: 26rem; padding: .7rem 1rem; color: var(--color-error-700-300); background: var(--color-surface-50-950); border: 1px solid var(--color-error-500-500); border-radius: var(--radius-base); box-shadow: var(--shadow-xl); }
+  .insert-error { padding: .7rem 1rem; color: var(--color-error-700-300); background: var(--color-surface-50-950); border: 1px solid var(--color-error-500-500); border-radius: var(--radius-base); box-shadow: var(--shadow-xl); }
   .insert-preview { margin-top: .4rem; border-top: 1px solid var(--color-divider); padding-top: .6rem; }
   .insert-preview pre { max-height: 11rem; overflow: auto; margin-top: .5rem; padding: .7rem; background: var(--color-surface-100-900); border-radius: var(--radius-base); font-size: .75rem; white-space: pre-wrap; }
   .insert-preview ul { margin: .5rem 0 0 1rem; color: var(--color-warning-700-300); font-size: .8rem; }

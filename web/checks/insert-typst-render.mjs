@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 // Compile every shared Insert action that has a Typst representation. This
 // catches syntax drift in the generator instead of only checking its strings.
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -5,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { buildTypst } from "../src/lib/insert-typst.js";
+import { INSERT_ACTIONS, buildInsertion } from "../src/lib/insert.js";
 
 const run = promisify(execFile);
 const dir = await mkdtemp(join(tmpdir(), "librepaper-insert-typst-"));
@@ -22,14 +23,20 @@ try {
     level: 2, numbered: true, src: "x.svg", caption: "A figure", label: "fig:test", width: "80%",
     rows: 2, columns: 2, header: true, alignment: "center", keys: ["smith2020"], locator: "p. 3",
     file: "references.bib", target: "existing", brackets: "brackets", language: "text", url: "https://example.com",
-    count: 2, gap: "1em", title: "Example", environment: "boxed",
+    count: 2, gap: "1em", title: "Example", environment: "boxed", arguments: ["80%"],
   };
-  const ids = ["heading", "abstract", "appendix", "toc", "figure", "table", "citation", "bibliography", "cross-reference", "label", "inline-math", "display-math", "aligned-math", "gather-math", "cases", "matrix", "bulleted-list", "numbered-list", "description-list", "quote", "quotation", "code-block", "footnote", "link", "theorem", "lemma", "proposition", "definition", "proof", "example", "remark", "page-break", "horizontal-rule", "columns"];
-  const snippets = ids.map((id) => buildTypst(id, options, { ...context, selection: { from: 0, to: 1, text: "x" } }).text).filter(Boolean);
-  snippets.push(buildTypst("custom-environment", options, { ...context, text: "#let boxed(body) = block(body)" }).text);
-  await writeFile(join(dir, "main.typ"), `#let boxed(body) = block(body)\n#set page(width: 20cm)\n#set heading(numbering: "1.")\n= Existing <existing>\n${snippets.join("\n\n")}\n`);
+  let source='#let boxed(width, body) = block(width: width, body)\n#set page(width: 20cm)\n= Existing <existing>\n';
+  const actions=[...INSERT_ACTIONS].sort((a,b)=>a.id==='bibliography'?-1:b.id==='bibliography'?1:0);
+  for(const {id} of actions) {
+    const current={...context,text:source,mainText:source,selection:{from:source.length,to:source.length,text:''}};
+    const generated=buildInsertion(id,options,current);
+    assert.ok(generated.text,id+' must generate source');
+    assert.deepEqual(generated.additionalEdits,[],id+' uses native Typst constructs');
+    source+=generated.text+'\n\n';
+  }
+  await writeFile(join(dir,'main.typ'),source);
   await run("typst", ["compile", "main.typ", "out.pdf"], { cwd: dir });
-  console.log(`insert Typst render: ${ids.length + 1} generated actions compiled`);
+  console.log(`insert Typst render: ${actions.length} generated actions compiled`);
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

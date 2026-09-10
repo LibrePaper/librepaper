@@ -10,7 +10,7 @@ const run = promisify(execFile), dir = await mkdtemp(join(tmpdir(), "librepaper-
 try {
   const mainPath = join(dir, "main.tex");
   let source = String.raw`\documentclass{article}
-\newenvironment{customenv}{}{}
+\newenvironment{customenv}[1]{}{}
 \newtheorem{theorem}{Theorem}
 \newtheorem{lemma}{Lemma}
 \newtheorem{proposition}{Proposition}
@@ -24,17 +24,17 @@ try {
   const snippets = [
     ["heading", { title: "Methods", level: 2, numbered: false, label: "methods" }], ["abstract", {}], ["appendix", { title: "Supplement" }], ["toc", {}],
     ["figure", { src: "pixel.png", caption: "A figure", label: "fig-pixel", width: "80%" }], ["table", { rows: 2, columns: 3, caption: "Data", label: "tbl-data", alignment: "left" }],
-    ["citation", { keys: ["smith2020"], style: "narrative" }], ["bibliography", { file: "refs" }], ["cross-reference", { target: "fig-pixel" }], ["label", { label: "anchor" }],
+    ["bibliography", { file: "refs" }], ["citation", { keys: ["smith2020"], style: "narrative" }], ["cross-reference", { target: "fig-pixel" }], ["label", { label: "anchor" }],
     ["inline-math", {}], ["display-math", { numbered: false, label: "eq-one" }], ["aligned-math", {}], ["gather-math", {}], ["cases", { rows: 2 }], ["matrix", { rows: 2, columns: 3, brackets: "bmatrix" }],
     ["bulleted-list", {}], ["numbered-list", {}], ["description-list", { terms: ["One", "Two"] }], ["quote", {}], ["quotation", {}], ["code-block", { language: "python" }], ["footnote", {}], ["link", { url: "https://example.com" }],
-    ["theorem", {}], ["lemma", {}], ["proposition", {}], ["definition", {}], ["proof", {}], ["example", {}], ["remark", {}], ["page-break", {}], ["horizontal-rule", {}], ["columns", { columns: 2, gap: "12pt" }], ["custom-environment", { environment: "customenv" }],
+    ["theorem", {}], ["lemma", {}], ["proposition", {}], ["definition", {}], ["proof", {}], ["example", {}], ["remark", {}], ["page-break", {}], ["horizontal-rule", {}], ["columns", { columns: 2, gap: "12pt" }], ["custom-environment", { environment: "customenv", arguments:["Title"] }],
   ];
   for (const [id, options] of snippets) {
-    const context = { format: "latex", path: mainPath, mainPath, text: source, mainText: source, selection: { from: source.length, to: source.length, text: "" }, bibliography: [{ key: "smith2020" }] };
+    const context = { format: "latex", path: "main.tex", mainPath: "main.tex", text: source, mainText: source, selection: { from: source.length, to: source.length, text: "" }, bibliography: [{ key: "smith2020" }] };
     const built = buildInsertion(id, options, context);
     assert.ok(built.text, `${id} generated no text`);
     for (const edit of [...built.additionalEdits].sort((a, b) => b.from - a.from)) {
-      assert.equal(edit.path, mainPath, `${id} dependency edit targeted the main source`);
+      assert.equal(edit.path, "main.tex", `${id} dependency edit targeted the main source`);
       source = source.slice(0, edit.from) + edit.insert + source.slice(edit.to);
     }
     source += built.text + "\n";
@@ -42,6 +42,7 @@ try {
   source += "\\end{document}\n";
   await writeFile(mainPath, source);
   await run("pdflatex", ["-interaction=nonstopmode", "-halt-on-error", "main.tex"], { cwd: dir });
+  await run("bibtex", ["main"], {cwd:dir});
   await run("pdflatex", ["-interaction=nonstopmode", "-halt-on-error", "main.tex"], { cwd: dir });
   assert.match(source, /\\usepackage\{amsmath\}/);
   assert.match(source, /\\usepackage\{listings\}/);

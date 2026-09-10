@@ -387,7 +387,7 @@
     if (!target || !view) return null;
     const path = session.paths?.get(showing) || "";
     const lower = path.toLowerCase();
-    const insertFormat = formatOf(path) || (!path ? format : "");
+    const insertFormat = lower.endsWith(".qmd") ? "quarto" : formatOf(path) || (!path ? format : "");
     const tree = session.tree?.() || { main: "", texts: {} };
     const mainPath = tree.main || session.mainPath?.() || path;
     const mainText = session.textOf?.(session.idOf?.(mainPath))?.toString?.() || tree.texts?.[mainPath] || "";

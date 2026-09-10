@@ -47,8 +47,10 @@ export function insertSyntaxContext(input) {
     }
     if(format!=='typst' && before.lastIndexOf('<!--')>before.lastIndexOf('-->'))return 'comment';
     if(format==='typst' && (before.lastIndexOf('/*')>before.lastIndexOf('*/') || /(^|[^:])\/\/[^\n]*$/.test(before)))return 'comment';
+    if(format==='markdown' && /<span\s+data-math-style="(?:inline|display)">[^]*$/.test(before.slice(before.lastIndexOf('<span'))) && before.lastIndexOf('<span')>before.lastIndexOf('</span>'))return 'math';
     const line=before.slice(before.lastIndexOf('\n')+1);
-    if((line.match(/(?<!\\)`/g)||[]).length%2)return 'code';
+    let ticks=0;for(const m of line.matchAll(/(?<!\\)`+/g)){if(!ticks)ticks=m[0].length;else if(ticks===m[0].length)ticks=0;}
+    if(ticks)return 'code';
     if(format==='typst') {
       // Code expressions contain markup only inside content blocks. Refuse
       // raw expressions instead of inserting markup into function arguments.
@@ -84,6 +86,19 @@ export function gatherInsertEnvironments(input = {}) {
   for(const m of text.matchAll(regex))names.add(m[1]);
   return [...names].sort();
 }
+export function insertEnvironmentFields(name,input={}) {
+  if(!/^[A-Za-z][\w-]*$/.test(name||''))return [];
+  const c=context(input),source=[c.text,c.mainText,...c.files.map(f=>f.text)].filter(Boolean).join('\n');
+  if(c.format==='latex'){
+    const match=source.match(new RegExp('\\\\(?:newenvironment|renewenvironment)\\s*\\{'+name+'\\}\\s*\\[(\\d+)\\](?:\\s*\\[([^\\]]*)\\])?'));
+    return Array.from({length:Math.min(9,Number(match?.[1])||0)},(_,i)=>({label:'Argument '+(i+1),defaultValue:i===0?match?.[2]||'':'',optional:i===0&&match?.[2]!=null}));
+  }
+  if(c.format==='typst'){
+    const match=source.match(new RegExp('#let\\s+'+name+'\\s*\\(([^)]*)\\)'));
+    return (match?.[1].split(',')||[]).map(s=>s.trim()).filter(s=>s&&s!=='body'&&!s.includes(':')).map(label=>({label,defaultValue:'',optional:false}));
+  }
+  return [];
+}
 export function gatherInsertTargets(input = {}) {
   const c=context(input), found=[], seen=new Set();
   const sources=[{path:c.path,text:c.text},...c.files.filter(f=>f.path!==c.path && typeof f.text==='string')];
@@ -117,10 +132,17 @@ function uniqueLabel(value,c,prefix='') {
 // Metadata edits address the captured source, never a generated snippet.
 function metadata(c, additions) {
   const source=c.text, match=source.match(/^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/);
-  const pending=Object.entries(additions).filter(([key])=>!new RegExp('^'+key+'\\s*:','m').test(match?.[1]||''));
-  if(!pending.length)return [];
-  const insert=pending.map(([key,value])=>`${key}: ${value}`).join('\n')+'\n';
-  return [{from:match?source.indexOf('\n')+1:0,to:match?source.indexOf('\n')+1:0,insert:match?insert:`---\n${insert}---\n\n`}];
+  const edits=[],pending=[];
+  for(const [key,value] of Object.entries(additions)) {
+    const existing=match?.[0].match(new RegExp('^'+key+'\\s*:[^\\n]*','m'));
+    if(!existing){pending.push(key+': '+value);continue;}
+    const old=existing[0].slice(existing[0].indexOf(':')+1).trim();
+    if(old===value)continue;
+    if(!old)throw Error('The '+key+' metadata has a structured value. Edit that setting in the source.');
+    edits.push({from:existing.index,to:existing.index+existing[0].length,insert:key+': '+value});
+  }
+  if(pending.length){const insert=pending.join('\n')+'\n',at=match?source.indexOf('\n')+1:0;edits.push({from:at,to:at,insert:match?insert:'---\n'+insert+'---\n\n'});}
+  return edits;
 }
 function markdownMath(id,o,c) {
   const body=c.selection.text||'x = y', rowCount=o.rows||2, columns=o.columns||2;
@@ -132,7 +154,8 @@ function markdownMath(id,o,c) {
     const env=({parentheses:'pmatrix',brackets:'bmatrix',braces:'Bmatrix',bars:'vmatrix',doublebars:'Vmatrix',none:'matrix'})[o.brackets]||'pmatrix';
     formula=`\\begin{${env}}\n${Array.from({length:rowCount},()=>Array(columns).fill('0').join(' & ')).join(' \\\\\n')}\n\\end{${env}}`;
   }
-  const text=insertSyntaxContext(c)==='math'?formula:id==='inline-math'?`$${formula}$`:`$$\n${formula}\n$$${c.format==='quarto' && o.numbered!==false && o.label?` {#${o.label}}`:''}`;
+  if(c.format==='markdown' && insertSyntaxContext(c)!=='math') return {text:`<span data-math-style="${id==='inline-math'?'inline':'display'}">${html(formula)}</span>`,placeholder:html(id==='matrix'?'0':id==='cases'?'1':body)};
+  const text=insertSyntaxContext(c)==='math'?(c.format==='markdown'&&c.text.slice(0,c.selection.from).lastIndexOf('<span')>c.text.slice(0,c.selection.from).lastIndexOf('</span>')?html(formula):formula):id==='inline-math'?`$${formula}$`:`$$\n${formula}\n$$${c.format==='quarto' && o.numbered!==false && o.label?` {#${o.label}}`:''}`;
   return {text,placeholder:id==='matrix'?'0':id==='cases'?'1':body};
 }
 function buildMarkdown(id,o,c) {
@@ -155,7 +178,12 @@ function buildMarkdown(id,o,c) {
   }else if(id==='table'){
     const r=o.rows||3,m=o.columns||3, header=o.header!==false;
     const cells=Array.from({length:r},(_,i)=>Array.from({length:m},(_,j)=>i===0&&header?`Header ${j+1}`:`Cell ${i+1},${j+1}`));
-    if(!header){text=`<table${o.label?` id="${html(o.label)}"`:''}>${o.caption?`\n<caption>${html(o.caption)}</caption>`:''}\n<tbody>\n${cells.map(row=>'<tr>'+row.map(cell=>`<td${o.alignment!=='default'?` style="text-align: ${o.alignment}"`:''}>${cell}</td>`).join('')+'</tr>').join('\n')}\n</tbody>\n</table>`; if(q)notes.push('A table without a header uses HTML and is intended for HTML output.');}
+    if(!header && q){
+      const widths=Array.from({length:m},(_,j)=>Math.max(...cells.map(row=>row[j].length))+2);
+      const border='+'+widths.map(w=>'-'.repeat(w)).join('+')+'+';
+      text=border+'\n'+cells.map(row=>'|'+row.map((cell,j)=>(' '+cell).padEnd(widths[j])).join('|')+'|\n'+border).join('\n');
+      if(o.caption||o.label)text+='\n\n: '+markdown(o.caption||'Table')+(o.label?' {#'+o.label+'}':'');
+    }else if(!header){text=`<table${o.label?` id="${html(o.label)}"`:''}>${o.caption?`\n<caption>${html(o.caption)}</caption>`:''}\n<tbody>\n${cells.map(row=>'<tr>'+row.map(cell=>`<td${o.alignment!=='default'?` style="text-align: ${o.alignment}"`:''}>${cell}</td>`).join('')+'</tr>').join('\n')}\n</tbody>\n</table>`; if(q)notes.push('A table without a header uses HTML and is intended for HTML output.');}
     else {
       const align=({left:':---',center:':---:',right:'---:'})[o.alignment]||'---';
       text=[cells[0],Array(m).fill(align),...cells.slice(1)].map(row=>'| '+row.join(' | ')+' |').join('\n');
@@ -181,7 +209,7 @@ function buildMarkdown(id,o,c) {
   }else if(id==='cross-reference'){
     if(!o.target)throw Error('Choose a reference target.');
     const target=gatherInsertTargets(c).find(t=>t.id===o.target);
-    text=q && /^(sec|fig|tbl|eq|thm|lem|prp|def|exm)-/.test(o.target)?'@'+o.target:`[${markdown(target?.label||o.target)}](#${url(o.target)})`;
+    text=q && /^(sec|fig|tbl|eq|thm|lem|prp|def|exm)-/.test(o.target)?'@'+o.target:`[${markdown(target?.label||o.target)}](${target?.path&&target.path!==c.path?url(relativePath(target.path,c.path)):''}#${url(o.target)})`;
   }else if(id==='label')text=q?`[]{#${o.label}}`:`<a id="${html(o.label)}"></a>`;
   else if(['inline-math','display-math','aligned-math','gather-math','cases','matrix'].includes(id))return markdownMath(id,o,c);
   else if(['bulleted-list','numbered-list','description-list'].includes(id)){
@@ -195,17 +223,17 @@ function buildMarkdown(id,o,c) {
     text=fence+(o.language||'')+'\n'+content+'\n'+fence;placeholder=content;
   }else if(id==='footnote'){
     if(q)text=`^[${selected||'Note.'}]`;
-    else {let n=1;while(c.text.includes(`[^note-${n}]`))n++;text=`[^note-${n}]`;additionalEdits.push({from:c.text.length,to:c.text.length,insert:`\n\n[^note-${n}]: ${(selected||'Note.').replace(/\n/g,'\n    ')}\n`});}
-  }else if(id==='link'){placeholder=selected||markdown(o.title||'Link');text=`[${placeholder}](${url(o.url||'https://example.com')})`;}
+    else {let n=1;while(c.text.includes(`[^note-${n}]`))n++;text='[^note-'+n+']';const definition='\n\n[^note-'+n+']: '+(selected||'Note.').replace(/\n/g,'\n    ')+'\n';if(c.selection.to===c.text.length){text+=definition;placeholder=selected||'Note.';}else additionalEdits.push({from:c.text.length,to:c.text.length,insert:definition});}
+  }else if(id==='link'){placeholder=selected?selected.replace(/[\[\]]/g,'\\$&'):markdown(o.title||'Link');text='['+placeholder+']('+url(o.url||'https://example.com')+')';}
   else if(scholarly.has(id)){
     const title=id[0].toUpperCase()+id.slice(1), heading=o.title?markdown(o.title):title;
     if(q){const attr=['proof','remark'].includes(id)?`.${id}${o.label?' #'+o.label:''}`:'#'+o.label;text=`::: {${attr}}\n\n${o.title?'## '+heading+'\n\n':''}${body}\n\n:::`;}
     else text=`${o.label?`<a id="${html(o.label)}"></a>\n\n`:''}**${title}${o.title?` (${heading})`:''}.** ${body}`;
   }else if(id==='page-break')text=q?'{{< pagebreak >}}':'<div style="break-after: page;"></div>';
-  else if(id==='horizontal-rule')text='---';
+  else if(id==='horizontal-rule')text='***';
   else if(id==='columns'){
     const count=o.columns||2, gap=o.gap||'1em';
-    text=q?`:::: {layout-ncol=${count}}\n\n${Array.from({length:count},(_,i)=>`::: {}\n${i===0?body:'Column content.'}\n:::`).join('\n\n')}\n\n::::`:`<div style="column-count: ${count}; column-gap: ${gap}">\n<p>${html(body)}</p>\n</div>`;
+    text=q?`:::: {layout-ncol=${count}}\n\n${Array.from({length:count},(_,i)=>`::: {}\n${i===0?body:'Column content.'}\n:::`).join('\n\n')}\n\n::::`:`<div style="column-count: ${count}; column-gap: ${gap}">\n\n${body}\n\n</div>`;
     if(q&&o.gap)notes.push('Quarto panel spacing follows the document theme.');
   }else if(id==='custom-environment'){
     if(!/^[A-Za-z][\w-]*$/.test(o.environment||''))throw Error('Enter an environment name using letters, numbers, or hyphens.');
@@ -219,17 +247,32 @@ export function buildInsertion(id, options = {}, input = {}) {
   for(const [key,max] of [['rows',100],['columns',30],['level',6]])if(o[key]!=null){const n=Number(o[key]);if(!Number.isInteger(n)||n<1||n>max)throw Error(`${key[0].toUpperCase()+key.slice(1)} must be between 1 and ${max}.`);o[key]=n;}
   if(o.width && !/^\d+(?:\.\d+)?(?:%|cm|mm|in|pt|px|em)$/.test(o.width) && !(c.format==='latex' && /^(?:\d*\.?\d+)?\\(?:line|text)width$/.test(o.width)))throw Error('Use a width such as 80%, 8cm, or 200pt.');
   if(o.gap && !/^\d+(?:\.\d+)?(?:cm|mm|in|pt|px|em)$/.test(o.gap))throw Error('Use spacing such as 1em or 12pt.');
+  if(c.format==='latex'&&o.level>5)throw Error('LaTeX section levels range from 1 to 5.');
   if(o.language && !/^[\w.+-]+$/.test(o.language))throw Error('Use a language name such as python, r, or javascript.');
   if(o.alignment && !['default','left','center','right'].includes(o.alignment))throw Error('Choose left, center, or right alignment.');
   const prefixes={heading:'sec',figure:'fig',table:'tbl','display-math':'eq','aligned-math':'eq','gather-math':'eq',theorem:'thm',lemma:'lem',proposition:'prp',definition:'def',example:'exm',proof:'prf',remark:'rem',cases:'eq',matrix:'eq'};
+  if(c.format==='quarto'&&['display-math','aligned-math','gather-math','cases','matrix'].includes(id)&&o.numbered===true&&!o.label)o.label=id;
   if(o.label || id==='label' || (c.format==='quarto'&&scholarly.has(id)&&!['proof','remark'].includes(id)))o.label=uniqueLabel(o.label||id,c,c.format==='quarto'?prefixes[id]:'');
+  if(id==='bibliography'){
+    const whole=[c.text,c.mainText].filter(Boolean).join('\n');
+    const exists=c.format==='typst'?/#bibliography\s*\(/.test(whole):c.format==='latex'?/\\(?:printbibliography|bibliography\s*\{)/.test(whole):c.format==='quarto'?/\{#refs\}/.test(c.text):/^#{1,6}\s+References\s*$/im.test(c.text);
+    if(exists)throw Error('This document already contains a bibliography. Edit or move the existing one.');
+  }
   const basePath=c.format==='latex' ? c.mainPath || c.path : c.path;
-  if(o.src)o.src=relativePath(o.src,basePath);
+  if(o.src){
+    if(c.format==='latex'&&!/\.(png|jpe?g|pdf)$/i.test(o.src))throw Error('Choose a PNG, JPEG, or PDF figure for LaTeX.');
+    if(c.format==='typst'&&!/\.(png|jpe?g|svg|gif|webp)$/i.test(o.src))throw Error('Choose a PNG, JPEG, SVG, GIF, or WebP image for Typst.');
+    o.src=relativePath(o.src,basePath);
+  }
   if(o.file)o.file=relativePath(o.file,basePath);
   if(o.url)url(o.url);
+  if(id==='citation' && ['latex','typst'].includes(c.format)){
+    const setup=[c.text,c.mainText].filter(Boolean).join('\n');
+    if(!(c.format==='latex'?/\\(?:bibliography|addbibresource|begin\{thebibliography\})/.test(setup):/#bibliography\s*\(/.test(setup)))throw Error('Insert a bibliography first so citations have a reference source.');
+  }
   let result=c.format==='latex'?buildLatex(id,o,c):c.format==='typst'?buildTypst(id,o,c):buildMarkdown(id,o,c);
   if(typeof result==='string')result={text:result};
-  let text=result.text||'',prefix='',suffix='';
+  let text=result.text||((result.additionalEdits?.length && c.selection.text) || ''),prefix='',suffix='';
   if(text && !inline.has(id) && insertSyntaxContext(c)!=='math'){
     const before=c.text.slice(0,c.selection.from),after=c.text.slice(c.selection.to);
     prefix=before && !before.endsWith('\n\n')?(before.endsWith('\n')?'\n':'\n\n'):'';
@@ -243,5 +286,5 @@ export function buildInsertion(id, options = {}, input = {}) {
     const previous=additionalEdits.find(e=>e.path===edit.path&&e.from===edit.from&&e.to===edit.to&&e.from===e.to);
     if(previous)previous.insert+=edit.insert;else additionalEdits.push({...edit});
   }
-  return {...result,text:prefix+text+suffix,selection,notes:result.notes||[],additionalEdits};
+  return {...result,text:prefix+text+suffix,selection,notes:[...(result.notes||[]),...(id==='appendix'&&['typst','latex'].includes(c.format)?['This starts appendix numbering for the following sections.']:[])],additionalEdits};
 }

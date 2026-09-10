@@ -23,8 +23,9 @@ import { yUndoManagerKeymap } from ${imp("node_modules/y-codemirror.next/src/y-u
 import Editor from ${imp("src/components/Editor.svelte")};
 import InsertMenu from ${imp("src/components/InsertMenu.svelte")};
 import { join as joinSession } from ${imp("src/lib/collab.js")};
+window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
 const session = joinSession({send: () => {}, mayEdit: true});
-const entries = [{key:'smith2020',author:['Jane Smith'],title:'A Study of Rivers',year:'2020'}, {key:'jones2021',author:['Alice Jones'],title:'Mountains',year:'2021'}];
+const entries = [{key:'smith2020',authors:['Jane Smith'],title:'A Study of Rivers',year:'2020'}, {key:'jones2021',authors:['Alice Jones'],title:'Mountains',year:'2021'}];
 let component, menu, file;
 window.setupInsert = async (format, source = null) => {
   menu?.$destroy(); component?.$destroy();
@@ -35,9 +36,9 @@ window.setupInsert = async (format, source = null) => {
   component = createClassComponent({component:Editor,target:document.getElementById('editor'),props:{session,format,file,analyze:async()=>({entries,diagnostics:[]})}});
   await tick();
   menu = createClassComponent({component:InsertMenu,target:document.getElementById('menu'),props:{
-    getContext:()=>({...component.getInsertContext(),bibliography:entries,files:[{path:file.name,text:session.textOf(file)},{path:'refs.bib',text:'@article{smith2020,title={Rivers},author={Smith, Jane},year={2020}}'},{path:'images/river.png',url:'data:image/png;base64,preview'}]}),
+    getContext:()=>({...component.getInsertContext(),bibliography:entries,files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers},author={Smith, Jane},year={2020}}'},{path:'images/river.png',url:'data:image/png;base64,preview'}]}),
     oninsert:(result,context)=>{ const ok=component.applyInsertResult(result,context); if(!ok) throw Error('Insertion target changed'); return ok; },
-    onupload:async()=> 'images/upload.png'
+    onupload:async()=> 'images/upload.png',onfocus:()=>component.focus(),oncancel:context=>component.releaseInsertContext(context)
   }});
   await tick();
 };
@@ -57,6 +58,22 @@ window.targetChecks=async()=>{
   component.$set({editable:true});await tick();
   return {switched,readonly};
 };
+window.atomicSetupCheck=async()=>{
+  const main=session.addText('setup-main.tex','\\\\documentclass{article}\\n\\\\begin{document}\\n\\\\input{chapter}\\n\\\\end{document}');
+  const chapter=session.addText('chapter.tex','BEFORE AFTER');session.setMain(main);
+  component.$set({file:chapter,format:'latex'});await tick();
+  view().dispatch({selection:{anchor:7}});
+  const c=component.getInsertContext();const oldMain=session.textOf(main).toString();
+  const at=oldMain.indexOf('\\\\begin{document}');
+  const ok=component.applyInsertResult({text:'INSERTED ',selection:{anchor:0,head:8},additionalEdits:[{path:'setup-main.tex',from:at,to:at,insert:'\\\\usepackage{graphicx}\\n'}]},c);
+  const applied=ok&&session.textOf(chapter).toString()==='BEFORE INSERTED AFTER'&&session.textOf(main).toString().includes('graphicx');
+  window.undoInsert();await tick();
+  const undone=session.textOf(chapter).toString()==='BEFORE AFTER'&&session.textOf(main).toString()===oldMain;
+  view().dispatch({selection:{anchor:0,head:6}});const selectionContext=component.getInsertContext();
+  session.doc.transact(()=>session.textOf(chapter).insert(3,'PEER'),'remote');await tick();
+  const conflict=component.applyInsertResult({text:'BAD'},selectionContext);
+  return {applied,undone,conflict,text:session.textOf(chapter).toString()};
+};
 window.insertReady=true;
 `);
 let server, page;
@@ -75,7 +92,7 @@ try {
   await until("Insert test loaded",()=>page.evaluate("window.insertReady"),10000);
   const evaluate=(code)=>page.evaluate(code);
   const click=async(selector)=>{ await until(selector,()=>evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`),5000); await evaluate(`document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new PointerEvent("pointermove",{bubbles:true,pointerType:"mouse"}));document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerType:"mouse"}));document.querySelector(${JSON.stringify(selector)}).click()`); };
-  const choose=async(id)=>{ await click('[data-scope="menu"][data-part="trigger"]'); await until("menu ready",()=>evaluate(`document.querySelector('[data-scope="menu"][data-part="trigger"]')?.getAttribute('data-state')==='open'`),5000); await click(`[data-scope="menu"][data-part="item"][data-value="${id}"]`); };
+  const choose=async(id)=>{ await click('[data-scope="menu"][data-part="trigger"]'); await until("menu ready",()=>evaluate(`document.querySelector('[data-scope="menu"][data-part="trigger"]')?.getAttribute('data-state')==='open'`),5000); const state=await evaluate(`(()=>{const x=document.querySelector('[data-scope="menu"][data-part="item"][data-value=${JSON.stringify(id)}]');return {disabled:x?.getAttribute('data-disabled'),text:x?.textContent}})()`);assert.equal(state.disabled,null,`${id} insertion is enabled: ${state.text}`); await click(`[data-scope="menu"][data-part="item"][data-value="${id}"]`); };
   const dialogTitle=async()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim() || ''`);
   const confirm=async()=>{ await evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find(x=>x.textContent.trim()==='Insert').click()`); await until("dialog closed",()=>evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`),5000); };
   const cancel=async()=>{ await evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find(x=>x.textContent.trim()==='Cancel').click()`); await until("dialog cancelled",()=>evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`),5000); };
@@ -105,14 +122,14 @@ try {
   assert.equal((await evaluate("insertState()" )).text,"Before AFTER","cancelling an insertion leaves source unchanged");
 
   // Citation search supports multiple selections and narrative style.
-  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");
+  await evaluate("setupInsert('markdown','---\\nbibliography: refs.bib\\n---\\n\\nBefore AFTER')");await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");
   await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);assert.equal(await dialogTitle(),"Citation","citation action opens the citation dialog");
   await field("Search bibliography","Rivers");await checkCitation("smith2020");
   await field("Search bibliography","");await checkCitation("jones2021");await field("Citation style","narrative");await confirm();
   assert.match((await evaluate("insertState()")).text,/\[?@smith2020; @jones2021\]?/,"citation inserts both selected references in narrative form");
 
   // Cross-reference and label dialogs use actual gathered target ids.
-  await evaluate("setupInsert('markdown','# Intro\n\nBefore AFTER')");await evaluate("selectInsert(15)");
+  await evaluate(`setupInsert('markdown',${JSON.stringify("# Intro\n\nBefore AFTER")})`);await evaluate("selectInsert(15)");
   await choose("cross-reference");await until("cross-reference dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Cross-reference'`),5000);
   const target=await evaluate(`document.querySelector('[role="dialog"][data-state="open"] select')?.options[1]?.value`);assert.ok(target,"cross-reference target is available");await field("Reference",target);await confirm();
   assert.match((await evaluate("insertState()" )).text,/\[[^\]]+\]\(#.+\)/,"cross-reference inserts a link");
@@ -123,9 +140,17 @@ try {
 
   // Project image selection provides a preview and inserts the chosen source.
   await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await choose("figure");await until("figure dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Image / figure'`),5000);await field("Project image","images/river.png");assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"] img.insert-image-preview'))`),true);await confirm();assert.match((await evaluate("insertState()" )).text,/images\/river\.png/);
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await choose('figure');
+  await until('upload dialog',()=>evaluate('Boolean(document.querySelector(\'[role="dialog"][data-state="open"]\'))'),5000);
+  await evaluate('(()=>{const input=document.querySelector(\'[role="dialog"][data-state="open"] input[type=file]\');const data=new DataTransfer();data.items.add(new File(["bytes"],"upload.png",{type:"image/png"}));input.files=data.files;input.dispatchEvent(new Event("change",{bubbles:true}));})()');
+  await until('upload path',()=>evaluate('document.querySelector(\'[role="dialog"][data-state="open"] select\')?.value === "images/upload.png"'),5000);
+  await confirm();assert.match((await evaluate('insertState()')).text,/images\/upload\.png/);
   await evaluate("setupInsert('markdown','alpha\\nbeta')");await evaluate("selectInsert(0,10)");
   await choose("bulleted-list");
   await until("selection converted to list",async()=>/^\s*- alpha\n- beta/.test((await evaluate("insertState()")).text),5000);
   assert.deepEqual(await evaluate("targetChecks()"),{switched:false,readonly:false});
+  await evaluate("setupInsert('markdown','Before')");await evaluate("selectInsert(6)");await choose("footnote");await until("footnote inserted",()=>evaluate("insertState().text.includes('[^note-1]')"),5000);assert.match((await evaluate("insertState()")).text,/^Before\[\^note-1\]\n\n\[\^note-1\]: Note\./);
+  assert.deepEqual(await evaluate("atomicSetupCheck()"),{applied:true,undone:true,conflict:false,text:"BEFPEERORE AFTER"});
+  await evaluate("setupInsert('quarto')");await evaluate("selectInsert(7)");await choose("toc");await until("Quarto TOC",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);await confirm();assert.match((await evaluate("insertState()")).text,/toc: true/);
   console.log("insert-browser: Skeleton table dialogs in all four formats, selection wrapping, remote anchors, undo, file switch and readonly guards passed");
-} finally {await page?.close();server?.close();rmSync(temporary,{recursive:true,force:true});}
+} catch(error) {console.error(await page?.evaluate("({errors:window.testErrors,dialogs:[...document.querySelectorAll('[role=dialog]')].map(x=>({title:x.textContent,state:x.dataset.state})),documentText:document.querySelector('.cm-content')?.textContent})"));throw error;} finally {await page?.close();server?.close();rmSync(temporary,{recursive:true,force:true});}
