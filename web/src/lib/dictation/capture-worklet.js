@@ -27,7 +27,6 @@ class LibrepaperDictationCapture extends AudioWorkletProcessor {
     this._ratio = TARGET_RATE / sampleRate;
     this._position = 0; // in units of *input* samples
     this._prevInputSample = 0;
-    this._haveInput = false;
     this._outBuffer = new Float32Array(FRAME_SAMPLES);
     this._outFilled = 0;
   }
@@ -47,7 +46,11 @@ class LibrepaperDictationCapture extends AudioWorkletProcessor {
       const i0 = Math.floor(pos);
       if (i0 + 1 >= channel.length) break;
       const frac = pos - i0;
-      const s0 = channel[i0];
+      // A fractional position carried over from the last block sits between
+      // that block's final sample and this block's first: without the carried
+      // sample, channel[-1] is undefined and the frame fills with NaN at
+      // every rate that is not an integer multiple of 16 kHz, such as 44.1.
+      const s0 = i0 < 0 ? this._prevInputSample : channel[i0];
       const s1 = channel[i0 + 1];
       const sample = s0 + (s1 - s0) * frac;
       this._pushSample(sample);
@@ -56,6 +59,7 @@ class LibrepaperDictationCapture extends AudioWorkletProcessor {
     // Carry the leftover fractional position into the next block, shifted
     // back by the number of input samples this block consumed.
     this._position = pos - channel.length;
+    this._prevInputSample = channel[channel.length - 1];
     return true;
   }
 

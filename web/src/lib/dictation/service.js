@@ -9,28 +9,14 @@
 // style of `web/src/lib/latex/local.js`, so `web/checks/dictation-service.mjs`
 // can drive the real state machine under Node with fakes.
 //
-// `assemble.js` and `models.js` are being written in parallel on other
-// branches (docs/dictation-interfaces.md's parallel-authorship note) and do
-// not exist in this tree yet. `createDictationService` never imports them:
-// it only calls `deps.assemble(...)` and the `deps.models` methods below,
-// which the check supplies as small fakes. `getDictation()` -- the one
-// caller that needs the real thing -- resolves them with a *dynamic*
-// `import()`, and only inside `start()`, the first time a session actually
-// needs them. A static `import ... from "./models.js"` at the top of this
-// file would fail to resolve the moment Node loaded this module at all,
-// long before any test got a chance to inject a fake; a lazy dynamic import
-// is invisible to Node until the code path that needs the real file
-// actually runs, which happens only from a real page, after every module in
-// docs/dictation-interfaces.md has been merged.
-//
-// deps.models is the models.js module namespace shape, called as methods
-// rather than read as `DEFAULT_MODEL`/`VAD` constants, so the lazily-loaded
-// real module and a synchronous fake look identical to this file:
-//   { modelById(id), defaultModel(), vad(), pickLanguage(model, setting, navigatorLanguages) }
-// Each may return its value directly or a Promise of it; this module always
-// `await`s them, which is a no-op on a plain value.
+// `assemble` and the catalog are reached through `deps` as well, so a check
+// can hand the state machine a fake recognizer vocabulary; the real modules
+// are the defaults.
 
 import { readSettings, confirm as confirmModel, isConfirmed } from "./settings.js";
+import { assemble } from "./assemble.js";
+import { DEFAULT_MODEL, VAD, modelById, pickLanguage } from "./models.js";
+import { openMicrophone } from "./capture.js";
 
 const STATES = Object.freeze({
   IDLE: "idle",
@@ -204,11 +190,14 @@ export function createDictationService(deps) {
         setState({ progress: { loaded: msg.loaded, total: msg.total, file: msg.file } });
         return;
       case "speech": {
+        // The worker reports the detector's view, which flaps through the
+        // short pauses inside a sentence. "Transcribing" therefore means "a
+        // segment may be with the recognizer": on during silence after
+        // speech, off again when speech resumes or the text lands.
         const was = speaking;
         setState({ speaking: !!msg.speaking });
-        if (was && !msg.speaking && state === STATES.LISTENING) {
-          setState({ state: STATES.TRANSCRIBING });
-        }
+        if (was && !msg.speaking && state === STATES.LISTENING) setState({ state: STATES.TRANSCRIBING });
+        else if (msg.speaking && state === STATES.TRANSCRIBING) setState({ state: STATES.LISTENING });
         return;
       }
       case "text":
@@ -474,18 +463,25 @@ export function createDictationService(deps) {
 
 let singleton = null;
 
+// The SPEC 5 download confirmation is a dialog, which lives in a component;
+// the component registers itself here so the service never imports UI.
+// Until one is mounted the download proceeds, which is right for a page
+// without the dialog and wrong for nothing else.
+let downloadConfirmation = () => Promise.resolve(true);
+export function setDownloadConfirmation(fn) {
+  downloadConfirmation = fn || (() => Promise.resolve(true));
+}
+
 function defaultDeps() {
   return {
     createWorker: () => new Worker(new URL("./worker.js", import.meta.url), { type: "module" }),
     openMicrophone: ({ onFrame }) =>
-      import("./capture.js").then(({ openMicrophone }) =>
-        openMicrophone({
-          onFrame,
-          getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
-          AudioContext: window.AudioContext || window.webkitAudioContext,
-          workletUrl: new URL("./capture-worklet.js", import.meta.url),
-        }),
-      ),
+      openMicrophone({
+        onFrame,
+        getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
+        AudioContext: window.AudioContext || window.webkitAudioContext,
+        workletUrl: new URL("./capture-worklet.js", import.meta.url),
+      }),
     storage: (() => {
       try {
         return typeof localStorage !== "undefined" ? localStorage : null;
@@ -496,12 +492,11 @@ function defaultDeps() {
     isSecureContext: () => typeof window !== "undefined" && !!window.isSecureContext,
     hasWebAssembly: () => typeof WebAssembly !== "undefined",
     hasMediaDevices: () => typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia,
-    confirmDownload: () => Promise.resolve(true), // placeholder; a later slice adds the SPEC 5 modal
-    notify: (message, level) => {
-      import("../toast.svelte.js").then(({ problem, said }) => {
-        (level === "error" ? problem : said)(message);
-      });
-    },
+    confirmDownload: (entry) => downloadConfirmation(entry),
+    // Lazy on purpose: the toast store drags Skeleton's Svelte components in,
+    // which Node cannot load, and the checks import this module.
+    notify: (message, level) =>
+      import("../toast.svelte.js").then(({ problem, said }) => (level === "error" ? problem : said)(message)),
     persist: async () => {
       try {
         await navigator.storage?.persist?.();
@@ -511,14 +506,8 @@ function defaultDeps() {
     },
     navigatorLanguages: () => (typeof navigator !== "undefined" ? Array.from(navigator.languages || []) : []),
     now: () => Date.now(),
-    assemble: (before, raw, entry) => import("./assemble.js").then(({ assemble }) => assemble(before, raw, entry)),
-    models: {
-      modelById: (id) => import("./models.js").then(({ modelById }) => modelById(id)),
-      defaultModel: () => import("./models.js").then(({ DEFAULT_MODEL }) => DEFAULT_MODEL),
-      vad: () => import("./models.js").then(({ VAD }) => VAD),
-      pickLanguage: (entry, setting, navigatorLanguages) =>
-        import("./models.js").then(({ pickLanguage }) => pickLanguage(entry, setting, navigatorLanguages)),
-    },
+    assemble,
+    models: { modelById, defaultModel: () => DEFAULT_MODEL, vad: () => VAD, pickLanguage },
   };
 }
 

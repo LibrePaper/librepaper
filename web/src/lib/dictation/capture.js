@@ -5,6 +5,8 @@
 // worklet module's URL -- arrives through arguments rather than the global,
 // so `web/checks/dictation-service.mjs` can drive this exact module under
 // Node with fakes, following the seam in `web/src/lib/latex/local.js`.
+const FIRST_FRAME_WAIT_MS = 2000;
+
 export async function openMicrophone({ onFrame, getUserMedia, AudioContext, workletUrl }) {
   const stream = await getUserMedia({
     audio: {
@@ -33,8 +35,17 @@ export async function openMicrophone({ onFrame, getUserMedia, AudioContext, work
     // contract in docs/dictation-interfaces.md), not merely once the graph
     // is wired -- a worklet can take a render quantum or two to produce its
     // first 512-sample frame.
+    // A device that never delivers a frame (some virtual inputs, a muted
+    // hardware switch) must not leave the caller waiting forever with the
+    // recording indicator lit: after two seconds the graph is considered
+    // live and frames are simply forwarded as they come, if ever.
     await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        node.port.onmessage = (inner) => onFrame(inner.data);
+        resolve();
+      }, FIRST_FRAME_WAIT_MS);
       node.port.onmessage = (event) => {
+        clearTimeout(timer);
         node.port.onmessage = (inner) => onFrame(inner.data);
         onFrame(event.data);
         resolve();
