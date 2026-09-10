@@ -122,10 +122,16 @@ export function createSegmenter({ classify, onSegment, onSpeech, ...overrides })
 
   function push(frame) {
     const gen = generation;
-    chain = chain.then(() => classify(frame)).then((isSpeech) => {
-      if (gen !== generation) return;
-      judge(frame, Boolean(isSpeech));
-    });
+    // A classifier that throws must not poison the chain: every later frame
+    // would reject and dictation would silently stop. A frame the VAD could
+    // not judge is treated as silence, which at worst closes a segment early.
+    chain = chain
+      .then(() => classify(frame))
+      .catch(() => false)
+      .then((isSpeech) => {
+        if (gen !== generation) return;
+        judge(frame, Boolean(isSpeech));
+      });
     return chain;
   }
 

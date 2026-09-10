@@ -195,6 +195,26 @@ async function testReset() {
   );
 }
 
+async function testThrowingClassifyCountsAsSilence() {
+  const segments = [];
+  let calls = 0;
+  const seg = createSegmenter({
+    ...OPTS,
+    classify: async (f) => {
+      calls += 1;
+      if (f[0] === 3) throw new Error("vad exploded");
+      return f[1] === 1;
+    },
+    onSegment: (s) => segments.push(s),
+  });
+
+  for (let i = 0; i < 6; i++) await seg.push(frame(i, true)); // frame 3 throws mid-speech
+  for (let i = 6; i <= 10; i++) await seg.push(frame(i, false));
+
+  check("a throwing classify does not reject push", calls === 11, `classify ran ${calls} times`);
+  check("the segment still closes after the throw", segments.length === 1, `got ${segments.length}`);
+}
+
 function testDefaultsShape() {
   check("DEFAULTS has the documented keys", [
     "sampleRate", "frameSamples", "preRollMs", "closeSilenceMs", "maxSegmentMs", "minSpeechMs",
@@ -228,6 +248,7 @@ const tests = [
   testStrictOrderingWithOutOfOrderAsyncClassify,
   testOnSpeechTransitions,
   testReset,
+  testThrowingClassifyCountsAsSilence,
   testEnergyClassifier,
 ];
 
