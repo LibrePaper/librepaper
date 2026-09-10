@@ -106,7 +106,7 @@ try {
 
   // Citation search supports multiple selections and narrative style.
   await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");
-  await choose("citation");await until("citation dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Citation'`),5000);
+  await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);assert.equal(await dialogTitle(),"Citation","citation action opens the citation dialog");
   await field("Search bibliography","Rivers");await checkCitation("smith2020");
   await field("Search bibliography","");await checkCitation("jones2021");await field("Citation style","narrative");await confirm();
   assert.match((await evaluate("insertState()")).text,/\[?@smith2020; @jones2021\]?/,"citation inserts both selected references in narrative form");
