@@ -65,7 +65,10 @@ export function createFramePreview({
 
   function normalize(payload) {
     if (!payload || (payload.kind !== "pdf" && payload.kind !== "html")) return null;
-    if (payload.kind === "html") return { kind: "html", html: payload.html };
+    if (payload.kind === "html") return {
+      kind: "html", html: payload.html,
+      ...(payload.presentation === "document" ? { presentation: "document" } : {}),
+    };
     const bytes = payload.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload.bytes);
     return { kind: "pdf", sha: payload.sha || null, bytes: bytes.slice() };
   }
@@ -77,7 +80,9 @@ export function createFramePreview({
       const buffer = payload.bytes.slice().buffer;
       send({ type: "preview", pdf: buffer }, [buffer]);
     } else {
-      send({ type: "preview", html: payload.html });
+      send({ type: "preview", html: payload.html,
+        ...(payload.presentation === "document" ? { presentation: "document" } : {}),
+      });
     }
     onDelivered(payload);
     return true;

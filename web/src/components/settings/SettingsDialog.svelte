@@ -3,10 +3,10 @@
   // list of categories at the left, one category at a time at the right. It
   // opens from the navbar menu, never from the sidebar, and any entry point
   // can open it on a given category -- the status bar's connect link lands
-  // on the local app, the render menu on rendering.
+  // on the local app.
   import { tick } from "svelte";
   import Modal from "../Modal.svelte";
-  import { GROUPS, offered, search } from "./registry.js";
+  import { offered, search } from "./registry.js";
   import EditorSettings from "./EditorSettings.svelte";
   import DictationSettings from "./DictationSettings.svelte";
   import StorageSettings from "./StorageSettings.svelte";
@@ -28,7 +28,6 @@
     // The Quarto project and the local app it renders on.
     bindingId = "",
     onbindingid,
-    preview = null,
     options,
     viewing = null,
     onapplyoptions,
@@ -39,18 +38,12 @@
   // The category shown: the one asked for, or the first offered when that is
   // not (the document changed format, or this browser lost the right to edit).
   const shown = $derived(available.find((each) => each.id === category) || available[0]);
-  const group = $derived(GROUPS.find((each) => each.id === shown?.group));
 
   let query = $state("");
   const found = $derived(search(query, context));
-  // The navigation: every group with something in it, either all its offered
-  // categories or, while searching, only those with a matching row.
-  const nav = $derived(
-    GROUPS.map((each) => ({
-      ...each,
-      categories: (found ? found.map((match) => match.category) : available).filter((category) => category.group === each.id),
-    })).filter((each) => each.categories.length),
-  );
+  // The navigation: every offered category or, while searching, only those
+  // with a matching row.
+  const nav = $derived(found ? found.map((match) => match.category) : available);
   const entriesOf = (id) => found?.find((match) => match.category.id === id)?.entries || [];
 
   let body = $state(null);
@@ -66,14 +59,11 @@
   <div class="settings">
     <nav class="settings-nav" aria-label="Settings categories">
       <input class="input input-sm settings-search" type="search" placeholder="Search settings" aria-label="Search settings" bind:value={query} />
-      {#each nav as each (each.id)}
-        <div class="settings-nav-group">{each.says}</div>
-        {#each each.categories as item (item.id)}
-          <button type="button" class="settings-nav-item" class:current={shown?.id === item.id}
-                  aria-current={shown?.id === item.id ? "page" : undefined} onclick={() => go(item.id)}>{item.says}</button>
-          {#each entriesOf(item.id) as entry (entry.id)}
-            <button type="button" class="settings-nav-entry" onclick={() => go(item.id, entry.id)}>{entry.says}</button>
-          {/each}
+      {#each nav as item (item.id)}
+        <button type="button" class="settings-nav-item" class:current={shown?.id === item.id}
+                aria-current={shown?.id === item.id ? "page" : undefined} onclick={() => go(item.id)}>{item.says}</button>
+        {#each entriesOf(item.id) as entry (entry.id)}
+          <button type="button" class="settings-nav-entry" onclick={() => go(item.id, entry.id)}>{entry.says}</button>
         {/each}
       {/each}
       {#if found && !nav.length}<p class="settings-nav-empty">Nothing matches.</p>{/if}
@@ -83,18 +73,18 @@
       {#if shown}
         <header class="settings-head">
           <h3 class="settings-category">{shown.says}</h3>
-          <span class="settings-scope">{group?.note}</span>
+          {#if shown.note}<span class="settings-scope">{shown.note}</span>{/if}
         </header>
         {#if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} />
         {:else if shown.id === "dictation"}
           <DictationSettings />
         {:else if shown.id === "storage"}
-          <StorageSettings {sourceFormat} {mayEdit} />
+          <StorageSettings />
         {:else if shown.id === "compiler"}
           <CompilerSettings {latexSettings} {onlatexsettings} />
         {:else if shown.id === "rendering"}
-          <RenderingSettings {preview} {options} {viewing} {onapplyoptions} />
+          <RenderingSettings {options} {viewing} {onapplyoptions} />
         {:else if shown.id === "local"}
           <LocalAppSettings {sourceFormat} {bindingId} {onbindingid} />
         {/if}

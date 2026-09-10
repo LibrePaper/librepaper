@@ -1,5 +1,5 @@
 // The dictation state machine, against a fake worker, microphone, and
-// target (SPEC-dictation.md 8; docs/dictation-interfaces.md "service.js").
+// target.
 //
 // `assemble.js` and `models.js` are written on other branches in parallel
 // and do not exist in this tree (see the header comment in
@@ -301,7 +301,7 @@ async function testPreconditions() {
 async function testBrowserBackendMissingSpeechRecognition() {
   // No `SpeechRecognition` constructor at all (the default in `makeDeps`) is
   // the "this browser has no built-in dictation" precondition failure, not a
-  // crash -- SPEC 6's table of failure modes.
+  // crash: one of the failure modes service.js enumerates.
   const models = makeModels({ defaultId: MODEL_BROWSER.id });
   const { deps, notifications } = makeDeps({ models });
   const service = createDictationService(deps);
@@ -313,7 +313,7 @@ async function testBrowserBackendMissingSpeechRecognition() {
 
 async function testBrowserBackendSetting() {
   // The stored backend setting, not an explicit model request, picks the
-  // browser catalog entry (SPEC 4.10, service.js contract). No download
+  // browser catalog entry (service.js contract). No download
   // confirmation and no worker are involved.
   const storage = makeStorage();
   storage.setItem("librepaper-dictation-backend", "browser");

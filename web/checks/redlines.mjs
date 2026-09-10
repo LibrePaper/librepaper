@@ -1,7 +1,5 @@
 // Redlines (track changes), the browser half: hunks to paint items, and
 // attribution across the checkpoints between a baseline and a target.
-// `docs/specs/track-changes.md`, "Browser: redlines" and "Tests", is the
-// contract.
 
 import { attribution, attributeChain, authorIndex, itemsFor } from "../src/lib/redlines.js";
 

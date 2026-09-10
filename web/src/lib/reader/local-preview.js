@@ -38,6 +38,7 @@ export function createLocalPreview({
   onRenderingChange,
   onStartingChange,
   onEnded,
+  onError,
   now = () => Date.now(),
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (timer) => clearTimeout(timer),
@@ -53,6 +54,11 @@ export function createLocalPreview({
   let syncBusy = false;
   let syncQueued = false;
   let errorShown = false;
+  let lifecycle = 0;
+  let pendingStart = null;
+  let pendingStop = null;
+  let target = null;
+  let reconciliation = 0;
 
   function setRendering(value) {
     value = !!value;
@@ -92,7 +98,7 @@ export function createLocalPreview({
           setRendering(page?.rendering);
           if (page?.kind === "html") {
             pageEtag = page.etag;
-            publish({ kind: "html", html: page.html });
+            publish({ kind: "html", html: page.html, presentation: "document" });
           } else if (page?.kind === "pdf") {
             pageEtag = page.etag;
             publish({ kind: "pdf", sha: etagToSha(page.etag), bytes: page.bytes });
@@ -126,6 +132,7 @@ export function createLocalPreview({
     onRunningChange?.(null);
     void local.stopLocalPreview(active.id).catch(() => {});
     report(message, isProblem);
+    onError?.(message);
     onEnded?.();
   }
 
@@ -158,16 +165,28 @@ export function createLocalPreview({
   }
 
   async function start() {
+    const mine = lifecycle;
+    if (pendingStart) await pendingStart;
+    if (mine !== lifecycle || session || isDisposed()) return;
+    pendingStart = runStart();
+    try { await pendingStart; }
+    finally { pendingStart = null; }
+  }
+
+  async function runStart() {
     if (session || starting || isDisposed()) return;
+    const mine = lifecycle;
+    const cancelled = () => isDisposed() || lifecycle !== mine;
+    onError?.("");
     setStarting(true);
     try {
       const tree = treeNow();
       await local.syncWorkspace({ tree });
-      if (isDisposed()) return;
+      if (cancelled()) return;
       const options = { entrypoint: entrypointOf(tree), ...optionsOf(tree) };
       const started = await local.startLocalPreview({ engine, job: jobOf(tree), tree, options });
-      if (isDisposed()) {
-        void local.stopLocalPreview(started.id).catch(() => {});
+      if (cancelled()) {
+        await local.stopLocalPreview(started.id).catch(() => {});
         return;
       }
       session = started;
@@ -175,8 +194,13 @@ export function createLocalPreview({
       onRunningChange?.(session);
       startPagePoll(started.id);
       startStatusPoll(started.id);
+      if (syncQueued) {
+        syncQueued = false;
+        void sync();
+      }
     } catch (error) {
-      if (!errorShown) {
+      if (!cancelled()) {
+        onError?.(error.message || `${label} preview unavailable`);
         report(error.message || `${label} preview unavailable`, true);
         errorShown = true;
       }
@@ -186,13 +210,19 @@ export function createLocalPreview({
   }
 
   async function stop() {
+    lifecycle += 1;
+    syncQueued = false;
     const active = session;
-    if (!active) return;
+    if (!active) { await Promise.all([pendingStart, pendingStop]); return; }
     session = null;
     stopPagePoll();
     stopStatusPoll();
     onRunningChange?.(null);
-    await local.stopLocalPreview(active.id).catch(() => {});
+    const stopped = local.stopLocalPreview(active.id).catch(() => {});
+    pendingStop = stopped;
+    await stopped;
+    if (pendingStop === stopped) pendingStop = null;
+    await pendingStart;
   }
 
   // Serialized: at most one sync in flight, and a source change arriving
@@ -200,6 +230,7 @@ export function createLocalPreview({
   // one-for-one. The engine's own file watcher does the rest once the
   // workspace has the new bytes.
   async function sync() {
+    if (starting && !session) { syncQueued = true; return; }
     if (!session || isDisposed()) return;
     if (syncBusy) {
       syncQueued = true;
@@ -210,6 +241,7 @@ export function createLocalPreview({
       await local.syncWorkspace({ tree: treeNow() });
     } catch (error) {
       if (!errorShown) {
+        onError?.(error.message || `${label} preview could not sync`);
         report(error.message || `${label} preview could not sync`, true);
         errorShown = true;
       }
@@ -229,11 +261,20 @@ export function createLocalPreview({
   // moment it stops holding. The whole of what a caller's own `$effect` needs
   // to drive automatic start/stop.
   async function reconcile(active) {
+    const mine = ++reconciliation;
+    const next = active || null;
+    if (target !== next) {
+      target = next;
+      const wasActive = session || starting;
+      if (wasActive || pendingStop) await stop();
+      if (mine !== reconciliation) return;
+      if (!active && wasActive) { onEnded?.(); return; }
+    }
     if (active) {
       await start();
       return;
     }
-    if (session) {
+    if (session || starting || pendingStop) {
       await stop();
       onEnded?.();
     }

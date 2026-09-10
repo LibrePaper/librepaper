@@ -1,5 +1,4 @@
-// Main-thread microphone capture for dictation (SPEC-dictation.md 4.2;
-// docs/dictation-interfaces.md "capture.js and capture-worklet.js").
+// Main-thread microphone capture for dictation.
 //
 // Everything that touches the browser -- getUserMedia, AudioContext, and the
 // worklet module's URL -- arrives through arguments rather than the global,
@@ -25,14 +24,14 @@ export async function openMicrophone({ onFrame, getUserMedia, AudioContext, work
     source.connect(node);
     // The worklet has no output the graph needs to hear, but Chrome only
     // pulls a node's process() calls while it is part of a live render
-    // graph reaching the destination -- SPEC 4.2's frames would silently
+    // graph reaching the destination -- the frames would silently
     // stop the moment a tab is backgrounded otherwise. connect(0)/gain 0
     // would work too; a plain connect to the destination is simplest and
     // costs nothing because the node emits no channels.
     node.connect(context.destination);
 
-    // openMicrophone() resolves once frames are actually flowing (the
-    // contract in docs/dictation-interfaces.md), not merely once the graph
+    // openMicrophone() resolves once frames are actually flowing,
+    // not merely once the graph
     // is wired -- a worklet can take a render quantum or two to produce its
     // first 512-sample frame.
     // A device that never delivers a frame (some virtual inputs, a muted

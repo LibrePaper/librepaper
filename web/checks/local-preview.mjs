@@ -116,7 +116,7 @@ function notRendered(rendering) {
   await flush(); // 304
   await flush(); // pdf
   assert.equal(published.length, 2, "a 304 publishes nothing");
-  assert.deepEqual(published[0], { kind: "html", html: "<p>one</p>" });
+  assert.deepEqual(published[0], { kind: "html", html: "<p>one</p>", presentation: "document" });
   assert.equal(published[1].kind, "pdf");
   assert.equal(published[1].sha, "deadbeef");
   assert.deepEqual([...published[1].bytes], [1, 2, 3]);
@@ -238,3 +238,124 @@ function runTimer(timer) {
 }
 
 console.log("local-preview: all checks passed");
+
+// Edits during startup must be synchronized after the watcher is installed.
+{
+  const gate = deferred();
+  const synced = [];
+  let tree = { main: "main.qmd", revision: 1 };
+  const { setTimer, clearTimer } = timerHarness();
+  const ctl = createLocalPreview({
+    engine: "quarto", treeNow: () => tree, entrypointOf: t => t.main,
+    optionsOf: () => ({}), setTimer, clearTimer,
+    local: {
+      syncWorkspace: async ({tree}) => { synced.push(tree.revision); },
+      startLocalPreview: () => gate.promise,
+      stopLocalPreview: async () => {},
+    },
+  });
+  const started = ctl.start();
+  await new Promise(setImmediate);
+  tree = { ...tree, revision: 2 };
+  await ctl.sync();
+  gate.resolve({ id: "starting-edit" });
+  await started;
+  assert.deepEqual(synced, [1, 2]);
+  await ctl.stop();
+}
+
+// Cancellation waits for startup and removes the late watcher; a restart
+// then uses the latest options, even when settings change during startup.
+{
+  const gate = deferred();
+  const stopped = [];
+  const requested = [];
+  const { setTimer, clearTimer } = timerHarness();
+  let profile = "first";
+  const ctl = createLocalPreview({
+    engine: "quarto", treeNow: () => ({main: "main.qmd"}),
+    entrypointOf: t => t.main, optionsOf: () => ({profile}),
+    setTimer, clearTimer,
+    local: {
+      syncWorkspace: async () => {},
+      startLocalPreview: async ({options}) => {
+        requested.push(options.profile);
+        return requested.length === 1 ? gate.promise : {id: "new"};
+      },
+      stopLocalPreview: async id => stopped.push(id),
+    },
+  });
+  const starting = ctl.start();
+  await new Promise(setImmediate);
+  const stopping = ctl.stop();
+  profile = "second";
+  gate.resolve({id: "old"});
+  await Promise.all([starting, stopping]);
+  assert.equal(ctl.running, false);
+  assert.deepEqual(stopped, ["old"]);
+  await ctl.start();
+  assert.deepEqual(requested, ["first", "second"]);
+  assert.equal(ctl.id, "new");
+  await ctl.stop();
+}
+
+// Errors can be consumed entirely by Diagnostics, and a failed start retries.
+{
+  const errors = [];
+  const {setTimer, clearTimer} = timerHarness();
+  let tries = 0;
+  const ctl = createLocalPreview({
+    engine: "quarto", treeNow: () => ({main: "main.qmd"}),
+    entrypointOf: t => t.main, optionsOf: () => ({}),
+    onError: message => errors.push(message), setTimer, clearTimer,
+    local: {
+      syncWorkspace: async () => {},
+      startLocalPreview: async () => {
+        if (++tries === 1) throw new Error("Quarto is not installed");
+        return {id: "retried"};
+      },
+      stopLocalPreview: async () => {},
+    },
+  });
+  await ctl.start();
+  assert.equal(errors.at(-1), "Quarto is not installed");
+  await ctl.start();
+  assert.equal(ctl.running, true);
+  assert.equal(errors.at(-1), "");
+  await ctl.stop();
+}
+console.log("local-preview: startup edits, cancellation, settings restart and diagnostic-only errors passed");
+
+// Changing files in the same engine releases the old watcher before starting
+// the new one. Repeated stops wait for its actual deletion from the bridge.
+{
+  const gate = deferred();
+  const calls = [];
+  let main = 'first.qmd';
+  const {setTimer, clearTimer} = timerHarness();
+  const ctl = createLocalPreview({
+    engine: 'quarto', treeNow: () => ({main}), entrypointOf: t => t.main,
+    optionsOf: () => ({}), setTimer, clearTimer,
+    local: {
+      syncWorkspace: async () => {},
+      startLocalPreview: async ({options}) => { calls.push(options.entrypoint); return {id:options.entrypoint}; },
+      stopLocalPreview: async id => { calls.push(`stop:${id}`); await gate.promise; },
+    },
+  });
+  await ctl.reconcile(main);
+  main = 'second.qmd';
+  const switching = ctl.reconcile(main);
+  const stopping = ctl.reconcile(false);
+  let stopped = false;
+  void stopping.then(() => { stopped = true; });
+  await new Promise(setImmediate);
+  assert.equal(stopped, false);
+  assert.deepEqual(calls, ['first.qmd','stop:first.qmd']);
+  gate.resolve();
+  await Promise.all([switching, stopping]);
+  assert.equal(ctl.running, false);
+  await ctl.reconcile(main);
+  assert.equal(ctl.id, 'second.qmd');
+  await ctl.stop();
+}
+console.log('local-preview: file switches serialize watcher teardown and restart');

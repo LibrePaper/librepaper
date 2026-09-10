@@ -1,7 +1,6 @@
 // Suggestions (track changes), the browser half: the card's diff runs, the
 // modal's prefill rule, and the accept/error state transitions, as pure
-// functions. `docs/specs/track-changes.md`, "Browser: suggestions" and
-// "Tests", is the contract.
+// functions.
 
 import {
   applyDecision,

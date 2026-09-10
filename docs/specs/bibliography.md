@@ -44,8 +44,8 @@ never assumed.
 **What is deliberately not built.** Not a server-side Zotero sync. It would be
 the first third-party credential LibrePaper stores and the first background job
 it runs for a user, and it would drag in secret storage and rotation, token
-revocation, the interaction with the retention and erasure rules in
-[catalog.md](catalog.md), and a rate-limited third-party API on the serving
+revocation, the interaction with the catalogue's retention and erasure rules, and a
+rate-limited third-party API on the serving
 path. A browser-only author with no Zotero on the machine exports a `.bib`
 from Zotero and uploads it, which is the workflow they have today and which
 keeps working.
@@ -56,7 +56,7 @@ keeps working.
 - No server-side Zotero sync or writing back to Zotero; imports are one-way.
 - No searching Crossref, PubMed, arXiv, or other external databases.
 - No changes to citation rendering or citation-style configuration.
-- Registering and rendering `.qmd` documents belongs to [quarto.md](quarto.md).
+- Registering and rendering `.qmd` documents is Quarto support, not this work.
 
 ## Order of work
 
@@ -94,5 +94,3 @@ continues to work when Zotero is unavailable.
 ## References
 
 - [Local bridge protocol](../../crates/librepaper/src/local/protocol.rs) -- local service wire contract.
-- [quarto.md](quarto.md) -- remaining Quarto support.
-- [catalog.md](catalog.md) -- secrets, retention, and erasure constraints.

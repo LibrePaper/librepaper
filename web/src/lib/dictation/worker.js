@@ -1,8 +1,8 @@
-// The recognizer worker: SPEC-dictation.md 4.3 and 4.4, but run together in
-// one worker rather than split across the service, per
-// docs/dictation-interfaces.md. It owns the Transformers.js pipeline, the
-// Silero VAD, and the segmenter (from ./segment.js, written in parallel
-// against that module's contract -- this file must not implement it).
+// The recognizer worker: detection, segmentation and recognition run
+// together in one worker rather than split across the service. It owns the
+// Transformers.js pipeline, the Silero VAD, and the segmenter (from
+// ./segment.js, written in parallel against that module's contract -- this
+// file must not implement it).
 //
 // Protocol follows the LaTeX renderer worker (renderer-worker.js): every
 // request carries an `id`, replies carry the same `id`, and unsolicited
@@ -13,7 +13,7 @@ import { pipeline, AutoModel, Tensor, env } from "@huggingface/transformers";
 import { createSegmenter, createEnergyClassifier } from "./segment.js";
 
 // The ONNX Runtime wasm binary and its .mjs loader, served from this origin
-// and never a CDN (SPEC 4.4). Transformers.js's own dist only ships the .mjs
+// and never a CDN. Transformers.js's own dist only ships the .mjs
 // glue for the browser bundle it picks (onnxruntime-web's threaded "asyncify"
 // build); the paired .wasm binary lives in onnxruntime-web, a dependency of
 // @huggingface/transformers already present in node_modules. Its exports map
@@ -26,12 +26,11 @@ env.backends.onnx.wasm.wasmPaths = {
   wasm: new URL("onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm", import.meta.url).href,
 };
 // Models come from the Hub, pinned by revision, and stay in the browser's
-// Cache Storage across sessions (SPEC 4.4).
+// Cache Storage across sessions.
 env.allowRemoteModels = true;
 env.useBrowserCache = true;
 
-// The pipeline call options per catalog id (docs/dictation-interfaces.md,
-// "worker.js protocol"). A table, not a switch, so `checks/dictation-models.mjs`
+// The pipeline call options per catalog id. A table, not a switch, so `checks/dictation-models.mjs`
 // can assert every catalog entry is covered by reading this file as text.
 const CALL_OPTIONS = {
   "whisper-base": (language) => (language ? { language, task: "transcribe" } : { task: "transcribe" }),
@@ -58,7 +57,7 @@ function freshVadState() {
 }
 
 // Speech above 0.5, silence below 0.35: hysteresis so a probability dip mid
-// word does not chop the segment (SPEC 4.3).
+// word does not chop the segment.
 const VAD_ENTER = 0.5;
 const VAD_EXIT = 0.35;
 
@@ -83,7 +82,7 @@ function reply(id, kind, extra) {
 }
 
 // classify() for the segmenter: the VAD when it loaded, otherwise the energy
-// fallback (SPEC 4.3). A fresh closure per `start` so its hysteresis and
+// fallback. A fresh closure per `start` so its hysteresis and
 // running state do not leak from one dictation session into the next.
 function makeClassifier() {
   if (!vadModel) return createEnergyClassifier();
@@ -119,7 +118,7 @@ async function loadVad(vad) {
       dtype: "fp32",
     });
   } catch {
-    // Falls back to the energy classifier (SPEC 4.3); not fatal to `load`.
+    // Falls back to the energy classifier; not fatal to `load`.
     return null;
   }
 }

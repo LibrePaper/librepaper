@@ -2,10 +2,10 @@
 // bundles through the API, then verify context selection, atomic replacement,
 // and reader access all work over HTTP.
 //
-// The reader no longer paints a published bundle into its pane (see
-// SPEC-quarto.md section 1.1): a document shows either the Markdown preview
-// or a live Quarto preview run through a paired local app, never a
-// previously published bundle's cached figures, "Full artifact" frame, or
+// The reader no longer paints a published bundle into its pane: a document
+// shows either the Markdown preview or a live Quarto preview run through a
+// paired local app, never a previously published bundle's cached figures,
+// "Full artifact" frame, or
 // freshness text ("Results may be outdated", "Showing saved results", etc.),
 // and there is no Render settings/Saved results dialog in the reader UI to
 // drive. Those UI checks have been removed from this script; what remains

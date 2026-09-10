@@ -50,6 +50,8 @@ include a UUID-shaped `temp_id`, kept unchanged across retries.
 | `delete` | `comment_id` | — |
 | `anchor` | `comment_id`, `source` | — |
 | `refine` | `comment_id`, `proposed`, `expected_proposed`, `revision` | `body` |
+| `accept` | `comment_id` | — |
+| `reject` | `comment_id` | — |
 
 `source` is `{path, exact, prefix, suffix, position}`: the file path and
 selected source text, with optional surrounding text and a nonnegative
@@ -91,6 +93,13 @@ suggestion, or an acceptance still pending is refused. The resulting `refine`
 event carries `comment_id` and the full updated `comment`. Retrying an already
 applied replacement and note returns a no-op. Refining a proposal never changes
 the document source.
+
+`accept` and `reject` decide a pending suggestion and need an editor. Accepting
+applies the proposal to the live source, takes a checkpoint, and answers with
+`resolved_in`; when the passage has changed since the suggestion was made the
+answer is `type: error` with `stale: true` and nothing is applied. Rejecting
+resolves without applying. A retry with the same `request_id` returns the
+recorded outcome with `noop: true`.
 
 ## Checkpoints
 
@@ -135,8 +144,8 @@ marker. The existing Yjs messages remain the synchronization transport:
   that socket. Incoming `y-update` frames from other peers must also be
   applied locally.
 - y-checkpoint receives the checkpoint result shapes above.
-- comment, reply, resolve, delete, and anchor receive the annotation result
-  shapes above.
+- comment, reply, resolve, delete, anchor, refine, accept, and reject receive
+  the annotation result shapes above.
 
 Every requested room operation must carry a request_id when the caller needs
 correlation. Errors are explicit and are never silently dropped for an

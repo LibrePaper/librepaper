@@ -579,8 +579,7 @@ The paired app renders against that project instead of its hosted workspace
 for this document. Revoke it with `librepaper local unbind-quarto <binding>`.
 
 For parser inspection without execution, use
-`librepaper quarto inspect paper.qmd`. The design and compatibility boundaries
-are documented in [SPEC-quarto.md](SPEC-quarto.md).
+`librepaper quarto inspect paper.qmd`.
 
 ### Typst documents with Calepin
 

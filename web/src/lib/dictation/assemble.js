@@ -1,6 +1,6 @@
 // Turns one recognizer segment into the exact string to insert at the caret.
 //
-// This is pure and dependency-free (SPEC 4.6, docs/dictation-interfaces.md)
+// This is pure and dependency-free
 // so `web/checks/dictation-assemble.mjs` can run it under Node, and so the
 // service can call it synchronously on every worker `text` message without
 // worrying about ambient state. It never looks far into `before`: only the

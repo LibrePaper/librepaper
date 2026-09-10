@@ -156,3 +156,15 @@
 	--radius-container: 0.5rem;
 	--text-scaling: 1;
 }
+
+/* Skeleton declares its edge widths as `var(--default-ring-width, 1px)` on
+   the same property, which is a cycle: the browser drops the value, the
+   inset ring of its text fields, which depends on it, never renders, and
+   the only edge a field ever showed was the browser's own focus outline.
+   Declaring the widths plainly, unlayered, wins the cascade and ends the
+   cycle. */
+:root, :host {
+  --default-border-width: 1px;
+  --default-ring-width: 1px;
+  --default-outline-width: 1px;
+}

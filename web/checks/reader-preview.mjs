@@ -392,4 +392,24 @@ function timerHarness() {
   assert.deepEqual(puts, [""], "teardown after the main PUT suppresses synctex");
 }
 
+// Local Quarto styling must survive both initial delivery and frame replay.
+{
+  const sent = [];
+  const frame = createFramePreview({
+    slug: "quarto", getDocsOrigin: () => "https://docs.test", framePath: () => "raw",
+    api: { frame: async () => ({ ok: false }) }, setSource: () => {},
+    send: message => sent.push(message),
+  });
+  frame.navigate();
+  frame.publish({ kind: "html", html: "<p>Quarto</p>", presentation: "document" });
+  assert.equal(sent.length, 0);
+  frame.markReady();
+  frame.replay();
+  assert.equal(sent.at(-1).presentation, "document");
+  frame.publish({ kind: "html", html: "<p>Markdown</p>" });
+  assert.equal(sent.at(-1).presentation, undefined);
+  frame.replay();
+  assert.equal(sent.at(-1).presentation, undefined);
+}
+
 console.log("reader-preview: all checks passed");

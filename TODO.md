@@ -12,16 +12,15 @@ says which.
   opening its own SQLite connection outside the execution boundary and
   shutdown.
 - Paginate `catalog_entries` and `documents()`, which are unbounded reads.
-- Distributed backup ownership: conditional claims, fencing, stale-owner
-  recovery. `BackupOwnership` supports single-authority deployments only.
-- A room fenced by the encoded-size backstop stays read-only until it is
-  reopened; a transient fault there needs a reopen path.
+  `Catalog::documents_page` already exists as the keyset primitive and has
+  no callers yet.
+- A room fenced as `FenceReason::Oversized` stays read-only until its
+  instance is evicted, and eviction refuses a dirty session, so an oversized
+  write leaves no way back short of a restart.
 - Checkpoint rate limiting counts in fixed hourly buckets (`bucket = now /
   3600`) where the doc comments describe a rolling hour.
 - Comment, reply and suggestion catalogue writes do not carry the session
   generation that ownership transfer and room-level mutations check.
-- Hosted recovery, R2 fencing and automatic takeover are designed in
-  [docs/specs/failover.md](docs/specs/failover.md) and not built.
 
 ## Known ways work can be lost, kept deliberately
 
@@ -46,13 +45,9 @@ says which.
 
 ## Directories
 
-- The sandbox's `max_assets` is the default 32 MB; it was to be measured
-  against the R2 bill and set lower. Cost bounding comes before every other
-  concern there, and the number is still a default.
-- Fonts for typst. A `.otf` or `.ttf` in the directory is stored and
-  versioned and not offered to typst, whose font book is built once from
-  the static faces. Building it per compile from those plus the directory's
-  is a step of its own, once someone needs a font the engine does not ship.
+- The sandbox's `max_assets` is the default 32 MB. Nobody has measured what
+  a public deployment on one disk can afford, so the number is still a
+  default rather than a decision.
 - A zip in. The editor hands back the directory as a zip; a zip dropped on
   the landing page -- the Overleaf habit -- would make `publish <directory>`
   reachable from the browser. Small, once the routes exist; not scheduled.
@@ -74,3 +69,69 @@ says which.
   `web/checks/latex-browser.mjs`) run Chromium. Other workflows already have
   Firefox checks, but LaTeX still needs Firefox and Safari coverage and
   validation on memory-constrained devices.
+
+## Quarto
+
+Source, live preview through the paired local app, result bundles, capture,
+binding, sync, and isolation all shipped. What did not:
+
+- The draft passes `:::` divs through verbatim. Callouts, columns, tabsets,
+  margin content, conditional content (`when-format`, profiles), and
+  shortcodes other than `{{< include >}}` render as their source. The
+  parser in `web/src/lib/engines/quarto.js` already tracks fences and
+  spans; the missing part is a rendering for each family.
+- The draft applies none of `echo`, `include`, `output`, `eval` or
+  `code-fold`: every cell shows verbatim. That was chosen over guessing.
+- Quarto preview is HTML only. `QuartoWatch::kind()` in
+  `crates/librepaper/src/local/preview/quarto.rs` is hard-wired to HTML;
+  a `--to pdf` preview would use the existing PDF reader, as Calepin's does.
+- Interactive widgets in a live surface. `web/src/lib/results-interactive.js`
+  isolates them, but its only consumer,
+  `web/src/components/ResultsArtifactBrowser.svelte`, is no longer mounted
+  anywhere. It is dead code until a surface wants it.
+- Website and book projects are collected and tested on the capture side
+  but the live preview accepts document scope only.
+- Render settings. The profile and parameters in
+  `web/src/components/settings/RenderingSettings.svelte` still feed the
+  preview request; the intended product has no render settings to
+  configure.
+- Navigation from a generated table cell or inline value to its source.
+  The draft marks generated markup with `data-librepaper-generated` and
+  nothing consumes it.
+- Unlabelled cells are matched by a unique source digest and lose their
+  results when duplicated or moved. A sidecar identity anchored to source
+  ranges in the CRDT would survive that; nothing decides whether it
+  survives a sync rewrite.
+- `librepaper local doctor` reports Quarto but never the Calepin tool.
+- No declared Quarto version support matrix, and the real-toolchain R and
+  Python tests are all `#[ignore]`d with no job that runs them. The
+  end-to-end gate (pair, live repaint, disconnect, reconnect, R then Python)
+  has no automated run; `web/tools/quarto-e2e.mjs` is HTTP-only.
+- `web/tools/quarto-benchmark.mjs` prints draft timings but asserts no
+  budget and has no large fixture.
+- Confinement (`bwrap`, `sandbox-exec`, none) is detected and reported, but
+  there is no model for granting a render access to data or the network.
+
+## Dictation
+
+- The dictation section of the settings panel is inside the reader's
+  settings tab, which only editors can open. Readers who only comment cannot
+  change the model.
+- The local app could serve model files: one download shared by every
+  browser on a machine and a pinned copy on disk. A new job kind and a CLI
+  command for a small gain, and it excludes everyone without the app. Only
+  worth revisiting together with the next item.
+- Native inference in the local app. Several times faster than wasm on
+  machines without WebGPU, and the only path to Parakeet TDT, Canary, and
+  streaming models. It puts an inference engine into the single static
+  binary on three platforms, must be gated so the public server never runs
+  it, and needs a streaming addition to the local protocol. The capture and
+  insertion code in `web/src/lib/dictation/` is what such a backend would
+  reuse.
+- Serving model files from the LibrePaper server, for self-hosters who want
+  no dependency on Hugging Face. Not for the sandbox, whose hosting limits
+  large files. A small addition when wanted.
+- A streaming model as the default. Words while speaking is a better feeling
+  than words after a pause, but the models that do it in the browser today
+  are English-centric or weaker than Whisper small. Revisit when the catalog
+  can take one without a second code path.

@@ -1,6 +1,6 @@
 // "Remove downloaded model" against a fake Cache Storage, so
 // web/src/lib/dictation/purge.js is driven under Node the same way as the
-// rest of dictation (docs/dictation-interfaces.md; SPEC-dictation.md 4.8).
+// rest of dictation.
 
 import { removeCachedModel } from "../src/lib/dictation/purge.js";
 

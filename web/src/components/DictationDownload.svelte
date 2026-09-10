@@ -1,5 +1,5 @@
 <script>
-  // SPEC-dictation.md 5: before the first download of a model, the reader
+  // Before the first download of a model, the reader
   // sees what is about to happen and can say no. The service knows nothing
   // about dialogs -- it calls whatever `setDownloadConfirmation` last
   // registered (service.js) and awaits a boolean -- so this component is the

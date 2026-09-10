@@ -1,65 +1,60 @@
-// The map of the settings dialog: the categories, the group each sits in, and
-// when each is offered. The dialog draws its navigation from this and searches
-// it; what a category shows is a component beside this file.
+// The map of the settings dialog: the categories and when each is offered.
+// The dialog draws its navigation from this and searches it; what a category
+// shows is a component beside this file.
 //
-// The groups are scopes. A setting either belongs to this browser, to the
-// document everyone is editing, or to the LibrePaper app on this computer,
-// and the question a person asks of every setting -- who else does this
-// change? -- is answered once, by where it sits, rather than by a sentence
-// under every control.
-
-export const GROUPS = [
-  { id: "browser", says: "This browser", note: "Applies only to this browser." },
-  { id: "document", says: "This document", note: "Shared with everyone who edits this document." },
-  { id: "computer", says: "This computer", note: "The LibrePaper app running on this computer." },
-];
+// Most settings belong to this browser alone. The two that do not say so in
+// their `note`, shown under the category's title: the LaTeX compiler choice
+// is shared with everyone editing the document, and the local app is the one
+// running on this computer.
 
 // `offered` answers with the document's format and whether this browser may
 // edit it. `terms` are the words somebody might type when looking for a row
 // and not finding its title.
 const everyone = () => true;
-const editor = ({ mayEdit }) => mayEdit;
 const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
 const local = ({ format, mayEdit }) => (format === "latex" || format === "quarto") && mayEdit;
 
 export const CATEGORIES = [
   {
-    id: "editor", group: "browser", says: "Editor", offered: everyone,
+    id: "editor", says: "Editor", offered: everyone,
     entries: [{ id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" }],
   },
   {
-    id: "dictation", group: "browser", says: "Dictation", offered: everyone,
+    id: "dictation", says: "Dictation", offered: everyone,
     entries: [
       { id: "dictation-backend", says: "Speech recognition", terms: "backend browser device whisper privacy audio" },
       { id: "dictation-model", says: "Model", terms: "whisper parakeet download size" },
       { id: "dictation-language", says: "Language", terms: "detect automatically" },
       { id: "dictation-status", says: "Loaded model", terms: "webgpu cpu wasm device running" },
+      { id: "dictation-downloads", says: "Downloaded models", terms: "storage cache clear remove free space whisper" },
     ],
   },
   {
-    id: "storage", group: "browser", says: "Storage", offered: everyone,
+    id: "storage", says: "Storage", offered: latex,
     entries: [
-      { id: "storage-latex", says: "Downloaded LaTeX files", terms: "cache clear free space packages compiler", offered: latex },
-      { id: "storage-dictation", says: "Speech models", terms: "cache clear remove download whisper" },
+      { id: "storage-latex", says: "Downloaded LaTeX files", terms: "cache clear free space packages compiler" },
     ],
   },
   {
-    id: "compiler", group: "document", says: "Compiler", offered: latex,
+    id: "compiler", says: "Compiler", offered: latex,
+    note: "Shared with everyone who edits this document.",
     entries: [
       { id: "compiler-engine", says: "PDF compiler", terms: "engine pdflatex xelatex lualatex automatic" },
       { id: "compiler-release", says: "Browser compiler version", terms: "release update pin undo" },
     ],
   },
   {
-    id: "rendering", group: "document", says: "Rendering", offered: quarto,
+    id: "rendering", says: "Quarto", offered: quarto,
+    note: "How this browser previews the document. Not shared.",
     entries: [
-      { id: "rendering-preview", says: "Local preview", terms: "open url" },
-      { id: "rendering-options", says: "Format and profile", terms: "format profile parameters pdf html" },
+      { id: "rendering-profile", says: "Profile", terms: "quarto profile render preview" },
+      { id: "rendering-parameters", says: "Parameters", terms: "quarto params parameters json render preview" },
     ],
   },
   {
-    id: "local", group: "computer", says: "Local app", offered: local,
+    id: "local", says: "Local app", offered: local,
+    note: "The LibrePaper app running on this computer.",
     entries: [
       { id: "local-status", says: "Connection", terms: "connect disconnect retry status" },
       { id: "local-pairing", says: "Pairing code", terms: "pair code allow site" },

@@ -86,7 +86,7 @@
 </SettingRow>
 
 {#if quarto}
-  <SettingRow id="local-binding" title="Binding ID" description="Which of the local app's workspaces this project renders in. Filled in when the app pairs; change it only if the app tells you to.">
+  <SettingRow id="local-binding" title="Binding ID" description="An explicitly granted local project for render jobs. Live preview uses the shared project workspace synchronized from this browser.">
     <input class="input input-sm setting-input" type="text" aria-label="Local Quarto binding ID" placeholder="binding ID" value={bindingId}
            onchange={(event) => onbindingid?.(event.currentTarget.value.trim())} />
   </SettingRow>

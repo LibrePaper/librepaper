@@ -318,7 +318,8 @@
   }
 
   /// The text as it stands, which is what a save publishes.
-  export function text() {
+  export function text(expectedFile) {
+    if (expectedFile && showing !== expectedFile) return null;
     return view ? view.state.doc.toString() : "";
   }
 
@@ -342,8 +343,7 @@
     view?.focus();
   }
 
-  /// Dictation's landing spot (SPEC-dictation.md 4.7, docs/dictation-interfaces.md
-  /// "targets.js"): replaces the main selection with `text` through an
+  /// Dictation's landing spot: replaces the main selection with `text` through an
   /// ordinary CodeMirror transaction, so collaborators, undo history, and
   /// track changes see it the same as a keystroke. Returns false rather than
   /// throwing when there is no view, since the service checks `alive()`
@@ -476,7 +476,7 @@
   }
 
   /// What `assemble()` looks at to decide spacing and capitalization for the
-  /// next dictated segment (SPEC-dictation.md 4.6): the document text just
+  /// next dictated segment: the document text just
   /// before the caret, capped so a huge file does not get copied on every
   /// segment.
   export function textBeforeCaret(limit = 200) {
@@ -488,7 +488,7 @@
   /// `null` when Vim keys are not the live compartment's content -- either
   /// nobody has turned Vim on, or the package is still downloading -- and
   /// otherwise "insert" or "normal" from the vim state's own `insertMode`
-  /// flag. Visual and replace read as "normal" here: SPEC 6 only cares
+  /// flag. Visual and replace read as "normal" here: dictation only cares
   /// whether typed characters land as text, and only insert mode does that.
   export function vimMode() {
     if (!view || !resolvedGetCM) return null;
@@ -499,7 +499,7 @@
   }
 
   /// Whether this editor is still a live target: the service checks this
-  /// before every insertion (SPEC 4.7) so a pane closed mid-dictation drops
+  /// before every insertion so a pane closed mid-dictation drops
   /// the text with a toast instead of writing nowhere.
   export function alive() {
     return !!view && !!view.dom && view.dom.isConnected;

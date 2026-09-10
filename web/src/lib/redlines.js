@@ -1,7 +1,6 @@
 // Redlines: turning the history panel's word-diff hunks into paint
 // instructions for the frame, and working out whose name -- and whose
 // colour -- belongs on them.
-// `docs/specs/track-changes.md`, "Browser: redlines", is the contract.
 //
 // Pure functions only, so `web/checks/redlines.mjs` can check both without a
 // browser: the hunk shapes come from `history.hunks` (see `Reader.svelte`'s

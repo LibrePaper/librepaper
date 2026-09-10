@@ -1,5 +1,5 @@
 //! Suggestions: a proposed replacement for a passage, inert until an editor
-//! accepts it. See docs/specs/track-changes.md.
+//! accepts it.
 
 use serde_json::json;
 

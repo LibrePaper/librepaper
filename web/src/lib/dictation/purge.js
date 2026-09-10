@@ -1,4 +1,4 @@
-// "Remove downloaded model" (SPEC-dictation.md 4.8, 4.10) has to reach into
+// "Remove downloaded model" has to reach into
 // Transformers.js's own cache rather than ask the library, which has no
 // eviction API of its own. It stores every model file in the Cache Storage
 // cache named "transformers-cache" (confirmed against

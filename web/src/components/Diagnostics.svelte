@@ -7,6 +7,8 @@
     main = "",
     canOpen = () => false,
     onopen,
+    localAppProblem = false,
+    onretrylocal,
     // The two LaTeX-only additions: what actually produced the current
     // preview, and every backend that was tried to get there. Both come
     // straight off the compile result Reader.svelte kept as
@@ -34,6 +36,9 @@
 
 <section class="panel" aria-label="Warnings and errors">
   <PanelHeader title="Diagnostics" />
+  {#if localAppProblem}
+    <button type="button" class="btn btn-sm preset-tonal-primary mb-4" onclick={onretrylocal}>Reconnect and retry preview</button>
+  {/if}
   {#if provenance}
     <details class="mb-4">
       <summary class="panel-section-title">Compiled with</summary>

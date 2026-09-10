@@ -1,5 +1,4 @@
-// Dictation's localStorage keys (SPEC-dictation.md 4.10;
-// docs/dictation-interfaces.md "settings.js").
+// Dictation's localStorage keys.
 //
 // `storage` is passed in rather than read from the global so the service and
 // its checks can supply `null` (storage disabled or unavailable) or a fake.

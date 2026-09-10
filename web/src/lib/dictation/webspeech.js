@@ -1,7 +1,7 @@
-// The "browser built-in" dictation backend (SPEC-dictation.md 1.1, the
-// browser-built-in backend row of 4.5, and section 7's "different product"
-// paragraph). It wraps the Web Speech API's `SpeechRecognition` the same way
-// `capture.js` wraps `getUserMedia`: the constructor arrives as a parameter
+// The "browser built-in" dictation backend: a different product from the
+// local models, since audio leaves the machine. It wraps the Web Speech
+// API's `SpeechRecognition` the same way `capture.js` wraps `getUserMedia`:
+// the constructor arrives as a parameter
 // so this module never touches a browser global directly and
 // `web/checks/dictation-webspeech.mjs` can drive it under Node with a fake.
 //

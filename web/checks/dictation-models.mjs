@@ -1,8 +1,7 @@
 // Catalog shape and language-picking behavior for
 // web/src/lib/dictation/models.js, plus a check that the recognizer worker's
 // options table (web/src/lib/dictation/worker.js) has not silently dropped a
-// catalog entry. See SPEC-dictation.md section 8 and
-// docs/dictation-interfaces.md.
+// catalog entry.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

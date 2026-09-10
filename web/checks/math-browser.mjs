@@ -46,11 +46,23 @@ try {
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("agent loaded", () => page.evaluate("window.published.length > 0"), 10000);
 
-  const preview = (html) => page.evaluate(`postMessage({librepaper:true,type:"preview",html:${JSON.stringify(html)}},"*")`);
+  const preview = (html, presentation) => page.evaluate(`postMessage(${JSON.stringify({librepaper:true,type:"preview",html,presentation})},"*")`);
+
+  // Switching to local Quarto keeps its root layout selectors and stops
+  // imposing the Markdown canvas. Switching back removes its attributes.
+  await preview('<html lang="fr"><head><style>body.fullcontent { max-width: 1100px; padding: 7px; } body.fullcontent main { color: rgb(12, 34, 56); }</style></head><body class="fullcontent" id="quarto" onload="window.badHandler=true"><main>Quarto output</main></body></html>', "document");
+  await until("Quarto output published", () => page.evaluate('window.published.at(-1) === "Quarto output"'), 5000);
+  assert.equal(await page.evaluate('getComputedStyle(document.body).maxWidth'), "1100px");
+  assert.equal(await page.evaluate('getComputedStyle(document.body).padding'), "7px");
+  assert.equal(await page.evaluate('getComputedStyle(document.querySelector("main")).color'), "rgb(12, 34, 56)");
+  assert.equal(await page.evaluate('document.documentElement.lang'), "fr");
+  assert.equal(await page.evaluate('document.body.hasAttribute("onload")'), false);
 
   // No math, nothing fetched.
   await preview("<!doctype html><html><head><title>Plain</title></head><body><p>No formulas here.</p></body></html>");
   await until("plain text published", () => page.evaluate('window.published.at(-1) === "No formulas here."'), 5000);
+  assert.equal(await page.evaluate('getComputedStyle(document.body).maxWidth'), "800px");
+  assert.equal(await page.evaluate('document.body.hasAttribute("class") || document.body.hasAttribute("id") || document.documentElement.hasAttribute("lang")'), false);
   assert.equal(await page.evaluate('document.querySelectorAll("link[href*=katex], script[src*=katex]").length'), 0);
 
   // Math: KaTeX arrives from this origin, the spans are rendered, and the

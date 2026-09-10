@@ -176,6 +176,13 @@ main.reader {
 .panel-muted { color: var(--panel-muted); }
 .panel-meta { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
 .panel :where(input, textarea, select) { font-family: inherit; font-size: inherit; }
+/* Skeleton's text fields draw their edge as an inset ring and only make the
+   native focus outline transparent; Safari paints an `auto` outline in its
+   own blue regardless, and a scrolling ancestor clips it to a few sides. The
+   ring is the focus indicator, so the outline goes. Controls the browser
+   draws itself keep theirs. */
+textarea:focus-visible, select:focus-visible,
+input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]):focus-visible { outline: none; }
 
 /* ---------------------------------------------------------------- timeline */
 
@@ -1039,7 +1046,6 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 }
 .settings-nav { display: flex; flex-direction: column; gap: --spacing(0.5); min-height: 0; overflow-y: auto; padding-right: --spacing(2); border-right: 1px solid var(--color-divider); }
 .settings-search { margin-bottom: --spacing(2); }
-.settings-nav-group { margin-top: --spacing(3); padding: --spacing(1) --spacing(2); color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: var(--panel-title-weight); text-transform: uppercase; letter-spacing: 0.04em; }
 .settings-nav-item, .settings-nav-entry { display: block; width: 100%; padding: --spacing(1.5) --spacing(2); border-radius: var(--radius-base); text-align: left; font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 .settings-nav-item:hover, .settings-nav-entry:hover { background-color: var(--color-row-hover); }
 .settings-nav-item.current { background-color: var(--color-row-hover); font-weight: var(--panel-title-weight); }
@@ -1064,9 +1070,11 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .setting-value { color: var(--panel-muted); }
 .setting-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); max-width: 100%; }
 /* A text field on the card has to be seen to be a field: Skeleton's input is
-   the card's own colour until it is focused. */
-.setting-input, .settings-search { background-color: var(--color-row-hover); border: 1px solid var(--color-divider); }
+   the card's own colour, so its ring takes the divider's colour until focus. */
+.setting-input, .settings-search { background-color: var(--color-row-hover); --tw-ring-color: var(--color-divider); }
 .setting-input { width: 14rem; max-width: 100%; }
+.setting-textarea { width: 100%; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); font-size: var(--panel-meta-size); background-color: var(--color-row-hover); --tw-ring-color: var(--color-divider); }
+.setting-error { margin: 0; color: var(--color-error-600-400); font-size: var(--panel-meta-size); }
 .setting-table { font-size: var(--panel-meta-size); border-collapse: collapse; }
 .setting-table th, .setting-table td { text-align: left; padding: --spacing(1) --spacing(4) --spacing(1) 0; }
 .setting-log { font-size: var(--panel-meta-size); max-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }
@@ -1082,7 +1090,6 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   .settings { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .settings-nav { flex-direction: row; flex-wrap: wrap; align-items: center; gap: --spacing(1); overflow: visible; padding-right: 0; padding-bottom: --spacing(2); border-right: 0; border-bottom: 1px solid var(--color-divider); }
   .settings-search { width: 100%; margin-bottom: --spacing(1); }
-  .settings-nav-group { display: none; }
   .settings-nav-item, .settings-nav-entry { width: auto; }
   .setting-row { grid-template-columns: minmax(0, 1fr); }
   .setting-control { justify-content: flex-start; }

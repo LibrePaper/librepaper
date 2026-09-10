@@ -1,4 +1,4 @@
-//! The `suggest`, `accept` and `reject` commands. See docs/specs/track-changes.md.
+//! The `suggest`, `accept` and `reject` commands.
 
 #![allow(unused_imports)]
 use serde_json::json;

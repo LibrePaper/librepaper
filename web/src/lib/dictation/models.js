@@ -1,8 +1,7 @@
 // The dictation model catalog: what the settings panel offers, and what the
 // recognizer worker needs to fetch and run each entry. Pure and browser-free
 // so `web/checks/dictation-models.mjs` drives it under Node, the same
-// discipline as `web/src/lib/latex/local.js`. See SPEC-dictation.md 4.5 and
-// `docs/dictation-interfaces.md`.
+// discipline as `web/src/lib/latex/local.js`.
 //
 // Revisions are pinned by hand, in the spirit of `wasm-modules.lock`: moving
 // one is a commit that says why, not a routine dependency bump.
@@ -108,7 +107,7 @@ export function supportsLanguage(model, tag) {
   return model.languages.includes(primary);
 }
 
-// SPEC 4.9: a setting other than "auto" wins when the model supports it;
+// Language choice: a setting other than "auto" wins when the model supports it;
 // otherwise the first navigator language the model supports; otherwise null
 // (the recognizer's own auto-detection, when it has one).
 export function pickLanguage(model, setting, navigatorLanguages) {

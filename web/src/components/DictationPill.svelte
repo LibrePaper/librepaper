@@ -1,5 +1,5 @@
 <script>
-  // SPEC-dictation.md 4.8 "Status pill": the shortcut has no button of its
+  // The status pill: the shortcut has no button of its
   // own to show feedback on, and a dictation started in a panel that later
   // scrolls out of view still needs somewhere to be stopped from. This is
   // that somewhere -- fixed to the window, not to any pane, so it survives

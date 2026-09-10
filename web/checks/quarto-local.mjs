@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
+import * as localBridge from "../src/lib/latex/local.js";
+import { createLocalPreview } from "../src/lib/reader/local-preview.js";
 import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus, quartoPreviewPage, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../src/lib/latex/local.js";
 import { parameterSha256 } from "../src/lib/quarto.js";
 
@@ -280,3 +284,49 @@ console.log("quarto-local: localPreviewPage returns pdf bytes as a Uint8Array wi
   _testing.inject({});
 }
 console.log("quarto-local: localPreviewStatus/stopLocalPreview alias the existing calls, and calepinAvailable defaults false");
+
+// Exercise the Reader's actual controller configuration with the wire client:
+// an old external binding must not redirect a synchronized live preview.
+{
+  const reader = readFileSync(new URL("../src/components/Reader.svelte", import.meta.url), "utf8");
+  for (const engine of ["quarto", "calepin"]) {
+    const calls = [];
+    setup(async (url, init) => {
+      if (init.method === "PUT" && url.endsWith("/workspace")) {
+        calls.push("sync");
+        return response({ synced: 1 });
+      }
+      if (init.method === "POST" && url.endsWith("/previews")) {
+        const request = JSON.parse(init.body);
+        calls.push(request[engine].binding_id);
+        return request[engine].binding_id === "hosted"
+          ? response({ id: "live" }, 201)
+          : response({ error: "Preview binding is not authorized" }, 400);
+      }
+      if (init.method === "DELETE") return response({ stopped: true });
+      throw new Error(`unexpected request: ${url}`);
+    });
+    localBridge.setBindingId("revoked-project-binding");
+    const name = `${engine}PreviewController`;
+    const start = reader.indexOf(`  const ${name} = createLocalPreview({`);
+    assert.ok(start >= 0);
+    const end = reader.indexOf("\n  });", start) + "\n  });".length;
+    const errors = [];
+    const context = vm.createContext({
+      localQuarto: localBridge, quartoBindingId: localBridge.bindingId(),
+      readerDisposed: false, navigationGeneration: 0,
+      treeNow: () => ({ main: engine === "quarto" ? "main.qmd" : "main.typ", texts: { [engine === "quarto" ? "main.qmd" : "main.typ"]: "Hello" } }),
+      quartoRenderContext: () => ({ format: "html", profiles: [], parameters: {} }),
+      createLocalPreview: options => createLocalPreview({ ...options,
+        onError: message => errors.push(message), setTimer: () => ({}), clearTimer: () => {},
+      }),
+    });
+    vm.runInContext(`${reader.slice(start, end)}\nglobalThis.controller = ${name};`, context);
+    await context.controller.start();
+    assert.deepEqual(calls, ["sync", "hosted"], `${engine} previews the workspace just synchronized`);
+    assert.equal(context.controller.running, true, errors.join("; "));
+    assert.equal(localBridge.bindingId(), "revoked-project-binding", "explicit render-job setting is preserved");
+    await context.controller.stop();
+  }
+}
+console.log("quarto-local: Reader previews use the synchronized workspace even with a revoked saved binding");

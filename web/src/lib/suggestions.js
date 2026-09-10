@@ -1,8 +1,6 @@
 // Pure helpers for suggestions (track changes), kept apart from the
 // components that use them so the card's diff, the modal's prefill rule and
 // the accept/reject state transitions are checkable without a browser.
-//
-// `docs/specs/track-changes.md`, "Browser: suggestions", is the contract.
 
 /// What the compose modal starts the proposal textarea with: the source
 /// slice when the passage was placed there, the rendered words otherwise.

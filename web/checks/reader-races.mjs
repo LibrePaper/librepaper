@@ -100,6 +100,7 @@ const context = (values) => vm.createContext({
   ArrayBuffer,
   readerDisposed: false,
   sourceFormat: "",
+  previewMain: "",
   session: null,
   diagnosticContext,
   snapshotDigest: async () => "test-render-digest",
@@ -237,7 +238,8 @@ console.log("reader-races: all checks passed");
       files: {}, list: () => [], folders: () => [], mainId: () => "main",
       mainPath: () => "paper.tex", latexSettings: () => ({ engine: "auto", release: null }),
     },
-    files: [], folders: [], openFile: "", sourceFormat: "markdown", shownFigure: null,
+    files: [], folders: [], openFile: "", previewMain: "", sourceFormat: "markdown", shownFigure: null,
+    viewing: null, tick: async () => {}, paintPreview: () => {},
     mayEdit: true, previousFigure: null, ARRIVED_FILE: "", arrivedFileOpened: false,
     navigationGeneration: 0, renderingRequest: 0, issued: 0, rendering: null,
     renderingChecked: false, latestPreview: null, renderedSha: null,
@@ -675,3 +677,41 @@ for (const latest of [
   assert.equal(await result, false, "teardown settles pending chat");
   assert.equal(timers[0].cleared, true, "teardown clears the chat timer");
 }
+
+// Selecting a source file changes the local preview and options without
+// mutating the shared main. Same-format switches also invalidate old pages.
+{
+  const texts = { 'paper.qmd': '# Quarto', 'notes.typ': '= Typst', 'other.typ': '= Other' };
+  const files = Object.keys(texts).map(path => ({ id: path, path, kind: 'text' }));
+  const configured = [];
+  let cleared = 0, painted = 0;
+  const ctx = context({
+    session: { mainPath: () => 'paper.qmd', paths: new Map(files.map(f => [f.id, f.path])) },
+    files, openFile: 'paper.qmd', previewMain: 'paper.qmd', sourceFormat: 'quarto',
+    viewing: null, editing: true, editor: { text: () => null },
+    liveTreeNow: () => ({main:'paper.qmd',texts,digests:{}}),
+    renderers: { formatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', warm: () => {} },
+    configureLatex: f => configured.push(f), mayEdit: true,
+    localQuarto: { configure: () => {}, bindingId: () => 'hosted', probe: async () => {} },
+    SLUG: 'mixed', location: {origin:'http://localhost'},
+    navigationGeneration: 0, issued: 0, docsOrigin: null,
+    renderingStore: {reset: () => {}}, framePreview: {clear: () => cleared++},
+    dropHeldRendering: () => {}, tick: async () => {}, paintPreview: () => painted++,
+  });
+  vm.runInContext(body('  function updatePreviewTarget()', '  // A file added'), ctx);
+  vm.runInContext(body('  function treeNow()', '  // Painting the preview'), ctx);
+  for (const path of ['notes.typ', 'other.typ', 'paper.qmd']) {
+    ctx.openFile = path;
+    vm.runInContext('updatePreviewTarget()', ctx);
+    assert.equal(ctx.previewMain, path);
+    assert.equal(ctx.sourceFormat, path.endsWith('.typ') ? 'typst' : 'quarto');
+    assert.equal(vm.runInContext('treeNow().main', ctx), path);
+    assert.equal(ctx.session.mainPath(), 'paper.qmd');
+    await new Promise(setImmediate);
+  }
+  assert.deepEqual(configured, ['typst','typst','quarto']);
+  assert.equal(cleared, 3);
+  assert.equal(painted, 3);
+  assert.equal(texts['paper.qmd'], '# Quarto');
+}
+console.log('reader-races: mixed-format and same-format file selection changes the local preview');

@@ -155,9 +155,18 @@ import { createMathTypesetter } from "../lib/math.js";
     ${authorRules}
   `;
   document.head.appendChild(redlineStyle);
-  function adoptStyles(parsed) {
+  function adoptStyles(parsed, presentation) {
+    // Quarto's layout selectors depend on attributes of both root elements.
+    // Keep the body itself (and its observer), copying only presentation
+    // attributes, never event handlers. Remove these again for the draft.
+    for (const [target, incoming] of [[document.documentElement, parsed.documentElement], [document.body, parsed.body]]) {
+      for (const name of ["class", "id", "lang", "dir", "style"]) {
+        if (incoming.hasAttribute(name)) target.setAttribute(name, incoming.getAttribute(name));
+        else target.removeAttribute(name);
+      }
+    }
     document.documentElement.classList.add("librepaper-preview");
-    document.documentElement.classList.toggle("librepaper-flow", !parsed.body.querySelector(":scope > svg.typst-doc"));
+    document.documentElement.classList.toggle("librepaper-flow", presentation !== "document" && !parsed.body.querySelector(":scope > svg.typst-doc"));
     const wanted = [...parsed.head.querySelectorAll("style, link[rel~='stylesheet' i]")];
     const markup = wanted.map((node) => node.outerHTML).join("");
     if (markup !== installed) {
@@ -875,7 +884,7 @@ import { createMathTypesetter } from "../lib/math.js";
       // inherit. The page's own head comes with it, and is installed once:
       // it is the same template on every keystroke, so it is replaced only
       // when it actually differs.
-      adoptStyles(parsed);
+      adoptStyles(parsed, message.presentation);
       quietly(() => {
         document.body.innerHTML = parsed.body.innerHTML;
         // In the same breath when KaTeX is already here, so the text published

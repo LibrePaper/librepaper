@@ -1,4 +1,4 @@
-// Table-driven check for web/src/lib/dictation/assemble.js against SPEC 4.6.
+// Table-driven check for web/src/lib/dictation/assemble.js.
 //
 // House style follows checks/latex-local.mjs: a plain script, a `check`
 // helper that counts failures, no test framework, exit 1 iff something

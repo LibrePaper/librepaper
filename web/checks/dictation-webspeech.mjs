@@ -1,6 +1,6 @@
 // `createWebSpeechSession` in isolation, against a fake `SpeechRecognition`
-// constructor (SPEC-dictation.md 1.1, 4.1's browser-backend deviation; see
-// the header comment in web/src/lib/dictation/webspeech.js). This check
+// constructor (see the header comment in web/src/lib/dictation/webspeech.js).
+// This check
 // exercises the mapping rules -- construction, the restart-on-end behavior,
 // and the error/event mapping -- directly, the way
 // `web/checks/dictation-service.mjs` exercises the same module wired into

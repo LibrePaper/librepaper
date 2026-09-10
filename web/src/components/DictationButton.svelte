@@ -1,7 +1,7 @@
 <script module>
   // Which DictationButton, if any, started the session the dictation
-  // service is currently running. The service (SPEC-dictation.md 4.1,
-  // docs/dictation-interfaces.md "service.js") exposes state but not whose
+  // service is currently running. The service exposes state but not
+  // whose
   // target it is bound to, and several of these buttons share the one
   // page-wide service instance, so ownership has to live somewhere all of
   // them can see: a module-level slot rather than a prop or a store, because
@@ -13,7 +13,7 @@
 </script>
 
 <script>
-  // A microphone next to a place text can land (SPEC-dictation.md 4.8: the
+  // A microphone next to a place text can land (the
   // composer, comment, and reply buttons). This component owns none of the
   // dictation machinery -- that is `lib/dictation/service.js`, one instance
   // for the whole page -- it only knows how to draw the button for whichever
@@ -27,7 +27,7 @@
   import { problem, said } from "../lib/toast.svelte.js";
 
   // `onlistening` is optional: a caller that wants to change its own copy
-  // (the composer's footer hint, SPEC 4.8) while this particular button is
+  // (the composer's footer hint) while this particular button is
   // the one running dictation subscribes to it instead of reaching into the
   // service itself, since "is it listening into *this* target" is exactly
   // the fact this component already tracks and the service does not expose.
@@ -96,7 +96,7 @@
     await dictation.start(built);
   }
 
-  // Escape stops dictation from the field it is typing into (SPEC 4.8). This
+  // Escape stops dictation from the field it is typing into. This
   // is deliberately scoped to "this button currently owns the session" --
   // the reader's own global Escape handling (a different worker's shortcut
   // work) is free to do whatever it does for every other case.
@@ -127,7 +127,7 @@
 
 <style>
   /* The pulsing ring is the one visible sign that a microphone the reader
-     cannot see is actually recording -- SPEC 4.8 asks for "a pulsing state"
+     cannot see is actually recording -- a pulsing state
      using the primary colour token. It sits behind the button rather than
      changing the button's own colours, so the icon keeps reading as "mic",
      pressed or not. */

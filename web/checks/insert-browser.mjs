@@ -110,6 +110,8 @@ try {
   }
   await evaluate("setupInsert('markdown')");await evaluate("selectInsert(7)");
   await choose("table");await until("dialog visible",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  // The dialog is portalled to <body>: mounted under a navbar with a backdrop filter, a `fixed` dialog would otherwise be confined to the bar. (This harness has no stylesheet, so only the mount point is checked here.)
+  assert.equal(await evaluate(`document.querySelector('[role="dialog"][data-state="open"]').closest("#menu") === null`),true,"dialog renders outside the menu mount");
   await evaluate("remoteInsert()");await confirm();
   assert.match((await evaluate("insertState()")).text,/^REMOTE Before [\s\S]*AFTER$/, "dialog inserts at peer-adjusted caret");
   await evaluate("undoInsert()");

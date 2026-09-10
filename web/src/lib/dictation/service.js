@@ -1,8 +1,7 @@
-// The dictation state machine (SPEC-dictation.md 4.1, 4.9; 6;
-// docs/dictation-interfaces.md "service.js"). Every component that offers
-// dictation -- the composer button, the comment/reply buttons, the
-// shortcut, the status pill -- talks to the single object this module
-// builds, never to the worker, the microphone, or a target directly.
+// The dictation state machine. Every
+// component that offers dictation -- the composer button, the comment/reply
+// buttons, the shortcut, the status pill -- talks to the single object this
+// module builds, never to the worker, the microphone, or a target directly.
 //
 // Everything ambient (creating the worker, opening the microphone, reading
 // storage, showing a toast, the wall clock) arrives through `deps`, in the
@@ -28,7 +27,7 @@ const STATES = Object.freeze({
   UNAVAILABLE: "unavailable",
 });
 
-// SPEC-dictation.md section 6, "Preconditions and failure modes".
+// Preconditions and failure modes.
 const REASON_INSECURE = "Dictation needs HTTPS or localhost";
 const REASON_NO_WASM = "Dictation needs WebAssembly, which this browser does not support";
 const REASON_NO_MIC = "No microphone found";
@@ -129,7 +128,7 @@ export function createDictationService(deps) {
 
   /// The microphone is released and the target forgotten, in that order (the
   /// recording indicator must go out even if nothing else about the session
-  /// can be salvaged) -- SPEC 3 and 6. The worker is told to stop too, the
+  /// can be salvaged). The worker is told to stop too, the
   /// same as a graceful `stop()`, so it does not sit "started" waiting for
   /// frames that a closed microphone will never send again.
   async function abortSession(toastMessage) {
@@ -213,7 +212,7 @@ export function createDictationService(deps) {
         // `reason: "direct"`; a segment from the running session is
         // unsolicited (`id: null`) and goes through insertion instead.
         if (msg.id != null && resolvePending(msg.id, msg)) return;
-        // Segments are transcribed and inserted in order (SPEC 4.3); the
+        // Segments are transcribed and inserted in order; the
         // worker only sends the next `text` once its own segment is ready,
         // so no reordering guard is needed on this side.
         lastTextHandling = handleTextMessage(msg).catch((error) => failSession(error));
@@ -227,8 +226,8 @@ export function createDictationService(deps) {
       case "error":
         if (msg.id != null && rejectPending(msg.id, workerError(msg.message))) return;
         // Unsolicited: the pipeline broke mid-session rather than in reply
-        // to a specific request. Treated like a crash (SPEC 6 "Worker
-        // crashes").
+        // to a specific request. Treated like a worker
+        // crash.
         failSession(workerError(msg.message));
         return;
       default:
@@ -263,8 +262,8 @@ export function createDictationService(deps) {
   }
 
   // The browser backend's equivalent of `failSession`/`abortSession`: there
-  // is no worker to terminate, only the recognition session to stop. SPEC 6:
-  // a denied permission is remembered for the session; any other error is a
+  // is no worker to terminate, only the recognition session to stop.
+  // A denied permission is remembered for the session; any other error is a
   // recoverable crash back to `idle`.
   async function handleBrowserError(error) {
     const session = webSpeech;
@@ -439,13 +438,13 @@ export function createDictationService(deps) {
       await session.stop();
       // Mirrors the local path: a `result` event still in flight when
       // `stop()` was called finishes inserting its text before the target is
-      // let go (SPEC 6, "insert any last text, then idle").
+      // let go (insert any last text, then idle).
       await lastTextHandling;
       clearTarget();
       toIdle();
       return;
     }
-    // The microphone is released as soon as dictation stops (SPEC 3), before
+    // The microphone is released as soon as dictation stops, before
     // the worker has even acknowledged the stop -- the recording indicator
     // must go out right away, not after a round trip.
     await closeMicrophone();
@@ -458,7 +457,7 @@ export function createDictationService(deps) {
     }
     // The `stopped` reply follows its flushed segment's `text` message, but
     // that message is handled asynchronously -- wait for it so the final
-    // text actually lands before the target is let go (SPEC 6).
+    // text actually lands before the target is let go.
     await lastTextHandling;
     clearTarget();
     toIdle();
@@ -532,7 +531,7 @@ export function createDictationService(deps) {
 
 let singleton = null;
 
-// The SPEC 5 download confirmation is a dialog, which lives in a component;
+// The download confirmation is a dialog, which lives in a component;
 // the component registers itself here so the service never imports UI.
 // Until one is mounted the download proceeds, which is right for a page
 // without the dialog and wrong for nothing else.

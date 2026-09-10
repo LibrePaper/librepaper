@@ -1,8 +1,8 @@
 // Quarto PDF bundle acceptance: publish a real PDF artifact through the HTTP
 // bundle API and confirm the stored artifact bytes can be read back. The
-// Reader no longer shows a bundle's rendered output (see SPEC-quarto.md
-// section 1.1: readers get Markdown preview or a live Quarto preview through
-// the local app, never a published bundle's PDF/HTML), so this check is
+// Reader no longer shows a bundle's rendered output (readers get Markdown
+// preview or a live Quarto preview through the local app, never a published
+// bundle's PDF/HTML), so this check is
 // HTTP-level only. It deliberately uses no local Quarto installation; the
 // bytes are a small valid PDF fixture.
 import assert from "node:assert/strict";
@@ -83,7 +83,7 @@ try {
   const status = await tab.evaluate(`(async () => (await fetch(${JSON.stringify(`/api/documents/${created.slug}/quarto/bundles`)}, { method:"POST", headers:{"content-type":"application/json","x-librepaper-client":"1"}, body:${JSON.stringify(JSON.stringify(publish))} })).status)()`);
   assert.ok([200, 201].includes(status), `PDF bundle publication failed: ${status}`);
 
-  // The reader no longer renders a bundle's PDF (SPEC-quarto.md section 1.1):
+  // The reader no longer renders a bundle's PDF:
   // there is no "/pdf/" frame or in-page preview to check here. Confirm
   // instead, at the HTTP level, that the stored artifact bytes round-trip
   // exactly through the bundle artifact endpoint.

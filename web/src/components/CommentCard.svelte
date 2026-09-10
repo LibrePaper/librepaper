@@ -39,8 +39,7 @@
     selected = false,
   } = $props();
 
-  // A suggestion is a comment whose motivation is `editing` (the W3C term);
-  // see `docs/specs/track-changes.md`, "Vocabulary".
+  // A suggestion is a comment whose motivation is `editing` (the W3C term).
   const isSuggestion = $derived(comment.motivation === "editing");
   const annotationColor = $derived(/^#[0-9a-f]{6}$/i.test(comment.color || "") ? comment.color : null);
 

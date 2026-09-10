@@ -1,8 +1,0 @@
-{
-  "estimated_source_bytes": 536866816,
-  "refusal": "room admission limit reached (128 rooms, 536883050 resident bytes)",
-  "rooms_admitted": 128,
-  "rooms_bytes_max": 536870912,
-  "rooms_max": 200,
-  "rss_high_water_bytes": 639729664
-}

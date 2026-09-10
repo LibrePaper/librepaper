@@ -1,7 +1,5 @@
 // The AudioWorkletProcessor that turns the microphone's native sample rate
-// into the fixed 16 kHz / 512-sample frames every recognizer model expects
-// (docs/dictation-interfaces.md "capture.js and capture-worklet.js";
-// SPEC-dictation.md 4.2, 4.3).
+// into the fixed 16 kHz / 512-sample frames every recognizer model expects.
 //
 // This file runs in the AudioWorkletGlobalScope, not the main thread or a
 // module graph Vite can rewrite imports for -- there is no `deps` seam here

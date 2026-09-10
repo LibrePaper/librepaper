@@ -1,5 +1,4 @@
-// Where dictated text lands (SPEC-dictation.md 4.7;
-// docs/dictation-interfaces.md "targets.js").
+// Where dictated text lands.
 //
 // A target hides the difference between a plain form control and the
 // CodeMirror editor behind one shape -- { insert, before, alive, focus } --
@@ -44,10 +43,9 @@ export function textareaTarget(element) {
 }
 
 /// Editor.svelte's own surface: `insertAtCaret`, `textBeforeCaret`,
-/// `vimMode()`, `focus()` (docs/dictation-interfaces.md "Editor.svelte gains
-/// three exports in a later slice"). `insert` throws a `VimNormalMode` error
+/// `vimMode()`, `focus()`. `insert` throws a `VimNormalMode` error
 /// rather than inserting keystrokes into normal mode; the service turns
-/// that into the SPEC 6 toast telling the user to enter insert mode.
+/// that into the toast telling the user to enter insert mode.
 export function editorTarget(editor) {
   return {
     kind: "editor",
@@ -73,7 +71,7 @@ export function editorTarget(editor) {
 
 /// What the toolbar button and the Ctrl+Shift+D shortcut bind to: whichever
 /// target the currently focused element implies, or `null` when it implies
-/// none (SPEC 4.8: the shortcut then toasts "Click into a text field
+/// none (the shortcut then toasts "Click into a text field
 /// first"). `editorFor(element)` answers whether `element` is (or is inside)
 /// a known editor's DOM, returning that editor or null; a plain textarea/text
 /// input wins on its own without consulting it.
