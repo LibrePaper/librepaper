@@ -245,7 +245,6 @@ try {
   await until("upstream edit", async () => (await tab.evaluate("document.body.innerText")).includes("Results may be outdated"));
   assert.ok((await tab.text()).includes("cached computation text"), "stale cached output remains visible");
 
-  await tab.evaluate('(async () => { [...document.querySelectorAll(".menubar-item")].find((el) => el.textContent.trim() === "Tools")?.click(); await new Promise((resolve) => setTimeout(resolve, 80)); const item = [...document.querySelectorAll(\'[role="menuitem"]\')].find((el) => el.textContent.includes("Show rendered output")); item?.dispatchEvent(new PointerEvent("pointermove", { pointerType:"mouse", bubbles:true })); item?.click(); })()');
   await until("full Quarto output", async () => (await frameText()).includes("Full artifact"));
   assert.ok(await tab.frameEvaluate('document.querySelector("img").src.startsWith("data:")', 2), "full artifact image uses an opaque data URL");
   assert.ok(await tab.frameEvaluate('document.querySelector("link").href.startsWith("data:")', 2), "full artifact stylesheet uses an opaque data URL");

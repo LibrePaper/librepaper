@@ -1314,6 +1314,182 @@ async fn hosted_binding_preview_starts_after_workspace_sync() {
     }
     assert!(ready, "hosted preview did not become ready");
 
+    // No managed web server exists any more: the local app renders the
+    // watched document itself, and the reader polls this endpoint for the
+    // self-contained HTML page.
+    let page_endpoint = format!("{endpoint}/page");
+    let mut page_body = None;
+    let mut etag = None;
+    for _ in 0..120 {
+        let response = test
+            .client
+            .get(&page_endpoint)
+            .header("Origin", ORIGIN)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        if response.status() == 200 {
+            let response_etag = response
+                .headers()
+                .get("etag")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let body = response.text().await.unwrap();
+            // Quarto may briefly leave a placeholder or partially written
+            // file at the destination path before the real render lands;
+            // wait for the text to actually show up rather than trusting
+            // the first 200.
+            if body.contains("Author-only text") {
+                etag = response_etag;
+                page_body = Some(body);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let page_body = page_body.expect("preview page did not render within 30s");
+    assert!(
+        page_body.contains("Author-only text"),
+        "rendered page missing document text: {page_body}"
+    );
+    let etag = etag.expect("page response carried an etag");
+    let etag_hex = etag.trim_matches('"');
+    assert_eq!(
+        etag.len(),
+        66,
+        "etag should be a quoted 64-hex digest: {etag}"
+    );
+    assert!(etag.starts_with('"') && etag.ends_with('"'));
+    assert!(
+        etag_hex.len() == 64 && etag_hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "etag is not 64 hex characters: {etag}"
+    );
+
+    let cached = test
+        .client
+        .get(&page_endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .header("If-None-Match", &etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cached.status(), 304);
+    assert!(cached.bytes().await.unwrap().is_empty());
+
+    let status: Value = test
+        .client
+        .get(&endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["page"]["sha256"], json!(etag_hex));
+    assert!(status["log_tail"].is_string());
+
+    let stop = test
+        .client
+        .delete(&endpoint)
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stop.status(), 200);
+}
+
+/// A document that fails to render never produces a page: `GET
+/// previews/{id}/page` answers `404 {"error":"not rendered yet"}` for as
+/// long as the preview lives, and the status endpoint's `log_tail` carries
+/// enough of Quarto's own stderr to show why.
+#[tokio::test]
+async fn preview_render_failure_reports_no_page_and_logs_the_error() {
+    let (test, _workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "888888");
+    let token = connected_token(&test, ORIGIN, "paper", "888888").await;
+
+    // Invalid YAML frontmatter: Quarto fails before any execution engine is
+    // needed, so this is deterministic on a machine with no R/Python/Jupyter
+    // configured.
+    let source: &[u8] = b"---\ntitle: \"unterminated\n---\n\n# Broken\n";
+    let manifest = manifest_for(&[("paper.qmd", source)]);
+    let synced = put_workspace(
+        &test,
+        ORIGIN,
+        &token,
+        manifest.clone(),
+        &[("paper.qmd", source)],
+    )
+    .await;
+    assert_eq!(synced.status(), 200);
+
+    let body = json!({
+        "protocol":1,"kind":"quarto","origin":ORIGIN,"project":"paper",
+        "snapshot":"revision","generation":1,"manifest":manifest,
+        "quarto":{"binding_id":"hosted","main":"paper.qmd","format":"html"},
+    });
+    let response = test
+        .client
+        .post(format!("{}/previews", test.base))
+        .header("Origin", ORIGIN)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let preview: Value = response.json().await.unwrap();
+    assert_eq!(status, 201, "a failing render is still admitted: {preview}");
+    let id = preview["id"].as_str().unwrap().to_string();
+    let endpoint = format!("{}/previews/{id}", test.base);
+    let page_endpoint = format!("{endpoint}/page");
+
+    let mut log_tail = String::new();
+    for _ in 0..120 {
+        let page = test
+            .client
+            .get(&page_endpoint)
+            .header("Origin", ORIGIN)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            page.status(),
+            404,
+            "a failing render must never produce a page"
+        );
+        let body: Value = page.json().await.unwrap();
+        assert_eq!(body["error"], "not rendered yet");
+
+        let status: Value = test
+            .client
+            .get(&endpoint)
+            .header("Origin", ORIGIN)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(status["page"]["sha256"].is_null());
+        log_tail = status["log_tail"].as_str().unwrap_or_default().to_string();
+        if log_tail.to_lowercase().contains("error") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        log_tail.to_lowercase().contains("error"),
+        "log_tail should mention the render error: {log_tail}"
+    );
+
     let stop = test
         .client
         .delete(&endpoint)

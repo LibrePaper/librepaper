@@ -36,8 +36,13 @@ use tokio::sync::{mpsc, watch, Mutex, Notify};
 use crate::local::pairing::{self, PairingStore};
 use crate::local::protocol::{
     self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace, BASE_PATH,
-    MAX_FILES, MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
+    MAX_FILES, MAX_JSON_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
 };
+use crate::local::quarto_preview;
+
+/// The last slice of a preview's combined stdout+stderr surfaced in its
+/// status JSON -- enough to show why a render failed, not the whole log.
+const PREVIEW_LOG_TAIL_BYTES: usize = 4 * 1024;
 use crate::local::quarto::{sync_hosted_workspace, BindingStore, HOSTED_BINDING};
 
 type Reply = Response<Body>;
@@ -851,6 +856,9 @@ async fn dispatch(
         }
         ["previews", id] if *method == Method::DELETE || *method == Method::GET => {
             handle_preview(inner, headers, origin, Some(id), request).await
+        }
+        ["previews", id, "page"] if *method == Method::GET => {
+            handle_preview_page(inner, headers, origin, id).await
         }
         ["workspace"] if *method == Method::PUT => {
             handle_workspace_put(inner, headers, origin, request).await
@@ -1975,27 +1983,34 @@ async fn handle_preview(
             .await;
         let Some(preview) = previews
             .0
-            .get(id)
+            .get_mut(id)
             .filter(|p| p.origin == origin && p.project == project)
         else {
             return plain(404, "preview not found");
         };
         if request.method() == Method::GET {
-            let address = preview
-                .url
-                .trim_start_matches("http://")
-                .trim_end_matches('/');
-            let ready = matches!(
-                tokio::time::timeout(
-                    Duration::from_millis(200),
-                    tokio::net::TcpStream::connect(address)
-                )
-                .await,
-                Ok(Ok(_))
-            );
+            // No managed web server runs any more: "running" now reports
+            // whether the watching `quarto preview` process is still alive,
+            // not whether a server answered a probe request.
+            let state = if preview.is_running() {
+                "running"
+            } else {
+                "stopped"
+            };
+            let page = quarto_preview::resolve_rendered_page(&preview.root, &preview.entrypoint)
+                .and_then(|path| std::fs::read(&path).ok())
+                .map(|bytes| json!({"sha256": hex_sha256(&bytes), "size": bytes.len() as u64}))
+                .unwrap_or_else(|| json!({"sha256": Value::Null, "size": Value::Null}));
+            let log_tail = quarto_preview::log_tail(preview, PREVIEW_LOG_TAIL_BYTES).await;
             return write_json(
                 200,
-                &json!({"id":id, "url":preview.url, "state":if ready { "running" } else { "starting" }}),
+                &json!({
+                    "id": id,
+                    "url": preview.url,
+                    "state": state,
+                    "page": page,
+                    "log_tail": log_tail,
+                }),
             );
         }
         previews.stop(id).await;
@@ -2047,6 +2062,60 @@ async fn handle_preview(
         ),
         Err(error) => write_json(400, &json!({"error":error})),
     }
+}
+
+/// `GET previews/{id}/page`: the local app's own render of the watched
+/// document, self-contained HTML the reader can frame directly -- no
+/// managed web server, no separate `_files/` directory to also serve.
+async fn handle_preview_page(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    id: &str,
+) -> Reply {
+    let project = match authenticate(inner, headers, origin) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let origin = pairing::normalize_origin(origin.unwrap_or_default());
+    let mut previews = inner.previews.lock().await;
+    let active_pairings = inner.pairing.active_pairings();
+    previews
+        .reap(&active_pairings, &inner.quarto_bindings)
+        .await;
+    let Some(preview) = previews
+        .0
+        .get(id)
+        .filter(|p| p.origin == origin && p.project == project)
+    else {
+        return plain(404, "preview not found");
+    };
+    let Some(path) = quarto_preview::resolve_rendered_page(&preview.root, &preview.entrypoint)
+    else {
+        return write_json(404, &json!({"error": "not rendered yet"}));
+    };
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(_) => return write_json(404, &json!({"error": "not rendered yet"})),
+    };
+    if metadata.len() > MAX_QUARTO_OUTPUT_BYTES as u64 {
+        return plain(413, "rendered page is too large");
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return write_json(404, &json!({"error": "not rendered yet"})),
+    };
+    let etag = format!("\"{}\"", hex_sha256(&bytes));
+    if header_str(headers, "if-none-match") == Some(etag.as_str()) {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+        set(&mut response, "etag", &etag);
+        return response;
+    }
+    let mut response = Response::new(Body::from(bytes));
+    set(&mut response, "content-type", "text/html; charset=utf-8");
+    set(&mut response, "etag", &etag);
+    response
 }
 
 #[cfg(test)]

@@ -83,7 +83,6 @@
   import { createRenderingStore } from "../lib/reader/rendering-store.js";
   import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
   import { clearPendingResults, loadPendingResults, savePendingResults } from "../lib/results-pending.js";
-  import ResultsArtifactBrowser from "./ResultsArtifactBrowser.svelte";
   import { prepareResultsArtifact } from "../lib/results-artifact.js";
   import { createResultsLoader } from "../lib/results-loader.js";
   import { publishResultsBundle } from "../lib/results-publication.js";
@@ -161,17 +160,11 @@
   let figureAt = $state([]); // text offset of each figure, by its index
 
   let preview = $state(null);
-  let quartoView = $state("draft");
   let quartoProjectScope = $state(false);
   let quartoSnapshot = $state(false);
   let quartoDataInputs = $state("");
   let quartoPreview = $state(null);
   let quartoPreviewStarting = $state(false);
-  // The Quarto live-preview switch, per document: whether the draft pane
-  // shows Quarto's own live-reloading page while paired, rather than the
-  // draft rendering this browser paints itself. Defaults on.
-  const QUARTO_LIVE_KEY = `librepaper-quarto-live:${SLUG}`;
-  let quartoLiveEnabled = $state(read(QUARTO_LIVE_KEY, true) !== false);
   let quartoLiveErrorShown = false;
   // Held while a render is using the local app: the managed preview and a
   // render cannot share it, and without this the effect that keeps the
@@ -180,10 +173,12 @@
   let quartoLiveSyncTimer = null;
   let quartoLiveSyncBusy = false;
   let quartoLiveSyncQueued = false;
-  function setQuartoLiveEnabled(on) {
-    quartoLiveEnabled = on;
-    write(QUARTO_LIVE_KEY, on);
-  }
+  // The live page's own bytes, polled from the local app while a preview
+  // runs, and the etag that names the version already delivered to the
+  // frame -- so a poll that finds nothing new costs one small request
+  // rather than a repaint.
+  let quartoPreviewPageTimer = null;
+  let quartoPreviewPageEtag = null;
   let quartoOutput = $state(null);
   let quartoOutputState = $state("");
   let quartoBundle = $state(null);
@@ -266,7 +261,6 @@
     quartoArtifactDispose = prepared?.dispose || null;
     quartoOutput = prepared ? quartoPreparedOutput(manifest, prepared) : null;
     quartoOutputState = quartoOutput ? "ready" : "missing";
-    if (!quartoOutput && quartoView === "output") quartoView = "draft";
     void refreshQuartoFreshness();
   } });
 
@@ -337,7 +331,6 @@
     quartoFreshnessSerial += 1;
     quartoFreshness = { state:"missing", message:"No saved result" };
     quartoArtifactStatus = "No saved output";
-    quartoView = "draft";
     quartoResultsOpen = false;
     closeQuartoResults();
   }
@@ -502,15 +495,7 @@
   // whatever is given it since only a comment that already has a `source`
   // does anything there.
   function anchorComments(list) {
-    const artifactView = sourceFormat === "quarto" && (quartoView === "output" || quartoLiveShowing);
-    const renderAnchors = artifactView ? [] : list.filter((comment) => !comment.region && !comment.output_anchor);
-    if (artifactView) {
-      for (const comment of list) {
-        if (comment.region) continue;
-        comment.start = null;
-        comment.end = null;
-      }
-    }
+    const renderAnchors = list.filter((comment) => !comment.region && !comment.output_anchor);
     anchorAll(docText || "", renderAnchors, docText === null ? null : docView);
     anchorAllSources(treeNow(), list.filter((comment) => !comment.output_anchor));
     for (const comment of list) applyAnchorFlags(comment);
@@ -601,14 +586,9 @@
         }
         break;
       case "selection":
-        // The immutable full Quarto artifact currently has no source map or
-        // render-id selector. Keep a user from attaching an artifact quote to
-        // a plausible but wrong .qmd passage until that identity is carried.
-        if (sourceFormat === "quarto" && (quartoView === "output" || quartoLiveShowing)) return;
         showSelection(message.selector, message.rect);
         break;
       case "region":
-        if (sourceFormat === "quarto" && (quartoView === "output" || quartoLiveShowing)) return;
         // A rectangle drawn on a figure anchors the same way a quotation
         // does, but it has no words to look up in the source: a region has
         // no source anchor and never will.
@@ -1183,28 +1163,34 @@
     }
   }
 
-  async function selectQuartoView(view) {
-    if (sourceFormat !== "quarto") return;
-    quartoView = view === "output" ? "output" : "draft";
-    if (quartoView === "output") {
-      try { await loadQuartoOutput(); } catch (error) { say(error.message || "Quarto output unavailable", true); quartoView = "draft"; }
-    }
-    void paintPreview();
-  }
-
   $effect(() => {
     const active = quartoPreview;
     if (!active) return;
     const timer = setInterval(() => {
       void localQuarto.quartoPreviewStatus(active.id).then(status => {
-        if (quartoPreview?.id === active.id && quartoPreview.state !== status.state) quartoPreview = {...quartoPreview, state:status.state};
+        if (quartoPreview?.id !== active.id) return;
+        // The bridge reports whether the `quarto preview` process is still
+        // alive: "running", or "stopped" once it exited (a failed render
+        // ends it). The dead entry is deleted on the bridge too, or the next
+        // start would be refused as a second watcher on the same workspace.
+        if (status.state && status.state !== "running") {
+          stopQuartoPreviewPagePoll();
+          quartoPreview = null;
+          void localQuarto.stopQuartoPreview(active.id).catch(() => {});
+          const line = String(status.log_tail || "").trim().split("\n").filter(Boolean).pop();
+          say(line || "Live preview ended", true);
+          // No retry loop: falls back to the shared bundle or the draft now
+          // and waits for the next connected transition, which is what
+          // re-arms the effect that starts the managed preview.
+          void paintPreview();
+          return;
+        }
+        if (quartoPreview.state !== status.state) quartoPreview = {...quartoPreview, state:status.state};
       }).catch(error => {
         if (quartoPreview?.id === active.id) {
           quartoPreview = null;
+          stopQuartoPreviewPagePoll();
           say("Live preview ended: " + error.message, true);
-          // No retry loop: falls back to the draft now and waits for the
-          // next connected transition, which is what re-arms the effect
-          // that starts the managed preview.
           void paintPreview();
         }
       });
@@ -1335,7 +1321,7 @@
         // paragraph. The full artifact is there under Tools for whoever
         // wants to inspect exactly what Quarto produced.
         await refreshQuartoFreshness();
-        if (quartoView === "draft") void paintPreview();
+        void paintPreview();
         if (receipt) say("Rendered and shared");
         else if (!result.publish) say("Rendered locally; not yet shared");
       }
@@ -1387,20 +1373,40 @@
   // texts -- or null for the document as it stands.
   let viewing = $state(null);
 
-  // Whether the draft pane should be showing Quarto's own live preview
-  // rather than this browser's own draft rendering: paired, connected,
-  // editable, not looking at history, and the switch is on. `editing` (the
-  // source pane) is not required -- an editor who has not opened it yet
-  // still gets the live pane the moment they are able to edit.
+  // Whether this browser should be running Quarto's own live preview rather
+  // than showing a shared bundle or its own draft rendering: paired,
+  // connected, editable, and not looking at history. `editing` (the source
+  // pane) is not required -- an editor who has not opened it yet still gets
+  // the live pane the moment they are able to edit. Being live is simply
+  // what a paired Quarto document does; there is no separate switch.
   const quartoLiveActive = $derived(
-    sourceFormat === "quarto" && mayEdit && !viewing && quartoLiveEnabled && !quartoLiveSuspended &&
+    sourceFormat === "quarto" && mayEdit && !viewing && !quartoLiveSuspended &&
       quartoLocalStatus.state === "connected",
   );
 
-  // True while the frame is actually showing Quarto's own live page: it has
-  // no source map or render-id selector any more than the immutable output
-  // view does, so selection/comment tools bail out the same way.
-  const quartoLiveShowing = $derived(sourceFormat === "quarto" && quartoLiveActive && Boolean(quartoPreview));
+  function stopQuartoPreviewPagePoll() {
+    clearInterval(quartoPreviewPageTimer);
+    quartoPreviewPageTimer = null;
+    quartoPreviewPageEtag = null;
+  }
+
+  // Polls the local app for the live page's own rendered bytes while a
+  // preview runs, and paints each new one into the frame the moment it
+  // arrives. A 304 (nothing new) or a 404 (nothing rendered yet) costs one
+  // small request and changes nothing on the screen.
+  function startQuartoPreviewPagePoll(id) {
+    stopQuartoPreviewPagePoll();
+    quartoPreviewPageTimer = setInterval(() => {
+      void localQuarto.quartoPreviewPage(id, { etag: quartoPreviewPageEtag }).then((page) => {
+        if (readerDisposed || quartoPreview?.id !== id || !page) return;
+        quartoPreviewPageEtag = page.etag;
+        framePreview.publish({ kind: "html", html: page.html });
+      }).catch(() => {
+        // A network hiccup or "not rendered yet" is not a reason to stop
+        // polling; the 5s status poll is what decides the preview is dead.
+      });
+    }, 1000);
+  }
 
   async function startLivePreview() {
     if (!quartoLiveActive || quartoPreview || quartoPreviewStarting || readerDisposed) return;
@@ -1418,7 +1424,7 @@
       if (readerDisposed || !quartoLiveActive) { await localQuarto.stopQuartoPreview(started.id).catch(() => {}); return; }
       quartoPreview = started;
       quartoLiveErrorShown = false;
-      framePreview.publish({ kind: "url", url: started.url });
+      startQuartoPreviewPagePoll(started.id);
     } catch (error) {
       if (!quartoLiveErrorShown) { say(error.message || "Live preview unavailable", true); quartoLiveErrorShown = true; }
     } finally {
@@ -1430,6 +1436,7 @@
     const active = quartoPreview;
     if (!active) return;
     quartoPreview = null;
+    stopQuartoPreviewPagePoll();
     await localQuarto.stopQuartoPreview(active.id).catch(() => {});
   }
 
@@ -1900,7 +1907,8 @@
   // else about the frame is the same: same origin, same CSP, same channel.
   const pdfOutput = $derived(renderers.producesPdf(displayedFormat));
   const framePath = $derived(
-    (sourceFormat === "quarto" && quartoView === "output" && quartoOutput?.kind === "pdf") ||
+    (sourceFormat === "quarto" && !viewing && !(quartoLiveActive && (quartoPreview || quartoPreviewStarting)) &&
+      quartoOutput?.kind === "pdf") ||
       renderers.outputKind(displayedFormat) === "pdf" ? "pdf" : "raw",
   );
 
@@ -2109,49 +2117,48 @@
     clearTimeout(previewTimer);
     previewTimer = null;
     renderingStore.cancelPoll();
-    if (renderers.formatOf(treeNow().main) === "quarto" && quartoView === "output" && !viewing) {
+    // The live preview owns the pane while it is running (or starting): the
+    // frame shows Quarto's own page, kept current by `syncQuartoLive` and
+    // the page poller, not by anything painted here. Only the freshness
+    // badge for a saved bundle, if any, still needs refreshing.
+    // `typeof` rather than a bare read: checks/reader-races.mjs runs this
+    // function's body in isolation against a context that does not declare
+    // these names for its non-Quarto (and some Quarto) cases.
+    // Keyed to a preview actually running or starting, not to whether this
+    // browser is paired: a browser whose preview failed to start paints (b)
+    // or (c) below, rather than leaving the pane at whatever it showed last.
+    if (sourceFormat === "quarto" && typeof quartoLiveActive !== "undefined" && quartoLiveActive &&
+        typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
+      void refreshQuartoFreshness();
+      return;
+    }
+    // Not live: the pane shows the last shared bundle's artifact when it has
+    // one to show (b), or falls through to this browser's own draft (c).
+    // Draft preview work is already debounced by sourceChanged. If front
+    // matter changed the target format, refresh the selected context before
+    // hashing freshness so an older bundle cannot remain associated with the
+    // new draft.
+    if (renderers.formatOf(treeNow().main) === "quarto" && !viewing) {
       try {
         const output = await loadQuartoOutput();
         // Freshness hashes the whole Quarto tree, including included files
         // and assets. Run it after the debounced output selection settles so
         // it describes the bundle that was actually loaded.
         void refreshQuartoFreshness();
-        if (output?.kind === "pdf" && output.bytes) framePreview.publish({ kind: "pdf", sha: output.renderId || quartoBundle?.render_id || null, bytes: output.bytes });
-        else if (output?.html) {
-          const document = output.page ? output.page(output.downloadName, false) : output.html;
-          framePreview.publish({ kind: "html", html: '<!doctype html><body style="margin:0"><iframe title="Saved Quarto artifact" sandbox="" referrerpolicy="no-referrer" style="border:0;width:100%;height:100vh" srcdoc="' + quarto.escapeHtml(document) + '"></iframe></body>' });
+        if (output?.kind === "pdf" && output.bytes) {
+          framePreview.publish({ kind: "pdf", sha: output.renderId || quartoBundle?.render_id || null, bytes: output.bytes });
+          return;
         }
-        else if (output?.downloadUrl) framePreview.publish({ kind: "html", html: `<main class="quarto-artifact-download"><p>This saved Quarto artifact is ${output.kind.toUpperCase()}.</p><p>Use the download link above to open it.</p></main>` });
+        if (output?.kind === "html" && output.html) {
+          framePreview.publish({ kind: "html", html: output.html });
+          return;
+        }
+        // No artifact, or one this pane cannot show (a DOCX bundle): fall
+        // through to the draft below.
       } catch {
-        // The draft remains available when the immutable output is missing or
-        // temporarily unavailable; selection reports the actionable error.
+        // The draft remains available when the immutable output is missing
+        // or temporarily unavailable.
       }
-      return;
-    }
-    // The live preview owns the pane while it is running (or starting): the
-    // frame shows Quarto's own page, kept current by `syncQuartoLive` and
-    // Quarto's own file watcher, not by a draft rendered here. Only the
-    // freshness badge for a saved bundle, if any, still needs refreshing.
-    // `typeof` rather than a bare read: checks/reader-races.mjs runs this
-    // function's body in isolation against a context that does not declare
-    // `quartoLiveActive` for its non-Quarto (and some Quarto) cases.
-    // Keyed to a preview actually running or starting, not to the mode
-    // being on: a mode whose preview failed to start still paints the
-    // draft, rather than leaving the pane at whatever it showed last.
-    if (sourceFormat === "quarto" && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
-      void refreshQuartoFreshness();
-      return;
-    }
-    // Draft preview work is already debounced by sourceChanged. If front
-    // matter changed the target format, refresh the selected context before
-    // hashing freshness so an older bundle cannot remain associated with the
-    // new draft.
-    if (sourceFormat === "quarto" && session) {
-      if (quartoBundle?.context?.format !== quartoTargetFormat()) {
-        try { await loadQuartoOutput(); } catch { /* the draft remains usable */ }
-        if (readerDisposed || sourceFormat !== "quarto") return;
-      }
-      void refreshQuartoFreshness();
     }
     // A paged document is compiled in an editor's browser and nowhere else,
     // so everybody else is shown the PDF the server kept from the last one
@@ -2395,8 +2402,8 @@
     // timer for every Typst keystroke would starve the PDF indefinitely.
     if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
     clearTimeout(previewTimer);
-    const quartoOutputView = sourceFormat === "quarto" && quartoView === "output";
-    if (outputIsPdf && !compilesHere && !quartoOutputView) {
+    const quartoOutputPdf = sourceFormat === "quarto" && typeof quartoOutput !== "undefined" && quartoOutput?.kind === "pdf";
+    if (outputIsPdf && !compilesHere && !quartoOutputPdf) {
       // The text has moved, so what is in the frame is a rendering of an
       // earlier version. That is known here rather than asked: the rendering
       // is named by the digest of the source it was compiled from.
@@ -2406,11 +2413,11 @@
     }
     // A rendering waiting for the text to stay quiet is of a text that did
     // not.
-    // A saved Quarto PDF is selected through the output view while the source
-    // remains a .qmd (and therefore has an HTML source format). Keep that
-    // view on the ordinary debounced path so its tree-wide freshness check
-    // still runs if the output kind changes or the format mapping evolves.
-    if (outputIsPdf && !quartoOutputView) dropHeldRendering();
+    // A saved Quarto PDF bundle remains selected while the source remains a
+    // .qmd (and therefore has an HTML source format). Keep that path on the
+    // ordinary debounced path so its tree-wide freshness check still runs if
+    // the output kind changes or the format mapping evolves.
+    if (outputIsPdf && !quartoOutputPdf) dropHeldRendering();
     // A LaTeX compile takes seconds, so it waits for the source to be quiet
     // for longer -- `latex.DEBOUNCE`, which is that module's number and not
     // one written twice. A reader watching somebody else type waits longer
@@ -2731,8 +2738,6 @@
     if (value === "render") return void renderQuartoLocally();
     if (value === "refresh") return void renderQuartoLocally("refresh-computations");
     if (value === "frozen") return void renderQuartoLocally("frozen");
-    if (value === "live-preview") return setQuartoLiveEnabled(!quartoLiveEnabled);
-    if (value === "artifact") return void selectQuartoView(quartoView === "output" ? "draft" : "output");
     if (value === "retry") return void retryQuartoPublish();
     if (value === "results") { closeQuartoResults(); quartoResultsOpen = true; }
   }
@@ -2801,7 +2806,6 @@
     if (format && format !== sourceFormat) {
       sourceFormat = format;
       if (format !== "quarto") {
-        quartoView = "draft";
         quartoOutput = null;
         quartoOutputState = "";
       }
@@ -3112,7 +3116,6 @@
       ? quarto.classifyFreshness(null, quartoBundle)
       : { state: "missing", message: "No saved result" };
     if (format !== "quarto") {
-      quartoView = "draft";
       quartoOutput = null;
       quartoOutputState = "";
     }
@@ -3141,9 +3144,6 @@
       return;
     }
     mayEdit = Boolean(allowed);
-    if (!mayEdit && sourceFormat === "quarto") {
-      quartoView = "output";
-    }
     // A panel remembered from an editor's visit is not one a link-holder is
     // offered. Coerced without being remembered: the preference is this
     // browser's, and an editor coming back to their own document keeps it.
@@ -3161,13 +3161,9 @@
     // it rather than beside the old restore-a-distribution code above.
     configureLatex(sourceFormat);
     if (sourceFormat === "quarto") {
-      // Fetch the selected manifest for cached draft assets even when an
-      // editor stays on Draft. Readers keep their selected full artifact
-      // preference, while both views share the same immutable bundle.
-      void loadQuartoOutput().then(() => paintPreview()).catch(() => {
-        if (!mayEdit) quartoView = "draft";
-        void paintPreview();
-      });
+      // Fetch the selected manifest so the shared bundle's assets are cached
+      // by the time `paintPreview` decides between it and the draft.
+      void loadQuartoOutput().then(() => paintPreview()).catch(() => void paintPreview());
     }
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
@@ -3244,6 +3240,7 @@
       previewTimer = null;
       boot.dispose();
       passages.clearPassageCache();
+      stopQuartoPreviewPagePoll();
       if (quartoPreview) void localQuarto.stopQuartoPreview(quartoPreview.id).catch(() => {});
       framePreview.dispose();
       releaseQuartoUrls();
@@ -3365,10 +3362,6 @@
     {#if compilesHere}<Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>{/if}
   {/if}
   {#if sourceFormat === "quarto"}
-    <Menu.Item value="live-preview" class="menuitem">
-      <span class="w-4">{quartoLiveEnabled ? "✓" : ""}</span>Live preview
-    </Menu.Item>
-    <Menu.Item value="artifact" class="menuitem">{quartoView === "output" ? "Show live draft" : "Show rendered output"}</Menu.Item>
     {#if quartoBundle?.cells?.some((cell) => cell.outputs?.length)}
       <Menu.Item value="results" class="menuitem">Saved results</Menu.Item>
     {/if}
@@ -3455,12 +3448,9 @@
     <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
   </div>
 {/if}
-{#if sourceFormat === "quarto" && (quartoFreshness.state !== "missing" || quartoLiveActive)}
+{#if sourceFormat === "quarto" && quartoFreshness.state !== "missing"}
   <div class="workspace-banner" role="region" aria-label="Quarto preview">
-    {#if quartoFreshness.state !== "missing"}
-      <small class="badge {quartoFreshness.state === 'potentially-stale' ? 'preset-tonal-warning' : 'preset-tonal-surface'}" title="Saved computation results do not verify current external data or package environments.">{quartoFreshness.message}</small>
-    {/if}
-    {#if quartoLiveActive}<small class="badge preset-tonal-secondary">Live preview</small>{/if}
+    <small class="badge {quartoFreshness.state === 'potentially-stale' ? 'preset-tonal-warning' : 'preset-tonal-surface'}" title="Saved computation results do not verify current external data or package environments.">{quartoFreshness.message}</small>
   </div>
 {/if}
 
@@ -3683,13 +3673,6 @@
        would reload the document and lose the reader's place in it. -->
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
            away={!shown.document || unrendered || failedBeforeRender} />
-  {#if sourceFormat === "quarto" && quartoView === "output" && quartoOutput?.downloadUrl}
-    <div class="px-4 py-2 text-sm text-surface-700-300">
-      Saved Quarto {quartoOutput.kind.toUpperCase()} artifact:
-      {#if quartoOutput.page}<ResultsArtifactBrowser artifact={quartoOutput} />{/if}
-      <a class="anchor" href={quartoOutput.downloadUrl} download={quartoOutput.downloadName}>Download artifact</a>
-    </div>
-  {/if}
 
   <nav class="mobile-pane-nav" aria-label="Workspace view">
     <IconButton icon="book" label="Document" pressed={shown.document}

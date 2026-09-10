@@ -34,23 +34,36 @@ The `.qmd` remains the source of truth. Generated Markdown, HTML, and PDF are
 artifacts. Editing a generated artifact must never silently overwrite the
 Quarto source or create a second independently editable version of the paper.
 
-### 1.1 Three complementary views
+### 1.1 Source, preview pane, and results bundle
 
-| View | Renderer | Available without local tools | Purpose |
+| Row | Renderer | Available without local tools | Purpose |
 | --- | --- | --- | --- |
 | Source | Existing collaborative editor | Yes | Edit the actual `.qmd` |
-| Draft | LibrePaper Markdown infrastructure plus Quarto support | Yes | Execution-free prose preview, annotated, with cached outputs |
-| Live preview | Locally installed Quarto, through the local app | Author only, while paired | Quarto's own preview page, kept current as the author types |
-| Rendered output | Locally installed Quarto, uploaded as a bundle | Yes, after output is uploaded | Inspect the actual immutable rendered revision |
+| Preview pane | Local app (live), or the last shared render, or LibrePaper's own draft rendering | Yes, in some form | What every reader sees, in one frame |
+| Results bundle | Locally installed Quarto, published by Share results | Yes, once shared | The shareable, immutable record readers' panes show, and comment anchors on results reference |
 
-The draft is a composition of current source and explicitly associated prior
-outputs. It is not necessarily the output of any single Quarto invocation, and
-it never runs document code; annotations anchor to it and to the rendered
-output. Live preview is Quarto's own page, reached only through a paired local
-app: it is never a portable artifact, is never shown to a remote reader, and
-carries no LibrePaper comments or highlights of its own. The rendered output
-is an immutable render artifact. It does not silently acquire new prose when
-the source changes.
+The preview pane resolves one of three sources, in order, and paints whichever
+applies into the same frame so comments and highlights land consistently:
+
+1. **Live render from the local app**, whenever this browser is paired with a
+   local app (`librepaper serve` on the same machine runs it without a
+   separate start) and that app has Quarto installed. The reader keeps the
+   app's hosted workspace current with `PUT workspace` on every edit; Quarto
+   runs `quarto preview --no-serve` there and re-renders; LibrePaper polls the
+   app's self-contained rendered HTML and paints it into the pane. Author only,
+   while paired.
+2. **The last shared Quarto render**, when a published results bundle with an
+   HTML (or PDF) artifact exists, painted directly into the pane. Available to
+   any reader with document access.
+3. **The draft**, LibrePaper's own execution-free rendering of the source:
+   front matter dropped, `:::` fenced divs and code chunks shown verbatim, and
+   saved figures, tables, and text results shown in place where a results
+   bundle provides them. Always available.
+
+The results bundle is the shareable immutable record: it is what readers' panes
+show under (2), and it is what comments on a specific figure or table anchor
+to, independent of later source or render changes. It does not silently
+acquire new prose when the source changes.
 
 ### 1.2 Scope
 
@@ -641,27 +654,31 @@ choice, not client clock ordering.
 
 ### 10.4 Managed live preview
 
-Quarto provides a preview service with `--no-browser`. When the editor's
-browser is paired with a local app that has Quarto installed, LibrePaper's
-pane shows that service's own page for the document instead of the draft: the
-reader keeps the hosted workspace current with `PUT workspace` on every edit,
-and Quarto's own watcher re-renders and reloads the page. This is a per-document
-toggle in the Tools menu, "Live preview", on by default, visible and usable
-only in the author's own pane; readers and unpaired browsers always fall back
-to the draft. The preview URL is local to the author and is never sent to
-another browser or embedded in a shared document.
+Quarto provides a preview service with `--no-serve`. When the editor's browser
+is paired with a local app that has Quarto installed, the app runs
+`quarto preview --no-serve` against its hosted workspace, kept current by the
+reader's `PUT workspace` call on every edit; Quarto's own watcher re-renders
+on source changes. The app serves the resulting self-contained rendered HTML
+at `GET /librepaper/local/v1/previews/{id}/page` (ETag/If-None-Match), which
+the reader polls about once a second and paints into LibrePaper's own frame —
+not Quarto's page framed or linked directly — so comments and highlights work
+on the live page. This applies only in the author's own pane, only while
+paired and Quarto is installed there; readers and unpaired browsers always
+fall back to the last shared render or the draft. No loopback URL is ever
+framed or shown to a reader.
 [Quarto preview CLI](https://quarto.org/docs/cli/preview.html)
 
 Use one owner for watching/rebuild scheduling: Quarto's own preview watcher
-owns re-rendering while its page is shown; LibrePaper's render queue is not
-also rebuilding the same workspace at the same time. Running both without
-coordination can execute the same changes twice and create a rebuild loop.
+owns re-rendering while the pane is polling its page; LibrePaper's render
+queue is not also rebuilding the same workspace at the same time. Running both
+without coordination can execute the same changes twice and create a rebuild
+loop.
 
 Keep live preview distinct from publication. Capture a completed revision into
 an immutable bundle when publishing (Share results); never have remote readers
 point at the author's loopback server. Strip development reload clients from
 published artifacts. Stop or expire unused preview processes and invalidate
-their URLs.
+their page endpoints.
 
 ## 11. Full HTML, PDF, and output isolation
 
@@ -893,12 +910,12 @@ computation result.
 
 ## 15. User interface and diagnostics
 
-There is no Draft/Quarto output toggle in the banner. The pane shows Quarto's
-own live preview page when the author's browser is paired and "Live preview"
-is on; otherwise it shows the draft. Tools offers "Show rendered output" /
-"Show live draft" to inspect the selected immutable artifact separately.
-Reader-only access shows the draft, annotated with any published results.
-Switching views does not cause execution.
+There is no Draft/Quarto output toggle in the banner. The pane resolves the
+live render from the local app, then the last shared Quarto render, then the
+draft, painting whichever applies into one frame. Reader-only access shows the
+last shared render when one exists, otherwise the draft, annotated with any
+published results. Switching between what the pane shows does not cause
+execution.
 
 The local render control shows a compact connection/job state and exposes logs,
 cancel, and render policy details. Missing local tools do not disable reading,

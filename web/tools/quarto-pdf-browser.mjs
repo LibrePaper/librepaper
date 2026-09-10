@@ -80,7 +80,6 @@ try {
   assert.ok([200, 201].includes(status), `PDF bundle publication failed: ${status}`);
   await tab.navigate(`${base}/docs/${created.slug}`);
   await until("Quarto PDF editor", () => tab.evaluate('!!document.querySelector(".cm-content")'));
-  await tab.evaluate('(async () => { [...document.querySelectorAll(".menubar-item")].find((el) => el.textContent.trim() === "Tools")?.click(); await new Promise((resolve) => setTimeout(resolve, 80)); const item = [...document.querySelectorAll(\'[role="menuitem"]\')].find((el) => el.textContent.includes("Show rendered output")); item?.dispatchEvent(new PointerEvent("pointermove", { pointerType:"mouse", bubbles:true })); item?.click(); })()');
   await until("Quarto PDF frame", () => tab.evaluate('document.querySelector("iframe")?.src.includes("/pdf/")'));
   await until("Quarto PDF text", async () => (await tab.text()).includes("Quarto PDF fixture"));
   assert.match(await tab.evaluate('document.querySelector("iframe").src'), /\/pdf\//);

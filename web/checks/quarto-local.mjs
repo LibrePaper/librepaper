@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus, syncWorkspace } from "../src/lib/latex/local.js";
+import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus, quartoPreviewPage, syncWorkspace } from "../src/lib/latex/local.js";
 import { parameterSha256 } from "../src/lib/quarto.js";
 
 const digest = "a".repeat(64);
@@ -31,12 +31,15 @@ assert.throws(() => quartoRequest({ job: { binding: "binding-1" }, entrypoint: "
 assert.throws(() => quartoRequest({ job: { binding: "binding-1" }, entrypoint: "paper.qmd", format: "HTML" }));
 assert.throws(() => quartoRequest({ job: { binding: "binding-1" }, entrypoint: "paper.qmd", files: [{ path: "data/a", sha256: digest, size: 1 }, { path: "data/a", sha256: digest, size: 1 }] }));
 
-function response(body, status = 200) {
+function response(body, status = 200, headers = {}) {
   const bytes = body instanceof Uint8Array ? body : new TextEncoder().encode(JSON.stringify(body));
+  const lower = new Map(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: { get: (name) => lower.get(String(name).toLowerCase()) ?? null },
     json: async () => JSON.parse(new TextDecoder().decode(bytes)),
+    text: async () => new TextDecoder().decode(bytes),
     arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
     clone() { return this; },
   };
@@ -169,3 +172,29 @@ assert.equal(filesInForm.length, 2);
 const fileNames = filesInForm.map((part) => part.name).sort();
 assert.deepEqual(fileNames, ["figures/plot.png", "paper.qmd"]);
 console.log("quarto-local: syncWorkspace uploads a manifest and file parts to the workspace endpoint");
+
+// The live preview's own page: a fresh render comes back with an etag, a
+// repeat of the same etag is a 304 the caller reads as "nothing new", and a
+// preview with no render yet is a 404 the caller can tell apart from any
+// other failure.
+{
+  const pageCalls = [];
+  setup(async (url, init = {}) => {
+    pageCalls.push({ url, init });
+    if (url.endsWith("/previews/preview-1/page")) {
+      if (init.headers?.["If-None-Match"] === '"etag-1"') return response(new Uint8Array(), 304);
+      return response(new TextEncoder().encode("<html>page</html>"), 200, { ETag: '"etag-1"' });
+    }
+    if (url.endsWith("/previews/preview-missing/page")) return response({ error: "not rendered yet" }, 404);
+    throw new Error(`unexpected local request: ${init.method || "GET"} ${url}`);
+  });
+  const first = await quartoPreviewPage("preview-1", {});
+  assert.equal(first.html, "<html>page</html>");
+  assert.equal(first.etag, '"etag-1"');
+  assert.equal(pageCalls[0].init.headers["If-None-Match"], undefined);
+  const unchanged = await quartoPreviewPage("preview-1", { etag: '"etag-1"' });
+  assert.equal(unchanged, null);
+  assert.equal(pageCalls[1].init.headers["If-None-Match"], '"etag-1"');
+  await assert.rejects(quartoPreviewPage("preview-missing", {}), (error) => error.name === "NotRendered");
+}
+console.log("quarto-local: quartoPreviewPage resolves fresh HTML, a 304 miss, and a distinguishable 404");

@@ -993,6 +993,52 @@ export async function quartoPreviewStatus(id) {
   return response.json();
 }
 
+// The live preview's own rendered page. `etag`, when given, is sent as
+// `If-None-Match`: a 304 (nothing new since that version) resolves `null`
+// rather than re-fetching bytes nothing needs. A 404 means the preview has
+// not produced a first render yet, which the poller treats as "not yet" --
+// distinguished by `name` from every other failure, none of which are.
+export async function quartoPreviewPage(id, { etag } = {}) {
+  const pairing = requirePairing();
+  const addr = address();
+  const url = `${addr}librepaper/local/v1/previews/${encodeURIComponent(id)}/page`;
+  const headers = { Accept: "text/html", Authorization: `Bearer ${pairing.token}` };
+  if (etag) headers["If-None-Match"] = etag;
+  let response;
+  try {
+    response = await deps.fetch(url, { method: "GET", mode: "cors", credentials: "omit", headers });
+  } catch (error) {
+    const wrapped = new Error(String(error?.message || error));
+    wrapped.name = "Unreachable";
+    throw wrapped;
+  }
+  if (response.status === 304) return null;
+  if (response.status === 404) {
+    const error = new Error("not rendered yet");
+    error.name = "NotRendered";
+    throw error;
+  }
+  if (response.status === 401) {
+    dropPairing();
+    const error = new Error("Local LibrePaper rejected the stored pairing");
+    error.name = "Unauthorized";
+    throw error;
+  }
+  if (!response.ok) {
+    let message = `Local LibrePaper refused the request (${response.status})`;
+    try {
+      const data = await response.clone().json();
+      if (data && typeof data.error === "string") message = data.error;
+    } catch { /* not a JSON body; keep the generic message */ }
+    const error = new Error(message);
+    error.name = "Refused";
+    error.status = response.status;
+    throw error;
+  }
+  const html = await response.text();
+  return { html, etag: response.headers?.get?.("etag") || null };
+}
+
 // -------------------------------------------------------------- workspace sync
 
 /** The manifest entries `syncWorkspace` uploads for a shared tree: the same

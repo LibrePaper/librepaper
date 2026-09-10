@@ -444,7 +444,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   const published = [];
   const ctx = context({
     sourceGeneration: 0, quartoFreshnessSerial: 0, editing: true, sourceFormat: "quarto",
-    quartoView: "output", pdfOutput: true, compilesHere: false, previewTimer: null, viewing: null,
+    quartoOutput: { kind: "pdf" }, pdfOutput: true, compilesHere: false, previewTimer: null, viewing: null,
     quartoBundle: { context: { format: "pdf" } }, quartoTargetFormat: () => "pdf",
     treeNow: () => ({ main: "main.qmd", texts: { "main.qmd": "---\nformat: pdf\n---\n" }, digests: {} }),
     renderers: { formatOf: () => "quarto" },
@@ -471,7 +471,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let loads = 0;
   let freshness = 0;
   const ctx = context({
-    sourceFormat: "quarto", session: {}, quartoView: "draft", paintsTheFrame: false, pdfOutput: false, compilesHere: false,
+    sourceFormat: "quarto", session: {}, paintsTheFrame: false, pdfOutput: false, compilesHere: false,
     previewTimer: null, quartoBundle: { context: { format: "html" } },
     quartoTargetFormat: () => "pdf", loadQuartoOutput: async () => { loads++; },
     treeNow: () => ({ main: "main.qmd", texts: { "main.qmd": "source" }, digests: {} }),

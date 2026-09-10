@@ -516,18 +516,18 @@ librepaper publish paper.qmd
 librepaper sync <document> paper.qmd
 ```
 
-The pane is live, like Markdown, whenever your browser is paired with a local
-app that has Quarto installed: it shows Quarto's own preview page for the
-document, kept in sync as you type, and Quarto itself re-renders and reloads
-it. Otherwise, and for readers, the pane shows the annotated **draft**: prose
-without running code, with saved figures, tables, and text results shown in
-place where a saved render provides them, and chunks without results simply
-absent. Tools, **Show rendered output**, opens the complete saved render
-instead, which has its own source revision; changes to computation inputs mark
-saved results as potentially outdated, and a matching source fingerprint does
-not prove that external data or packages have stayed unchanged. Comments and
-highlights live on the draft and the rendered output, not on Quarto's own
-preview page.
+The pane shows one of three things, in order. Whenever your browser is paired
+with a local app that has Quarto installed, it shows that app's live render,
+kept in sync as you type: your edits sync into the app's own workspace, Quarto
+re-renders there, and the pane polls the result and paints it in, so comments
+and highlights work on the live page too. Otherwise, when a shared render
+exists, the pane shows that: the last **results bundle** you published, painted
+directly in. Otherwise, and always for readers without one, the pane shows the
+annotated **draft**: prose without running code, with saved figures, tables,
+and text results shown in place where a saved render provides them, and chunks
+without results simply absent. Changes to computation inputs mark saved
+results as potentially outdated, and a matching source fingerprint does not
+prove that external data or packages have stayed unchanged.
 
 Open **Saved results** to discuss a particular figure or table, or draw a region
 on a saved image. **Inspect original result** returns to the exact result that
@@ -556,16 +556,16 @@ librepaper local start
 
 The first time, a small window from the local app asks whether to allow that
 site to use this computer's tools; click **Allow**. That is the whole setup:
-once paired, the pane switches to Quarto's own live preview automatically,
-kept in sync with a workspace of its own, written from the files your browser
-sends as you edit, so nothing has to be linked or bound. Turn it off per
-document with Tools, **Live preview**. Choose **Share results** from the
-Tools menu to render on the local app and publish a results bundle so readers
-see the figures, tables, and text results in the draft. **Refresh
-computations** asks Quarto to rerun its caches. Both run the document's code,
-filters, and scripts on your machine, so allow only sites you trust. The
-pairing code the app prints still works as a fallback under Tools, Local app
-settings.
+once paired, the pane switches to the app's live render automatically, kept in
+sync with a workspace of its own, written from the files your browser sends as
+you edit, so nothing has to be linked or bound. Choose **Share results** from
+the Tools menu to render on the local app and publish a results bundle so
+readers see the figures, tables, and text results in the pane. **Refresh
+computations** asks Quarto to rerun its caches, and **Use frozen results**
+reformats available saved computations when supported. These run the
+document's code, filters, and scripts on your machine, so allow only sites you
+trust. The pairing code the app prints still works as a fallback under Tools,
+**Local app settings…**.
 
 When `librepaper serve` runs on the machine you browse from, it runs the local
 app itself: nothing to start. Pass `--no-local` to turn that off.
