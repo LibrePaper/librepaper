@@ -19,6 +19,26 @@ fn segment_round_trip_and_digest_validation() {
 }
 
 #[test]
+fn multi_fragment_segment_rejects_non_hex_aggregate_digest() {
+    let mut records = JournalRecord::chunked(
+        "storage",
+        1,
+        "retry",
+        0,
+        vec![b'x'; MAX_RECORD_CHUNK_BYTES + 1],
+    )
+    .expect("fragments");
+    // Aggregate digests are not compared in `JournalRecord::validate` for
+    // multi-fragment records, so this specifically exercises format
+    // validation rather than the later reassembly check.
+    records[0].digest = "z".repeat(64);
+    assert!(matches!(
+        Segment::new(records),
+        Err(JournalError::Corrupt(message)) if message.contains("digest")
+    ));
+}
+
+#[test]
 fn legacy_segment_reencoding_preserves_legacy_header_layout() {
     let payload = b"legacy-state".to_vec();
     let digest = hex::encode(sha2::Sha256::digest(&payload));
@@ -461,6 +481,120 @@ async fn concurrent_deployment_appends_preserve_per_document_coverage() {
 }
 
 #[tokio::test]
+async fn recovery_fails_closed_when_a_committed_segment_is_missing() {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+    let directory = tempfile::tempdir().expect("blob directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
+    let runtime = JournalRuntime::new(
+        catalog.clone(),
+        blobs.clone(),
+        "deployment",
+        CoordinatorLimits::default(),
+    )
+    .expect("runtime");
+    JournalStore::new(catalog.clone())
+        .initialize("deployment", "generation")
+        .expect("initialize");
+    runtime
+        .append("storage", 1, b"durable".to_vec())
+        .await
+        .expect("append");
+    let (key, _) = JournalStore::new(catalog)
+        .committed_segments()
+        .expect("descriptor")
+        .into_iter()
+        .next()
+        .expect("segment");
+    blobs
+        .delete(std::slice::from_ref(&key))
+        .await
+        .expect("delete");
+    assert!(matches!(
+        runtime.recover_latest("storage").await,
+        Err(JournalError::Storage(_))
+    ));
+}
+
+#[tokio::test]
+async fn recovery_fails_closed_when_a_committed_segment_is_corrupt() {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+    let directory = tempfile::tempdir().expect("blob directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
+    let runtime = JournalRuntime::new(
+        catalog.clone(),
+        blobs.clone(),
+        "deployment",
+        CoordinatorLimits::default(),
+    )
+    .expect("runtime");
+    JournalStore::new(catalog.clone())
+        .initialize("deployment", "generation")
+        .expect("initialize");
+    runtime
+        .append("storage", 1, b"durable".to_vec())
+        .await
+        .expect("append");
+    let (key, _) = JournalStore::new(catalog)
+        .committed_segments()
+        .expect("descriptor")
+        .into_iter()
+        .next()
+        .expect("segment");
+    blobs
+        .put(&key, b"corrupt".to_vec(), "application/octet-stream")
+        .await
+        .expect("overwrite segment");
+    assert!(matches!(
+        runtime.recover_latest("storage").await,
+        Err(JournalError::Corrupt(_))
+    ));
+}
+
+#[tokio::test]
+async fn failed_segment_write_releases_admission_and_retry_succeeds() {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+    let directory = tempfile::tempdir().expect("blob directory");
+    let objects = directory.path().join("objects");
+    std::fs::write(&objects, b"disk-full").expect("block object directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(&objects, true));
+    let runtime = JournalRuntime::new(
+        catalog.clone(),
+        blobs,
+        "deployment",
+        CoordinatorLimits::default(),
+    )
+    .expect("runtime");
+    JournalStore::new(catalog.clone())
+        .initialize("deployment", "generation")
+        .expect("initialize");
+    assert!(runtime
+        .append("storage", 1, b"retry me".to_vec())
+        .await
+        .is_err());
+    assert_eq!(
+        JournalStore::new(catalog.clone())
+            .committed_segments()
+            .expect("segments")
+            .len(),
+        0
+    );
+    assert_eq!(runtime.payload_bytes_in_flight().await, (0, 0));
+    assert_eq!(runtime.memory().held_bytes(), 0);
+
+    std::fs::remove_file(&objects).expect("remove blocking file");
+    std::fs::create_dir(&objects).expect("restore object directory");
+    runtime
+        .append("storage", 1, b"retry me".to_vec())
+        .await
+        .expect("retry");
+    assert_eq!(runtime.memory().held_bytes(), 0);
+    assert_eq!(
+        runtime.recover_latest("storage").await.expect("recovery"),
+        Some(b"retry me".to_vec())
+    );
+}
+
+#[tokio::test]
 async fn shared_segment_rewrite_physically_excludes_erased_identity() {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     for (slug, storage_id) in [("one", "one"), ("two", "two"), ("three", "three")] {
@@ -783,6 +917,55 @@ async fn restarted_cursor_rejects_conflicting_payload_and_accepts_next_sequence(
     assert_eq!(
         restarted.recover_latest("storage").await.expect("recovery"),
         Some(b"state-2".to_vec())
+    );
+}
+
+#[tokio::test]
+async fn recovery_accepts_nonconsecutive_snapshot_sequences_and_compacted_bases() {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+    let directory = tempfile::tempdir().expect("blob directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
+    let runtime = JournalRuntime::new(
+        catalog.clone(),
+        blobs,
+        "deployment",
+        CoordinatorLimits::default(),
+    )
+    .expect("runtime");
+    JournalStore::new(catalog)
+        .initialize("deployment", "generation")
+        .expect("initialize");
+
+    // Room snapshots use the session generation as their durable sequence;
+    // the first persisted generation need not be one, and generations may
+    // have advanced between snapshots.
+    runtime
+        .append("storage", 7, b"state-7".to_vec())
+        .await
+        .expect("append 7");
+    runtime
+        .append("storage", 9, b"state-9".to_vec())
+        .await
+        .expect("append 9");
+    assert_eq!(
+        runtime.recover_latest("storage").await.expect("recovery"),
+        Some(b"state-9".to_vec())
+    );
+
+    runtime
+        .compact("storage", 0, 9, b"state-9".to_vec())
+        .await
+        .expect("compact");
+    runtime
+        .append("storage", 12, b"state-12".to_vec())
+        .await
+        .expect("append after compacted base");
+    assert_eq!(
+        runtime
+            .recover_latest("storage")
+            .await
+            .expect("recovery after compaction"),
+        Some(b"state-12".to_vec())
     );
 }
 

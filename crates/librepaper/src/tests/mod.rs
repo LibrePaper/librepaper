@@ -31,6 +31,8 @@ mod local;
 mod mirror_server;
 mod onboarding;
 mod ownership;
+mod persistence_capacity;
+mod persistence_defaults;
 mod pseudonym;
 mod publish_cli;
 mod quarto_local;

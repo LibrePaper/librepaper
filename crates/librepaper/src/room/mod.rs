@@ -2832,13 +2832,22 @@ impl Room {
                 state.session.by.clone(),
             )
         };
-        let flush_due = dirty
-            && if last_persist_at > 0 {
-                now >= last_persist_at.saturating_add(15)
-            } else {
-                dirty_for >= 15
-            };
-        if dirty && (quiet_for >= limits.write_after_seconds.max(0) || flush_due) {
+        let floor_elapsed = if last_persist_at > 0 {
+            now >= last_persist_at.saturating_add(15)
+        } else {
+            dirty_for >= 15
+        };
+        let quiet = quiet_for >= limits.write_after_seconds.max(0);
+        // Quiet periods may request an early save only after the journal's
+        // flush floor. Continuous typing still reaches the dirty-age deadline;
+        // it must not reset that deadline or force a write on every brief pause.
+        // The compatibility session store retains its original debounce policy.
+        let flush_due = if self.journal.get().is_some() {
+            floor_elapsed && (quiet || dirty_for >= 15)
+        } else {
+            quiet || floor_elapsed
+        };
+        if dirty && flush_due {
             if let Err(err) = self.persist().await {
                 eprintln!(
                     "warning: could not write the session for {}: {err}",

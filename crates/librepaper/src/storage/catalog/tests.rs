@@ -882,6 +882,78 @@ fn file_catalog_reopens_with_wal_and_journal_state() {
 }
 
 #[test]
+fn journal_commit_rejects_non_head_sequence_and_negative_time() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog
+        .configure_journal("deployment-1", "writer-1")
+        .unwrap();
+    catalog
+        .prepare_journal(&JournalPreparation {
+            operation_id: "flush-1".into(),
+            kind: "flush".into(),
+            expected_revision: 0,
+            expected_generation: "writer-1".into(),
+            created_at: 1,
+            plan: "{}".into(),
+            resolved_at: None,
+        })
+        .unwrap();
+    let segment = JournalSegment {
+        segment_id: "segment-1".into(),
+        segment_seq: 1,
+        operation_id: "flush-1".into(),
+        object_key: "journal/segment-1".into(),
+        digest: "digest".into(),
+        encoded_bytes: 10,
+        committed_at: 2,
+    };
+    assert!(matches!(
+        catalog.commit_journal(
+            "flush-1",
+            &segment,
+            "journal/manifest-1",
+            "manifest-digest",
+            12,
+            1,
+            2,
+        ),
+        Err(CatalogError::Conflict(_))
+    ));
+    let mut segment = segment;
+    segment.segment_seq = 0;
+    segment.committed_at = -1;
+    assert!(matches!(
+        catalog.commit_journal(
+            "flush-1",
+            &segment,
+            "journal/manifest-1",
+            "manifest-digest",
+            12,
+            1,
+            -1,
+        ),
+        Err(CatalogError::Invalid(_))
+    ));
+}
+
+#[test]
+fn journal_preparation_rejects_negative_creation_time() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    let error = catalog
+        .prepare_journal(&JournalPreparation {
+            operation_id: "flush-1".into(),
+            kind: "flush".into(),
+            expected_revision: 0,
+            expected_generation: "writer-1".into(),
+            created_at: -1,
+            plan: "{}".into(),
+            resolved_at: None,
+        })
+        .unwrap_err();
+    assert!(matches!(error, CatalogError::Invalid(_)));
+}
+
+#[test]
 fn sql_children_are_bounded_and_expiry_filtered() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();

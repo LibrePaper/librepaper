@@ -151,6 +151,8 @@ impl Catalog {
             || preparation.kind.is_empty()
             || preparation.plan.len() > 262_144
             || preparation.expected_revision < 0
+            || preparation.expected_generation.is_empty()
+            || preparation.created_at < 0
         {
             return Err(CatalogError::Invalid("invalid journal preparation".into()));
         }
@@ -178,9 +180,12 @@ impl Catalog {
         if operation_id.is_empty()
             || segment.segment_id.is_empty()
             || segment.object_key.is_empty()
+            || segment.operation_id != operation_id
+            || segment.segment_seq < 0
             || segment.encoded_bytes < 0
             || manifest_length < 0
             || tail_after < 0
+            || committed_at < 0
         {
             return Err(CatalogError::Invalid("invalid journal commit".into()));
         }
@@ -188,7 +193,12 @@ impl Catalog {
             let prep: JournalPreparation = tx.query_row("SELECT operation_id,kind,expected_revision,expected_generation,created_at,plan,resolved_at FROM journal_preparations WHERE operation_id=?1",[operation_id],Self::read_journal_preparation).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
             if prep.resolved_at.is_some() { return Self::journal_state_in_tx(tx); }
             let state=Self::journal_state_in_tx(tx)?;
-            if state.revision != prep.expected_revision || state.writer_generation != prep.expected_generation || segment.segment_seq != state.next_segment_seq || segment.operation_id != operation_id { return Err(CatalogError::Conflict("journal head changed".into())); }
+            if state.revision != prep.expected_revision
+                || state.writer_generation != prep.expected_generation
+                || segment.segment_seq != state.next_segment_seq
+            {
+                return Err(CatalogError::Conflict("journal head changed".into()));
+            }
             tx.execute("INSERT INTO journal_segments(segment_id,segment_seq,operation_id,object_key,digest,encoded_bytes,committed_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![segment.segment_id,segment.segment_seq,operation_id,segment.object_key,segment.digest,segment.encoded_bytes,committed_at]).map_err(CatalogError::from)?;
             tx.execute("UPDATE journal_state SET revision=revision+1,last_operation_id=?1,next_segment_seq=next_segment_seq+1,manifest_key=?2,manifest_digest=?3,manifest_length=?4,tail_after=?5 WHERE id=1",params![operation_id,manifest_key,manifest_digest,manifest_length,tail_after]).map_err(CatalogError::from)?;
             tx.execute("UPDATE journal_preparations SET resolved_at=?2 WHERE operation_id=?1",params![operation_id,committed_at]).map_err(CatalogError::from)?;

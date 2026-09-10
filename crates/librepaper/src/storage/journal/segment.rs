@@ -136,14 +136,21 @@ impl JournalRecord {
         if self.format_version == SEGMENT_FORMAT && self.chunk_digest != chunk_digest {
             return Err(JournalError::Corrupt("record digest mismatch".into()));
         }
-        if self.digest.len() != 64 {
+        if !is_sha256_hex(&self.digest) {
             return Err(JournalError::Corrupt("invalid record digest".into()));
+        }
+        if !is_sha256_hex(&self.chunk_digest) {
+            return Err(JournalError::Corrupt("invalid record chunk digest".into()));
         }
         if self.fragment_count == 1 && self.digest != chunk_digest {
             return Err(JournalError::Corrupt("record digest mismatch".into()));
         }
         Ok(())
     }
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

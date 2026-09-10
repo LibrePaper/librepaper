@@ -1,13 +1,25 @@
 # SPEC: batched edit persistence
 
+Implementation and reproducible validation commands are recorded in
+[persistence validation](../persistence-validation.md). The capacity reports
+describe their measured workload and exclusions; they are not a claim that the
+entire release matrix below has been exercised.
+
 ## Decision
 
 LibrePaper uses one batching implementation and one storage shape: a SQLite
 catalogue and immutable objects, both in the deployment directory.
 
-Live Yjs edits from many documents are combined into shared segments instead
-of saving one snapshot per document. One coordinator, record format,
+Live Yjs state from many documents is combined into shared segments instead
+of writing a separate session object per document. One coordinator, record format,
 scheduling, replay, compaction and deletion code path covers all of it.
+
+The current room adapter supplies complete CRDT snapshots to that shared
+coordinator. Multiple snapshots share a segment; they are not individual
+incremental keystroke records. Snapshot sequences can skip edit generations,
+and recovery selects the newest complete snapshot rather than requiring
+consecutive sequence numbers. Snapshot state includes deletions even when the
+CRDT state vector has not changed.
 
 A save is acknowledged only after the segment is durable in the object store
 and its recovery reference is committed in the catalogue: the deployment

@@ -1371,6 +1371,9 @@ impl JournalStore {
         segments: &[WrittenSegment],
         committed_at: i64,
     ) -> JournalResult<(JournalState, Vec<i64>)> {
+        if committed_at < 0 {
+            return Err(JournalError::Invalid("invalid segment timestamp".into()));
+        }
         Self::validate_segment_batch(segments)?;
         self.catalog
             .with_connection(|connection| {
@@ -1390,6 +1393,9 @@ impl JournalStore {
         segments: Vec<WrittenSegment>,
         committed_at: i64,
     ) -> JournalResult<(JournalState, Vec<i64>)> {
+        if committed_at < 0 {
+            return Err(JournalError::Invalid("invalid segment timestamp".into()));
+        }
         Self::validate_segment_batch(&segments)?;
         let input_bytes = DESCRIPTOR_JOB_BYTES
             + operation_id.len()
@@ -1702,6 +1708,17 @@ impl JournalStore {
     ) -> JournalResult<()> {
         if shards.is_empty() {
             return Err(JournalError::Invalid("manifest shard set is empty".into()));
+        }
+        if base.base_id.is_empty()
+            || base.storage_id.is_empty()
+            || base.object_key.is_empty()
+            || base.encoded_bytes < 0
+            || base.committed_at < 0
+            || shards.iter().any(|shard| {
+                shard.object_key.is_empty() || shard.encoded_bytes < 0 || shard.committed_at < 0
+            })
+        {
+            return Err(JournalError::Invalid("invalid compaction metadata".into()));
         }
         let base_json = serde_json::to_string(base)
             .map_err(|error| JournalError::Invalid(format!("invalid base metadata: {error}")))?;

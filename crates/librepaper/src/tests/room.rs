@@ -1653,3 +1653,92 @@ async fn comment_view_agrees_across_snapshot_and_event_for_every_viewer() {
     assert_eq!(shared["comment"]["mine"].as_bool(), Some(false));
     assert_eq!(shared["comment"]["deletable"].as_bool(), Some(false));
 }
+
+/// Brief pauses cannot bypass the journal's write floor, and continuous
+/// typing cannot move its deadline. Explicit saves remain immediate.
+#[tokio::test]
+async fn journal_scheduled_saves_obey_floor_and_dirty_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open_with(dir.path().join("catalog.db"), true).unwrap(),
+    );
+    let mut config = Configuration::default();
+    config.session.checkpoint_seconds = i64::MAX;
+    config.session.history_interval_seconds = i64::MAX;
+    let config = Arc::new(config);
+    let store = Arc::new(
+        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+            .await
+            .unwrap(),
+    );
+    store
+        .put(store::Publication {
+            slug: "flush-floor".into(),
+            source: "initial".into(),
+            source_format: "markdown".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    crate::storage::journal::JournalStore::new(catalog.clone())
+        .initialize_local("flush-test")
+        .unwrap();
+    let journal = crate::storage::journal::JournalRuntime::new(
+        catalog,
+        blobs.clone(),
+        "flush-test",
+        crate::storage::journal::CoordinatorLimits::default(),
+    )
+    .unwrap();
+    let rooms = room::RoomSet::new(blobs, config);
+    rooms.attach_store(store);
+    rooms.attach_journal(journal);
+    let room = rooms.get("flush-floor").await;
+    room.set_source("saved", "markdown").await.unwrap();
+    room.persist().await.unwrap();
+
+    room.set_source("brief pause", "markdown").await.unwrap();
+    {
+        let mut state = room.state.lock().await;
+        let now = crate::util::now_unix();
+        state.session.last_persist_at = now;
+        state.session.updated_at = now - 3;
+        state.session.dirty_since = now - 3;
+    }
+    room.tick().await;
+    assert!(
+        room.state.lock().await.session.dirty,
+        "a pause bypassed the floor"
+    );
+
+    // The floor has elapsed but this new burst has neither paused nor reached
+    // its deadline. A long idle period before typing is not an immediate save.
+    {
+        let mut state = room.state.lock().await;
+        let now = crate::util::now_unix();
+        state.session.last_persist_at = now - 30;
+        state.session.updated_at = now + 60;
+        state.session.dirty_since = now;
+    }
+    room.tick().await;
+    assert!(room.state.lock().await.session.dirty);
+
+    {
+        let mut state = room.state.lock().await;
+        state.session.dirty_since = crate::util::now_unix() - 16;
+    }
+    room.tick().await;
+    assert!(
+        !room.state.lock().await.session.dirty,
+        "continuous edits delayed the save"
+    );
+
+    room.set_source("explicit save", "markdown").await.unwrap();
+    assert!(
+        room.persist().await.unwrap(),
+        "explicit saves must bypass the floor"
+    );
+    assert!(!room.state.lock().await.session.dirty);
+}

@@ -465,18 +465,35 @@ impl BlobStore for FsStore {
 /// failure no longer abandons the keys after it: each object's accounting is
 /// settled on its own evidence.
 fn remove_one_file(name: &Path, durable: bool) -> DeleteOutcome {
-    let removed = match std::fs::remove_file(name) {
-        Ok(()) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+    remove_one_file_with(name, durable, &mut |path, durable| {
+        sync_directory(path, durable)
+    })
+}
+
+fn remove_one_file_with(
+    name: &Path,
+    durable: bool,
+    sync: &mut impl FnMut(&Path, bool) -> std::io::Result<()>,
+) -> DeleteOutcome {
+    match std::fs::remove_file(name) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // A previous attempt may have unlinked the name but failed while
+            // syncing its directory.  NotFound is only confirmation that the
+            // name is absent from this process's view; sync the nearest
+            // surviving ancestor before treating the deletion as durable.
+            return match sync_existing_ancestor(name.parent(), durable, sync) {
+                Ok(()) => DeleteOutcome::Absent,
+                Err(error) => DeleteOutcome::Uncertain(error.to_string()),
+            };
+        }
         Err(err) => return DeleteOutcome::Failed(err.to_string()),
-    };
-    if removed {
-        if let Some(parent) = name.parent() {
-            if let Err(err) = sync_directory(parent, durable) {
-                // The name is gone from this process's view but the directory
-                // entry may not be on disk yet, so the removal is not durable.
-                return DeleteOutcome::Uncertain(err.to_string());
-            }
+    }
+    if let Some(parent) = name.parent() {
+        if let Err(err) = sync(parent, durable) {
+            // The name is gone from this process's view but the directory
+            // entry may not be on disk yet, so the removal is not durable.
+            return DeleteOutcome::Uncertain(err.to_string());
         }
     }
     // The directory a key lived in is part of the key, not a thing of its
@@ -486,7 +503,7 @@ fn remove_one_file(name: &Path, durable: bool) -> DeleteOutcome {
         match std::fs::remove_dir(parent) {
             Ok(()) => {
                 if let Some(container) = parent.parent() {
-                    if let Err(err) = sync_directory(container, durable) {
+                    if let Err(err) = sync(container, durable) {
                         return DeleteOutcome::Uncertain(err.to_string());
                     }
                 }
@@ -501,11 +518,31 @@ fn remove_one_file(name: &Path, durable: bool) -> DeleteOutcome {
             Err(_) => {}
         }
     }
-    if removed {
-        DeleteOutcome::Deleted
-    } else {
-        DeleteOutcome::Absent
+    DeleteOutcome::Deleted
+}
+
+fn sync_existing_ancestor(
+    path: Option<&Path>,
+    durable: bool,
+    sync: &mut impl FnMut(&Path, bool) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if !durable {
+        return Ok(());
     }
+    let mut candidate = path;
+    while let Some(directory) = candidate {
+        match std::fs::metadata(directory) {
+            Ok(metadata) if metadata.is_dir() => return sync(directory, true),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        candidate = directory.parent();
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "no surviving parent directory",
+    ))
 }
 
 fn read_versioned_path(path: &Path) -> BlobResult<(Vec<u8>, BlobVersion)> {
@@ -1204,5 +1241,68 @@ mod tests {
             blobs.put(".object.tmp-123-4", b"nope".to_vec(), "").await,
             Err(BlobError::Other(message)) if message.contains("reserved")
         ));
+    }
+
+    #[test]
+    fn uncertain_deletion_retry_syncs_surviving_ancestor_before_absent() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let object = directory.path().join("nested/object");
+        std::fs::create_dir_all(object.parent().expect("object parent")).expect("parent");
+        std::fs::write(&object, b"body").expect("object");
+        let mut calls = Vec::new();
+        let mut sync = |path: &Path, _durable: bool| {
+            calls.push(path.to_path_buf());
+            if calls.len() == 2 {
+                Err(std::io::Error::other("injected sync failure"))
+            } else {
+                Ok(())
+            }
+        };
+
+        assert!(matches!(
+            remove_one_file_with(&object, true, &mut sync),
+            DeleteOutcome::Uncertain(_)
+        ));
+        assert!(!object.exists());
+        assert_eq!(
+            remove_one_file_with(&object, true, &mut sync),
+            DeleteOutcome::Absent
+        );
+        assert_eq!(
+            calls.len(),
+            3,
+            "absence must trigger a fresh directory sync"
+        );
+        assert_eq!(calls.last(), Some(&directory.path().to_path_buf()));
+    }
+
+    #[test]
+    fn uncertain_unlink_keeps_retrying_until_parent_sync_succeeds() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("nested");
+        std::fs::create_dir(&parent).unwrap();
+        let object = parent.join("object");
+        std::fs::write(&object, b"body").unwrap();
+        let mut calls = 0;
+        let mut sync = |path: &Path, _durable: bool| {
+            assert_eq!(path, parent);
+            calls += 1;
+            if calls <= 2 {
+                Err(std::io::Error::other("injected directory sync failure"))
+            } else {
+                Ok(())
+            }
+        };
+        for _ in 0..2 {
+            assert!(matches!(
+                remove_one_file_with(&object, true, &mut sync),
+                DeleteOutcome::Uncertain(_)
+            ));
+        }
+        assert_eq!(
+            remove_one_file_with(&object, true, &mut sync),
+            DeleteOutcome::Absent
+        );
+        assert_eq!(calls, 3);
     }
 }
