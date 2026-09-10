@@ -7,7 +7,8 @@ authoritative and immutable objects live beside it, both in the same private
 deployment directory.
 
 This replaces the whole-file JSON indexes and per-room snapshot objects.
-[persistence.md](persistence.md) defines the edit journal and “saved.”
+The [journal runtime](../../crates/librepaper/src/storage/journal/runtime.rs)
+publishes durable edit batches before they are acknowledged as saved.
 
 The catalogue's schema, batching coordinator, segment format, publication
 state machine, recovery rules and contract tests are one design. Product code
@@ -33,8 +34,8 @@ Every document receives a random immutable `storage_id`. Document-owned objects
 use `content/<storage_id>/trees/<sha>`, `blobs/<sha>`, `assets/<sha>` and
 `renderings/<tree_sha>/` below that same identity prefix. Routes resolve an active
 slug to its current identity; clients never supply an arbitrary object key.
-Journal bases and shared segments use the separate journal namespace in
-[persistence.md](persistence.md).
+Journal bases and shared segments use the separate `journal/<deployment-id>/`
+namespace.
 
 A deleting row reserves its slug until its objects and journal payload have been
 reclaimed. Only then may a new document reuse the slug, with a new `storage_id`.
@@ -83,8 +84,8 @@ recovery as well as the in-memory SQL contract.
 ## Schema
 
 The catalogue starts with eleven domain tables and a document-operation
-ledger. Journal records follow the durable record contract in
-[persistence.md](persistence.md) and use the same migration sequence.
+ledger. Journal tables use the same migration sequence; their operations live in
+the [journal store](../../crates/librepaper/src/storage/journal/store.rs).
 
 ```sql
 CREATE TABLE accounts (
@@ -326,7 +327,7 @@ query plans and measure their write and replication cost.
   own object is durable. Retirement withdraws availability and queues the
   objects atomically, even when the corresponding checkpoint survives.
 - `pending_deletes` covers document-owned objects. Shared edit segments use
-  journal retirement metadata from [persistence.md](persistence.md).
+  journal-owned retirement metadata.
 
 Times stored as text use canonical UTC RFC 3339 with fixed precision so indexed
 comparisons agree with time ordering. `links.until = ''` means no expiry; any
@@ -386,7 +387,7 @@ new references. A confirmed abort retains cleanup responsibility for any
 objects already written. Retain document-operation receipts until the document
 is physically removed, including tombstones for deleted comments; receipt
 growth is part of admission and the measured storage cost. Journal batches use
-the separate bounded reconciliation records in [persistence.md](persistence.md).
+separate bounded `journal_preparations` reconciliation records.
 
 Every driver returns known success, known abort or unknown outcome. On an
 unknown outcome, query the primary by operation id before allocating another
@@ -616,8 +617,8 @@ activity; document timestamps cannot substitute for it.
 
 ## Persistence, history and cost controls
 
-The batching schedule and acknowledgement rules live in
-[persistence.md](persistence.md). `rooms_max` is a hard admission limit,
+The [room implementation](../../crates/librepaper/src/room/mod.rs) schedules
+batched saves and acknowledges durable edits. `rooms_max` is a hard admission limit,
 including rooms still loading, and `rooms_bytes_max` defaults to 512 MiB.
 Evict clean idle rooms first; refuse new rooms retryably when no slot remains.
 Never evict dirty work. The byte cap covers conservatively accounted resident
@@ -651,8 +652,8 @@ Budget exhaustion defers automatic work and refuses an exact-version action
 before its side effects. The default `history_max = 0` imposes no checkpoint
 count cap; storage, metadata-memory and rate limits still apply.
 
-The request model and release workload are defined once in
-[persistence.md](persistence.md#cost-and-release-checks). Measure actual
+The [capacity workload](../../crates/librepaper/src/tests/persistence_capacity.rs)
+records its inputs, measurements, and exclusions. Measure actual
 filesystem operations and bytes written rather than inferring them from
 logical rows. Include admission aggregates, receipts, activity updates,
 checkpoints by reason, assets, renderings, cleanup and complete backup
