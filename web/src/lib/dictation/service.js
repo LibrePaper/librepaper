@@ -17,6 +17,7 @@ import { readSettings, confirm as confirmModel, isConfirmed } from "./settings.j
 import { assemble } from "./assemble.js";
 import { DEFAULT_MODEL, VAD, modelById, pickLanguage } from "./models.js";
 import { openMicrophone } from "./capture.js";
+import { createWebSpeechSession } from "./webspeech.js";
 
 const STATES = Object.freeze({
   IDLE: "idle",
@@ -30,7 +31,7 @@ const STATES = Object.freeze({
 const REASON_INSECURE = "Dictation needs HTTPS or localhost";
 const REASON_NO_WASM = "Dictation needs WebAssembly, which this browser does not support";
 const REASON_NO_MIC = "No microphone found";
-const REASON_BROWSER_BACKEND = "Browser dictation is not available yet";
+const REASON_NO_BROWSER_SPEECH = "This browser has no built-in dictation";
 
 const TOAST_PERMISSION_DENIED = "Microphone access was denied. Check this site's microphone permission in your browser settings.";
 const TOAST_TARGET_GONE = "Dictation stopped: the field it was typing into went away.";
@@ -52,6 +53,7 @@ export function createDictationService(deps) {
   let workerModelId = null; // the model id `worker` currently has loaded, or null
   let pending = new Map(); // request id -> { resolve, reject }
   let microphone = null;
+  let webSpeech = null; // the browser-backend session in place of worker + microphone
   let target = null;
   let permissionDeniedThisSession = false;
   let persisted = false;
@@ -183,23 +185,28 @@ export function createDictationService(deps) {
     return true;
   }
 
+  // The worker reports the detector's view, which flaps through the short
+  // pauses inside a sentence, and the browser backend's speechstart/speechend
+  // events play the same role. "Transcribing" therefore means "a segment may
+  // be with the recognizer": on during silence after speech, off again when
+  // speech resumes or the text lands. Shared by `handleWorkerMessage`'s
+  // "speech" case and the browser session's `onSpeech`.
+  function applySpeechFlag(isSpeaking) {
+    const was = speaking;
+    setState({ speaking: !!isSpeaking });
+    if (was && !isSpeaking && state === STATES.LISTENING) setState({ state: STATES.TRANSCRIBING });
+    else if (isSpeaking && state === STATES.TRANSCRIBING) setState({ state: STATES.LISTENING });
+  }
+
   function handleWorkerMessage(msg) {
     if (msg == null) return;
     switch (msg.kind) {
       case "progress":
         setState({ progress: { loaded: msg.loaded, total: msg.total, file: msg.file } });
         return;
-      case "speech": {
-        // The worker reports the detector's view, which flaps through the
-        // short pauses inside a sentence. "Transcribing" therefore means "a
-        // segment may be with the recognizer": on during silence after
-        // speech, off again when speech resumes or the text lands.
-        const was = speaking;
-        setState({ speaking: !!msg.speaking });
-        if (was && !msg.speaking && state === STATES.LISTENING) setState({ state: STATES.TRANSCRIBING });
-        else if (msg.speaking && state === STATES.TRANSCRIBING) setState({ state: STATES.LISTENING });
+      case "speech":
+        applySpeechFlag(msg.speaking);
         return;
-      }
       case "text":
         // A `transcribe` request's own reply carries a matching id and its
         // `reason: "direct"`; a segment from the running session is
@@ -254,6 +261,30 @@ export function createDictationService(deps) {
     });
   }
 
+  // The browser backend's equivalent of `failSession`/`abortSession`: there
+  // is no worker to terminate, only the recognition session to stop. SPEC 6:
+  // a denied permission is remembered for the session; any other error is a
+  // recoverable crash back to `idle`.
+  async function handleBrowserError(error) {
+    const session = webSpeech;
+    webSpeech = null;
+    if (session) {
+      try {
+        await session.stop();
+      } catch {
+        /* already gone */
+      }
+    }
+    clearTarget();
+    toIdle();
+    if (error?.name === "NotAllowedError") {
+      permissionDeniedThisSession = true;
+      deps.notify(TOAST_PERMISSION_DENIED, "error");
+    } else {
+      deps.notify(TOAST_WORKER_ERROR, "error");
+    }
+  }
+
   function attachWorker(w) {
     w.onmessage = (event) => handleWorkerMessage(event.data);
     w.onerror = () => failSession(new Error("worker crashed"));
@@ -271,7 +302,11 @@ export function createDictationService(deps) {
 
   async function resolveModel(requested) {
     const settings = readSettings(deps.storage);
-    const id = requested || settings.model || (await deps.models.defaultModel());
+    // An explicit `requested` model (a caller passing `{ model }` to `start`)
+    // wins over the backend setting; absent that, the "browser" backend picks
+    // the browser catalog entry regardless of the stored model id, since a
+    // local model id makes no sense once the built-in backend is chosen.
+    const id = requested || (settings.backend === "browser" ? "browser" : settings.model) || (await deps.models.defaultModel());
     const entry = await deps.models.modelById(id);
     return entry || (await deps.models.modelById(await deps.models.defaultModel()));
   }
@@ -323,8 +358,28 @@ export function createDictationService(deps) {
 
     const entry = await resolveModel(requestedModel);
     if (entry.kind === "browser") {
-      toUnavailable(REASON_BROWSER_BACKEND);
-      deps.notify(REASON_BROWSER_BACKEND, "error");
+      // No download confirmation, no worker, no `getUserMedia` microphone --
+      // the Web Speech API owns capture and its own permission prompt.
+      if (!deps.SpeechRecognition) {
+        toUnavailable(REASON_NO_BROWSER_SPEECH);
+        deps.notify(REASON_NO_BROWSER_SPEECH, "error");
+        return;
+      }
+      const language = await resolveLanguage(requestedLanguage, entry);
+      target = newTarget;
+      webSpeech = deps.createWebSpeechSession({
+        language,
+        onText: (text) => {
+          lastTextHandling = handleTextMessage({ text, language, reason: "browser" }).catch((error) =>
+            handleBrowserError(error),
+          );
+        },
+        onSpeech: (isSpeaking) => applySpeechFlag(isSpeaking),
+        onError: (error) => {
+          handleBrowserError(error);
+        },
+      });
+      setState({ state: STATES.LISTENING, model: entry, device: "browser" });
       return;
     }
 
@@ -377,6 +432,18 @@ export function createDictationService(deps) {
 
   async function stop() {
     if (state === STATES.IDLE || state === STATES.UNAVAILABLE) return;
+    if (webSpeech) {
+      const session = webSpeech;
+      webSpeech = null;
+      await session.stop();
+      // Mirrors the local path: a `result` event still in flight when
+      // `stop()` was called finishes inserting its text before the target is
+      // let go (SPEC 6, "insert any last text, then idle").
+      await lastTextHandling;
+      clearTarget();
+      toIdle();
+      return;
+    }
     // The microphone is released as soon as dictation stops (SPEC 3), before
     // the worker has even acknowledged the stop -- the recording indicator
     // must go out right away, not after a round trip.
@@ -444,6 +511,7 @@ export function createDictationService(deps) {
         worker = null;
         workerModelId = null;
         microphone = null;
+        webSpeech = null;
         target = null;
         permissionDeniedThisSession = false;
         persisted = false;
@@ -473,6 +541,8 @@ export function setDownloadConfirmation(fn) {
 }
 
 function defaultDeps() {
+  const SpeechRecognition =
+    typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : undefined;
   return {
     createWorker: () => new Worker(new URL("./worker.js", import.meta.url), { type: "module" }),
     openMicrophone: ({ onFrame }) =>
@@ -482,6 +552,8 @@ function defaultDeps() {
         AudioContext: window.AudioContext || window.webkitAudioContext,
         workletUrl: new URL("./capture-worklet.js", import.meta.url),
       }),
+    SpeechRecognition,
+    createWebSpeechSession: (args) => createWebSpeechSession({ ...args, SpeechRecognition }),
     storage: (() => {
       try {
         return typeof localStorage !== "undefined" ? localStorage : null;
