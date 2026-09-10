@@ -144,6 +144,12 @@ async fn automation_snapshot_is_link_scoped_and_consistent() {
 
     // The same cached owner session cannot use a link minted for another
     // document, and a revoked/expired link is removed from an active read.
+    server
+        .instance
+        .store
+        .rename(&slug, "First project")
+        .await
+        .unwrap();
     let other = publish_test_document(&server.url).await;
     let other_slug = text(&other, "slug");
     let (status, _) = automation_get(

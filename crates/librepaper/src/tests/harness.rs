@@ -493,7 +493,7 @@ pub fn session_as(login: &str) -> String {
 /// The same for a Google account: the `sub` stands in for the numeric one, the
 /// email is the handle the policies match, and the name is what readers see.
 pub fn google_session_as(sub: &str, email: &str, name: &str) -> String {
-    cookie_for(&Identity::google(sub, email, name))
+    cookie_for(&Identity::google(sub, email, name, ""))
 }
 
 fn cookie_for(id: &Identity) -> String {

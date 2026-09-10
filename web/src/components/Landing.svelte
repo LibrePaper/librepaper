@@ -527,16 +527,6 @@
                           {found(doc, needle).path}
                         </a>
                       {/if}
-                      <!-- What the document is written in. Every format is
-                           editable -- HTML's renderer is the identity -- so
-                           this says what it was written in and nothing more. -->
-                      <span
-                        class="badge preset-tonal-surface text-xs"
-                        title="Published from {doc.source_format || 'html'}"
-                      >
-                        {({ markdown: ".md", typst: ".typ", latex: ".tex" })[doc.source_format] ||
-                          ".html"}
-                      </span>
                       <!-- What you hold on somebody else's document. Your own
                            say nothing: everything unmarked here is yours. -->
                       {#if !mine(doc)}

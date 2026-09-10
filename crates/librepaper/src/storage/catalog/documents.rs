@@ -4,6 +4,54 @@
 use super::*;
 
 impl Catalog {
+    /// Check under the write transaction, including pending creations.
+    fn unique_project_title_in_tx(
+        tx: &Transaction<'_>,
+        slug: &str,
+        title: &str,
+        owner_id: Option<&str>,
+        owner_key: &str,
+    ) -> CatalogResult<()> {
+        let mut statement = tx
+            .prepare(
+                "SELECT title FROM documents WHERE slug <> ?1 AND status <> 'deleting'
+             AND ((?2 IS NOT NULL AND owner_id = ?2)
+                  OR (?2 IS NULL AND owner_id IS NULL AND owner_key = ?3))",
+            )
+            .map_err(CatalogError::from)?;
+        let titles = statement
+            .query_map(params![slug, owner_id, owner_key], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(CatalogError::from)?;
+        let name = title.trim().to_lowercase();
+        for other in titles {
+            if other.map_err(CatalogError::from)?.trim().to_lowercase() == name {
+                return Err(CatalogError::Conflict(
+                    "A project with this name already exists. Choose a different name.".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Preflight a rename before an upload changes the project's source.
+    pub fn check_project_title(&self, slug: &str, title: &str) -> CatalogResult<()> {
+        self.immediate(|tx| {
+            let document = Self::document_in_tx(tx, slug)?;
+            if title.is_empty() || title == document.title {
+                return Ok(());
+            }
+            Self::unique_project_title_in_tx(
+                tx,
+                slug,
+                title,
+                document.owner_id.as_deref(),
+                &document.owner_key,
+            )
+        })
+    }
+
     /// Read the explicit result metadata.  Migration 18 backfills this row
     /// for every legacy document, so callers do not need to guess from a
     /// missing value.  The old `source_format` column remains authoritative
@@ -110,6 +158,13 @@ impl Catalog {
     pub fn create_document(&self, document: &NewDocument) -> CatalogResult<Document> {
         self.validate_document_input(document)?;
         self.immediate(|tx| {
+            Self::unique_project_title_in_tx(
+                tx,
+                &document.slug,
+                &document.title,
+                document.owner_id.as_deref(),
+                &document.owner_key,
+            )?;
             if let Some(owner_id) = &document.owner_id {
                 let status: Option<String> = tx
                     .query_row(
@@ -177,6 +232,13 @@ impl Catalog {
             return Err(CatalogError::Invalid("negative quota limit".into()));
         }
         self.immediate(|tx| {
+            Self::unique_project_title_in_tx(
+                tx,
+                &document.slug,
+                &document.title,
+                document.owner_id.as_deref(),
+                &document.owner_key,
+            )?;
             self.validate_owner_in_tx(tx, document.owner_id.as_deref())?;
             let (owner_column, owner_value) = match document.owner_id.as_deref() {
                 Some(id) => ("owner_id", id),
@@ -261,6 +323,10 @@ impl Catalog {
             return Err(CatalogError::Invalid("negative quota limit".into()));
         }
         self.immediate(|tx| {
+            Self::unique_project_title_in_tx(
+                tx, &document.slug, &document.title,
+                document.owner_id.as_deref(), &document.owner_key,
+            )?;
             let (old_owner_id, old_owner_key, old_counted, maintenance): (
                 Option<String>,
                 String,
@@ -547,6 +613,8 @@ impl Catalog {
             if target.saturating_add(counted - maintenance) > owner_limit {
                 return Err(CatalogError::Conflict("owner storage quota exceeded".into()));
             }
+            let document = Self::document_in_tx(tx, slug)?;
+            Self::unique_project_title_in_tx(tx, slug, &document.title, Some(owner_id), "")?;
             tx.execute("UPDATE documents SET owner_id=?2,owner_key='' WHERE slug=?1", params![slug, owner_id])
                 .map_err(CatalogError::from)?;
             Self::document_in_tx(tx, slug)
@@ -627,6 +695,8 @@ impl Catalog {
             if target.saturating_add(counted - maintenance) > owner_limit {
                 return Err(CatalogError::Conflict("owner storage quota exceeded".into()));
             }
+            let document = Self::document_in_tx(tx, slug)?;
+            Self::unique_project_title_in_tx(tx, slug, &document.title, Some(new_owner_id), "")?;
             tx.execute("UPDATE documents SET owner_id=?2,owner_key='' WHERE slug=?1", params![slug,new_owner_id]).map_err(CatalogError::from)?;
             tx.execute("DELETE FROM grants WHERE slug=?1 AND account_id=?2", params![slug,new_owner_id]).map_err(CatalogError::from)?;
             Self::document_in_tx(tx, slug)
@@ -768,6 +838,19 @@ impl Catalog {
             return Err(CatalogError::Invalid("invalid document accounting".into()));
         }
         self.immediate(|tx| {
+            let previous = Self::document_in_tx(tx, &document.slug)?;
+            if previous.title != document.title
+                || previous.owner_id != document.owner_id
+                || previous.owner_key != document.owner_key
+            {
+                Self::unique_project_title_in_tx(
+                    tx,
+                    &document.slug,
+                    &document.title,
+                    document.owner_id.as_deref(),
+                    &document.owner_key,
+                )?;
+            }
             let old_counted: i64 = tx
                 .query_row(
                     "SELECT counted_size FROM documents WHERE slug = ?1",

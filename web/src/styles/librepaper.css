@@ -28,16 +28,6 @@ body > nav {
   background: color-mix(in srgb, var(--color-shell) 94%, transparent);
   backdrop-filter: blur(12px);
 }
-.nav-status {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: --spacing(2);
-  overflow: hidden;
-}
-.nav-status > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-identity > a { flex-shrink: 0; }
 .share-panel { font-family: var(--typo-base--font-family); font-size: var(--panel-font-size); line-height: var(--panel-line-height); }
 .share-field {
@@ -1030,4 +1020,72 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .menubar-item:focus-visible {
   outline: 2px solid var(--color-primary-500);
   outline-offset: -1px;
+}
+
+/* ------------------------------------------------------------- settings */
+/* The settings dialog: a page-sized card (see Modal's `full`) holding a
+   navigation column and a body that scrolls on its own, and inside the
+   body one shape of row for every setting. */
+.modal-page { height: calc(100dvh - var(--spacing) * 12); }
+.settings {
+  display: grid;
+  grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
+  gap: --spacing(6);
+  flex: 1 1 auto;
+  min-height: 0;
+  font-family: var(--typo-base--font-family);
+  font-size: var(--panel-font-size);
+  line-height: var(--panel-line-height);
+}
+.settings-nav { display: flex; flex-direction: column; gap: --spacing(0.5); min-height: 0; overflow-y: auto; padding-right: --spacing(2); border-right: 1px solid var(--color-divider); }
+.settings-search { margin-bottom: --spacing(2); }
+.settings-nav-group { margin-top: --spacing(3); padding: --spacing(1) --spacing(2); color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: var(--panel-title-weight); text-transform: uppercase; letter-spacing: 0.04em; }
+.settings-nav-item, .settings-nav-entry { display: block; width: 100%; padding: --spacing(1.5) --spacing(2); border-radius: var(--radius-base); text-align: left; font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.settings-nav-item:hover, .settings-nav-entry:hover { background-color: var(--color-row-hover); }
+.settings-nav-item.current { background-color: var(--color-row-hover); font-weight: var(--panel-title-weight); }
+.settings-nav-entry { padding-left: --spacing(5); font-size: var(--panel-meta-size); color: var(--panel-muted); }
+.settings-nav-empty { padding: --spacing(2); color: var(--panel-muted); }
+.settings-body { min-height: 0; overflow-y: auto; padding-right: --spacing(2); overscroll-behavior: contain; }
+.settings-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: --spacing(3); padding-bottom: --spacing(3); margin-bottom: --spacing(1); border-bottom: 1px solid var(--color-divider); }
+.settings-category { margin: 0; margin-right: auto; font: inherit; font-size: var(--panel-title-size); font-weight: var(--panel-title-weight); }
+.settings-scope { color: var(--panel-muted); font-size: var(--panel-meta-size); }
+.settings-heading { margin: --spacing(6) 0 --spacing(1); font: inherit; font-weight: var(--panel-title-weight); }
+.settings-heading:first-child { margin-top: --spacing(2); }
+
+/* A row: the words at the left, the control at the right, a line under each. */
+.setting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: --spacing(6); row-gap: --spacing(2); padding: --spacing(3) 0; border-bottom: 1px solid var(--color-divider); }
+.setting-row.stacked { grid-template-columns: minmax(0, 1fr); }
+.setting-row:last-child { border-bottom: 0; }
+.setting-title { font-weight: 500; }
+.setting-description { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
+.setting-description code { font-size: inherit; }
+.setting-control { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: --spacing(2); min-width: 0; }
+.setting-row.stacked .setting-control { justify-content: flex-start; flex-direction: column; align-items: stretch; }
+.setting-value { color: var(--panel-muted); }
+.setting-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); max-width: 100%; }
+/* A text field on the card has to be seen to be a field: Skeleton's input is
+   the card's own colour until it is focused. */
+.setting-input, .settings-search { background-color: var(--color-row-hover); border: 1px solid var(--color-divider); }
+.setting-input { width: 14rem; max-width: 100%; }
+.setting-table { font-size: var(--panel-meta-size); border-collapse: collapse; }
+.setting-table th, .setting-table td { text-align: left; padding: --spacing(1) --spacing(4) --spacing(1) 0; }
+.setting-log { font-size: var(--panel-meta-size); max-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+
+/* The local app's status: the one card in the settings, because it is a
+   state and its action rather than a preference. */
+.setting-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: --spacing(3); padding: --spacing(3) --spacing(4); margin: --spacing(2) 0 --spacing(3); border: 1px solid var(--color-divider); border-radius: var(--radius-container); }
+.setting-status-dot { width: --spacing(2.5); height: --spacing(2.5); border-radius: 50%; background-color: var(--color-surface-300); }
+.setting-status[data-tone="good"] .setting-status-dot { background-color: var(--color-success-500); }
+.setting-status[data-tone="warn"] .setting-status-dot { background-color: var(--color-warning-500); }
+
+@media (max-width: 600px) {
+  .settings { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settings-nav { flex-direction: row; flex-wrap: wrap; align-items: center; gap: --spacing(1); overflow: visible; padding-right: 0; padding-bottom: --spacing(2); border-right: 0; border-bottom: 1px solid var(--color-divider); }
+  .settings-search { width: 100%; margin-bottom: --spacing(1); }
+  .settings-nav-group { display: none; }
+  .settings-nav-item, .settings-nav-entry { width: auto; }
+  .setting-row { grid-template-columns: minmax(0, 1fr); }
+  .setting-control { justify-content: flex-start; }
+  .setting-status { grid-template-columns: auto minmax(0, 1fr); }
+  .setting-status .setting-control { grid-column: 1 / -1; }
 }

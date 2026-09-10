@@ -226,6 +226,7 @@ impl Caller {
             id: self.id.clone(),
             handle: self.handle.clone(),
             name: self.name.clone(),
+            picture: String::new(),
             session_generation: self.session_generation.clone(),
         }
     }

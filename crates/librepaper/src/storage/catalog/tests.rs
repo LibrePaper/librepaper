@@ -512,7 +512,7 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
             .create_document(&NewDocument {
                 slug: format!("owned-{index:04}"),
                 storage_id: format!("storage-{index:04}"),
-                title: String::new(),
+                title: format!("Owned {index}"),
                 sha: format!("sha-{index:04}"),
                 created_at: format!("2026-01-01T00:{:02}:00Z", index % 60),
                 published_at: format!("2026-01-01T00:{:02}:00Z", index % 60),
@@ -1342,6 +1342,7 @@ fn account_erasure_uses_a_stable_primary_key_cursor() {
     for index in 0..3 {
         let mut document = document();
         document.slug = format!("doc-{index}");
+        document.title = format!("Document {index}");
         document.storage_id = format!("storage-{index}");
         document.owner_id = Some(owner.id.clone());
         catalog.create_document(&document).unwrap();
@@ -1979,4 +1980,50 @@ fn quarto_starter_migration_preserves_existing_account_progress() {
         )
         .unwrap();
     assert_eq!(finished, 1);
+}
+
+#[test]
+fn project_names_are_unique_per_owner_across_creation_and_rename() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let mut second = document();
+    second.slug = "second".into();
+    second.storage_id = "storage-2".into();
+    second.title = "  DOCUMENT  ".into();
+    assert!(
+        matches!(catalog.create_document_admitted(&second, 1000, 1000, 10, 10),
+        Err(CatalogError::Conflict(message)) if message.contains("project with this name"))
+    );
+    assert!(catalog.document("second").unwrap().is_none());
+    second.title = "Another project".into();
+    let mut saved = catalog
+        .create_document_admitted(&second, 1000, 1000, 10, 10)
+        .unwrap();
+    saved.title = "document".into();
+    assert!(matches!(
+        catalog.update_document(&saved),
+        Err(CatalogError::Conflict(_))
+    ));
+    assert_eq!(
+        catalog.document("second").unwrap().unwrap().title,
+        "Another project"
+    );
+    // Keeping one's own name is valid, and a different owner has a separate namespace.
+    catalog
+        .update_document(&catalog.document("doc").unwrap().unwrap())
+        .unwrap();
+    let mut other = account();
+    other.id = "acct-2".into();
+    other.handle = "bob".into();
+    catalog.upsert_account(&other).unwrap();
+    second.slug = "third".into();
+    second.storage_id = "storage-3".into();
+    second.owner_id = Some(other.id);
+    second.title = "Document".into();
+    catalog.create_document(&second).unwrap();
+    assert!(matches!(
+        catalog.transfer_ownership("third", "acct-1", 1000),
+        Err(CatalogError::Conflict(_))
+    ));
 }

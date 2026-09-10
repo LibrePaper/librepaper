@@ -338,18 +338,20 @@ native (if a suitable local TeX exists) and otherwise to the VM.
 
 ## 3. Reader integration (package C)
 
-`web/src/components/Reader.svelte`, `Settings.svelte`, `LatexCard.svelte`
-(deleted) and a new `LatexStatus.svelte` (compact status line under the
-toolbar badge with the phase message, backend, and the actions `Connect local
+`web/src/components/Reader.svelte`, `settings/CompilerSettings.svelte`, `LatexCard.svelte`
+(deleted) and a new `LatexStatus.svelte` (the status line in the Reader's
+status row under the toolbar, set in the page's own type rather than a
+badge's, with the phase message, backend, and the actions `Connect local
 LibrePaper`, `Retry connection`, `Try browser compilation`, `Open LibrePaper`).
+Nothing about a compile is printed on the toolbar itself.
 
 - No chooser, no book icon. `latex.configure({project: SLUG, settings,
-  mayCompile})` on open; `latex.subscribe` drives the badge and status line.
+  mayCompile})` on open; `latex.subscribe` drives the status line.
 - `renderers.render` keeps its contract; the reader reads `provenance`,
   `attempts` and `failure` off the result and shows provenance in Diagnostics
   ("Compiled locally with pdfTeX 1.40.27 (TeX Live 2025); browser attempt
   failed: ...") without leaving an error state after a successful fallback.
-- Settings panel for LaTeX: engine select (Automatic/pdfLaTeX/XeLaTeX/
+- Settings dialog for LaTeX: engine select (Automatic/pdfLaTeX/XeLaTeX/
   LuaLaTeX), pinned release with "Update to <default>" and "Revert", local
   connection status + controls + `librepaper local doctor` output, cache size +
   clear.

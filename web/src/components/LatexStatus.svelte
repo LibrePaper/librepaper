@@ -37,9 +37,9 @@
     ),
   );
   const tone = $derived(
-    status.phase === "failed" ? "preset-tonal-error"
-      : status.phase === "local-needed" ? "preset-tonal-warning"
-      : "preset-tonal-surface",
+    status.phase === "failed" ? "text-error-600-400"
+      : status.phase === "local-needed" ? "text-warning-600-400"
+      : "",
   );
   const share = $derived(
     status.progress?.total ? Math.round((status.progress.done / status.progress.total) * 100) : 0,
@@ -61,15 +61,13 @@
 
 {#if status.phase !== "idle"}
   <span class="latex-status">
-    <!-- The title says the whole line, backend and all, because the line
-         itself may be narrowed to the words alone; see `.latex-backend`. -->
-    <small
-      class="badge {tone}"
-      title={hint || explanation || `${status.message}${chip ? ` · ${chip}` : ""}`}
-    >
+    <!-- Set in the status row's own type, not a badge's: this line is the
+         whole of what a person sees of a compile, and a failure has to be
+         readable at a glance, hint and all. -->
+    <span class="latex-message {tone}">
       {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
       {status.message}{#if chip}<span class="latex-backend"> · {chip}</span>{/if}
-    </small>
+    </span>
     {#if status.progress}
       <span
         class="latex-progress"
@@ -80,8 +78,8 @@
         <span class="bar" style:width="{share}%"></span>
       </span>
     {/if}
-    {#if hint}<small class="text-surface-600-400 text-xs">{hint}</small>{/if}
-    {#if explanation}<small class="text-surface-600-400 text-xs">{explanation}</small>{/if}
+    {#if hint}<span class="text-surface-600-400">{hint}</span>{/if}
+    {#if explanation}<span class="text-surface-600-400">{explanation}</span>{/if}
     {#if actions.length}
       <span class="latex-actions">
         {#if actions.includes("connect")}
@@ -105,14 +103,14 @@
           </button>
         {/if}
         {#if actions.includes("doctor")}
-          <span class="text-surface-600-400 text-xs">Run <code>librepaper local doctor</code> for setup help.</span>
+          <span class="text-surface-600-400">Run <code>librepaper local doctor</code> for setup help.</span>
         {/if}
         {#if actions.includes("diagnostics")}
-          <span class="text-surface-600-400 text-xs">See Diagnostics for what the local build said.</span>
+          <span class="text-surface-600-400">See Diagnostics for what the local build said.</span>
         {/if}
       </span>
     {/if}
-    {#if instructions}<small class="text-surface-600-400 text-xs">{instructions}</small>{/if}
+    {#if instructions}<span class="text-surface-600-400">{instructions}</span>{/if}
   </span>
 {/if}
 
@@ -124,18 +122,16 @@
     gap: calc(var(--spacing) * 2);
   }
 
-  /* Which backend compiled it -- "· browser", "· local" -- is a third of the
-     line's width and the least of what it says. On a bar with no room for the
-     whole line the words are what survive: a phone that keeps "· browser" and
-     loses "Current preview ready" has kept the footnote and dropped the fact.
-     The `title` still carries the whole of it. */
-  @media (max-width: 760px) {
-    .latex-backend { display: none; }
+  .latex-message {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing);
   }
 
   .latex-actions {
     display: inline-flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: calc(var(--spacing) * 1);
   }
 

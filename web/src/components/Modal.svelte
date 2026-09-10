@@ -10,20 +10,25 @@
   // open, Escape closes, the page behind does not scroll, and the heading
   // names the dialog for a screen reader. Five hand-written <dialog> elements
   // did some of that and none of them did all of it.
-  let { open = $bindable(false), title, description = null, children, footer, onclose, wide = false } = $props();
+  let { open = $bindable(false), title, description = null, children, footer, onclose, wide = false, full = false } = $props();
+
+  // Three sizes: a question, a result to read, or a page -- the settings --
+  // which is as wide as a page and a fixed height, so what is inside it can
+  // keep its own columns and scroll them itself rather than being scrolled.
+  const width = $derived(full ? "max-w-5xl modal-page" : wide ? "max-w-xl" : "max-w-lg");
 </script>
 
 <Dialog {open} onOpenChange={(event) => { open = event.open; if (!open) onclose?.(); }}>
   <Dialog.Backdrop class="fixed inset-0 z-50 bg-surface-950/50 backdrop-blur-xs" />
   <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <Dialog.Content class="card bg-surface-50-950 flex max-h-full w-full flex-col gap-4 p-6 shadow-xl {wide ? 'max-w-xl' : 'max-w-lg'}">
+    <Dialog.Content class="card bg-surface-50-950 flex max-h-full w-full flex-col gap-4 p-6 shadow-xl {width}">
       <header class="shrink-0">
         <Dialog.Title class="h4">{title}</Dialog.Title>
         {#if description}
           <Dialog.Description class="text-surface-600-400 text-sm">{description}</Dialog.Description>
         {/if}
       </header>
-      <div class="flex min-h-0 flex-col gap-3 overflow-y-auto">
+      <div class="flex min-h-0 flex-col gap-3 {full ? 'flex-1 overflow-hidden' : 'overflow-y-auto'}">
         {@render children?.()}
       </div>
       {#if footer}

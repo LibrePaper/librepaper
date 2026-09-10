@@ -1289,6 +1289,7 @@ async fn room_try_get_refuses_hard_count_limit() {
     store
         .put(store::Publication {
             slug: "second-room".into(),
+            title: "second-room".into(),
             source: "second".into(),
             owner: "alice".into(),
             ..Default::default()
@@ -1348,6 +1349,7 @@ async fn get_does_not_block_on_a_cold_room() {
         store
             .put(store::Publication {
                 slug: slug.into(),
+                title: slug.into(),
                 source: "A".into(),
                 source_format: "markdown".into(),
                 owner: "alice".into(),
@@ -1492,6 +1494,7 @@ async fn sweeper_saves_other_rooms_while_one_write_is_paused() {
     store
         .put(store::Publication {
             slug: "second".into(),
+            title: "second".into(),
             source: "second source".into(),
             source_format: "markdown".into(),
             owner: "alice".into(),

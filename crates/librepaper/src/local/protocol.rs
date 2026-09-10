@@ -133,6 +133,12 @@ pub struct Capabilities {
     pub distribution: Option<Distribution>,
     #[serde(default)]
     pub quarto: QuartoCapabilities,
+    /// Whether a local Calepin (Typst) install was found, and its version.
+    /// Kept as a plain `Tool` -- unlike Quarto's richer capability record,
+    /// there is no execution engine, format list, or policy set to report:
+    /// Calepin exists on this surface only as a managed-preview adapter.
+    #[serde(default)]
+    pub calepin: Tool,
 }
 
 /// One input file the browser says it is sending.
@@ -195,6 +201,34 @@ pub struct JobRequest {
     pub manifest: Vec<ManifestEntry>,
     #[serde(default)]
     pub options: JobOptions,
+}
+
+/// The `POST previews` (and `GET`/`DELETE previews/{id}`) request body: a
+/// managed-preview session description. Deliberately a separate type from
+/// `JobRequest` -- the execution job's wire shape and its `engine` gate
+/// (`engine_adapter::select`) must never see or need Calepin's typed
+/// options, and this type's `engine` selects a preview adapter instead of an
+/// execution engine.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PreviewRequest {
+    pub protocol: u32,
+    /// Always `"quarto"`: the shape of a preview request is unchanged by
+    /// which rendering engine actually watches the document. `engine` below
+    /// makes that choice.
+    pub kind: String,
+    pub project: String,
+    pub origin: String,
+    pub snapshot: String,
+    pub generation: u64,
+    /// `"quarto"` (the default, also written as `""` for wire compatibility
+    /// with clients predating this field) or `"calepin"`.
+    #[serde(default)]
+    pub engine: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarto: Option<QuartoJobOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calepin: Option<CalepinJobOptions>,
+    pub manifest: Vec<ManifestEntry>,
 }
 
 /// Options accepted by the local Quarto adapter. Every value is validated
@@ -411,6 +445,52 @@ impl QuartoJobOptions {
             && self.shared_tree_sha256.is_none()
         {
             return Err("isolated Quarto snapshots require a shared tree digest".into());
+        }
+        Ok(())
+    }
+}
+
+/// Options accepted by the local Calepin/Typst preview adapter. Calepin
+/// previews are a managed-preview-only surface: there is no `POST jobs`
+/// execution path for this engine, so validation stays deliberately narrow
+/// compared to `QuartoJobOptions`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CalepinJobOptions {
+    pub binding_id: String,
+    #[serde(default = "default_calepin_main")]
+    pub main: String,
+    #[serde(default = "default_calepin_format")]
+    pub format: String,
+}
+
+fn default_calepin_main() -> String {
+    "index.typ".to_string()
+}
+
+fn default_calepin_format() -> String {
+    "html".to_string()
+}
+
+impl Default for CalepinJobOptions {
+    fn default() -> Self {
+        Self {
+            binding_id: String::new(),
+            main: default_calepin_main(),
+            format: default_calepin_format(),
+        }
+    }
+}
+
+impl CalepinJobOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.binding_id.is_empty() || self.binding_id.len() > 256 {
+            return Err("calepin binding_id is required and must be at most 256 bytes".into());
+        }
+        if !safe_relative_path(&self.main) || !self.main.ends_with(".typ") {
+            return Err("entrypoint must be a safe project-relative .typ path".into());
+        }
+        if !matches!(self.format.as_str(), "html" | "pdf") {
+            return Err(format!("unsupported calepin output format: {}", self.format));
         }
         Ok(())
     }

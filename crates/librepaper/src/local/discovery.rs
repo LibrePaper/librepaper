@@ -501,6 +501,7 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
         platform: cache.platform.clone(),
         distribution: cache.distribution.clone(),
         quarto: Default::default(),
+        calepin: Default::default(),
     }
 }
 
@@ -526,6 +527,7 @@ pub async fn discover(refresh: bool, tex_path: &[PathBuf]) -> Capabilities {
     let mut capabilities = capabilities_from(&discover_cache(refresh, tex_path).await);
     capabilities.quarto = crate::local::quarto::discover().await;
     capabilities.tools.quarto = capabilities.quarto.tool.clone();
+    capabilities.calepin = crate::local::preview::calepin::discover().await;
     capabilities
 }
 

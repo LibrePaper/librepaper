@@ -16,54 +16,73 @@ the intended direction for future Quarto work.
 
 An author should be able to publish a `.qmd`, collaboratively edit its source
 in LibrePaper, and see a useful preview immediately. A collaborator should be
-able to write around existing figures and tables without installing Quarto,
-R, Python, or the author's packages. An author with LibrePaper and Quarto
-installed locally should be able to execute the document in its real project
-environment and share the resulting outputs and complete rendered document.
+able to read the document without installing Quarto, R, Python, or the
+author's packages, using the Markdown preview. An author with LibrePaper and
+Quarto installed locally should be able to switch to Quarto preview and see
+the document rendered in its real project environment, on their own machine,
+as they edit.
 
 The central workflow is:
 
-1. Publish the Quarto source, its intended shared resources, and any available
-   results from a local render.
-2. Edit prose collaboratively in the browser while retaining those results.
-3. Request a local render when the analysis or final presentation needs updating.
-4. Publish a complete, revision-associated result bundle atomically.
-5. Continue writing even when the author's machine disconnects.
+1. Publish the Quarto source and its intended shared resources.
+2. Edit prose collaboratively in the browser. Readers without a paired local
+   Quarto installation see the Markdown preview.
+3. Switch to Quarto preview to run the document with Quarto on the reader's
+   own computer through the local app, re-rendering on every edit.
+4. Continue writing even when the local app disconnects; the pane falls back
+   to the Markdown preview.
 
-The `.qmd` remains the source of truth. Generated Markdown, HTML, and PDF are
-artifacts. Editing a generated artifact must never silently overwrite the
-Quarto source or create a second independently editable version of the paper.
+The `.qmd` remains the source of truth. Nothing rendered is ever uploaded to
+LibrePaper: the server holds source files only. Editing does not create a
+second independently editable version of the paper.
 
-### 1.1 Source, preview pane, and results bundle
+### 1.1 Two preview modes, one pane
 
-| Row | Renderer | Available without local tools | Purpose |
+A Quarto document has two preview modes, chosen under Tools. Exactly one is
+active at a time (a check mark marks it), the choice persists per document,
+and the default is Quarto preview.
+
+| Mode | What it shows | Runs code | Needs |
 | --- | --- | --- | --- |
-| Source | Existing collaborative editor | Yes | Edit the actual `.qmd` |
-| Preview pane | Local app (live), or the last shared render, or LibrePaper's own draft rendering | Yes, in some form | What every reader sees, in one frame |
-| Results bundle | Locally installed Quarto, published by Share results | Yes, once shared | The shareable, immutable record readers' panes show, and comment anchors on results reference |
+| Markdown preview | The source rendered as Markdown in the browser: front matter dropped, `:::` divs and code chunks shown verbatim | Never | Nothing |
+| Quarto preview | The document run with Quarto on the reader's own computer, through the local app | Yes, locally | A paired local app with Quarto installed |
 
-The preview pane resolves one of three sources, in order, and paints whichever
-applies into the same frame so comments and highlights land consistently:
+Both modes paint into the same frame, so comments and highlights work the same
+way regardless of which is active.
 
-1. **Live render from the local app**, whenever this browser is paired with a
-   local app (`librepaper serve` on the same machine runs it without a
-   separate start) and that app has Quarto installed. The reader keeps the
-   app's hosted workspace current with `PUT workspace` on every edit; Quarto
-   runs `quarto preview --no-serve` there and re-renders; LibrePaper polls the
-   app's self-contained rendered HTML and paints it into the pane. Author only,
-   while paired.
-2. **The last shared Quarto render**, when a published results bundle with an
-   HTML (or PDF) artifact exists, painted directly into the pane. Available to
-   any reader with document access.
-3. **The draft**, LibrePaper's own execution-free rendering of the source:
-   front matter dropped, `:::` fenced divs and code chunks shown verbatim, and
-   saved figures, tables, and text results shown in place where a results
-   bundle provides them. Always available.
+Quarto preview mechanics: the reader's browser keeps the local app's hosted
+workspace current by calling `PUT /librepaper/local/v1/workspace` on every
+edit. The app runs `quarto preview --no-serve` against that workspace with
+embedded resources, and Quarto's own watcher re-renders on source changes.
+LibrePaper never talks to Quarto directly; it polls
+`GET /librepaper/local/v1/previews/{id}/page` (ETag) and paints whatever
+complete page comes back into the pane. The endpoint only ever serves a
+complete rendered page: the previous complete page stays visible until the
+next one finishes, so figures never flash blank. The response header
+`x-librepaper-rendering` reports whether a re-render is under way, and the
+pane shows "Rendering…" while one is, alongside the still-visible last page.
 
-The results bundle is the shareable immutable record: it is what readers' panes
-show under (2), and it is what comments on a specific figure or table anchor
-to, independent of later source or render changes. It does not silently
-acquire new prose when the source changes.
+If the browser is not yet paired with a local app, choosing Quarto preview
+opens the app's consent page for a single Allow click (see §9.4). If no local
+app is available at all, the pane shows the Markdown preview and the banner
+shows a "Connect" button.
+
+Nothing rendered by Quarto preview is ever uploaded to LibrePaper: the server
+stores only the `.qmd` source and its declared shared resources. There is no
+results bundle, no saved-results panel, no render settings, no frozen/refresh
+options, and no separate rendered-output view — the live pane described above
+is the only rendered view a reader ever sees.
+
+The remainder of this document (§§4-19) is written from an earlier design
+that included a published, browser-visible results bundle with per-cell
+freshness tracking. That reader-facing bundle no longer exists: readers who
+cannot run Quarto see only the Markdown preview (§1.1), and Quarto preview is
+always a live local render, never a previously published artifact. Passages
+below that describe a bundle, cache, or capture mechanism as CLI- or
+server-side storage (for example an eventual `librepaper quarto import`) may
+still apply; passages that describe a reader seeing saved/cached results,
+freshness badges, or a separate rendered-output view are superseded by §1.1
+and §10.
 
 ### 1.2 Scope
 
@@ -207,6 +226,13 @@ the contents of a hidden cell's result.
 
 ## 5. Cached outputs: what is stored and why
 
+Per §1.1, none of this reaches a reader today: there is no results bundle
+painted into any pane, and Markdown preview never mixes in saved output.
+Sections 5-8 describe a per-cell capture/bundle/freshness model that no longer
+has a reader-facing surface; they are kept only as a design record for a
+possible future CLI-side import/bundle mechanism (§1.1, design note 3), not as
+a description of what a reader sees.
+
 ### 5.1 Three distinct caches
 
 | Cache | Owner and location | Key or association | Purpose |
@@ -343,6 +369,13 @@ in the draft. Do not substitute values by searching for matching numbers in
 the rendered document.
 
 ## 7. Freshness and invalidation
+
+Superseded by §1.1: there is no reader-visible bundle of saved/cached results
+to classify, so none of the "suggested wording" or per-cell staleness display
+below is shown to a reader. Quarto preview is always a live local render (with
+its own "Rendering…" state, §10.2); Markdown preview never shows a computed
+result at all. This section is retained only as a record of the freshness
+model an eventual CLI-side import/bundle mechanism could reuse internally.
 
 ### 7.1 Two axes
 
@@ -587,98 +620,74 @@ and permission to consume another user's local compute remain separate.
 
 ## 10. Render and preview operations
 
-### 10.1 Render policies
+### 10.1 Operations
 
-The user-facing actions should distinguish normal rendering from forcing new
-computation. The adapter translates typed options into arguments; it never
-accepts an arbitrary shell command from the document or browser.
+The only choice exposed to anyone is which preview mode is active (§1.1),
+under Tools. There is no Share results, Refresh computations, Use frozen
+results, or Import existing output action, and no render settings to
+configure. Quarto preview always runs the document with the project's own
+defaults; the app does not accept a typed render policy from the browser, and
+there is no job to queue, cancel, or supersede — only "is the live render
+current" and "is one under way."
 
-| Action | Intended behavior |
-| --- | --- |
-| Share results | Produce full output using the project's normal execution/cache settings and publish it as a results bundle, so readers see figures, tables, and text results in the draft |
-| Refresh computations | Request execution with refreshed engine caches, respecting intentionally non-evaluated cells |
-| Use frozen results | Reformat available saved computations when supported; retain their original computational provenance |
-| Import existing output | Collect artifacts without invoking Quarto |
+### 10.2 Live pane mechanics
 
-Current Quarto CLI documentation lists `--cache-refresh`, `--use-freezer`,
-`--execute`, `--no-execute`, `--profile`, and `--to`. The freezer flag explicitly
-allows frozen computations in an incremental render. Detect support in the
-installed version; do not assume every version accepts every flag. `--no-execute`
-alone is not a guarantee of a complete output cache.
-[Quarto render CLI](https://quarto.org/docs/cli/render.html)
+Quarto provides a preview service via `quarto preview --no-serve`. While a
+browser has Quarto preview selected and is paired with a local app that has
+Quarto installed, the app runs that command against its hosted workspace,
+kept current by the reader's `PUT /librepaper/local/v1/workspace` call on
+every edit; Quarto's own watcher re-renders on source changes.
 
-The adapter must record actual invocation policy and observed evidence of cache
-reuse. A newly formatted HTML document using old computations must not be stamped
-as freshly computed today. If engine-level execution details are unavailable,
-report “rendered using project cache settings,” not “all cells executed.”
+The app serves the resulting self-contained rendered page at
+`GET /librepaper/local/v1/previews/{id}/page` (ETag/If-None-Match). The
+reader polls that endpoint about once a second and paints the response into
+LibrePaper's own frame — never Quarto's page framed or linked directly — so
+comments and highlights work on the live page.
 
-### 10.2 Proposed job lifecycle
+Complete-page rule: the endpoint only ever serves a complete rendered page.
+The `x-librepaper-rendering` response header reports whether a re-render is
+under way; while it is, the pane shows "Rendering…" and keeps showing the
+previous complete page until the next complete page replaces it. Figures
+never flash blank mid-render.
 
-`requested → reconciling → preparing → running → collecting → uploading → published`
-
-Terminal alternatives: `failed`, `cancelled`, `superseded`, `publication-failed`.
-Completion with extraction limitations is a successful render with incomplete
-coverage, not a transport failure.
-
-Every job has an ID, binding, source revision, input digest, context ID,
-request sequence, creation time, and typed options. Retry a transport operation
-with the same job ID; do not execute the analysis again merely because a client
-lost the response.
-
-Allow one executing job per binding by default. Repeated clicks coalesce for
-the same request identity. If an explicit newer request arrives, queue it or
-cancel the old job according to a visible policy. Do not queue every keystroke.
-
-Cancellation terminates the process group and managed child processes, then
-cleans up owned temporary files. It cannot undo arbitrary side effects already
-performed by analysis code. Local failures must release job slots and source
-sync pauses. App restart marks interrupted jobs as such rather than reporting
-them as successful or automatically restarting them.
-
-### 10.3 Late results and multiple authors
-
-If job A starts at revision 10 and the source reaches revision 12, A may still
-be stored for revision 10. It must not be labelled current for revision 12.
-Its mapped outputs may be useful in the draft under the freshness rules.
-
-If job B for a newer requested revision completes before A, A cannot replace B
-as the selected default merely because its upload arrived later. Use explicit
-selection generations or compare-and-swap publication intent, not timestamps.
-
-Two authors can render the same revision in different local environments.
-Retain separate render IDs and provenance. Do not merge their cell outputs.
-The initial selection policy prefers the latest non-superseded explicitly
-requested successful render for the selected context; conflicting independent
-choices require a deterministic server selection event or an explicit user
-choice, not client clock ordering.
-
-### 10.4 Managed live preview
-
-Quarto provides a preview service with `--no-serve`. When the editor's browser
-is paired with a local app that has Quarto installed, the app runs
-`quarto preview --no-serve` against its hosted workspace, kept current by the
-reader's `PUT workspace` call on every edit; Quarto's own watcher re-renders
-on source changes. The app serves the resulting self-contained rendered HTML
-at `GET /librepaper/local/v1/previews/{id}/page` (ETag/If-None-Match), which
-the reader polls about once a second and paints into LibrePaper's own frame —
-not Quarto's page framed or linked directly — so comments and highlights work
-on the live page. This applies only in the author's own pane, only while
-paired and Quarto is installed there; readers and unpaired browsers always
-fall back to the last shared render or the draft. No loopback URL is ever
-framed or shown to a reader.
+This applies only in a pane that has Quarto preview selected and is paired
+with a local app that has Quarto installed; an unpaired browser, or one with
+Markdown preview selected, always shows the Markdown preview. No loopback URL
+is ever framed or shown to a reader.
 [Quarto preview CLI](https://quarto.org/docs/cli/preview.html)
 
 Use one owner for watching/rebuild scheduling: Quarto's own preview watcher
-owns re-rendering while the pane is polling its page; LibrePaper's render
-queue is not also rebuilding the same workspace at the same time. Running both
-without coordination can execute the same changes twice and create a rebuild
-loop.
+owns re-rendering while the pane is polling its page. Nothing else rebuilds
+the same workspace at the same time; running both without coordination can
+execute the same changes twice and create a rebuild loop. Stop or expire
+unused preview processes and invalidate their page endpoints once a document
+is closed or Markdown preview is selected instead.
 
-Keep live preview distinct from publication. Capture a completed revision into
-an immutable bundle when publishing (Share results); never have remote readers
-point at the author's loopback server. Strip development reload clients from
-published artifacts. Stop or expire unused preview processes and invalidate
-their page endpoints.
+### 10.3 Engine-neutral preview sessions
+
+The local app's managed preview is not Quarto-specific: one hosted workspace
+per document, one preview session per workspace, and an engine adapter
+underneath that knows how to run that workspace and report progress. Quarto
+is one adapter; Calepin, for Typst documents with code chunks, is another.
+`POST /librepaper/local/v1/previews` takes an optional `"engine": "quarto" |
+"calepin"` (default `quarto`); Calepin's typed options are `"calepin": {
+"binding_id": "hosted", "main": "doc.typ", "format": "html"|"pdf" }`. For
+Calepin the app runs `calepin watch doc.typ doc.pdf --format pdf` (or
+`--format html -- --no-serve`) against the hosted workspace; Calepin
+preprocesses the chunks and delegates the actual compilation to `typst watch`
+itself, and its `.calepin` artifacts survive workspace syncs the same way a
+Quarto `_freeze` cache would.
+
+Every adapter produces one of two artifact kinds, `html` or `pdf`, and the
+same complete-output rule from §10.2 applies regardless of engine: `GET
+previews/{id}/page` serves only a finished render (`content-type` `text/html`
+or `application/pdf`, `x-librepaper-kind: html|pdf`, ETag, and
+`x-librepaper-rendering` reporting whether a re-render is under way), never a
+partial one, and the pane keeps the previous complete page on screen until
+the next one replaces it. Preview status reports the session's `engine` and
+`kind`; `GET capabilities` reports a `calepin` entry alongside `quarto`, with
+whether the command was found and its version. As with Quarto, no loopback
+URL from either adapter is ever framed or shown to a reader.
 
 ## 11. Full HTML, PDF, and output isolation
 
@@ -886,7 +895,15 @@ mark provenance unstable; do not overwrite those changes with an old snapshot.
 
 Prose comments stay anchored to source text through the existing collaborative
 model. Renderer-added titles, reference numbers, and generated bibliography
-text must not be mistaken for editable source spans.
+text must not be mistaken for editable source spans. In Quarto preview,
+comments and highlights land on the current live-rendered page (§10.2); there
+is no separate render ID or bundle for a comment to outlive, since the pane
+always shows the latest complete render, not a retained one.
+
+The remainder of this section's per-cell output-comment model (render ID,
+cell ID, output digest, retained comments on stale results) belongs to the
+superseded reader-facing bundle (§5) and applies only if a future CLI-side
+import/bundle mechanism restores that concept.
 
 Output comments carry render ID, cell ID where available, output ordinal, and
 output content digest. A region comment on a plot also stores the artifact's
@@ -910,36 +927,26 @@ computation result.
 
 ## 15. User interface and diagnostics
 
-There is no Draft/Quarto output toggle in the banner. The pane resolves the
-live render from the local app, then the last shared Quarto render, then the
-draft, painting whichever applies into one frame. Reader-only access shows the
-last shared render when one exists, otherwise the draft, annotated with any
-published results. Switching between what the pane shows does not cause
-execution.
-
-The local render control shows a compact connection/job state and exposes logs,
-cancel, and render policy details. Missing local tools do not disable reading,
-source editing, cached figures, history, or comments.
+The Markdown preview / Quarto preview choice lives under Tools, with a check
+mark on the active mode (§1.1); there is no other reader-facing render
+control, no logs panel, no cancel button, and no render policy settings. The
+pane always paints whichever mode is active into one frame, and switching
+modes never itself causes execution — Quarto preview only runs while it is
+the active mode and the browser stays paired.
 
 | Situation | Expected presentation |
 | --- | --- |
-| No saved results | Draft source and “No saved result” at relevant visible cells |
-| Prose changed | Immediate draft update with saved figures |
-| Code changed | Saved figures retained; document-level outdated-results status |
-| Local app unavailable | Connection guidance beside Render; draft remains usable |
-| Quarto exists but runtime fails | Runtime-specific diagnostic and local log |
-| Render fails | Keep last successful result; show failing revision and stage |
-| Collection partially supported | Full artifact available; explain missing inline coverage |
-| Upload fails | “Rendered locally; not yet shared,” with retry |
-| Late result | Attach to its original revision; do not jump away from newer output |
-| Imported output lacks provenance | Display as imported, freshness unknown |
-| Source restored from history | Select associated retained bundle or report missing result |
+| Quarto preview selected, not yet paired | Consent page opens for one Allow click |
+| Quarto preview selected, no local app available | Markdown preview shown; banner shows a "Connect" button |
+| Quarto preview selected, app paired, first render pending | "Rendering…" until the first complete page arrives |
+| Quarto preview selected, re-render after an edit | Previous complete page stays visible with "Rendering…" until the next complete page replaces it |
+| Quarto exists but the project fails to run | Runtime-specific diagnostic from the local app; Markdown preview remains available as a fallback |
+| Markdown preview selected | Source rendered as Markdown, verbatim divs/chunks, no execution, no connection needed |
 
-Diagnostics include stage, severity, source path/span when known, cell identity,
-job ID, and a concise actionable message. Full logs remain local by default;
-shared diagnostics are bounded and stripped of known credentials and absolute
-machine paths. Redaction is not a guarantee that arbitrary program output is
-free of sensitive data, so automatic raw-log publication is excluded.
+Diagnostics for a failed local render are local-app concerns: stage, severity,
+and a concise actionable message shown near the "Connect"/mode control. Full
+logs stay on the author's machine; nothing about a local run is uploaded or
+shown to other readers.
 
 Keyboard users can switch previews, render, cancel, and inspect status. Staleness
 must not be communicated through color alone. Cached figures retain alt text;
@@ -994,6 +1001,9 @@ present must not publish that file as new.
 
 ### 17.3 Freshness regressions
 
+Per the §5 note, freshness classification has no reader-facing surface today;
+these scenarios apply only if a CLI-side import/bundle mechanism is built.
+
 | Scenario | Required result |
 | --- | --- |
 | Two identical `plot(x)` cells after different assignments | Distinct associations and correct images |
@@ -1029,17 +1039,24 @@ cleanup. Test loopback pairing in the browsers actually supported by LibrePaper.
 ### 17.6 End-to-end release gate
 
 An R author publishes a paper with a generated plot and table. A collaborator
-with no local tools changes prose and sees those outputs. The collaborator then
-changes analysis code; old outputs remain visibly marked. The author renders
-locally, producing new outputs while another prose edit arrives. Everyone sees
-the correct new bundle with accurate revision/freshness status, and comments on
-the old plot remain inspectable. Repeat with Python and after reconnecting from
-a network interruption.
+with no local tools sees the Markdown preview: verbatim divs and code chunks,
+no figures, no execution. The author pairs a local app, switches to Quarto
+preview, and edits prose and analysis code while the pane keeps repainting the
+latest complete rendered page, never flashing blank between renders. The
+author disconnects; their pane falls back to the Markdown preview. Comments
+placed on the live-rendered pane remain inspectable throughout. Repeat with
+Python and after reconnecting from a network interruption.
 
-This workflow is the gate for claiming cached-output Quarto support, rather
-than a demo that renders only a static `.qmd`.
+This workflow is the gate for claiming Quarto preview support, rather than a
+demo that renders only a static `.qmd`.
 
 ## 18. Implementation sequence
+
+This phasing predates §1.1's decision to drop the reader-facing results
+bundle in favor of two preview modes: Markdown preview needs only Phase 1;
+Quarto preview needs the live-pane mechanics of §10, not the bundle work in
+Phases 2-3. Phases 2-3 remain relevant only if a CLI-side import/bundle
+mechanism (§1.1, design note 3) is later built.
 
 ### Phase 0: settle capture and contracts
 

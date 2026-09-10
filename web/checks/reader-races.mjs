@@ -435,54 +435,31 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(paintedDiagnostics, 1, "diagnostics paint after the editor update returns");
 }
 
-// Quarto freshness is work for the bounded preview, not the keystroke path.
-// A saved PDF output follows that same path even though the source itself is
-// a .qmd and normally has HTML source semantics.
+// A Quarto document with no live preview running paints its Markdown draft
+// like any other draft format -- nothing rendered is ever uploaded, so there
+// is no saved bundle left to prefer over it.
 {
-  let scheduled = 0;
-  let freshness = 0;
+  let compiled = 0;
   const published = [];
   const ctx = context({
-    sourceGeneration: 0, quartoFreshnessSerial: 0, editing: true, sourceFormat: "quarto",
-    quartoOutput: { kind: "pdf" }, pdfOutput: true, compilesHere: false, previewTimer: null, viewing: null,
-    quartoBundle: { context: { format: "pdf" } }, quartoTargetFormat: () => "pdf",
-    treeNow: () => ({ main: "main.qmd", texts: { "main.qmd": "---\nformat: pdf\n---\n" }, digests: {} }),
-    renderers: { formatOf: () => "quarto" },
-    diagnosticPainter: { typed: () => {} }, setTimeout: () => ++scheduled, clearTimeout: () => {},
-    paintPreview: () => {}, dropHeldRendering: () => {},
-    renderingStore: { schedulePoll: () => {}, cancelPoll: () => {} },
-    refreshQuartoFreshness: () => freshness++,
-    loadQuartoOutput: async () => ({ kind: "pdf", renderId: "saved", bytes: Uint8Array.of(7) }),
-    framePreview: { publish: (value) => published.push(value), clear: () => {} },
-  });
-  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
-  vm.runInContext("sourceChanged()", ctx);
-  assert.equal(freshness, 0, "typing does not hash the Quarto tree");
-  assert.equal(scheduled, 1, "Quarto typing schedules one bounded preview");
-  vm.runInContext(paintPreview, ctx);
-  await vm.runInContext("paintPreview()", ctx);
-  assert.equal(freshness, 1, "saved Quarto PDF freshness runs in the debounced paint");
-  assert.equal(published[0].kind, "pdf");
-}
-
-// A front-matter format change reloads the draft context before freshness is
-// classified, rather than leaving an older-format bundle selected.
-{
-  let loads = 0;
-  let freshness = 0;
-  const ctx = context({
-    sourceFormat: "quarto", session: {}, paintsTheFrame: false, pdfOutput: false, compilesHere: false,
-    previewTimer: null, quartoBundle: { context: { format: "html" } },
-    quartoTargetFormat: () => "pdf", loadQuartoOutput: async () => { loads++; },
+    sourceFormat: "quarto", session: {}, paintsTheFrame: true, pdfOutput: false, compilesHere: false,
+    issued: 0, painted: 0, viewing: null, navigationGeneration: 0, sourceGeneration: 0,
+    previewPaintBusy: false, previewPaintQueued: false, previewTimer: null, everPainted: true,
     treeNow: () => ({ main: "main.qmd", texts: { "main.qmd": "source" }, digests: {} }),
-    renderers: { formatOf: () => "quarto" }, viewing: null,
-    refreshQuartoFreshness: () => freshness++, refreshFramedPage: () => {},
+    headingOf: async () => "Title",
+    renderers: {
+      formatOf: () => "quarto", producesPdf: () => false,
+      render: async () => { compiled++; return { html: "<p>draft</p>", diagnostics: [] }; },
+    },
+    framePreview: { publish: (value) => published.push(value), clear: () => {} },
     renderingStore: { cancelPoll: () => {} },
+    diagnosticPainter: { rendered: () => {} }, say: () => {},
   });
   vm.runInContext(paintPreview, ctx);
   await vm.runInContext("paintPreview()", ctx);
-  assert.equal(loads, 1, "draft format changes reload the target Quarto context");
-  assert.equal(freshness, 1, "freshness follows the reloaded draft context");
+  assert.equal(compiled, 1, "a Quarto document with no live preview compiles its own draft");
+  assert.equal(published[0].kind, "html");
+  assert.equal(published[0].html, "<p>draft</p>");
 }
 
 // Typst follows the PDF lifecycle too: one compile in flight, latest request
@@ -578,25 +555,23 @@ for (const invalidate of [null, "navigation", "main"]) {
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
-// Ctrl-S uses the existing reactive saving/offline badge. A static copy would
-// remain stuck after the server acknowledges the pending updates.
+// Ctrl-S says "saved on the server" only when that is true: never while
+// updates are pending, never while the connection is down.
 {
-  const timers = [];
+  const said = [];
   const ctx = context({
-    connected: true, persistence: { pending: 1, local: true }, state: "",
-    say: (value) => { ctx.state = value; }, setTimeout: (fn) => timers.push(fn),
+    connected: true, persistence: { pending: 1, local: true },
+    say: (value) => { said.push(value); },
   });
   vm.runInContext(body("  function reportPersistence()", "  // There is no save, so a close"), ctx);
   vm.runInContext("reportPersistence()", ctx);
-  assert.equal(ctx.state, "");
+  assert.deepEqual(said, []);
   ctx.persistence.pending = 0;
   vm.runInContext("reportPersistence()", ctx);
-  assert.equal(ctx.state, "saved on the server");
-  timers.pop()();
-  assert.equal(ctx.state, "");
+  assert.deepEqual(said, ["saved on the server"]);
   ctx.connected = false;
   vm.runInContext("reportPersistence()", ctx);
-  assert.equal(ctx.state, "");
+  assert.deepEqual(said, ["saved on the server"]);
 }
 
 // Reconnect metadata is checked before the old session can send its CRDT.

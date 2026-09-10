@@ -48,7 +48,7 @@ plainly when it cannot confine them. It installs nothing.
 
 ## Settings
 
-The Settings panel of a LaTeX document has four things: the project engine
+The Settings dialog of a LaTeX document has four things: the project engine
 (Automatic, pdfLaTeX, XeLaTeX, LuaLaTeX), the pinned browser release with an
 explicit update, the local connection with its status and controls, and the
 compiler cache with its size and a clear. The engine and the release are

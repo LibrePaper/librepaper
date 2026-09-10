@@ -12,7 +12,11 @@ assert.match(collaboration, /<Comments \{\.\.\.common\(\)\} \{comments\} filter=
 assert.match(comments, /oninspectresult/);
 assert.match(comments, /Boolean\(comment\.output_anchor\)/);
 assert.match(commentCard, /oninspectresult \? oninspectresult\(comment\)/);
-assert.match(reader, /oninspectresult=\{inspectQuartoComment\}/);
+// The reader no longer wires an inspector: nothing rendered is ever
+// uploaded, so a saved-results panel to inspect no longer exists, and a
+// comment with an `output_anchor` renders as an ordinary card (the prop
+// stays supported for whoever else might use it).
+assert.doesNotMatch(reader, /oninspectresult/);
 
 const text = "Previous statistical result";
 const digest = await sha256(text);

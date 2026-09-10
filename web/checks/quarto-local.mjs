@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus, quartoPreviewPage, syncWorkspace } from "../src/lib/latex/local.js";
+import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus, quartoPreviewPage, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../src/lib/latex/local.js";
 import { parameterSha256 } from "../src/lib/quarto.js";
 
 const digest = "a".repeat(64);
@@ -182,19 +182,101 @@ console.log("quarto-local: syncWorkspace uploads a manifest and file parts to th
   setup(async (url, init = {}) => {
     pageCalls.push({ url, init });
     if (url.endsWith("/previews/preview-1/page")) {
-      if (init.headers?.["If-None-Match"] === '"etag-1"') return response(new Uint8Array(), 304);
-      return response(new TextEncoder().encode("<html>page</html>"), 200, { ETag: '"etag-1"' });
+      if (init.headers?.["If-None-Match"] === '"etag-1"') {
+        return response(new Uint8Array(), 304, { "X-LibrePaper-Rendering": "true" });
+      }
+      return response(new TextEncoder().encode("<html>page</html>"), 200, { ETag: '"etag-1"', "X-LibrePaper-Rendering": "false" });
     }
-    if (url.endsWith("/previews/preview-missing/page")) return response({ error: "not rendered yet" }, 404);
+    if (url.endsWith("/previews/preview-missing/page")) {
+      return response({ error: "not rendered yet" }, 404, { "X-LibrePaper-Rendering": "true" });
+    }
     throw new Error(`unexpected local request: ${init.method || "GET"} ${url}`);
   });
   const first = await quartoPreviewPage("preview-1", {});
   assert.equal(first.html, "<html>page</html>");
   assert.equal(first.etag, '"etag-1"');
+  assert.equal(first.rendering, false);
   assert.equal(pageCalls[0].init.headers["If-None-Match"], undefined);
   const unchanged = await quartoPreviewPage("preview-1", { etag: '"etag-1"' });
-  assert.equal(unchanged, null);
+  assert.equal(unchanged.html, undefined);
+  assert.equal(unchanged.rendering, true);
   assert.equal(pageCalls[1].init.headers["If-None-Match"], '"etag-1"');
-  await assert.rejects(quartoPreviewPage("preview-missing", {}), (error) => error.name === "NotRendered");
+  await assert.rejects(quartoPreviewPage("preview-missing", {}), (error) => error.name === "NotRendered" && error.rendering === true);
 }
-console.log("quarto-local: quartoPreviewPage resolves fresh HTML, a 304 miss, and a distinguishable 404");
+console.log("quarto-local: quartoPreviewPage resolves fresh HTML, a 304 miss, and a distinguishable 404, each carrying the render-state header");
+
+// startLocalPreview({ engine: "calepin", ... }) validates the typed options
+// block and posts the generalized envelope; a .qmd entrypoint or a bad
+// format is rejected before any request is sent.
+{
+  const calepinCalls = [];
+  setup(async (url, init) => {
+    calepinCalls.push({ url, init });
+    return response({ id: "preview-calepin", url: "http://127.0.0.1:4000/", state: "running" });
+  });
+  const calepinTree = { texts: { "doc.typ": "= Hello" } };
+  const calepinPreview = await startLocalPreview({
+    engine: "calepin",
+    job: { binding: "binding-1" },
+    tree: calepinTree,
+    options: { entrypoint: "doc.typ", format: "pdf" },
+  });
+  assert.equal(calepinPreview.id, "preview-calepin");
+  const calepinRequest = JSON.parse(calepinCalls[0].init.body);
+  assert.equal(calepinRequest.engine, "calepin");
+  assert.equal(calepinRequest.calepin.binding_id, "binding-1");
+  assert.equal(calepinRequest.calepin.main, "doc.typ");
+  assert.equal(calepinRequest.calepin.format, "pdf");
+  assert.equal(calepinRequest.manifest[0].sha256, await sha(new TextEncoder().encode("= Hello")));
+
+  await assert.rejects(
+    startLocalPreview({ engine: "calepin", job: { binding: "binding-1" }, tree: calepinTree, options: { entrypoint: "doc.qmd", format: "html" } }),
+    /\.typ file/,
+  );
+  await assert.rejects(
+    startLocalPreview({ engine: "calepin", job: { binding: "binding-1" }, tree: calepinTree, options: { entrypoint: "doc.typ", format: "docx" } }),
+    /invalid Calepin output format/,
+  );
+
+  // startQuartoPreview keeps producing exactly the Quarto envelope, with no
+  // `engine`/`calepin` fields leaking in.
+  const quartoOnly = await startQuartoPreview({ job: { binding: "binding-1" }, tree: { main: "paper.qmd", texts: { "paper.qmd": "# Preview" } }, options: {} });
+  assert.equal(quartoOnly.id, "preview-calepin");
+  const quartoOnlyRequest = JSON.parse(calepinCalls[calepinCalls.length - 1].init.body);
+  assert.equal(quartoOnlyRequest.engine, undefined);
+  assert.equal(quartoOnlyRequest.kind, "quarto");
+}
+console.log("quarto-local: startLocalPreview validates and posts the calepin engine envelope, and startQuartoPreview is unchanged");
+
+// localPreviewPage recognizes a PDF artifact by its content type and hands
+// back raw bytes rather than text.
+{
+  const pdfBytes = new TextEncoder().encode("%PDF-1.7 fake");
+  setup(async (url, init = {}) => {
+    if (url.endsWith("/previews/preview-pdf/page")) {
+      return response(pdfBytes, 200, { ETag: '"etag-pdf"', "X-LibrePaper-Rendering": "false", "X-LibrePaper-Kind": "pdf", "Content-Type": "application/pdf" });
+    }
+    throw new Error(`unexpected local request: ${init.method || "GET"} ${url}`);
+  });
+  const page = await localPreviewPage("preview-pdf", {});
+  assert.equal(page.kind, "pdf");
+  assert.ok(page.bytes instanceof Uint8Array);
+  assert.deepEqual([...page.bytes], [...pdfBytes]);
+  assert.equal(page.etag, '"etag-pdf"');
+  assert.equal(page.rendering, false);
+}
+console.log("quarto-local: localPreviewPage returns pdf bytes as a Uint8Array with kind \"pdf\"");
+
+// localPreviewStatus/stopLocalPreview are aliases of the existing calls, and
+// calepinAvailable reads the last probed capabilities without fetching.
+{
+  setup(async (url, init) => {
+    if (init.method === "DELETE") return response({ stopped: true });
+    return response({ id: "preview-1", url: "http://127.0.0.1:4000/", state: "running" });
+  });
+  assert.equal((await localPreviewStatus("preview-1")).state, "running");
+  await stopLocalPreview("preview-1");
+  assert.equal(calepinAvailable(), false);
+  _testing.inject({});
+}
+console.log("quarto-local: localPreviewStatus/stopLocalPreview alias the existing calls, and calepinAvailable defaults false");

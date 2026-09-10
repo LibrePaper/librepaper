@@ -534,6 +534,14 @@ export async function disconnect() {
   return probe({ force: true });
 }
 
+// Reads the last probed capabilities rather than fetching -- callers that
+// need a fresh answer call `capabilities()` first, the same way the rest of
+// this module treats `status()` as a cache of the last probe.
+export function calepinAvailable() {
+  const calepin = status().capabilities?.calepin;
+  return !!(calepin && calepin.found);
+}
+
 export async function capabilities({ rescan = false } = {}) {
   const pairing = requirePairing();
   const method = rescan ? "POST" : "GET";
@@ -693,6 +701,50 @@ function collectTreeFiles(tree) {
   for (const [path, text] of Object.entries(tree?.texts || {})) add(path, bytesOf(text));
   for (const [path, bytes] of Object.entries(tree?.assets || {})) add(path, bytesOf(bytes));
   return files;
+}
+
+export const CALEPIN_FORMATS = Object.freeze(["html", "pdf"]);
+
+/** Validate the Calepin-specific options (`entrypoint`, `format`), the same
+ * way `quartoRequest` validates a Quarto job's shape before anything is
+ * built from the tree. */
+function calepinOptions({ entrypoint, format = "html" } = {}) {
+  const main = relativePath(entrypoint || "");
+  if (!main.endsWith(".typ")) throw new Error("Calepin entrypoint must be a .typ file");
+  if (!CALEPIN_FORMATS.includes(String(format))) throw new Error("invalid Calepin output format");
+  return { main, format: String(format) };
+}
+
+async function buildCalepinForm({ job = {}, tree, options = {} }) {
+  const files = collectTreeFiles(tree);
+  const manifest = await manifestOf(files);
+  const { main, format } = calepinOptions(options);
+  if (!manifest.some((file) => file.path === main)) {
+    throw new Error(`Calepin project is missing its entrypoint: ${main}`);
+  }
+  const binding = boundedString(job.binding || job.bindingId || "", "binding");
+  if (!/^[A-Za-z0-9._:-]+$/.test(binding)) throw new Error("invalid Calepin binding");
+  // Same top-level envelope the bridge expects for every preview request
+  // (`protocol`, `kind`, `project`, `origin`, `snapshot`, `generation`,
+  // `manifest`, `options`); `kind` stays the value the Rust `JobRequest`
+  // already deserializes today, with `engine`/`calepin` layered alongside it
+  // the way `quarto` sits alongside a Quarto request.
+  const request = {
+    protocol: QUARTO_PROTOCOL,
+    kind: "quarto",
+    project: current.project,
+    origin: current.origin,
+    snapshot: String(options.inputRevision || job.inputRevision || ""),
+    generation: Number.isFinite(job.generation) ? Math.max(0, Math.floor(job.generation)) : 0,
+    manifest,
+    options: {
+      deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
+      max_passes: Number.isFinite(job.maxPasses) ? Math.max(1, Math.floor(job.maxPasses)) : 8,
+    },
+    engine: "calepin",
+    calepin: { binding_id: binding, main, format },
+  };
+  return formOf(request, files);
 }
 
 async function buildQuartoForm({ job, tree, options = {} }) {
@@ -976,21 +1028,75 @@ export async function cancelQuarto(jobId) {
   return true;
 }
 
-export async function startQuartoPreview(input) {
+/** Start a live preview on either engine. For `quarto` this produces exactly
+ * the JSON `startQuartoPreview` always has; for `calepin`, `options` is the
+ * `{ entrypoint, format }` pair validated by `calepinOptions`. */
+export async function startLocalPreview({ engine = "quarto", job = {}, tree, options = {} } = {}) {
   const pairing = requirePairing();
-  const form = await buildQuartoForm(input);
+  const form = engine === "calepin"
+    ? await buildCalepinForm({ job, tree, options })
+    : await buildQuartoForm({ job, tree, options });
   const request = JSON.parse(await form.get("job").text());
   const response = await send("POST", "previews", { token:pairing.token, jsonBody:request });
   return response.json();
 }
-export async function stopQuartoPreview(id) {
+export async function startQuartoPreview(input) {
+  return startLocalPreview({ engine: "quarto", ...input });
+}
+export async function stopLocalPreview(id) {
   const pairing = requirePairing();
   await send("DELETE", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
 }
-export async function quartoPreviewStatus(id) {
+export async function stopQuartoPreview(id) {
+  return stopLocalPreview(id);
+}
+export async function localPreviewStatus(id) {
   const pairing = requirePairing();
   const response = await send("GET", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
   return response.json();
+}
+export async function quartoPreviewStatus(id) {
+  return localPreviewStatus(id);
+}
+
+// Every response on this route -- 200, 304 and 404 alike -- carries
+// `x-librepaper-rendering: true|false` saying whether Quarto is currently
+// re-rendering (the intermediate output itself is never served; this header
+// is the only signal a poller has that a newer page is on the way). Read the
+// header name case-insensitively since callers may hand this a plain object
+// rather than a real `Headers` instance; a missing header is `null` rather
+// than a guessed boolean.
+function headerOf(response, name) {
+  const headers = response?.headers;
+  if (!headers || typeof headers.get !== "function") return null;
+  let raw = headers.get(name);
+  if (raw == null) {
+    // Fall back to scanning for a differently-cased key when the shim's
+    // `get` is not itself case-insensitive.
+    const variants = [name, name.toLowerCase(), name.toUpperCase(),
+      name.replace(/(^|-)([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase())];
+    for (const variant of variants) {
+      raw = headers.get(variant);
+      if (raw != null) break;
+    }
+  }
+  return raw == null ? null : String(raw);
+}
+
+function renderingHeaderOf(response) {
+  const raw = headerOf(response, "x-librepaper-rendering");
+  if (raw == null) return null;
+  const value = raw.trim().toLowerCase();
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
+}
+
+function kindHeaderOf(response) {
+  const raw = headerOf(response, "x-librepaper-kind");
+  if (raw == null) return null;
+  const value = raw.trim().toLowerCase();
+  return value === "pdf" || value === "html" ? value : null;
 }
 
 // The live preview's own rendered page. `etag`, when given, is sent as
@@ -998,11 +1104,11 @@ export async function quartoPreviewStatus(id) {
 // rather than re-fetching bytes nothing needs. A 404 means the preview has
 // not produced a first render yet, which the poller treats as "not yet" --
 // distinguished by `name` from every other failure, none of which are.
-export async function quartoPreviewPage(id, { etag } = {}) {
+export async function localPreviewPage(id, { etag } = {}) {
   const pairing = requirePairing();
   const addr = address();
   const url = `${addr}librepaper/local/v1/previews/${encodeURIComponent(id)}/page`;
-  const headers = { Accept: "text/html", Authorization: `Bearer ${pairing.token}` };
+  const headers = { Accept: "text/html, application/pdf", Authorization: `Bearer ${pairing.token}` };
   if (etag) headers["If-None-Match"] = etag;
   let response;
   try {
@@ -1012,10 +1118,12 @@ export async function quartoPreviewPage(id, { etag } = {}) {
     wrapped.name = "Unreachable";
     throw wrapped;
   }
-  if (response.status === 304) return null;
+  const rendering = renderingHeaderOf(response);
+  if (response.status === 304) return { rendering };
   if (response.status === 404) {
     const error = new Error("not rendered yet");
     error.name = "NotRendered";
+    error.rendering = rendering;
     throw error;
   }
   if (response.status === 401) {
@@ -1035,8 +1143,18 @@ export async function quartoPreviewPage(id, { etag } = {}) {
     error.status = response.status;
     throw error;
   }
+  const etagOut = response.headers?.get?.("etag") || null;
+  const contentType = response.headers?.get?.("content-type") || "";
+  const isPdf = kindHeaderOf(response) === "pdf" || /application\/pdf/i.test(contentType);
+  if (isPdf) {
+    const bytes = await bytesOfResponse(response);
+    return { kind: "pdf", bytes, etag: etagOut, rendering };
+  }
   const html = await response.text();
-  return { html, etag: response.headers?.get?.("etag") || null };
+  return { kind: "html", html, etag: etagOut, rendering };
+}
+export async function quartoPreviewPage(id, opts) {
+  return localPreviewPage(id, opts);
 }
 
 // -------------------------------------------------------------- workspace sync

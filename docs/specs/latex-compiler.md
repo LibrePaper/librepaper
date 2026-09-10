@@ -117,7 +117,7 @@ Implementation primarily touches:
 
 - web/src/lib/latex.js and web/src/lib/latex/: orchestration, worker adapter,
   resource/cache handling, diagnostics and local connection.
-- web/src/components/Reader.svelte, Settings.svelte and LatexCard.svelte:
+- web/src/components/Reader.svelte, settings/CompilerSettings.svelte and LatexCard.svelte:
   loading, preview, local fallback and removal of distribution selection.
 - latex/tools/: release building, resources, manifests and static mirroring,
   including the separately loaded Biber VM runtime/image.

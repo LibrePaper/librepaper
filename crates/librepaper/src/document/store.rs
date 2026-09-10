@@ -1112,6 +1112,17 @@ impl Store {
             owner_id = existing.publisher_id.clone();
             owner_name = existing.publisher_name.clone();
         }
+        if state.entries.values().any(|entry| {
+            entry.slug != v.slug
+                && entry.publisher_id == owner_id
+                && (!owner_id.is_empty() || entry.publisher == owner.to_lowercase())
+                && entry.title.trim().to_lowercase() == v.title.trim().to_lowercase()
+        }) {
+            return Err(PutError::Authorization {
+                status: 409,
+                message: "A project with this name already exists. Choose a different name.",
+            });
+        }
         // Who a document is shared with is not changed by its text changing.
         let shared = state.entries.get(&v.slug).cloned().unwrap_or_default();
         let entry = IndexEntry {
@@ -1220,6 +1231,25 @@ impl Store {
                     }
                 }
                 return Err(refused);
+            }
+            if fresh.entries.values().any(|other| {
+                other.slug != entry.slug
+                    && other.publisher_id == entry.publisher_id
+                    && (!entry.publisher_id.is_empty() || other.publisher == entry.publisher)
+                    && other.title.trim().to_lowercase() == entry.title.trim().to_lowercase()
+            }) {
+                match stored {
+                    Some(stored) => {
+                        state.entries.insert(v.slug.clone(), stored);
+                    }
+                    None => {
+                        state.entries.remove(&v.slug);
+                    }
+                }
+                return Err(PutError::Authorization {
+                    status: 409,
+                    message: "A project with this name already exists. Choose a different name.",
+                });
             }
             written = self.save_locked(&mut state).await;
         }
@@ -1550,6 +1580,15 @@ impl Store {
             .map_err(crate::storage::catalog::CatalogError::from);
         let document = result.map_err(|err| match err {
             crate::storage::catalog::CatalogError::Conflict(message)
+                if message.contains("project with this name") =>
+            {
+                PutError::Authorization {
+                    status: 409,
+                    message: "A project with this name already exists. Choose a different name.",
+                }
+            }
+
+            crate::storage::catalog::CatalogError::Conflict(message)
                 if message.contains("quota exceeded") || message.contains("upload rate") =>
             {
                 PutError::Quota {
@@ -1735,6 +1774,36 @@ impl Store {
         }
     }
 
+    /// Reject a conflicting name before a replacement upload writes content.
+    pub async fn check_project_title(&self, slug: &str, title: &str) -> Result<(), String> {
+        if let Some(catalog) = &self.catalog {
+            let slug = slug.to_string();
+            let title = title.to_string();
+            return catalog
+                .execute_catalog(STORE_JOB_BYTES + slug.len() + title.len(), move |catalog| {
+                    catalog.check_project_title(&slug, &title)
+                })
+                .await
+                .map_err(|err| err.to_string());
+        }
+        let state = self.state.lock().await;
+        let Some(entry) = state.entries.get(slug) else {
+            return Ok(());
+        };
+        if title.is_empty() || title == entry.title {
+            return Ok(());
+        }
+        if state.entries.values().any(|other| {
+            other.slug != slug
+                && other.publisher_id == entry.publisher_id
+                && (!entry.publisher_id.is_empty() || other.publisher == entry.publisher)
+                && other.title.trim().to_lowercase() == title.trim().to_lowercase()
+        }) {
+            return Err("A project with this name already exists. Choose a different name.".into());
+        }
+        Ok(())
+    }
+
     /// Renames a document. A publish onto an existing slug is an edit into its
     /// session rather than a new version, so the title is the one thing about
     /// the index entry such a publish still changes.
@@ -1772,6 +1841,16 @@ impl Store {
             };
             if entry.title == title || title.is_empty() {
                 return Ok(());
+            }
+            if state.entries.values().any(|other| {
+                other.slug != slug
+                    && other.publisher_id == entry.publisher_id
+                    && (!entry.publisher_id.is_empty() || other.publisher == entry.publisher)
+                    && other.title.trim().to_lowercase() == title.trim().to_lowercase()
+            }) {
+                return Err(
+                    "A project with this name already exists. Choose a different name.".into(),
+                );
             }
             let mut updated = entry.clone();
             updated.title = title.to_string();

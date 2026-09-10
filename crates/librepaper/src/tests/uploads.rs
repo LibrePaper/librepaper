@@ -509,3 +509,43 @@ async fn failed_replacement_preserves_concurrent_editor_update() {
         Some("concurrent editor work")
     );
 }
+
+#[tokio::test]
+async fn duplicate_project_names_are_refused_before_replacing_content() {
+    let server = new_test_server().await;
+    let first = publish_test_document(&server.url).await;
+    let (status, error) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "  MY PAPER  ", "html": "<p>duplicate</p>"}),
+    )
+    .await;
+    assert_eq!(status, 409, "{error}");
+    assert!(text(&error, "error").contains("project with this name"));
+    let (status, second) = post(
+        &server.url,
+        "/api/documents",
+        json!({"title": "Second", "html": "<p>original</p>"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{second}");
+    let second_slug = text(&second, "slug");
+    let original = server.instance.store.get(&second_slug).await.unwrap();
+    let (status, error) = post(
+        &server.url,
+        "/api/documents",
+        json!({"slug": second_slug, "title": "My Paper", "html": "<p>replacement</p>"}),
+    )
+    .await;
+    assert_eq!(status, 409, "{error}");
+    let unchanged = server.instance.store.get(&second_slug).await.unwrap();
+    assert_eq!(unchanged.title, "Second");
+    assert_eq!(unchanged.sha, original.sha);
+    let (status, result) = post(
+        &server.url,
+        "/api/documents",
+        json!({"slug": text(&first, "slug"), "title": "My Paper", "html": "<p>updated</p>"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{result}");
+}

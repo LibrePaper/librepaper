@@ -397,6 +397,7 @@ impl Server {
                                 "provider": "",
                                 "handle": "",
                                 "name": "",
+                                "picture": "",
                                 "can_publish": self.publishers.allows(""),
                                 "can_comment": self.commenters.allows(""),
                                 "comments_need_login": !self.commenters.public,
@@ -419,6 +420,10 @@ impl Server {
                         // switches, and a Google handle is an email address.
                         "handle": id.handle,
                         "name": id.name,
+                        // Where the bar fetches the account's own picture
+                        // from: the provider's URL, loaded by a page that
+                        // sends no referrer, and told to nobody else.
+                        "picture": id.picture_url(),
                         "can_publish": self.publishers.allows(&id.handle),
                         "can_comment": self.commenters.allows(&id.handle),
                         "comments_need_login": !self.commenters.public,

@@ -133,7 +133,7 @@ quarto render paper.qmd --to html -M embed-resources:true
 
 To collaborate on the Quarto source, publish `paper.qmd` instead. This preserves
 the source and does not run its code. See [Quarto documents](#quarto-documents)
-for local rendering and saved results.
+for the two preview modes and local rendering.
 
 Publishing a file again, to a document that already exists, writes the file's
 text into the live document and marks a checkpoint in its history. It never
@@ -299,7 +299,12 @@ librepaper edit c9k
 ```
 
 The **Files** sidebar is a folder tree. Its toolbar creates files and folders
-inside the selection, or uploads files from your computer. Drag files or
+inside the selection, or uploads files from your computer; the **File** menu
+at the top of the page offers the same, along with downloads and shortcuts to
+the Share and History panels. **Download PDF** or **Download HTML** saves the
+rendering on screen, whichever kind the document produces (LaTeX and Typst
+make a PDF; Markdown, Quarto and HTML make a page), and is greyed out until
+one exists; **Download project** saves every file as a ZIP. Drag files or
 folders onto another folder to move them; drop onto empty space in the sidebar
 to move them to the top level. Dropping files or directories from your computer uploads them with
 their folder structure. Upload name collisions offer **Keep both** or **Skip**.
@@ -322,7 +327,7 @@ rather than quietly dropped.
 
 Several people can edit at once. The source is a CRDT (Yjs), so two people
 typing in the same sentence converge without either waiting for the other, and
-the toolbar says how many are in the session. The server holds the document,
+the status row under the toolbar says how many are in the session. The server holds the document,
 relays every update and keeps the result, so closing the last tab loses nothing
 and whoever opens the document next, in a browser or with `librepaper sync`, joins
 what is there.
@@ -412,7 +417,7 @@ their own licences, and Biber is AGPL-3.0. They are fetched at run time;
 their notices travel with the mirror.
 
 The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) and the pinned
-browser release are project settings in the Settings panel. Automatic honours
+browser release are project settings in the Settings dialog. Automatic honours
 a `% !TEX program = xelatex` line in the main file, then looks for packages
 that only a Unicode engine can load, and otherwise uses pdfLaTeX. LuaLaTeX
 remains in the selector for release compatibility, but selecting it with the
@@ -440,7 +445,7 @@ librepaper local disconnect --all
 one each run, and `--tex-path` (colon-separated directories) when a TeX
 installation lives somewhere `start` and `doctor` would not otherwise search.
 
-Enter the code once in the document's Settings panel and later fallbacks are
+Enter the code once in the document's Settings dialog and later fallbacks are
 automatic. When browser compilation fails outright (an engine that will not
 start, a package the mirror lacks, a crash, a TeX error), the reader asks the
 app to compile the whole project natively with your installed TeX, once per
@@ -516,23 +521,37 @@ librepaper publish paper.qmd
 librepaper sync <document> paper.qmd
 ```
 
-The pane shows one of three things, in order. Whenever your browser is paired
-with a local app that has Quarto installed, it shows that app's live render,
-kept in sync as you type: your edits sync into the app's own workspace, Quarto
-re-renders there, and the pane polls the result and paints it in, so comments
-and highlights work on the live page too. Otherwise, when a shared render
-exists, the pane shows that: the last **results bundle** you published, painted
-directly in. Otherwise, and always for readers without one, the pane shows the
-annotated **draft**: prose without running code, with saved figures, tables,
-and text results shown in place where a saved render provides them, and chunks
-without results simply absent. Changes to computation inputs mark saved
-results as potentially outdated, and a matching source fingerprint does not
-prove that external data or packages have stayed unchanged.
+The Tools menu offers exactly one active preview mode at a time, remembered
+per document (default: **Quarto preview**):
 
-Open **Saved results** to discuss a particular figure or table, or draw a region
-on a saved image. **Inspect original result** returns to the exact result that
-received the comment after a later render changes the analysis. Full PDF output
-uses the existing PDF reader; DOCX remains a downloadable artifact.
+- **Markdown preview** renders the source as Markdown in the browser — front
+  matter dropped, `:::` divs and code chunks shown verbatim — and never runs
+  code.
+- **Quarto preview** runs the document with Quarto on your own computer,
+  through the local app.
+
+Rendering runs on your own computer, with Quarto and R or Python installed
+there. Start the local app once:
+
+```sh
+librepaper local start
+```
+
+The first time you pick Quarto preview, a small window from the local app
+asks whether to allow that site to use this computer's tools; click
+**Allow**. Once paired, your edits sync into the app's own workspace, Quarto
+re-renders there, and the pane polls the result and paints it in, so comments
+and highlights work on the live page too. The previous render stays on screen
+while a new one is under way, so figures never flash blank. If the browser
+isn't paired, or no local app is available, the pane shows Markdown preview
+with a **Connect** button in the banner. These run the document's code,
+filters, and scripts on your machine, so allow only sites you trust. The
+pairing code the app prints still works as a fallback under Tools, **Local
+app settings…**. Nothing rendered is ever uploaded: the server holds only the
+`.qmd` source and its declared shared resources.
+
+When `librepaper serve` runs on the machine you browse from, it runs the local
+app itself: nothing to start. Pass `--no-local` to turn that off.
 
 Publishing a project directory includes editorial resources and code, but skips
 generated output directories, execution caches, environments, and raw data by
@@ -547,29 +566,6 @@ Review the publication inventory. Shared source and assets are readable by
 collaborators with document access. Files needed only for local execution can
 remain in the author's project.
 
-Rendering runs on your own computer, with the Quarto and R or Python
-installed there. Start the local app once:
-
-```sh
-librepaper local start
-```
-
-The first time, a small window from the local app asks whether to allow that
-site to use this computer's tools; click **Allow**. That is the whole setup:
-once paired, the pane switches to the app's live render automatically, kept in
-sync with a workspace of its own, written from the files your browser sends as
-you edit, so nothing has to be linked or bound. Choose **Share results** from
-the Tools menu to render on the local app and publish a results bundle so
-readers see the figures, tables, and text results in the pane. **Refresh
-computations** asks Quarto to rerun its caches, and **Use frozen results**
-reformats available saved computations when supported. These run the
-document's code, filters, and scripts on your machine, so allow only sites you
-trust. The pairing code the app prints still works as a fallback under Tools,
-**Local app settings…**.
-
-When `librepaper serve` runs on the machine you browse from, it runs the local
-app itself: nothing to start. Pass `--no-local` to turn that off.
-
 A project that keeps data the document does not share can still be linked
 explicitly, and that link then takes precedence for the document:
 
@@ -579,24 +575,24 @@ librepaper local bind-quarto --origin https://your-librepaper-server.example \
   --project <document-slug> --root /path/to/project --main paper.qmd
 ```
 
-Enter the returned binding ID under Tools, Render settings. Revoke it with
-`librepaper local unbind-quarto <binding>`.
-
-To share an output you rendered yourself, import it explicitly:
-
-```sh
-librepaper quarto import <document> paper.html
-librepaper quarto status <document>
-```
-
-Import does not execute code. Imported outputs have unknown freshness; an HTML
-file alone does not establish which source produced it. PDF and DOCX imports
-are saved artifacts. Execution caches such as `_freeze`, Knitr caches, Python
-objects, and package environments remain local.
+The paired app renders against that project instead of its hosted workspace
+for this document. Revoke it with `librepaper local unbind-quarto <binding>`.
 
 For parser inspection without execution, use
 `librepaper quarto inspect paper.qmd`. The design and compatibility boundaries
 are documented in [SPEC-quarto.md](SPEC-quarto.md).
+
+### Typst documents with Calepin
+
+Ordinary Typst rendering — the browser's own compiler, described above — is
+unchanged. A Typst document with code chunks can also offer **Calepin
+preview** under Tools alongside **Typst preview** (the default): it runs
+`calepin watch` on your own computer, through the local app, and shows the
+resulting PDF in the usual PDF viewer, where comments work. This needs
+Calepin installed on the machine running the local app; pairing works
+exactly as it does for Quarto preview —
+one **Allow** click, no binding required. If Calepin isn't installed, the
+banner says so. Nothing rendered is ever uploaded.
 
 ### Sync
 
@@ -1119,14 +1115,16 @@ browser and terminal credentials across the deployment.
 ## Environment variables
 
 [^github-data]: LibrePaper requests no GitHub scopes through OAuth. It uses the
-GitHub API only to obtain your public login name; it does not collect your email,
-repositories, or other profile data.
+GitHub API only to obtain your public login name and account id; it does not
+collect your email, repositories, or other profile data. The bar shows you your
+own public avatar, fetched from GitHub by your browser.
 
 [^google-data]: LibrePaper reads the verified email address on a Google account,
-the hosted domain, the account identifier, and the profile name. The address is what
-`--publishers`, `--commenters` and a grant by name are matched against, and
-where a retention notice is sent; it is shown to no other reader anywhere.
-Other readers see the profile name.
+the hosted domain, the account identifier, the profile name and the profile
+picture. The address is what `--publishers`, `--commenters` and a grant by name
+are matched against, and where a retention notice is sent; it is shown to no
+other reader anywhere. Other readers see the profile name. The picture is shown
+only to you, in the bar, and its address is kept in your own session cookie.
 
 Every command-line option has exactly one flag and one environment variable of
 the same name: `--foo-bar` is `LIBREPAPER_FOO_BAR`, and the flag wins when both

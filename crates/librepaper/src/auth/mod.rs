@@ -57,6 +57,11 @@ pub struct Identity {
     pub id: String,
     pub handle: String,
     pub name: String,
+    /// The provider's profile picture, as an `https://` URL, or empty. Stored
+    /// only for Google, whose picture URLs are opaque; a GitHub avatar is a
+    /// function of the numeric id, so `picture_url` derives it and the
+    /// credential need not carry it.
+    pub picture: String,
     /// Random catalogue generation bound into signed credentials. Changing
     /// it revokes every cookie and device token for the account.
     pub session_generation: String,
@@ -83,15 +88,18 @@ impl Identity {
             id: qualified(PROVIDER_GITHUB, id),
             name: login.clone(),
             handle: login,
+            picture: String::new(),
             session_generation: String::new(),
         }
     }
 
-    /// A Google account, from its `sub`, its verified email, and the profile
-    /// name. Google returns no name for some accounts, and an unnamed comment
-    /// is worse than one signed with the local part of the address, which is
-    /// the name the person already writes to themselves under.
-    pub fn google(sub: &str, email: &str, name: &str) -> Identity {
+    /// A Google account, from its `sub`, its verified email, the profile
+    /// name and the profile picture. Google returns no name for some
+    /// accounts, and an unnamed comment is worse than one signed with the
+    /// local part of the address, which is the name the person already writes
+    /// to themselves under. The picture is kept only if it is an address a
+    /// page could safely show and a credential could safely carry.
+    pub fn google(sub: &str, email: &str, name: &str, picture: &str) -> Identity {
         let email = email.trim().to_lowercase();
         let name = name.trim();
         let shown = if name.is_empty() {
@@ -104,8 +112,45 @@ impl Identity {
             id: qualified(PROVIDER_GOOGLE, sub),
             handle: email,
             name: shown,
+            picture: acceptable_picture(picture),
             session_generation: String::new(),
         }
+    }
+
+    /// Where the account's picture can be fetched from, or empty when the
+    /// provider offers none. A GitHub avatar lives at a URL made of the
+    /// numeric id alone -- it is exactly what `avatar_url` on `/user` answers
+    /// with -- so it costs nothing to keep, and every session that exists
+    /// today already has one.
+    pub fn picture_url(&self) -> String {
+        if !self.picture.is_empty() {
+            return self.picture.clone();
+        }
+        if self.provider == PROVIDER_GITHUB {
+            if let Some(number) = self.id.strip_prefix("github:") {
+                if !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return format!("https://avatars.githubusercontent.com/u/{number}?s=96&v=4");
+                }
+            }
+        }
+        String::new()
+    }
+}
+
+/// A picture URL a provider answered with, or empty if it is not one a page
+/// should be handed: it has to be https, short, made of URL characters, and
+/// free of the bar that separates credential fields.
+fn acceptable_picture(picture: &str) -> String {
+    let picture = picture.trim();
+    let plain = picture.starts_with("https://")
+        && picture.len() <= 512
+        && picture
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'|' | b'"' | b'<' | b'>'));
+    if plain {
+        picture.to_string()
+    } else {
+        String::new()
     }
 }
 
@@ -319,47 +364,60 @@ pub fn verifies(key: &[u8], purpose: &str, payload: &str, signature: &str) -> bo
 /// Browser and terminal credentials have separate MAC domains. Version one
 /// deliberately rejects credentials from before purpose separation: accepting
 /// those as a fallback would preserve their cross-use vulnerability.
+///
+/// Version two adds the picture. A v1 credential is still read, as the same
+/// identity with no picture, so nobody is signed out the day this ships. The
+/// version is part of the signed purpose, so a v1 payload relabelled as v2
+/// fails its signature instead of being parsed with its fields shifted.
 pub fn sign_session(key: &[u8], id: &Identity, expiry_unix: i64) -> String {
-    sign_identity(key, "session-v1", id, expiry_unix)
+    sign_identity(key, "session", id, expiry_unix)
 }
 
 pub fn sign_device(key: &[u8], id: &Identity, expiry_unix: i64) -> String {
     format!(
         "{DEVICE_TOKEN_PREFIX}{}",
-        sign_identity(key, "device-v1", id, expiry_unix)
+        sign_identity(key, "device", id, expiry_unix)
     )
 }
 
 fn sign_identity(key: &[u8], purpose: &str, id: &Identity, expiry_unix: i64) -> String {
+    // The picture goes before the name: only the name may contain bars.
     let payload = base64url(
         format!(
-            "{}|{}|{}|{}|{}|{}",
-            id.provider, id.handle, id.id, id.session_generation, id.name, expiry_unix
+            "{}|{}|{}|{}|{}|{}|{}",
+            id.provider, id.handle, id.id, id.session_generation, id.picture, id.name, expiry_unix
         )
         .as_bytes(),
     );
-    format!("v1.{payload}.{}", sign(key, purpose, &payload))
+    format!(
+        "v2.{payload}.{}",
+        sign(key, &format!("{purpose}-v2"), &payload)
+    )
 }
 
 pub fn read_session(key: &[u8], cookie: &str) -> Identity {
-    read_identity(key, "session-v1", cookie)
+    read_identity(key, "session", cookie)
 }
 
 pub fn read_device(key: &[u8], token: &str) -> Identity {
     token
         .strip_prefix(DEVICE_TOKEN_PREFIX)
-        .map(|token| read_identity(key, "device-v1", token))
+        .map(|token| read_identity(key, "device", token))
         .unwrap_or_default()
 }
 
 fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
-    let Some(versioned) = credential.strip_prefix("v1.") else {
+    let (version, versioned) = if let Some(rest) = credential.strip_prefix("v2.") {
+        (2, rest)
+    } else if let Some(rest) = credential.strip_prefix("v1.") {
+        (1, rest)
+    } else {
         return Identity::anonymous();
     };
     let Some((payload, signature)) = versioned.split_once('.') else {
         return Identity::anonymous();
     };
-    if !verifies(key, purpose, payload, signature) {
+    if !verifies(key, &format!("{purpose}-v{version}"), payload, signature) {
         return Identity::anonymous();
     }
     let Ok(raw) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
@@ -378,9 +436,18 @@ fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
     if now_unix() >= expiry {
         return Identity::anonymous();
     }
-    let fields: Vec<&str> = front.splitn(5, '|').collect();
-    let [provider, handle, id, generation, name] = fields[..] else {
-        return Identity::anonymous();
+    let (provider, handle, id, generation, picture, name) = if version == 2 {
+        let fields: Vec<&str> = front.splitn(6, '|').collect();
+        let [provider, handle, id, generation, picture, name] = fields[..] else {
+            return Identity::anonymous();
+        };
+        (provider, handle, id, generation, picture, name)
+    } else {
+        let fields: Vec<&str> = front.splitn(5, '|').collect();
+        let [provider, handle, id, generation, name] = fields[..] else {
+            return Identity::anonymous();
+        };
+        (provider, handle, id, generation, "", name)
     };
     if !matches!(provider, PROVIDER_GITHUB | PROVIDER_GOOGLE)
         || handle.is_empty()
@@ -395,6 +462,7 @@ fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
         handle: handle.into(),
         id: id.into(),
         session_generation: generation.into(),
+        picture: acceptable_picture(picture),
         name: name.into(),
     }
 }

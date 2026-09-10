@@ -70,7 +70,12 @@ fn policies() {
 // is shown under is not consulted at all.
 #[test]
 fn policies_match_the_handle_not_the_name() {
-    let google = Identity::google("10769", "Anne.Grandchamp@UMontreal.CA", "Anne Grandchamp");
+    let google = Identity::google(
+        "10769",
+        "Anne.Grandchamp@UMontreal.CA",
+        "Anne Grandchamp",
+        "",
+    );
     assert_eq!(google.handle, "anne.grandchamp@umontreal.ca");
     assert_eq!(google.name, "Anne Grandchamp");
     assert_eq!(google.id, "google:10769");
@@ -83,7 +88,7 @@ fn policies_match_the_handle_not_the_name() {
 
     // No name from Google: the local part of the address stands in, and the
     // address is still the handle.
-    let unnamed = Identity::google("2", "jean@example.org", "");
+    let unnamed = Identity::google("2", "jean@example.org", "", "");
     assert_eq!(unnamed.name, "jean");
     assert_eq!(unnamed.handle, "jean@example.org");
 }
@@ -124,7 +129,7 @@ fn session_cookies() {
 
     // The same round trip for a Google account, whose name is neither the
     // handle nor derivable from it, so the cookie has to carry it.
-    let google = Identity::google("10769", "anne@umontreal.ca", "Anne Grandchamp");
+    let google = Identity::google("10769", "anne@umontreal.ca", "Anne Grandchamp", "");
     assert_eq!(
         read_session(key, &sign_session(key, &google, now_unix() + 3600)),
         google
@@ -132,7 +137,7 @@ fn session_cookies() {
 
     // A profile name containing the field separator survives the round trip:
     // the expiry is taken off the end, so the name may hold anything.
-    let barred = Identity::google("3", "x@example.org", "Jean | Tremblay");
+    let barred = Identity::google("3", "x@example.org", "Jean | Tremblay", "");
     assert_eq!(
         read_session(key, &sign_session(key, &barred, now_unix() + 3600)).name,
         "Jean | Tremblay"
@@ -147,7 +152,7 @@ fn session_cookies() {
         "a cookie signed with another key was accepted"
     );
     // Flipping a character of the payload must invalidate the signature.
-    let tampered = format!("v1.X{}", &valid[4..]);
+    let tampered = format!("v2.X{}", &valid[4..]);
     assert!(
         !read_session(key, &tampered).is_signed_in(),
         "a tampered cookie was accepted"
@@ -536,7 +541,7 @@ fn cookie_of(response: &reqwest::Response, name: &str) -> String {
 }
 
 fn verified(name: &str) -> Value {
-    json!({"sub": "10769", "email": "Anne@Example.org", "email_verified": true, "hd": "example.org", "name": name})
+    json!({"sub": "10769", "email": "Anne@Example.org", "email_verified": true, "hd": "example.org", "name": name, "picture": "https://lh3.googleusercontent.com/a/anne=s96-c"})
 }
 
 // The door: one provider is a redirect into it, two are a choice, none is the
@@ -640,6 +645,24 @@ async fn the_google_callback_signs_in() {
     assert_eq!(who.id, "google:10769");
     assert_eq!(who.handle, "anne@example.org");
     assert_eq!(who.name, "Anne Grandchamp");
+    // The profile picture rides in the session and reaches the bar through
+    // /api/me, for the account's own eyes.
+    assert_eq!(
+        who.picture,
+        "https://lh3.googleusercontent.com/a/anne=s96-c"
+    );
+    let (status, me) = get_json_as(
+        &format!("{}={session}", crate::auth::SESSION_COOKIE),
+        &server.url,
+        "/api/me",
+    )
+    .await;
+    assert_eq!(status, 200, "{me}");
+    assert_eq!(
+        me["picture"],
+        "https://lh3.googleusercontent.com/a/anne=s96-c"
+    );
+    assert_eq!(me["name"], "Anne Grandchamp");
     let entries = server.instance.store.list().await;
     assert_eq!(
         entries.len(),

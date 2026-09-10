@@ -413,12 +413,14 @@ async fn catalog_concurrent_admission_is_atomic() {
     );
     let left = first.put(store::Publication {
         slug: "left".into(),
+        title: "left".into(),
         source: "12345".into(),
         owner: "alice".into(),
         ..Default::default()
     });
     let right = second.put(store::Publication {
         slug: "right".into(),
+        title: "right".into(),
         source: "12345".into(),
         owner: "alice".into(),
         ..Default::default()
@@ -557,6 +559,7 @@ async fn room_for_charges_uncached_catalog_documents() {
     store
         .put(store::Publication {
             slug: "first".into(),
+            title: "first".into(),
             source: "abcd".into(),
             owner: "alice".into(),
             ..Default::default()
@@ -566,6 +569,7 @@ async fn room_for_charges_uncached_catalog_documents() {
     store
         .put(store::Publication {
             slug: "second".into(),
+            title: "second".into(),
             source: "abcdef".into(),
             owner: "alice".into(),
             ..Default::default()
@@ -643,4 +647,40 @@ async fn a_sealed_link_is_opened_outside_the_connection_closure() {
     let listed = listed.iter().find(|e| e.slug == "linked").unwrap();
     assert_eq!(listed.links.len(), 1);
     assert!(listed.links[0].key.is_empty());
+}
+
+#[tokio::test]
+async fn concurrent_publications_cannot_claim_the_same_project_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let (blobs, catalog) = local_catalog_store(&dir);
+    let config = Arc::new(Configuration::default());
+    let second_catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let first = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
+        .await
+        .unwrap();
+    let second = store::Store::open_with_catalog(blobs, config, second_catalog)
+        .await
+        .unwrap();
+    let publication = |slug: &str| store::Publication {
+        slug: slug.into(),
+        title: "Same project".into(),
+        source: "source".into(),
+        owner: "alice".into(),
+        ..Default::default()
+    };
+    let (left, right) = tokio::join!(
+        first.put(publication("left")),
+        second.put(publication("right"))
+    );
+    assert_eq!(left.is_ok(), right.is_err());
+    assert!(
+        matches!(
+            left,
+            Err(store::PutError::Authorization { status: 409, .. })
+        ) || matches!(
+            right,
+            Err(store::PutError::Authorization { status: 409, .. })
+        )
+    );
 }

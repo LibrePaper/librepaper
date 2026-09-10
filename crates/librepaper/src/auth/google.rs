@@ -51,7 +51,7 @@ impl Default for GoogleApp {
     }
 }
 
-/// What `userinfo` answers with. Only these five fields are read; the id token
+/// What `userinfo` answers with. Only these six fields are read; the id token
 /// the exchange also returns is not used at all, because verifying it means
 /// fetching Google's signing keys and checking a JWT to learn what this call
 /// already proves through the same trust the GitHub `/user` call rests on --
@@ -68,6 +68,8 @@ pub(super) struct GoogleUser {
     pub(super) hd: String,
     #[serde(default)]
     pub(super) name: String,
+    #[serde(default)]
+    pub(super) picture: String,
 }
 
 impl GoogleApp {
@@ -182,7 +184,12 @@ impl GoogleApp {
         if !is_consumer_google_domain(&domain) && !user.hd.eq_ignore_ascii_case(&domain) {
             return Err(UNVERIFIED_WORKSPACE_DOMAIN.to_string());
         }
-        Ok(Identity::google(&user.sub, &user.email, &user.name))
+        Ok(Identity::google(
+            &user.sub,
+            &user.email,
+            &user.name,
+            &user.picture,
+        ))
     }
 }
 

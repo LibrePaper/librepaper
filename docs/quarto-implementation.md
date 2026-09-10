@@ -7,6 +7,20 @@ implementation boundaries rather than treating all Quarto syntax as supported.
 The [shared results architecture](results-architecture.md) describes the
 engine boundary and compatibility requirements for future computation engines.
 
+## Engine-neutral preview sessions
+
+Per [SPEC-quarto.md §10.3](../SPEC-quarto.md), the local app's managed
+preview session is engine-neutral: `POST /librepaper/local/v1/previews`
+takes an `engine` field, `"quarto"` (default) or `"calepin"`, selecting the
+adapter that runs the hosted workspace. The Quarto adapter is what the rest
+of this document describes. The Calepin adapter serves Typst documents with
+code chunks: it runs `calepin watch` against the hosted workspace, which
+itself preprocesses the chunks and delegates compilation to `typst watch`,
+and reports artifact kind `pdf` or `html` the same way the Quarto adapter
+does. Preview status and `GET capabilities` both surface which engine is in
+play, so reader-facing code never needs to special-case Calepin beyond
+offering it as a Tools choice for Typst documents.
+
 ## Source and publication
 
 `.qmd` is a source format throughout the editor, publication, downloads, native
@@ -27,24 +41,21 @@ data just because document code reads it.
 
 ## Saved results and execution
 
+Per [SPEC-quarto.md §1.1](../SPEC-quarto.md), a Quarto document has exactly two
+reader-facing preview modes, chosen under Tools with a check mark on the
+active one: Markdown preview (verbatim, execution-free) and Quarto preview
+(a live local render). There is no reader-facing results bundle, saved-results
+panel, render settings, or frozen/refresh choice, and nothing rendered is
+uploaded — the server holds source files only. The bundle format, cell
+association, and freshness classification described in the rest of this
+section are CLI-/server-side concerns only (a possible future
+`librepaper quarto import`), not part of what a reader sees.
+
 The portable format is `librepaper-quarto-bundle/v1`. A bundle has one immutable
 render ID, its shared source revision, a computation context, coverage records,
 cell outputs, and the full artifact's dependency inventory. Binary identity is
 SHA-256; it is separate from cell identity and source identity. Reads require
 document access even when the caller knows a digest.
-
-The browser uses one selected bundle for each format/profile/parameter context.
-The Render options controls choose an output format, one optional profile, and
-typed scalar JSON parameters. Document default follows the source's format;
-an explicit choice overrides it for local rendering. Choices are remembered
-for this document in this browser, without editing the source or running code.
-Applying them loads that context's saved bundle, and an unavailable context
-does not borrow outputs from another context. Parameter names and values are
-validated before a job is submitted. Frozen reuse additionally requires verified
-local evidence for the selected computation context.
-Reveal.js retains its own computation context while using an HTML artifact;
-its default preview follows the static HTML isolation rules. The saved artifact
-browser can explicitly enable its captured scripts in a separate sandbox.
 
 Unique labelled cells can retain their prior results after a code edit. An
 unlabelled result requires an unambiguous source fingerprint in that file;
@@ -52,27 +63,31 @@ inserting or duplicating an unlabelled cell never transfers a plot by ordinal.
 Known input changes invalidate the computational result set together. Imported
 HTML cannot establish a computational source revision and remains unknown.
 
-Local execution requires loopback pairing, made either on the consent page the
+Quarto preview requires loopback pairing, made either on the consent page the
 local app serves (`GET /librepaper/local/v1/pair`, opened by the reader in a
 popup, which posts the pairing back to the allowed origin) or with the printed
-code. The request contains a binding ID, an entrypoint, typed options, and a
-shared-input inventory. The default binding id `hosted` names the workspace
-the local app keeps per origin and document: the runner writes the uploads
-into it, removes what an earlier job wrote that the inventory no longer lists,
-and renders there. A machine-local project grant made with
+code. The default binding id `hosted` names the workspace the local app keeps
+per origin and document: it writes the browser's uploads into that workspace,
+removes what an earlier sync wrote that the inventory no longer lists, and
+renders there. A machine-local project grant made with
 `librepaper local bind-quarto` replaces the workspace with a linked project;
-the runner then checks the inventory against that project and never overwrites
+the app then checks the inventory against that project and never overwrites
 it with browser uploads, so differences must be synchronized before rendering.
 `librepaper serve` also runs the local app in-process for browsers on its own
-machine (`--no-local` disables it). Whenever this browser is paired with a
-local app that has Quarto installed, the browser keeps the hosted workspace
-current with `PUT /librepaper/local/v1/workspace` (multipart `manifest` plus
-`file` parts) on every edit; the app runs `quarto preview --no-serve` there,
-re-rendering on its own, and serves the resulting self-contained rendered HTML
-at `GET /librepaper/local/v1/previews/{id}/page` (ETag/If-None-Match), which
-the browser polls about once a second and paints into LibrePaper's own pane;
-the pane falls back to the last shared render, or the annotated draft,
-whenever the browser is unpaired or Quarto is unavailable there.
+machine (`--no-local` disables it). While Quarto preview is the selected mode
+and this browser is paired with a local app that has Quarto installed, the
+browser keeps the hosted workspace current with
+`PUT /librepaper/local/v1/workspace` (multipart `manifest` plus `file` parts)
+on every edit; the app runs `quarto preview --no-serve` there, re-rendering on
+its own, and serves the resulting self-contained rendered page at
+`GET /librepaper/local/v1/previews/{id}/page` (ETag/If-None-Match), with an
+`x-librepaper-rendering` response header reporting whether a re-render is under
+way. The browser polls that endpoint about once a second and paints the
+response into LibrePaper's own pane; the previous complete page stays on
+screen (with "Rendering…" shown) until the next complete page replaces it, so
+figures never flash blank. The pane falls back to the Markdown preview,
+with a "Connect" button in the banner, whenever the browser is unpaired or
+Quarto is unavailable there.
 
 Project-default rendering preserves engine cache behavior. Refresh requests
 ask Quarto to refresh computations. Neither successful exit nor a requested
@@ -117,15 +132,10 @@ remains editable. Inline computation that cannot be mapped remains source text.
 Arbitrary filters, extensions, executable diagrams, and widgets do not run in
 Draft. Full YAML/project semantics are delegated to Quarto during a real render.
 
-Selected bundles and one associated bundle per retained revision/context are
-kept with bounded additional render history. Source restore reselects a retained,
-previously selected matching bundle or explicitly clears the selection. A saved
-bundle that was never selected is not promoted by restore. Clearing still advances its
-generation, so a job started before the restore cannot overwrite that choice.
-Backups preserve bundle objects, the authoritative selection rows, and those
-generation records and selection history. If reconciliation fails after the
-source is restored, the response reports the failure and asks for a retry or
-an explicit saved-result selection; it does not promise a background retry.
+The paragraph above describes CLI-/server-side bundle retention only (see the
+note at the top of "Saved results and execution"); a reader's pane never shows
+a selected bundle, and there is no reader-facing bundle-selection dialog to
+reconcile after a source restore.
 
 Cached HTML table fragments pass through an inert parser and an element,
 attribute, and URL allowlist. Text output stays literal. SVG is used as an image,
@@ -139,45 +149,26 @@ against their containing file. A failed resource load preserves the previous
 successfully loaded output.
 
 Source comments retain their existing anchors. Generated output has no editable
-source span. The Saved results dialog supports comments on individual captured
-results and rectangular image regions. Each discussion records its render ID,
-cell ID, output ordinal, content digest, and region dimensions where applicable.
-Inspect original result retrieves that immutable result, even after a new render
-replaces the selected plot. Retained comments pin their referenced bundles.
-Generated-result comments cannot become source-edit suggestions. Direct selection
-in a full artifact remains disabled where reliable mapping is unavailable.
+source span. Comments and highlights on the live-rendered page (Quarto
+preview) work the same as on the Markdown preview, through the existing
+document frame — there is no separate saved-results comment dialog, render ID,
+or output digest for a reader to reference; the pane always shows the current
+live render, not a retained one.
 
-PDF full artifacts use the existing PDF reader with the saved render's identity;
-the editable source remains Quarto. Both PDF and DOCX also retain download links.
-PDF text selection does not fabricate a source anchor into the `.qmd`.
+PDF is not exposed to readers; only HTML Quarto preview is implemented.
 
 ## Managed preview and presentation
 
-Start live preview launches an author-only Quarto watcher against the linked
-project after checking its shared inputs. The local URL opens separately from
-the saved document. Stop it before rendering and publishing immutable results:
-the service serializes admission so a watcher and a render cannot own the same
-binding concurrently. Preview sessions expire and are not restored after a
-service restart. Closing the reader requests shutdown; service expiry also
-bounds abandoned sessions.
+Quarto preview is not a separate action from viewing the document: selecting
+it under Tools (§ "Saved results and execution" above) is what starts the live
+render for as long as it stays selected and the browser is paired. There is no
+separate local URL, no "Browse saved pages" dialog, and no distinct
+publish/live-preview lifecycle to serialize — the live pane and the source
+edits share the same paired session.
 
-Browse saved pages / widgets displays captured HTML pages in a separate iframe.
-Its default is static. Enable document scripts opts into captured script
-execution with an opaque origin, no editor message bridge, blocked fetches,
-no child frames, and no forms or popups. It receives no pairing token or app
-API context. Inline scripts and bundled script dependencies can run; scripts
-requiring a remote service, workers, eval, or uncaptured resources cannot.
-The ordinary static preview and original artifact download remain available.
-Page selection uses the verified bundle inventory rather than navigating the
-application to document-controlled URLs.
-
-Website and book rendering is an explicit project scope for HTML. Captured
-pages and their dependencies remain one immutable bundle. This is distinct
-from deploying a website: no public live server or executable backend is
-published. The saved-results dialog can locate an unambiguous current source
-cell by label or exact source fingerprint; it refuses ambiguous or deleted
-cells. Discussions still identify immutable captured outputs. Whole-artifact
-PDF/HTML selection does not fabricate editable source anchors.
+Website and book rendering is an explicit project scope for HTML. This is
+distinct from deploying a website: no public live server or executable backend
+is published, and nothing rendered leaves the reader's machine.
 
 The execution workspace control can copy shared source and explicitly named
 local data files into an isolated temporary project. Working-tree execution

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn credentials_cannot_cross_purposes() {
     let key = [7; 32];
-    let mut who = Identity::google("42", "alice@example.org", "Alice | Example");
+    let mut who = Identity::google("42", "alice@example.org", "Alice | Example", "");
     who.session_generation = "generation".into();
     let session = sign_session(&key, &who, now_unix() + 3600);
     let device = sign_device(&key, &who, now_unix() + 3600);
@@ -24,6 +24,85 @@ fn credentials_cannot_cross_purposes() {
     let signature = sign(&key, "figure-frame-v1", payload);
     assert!(!verifies(&key, "socket-state-v1", payload, &signature));
     assert!(!read_session(&key, &sign_session(&key, &who, now_unix())).is_signed_in());
+}
+
+#[test]
+fn pictures_travel_in_v2_credentials_and_v1_credentials_still_read() {
+    let key = [3; 32];
+    let expiry = now_unix() + 3600;
+    let mut who = Identity::google(
+        "42",
+        "alice@example.org",
+        "Alice | Example",
+        "https://lh3.googleusercontent.com/a/photo=s96-c",
+    );
+    who.session_generation = "generation".into();
+    assert_eq!(
+        who.picture,
+        "https://lh3.googleusercontent.com/a/photo=s96-c"
+    );
+    assert_eq!(who.picture_url(), who.picture);
+    let session = sign_session(&key, &who, expiry);
+    assert!(session.starts_with("v2."));
+    assert_eq!(read_session(&key, &session), who);
+    assert_eq!(read_device(&key, &sign_device(&key, &who, expiry)), who);
+
+    // A GitHub avatar is derived from the id and never stored.
+    let github = Identity::github("Alice", "583231");
+    assert!(github.picture.is_empty());
+    assert_eq!(
+        github.picture_url(),
+        "https://avatars.githubusercontent.com/u/583231?s=96&v=4"
+    );
+    assert!(Identity::anonymous().picture_url().is_empty());
+
+    // Pictures that are not plain https URLs are dropped rather than carried.
+    for bad in [
+        "http://example.org/a.png",
+        "https://example.org/a|b.png",
+        "javascript:alert(1)",
+        "https://example.org/<img>",
+        &format!("https://example.org/{}", "x".repeat(600)),
+    ] {
+        assert!(
+            Identity::google("42", "alice@example.org", "Alice", bad)
+                .picture
+                .is_empty(),
+            "kept {bad}"
+        );
+    }
+
+    // A v1 cookie from before pictures existed is the same identity without
+    // one; its five fields are read as five, so a bar in the name survives.
+    let v1_payload = base64url(
+        format!("google|alice@example.org|google:42|generation|Alice | Example|{expiry}")
+            .as_bytes(),
+    );
+    let v1 = format!("v1.{v1_payload}.{}", sign(&key, "session-v1", &v1_payload));
+    let read = read_session(&key, &v1);
+    assert_eq!(read.name, "Alice | Example");
+    assert_eq!(read.handle, "alice@example.org");
+    assert!(read.picture.is_empty());
+    assert!(read.picture_url().is_empty());
+
+    // Relabelling a v1 payload as v2, or the reverse, fails the signature
+    // rather than shifting the fields.
+    assert!(!read_session(
+        &key,
+        &format!("v2.{v1_payload}.{}", sign(&key, "session-v1", &v1_payload))
+    )
+    .is_signed_in());
+    let v2_payload = session
+        .strip_prefix("v2.")
+        .unwrap()
+        .split_once('.')
+        .unwrap()
+        .0;
+    assert!(!read_session(
+        &key,
+        &format!("v1.{v2_payload}.{}", sign(&key, "session-v2", v2_payload))
+    )
+    .is_signed_in());
 }
 
 fn legacy_signature(key: &[u8], payload: &str) -> String {

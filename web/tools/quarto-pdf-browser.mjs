@@ -1,6 +1,10 @@
-// Quarto PDF reader acceptance: publish a real PDF artifact, then make the
-// Reader display it through its normal PDF preview path. This deliberately
-// uses no local Quarto installation; the bytes are a small valid PDF fixture.
+// Quarto PDF bundle acceptance: publish a real PDF artifact through the HTTP
+// bundle API and confirm the stored artifact bytes can be read back. The
+// Reader no longer shows a bundle's rendered output (see SPEC-quarto.md
+// section 1.1: readers get Markdown preview or a live Quarto preview through
+// the local app, never a published bundle's PDF/HTML), so this check is
+// HTTP-level only. It deliberately uses no local Quarto installation; the
+// bytes are a small valid PDF fixture.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -78,12 +82,24 @@ try {
   const publish = { manifest, blobs:[{ sha256:digest(artifact), mime:"application/pdf", data:base64(artifact) }], select:true, expected_generation:0 };
   const status = await tab.evaluate(`(async () => (await fetch(${JSON.stringify(`/api/documents/${created.slug}/quarto/bundles`)}, { method:"POST", headers:{"content-type":"application/json","x-librepaper-client":"1"}, body:${JSON.stringify(JSON.stringify(publish))} })).status)()`);
   assert.ok([200, 201].includes(status), `PDF bundle publication failed: ${status}`);
-  await tab.navigate(`${base}/docs/${created.slug}`);
-  await until("Quarto PDF editor", () => tab.evaluate('!!document.querySelector(".cm-content")'));
-  await until("Quarto PDF frame", () => tab.evaluate('document.querySelector("iframe")?.src.includes("/pdf/")'));
-  await until("Quarto PDF text", async () => (await tab.text()).includes("Quarto PDF fixture"));
-  assert.match(await tab.evaluate('document.querySelector("iframe").src'), /\/pdf\//);
-  console.log("quarto-pdf-browser: real PDF artifact loaded through the Quarto Reader preview");
+
+  // The reader no longer renders a bundle's PDF (SPEC-quarto.md section 1.1):
+  // there is no "/pdf/" frame or in-page preview to check here. Confirm
+  // instead, at the HTTP level, that the stored artifact bytes round-trip
+  // exactly through the bundle artifact endpoint.
+  const artifactPath = JSON.stringify(`/api/documents/${created.slug}/quarto/bundles/${encodeURIComponent(manifest.render_id)}/artifact`);
+  const fetched = await tab.evaluate(`(async () => {
+    const response = await fetch(${artifactPath}, { headers: { "x-librepaper-client": "1" } });
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return JSON.stringify({ status: response.status, contentType: response.headers.get("content-type"), data: btoa(binary) });
+  })()`);
+  const { status: artifactStatus, contentType, data } = JSON.parse(fetched);
+  assert.equal(artifactStatus, 200, `PDF bundle artifact fetch failed: ${artifactStatus}`);
+  assert.match(contentType || "", /application\/pdf/, "the stored PDF artifact keeps its declared MIME type");
+  assert.equal(digest(Buffer.from(data, "base64")), digest(artifact), "the stored PDF artifact bytes round-trip exactly");
+  console.log("quarto-pdf-browser: PDF bundle published and its artifact bytes read back over the HTTP API");
 } catch (error) {
   if (tab) console.error("quarto-pdf-browser page:", await tab.evaluate("document.body.innerText.slice(-2500)").catch(() => "page unavailable"));
   throw error;

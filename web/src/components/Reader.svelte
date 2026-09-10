@@ -52,7 +52,6 @@
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-  import PanelHeader from "./PanelHeader.svelte";
   import CopyLink from "./CopyLink.svelte";
   import Share from "./Share.svelte";
   import Modal from "./Modal.svelte";
@@ -60,34 +59,30 @@
   import DictationDownload from "./DictationDownload.svelte";
   import DictationPill from "./DictationPill.svelte";
   import Row from "./layout/Row.svelte";
-  import { problem as toastProblem, said as toastSaid } from "../lib/toast.svelte.js";
+  import { problem as toastProblem, said as toastSaid, unsay as toastUnsay } from "../lib/toast.svelte.js";
+  import { availableDownloads, inlineBlobUrls, saveBlob } from "../lib/reader/downloads.js";
   import { getDictation } from "../lib/dictation/service.js";
   import { targetForActiveElement, textareaTarget } from "../lib/dictation/targets.js";
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
   import Collaboration from "./Collaboration.svelte";
   import Changes from "./Changes.svelte";
-  import SavedResults from "./SavedResults.svelte";
-  import QuartoRenderOptions from "./QuartoRenderOptions.svelte";
   import { loadRenderOptions, saveRenderOptions, parseRenderOptions } from "../lib/quarto-options.js";
-  import { resultItems, resultAnchor, inspectResult } from "../lib/results-comments.js";
   import Agent from "./Agent.svelte";
   import History from "./History.svelte";
   import Diagnostics from "./Diagnostics.svelte";
-  import Settings from "./Settings.svelte";
+  import SettingsDialog from "./settings/SettingsDialog.svelte";
   import LatexStatus from "./LatexStatus.svelte";
   import Files from "./Files.svelte";
   import { renderedNoteText } from "../lib/latex/status-text.js";
   import { createPreviewApi } from "../lib/reader/preview-api.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { createRenderingStore } from "../lib/reader/rendering-store.js";
+  import { createLocalPreview } from "../lib/reader/local-preview.js";
   import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
-  import { clearPendingResults, loadPendingResults, savePendingResults } from "../lib/results-pending.js";
-  import { prepareResultsArtifact } from "../lib/results-artifact.js";
-  import { createResultsLoader } from "../lib/results-loader.js";
-  import { publishResultsBundle } from "../lib/results-publication.js";
   import { documentResultsIdentity } from "../lib/engines/identity.js";
   import DictationButton from "./DictationButton.svelte";
+  import InsertMenu from "./InsertMenu.svelte";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -160,150 +155,55 @@
   let figureAt = $state([]); // text offset of each figure, by its index
 
   let preview = $state(null);
-  let quartoProjectScope = $state(false);
-  let quartoSnapshot = $state(false);
-  let quartoDataInputs = $state("");
+  // Both Quarto's own live preview and a Typst document previewed through
+  // Calepin run the same `createLocalPreview` lifecycle (`../lib/reader/local-preview.js`)
+  // against the same local app; only the reactive mirrors below -- what the
+  // template reads -- are per engine.
   let quartoPreview = $state(null);
   let quartoPreviewStarting = $state(false);
-  let quartoLiveErrorShown = false;
-  // Held while a render is using the local app: the managed preview and a
-  // render cannot share it, and without this the effect that keeps the
-  // preview running would restart it the instant the render stopped it.
-  let quartoLiveSuspended = $state(false);
   let quartoLiveSyncTimer = null;
-  let quartoLiveSyncBusy = false;
-  let quartoLiveSyncQueued = false;
-  // The live page's own bytes, polled from the local app while a preview
-  // runs, and the etag that names the version already delivered to the
-  // frame -- so a poll that finds nothing new costs one small request
-  // rather than a repaint.
-  let quartoPreviewPageTimer = null;
-  let quartoPreviewPageEtag = null;
-  let quartoOutput = $state(null);
-  let quartoOutputState = $state("");
-  let quartoBundle = $state(null);
-  let quartoAssets = $state({});
-  let quartoObjectUrls = [];
-  let quartoArtifactDispose = null;
-  let quartoContext = $state("");
+  // Whether the bridge says Quarto is currently re-rendering the live
+  // preview -- carried on every response of the page route (200, 304, 404
+  // alike), never just the ones with new HTML. Drives the "Rendering…" badge
+  // and the faster poll cadence while true.
+  let quartoRendering = $state(false);
+  let calepinPreview = $state(null);
+  let calepinPreviewStarting = $state(false);
+  let calepinSyncTimer = null;
+  let calepinRendering = $state(false);
+  // Front-matter derived defaults (format, profile, parameters), remembered
+  // per document. There is no UI to change these any more -- nothing
+  // rendered is ever uploaded, so there is no render job to point them at --
+  // but the live preview controller still hands them to Quarto's own preview.
   let quartoOptions = $state(loadRenderOptions(SLUG));
-  let quartoOptionsChanging = $state(false);
-  let quartoLoadSerial = 0;
-  let quartoRequestedContext = "";
-  let quartoFreshness = $state({ state: "missing", message: "No saved result" });
-  let quartoJob = $state(null);
-  let quartoLog = $state("");
   let quartoBindingId = $state("");
-  let quartoGeneration = $state(0);
-  let quartoPendingPublish = $state(null);
-  let quartoLocalStatus = $state(localQuarto.status());
-  let quartoArtifactStatus = $state("No saved output");
-  let quartoFreshnessSerial = 0;
-  let quartoResultsOpen = $state(false);
-  let quartoInspected = $state(null);
-  let quartoInspectSerial = 0;
+  let localAppStatus = $state(localQuarto.status());
+  // Which of Quarto's own live preview, or this browser's own Markdown
+  // draft, a Quarto document shows. One person's choice, remembered per
+  // document, in this browser.
+  const QUARTO_PREVIEW_MODE_KEY = `librepaper-quarto-preview:${SLUG}`;
+  let quartoPreviewMode = $state(read(QUARTO_PREVIEW_MODE_KEY, "quarto") === "markdown" ? "markdown" : "quarto");
+  // Which of the browser's own Typst rendering, or Calepin running the same
+  // document's chunks on this computer through the local app, a Typst
+  // document shows. Same shape of choice as Quarto's, remembered separately.
+  const TYPST_PREVIEW_MODE_KEY = `librepaper-typst-preview:${SLUG}`;
+  let typstPreviewMode = $state(read(TYPST_PREVIEW_MODE_KEY, "typst") === "calepin" ? "calepin" : "typst");
 
-  function closeQuartoResults() {
-    quartoInspectSerial += 1;
-    quartoInspected?.dispose?.();
-    quartoInspected = null;
+  function setQuartoPreviewMode(mode) {
+    quartoPreviewMode = mode === "markdown" ? "markdown" : "quarto";
+    write(QUARTO_PREVIEW_MODE_KEY, quartoPreviewMode);
+    // A user gesture may open the pairing popup when the app is reachable
+    // but not yet paired; the mode's own effect starts the preview once it
+    // is connected.
+    if (quartoPreviewMode === "quarto") void ensureLocalApp();
   }
 
-  async function inspectQuartoComment(comment) {
-    const serial = ++quartoInspectSerial;
-    try {
-      const inspected = await inspectResult(previewApi, comment.output_anchor);
-      if (serial !== quartoInspectSerial || readerDisposed) { inspected.dispose(); return; }
-      quartoInspected?.dispose?.();
-      quartoInspected = { ...inspected, region:comment.region || null };
-      quartoResultsOpen = true;
-    } catch (error) { if (serial === quartoInspectSerial) toastProblem(error.message); }
+  function setTypstPreviewMode(mode) {
+    typstPreviewMode = mode === "calepin" ? "calepin" : "typst";
+    write(TYPST_PREVIEW_MODE_KEY, typstPreviewMode);
+    if (typstPreviewMode === "calepin") void ensureLocalApp();
   }
 
-  async function locateQuartoResult(item) {
-    const path = item.cell.source_path;
-    const text = treeNow().texts?.[path];
-    if (typeof text !== "string") { say("The source file for this result is unavailable.", true); return; }
-    const cells = quarto.parseQuarto(text, {path}).cells;
-    const candidates = item.cell.label ? cells.filter(cell => cell.label === item.cell.label)
-      : (await Promise.all(cells.map(async cell => ({cell, digest:await quarto.cellFingerprint(cell)}))))
-        .filter(value => value.digest === item.cell.source_sha256).map(value => value.cell);
-    if (candidates.length !== 1 || candidates[0].ambiguous) { say("This saved result cannot be mapped unambiguously to the current source.", true); return; }
-    if (treeNow().texts?.[path] !== text) { say("The source changed while locating this result; try again.", true); return; }
-    const id = session.idOf(path);
-    if (!id || !editor) return;
-    quartoResultsOpen = false;
-    closeQuartoResults();
-    openFile = id;
-    editor.goToIn(id, candidates[0].sourceStart);
-  }
-
-  function commentQuartoResult(item, geometry = {}) {
-    const manifest = quartoInspected?.manifest || quartoBundle;
-    if (!manifest || !mayChat) return;
-    try {
-      pending = { exact:item.output.caption || item.cell.label || item.cell.id, prefix:"", suffix:"",
-        position:null, source:null, region:geometry.region || null, revision:manifest.source.revision,
-        output_anchor:resultAnchor(manifest, item, geometry) };
-      tool = "commenting";
-      quartoResultsOpen = false;
-      closeQuartoResults();
-      openDialog();
-    } catch (error) { toastProblem(error.message); }
-  }
-  const quartoLoader = createResultsLoader({ api: previewApi, apply: ({ context, manifest, prepared, generation }) => {
-    if (quartoResultsOpen && !quartoInspected) quartoResultsOpen = false;
-    releaseQuartoUrls();
-    quartoContext = context;
-    quartoGeneration = generation;
-    quartoBundle = manifest;
-    quartoAssets = prepared?.assets || {};
-    quartoArtifactDispose = prepared?.dispose || null;
-    quartoOutput = prepared ? quartoPreparedOutput(manifest, prepared) : null;
-    quartoOutputState = quartoOutput ? "ready" : "missing";
-    void refreshQuartoFreshness();
-  } });
-
-  function quartoPreparedOutput(manifest, prepared, local = false) {
-    if (!manifest.artifact) return null;
-    return {
-      pages: prepared.pages, page: prepared.page, html: prepared.html, bytes: prepared.bytes || null, downloadUrl: prepared.downloadUrl,
-      downloadName: manifest.artifact.entrypoint, kind: prepared.kind,
-      renderId: manifest.render_id, provenance: manifest.provenance || null, local,
-    };
-  }
-
-  async function refreshQuartoFreshness() {
-    const serial = ++quartoFreshnessSerial;
-    const bundle = quartoBundle;
-    if (!bundle || !session) {
-      quartoFreshness = { state:"missing", message:"No saved result" };
-      quartoArtifactStatus = "No saved output";
-      return;
-    }
-    const tree = treeNow();
-    const parsed = quarto.parseQuarto(tree.texts?.[tree.main] || "", { path:tree.main });
-    try {
-      const [currentContext, sourceDigest] = await Promise.all([
-        contextForQuarto(parsed, tree, bundle.context), snapshotDigest(tree, tree.assets || {}),
-      ]);
-      if (readerDisposed || serial !== quartoFreshnessSerial) return;
-      quartoFreshness = quarto.classifyFreshness(parsed, bundle, { currentContext });
-      quartoArtifactStatus = !bundle.source?.tree_sha256 ? "Source revision unknown"
-        : bundle.source.tree_sha256 === sourceDigest ? "Rendered source unchanged" : "Output from an older source revision";
-    } catch {
-      if (serial !== quartoFreshnessSerial) return;
-      quartoFreshness = { state:"unknown", message:"Saved results; freshness unknown" };
-      quartoArtifactStatus = "Could not verify rendered source";
-    }
-  }
-
-  function releaseQuartoUrls() {
-    if (quartoArtifactDispose) quartoArtifactDispose();
-    quartoArtifactDispose = null;
-    for (const url of quartoObjectUrls) URL.revokeObjectURL(url);
-    quartoObjectUrls = [];
-  }
   function quartoTargetFormat(tree = null) {
     if (quartoOptions.format !== "default") return quartoOptions.format;
     const main = tree?.main || session?.mainPath?.() || "main.qmd";
@@ -321,40 +221,6 @@
     };
   }
 
-  function clearQuartoSelection() {
-    releaseQuartoUrls();
-    quartoBundle = null;
-    quartoOutput = null;
-    quartoAssets = {};
-    quartoContext = "";
-    quartoGeneration = 0;
-    quartoFreshnessSerial += 1;
-    quartoFreshness = { state:"missing", message:"No saved result" };
-    quartoArtifactStatus = "No saved output";
-    quartoResultsOpen = false;
-    closeQuartoResults();
-  }
-
-  async function applyQuartoOptions(next) {
-    if (quartoJob || quartoOptionsChanging || viewing) return;
-    const options = parseRenderOptions(next);
-    quartoOptionsChanging = true;
-    try {
-      quartoOptions = options;
-      const saved = saveRenderOptions(SLUG, options);
-      // A different context must never display the previous context's plots,
-      // including when its selected bundle is missing or cannot be fetched.
-      quartoLoadSerial += 1;
-      quartoLoader.invalidate();
-      clearQuartoSelection();
-      void paintPreview();
-      await loadQuartoOutput();
-      if (saved === false) say("Render options apply to this tab; browser storage is unavailable.", true);
-    } finally {
-      quartoOptionsChanging = false;
-      void paintPreview();
-    }
-  }
   const tell = (message, transfer) => preview?.tell(message, transfer);
   // Initialized after the derived frame kind is available. The controller's
   // callbacks still update the small bits of component state used by the
@@ -760,10 +626,6 @@
 
   async function revealAnnotation(comment) {
     selectedAnnotation = String(comment.id);
-    if (comment.output_anchor) {
-      await inspectQuartoComment(comment);
-      return;
-    }
     if (comment.start != null || comment.region) {
       showMobileView("document");
       await tick();
@@ -1061,15 +923,6 @@
       return;
     }
 
-    if (event.type === "quarto-selection") {
-      if (sourceFormat !== "quarto") return;
-      if (quartoContext && event.context_id && event.context_id !== quartoContext) return;
-      const generation = Number(event.generation || 0);
-      if (generation && generation <= quartoGeneration) return;
-      void loadQuartoOutput({ force: true }).then(() => paintPreview()).catch(() => {});
-      return;
-    }
-
     if (event.type === "anchor") {
       // The server's answer to this browser's own backfill, or somebody
       // else's: either way, a comment that had no anchor of record now does.
@@ -1108,27 +961,33 @@
   let sourceEpoch = $state(0);
   let mayEdit = $state(false);
   let sourceFormat = $state("");
-  let state = $state(""); // what the editor is saying about itself
-  let problem = $state(false);
   let peers = $state(1);
   let linked = $state(read(LINKED, false) === true);
 
-  // Routine saving stays quiet; losing the connection still needs a warning.
-  const persistenceBadge = $derived.by(() => {
-    if (!mayEdit || !session) return "";
-    if (!connected) {
-      return persistence.local ? "offline, changes kept in this browser" : "offline";
-    }
-    return "";
+  // Routine saving stays quiet; losing the connection still needs a warning,
+  // and the warning has to say what is happening to the typing meanwhile.
+  const connectionNote = $derived.by(() => {
+    if (connected) return "";
+    if (!mayEdit || !session) return "Reconnecting…";
+    return persistence.local
+      ? "Offline; changes are kept in this browser while reconnecting…"
+      : "Offline; reconnecting…";
   });
 
   // A close is only worth interrupting when the work has reached neither this
   // browser's storage nor the server.
   const atRisk = $derived(Boolean(mayEdit && persistence.pending && !persistence.local));
 
+  // What the editor has to say about an event -- a render that finished, a
+  // download that failed, a lock with nowhere to go -- is said in a toast,
+  // where it is set in readable type and goes on its own, rather than as a
+  // badge on the bar, where it was the smallest text on the page and clipped
+  // to an ellipsis on anything narrower than a desktop. The text is the
+  // toast's id, so a line said again while it is still up is refreshed
+  // rather than stacked under its twin.
   function say(text, isProblem = false) {
-    state = text;
-    problem = isProblem;
+    if (!text) return;
+    (isProblem ? toastProblem : toastSaid)(text, { id: `reader:${text}` });
   }
 
   // What the document is called, which is what the rendered page is titled.
@@ -1138,65 +997,6 @@
   async function headingOf(tree) {
     return doc.title || (await renderers.titleOf(tree)) || "Untitled";
   }
-
-  async function loadQuartoOutput({ force = false } = {}) {
-    if (sourceFormat !== "quarto" || readerDisposed) return null;
-    const renderContext = quartoRenderContext();
-    const requested = JSON.stringify(renderContext);
-    if (quartoRequestedContext && requested !== quartoRequestedContext) {
-      quartoLoader.invalidate();
-      clearQuartoSelection();
-    }
-    quartoRequestedContext = requested;
-    const serial = ++quartoLoadSerial;
-    const context = await quarto.contextId(renderContext);
-    if (readerDisposed || serial !== quartoLoadSerial) return null;
-    if (!force && quartoOutput?.local && quartoPendingPublish && quartoContext === context) return quartoOutput;
-    quartoOutputState = "loading";
-    try {
-      await quartoLoader.load(context, { force });
-      if (!readerDisposed && serial === quartoLoadSerial) quartoOutputState = quartoOutput ? "ready" : "missing";
-      return quartoOutput;
-    } catch (error) {
-      if (!readerDisposed && serial === quartoLoadSerial) quartoOutputState = error.message || "Quarto output unavailable";
-      throw error;
-    }
-  }
-
-  $effect(() => {
-    const active = quartoPreview;
-    if (!active) return;
-    const timer = setInterval(() => {
-      void localQuarto.quartoPreviewStatus(active.id).then(status => {
-        if (quartoPreview?.id !== active.id) return;
-        // The bridge reports whether the `quarto preview` process is still
-        // alive: "running", or "stopped" once it exited (a failed render
-        // ends it). The dead entry is deleted on the bridge too, or the next
-        // start would be refused as a second watcher on the same workspace.
-        if (status.state && status.state !== "running") {
-          stopQuartoPreviewPagePoll();
-          quartoPreview = null;
-          void localQuarto.stopQuartoPreview(active.id).catch(() => {});
-          const line = String(status.log_tail || "").trim().split("\n").filter(Boolean).pop();
-          say(line || "Live preview ended", true);
-          // No retry loop: falls back to the shared bundle or the draft now
-          // and waits for the next connected transition, which is what
-          // re-arms the effect that starts the managed preview.
-          void paintPreview();
-          return;
-        }
-        if (quartoPreview.state !== status.state) quartoPreview = {...quartoPreview, state:status.state};
-      }).catch(error => {
-        if (quartoPreview?.id === active.id) {
-          quartoPreview = null;
-          stopQuartoPreviewPagePoll();
-          say("Live preview ended: " + error.message, true);
-          void paintPreview();
-        }
-      });
-    }, 5000);
-    return () => clearInterval(timer);
-  });
 
   // The whole connection story, on demand and with nothing to type: reach
   // the local app, and when it is there but has not allowed this site yet,
@@ -1223,143 +1023,6 @@
     return true;
   }
 
-  async function renderQuartoLocally(policy = "project-defaults") {
-    if (!mayEdit || sourceFormat !== "quarto" || quartoJob || quartoOptionsChanging || viewing) return;
-    if (quartoPreviewStarting) { say("Live preview is starting; try again in a moment.", true); return; }
-    if (quartoPendingPublish) {
-      say("A completed render is waiting to be shared; use Retry sharing first.", true);
-      return;
-    }
-    // The managed preview and a render both reach the local app; pausing it
-    // for the render's duration (the effect restarts it once the suspension
-    // lifts in `finally`) is simpler than asking whoever clicked "Share
-    // results" to turn a switch that defaults to on back off first.
-    quartoLiveSuspended = true;
-    if (quartoPreview) await stopLivePreview();
-    const controller = new AbortController();
-    const id = crypto.randomUUID();
-    quartoJob = { id, controller, stage: "preparing" };
-    quartoLog = "";
-    localQuarto.configure({ project: SLUG, origin: location.origin });
-    try {
-      if (!(await ensureLocalApp())) return;
-      const renderTree = treeNow();
-      const renderContext = quartoRenderContext(renderTree);
-      const renderFormat = renderContext.format;
-      const inputContext = await quarto.contextId(renderContext);
-      const selectedResponse = await previewApi.selectedResults(inputContext);
-      const selected = await selectedResponse.json().catch(() => null);
-      if (!selectedResponse.ok && selectedResponse.status !== 404) throw new Error("Could not read the current Quarto selection before rendering.");
-      const inputSelectionGeneration = Number(selected?.selection?.generation ?? selected?.generation ?? 0);
-      const knownManifest = selected?.manifest || null;
-      const inputDigest = await snapshotDigest(renderTree, renderTree.assets || {});
-      const checkpointResponse = await previewApi.quartoCheckpoint(inputDigest);
-      if (!checkpointResponse.ok) throw new Error("The current source could not be checkpointed; try rendering again shortly.");
-      const checkpoint = await checkpointResponse.json();
-      const inputRevision = checkpoint?.revision || "";
-      if (!inputRevision) throw new Error("The server did not return a durable Quarto checkpoint.");
-      const result = await localQuarto.runQuarto({
-        job: { id, binding: quartoBindingId, inputRevision, inputDigest, sharedTreeSha256: inputDigest },
-        tree: renderTree,
-        options: { entrypoint: renderTree.main, format: renderFormat, profile: renderContext.profiles[0] || null,
-          parameters: renderContext.parameters, policy, inputRevision, inputDigest, sharedTreeSha256: inputDigest,
-          renderScope:quartoProjectScope ? "project" : "document", executionMode:quartoSnapshot ? "isolated-snapshot" : "working-tree", dataInputs:quartoDataInputs.split("\n").map(x => x.trim()).filter(Boolean) },
-      }, {
-        signal: controller.signal,
-        onProgress: (progress) => { if (quartoJob?.id === id) quartoJob = { ...quartoJob, stage: progress.stage || "running" }; },
-        onLog: (line) => (quartoLog += line + "\n"),
-      });
-      if (result.logs) quartoLog = result.logs;
-      if (!result.ok) throw new Error(result.error || "Quarto render failed");
-      let receipt = null;
-      if (result.publish) {
-        result.publish.manifest.context.id = inputContext;
-        result.publish.expected_generation = inputSelectionGeneration;
-        quartoPendingPublish = result.publish;
-        try {
-          await savePendingResults(SLUG, result.publish).catch((error) => { quartoLog += "Outbox: " + error.message + "\n"; });
-          receipt = await publishResultsBundle(previewApi, result.publish, knownManifest);
-          quartoPendingPublish = null;
-          await clearPendingResults(SLUG, result.publish.manifest.render_id).catch((error) => { quartoLog += "Outbox cleanup: " + error.message + "\n"; });
-        } catch (error) {
-          say("Rendered locally; not yet shared (" + error.message + ")", true);
-        }
-      }
-      if (receipt?.selected === false) {
-        try {
-          await loadQuartoOutput({ force:true });
-          say("Render saved; a newer output remains selected.");
-        } catch (error) {
-          say("Render saved; the selected preview could not be loaded (" + error.message + ")", true);
-        }
-        return;
-      }
-      if (await quarto.contextId(quartoRenderContext()) !== inputContext) {
-        if (receipt) say("Render saved for " + renderFormat.toUpperCase() + ".");
-        return;
-      }
-      if (result.artifact && result.manifest?.artifact) {
-        const blobs = new Map((result.publish?.blobs || []).map((blob) => [blob.sha256, blob]));
-        const prepared = await prepareResultsArtifact(result.manifest, result.artifact, async (asset) => {
-          const blob = blobs.get(asset.sha256);
-          if (!blob?.data) throw new Error("Local Quarto result is missing: " + asset.path);
-          return Uint8Array.from(atob(blob.data), (character) => character.charCodeAt(0));
-        });
-        if (readerDisposed) { prepared.dispose(); return; }
-        quartoLoader.invalidate();
-        if (quartoResultsOpen && !quartoInspected) quartoResultsOpen = false;
-        releaseQuartoUrls();
-        quartoBundle = receipt?.manifest || result.publish?.manifest || result.manifest;
-        quartoContext = inputContext;
-        if (receipt?.selection) quartoGeneration = Number(receipt.selection.generation);
-        quartoArtifactDispose = prepared.dispose;
-        quartoAssets = prepared.assets || {};
-        quartoOutput = quartoPreparedOutput(quartoBundle, prepared, !receipt);
-        quartoOutputState = "ready";
-        // The draft is the document: it stays live and takes the new
-        // results in place, the way a Markdown preview takes a new
-        // paragraph. The full artifact is there under Tools for whoever
-        // wants to inspect exactly what Quarto produced.
-        await refreshQuartoFreshness();
-        void paintPreview();
-        if (receipt) say("Rendered and shared");
-        else if (!result.publish) say("Rendered locally; not yet shared");
-      }
-    } catch (error) {
-      if (error?.name === "Canceled" || error?.name === "AbortError") say("Quarto render cancelled", true);
-      else say(error.message || "Quarto render failed", true);
-    } finally {
-      quartoJob = null;
-      // Lifting the suspension re-arms the effect that starts the preview
-      // when the mode still holds; otherwise the draft is painted here.
-      quartoLiveSuspended = false;
-      if (!quartoLiveActive) void paintPreview();
-    }
-  }
-
-  async function retryQuartoPublish() {
-    if (!quartoPendingPublish || quartoJob) return;
-    const pending = quartoPendingPublish;
-    try {
-      const receipt = await publishResultsBundle(previewApi, pending, quartoBundle);
-      if (quartoPendingPublish === pending) quartoPendingPublish = null;
-      await clearPendingResults(SLUG, pending.manifest.render_id).catch((error) => { quartoLog += "Outbox cleanup: " + error.message + "\n"; });
-      try {
-        await loadQuartoOutput({ force:true });
-        say(receipt.selected === false ? "Render saved; a newer output remains selected." : "Rendered and shared");
-      } catch (error) {
-        say("Render saved; the selected preview could not be loaded (" + error.message + ")", true);
-      }
-      void paintPreview();
-    } catch (error) {
-      say("Rendered locally; not yet shared (" + error.message + ")", true);
-    }
-  }
-
-  function cancelQuartoRender() {
-    quartoJob?.controller?.abort();
-  }
-
   /* --------------------------------------------------------- the timeline */
 
   // What this document used to say, and when. The manifest is fetched when the
@@ -1374,99 +1037,80 @@
   let viewing = $state(null);
 
   // Whether this browser should be running Quarto's own live preview rather
-  // than showing a shared bundle or its own draft rendering: paired,
+  // than showing its own draft rendering: Quarto preview mode chosen, paired,
   // connected, editable, and not looking at history. `editing` (the source
   // pane) is not required -- an editor who has not opened it yet still gets
-  // the live pane the moment they are able to edit. Being live is simply
-  // what a paired Quarto document does; there is no separate switch.
+  // the live pane the moment they are able to edit.
   const quartoLiveActive = $derived(
-    sourceFormat === "quarto" && mayEdit && !viewing && !quartoLiveSuspended &&
-      quartoLocalStatus.state === "connected",
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && mayEdit && !viewing &&
+      localAppStatus.state === "connected",
   );
 
-  function stopQuartoPreviewPagePoll() {
-    clearInterval(quartoPreviewPageTimer);
-    quartoPreviewPageTimer = null;
-    quartoPreviewPageEtag = null;
-  }
+  // Whether this browser should be showing a Typst document's chunks run by
+  // Calepin on this computer rather than this browser's own Typst rendering:
+  // the calepin mode chosen, paired, connected, the calepin command itself
+  // found, editable, and not looking at history.
+  const calepinActive = $derived(
+    sourceFormat === "typst" && typstPreviewMode === "calepin" && mayEdit && !viewing &&
+      localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
+  );
 
-  // Polls the local app for the live page's own rendered bytes while a
-  // preview runs, and paints each new one into the frame the moment it
-  // arrives. A 304 (nothing new) or a 404 (nothing rendered yet) costs one
-  // small request and changes nothing on the screen.
-  function startQuartoPreviewPagePoll(id) {
-    stopQuartoPreviewPagePoll();
-    quartoPreviewPageTimer = setInterval(() => {
-      void localQuarto.quartoPreviewPage(id, { etag: quartoPreviewPageEtag }).then((page) => {
-        if (readerDisposed || quartoPreview?.id !== id || !page) return;
-        quartoPreviewPageEtag = page.etag;
-        framePreview.publish({ kind: "html", html: page.html });
-      }).catch(() => {
-        // A network hiccup or "not rendered yet" is not a reason to stop
-        // polling; the 5s status poll is what decides the preview is dead.
-      });
-    }, 1000);
-  }
-
-  async function startLivePreview() {
-    if (!quartoLiveActive || quartoPreview || quartoPreviewStarting || readerDisposed) return;
-    quartoPreviewStarting = true;
-    localQuarto.configure({ project: SLUG, origin: location.origin });
-    try {
-      const tree = treeNow();
-      await localQuarto.syncWorkspace({ tree });
-      if (readerDisposed || !quartoLiveActive) return;
+  const quartoPreviewController = createLocalPreview({
+    local: localQuarto,
+    engine: "quarto",
+    label: "Quarto",
+    publish: (payload) => framePreview.publish(payload),
+    say,
+    treeNow,
+    entrypointOf: (tree) => tree.main,
+    optionsOf: (tree) => {
       const context = quartoRenderContext(tree);
-      const started = await localQuarto.startQuartoPreview({
-        job: { binding: quartoBindingId }, tree,
-        options: { entrypoint: tree.main, format: context.format, profile: context.profiles[0] || null, parameters: context.parameters },
-      });
-      if (readerDisposed || !quartoLiveActive) { await localQuarto.stopQuartoPreview(started.id).catch(() => {}); return; }
-      quartoPreview = started;
-      quartoLiveErrorShown = false;
-      startQuartoPreviewPagePoll(started.id);
-    } catch (error) {
-      if (!quartoLiveErrorShown) { say(error.message || "Live preview unavailable", true); quartoLiveErrorShown = true; }
-    } finally {
-      quartoPreviewStarting = false;
-    }
-  }
-
-  async function stopLivePreview() {
-    const active = quartoPreview;
-    if (!active) return;
-    quartoPreview = null;
-    stopQuartoPreviewPagePoll();
-    await localQuarto.stopQuartoPreview(active.id).catch(() => {});
-  }
-
-  // Serialized: at most one sync in flight, and a source change arriving
-  // mid-sync is coalesced into a single trailing retry rather than queued
-  // one-for-one. Quarto's own file watcher does the rest once the workspace
-  // has the new bytes.
-  async function syncQuartoLive() {
-    if (!quartoLiveActive || !quartoPreview || readerDisposed) return;
-    if (quartoLiveSyncBusy) { quartoLiveSyncQueued = true; return; }
-    quartoLiveSyncBusy = true;
-    try {
-      await localQuarto.syncWorkspace({ tree: treeNow() });
-    } catch (error) {
-      if (!quartoLiveErrorShown) { say(error.message || "Live preview could not sync", true); quartoLiveErrorShown = true; }
-      await stopLivePreview();
-      void paintPreview();
-    } finally {
-      quartoLiveSyncBusy = false;
-      if (quartoLiveSyncQueued) { quartoLiveSyncQueued = false; void syncQuartoLive(); }
-    }
-  }
-
-  // Drives the whole automatic mode: starts the managed preview the moment
-  // the conditions are met, and tears it down (falling back to the ordinary
-  // draft, no retry) the moment any of them stop holding.
-  $effect(() => {
-    if (quartoLiveActive) { void startLivePreview(); }
-    else if (quartoPreview) { void stopLivePreview().then(() => void paintPreview()); }
+      return { format: context.format, profile: context.profiles[0] || null, parameters: context.parameters };
+    },
+    jobOf: () => ({ binding: quartoBindingId }),
+    isDisposed: () => readerDisposed,
+    onRunningChange: (session) => (quartoPreview = session),
+    onRenderingChange: (value) => (quartoRendering = value),
+    onStartingChange: (value) => (quartoPreviewStarting = value),
+    onEnded: () => void paintPreview(),
   });
+
+  const calepinPreviewController = createLocalPreview({
+    local: localQuarto,
+    engine: "calepin",
+    label: "Calepin",
+    publish: (payload) => framePreview.publish(payload),
+    say,
+    treeNow,
+    entrypointOf: (tree) => tree.main,
+    optionsOf: () => ({ format: "pdf" }),
+    jobOf: () => ({ binding: quartoBindingId }),
+    isDisposed: () => readerDisposed,
+    onRunningChange: (session) => (calepinPreview = session),
+    onRenderingChange: (value) => (calepinRendering = value),
+    onStartingChange: (value) => (calepinPreviewStarting = value),
+    onEnded: () => void paintPreview(),
+  });
+
+  // Drives the whole automatic mode for each engine: starts the managed
+  // preview the moment its conditions are met, and tears it down (falling
+  // back to the ordinary rendering, no retry) the moment any of them stop
+  // holding.
+  $effect(() => { void quartoPreviewController.reconcile(quartoLiveActive); });
+  $effect(() => { void calepinPreviewController.reconcile(calepinActive); });
+
+  // The render options, applied from Settings: kept for this document, and
+  // the live preview -- which reads them only as it starts -- restarted so
+  // the page shows the new format rather than the old one until the next
+  // reconnect. A preview still starting reads the options after its
+  // workspace sync, so it picks them up on its own.
+  async function applyRenderOptions(next) {
+    quartoOptions = parseRenderOptions(next);
+    saveRenderOptions(SLUG, quartoOptions);
+    if (!quartoPreview || !quartoLiveActive) return;
+    await stopLivePreview();
+    void startLivePreview();
+  }
 
   const historyController = createHistoryController({
     slug: SLUG,
@@ -1775,12 +1419,7 @@
     // the agent, the anchoring -- is the same as for the live document,
     // because to all of it a checkpoint is just another directory.
     if (viewing) return checkpointTree(viewing);
-    const tree = liveTreeNow();
-    if (sourceFormat === "quarto" && quartoBundle) {
-      tree.quartoBundle = quartoBundle;
-      tree.urls = { ...(tree.urls || {}), ...quartoAssets };
-    }
-    return tree;
+    return liveTreeNow();
   }
 
   // Painting the preview is sending it to the frame: the draft is a document,
@@ -1906,11 +1545,7 @@
   // viewer on the documents origin rather than the empty shell. Everything
   // else about the frame is the same: same origin, same CSP, same channel.
   const pdfOutput = $derived(renderers.producesPdf(displayedFormat));
-  const framePath = $derived(
-    (sourceFormat === "quarto" && !viewing && !(quartoLiveActive && (quartoPreview || quartoPreviewStarting)) &&
-      quartoOutput?.kind === "pdf") ||
-      renderers.outputKind(displayedFormat) === "pdf" ? "pdf" : "raw",
-  );
+  const framePath = $derived(renderers.outputKind(displayedFormat) === "pdf" ? "pdf" : "raw");
 
   // How long the last compile took, and whether one is running now. Paged
   // formats expose the same short-lived loading state; the elapsed time is
@@ -1924,7 +1559,7 @@
   let pdfFailureReason = $state("");
 
   // The project's LaTeX settings, mirrored into state because the Yjs `meta`
-  // map they live in is not itself reactive: Settings.svelte needs to redraw
+  // map they live in is not itself reactive: the Compiler settings need to redraw
   // when a settings change arrives from another collaborator, not only when
   // this browser writes one. Kept current by the `meta.observe` handler set
   // up by `configureLatex` when this project enters LaTeX mode.
@@ -2023,7 +1658,33 @@
     !compiling ? "" : lastCompile ? `compiling… (last took ${lastCompile.toFixed(1)}s)` : "compiling…",
   );
 
+  // Whether `LatexStatus` has anything to draw. It draws nothing while the
+  // engine is idle, and the status row must know that, or a LaTeX document
+  // would wear an empty strip under the toolbar until its first compile.
+  let latexPhase = $state(latex.status().phase);
+  $effect(() => latex.subscribe((next) => (latexPhase = next.phase)));
+
+  // Quarto preview mode chosen, but not yet paired with the local app on
+  // this computer: the pane shows the draft, and the status row carries the
+  // one-line explanation and a way to connect.
+  const quartoNeedsLocalApp = $derived(
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && mayEdit && !viewing &&
+      localAppStatus.state !== "connected",
+  );
+
+  // Whether the status row under the toolbar has a reason to exist.
+  const statusRow = $derived(Boolean(
+    connectionNote
+      || renderedNote
+      || (editing && (peers > 1 || (sourceFormat === "latex" ? latexPhase !== "idle" : compileBadge)))
+      || quartoRendering || quartoNeedsLocalApp,
+  ));
+
   let frameShowsCheckpoint = false;
+  // The kind of the payload the frame was last handed -- "pdf", "html", or
+  // "" since the last navigation. `framePreview.preview()` knows the same,
+  // but not reactively, and the File menu's download items follow this.
+  let deliveredKind = $state("");
   framePreview = createFramePreview({
     slug: SLUG,
     getDocsOrigin: () => docsOrigin,
@@ -2036,9 +1697,11 @@
       renderingStore?.invalidate();
       issued += 1;
       renderedSha = null;
+      deliveredKind = "";
       lastRegions = lastHighlight = null;
     },
     onDelivered: (payload) => {
+      deliveredKind = payload.kind;
       if (payload.kind === "pdf") renderedSha = payload.sha || null;
       frameShowsCheckpoint = Boolean(viewing);
       everPainted = true;
@@ -2119,47 +1782,22 @@
     renderingStore.cancelPoll();
     // The live preview owns the pane while it is running (or starting): the
     // frame shows Quarto's own page, kept current by `syncQuartoLive` and
-    // the page poller, not by anything painted here. Only the freshness
-    // badge for a saved bundle, if any, still needs refreshing.
+    // the page poller, not by anything painted here.
     // `typeof` rather than a bare read: checks/reader-races.mjs runs this
     // function's body in isolation against a context that does not declare
     // these names for its non-Quarto (and some Quarto) cases.
     // Keyed to a preview actually running or starting, not to whether this
-    // browser is paired: a browser whose preview failed to start paints (b)
-    // or (c) below, rather than leaving the pane at whatever it showed last.
+    // browser is paired: a browser whose preview failed to start falls
+    // through to the draft below, rather than leaving the pane at whatever
+    // it showed last.
     if (sourceFormat === "quarto" && typeof quartoLiveActive !== "undefined" && quartoLiveActive &&
         typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
-      void refreshQuartoFreshness();
       return;
     }
-    // Not live: the pane shows the last shared bundle's artifact when it has
-    // one to show (b), or falls through to this browser's own draft (c).
-    // Draft preview work is already debounced by sourceChanged. If front
-    // matter changed the target format, refresh the selected context before
-    // hashing freshness so an older bundle cannot remain associated with the
-    // new draft.
-    if (renderers.formatOf(treeNow().main) === "quarto" && !viewing) {
-      try {
-        const output = await loadQuartoOutput();
-        // Freshness hashes the whole Quarto tree, including included files
-        // and assets. Run it after the debounced output selection settles so
-        // it describes the bundle that was actually loaded.
-        void refreshQuartoFreshness();
-        if (output?.kind === "pdf" && output.bytes) {
-          framePreview.publish({ kind: "pdf", sha: output.renderId || quartoBundle?.render_id || null, bytes: output.bytes });
-          return;
-        }
-        if (output?.kind === "html" && output.html) {
-          framePreview.publish({ kind: "html", html: output.html });
-          return;
-        }
-        // No artifact, or one this pane cannot show (a DOCX bundle): fall
-        // through to the draft below.
-      } catch {
-        // The draft remains available when the immutable output is missing
-        // or temporarily unavailable.
-      }
-    }
+    // Not live: nothing rendered is ever uploaded, so there is no shared
+    // bundle to fall back to -- a Quarto document not showing its own live
+    // preview shows this browser's Markdown draft, the same as every other
+    // draft format, painted below.
     // A paged document is compiled in an editor's browser and nowhere else,
     // so everybody else is shown the PDF the server kept from the last one
     // who did. See `docs/specs/latex.md`.
@@ -2376,7 +2014,6 @@
       clearTimeout(quartoLiveSyncTimer);
       quartoLiveSyncTimer = setTimeout(() => void syncQuartoLive(), 500);
     }
-    if (sourceFormat === "quarto") quartoFreshnessSerial += 1;
     if (sourceFormat === "quarto" && session) {
       const main = session.mainPath() || "main.qmd";
       const parsed = quarto.parseQuarto(session.textOf(session.mainId())?.toString?.() || session.text.toString(), { path: main });
@@ -2402,8 +2039,7 @@
     // timer for every Typst keystroke would starve the PDF indefinitely.
     if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
     clearTimeout(previewTimer);
-    const quartoOutputPdf = sourceFormat === "quarto" && typeof quartoOutput !== "undefined" && quartoOutput?.kind === "pdf";
-    if (outputIsPdf && !compilesHere && !quartoOutputPdf) {
+    if (outputIsPdf && !compilesHere) {
       // The text has moved, so what is in the frame is a rendering of an
       // earlier version. That is known here rather than asked: the rendering
       // is named by the digest of the source it was compiled from.
@@ -2413,11 +2049,7 @@
     }
     // A rendering waiting for the text to stay quiet is of a text that did
     // not.
-    // A saved Quarto PDF bundle remains selected while the source remains a
-    // .qmd (and therefore has an HTML source format). Keep that path on the
-    // ordinary debounced path so its tree-wide freshness check still runs if
-    // the output kind changes or the format mapping evolves.
-    if (outputIsPdf && !quartoOutputPdf) dropHeldRendering();
+    if (outputIsPdf) dropHeldRendering();
     // A LaTeX compile takes seconds, so it waits for the source to be quiet
     // for longer -- `latex.DEBOUNCE`, which is that module's number and not
     // one written twice. A reader watching somebody else type waits longer
@@ -2429,32 +2061,6 @@
           ? 300
           : READER_DEBOUNCE;
     previewTimer = setTimeout(paintPreview, wait);
-  }
-
-  async function contextForQuarto(parsed, tree, context = {}) {
-    const byPath = new Map();
-    for (const [path, text] of Object.entries(tree?.texts || {})) {
-      if (path !== parsed.path) byPath.set(path, await quarto.sha256(text));
-    }
-    for (const [path, digest] of Object.entries({ ...(tree?.assets || {}), ...(tree?.digests || {}) })) {
-      if (path !== parsed.path && typeof digest === "string" && digest) byPath.set(path, digest);
-    }
-    // Rust orders dependency records by UTF-8 path bytes. JS's default sort
-    // compares UTF-16 code units, which differs for astral Unicode paths.
-    const encoder = new TextEncoder();
-    const utf8Compare = (left, right) => {
-      const a = encoder.encode(left), b = encoder.encode(right);
-      for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] - b[i];
-      return a.length - b.length;
-    };
-    const dependencies = [...byPath.keys()].sort(utf8Compare).map((path) => `${path}\0${byPath.get(path)}`);
-    return quarto.contextFingerprint(parsed, {
-      main: parsed.path,
-      format: context.format || "html",
-      profiles: context.profiles || [],
-      parametersSha256: context.parameters_sha256 || await quarto.parameterSha256({}),
-      dependencies,
-    });
   }
 
   /* ------------------------------------------------------- keeping in step */
@@ -2469,7 +2075,7 @@
 
   function lost(yes) {
     if (!yes) {
-      if (state === NO_MATCH) say("");
+      toastUnsay(`reader:${NO_MATCH}`);
       return;
     }
     // Not a problem: the editor is in the state it was in, and the reader has
@@ -2540,7 +2146,7 @@
   // Which keys the editor answers to. A preference of the person at this
   // browser, not of the document, and nobody's default but their own; set
   // from the Settings panel, beside the rest of this browser's preferences.
-  let keys = $state(read(KEYMAP, "default") === "vim" ? "vim" : "default");
+  let keys = $state(["vim", "emacs"].includes(read(KEYMAP, "default")) ? read(KEYMAP, "default") : "default");
 
   // The column at the left, and what is in it: the files, the comments or the
   // history, or "" for closed. One value rather than a switch per panel,
@@ -2561,9 +2167,17 @@
     { id: "history", says: "History" },
     { id: "diagnostics", says: "Diagnostics", editOnly: true },
     { id: "share", says: "Share", sharingOnly: true },
-    { id: "settings", says: "Settings", editorOnly: true },
-    { id: "render", says: "Render settings", editorOnly: true, quartoOnly: true },
   ];
+  // Settings are not a column: they open as a dialog from the navbar menu, so
+  // the sidebar stays what its icons offer. Every entry point opens the same
+  // dialog on the category it is about. A browser that last left the column
+  // on the old settings tab falls through to the files below.
+  let settingsOpen = $state(false);
+  let settingsCategory = $state("editor");
+  function openSettings(category = "editor") {
+    settingsCategory = category;
+    settingsOpen = true;
+  }
   const PANELS = ["", ...TABS.map((tab) => tab.id)];
   const storedPanel = read(PANEL, null);
   const migratedPanel = storedPanel === "comments" || storedPanel === "chat" ? "collaboration" : storedPanel;
@@ -2605,7 +2219,7 @@
   const tabs = $derived(
     TABS.filter(
       (tab) =>
-        (!tab.editorOnly || mayEdit) && (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing) && (!tab.quartoOnly || sourceFormat === "quarto"),
+        (!tab.editorOnly || mayEdit) && (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing),
     ),
   );
   // Where the column goes back to when what it showed is taken away: the
@@ -2732,14 +2346,87 @@
   }
 
   function chooseToolCommand(value) {
-    if (value === "connect" || value === "settings") return showPanel("settings");
-    if (value === "render-settings") return showPanel("render");
+    if (value === "settings") return openSettings();
     if (value === "compile") return compileNow();
-    if (value === "render") return void renderQuartoLocally();
-    if (value === "refresh") return void renderQuartoLocally("refresh-computations");
-    if (value === "frozen") return void renderQuartoLocally("frozen");
-    if (value === "retry") return void retryQuartoPublish();
-    if (value === "results") { closeQuartoResults(); quartoResultsOpen = true; }
+    if (value === "preview-markdown") return void setQuartoPreviewMode("markdown");
+    if (value === "preview-quarto") return void setQuartoPreviewMode("quarto");
+  }
+
+  // The File menu. Its first three items are what the Files panel's toolbar
+  // does, reached without first switching layouts and opening the panel; the
+  // rest open the panels a person looks for under File. The Files panel is
+  // mounted on its first visit and draws the name field it focuses, so the
+  // panel is opened and the DOM given a turn before the panel is asked.
+  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "download-pdf", "download-html", "download", "share", "history"];
+  async function chooseFileCommand(value) {
+    if (value === "download") return downloadTree();
+    if (value === "download-pdf" || value === "download-html") return downloadRendering(value.slice(9));
+    if (value === "share" || value === "history") return openPanel(value);
+    if (!["new-file", "new-folder", "upload"].includes(value)) return;
+    await openPanel("files");
+    await tick();
+    if (value === "upload") fileList?.choose();
+    else fileList?.start(value === "new-file" ? "file" : "folder");
+  }
+
+  // Which of the rendering downloads the File menu can honour: the one for
+  // this document's output kind, once there is something to hand over.
+  const downloads = $derived(availableDownloads({
+    outputKind: renderers.outputKind(displayedFormat),
+    deliveredKind,
+    rendering,
+    displayedFormat,
+  }));
+
+  // The rendering on screen, as a file. A PDF is the bytes the frame was
+  // handed, or the stored rendering the server holds when this browser has
+  // not been handed one yet. An HTML page is the one this browser painted,
+  // with its figures written in, or for an authored HTML document the text
+  // itself, which is the rendering.
+  async function downloadRendering(kind) {
+    try {
+      if (kind === "pdf") {
+        const preview = framePreview.preview();
+        let bytes = preview?.kind === "pdf" ? preview.bytes : null;
+        if (!bytes) {
+          const found = rendering?.sha ? rendering : await previewApi.latest().then((r) => (r.ok ? r.json() : null)).catch(() => null);
+          if (!found?.sha) throw new Error("This document has not been rendered yet.");
+          const response = await previewApi.rendering(found.sha).catch(() => null);
+          if (!response?.ok) throw new Error("The rendering could not be fetched.");
+          bytes = new Uint8Array(await response.arrayBuffer());
+        }
+        saveBlob(new Blob([bytes], { type: "application/pdf" }), `${SLUG}.pdf`);
+        return;
+      }
+      let html = null;
+      if (displayedFormat === "html") {
+        const tree = treeNow();
+        html = tree.texts?.[tree.main] ?? null;
+      } else {
+        const preview = framePreview.preview();
+        html = preview?.kind === "html" ? await inlineBlobUrls(preview.html) : null;
+      }
+      if (typeof html !== "string") throw new Error("This document has not been rendered yet.");
+      saveBlob(new Blob([html], { type: "text/html" }), `${SLUG}.html`);
+    } catch (error) {
+      say(error.message || "Could not download the rendering.", true);
+    }
+  }
+
+  // Open a panel from the menu: unlike the activity bar, choosing an item
+  // that is already open leaves it open rather than closing the column.
+  function openPanel(name) {
+    if (!visitedPanels.includes(name)) visitedPanels = [...visitedPanels, name];
+    const opening = showPanel(name);
+    if (width <= 760) showMobileView("sidebar");
+    return opening;
+  }
+
+  // The one menu a narrow screen has stands in for all of them.
+  function chooseCompactCommand(value) {
+    if (FILE_COMMANDS.includes(value)) return void chooseFileCommand(value);
+    if (value.startsWith("layout-") || value.startsWith("side-") || value.startsWith("ratio-") || value === "linked") return chose(value);
+    return chooseToolCommand(value);
   }
 
   /* ------------------------------------------------------------------- boot */
@@ -2805,10 +2492,6 @@
     const format = renderers.formatOf(session.mainPath());
     if (format && format !== sourceFormat) {
       sourceFormat = format;
-      if (format !== "quarto") {
-        quartoOutput = null;
-        quartoOutputState = "";
-      }
       configureLatex(format);
       if (mayEdit) renderers.warm(format);
       // A main-file rename can keep the same output kind (Typst -> LaTeX is
@@ -2928,6 +2611,29 @@
     checkPlacement(rules, { kind: "asset", path }, session.list(), session.folders());
     session.putAsset(path, sha);
     paintPreview();
+    return path;
+  }
+
+  // InsertMenu captures the active editor target before opening a dialog. The
+  // editor owns the CRDT anchors; the reader only supplies project metadata
+  // and reports any generator notes to the existing toast channel.
+  function insertContext() {
+    return editor?.getInsertContext?.() || null;
+  }
+  function applyInsertion(result, context) {
+    if (!result?.text) {
+      for (const note of result?.notes || []) say(note, true);
+      return;
+    }
+    if (!editor?.applyInsertResult?.(result, context)) {
+      say("The insertion target is no longer available.", true);
+      return;
+    }
+    for (const note of result.notes || []) say(note, true);
+  }
+  async function uploadInsertAsset(file) {
+    const path = await addFigure(file);
+    return path;
   }
 
   /// The whole directory, as a zip. Built here rather than by a route,
@@ -2957,16 +2663,9 @@
       // Loaded when it is asked for. A reader who never downloads a document
       // should not carry the code that would have built one.
       const { zip } = await import("../lib/zip.js");
-      const url = URL.createObjectURL(zip(files));
-      const link = document.createElement("a");
-      link.href = url;
       // Named for the document rather than for its main file: what is being
       // downloaded is the directory, and the slug is what a person knows it by.
-      link.download = `${SLUG}.zip`;
-      link.click();
-      // Revoked on a later turn: revoking it now would race the download the
-      // click has only just started.
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      saveBlob(zip(files), `${SLUG}.zip`);
     } catch (error) {
       say(error.message || "could not download the project", true);
     }
@@ -3006,12 +2705,7 @@
         if (!(entry.path in content)) throw new Error("This file is no longer available.");
         blob = new Blob([content[entry.path]]);
       }
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = basename(entry.path) + (entry.kind === "folder" ? ".zip" : "");
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      saveBlob(blob, basename(entry.path) + (entry.kind === "folder" ? ".zip" : ""));
     } catch (error) { say(error.message || "Could not download this item.", true); }
   }
 
@@ -3109,28 +2803,13 @@
         ? resultsIdentity.draft_format
         : "html";
     sourceFormat = format;
-    quartoBundle = document_.quarto_bundle || document_.quartoBundle || null;
-    quartoAssets = {};
-    quartoContext = document_.quarto_context_id || document_.quartoContextId || "";
-    quartoFreshness = quartoBundle
-      ? quarto.classifyFreshness(null, quartoBundle)
-      : { state: "missing", message: "No saved result" };
-    if (format !== "quarto") {
-      quartoOutput = null;
-      quartoOutputState = "";
-    }
     if (format === "quarto") {
       localQuarto.configure({ project: SLUG, origin: location.origin });
       quartoBindingId = localQuarto.bindingId();
-      // A pairing this browser already holds is verified now, so the Tools
-      // menu shows the app's policies without a first failed render.
+      // A pairing this browser already holds is verified now, so the
+      // workspace banner shows a connected preview without a first failed
+      // attempt to start one.
       void localQuarto.probe();
-      void loadPendingResults(SLUG).then((pending) => {
-        if (pending && !quartoPendingPublish) {
-          quartoPendingPublish = pending;
-          say("A completed local render is waiting to be shared.");
-        }
-      }).catch(() => {});
     }
     // A document is shown by output kind. Paged documents use stored PDFs when
     // this deployment has no browser compiler, so opening a Typst paper never
@@ -3160,11 +2839,6 @@
     // session that `startCollaboration` just built, which is why this comes after
     // it rather than beside the old restore-a-distribution code above.
     configureLatex(sourceFormat);
-    if (sourceFormat === "quarto") {
-      // Fetch the selected manifest so the shared bundle's assets are cached
-      // by the time `paintPreview` decides between it and the draft.
-      void loadQuartoOutput().then(() => paintPreview()).catch(() => void paintPreview());
-    }
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
     if (mayEdit) startEditing();
@@ -3186,7 +2860,7 @@
 
   $effect(() => {
     markViewed(SLUG);
-    const stopQuartoStatus = localQuarto.subscribe((status) => { quartoLocalStatus = status; });
+    const stopQuartoStatus = localQuarto.subscribe((status) => { localAppStatus = status; });
     pendingChat = createPendingChat({
       send: (message) => collaboration?.sendLive(message) || { ok: false },
     });
@@ -3230,10 +2904,6 @@
       // this browser letting go of its half.
       readerDisposed = true;
       stopQuartoStatus();
-      quartoLoader.invalidate();
-      closeQuartoResults();
-      quartoFreshnessSerial += 1;
-      quartoJob?.controller?.abort();
       issued += 1;
       navigationGeneration += 1;
       clearTimeout(previewTimer);
@@ -3243,7 +2913,6 @@
       stopQuartoPreviewPagePoll();
       if (quartoPreview) void localQuarto.stopQuartoPreview(quartoPreview.id).catch(() => {});
       framePreview.dispose();
-      releaseQuartoUrls();
       renderingStore?.dispose();
       stopLatex();
       pendingChat?.dispose();
@@ -3258,9 +2927,6 @@
     // Never claim pending or disconnected writes have reached the server.
     if (!connected || persistence.pending) return;
     say("saved on the server");
-    setTimeout(() => {
-      if (state === "saved on the server") say("");
-    }, 2000);
   }
 
   // There is no save, so a close is almost never worth interrupting: the
@@ -3320,6 +2986,27 @@
 
 <svelte:window bind:innerWidth={width} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
 
+{#snippet fileItems()}
+  {#if !viewing}
+    <Menu.Item value="new-file" class="menuitem">New file…</Menu.Item>
+    <Menu.Item value="new-folder" class="menuitem">New folder…</Menu.Item>
+    <Menu.Item value="upload" class="menuitem">Upload files…</Menu.Item>
+    <hr class="hr my-1" />
+  {/if}
+  <!-- One of the two, never both: a document renders to a PDF or to a page.
+       Greyed out, not hidden, while there is nothing to download yet, so the
+       menu says what the document will offer. -->
+  {#if renderers.outputKind(displayedFormat) === "pdf"}
+    <Menu.Item value="download-pdf" class="menuitem" disabled={!downloads.pdf}>Download PDF</Menu.Item>
+  {:else}
+    <Menu.Item value="download-html" class="menuitem" disabled={!downloads.html}>Download HTML</Menu.Item>
+  {/if}
+  <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
+  <hr class="hr my-1" />
+  {#if canSeeSharing}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
+  <Menu.Item value="history" class="menuitem">History</Menu.Item>
+{/snippet}
+
 {#snippet layoutItems()}
   {#each [["source", "Source"], ["document", "Preview"], ["split", "Split"]] as [value, label]}
     <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"}>
@@ -3345,48 +3032,41 @@
 
 {#snippet toolItems()}
   {#if sourceFormat === "quarto" && !viewing}
-    <!-- The render verbs are always here: choosing one reaches the local
-         app and asks it to allow this site on the way, so there is no
-         separate connect step to find first. The settings item stays for
-         the fallbacks: another address, or the pairing code. -->
-    <Menu.Item value="render" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Share results</Menu.Item>
-    <Menu.Item value="refresh" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Refresh computations</Menu.Item>
-    {#if quartoLocalStatus.capabilities?.quarto?.policies?.includes("frozen")}
-      <Menu.Item value="frozen" class="menuitem" disabled={Boolean(quartoJob) || quartoOptionsChanging}>Use frozen results</Menu.Item>
-    {/if}
-    {#if quartoLocalStatus.state !== "connected"}
-      <Menu.Item value="connect" class="menuitem">Local app settings…</Menu.Item>
-    {/if}
-    {#if quartoPendingPublish}<Menu.Item value="retry" class="menuitem">Retry sharing</Menu.Item>{/if}
+    <!-- Nothing rendered is ever uploaded: choosing "Quarto preview" runs
+         the document's code with Quarto on this computer, through the local
+         app, and shows its own page here; "Markdown preview" never runs any
+         code. The two are exclusive, with a check mark on whichever is
+         active. Local app settings remain reachable from Settings… below. -->
+    <Menu.Item value="preview-markdown" class="menuitem">
+      <span class="w-4">{quartoPreviewMode === "markdown" ? "✓" : ""}</span>Markdown preview
+    </Menu.Item>
+    <Menu.Item value="preview-quarto" class="menuitem">
+      <span class="w-4">{quartoPreviewMode === "quarto" ? "✓" : ""}</span>Quarto preview
+    </Menu.Item>
+    <hr class="hr my-1" />
   {:else if sourceFormat === "latex" && !viewing}
     {#if compilesHere}<Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>{/if}
-  {/if}
-  {#if sourceFormat === "quarto"}
-    {#if quartoBundle?.cells?.some((cell) => cell.outputs?.length)}
-      <Menu.Item value="results" class="menuitem">Saved results</Menu.Item>
-    {/if}
-    <Menu.Item value="render-settings" class="menuitem">Render settings…</Menu.Item>
-    <hr class="hr my-1" />
   {/if}
   <Menu.Item value="settings" class="menuitem">Settings…</Menu.Item>
 {/snippet}
 
 <Nav {me}>
   {#snippet menus()}
+    {#if mayEdit}
+      <div class="desktop-workspace-menu">
+        <Menu onSelect={(chosen) => void chooseFileCommand(chosen.value)}>
+          <Menu.Trigger class="menubar-item">File</Menu.Trigger>
+          <ExplorerMenu>{@render fileItems()}</ExplorerMenu>
+        </Menu>
+      </div>
+    {/if}
     {#if editing && mayEdit && !viewing}
-      <Menu>
-        <Menu.Trigger class="menubar-item">Insert</Menu.Trigger>
-        <ExplorerMenu>
-          <Menu.Item value="figure" class="menuitem" disabled>
-            Insert Figure… <small class="text-surface-600-400">Coming soon</small>
-          </Menu.Item>
-        </ExplorerMenu>
-      </Menu>
+      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} />
     {/if}
     {#if editing}
       <div class="desktop-workspace-menu">
         <Menu onSelect={(chosen) => chose(chosen.value)}>
-          <Menu.Trigger class="menubar-item">Layout</Menu.Trigger>
+          <Menu.Trigger class="menubar-item">View</Menu.Trigger>
           <ExplorerMenu>{@render layoutItems()}</ExplorerMenu>
         </Menu>
       </div>
@@ -3401,9 +3081,10 @@
     {/if}
     {#if editing || mayEdit}
       <div class="compact-workspace-menu">
-        <Menu onSelect={(chosen) => { if (chosen.value.startsWith("layout-") || chosen.value.startsWith("side-") || chosen.value.startsWith("ratio-") || chosen.value === "linked") chose(chosen.value); else chooseToolCommand(chosen.value); }}>
-          <Menu.Trigger class="menubar-item" aria-label="Layout and tools">Menu</Menu.Trigger>
+        <Menu onSelect={(chosen) => chooseCompactCommand(chosen.value)}>
+          <Menu.Trigger class="menubar-item" aria-label="File, view and tools">Menu</Menu.Trigger>
           <ExplorerMenu>
+            {#if mayEdit}{@render fileItems()}<hr class="hr my-1" />{/if}
             {#if editing}{@render layoutItems()}<hr class="hr my-1" />{/if}
             {#if mayEdit}{@render toolItems()}{/if}
           </ExplorerMenu>
@@ -3416,25 +3097,7 @@
       {toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
     </span>
   {/snippet}
-  {#snippet status()}
-    {#if !connected}<small class="badge preset-tonal-warning" title="Reconnecting">reconnecting…</small>{/if}
-    {#if renderedNote}<small class="badge preset-tonal-surface" title={renderedNote}>{renderedNote}</small>{/if}
-    {#if editing}
-      {#if persistenceBadge}<small class="badge preset-tonal-warning" title={persistenceBadge}>{persistenceBadge}</small>{/if}
-      {#if peers > 1}<small class="badge preset-tonal-secondary">{peers} editing</small>{/if}
-      {#if sourceFormat === "latex"}
-        <LatexStatus onconnect={() => showPanel("settings")} onretrybrowser={() => void paintPreview()} />
-      {:else if compileBadge}
-        <small class="badge preset-tonal-surface" title={compileBadge}><span class="spinner" aria-hidden="true"></span>{compileBadge}</small>
-      {/if}
-      {#if state}<small class="badge {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}" title={state}>{state}</small>{/if}
-    {/if}
-  {/snippet}
   {#snippet tools()}
-    {#if quartoJob}
-      <small class="text-surface-600-400">{quartoJob.stage}…</small>
-      <button type="button" class="btn btn-sm preset-tonal-error" onclick={cancelQuartoRender}>Cancel</button>
-    {/if}
     <CopyLink href={linkFor(SLUG)} label="Copy the link to this document" />
   {/snippet}
 </Nav>
@@ -3448,9 +3111,35 @@
     <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
   </div>
 {/if}
-{#if sourceFormat === "quarto" && quartoFreshness.state !== "missing"}
-  <div class="workspace-banner" role="region" aria-label="Quarto preview">
-    <small class="badge {quartoFreshness.state === 'potentially-stale' ? 'preset-tonal-warning' : 'preset-tonal-surface'}" title="Saved computation results do not verify current external data or package environments.">{quartoFreshness.message}</small>
+<!-- The status row. Everything the document has to say about its own state
+     -- the connection, what rendering is on screen, who else is here, how a
+     compile is going -- used to be badges on the bar, in the smallest type
+     on the page and clipped to an ellipsis as soon as the bar ran out of
+     room, which on a laptop it always did. Here it has the whole width, the
+     page's own type size, and room to wrap; a LaTeX failure can carry its
+     hint and its buttons on one readable line. The row is absent, not empty,
+     when there is nothing to say. -->
+{#if statusRow}
+  <div class="workspace-banner workspace-status" role="status" aria-label="Document status">
+    {#if connectionNote}<span class="status-warning">{connectionNote}</span>{/if}
+    {#if renderedNote}<span>{renderedNote}</span>{/if}
+    {#if editing}
+      {#if peers > 1}<span>{peers} people editing</span>{/if}
+      {#if sourceFormat === "latex"}
+        <LatexStatus onconnect={() => openSettings("local")} onretrybrowser={() => void paintPreview()} />
+      {:else if compileBadge}
+        <span><span class="spinner" aria-hidden="true"></span>{compileBadge}</span>
+      {/if}
+    {/if}
+    {#if sourceFormat === "quarto"}
+      {#if quartoRendering}
+        <span title="Quarto is re-rendering the live preview."><span class="spinner" aria-hidden="true"></span>Rendering the live preview…</span>
+      {/if}
+      {#if quartoNeedsLocalApp}
+        <span class="status-warning">Quarto preview needs the local app on this computer.</span>
+        <button type="button" class="btn btn-sm preset-tonal-primary" onclick={ensureLocalApp}>Connect</button>
+      {/if}
+    {/if}
   </div>
 {/if}
 
@@ -3467,7 +3156,7 @@
     <aside class="sidebar" class:collapsed={!shown.comments} ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <div class="sidebar-activity">
         <div class="activity-sections" role="group" aria-label="Sidebar sections">
-          {#each tabs.filter((tab) => !["settings", "render"].includes(tab.id)) as tab (tab.id)}
+          {#each tabs as tab (tab.id)}
             {#if tab.id === "diagnostics"}
               <!-- The counts sit under the icon, in the colour of what they
                    count, so the bar says at a glance whether the document
@@ -3522,7 +3211,6 @@
           onsend={sendLiveChat} {unreadChat} bind:tab={collaborationTab}
           {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
           canComment={mayChat} hasFigures={figureAt.length > 0} ontool={chooseTool}
-          oninspectresult={inspectQuartoComment}
           onreveal={revealAnnotation} selected={selectedAnnotation}
           onresolve={resolve} ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} />
       {:else if tab.id === "changes"}
@@ -3534,27 +3222,6 @@
           onhistory={() => { setHistoryRedlines(true); void showPanel("history"); }} />
       {:else if tab.id === "share" && canSeeSharing}
         <Share open={panel === "share" && shown.comments} inline slug={SLUG} onclose={() => showPanel("")} />
-      {:else if tab.id === "settings" && mayEdit}
-        <Settings {keys}
-                  {sourceFormat} {mayEdit} latexSettings={latexSettingsState}
-                  onkeys={setKeys}
-                  onlatexsettings={(next) => session?.setLatexSettings(next)} />
-      {:else if tab.id === "render" && sourceFormat === "quarto" && mayEdit}
-        <section class="panel render-settings-panel" aria-label="Render settings">
-          <PanelHeader title="Render settings" />
-          <label>Local Quarto binding ID
-            <input class="input input-sm" aria-label="Local Quarto binding ID" placeholder="binding ID" value={quartoBindingId}
-              onchange={(event) => { quartoBindingId = event.currentTarget.value.trim(); localQuarto.setBindingId(quartoBindingId); }} />
-          </label>
-          {#if quartoPreview?.state === "starting"}<small>Starting local preview…</small>{:else if quartoPreview}<a class="anchor" href={quartoPreview.url} target="_blank" rel="noopener noreferrer">Open local preview (not shared)</a>{/if}
-          <details><summary>Execution workspace</summary>
-            <label><input type="checkbox" bind:checked={quartoProjectScope} disabled={Boolean(quartoJob)} /> Render all pages of a website or book (HTML)</label>
-            <label><input type="checkbox" bind:checked={quartoSnapshot} disabled={Boolean(quartoJob)} /> Render an isolated copy of all shared files</label>
-            {#if quartoSnapshot}<label>Additional local data files (one relative path per line)<textarea class="textarea" bind:value={quartoDataInputs} disabled={Boolean(quartoJob)}></textarea></label><small>Only shared files and these declared inputs are copied. Install required packages in the local environment.</small>{/if}
-          </details>
-        <QuartoRenderOptions options={quartoOptions} disabled={Boolean(quartoJob) || quartoOptionsChanging || Boolean(viewing)} onapply={applyQuartoOptions} />
-        {#if quartoLog}<details class="text-xs"><summary>Local render log</summary><pre class="max-h-32 overflow-auto whitespace-pre-wrap">{quartoLog}</pre></details>{/if}
-        </section>
       {:else if tab.id === "diagnostics"}
         <Diagnostics {diagnostics} main={session?.mainPath() || ""}
                      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
@@ -3616,6 +3283,7 @@
       {:else if Editor}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={sourceFormat} file={openFile} {keys}
+                  editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} oncaret={followCaret} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { openFile = id; shownFigure = null; }} />
         {/key}
@@ -3681,7 +3349,7 @@
       <IconButton icon="file-text" label="Source" pressed={shown.source}
                   onclick={() => showMobileView("source")} />
     {/if}
-    {#each compact ? tabs.filter((tab) => !["settings", "render"].includes(tab.id)) : [] as tab (tab.id)}
+    {#each compact ? tabs : [] as tab (tab.id)}
       <IconButton
         icon={tab.id === "files" ? "folder" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
         label={tab.says} pressed={shown.comments && panel === tab.id}
@@ -3720,14 +3388,16 @@
   </div>
 {/if}
 
-<!-- What a selection becomes, once the reader has said what to call it and
-     what they think of it. -->
-<Modal bind:open={quartoResultsOpen} title={quartoInspected ? "Original saved result" : "Saved results"} wide onclose={closeQuartoResults}>
-  <SavedResults items={quartoInspected?.items || resultItems(quartoBundle)}
-    assets={quartoInspected?.assets || quartoAssets} renderId={quartoInspected?.manifest.render_id || quartoBundle?.render_id || ""}
-    selectedRegion={quartoInspected?.region || null}
-    onsource={editing ? locateQuartoResult : undefined} canComment={mayChat && !quartoOutput?.local} oncomment={commentQuartoResult} />
-</Modal>
+<!-- The preferences, opened from the navbar menu rather than the column:
+     the sidebar is for what its icons offer, and a page of settings reads
+     better at the width of the window than in a column beside the text. -->
+<SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
+                {sourceFormat} {mayEdit}
+                {keys} onkeys={setKeys}
+                latexSettings={latexSettingsState} onlatexsettings={(next) => session?.setLatexSettings(next)}
+                bindingId={quartoBindingId} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
+                preview={quartoPreview} options={quartoOptions} {viewing}
+                onapplyoptions={applyRenderOptions} />
 
 <Modal bind:open={commenting} title={tool === "editing" ? "Suggest a change" : "Add comment"}>
   {#snippet children()}
@@ -3874,8 +3544,13 @@
   }
   .compact-workspace-menu { display: none; }
   .workspace-banner { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); border-bottom: 1px solid var(--color-divider); }
-  .render-settings-panel { display: flex; flex-direction: column; gap: calc(var(--spacing) * 3); }
-  .render-settings-panel label { display: flex; flex-wrap: wrap; gap: var(--spacing); }
+  /* The status row wears the page's own type, not a badge's: what it says is
+     meant to be read across the room, and an offline warning in particular is
+     not something to squint at. Each item is one inline group, so a spinner
+     stays beside its words when the row wraps. */
+  .workspace-status { color: var(--color-surface-700-300); }
+  .workspace-status > * { display: inline-flex; align-items: center; gap: var(--spacing); }
+  .workspace-status .status-warning { color: var(--color-warning-600-400); font-weight: 500; }
   @media (max-width: 600px) {
     .desktop-workspace-menu { display: none; }
     .compact-workspace-menu { display: block; }

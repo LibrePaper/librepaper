@@ -5,15 +5,20 @@
   // position or the undo history -- and without tearing down `yCollab`.
   import { Compartment } from "@codemirror/state";
   import { yUndoManagerKeymap as vimUndoKeymap } from "y-codemirror.next";
+  import { keymap } from "@codemirror/view";
 
+  // The keys the editor answers to: Vim's, Emacs's, or nothing extra. One
+  // compartment, whichever is chosen, so switching swaps one for the other.
   const vimCompartment = new Compartment();
 
-  // The package is fetched only once a browser asks for Vim keys, and every
+  // Each package is fetched only once a browser asks for its keys, and every
   // editor on the page shares the one download and the one module. Once it
-  // has resolved, `resolvedVim` lets a later switch reconfigure a compartment
-  // right away, with nothing to await.
+  // has resolved, `resolvedVim` (or `resolvedEmacs`) lets a later switch
+  // reconfigure a compartment right away, with nothing to await.
   let vimPromise = null;
   let resolvedVim = null;
+  let emacsPromise = null;
+  let resolvedEmacs = null;
   // `getCM` is the only way to reach the vim-specific state (`insertMode`,
   // `visualMode`, ...) that `vimMode()` below reads; it comes from the same
   // module as `vim`/`Vim`, so it is captured alongside them rather than
@@ -30,6 +35,25 @@
       });
     }
     return vimPromise;
+  }
+
+  // Emacs undoes with C-/ (and C-_ and C-x u), which the package points at
+  // CodeMirror's own history. Routed to the Yjs manager first, so an undo
+  // stays this collaborator's, as Vim's `u` is above.
+  function loadEmacs() {
+    if (!emacsPromise) {
+      emacsPromise = import("@replit/codemirror-emacs").then(({ emacs }) => {
+        const undo = vimUndoKeymap[0].run;
+        resolvedEmacs = [keymap.of([{ key: "Ctrl-/", run: undo }, { key: "Ctrl-_", run: undo }, { key: "Ctrl-x u", run: undo }]), emacs()];
+        return resolvedEmacs;
+      });
+    }
+    return emacsPromise;
+  }
+
+  // The extension for a choice of keys, when it has already been fetched.
+  function resolvedKeys(want) {
+    return want === "vim" ? resolvedVim : want === "emacs" ? resolvedEmacs : [];
   }
 
   // `Vim` is a module-wide singleton: defining these twice would be
@@ -76,7 +100,7 @@
   // history. Everyone else's caret is drawn where they are, labelled with
   // their name.
   import { EditorState, Transaction } from "@codemirror/state";
-  import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
+  import { EditorView, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
   import { defaultKeymap, indentWithTab } from "@codemirror/commands";
   import { autocompletion, completionKeymap, startCompletion } from "@codemirror/autocomplete";
   import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
@@ -90,15 +114,18 @@
     openLintPanel,
   } from "@codemirror/lint";
   import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
+  import * as Y from "yjs";
 
   import { typstLanguage } from "../lib/typst-mode.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext } from "../lib/bibliography.js";
   import { untrack } from "svelte";
 
-  let { session, format = "", file = "", keys = "default", analyze = analyzeBibliography, onchange, oncaret, onfilechange, onbibliography, onsave, onquit } = $props();
+  let { session, format = "", file = "", keys = "default", editable = true, analyze = analyzeBibliography, onchange, oncaret, onfilechange, onbibliography, onsave, onquit } = $props();
 
   let parsedBibliography = $state(null);
+  const insertTargets = new Map();
+  const undoManagers = new Map();
   let bibliographyGeneration = 0;
   let bibliographyTimer = null;
   let lastBibliographyKey = "";
@@ -334,6 +361,112 @@
     return true;
   }
 
+  // Capture the target as Yjs relative positions. Unlike raw CodeMirror
+  // offsets, these survive edits made by collaborators while an Insert dialog
+  // is open. The session and file identity are retained so a late dialog
+  // result cannot write into a different document.
+  export function captureInsertTarget() {
+    if (!view || !session || !showing || editable === false) return null;
+    const ytext = session.textOf?.(showing) || session.text;
+    if (!ytext?.doc) return null;
+    const { from, to } = view.state.selection.main;
+    return {
+      session,
+      file: showing,
+      from: Y.createRelativePositionFromTypeIndex(ytext, from),
+      to: Y.createRelativePositionFromTypeIndex(ytext, to),
+      capturedText: view.state.sliceDoc(from, to),
+    };
+  }
+
+  // Context consumed by InsertMenu's format-aware generators. `target` is an
+  // implementation detail used by applyInsertResult and intentionally lives
+  // alongside the serializable context rather than in the menu itself.
+  export function getInsertContext() {
+    const target = captureInsertTarget();
+    if (!target || !view) return null;
+    const path = session.paths?.get(showing) || "";
+    const lower = path.toLowerCase();
+    const insertFormat = lower.endsWith(".qmd") ? "quarto" : formatOf(path) || format;
+    const tree = session.tree?.() || { main: "", texts: {} };
+    const mainPath = tree.main || session.mainPath?.() || path;
+    const mainText = session.textOf?.(session.idOf?.(mainPath))?.toString?.() || tree.texts?.[mainPath] || "";
+    return {
+      format: insertFormat,
+      path,
+      text: view.state.doc.toString(),
+      selection: { from: view.state.selection.main.from, to: view.state.selection.main.to, text: target.capturedText },
+      mainText,
+      files: Object.entries(tree.texts || {}).map(([filePath, text]) => ({ path: filePath, text: String(text ?? "") })),
+      bibliography: bibliographyEntries(),
+      targetId: (() => {
+        const id = `insert-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        target.snapshotText = view.state.doc.toString();
+        insertTargets.set(id, target);
+        return id;
+      })(),
+    };
+  }
+
+  // Apply a generator result in one CodeMirror transaction. Relative Yjs
+  // positions are resolved at commit time, so remote edits made during the
+  // dialog are included in the right place and remain one local undo step.
+  export function applyInsertResult(result, capturedContext = null) {
+    if (!result || typeof result.text !== "string" || !view || !session || editable === false) return false;
+    const target = insertTargets.get(capturedContext?.targetId) || capturedContext?.target || capturedContext || null;
+    if (!target || target.session !== session || target.file !== showing) return false;
+    const ytext = session.textOf?.(showing) || session.text;
+    if (!ytext?.doc) return false;
+    const absolute = (relative) => Y.createAbsolutePositionFromRelativePosition(relative, ytext.doc);
+    const start = absolute(target.from);
+    const end = absolute(target.to);
+    if (!start || !end || start.type !== ytext || end.type !== ytext) return false;
+    const from = Math.min(start.index, end.index);
+    const to = Math.max(start.index, end.index);
+    // A collaborator may have edited inside the selected range while the
+    // dialog was open. Refusing here preserves that work; the relative
+    // anchors still make ordinary caret insertions safe across remote edits.
+    if (ytext.toString().slice(from, to) !== String(target.capturedText || "")) return false;
+    const currentText = ytext.toString();
+    const snapshotText = capturedContext?.text || target.snapshotText || currentText;
+    const mapSnapshotOffset = (offset) => {
+      if (snapshotText === currentText) return offset;
+      let prefix = 0;
+      while (prefix < snapshotText.length && prefix < currentText.length && snapshotText[prefix] === currentText[prefix]) prefix += 1;
+      let suffix = 0;
+      while (suffix < snapshotText.length - prefix && suffix < currentText.length - prefix
+        && snapshotText[snapshotText.length - 1 - suffix] === currentText[currentText.length - 1 - suffix]) suffix += 1;
+      const oldChangedEnd = snapshotText.length - suffix;
+      if (offset < prefix) return offset;
+      if (offset > oldChangedEnd) return offset + (currentText.length - snapshotText.length);
+      return null;
+    };
+    const changes = [];
+    for (const edit of result.additionalEdits || []) {
+      if (!Number.isInteger(edit?.from) || !Number.isInteger(edit?.to) || typeof edit.insert !== "string") continue;
+      const editFrom = mapSnapshotOffset(edit.from), editTo = mapSnapshotOffset(edit.to);
+      // Additional edits are absolute offsets in the captured source. An
+      // overlap with the primary replacement or an un-mappable concurrent
+      // edit is unsafe, so fail the whole insertion instead of dropping it.
+      if (editFrom == null || editTo == null || editFrom > editTo || editFrom < to && editTo > from) return false;
+      changes.push({ from: editFrom, to: editTo, insert: edit.insert });
+    }
+    changes.push({ from, to, insert: result.text });
+    changes.sort((a, b) => a.from - b.from || a.to - b.to);
+    for (let i = 1; i < changes.length; i += 1) if (changes[i - 1].to > changes[i].from) return false;
+    const selection = result.selection;
+    const anchor = selection && Number.isInteger(selection.anchor)
+      ? from + Math.max(0, Math.min(result.text.length, selection.anchor)) : from + result.text.length;
+    const head = selection && Number.isInteger(selection.head)
+      ? from + Math.max(0, Math.min(result.text.length, selection.head)) : anchor;
+    undoManagers.get(ytext)?.stopCapturing?.();
+    view.dispatch({ changes, selection: { anchor, head }, effects: EditorView.scrollIntoView(head) });
+    undoManagers.get(ytext)?.stopCapturing?.();
+    view.focus();
+    if (capturedContext?.targetId) insertTargets.delete(capturedContext.targetId);
+    return true;
+  }
+
   /// What `assemble()` looks at to decide spacing and capitalization for the
   /// next dictated segment (SPEC-dictation.md 4.6): the document text just
   /// before the caret, capped so a huge file does not get copied on every
@@ -390,13 +523,15 @@
   function stateFor(id) {
     const text = session.textOf?.(id) || session.text;
     const path = session.paths?.get(id) || "";
+    const undoManager = undoManagers.get(text) || new Y.UndoManager(text);
+    undoManagers.set(text, undoManager);
     return EditorState.create({
       doc: text.toString(),
       extensions: [
         // Vim, when the setting says so, and always first: an earlier
         // extension has precedence, and Vim has to see a key before the
         // default keymap does, or `j` inserts a letter instead of moving.
-        vimCompartment.of(untrack(() => keys) === "vim" && resolvedVim ? resolvedVim : []),
+        vimCompartment.of(resolvedKeys(untrack(() => keys)) || []),
         lineNumbers(),
         drawSelection(),
         highlightActiveLine(),
@@ -427,7 +562,7 @@
         // made in, so a caret already paints only in the file it is in; what
         // says *which* file that is, for the file list, is the awareness field
         // the reader sets beside it.
-        yCollab(text, session.awareness),
+        yCollab(text, session.awareness, { undoManager }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onchange?.();
           // Only a deliberate move counts: typing moves the caret constantly,
@@ -450,17 +585,18 @@
     // too, and neither may re-run -- rebuilding the view -- when the setting
     // changes. The effect below is the one that follows it.
     const want = untrack(() => keys);
-    if (want !== "vim") {
+    if (want !== "vim" && want !== "emacs") {
       target.dispatch({ effects: vimCompartment.reconfigure([]) });
       return;
     }
-    if (resolvedVim) {
-      target.dispatch({ effects: vimCompartment.reconfigure(resolvedVim) });
+    const ready = resolvedKeys(want);
+    if (ready) {
+      target.dispatch({ effects: vimCompartment.reconfigure(ready) });
       return;
     }
-    loadVim().then((extension) => {
+    (want === "vim" ? loadVim() : loadEmacs()).then((extension) => {
       // The setting, or the view, may have moved on while the download ran.
-      if (view === target && untrack(() => keys) === "vim") {
+      if (view === target && untrack(() => keys) === want) {
         target.dispatch({ effects: vimCompartment.reconfigure(extension) });
       }
     });
@@ -539,6 +675,8 @@
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         if (view) viewCallbacks.delete(view);
         view?.destroy();
+        insertTargets.clear();
+        undoManagers.clear();
         view = null;
         states.clear();
         showing = "";

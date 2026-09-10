@@ -516,6 +516,18 @@ impl Server {
         // must leave the live document exactly as it was, not half-applied.
         self.preflight_directory(parsed, &main_path, &current)?;
 
+        // A title given on the command line renames the document; an empty one
+        // leaves it as it is.
+        let title = if parsed.title.is_empty() {
+            existing.title.clone()
+        } else {
+            parsed.title.clone()
+        };
+        self.store
+            .check_project_title(&existing.slug, &title)
+            .await
+            .map_err(|error| write_json(409, &json!({"error": error})))?;
+
         let request_digest = upload_digest(parsed);
         if self.store.catalog.is_some() {
             let actor = crate::document::store::MutationActor {
@@ -691,13 +703,6 @@ impl Server {
             crate::document::session::encode_diff(&state.session.doc, &before)
                 .unwrap_or_else(|_| crate::document::session::encode_state(&state.session.doc))
         };
-        // A title given on the command line renames the document; an empty one
-        // leaves it as it is.
-        let title = if parsed.title.is_empty() {
-            existing.title.clone()
-        } else {
-            parsed.title.clone()
-        };
         let sha = match room
             .checkpoint_publication_now_locked(
                 "cli",
@@ -748,9 +753,10 @@ impl Server {
         publication_token.commit();
         room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
             .await;
-        if let Err(err) = self.store.rename(&existing.slug, &title).await {
-            eprintln!("warning: could not rename {}: {err}", existing.slug);
-        }
+        self.store
+            .rename(&existing.slug, &title)
+            .await
+            .map_err(|error| write_json(409, &json!({"error": error})))?;
         let mut entry = self
             .store
             .get(&existing.slug)

@@ -1151,6 +1151,56 @@ async fn quarto_managed_preview_starts_serves_and_stops() {
     );
 }
 
+#[test]
+fn looks_complete_accepts_only_a_fully_embedded_page() {
+    use crate::local::preview::{looks_complete, ArtifactKind};
+
+    let complete =
+        b"<!doctype html><html><body><img src=\"data:image/png;base64,AAAA\"></body></html>";
+    assert!(looks_complete(ArtifactKind::Html, "paper.qmd", complete));
+
+    // Truncated mid-write: no closing tag in the last 1KiB.
+    let truncated = b"<!doctype html><html><body><img src=\"data:image/png;base64,AAAA\">";
+    assert!(!looks_complete(ArtifactKind::Html, "paper.qmd", truncated));
+
+    // Pandoc's own intermediate output: a relative figure reference into the
+    // `_files/` directory that Quarto's post-processing pass later inlines.
+    let relative_figure = b"<!doctype html><html><body><img src=\"paper_files/figure-html/plot-1.png\"></body></html>";
+    assert!(!looks_complete(
+        ArtifactKind::Html,
+        "paper.qmd",
+        relative_figure
+    ));
+
+    // Any relative image path, not only the entrypoint's own `_files/`
+    // prefix, is refused.
+    let other_relative = b"<!doctype html><html><body><img src=\"assets/plot.png\"></body></html>";
+    assert!(!looks_complete(
+        ArtifactKind::Html,
+        "paper.qmd",
+        other_relative
+    ));
+
+    // An absolute or data URL image reference is fine.
+    let remote_image =
+        b"<!doctype html><html><body><img src=\"https://example.com/plot.png\"></body></html>";
+    assert!(looks_complete(ArtifactKind::Html, "paper.qmd", remote_image));
+}
+
+#[test]
+fn looks_complete_pdf_requires_header_and_trailer() {
+    use crate::local::preview::{looks_complete, ArtifactKind};
+
+    let complete = [b"%PDF-1.7 body bytes here ".as_slice(), b"%%EOF"].concat();
+    assert!(looks_complete(ArtifactKind::Pdf, "doc.typ", &complete));
+
+    let no_header = b"not a pdf ...... %%EOF";
+    assert!(!looks_complete(ArtifactKind::Pdf, "doc.typ", no_header));
+
+    let truncated = b"%PDF-1.7 body bytes with no trailer at all, cut off";
+    assert!(!looks_complete(ArtifactKind::Pdf, "doc.typ", truncated));
+}
+
 #[tokio::test]
 async fn workspace_put_syncs_hosted_files_and_removes_dropped_ones() {
     use crate::local::quarto::{BindingStore, HOSTED_BINDING};
@@ -1329,6 +1379,11 @@ async fn hosted_binding_preview_starts_after_workspace_sync() {
             .send()
             .await
             .unwrap();
+        let rendering_header = response.headers().get("x-librepaper-rendering").is_some();
+        assert!(
+            rendering_header,
+            "every /page response must carry x-librepaper-rendering"
+        );
         if response.status() == 200 {
             let response_etag = response
                 .headers()
@@ -1353,6 +1408,10 @@ async fn hosted_binding_preview_starts_after_workspace_sync() {
         page_body.contains("Author-only text"),
         "rendered page missing document text: {page_body}"
     );
+    assert!(
+        !page_body.contains("_files/"),
+        "served page must be self-contained, not reference a _files/ directory: {page_body}"
+    );
     let etag = etag.expect("page response carried an etag");
     let etag_hex = etag.trim_matches('"');
     assert_eq!(
@@ -1376,6 +1435,7 @@ async fn hosted_binding_preview_starts_after_workspace_sync() {
         .await
         .unwrap();
     assert_eq!(cached.status(), 304);
+    assert!(cached.headers().get("x-librepaper-rendering").is_some());
     assert!(cached.bytes().await.unwrap().is_empty());
 
     let status: Value = test

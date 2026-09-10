@@ -19,4 +19,4 @@ pub mod quarto_capture;
 pub mod service;
 pub mod texlog;
 
-pub(crate) mod quarto_preview;
+pub(crate) mod preview;

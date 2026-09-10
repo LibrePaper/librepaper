@@ -179,8 +179,7 @@ window.sharingSetup = async () => {
   const snippet = (html) => createRawSnippet(() => ({ render: () => html }));
   window.testNav = createClassComponent({ component: Nav, target: document.body, props: {
     children: snippet('<span>Example project</span>'),
-    tools: snippet('<div><button>Layout</button><button>Share</button></div>'),
-    status: snippet('<small class="badge preset-tonal-warning">Changes are only saved in this browser</small>'),
+    tools: snippet('<div><button>View</button><button>Share</button></div>'),
   } });
   window.testShare = createClassComponent({ component: Share, target: document.body, props: { open: true, slug: 'paper' } });
   await flush();
@@ -226,9 +225,10 @@ window.sharingCheck = async () => {
   check(window.copiedLink !== previousReadLink, 'recreating issues a new read link');
   check(window.shareRequests.every((body) => !('visibility' in body)), 'the pane never sends a visibility');
   window.testShare.$set({ open: false }); await flush();
-  const status = document.querySelector('.nav-status').getBoundingClientRect();
-  const actions = document.querySelector('.nav-actions').getBoundingClientRect();
-  check(status.right <= actions.left, 'warnings do not overlap action icons');
+  // The bar carries no status of its own any more: warnings go in the
+  // Reader's status row under it, where they are readable, not squeezed
+  // between the file name and the icons.
+  check(!document.querySelector('nav [role="status"]'), 'the bar prints no status text');
   return true;
 };
 

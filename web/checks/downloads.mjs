@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { availableDownloads, inlineBlobUrls } from "../src/lib/reader/downloads.js";
 
 const reader = readFileSync(new URL("../src/components/Reader.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -68,8 +69,7 @@ async function runDownload(source, entry) {
     basename: (path) => path.split("/").pop(),
     inside: (path, parent) => path === parent || path.startsWith(`${parent}/`),
     say: (message) => { throw new Error(message); },
-    URL: { createObjectURL: () => "blob:test", revokeObjectURL: () => {} },
-    document: { createElement: () => ({ click() {} }) },
+    saveBlob: () => {},
     captured: null,
     entry,
     viewing: checkpoint,
@@ -106,4 +106,42 @@ assert.deepEqual([...selectedProject["project/fig.png"]], [7]);
 assert(selectedProject["project/"] instanceof Uint8Array);
 assert(selectedProject["project/old-folder/"] instanceof Uint8Array);
 
-console.log("downloads: file exports stay live while history rendering stays historical");
+// The File menu offers the download for the document's output kind, and only
+// once there is something to hand over.
+{
+  const paged = (extra) => availableDownloads({ outputKind: "pdf", ...extra });
+  assert.deepEqual(paged({}), { pdf: false, html: false }, "a paged document with nothing rendered offers nothing");
+  assert.deepEqual(paged({ deliveredKind: "pdf" }), { pdf: true, html: false }, "a PDF the frame was handed can be saved");
+  assert.deepEqual(paged({ rendering: { sha: "abc" } }), { pdf: true, html: false }, "a stored rendering can be fetched and saved");
+  assert.deepEqual(paged({ rendering: { sha: "abc", missing: true } }), { pdf: false, html: false }, "a missing checkpoint rendering is not offered");
+  assert.deepEqual(paged({ deliveredKind: "html" }), { pdf: false, html: false }, "a paged document never offers HTML");
+
+  const flow = (extra) => availableDownloads({ outputKind: "html", ...extra });
+  assert.deepEqual(flow({}), { pdf: false, html: false }, "a page not yet painted offers nothing");
+  assert.deepEqual(flow({ deliveredKind: "html" }), { pdf: false, html: true }, "a painted page can be saved");
+  assert.deepEqual(flow({ displayedFormat: "html" }), { pdf: false, html: true }, "an authored HTML document is its own rendering");
+  assert.deepEqual(flow({ rendering: { sha: "abc" } }), { pdf: false, html: false }, "a flow document never offers a PDF");
+  assert.deepEqual(availableDownloads({ outputKind: "" }), { pdf: false, html: false });
+}
+
+// A painted page names its figures by object URL; the download carries the
+// bytes instead, and leaves alone what it cannot fetch.
+{
+  const fetched = [];
+  const fetcher = async (url) => {
+    fetched.push(url);
+    if (url.endsWith("gone")) return { ok: false };
+    return {
+      ok: true,
+      headers: { get: () => "image/png" },
+      arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer,
+    };
+  };
+  const page = '<img src="blob:https://x/one#librepaper-asset=a"><img src="blob:https://x/one#librepaper-asset=a"><img src="blob:https://x/gone">';
+  const inlined = await inlineBlobUrls(page, fetcher);
+  assert.deepEqual(fetched, ["blob:https://x/one", "blob:https://x/gone"], "each object URL is fetched once, without its fragment");
+  assert.equal(inlined, '<img src="data:image/png;base64,AQID"><img src="data:image/png;base64,AQID"><img src="blob:https://x/gone">');
+  assert.equal(await inlineBlobUrls("<p>no figures</p>", fetcher), "<p>no figures</p>");
+}
+
+console.log("downloads: file exports stay live while history rendering stays historical; rendering downloads follow the output kind");

@@ -38,7 +38,7 @@ export const PANEL = "librepaper-panel";
 // this is the right place for one: it is per browser, so opening the link on a
 // phone means pasting it again, and it is cleared with everything else.
 export const KEYS = "librepaper-keys";
-// Which keys the editor answers to, "default" or "vim". A habit of the
+// Which keys the editor answers to: "default", "vim" or "emacs". A habit of the
 // person typing rather than of the document, so it lives here rather than on
 // the shared text, and a coauthor on the other end keeps whichever they chose.
 export const KEYMAP = "librepaper-keymap";

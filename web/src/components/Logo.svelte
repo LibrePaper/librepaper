@@ -5,7 +5,10 @@
   // the word beside it is the same two colours: "Libre" in pine, "Paper" in
   // ink. The word is set in Gotham HTF and outlined into paths in the file,
   // so no brand font is served and nobody sees it fall back. Both files are
-  // exported from the sources at the root of the repository.
+  // exported from the sources at the root of the repository. Both carry a
+  // width and height as well as a viewBox: an SVG with only a viewBox has no
+  // intrinsic size in an <img>, and a browser sizing it from its container
+  // alone falls back to 300px, or in Firefox to nothing at all.
   //
   // Two sizes: the one on the bar, and the one above a page that introduces
   // itself. A caller asks for a size rather than reaching in with a selector,
@@ -41,5 +44,6 @@
     width: min(100%, 28rem);
     height: auto;
     aspect-ratio: 6221 / 908;
+    margin-inline: auto;
   }
 </style>

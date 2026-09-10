@@ -35,10 +35,11 @@ use tokio::sync::{mpsc, watch, Mutex, Notify};
 
 use crate::local::pairing::{self, PairingStore};
 use crate::local::protocol::{
-    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace, BASE_PATH,
-    MAX_FILES, MAX_JSON_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
+    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, PreviewRequest,
+    Workspace, BASE_PATH, MAX_FILES, MAX_JSON_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_UPLOAD_BYTES,
+    PROTOCOL_VERSIONS,
 };
-use crate::local::quarto_preview;
+use crate::local::preview;
 
 /// The last slice of a preview's combined stdout+stderr surfaced in its
 /// status JSON -- enough to show why a render failed, not the whole log.
@@ -304,7 +305,7 @@ struct Inner {
     port: u16,
     pairing: PairingStore,
     quarto_bindings: BindingStore,
-    previews: Mutex<super::quarto_preview::Previews>,
+    previews: Mutex<super::preview::Previews>,
     runner: Arc<dyn Runner>,
     jobs: Mutex<HashMap<String, JobEntry>>,
     queue: Mutex<VecDeque<String>>,
@@ -1997,18 +1998,25 @@ async fn handle_preview(
             } else {
                 "stopped"
             };
-            let page = quarto_preview::resolve_rendered_page(&preview.root, &preview.entrypoint)
-                .and_then(|path| std::fs::read(&path).ok())
-                .map(|bytes| json!({"sha256": hex_sha256(&bytes), "size": bytes.len() as u64}))
-                .unwrap_or_else(|| json!({"sha256": Value::Null, "size": Value::Null}));
-            let log_tail = quarto_preview::log_tail(preview, PREVIEW_LOG_TAIL_BYTES).await;
+            let rendering = preview.rendering.load(std::sync::atomic::Ordering::SeqCst);
+            let page = {
+                let latest = preview.latest.lock().await;
+                latest
+                    .as_ref()
+                    .map(|page| json!({"sha256": page.sha256, "size": page.bytes.len() as u64}))
+                    .unwrap_or_else(|| json!({"sha256": Value::Null, "size": Value::Null}))
+            };
+            let log_tail = preview::log_tail(preview, PREVIEW_LOG_TAIL_BYTES).await;
             return write_json(
                 200,
                 &json!({
                     "id": id,
                     "url": preview.url,
                     "state": state,
+                    "engine": preview.engine,
+                    "kind": preview.kind.as_str(),
                     "page": page,
+                    "rendering": rendering,
                     "log_tail": log_tail,
                 }),
             );
@@ -2016,7 +2024,7 @@ async fn handle_preview(
         previews.stop(id).await;
         return write_json(200, &json!({"stopped":true}));
     }
-    let job = match read_json_body::<JobRequest>(request).await {
+    let job = match read_json_body::<PreviewRequest>(request).await {
         Ok(job) => job,
         Err(e) => return e,
     };
@@ -2090,31 +2098,34 @@ async fn handle_preview_page(
     else {
         return plain(404, "preview not found");
     };
-    let Some(path) = quarto_preview::resolve_rendered_page(&preview.root, &preview.entrypoint)
-    else {
-        return write_json(404, &json!({"error": "not rendered yet"}));
+    let rendering = preview.rendering.load(std::sync::atomic::Ordering::SeqCst);
+    let rendering_header = if rendering { "true" } else { "false" };
+    let latest = preview.latest.lock().await;
+    let Some(page) = latest.as_ref() else {
+        let mut response = write_json(404, &json!({"error": "not rendered yet"}));
+        set(&mut response, "x-librepaper-rendering", rendering_header);
+        return response;
     };
-    let metadata = match std::fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(_) => return write_json(404, &json!({"error": "not rendered yet"})),
-    };
-    if metadata.len() > MAX_QUARTO_OUTPUT_BYTES as u64 {
-        return plain(413, "rendered page is too large");
+    if page.bytes.len() > MAX_QUARTO_OUTPUT_BYTES {
+        let mut response = plain(413, "rendered page is too large");
+        set(&mut response, "x-librepaper-rendering", rendering_header);
+        return response;
     }
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(_) => return write_json(404, &json!({"error": "not rendered yet"})),
-    };
-    let etag = format!("\"{}\"", hex_sha256(&bytes));
+    let etag = format!("\"{}\"", page.sha256);
+    let kind_header = page.kind.as_str();
     if header_str(headers, "if-none-match") == Some(etag.as_str()) {
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::NOT_MODIFIED;
         set(&mut response, "etag", &etag);
+        set(&mut response, "x-librepaper-rendering", rendering_header);
+        set(&mut response, "x-librepaper-kind", kind_header);
         return response;
     }
-    let mut response = Response::new(Body::from(bytes));
-    set(&mut response, "content-type", "text/html; charset=utf-8");
+    let mut response = Response::new(Body::from(page.bytes.clone()));
+    set(&mut response, "content-type", page.kind.content_type());
     set(&mut response, "etag", &etag);
+    set(&mut response, "x-librepaper-rendering", rendering_header);
+    set(&mut response, "x-librepaper-kind", kind_header);
     response
 }
 

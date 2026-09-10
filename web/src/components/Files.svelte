@@ -56,7 +56,10 @@
   function expand(path) { if (path) expanded = [...new Set([...expanded, `folder:${path}`])]; }
   function reset() { editing = null; draft = ""; refusal = ""; }
   function focusName(element) { tick().then(() => { element.focus(); element.select(); }); }
-  function start(type, entry = null, parent = currentFolder) {
+  // `start` and `choose` are exported for the toolbar's File menu, which
+  // offers what this panel's own toolbar does without making a person open
+  // the panel first to find it.
+  export function start(type, entry = null, parent = currentFolder) {
     if (!mayEdit) return;
     refusal = "";
     editing = { type, entry, parent };
@@ -129,7 +132,7 @@
     if (event.key === "F2" && targets.length === 1) { event.preventDefault(); start("rename", targets[0], parentPath(targets[0].path)); }
     if (event.key === "Delete" && targets.length) { event.preventDefault(); ask("delete", targets); }
   }
-  function choose(path = currentFolder) { uploadTarget = path; chooser?.click(); }
+  export function choose(path = currentFolder) { uploadTarget = path; chooser?.click(); }
   function resolveConflict(keep) { conflict = null; settleConflict?.(keep); settleConflict = null; }
   async function upload(items, target, incomingFolders = []) {
     if (!mayEdit || busy) return;
