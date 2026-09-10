@@ -16,6 +16,8 @@
 //! installed on the machine that runs `cargo test`.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::fs::OpenOptions;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +38,7 @@ use crate::local::protocol::{
     self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace, BASE_PATH,
     MAX_FILES, MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
 };
+use crate::local::quarto::BindingStore;
 
 type Reply = Response<Body>;
 
@@ -48,6 +51,10 @@ const MAX_QUEUE: usize = 4;
 /// How long a finished job's outputs stay downloadable before the reaper
 /// removes its workspace.
 const FINISHED_TTL: Duration = Duration::from_secs(10 * 60);
+const QUARTO_RECORD_FILE: &str = "quarto-record.json";
+const QUARTO_FILES_DIR: &str = "files";
+const MAX_RECOVERED_QUARTO_JOBS: usize = 128;
+const MAX_RECOVERED_QUARTO_BYTES: usize = 512 * 1024 * 1024;
 
 /// Connection attempts allowed per source IP per rolling minute.
 const CONNECT_RATE_LIMIT: usize = 5;
@@ -81,6 +88,16 @@ pub trait Runner: Send + Sync {
 /// directory list, fixed for the lifetime of one `librepaper local start`.
 pub struct NativeRunner {
     pub tex_path: Vec<PathBuf>,
+    binding_store: BindingStore,
+}
+
+impl NativeRunner {
+    pub fn new(tex_path: Vec<PathBuf>, state_home: &std::path::Path) -> Self {
+        Self {
+            tex_path,
+            binding_store: BindingStore::new(state_home),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -92,11 +109,19 @@ impl Runner for NativeRunner {
         cancel: watch::Receiver<bool>,
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome {
-        crate::local::native::run_job(&self.tex_path, request, workspace, cancel, progress).await
+        crate::local::engine_adapter::run(
+            &self.tex_path,
+            request,
+            workspace,
+            cancel,
+            progress,
+            &self.binding_store,
+        )
+        .await
     }
 
     async fn capabilities(&self, refresh: bool) -> Capabilities {
-        crate::local::discovery::discover(refresh, &self.tex_path).await
+        crate::local::engine_adapter::capabilities(refresh, &self.tex_path).await
     }
 }
 
@@ -221,7 +246,6 @@ impl Runner for FakeRunner {
     }
 }
 
-#[cfg(test)]
 fn hex_sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -248,10 +272,28 @@ struct JobEntry {
     finished_at: Option<Instant>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DurableQuartoJob {
+    request: JobRequest,
+    status: JobStatus,
+    origin: String,
+    project: String,
+    files: Vec<DurableQuartoFile>,
+    finished_at: i64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DurableQuartoFile {
+    name: String,
+    storage: String,
+}
+
 struct Inner {
     instance: String,
     port: u16,
     pairing: PairingStore,
+    quarto_bindings: BindingStore,
+    previews: Mutex<super::quarto_preview::Previews>,
     runner: Arc<dyn Runner>,
     jobs: Mutex<HashMap<String, JobEntry>>,
     queue: Mutex<VecDeque<String>>,
@@ -271,9 +313,9 @@ impl LocalService {
     /// `state_home` and `cache_home` are XDG bases -- production passes
     /// `crate::cli::state_home()` and the real cache directory; a test
     /// passes two temporary directories so it never races another test over
-    /// process-wide environment state. Orphaned workspaces from a previous
-    /// run are removed here: nothing in this fresh process can own them, so
-    /// keeping them would only leak disk across restarts.
+    /// process-wide environment state. Completed Quarto records are restored
+    /// for bounded retry/recovery; interrupted and unknown workspaces are
+    /// removed here and are never resumed.
     pub fn new(
         port: u16,
         instance: String,
@@ -283,14 +325,16 @@ impl LocalService {
         fixed_code: Option<String>,
     ) -> Self {
         let jobs_root = cache_home.join("librepaper").join("local").join("jobs");
-        let _ = std::fs::remove_dir_all(&jobs_root);
         let _ = std::fs::create_dir_all(&jobs_root);
+        let recovered = recover_quarto_jobs(&jobs_root);
         let inner = Arc::new(Inner {
             instance,
             port,
             pairing: PairingStore::new(state_home, fixed_code),
+            quarto_bindings: BindingStore::new(state_home),
+            previews: Mutex::new(Default::default()),
             runner,
-            jobs: Mutex::new(HashMap::new()),
+            jobs: Mutex::new(recovered),
             queue: Mutex::new(VecDeque::new()),
             work: Notify::new(),
             jobs_root,
@@ -301,11 +345,284 @@ impl LocalService {
         LocalService { inner }
     }
 
+    pub async fn stop_previews(&self) {
+        let mut previews = self.inner.previews.lock().await;
+        let ids: Vec<_> = previews.0.keys().cloned().collect();
+        for id in ids {
+            previews.stop(&id).await;
+        }
+    }
+
     pub fn router(&self) -> Router {
         Router::new()
             .fallback(handle)
             .with_state(self.inner.clone())
     }
+}
+
+fn read_bounded_file(path: &std::path::Path, limit: usize) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "file exceeds bounded read limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn recovered_finished_at(age: u64) -> Instant {
+    Instant::now()
+        .checked_sub(Duration::from_secs(age))
+        .unwrap_or_else(Instant::now)
+}
+
+fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry> {
+    let mut entries: Vec<_> = match std::fs::read_dir(jobs_root) {
+        Ok(entries) => entries.flatten().collect(),
+        Err(_) => return HashMap::new(),
+    };
+    entries.sort_by_key(|entry| entry.file_name());
+    let mut recovered = HashMap::new();
+    let mut recovered_bytes = 0usize;
+    for entry in entries {
+        let path = entry.path();
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        };
+        if !metadata.is_dir() || recovered.len() >= MAX_RECOVERED_QUARTO_JOBS {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        }
+        let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        };
+        let record_path = path.join(QUARTO_RECORD_FILE);
+        let Ok(record_meta) = std::fs::symlink_metadata(&record_path) else {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        };
+        if !record_meta.is_file() || record_meta.len() > 4 * 1024 * 1024 {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        }
+        let valid = read_bounded_file(&record_path, 4 * 1024 * 1024)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<DurableQuartoJob>(&bytes).ok())
+            .filter(|record| {
+                record.request.kind == "quarto"
+                    && record.request.origin == record.origin
+                    && record.request.project == record.project
+                    && matches!(
+                        record.status.status.as_str(),
+                        "queued" | "running" | "done" | "failed" | "canceled"
+                    )
+                    && crate::auth::now_unix().saturating_sub(record.finished_at)
+                        <= FINISHED_TTL.as_secs() as i64
+                    && record.files.len() <= MAX_FILES
+                    && record.status.outputs.len() <= MAX_FILES
+            });
+        let Some(record) = valid else {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        };
+        let interrupted = matches!(record.status.status.as_str(), "queued" | "running");
+        let expected_names: std::collections::BTreeSet<_> =
+            record.status.outputs.keys().cloned().collect();
+        let record_names: std::collections::BTreeSet<_> =
+            record.files.iter().map(|file| file.name.clone()).collect();
+        if (!interrupted && expected_names != record_names)
+            || (interrupted && (!record.status.outputs.is_empty() || !record.files.is_empty()))
+        {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        }
+        let files_root = path.join(QUARTO_FILES_DIR);
+        let Ok(files_meta) = std::fs::symlink_metadata(&files_root) else {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        };
+        if !files_meta.is_dir() || files_meta.file_type().is_symlink() {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        }
+        let Ok(files_root_canonical) = std::fs::canonicalize(&files_root) else {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        };
+        let mut files = BTreeMap::new();
+        let mut total = 0usize;
+        let mut file_error = false;
+        for durable in record.files {
+            let name = durable.name;
+            if !crate::local::protocol::safe_relative_path(&name)
+                || durable.storage.is_empty()
+                || durable.storage.contains('/')
+                || durable.storage.contains('\\')
+            {
+                file_error = true;
+                break;
+            }
+            let expected = record.status.outputs.get(&name);
+            let Some(expected) = expected else {
+                file_error = true;
+                break;
+            };
+            if expected.size > MAX_UPLOAD_BYTES as u64 || expected.sha256.len() != 64 {
+                file_error = true;
+                break;
+            }
+            let file_path = files_root.join(&durable.storage);
+            let Ok(meta) = std::fs::symlink_metadata(&file_path) else {
+                file_error = true;
+                break;
+            };
+            if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != expected.size {
+                file_error = true;
+                break;
+            }
+            let Ok(canonical) = std::fs::canonicalize(&file_path) else {
+                file_error = true;
+                break;
+            };
+            if !canonical.starts_with(&files_root_canonical) {
+                file_error = true;
+                break;
+            }
+            let Ok(bytes) = read_bounded_file(&file_path, MAX_UPLOAD_BYTES) else {
+                file_error = true;
+                break;
+            };
+            if expected.size != bytes.len() as u64 || expected.sha256 != hex_sha256(&bytes) {
+                file_error = true;
+                break;
+            }
+            total = total.saturating_add(bytes.len());
+            if total > MAX_UPLOAD_BYTES
+                || recovered_bytes.saturating_add(total) > MAX_RECOVERED_QUARTO_BYTES
+                || files.insert(name, bytes).is_some()
+            {
+                file_error = true;
+                break;
+            }
+        }
+        if file_error {
+            let _ = std::fs::remove_dir_all(&path);
+            continue;
+        }
+        let age = crate::auth::now_unix()
+            .saturating_sub(record.finished_at)
+            .max(0) as u64;
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let mut status = record.status;
+        if interrupted {
+            status.status = "failed".into();
+            status.stage = "recovery".into();
+            status.exit = -1;
+            status.error = Some("local service restarted while the Quarto job was running".into());
+            status.log_tail = "local service restarted before this Quarto job completed".into();
+        }
+        recovered_bytes = recovered_bytes.saturating_add(total);
+        recovered.insert(
+            id.clone(),
+            JobEntry {
+                status,
+                request: record.request,
+                origin: record.origin,
+                project: record.project,
+                files,
+                workspace: Workspace { root: path },
+                cancel_tx,
+                cancel_rx,
+                queued: false,
+                superseded: false,
+                // A recovered terminal job must always have a local expiry
+                // instant.  `checked_sub` can theoretically return `None`
+                // on a platform with a narrow Instant range; leaving it
+                // unset would make preview admission treat this old job as
+                // permanently active after a restart.
+                finished_at: Some(recovered_finished_at(age)),
+            },
+        );
+        if interrupted {
+            if let Some(entry) = recovered.get(&id) {
+                // Rewrite an interrupted admission record as a terminal
+                // result so a second restart remains idempotent.
+                let _ = persist_quarto_job(&id, entry);
+            }
+        }
+    }
+    recovered
+}
+
+fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
+    if entry.request.kind != "quarto" {
+        return Ok(());
+    }
+    let root = &entry.workspace.root;
+    let files_root = root.join(QUARTO_FILES_DIR);
+    if std::fs::symlink_metadata(&files_root)
+        .ok()
+        .is_some_and(|meta| meta.file_type().is_symlink())
+    {
+        return Err("completed Quarto output directory is a symlink".into());
+    }
+    if files_root.exists() {
+        std::fs::remove_dir_all(&files_root).map_err(|error| error.to_string())?;
+    }
+    std::fs::create_dir_all(&files_root).map_err(|error| error.to_string())?;
+    let expected_names: std::collections::BTreeSet<_> =
+        entry.status.outputs.keys().cloned().collect();
+    let actual_names: std::collections::BTreeSet<_> = entry.files.keys().cloned().collect();
+    if expected_names != actual_names {
+        return Err("completed Quarto outputs do not match their status descriptors".into());
+    }
+    let mut names = Vec::with_capacity(entry.files.len());
+    let mut total = 0usize;
+    for (name, bytes) in &entry.files {
+        if !crate::local::protocol::safe_relative_path(name) {
+            return Err(format!("unsafe completed output name: {name}"));
+        }
+        total = total.saturating_add(bytes.len());
+        if total > MAX_UPLOAD_BYTES {
+            return Err("completed Quarto output exceeds its size limit".into());
+        }
+        let Some(expected) = entry.status.outputs.get(name) else {
+            return Err(format!("missing output descriptor: {name}"));
+        };
+        if expected.size != bytes.len() as u64 || expected.sha256 != hex_sha256(bytes) {
+            return Err(format!("output descriptor does not match bytes: {name}"));
+        }
+        let storage = format!("{}.bin", hex_sha256(name.as_bytes()));
+        let path = files_root.join(&storage);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| error.to_string())?;
+        use std::io::Write;
+        file.write_all(bytes).map_err(|error| error.to_string())?;
+        names.push(DurableQuartoFile {
+            name: name.clone(),
+            storage,
+        });
+    }
+    let record = DurableQuartoJob {
+        request: entry.request.clone(),
+        status: entry.status.clone(),
+        origin: entry.origin.clone(),
+        project: entry.project.clone(),
+        files: names,
+        finished_at: crate::auth::now_unix(),
+    };
+    let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
+    let temporary = root.join(format!("{QUARTO_RECORD_FILE}.tmp-{id}"));
+    std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
+    std::fs::rename(temporary, root.join(QUARTO_RECORD_FILE)).map_err(|error| error.to_string())
 }
 
 async fn run_worker(inner: Arc<Inner>) {
@@ -363,6 +680,9 @@ async fn run_worker(inner: Arc<Inner>) {
             entry.status = status;
             entry.files = outcome.files;
             entry.finished_at = Some(Instant::now());
+            if let Err(error) = persist_quarto_job(&id, entry) {
+                eprintln!("could not persist completed local Quarto job {id}: {error}");
+            }
         }
     }
 }
@@ -371,6 +691,13 @@ async fn run_reaper(inner: Arc<Inner>) {
     let mut ticker = tokio::time::interval(Duration::from_secs(30));
     loop {
         ticker.tick().await;
+        let active_pairings = inner.pairing.active_pairings();
+        inner
+            .previews
+            .lock()
+            .await
+            .reap(&active_pairings, &inner.quarto_bindings)
+            .await;
         let mut jobs = inner.jobs.lock().await;
         let now = Instant::now();
         let expired: Vec<String> = jobs
@@ -463,6 +790,12 @@ async fn dispatch(
         ["capabilities", "rescan"] if *method == Method::POST => {
             handle_capabilities(inner, headers, origin, true).await
         }
+        ["previews"] if *method == Method::POST => {
+            handle_preview(inner, headers, origin, None, request).await
+        }
+        ["previews", id] if *method == Method::DELETE || *method == Method::GET => {
+            handle_preview(inner, headers, origin, Some(id), request).await
+        }
         ["jobs"] if *method == Method::POST => {
             handle_jobs_post(inner, headers, origin, request).await
         }
@@ -472,8 +805,13 @@ async fn dispatch(
         ["jobs", id] if *method == Method::DELETE => {
             handle_job_delete(inner, headers, origin, id).await
         }
-        ["jobs", id, "files", name] if *method == Method::GET => {
-            handle_job_file(inner, headers, origin, id, name).await
+        ["jobs", id, "files", name @ ..] if *method == Method::GET => {
+            let encoded_name = name.join("/");
+            let name = match percent_encoding::percent_decode_str(&encoded_name).decode_utf8() {
+                Ok(name) => name.into_owned(),
+                Err(_) => return plain(400, "invalid file name encoding"),
+            };
+            handle_job_file(inner, headers, origin, id, &name).await
         }
         ["jobs", id, "cancel"] if *method == Method::POST => {
             handle_cancel(inner, headers, origin, id).await
@@ -575,9 +913,14 @@ async fn handle_disconnect(inner: &Inner, headers: &HeaderMap, origin: Option<&s
         Ok(project) => project,
         Err(response) => return response,
     };
+    let origin = pairing::normalize_origin(origin.unwrap_or_default());
+    inner.pairing.revoke_one(&origin, &project);
     inner
-        .pairing
-        .revoke_one(origin.unwrap_or_default(), &project);
+        .previews
+        .lock()
+        .await
+        .stop_scope(&origin, &project)
+        .await;
     write_json(200, &json!({"ok": true}))
 }
 
@@ -694,8 +1037,44 @@ async fn handle_jobs_post(
             &json!({"error": "origin does not match the connected token"}),
         );
     }
-    if job.kind != "biber" && job.kind != "tex" {
-        return write_json(400, &json!({"error": "unknown job kind"}));
+    if let Err(error) = crate::local::engine_adapter::select(&job) {
+        return write_json(400, &json!({"error": error}));
+    }
+    let previews = inner.previews.lock().await;
+    if job.kind == "quarto" {
+        if previews.0.values().any(|p| {
+            job.quarto.as_ref().is_some_and(|q| {
+                p.binding == q.binding_id
+                    || inner
+                        .quarto_bindings
+                        .get_scoped(&q.binding_id, &origin, &project)
+                        .is_some_and(|binding| binding.root == p.root)
+            })
+        }) {
+            return write_json(
+                409,
+                &json!({"error":"Stop managed preview before rendering or publishing."}),
+            );
+        }
+        let Some(options) = job.quarto.as_ref() else {
+            return write_json(
+                400,
+                &json!({"error": "quarto job is missing typed options"}),
+            );
+        };
+        if let Err(error) = options.validate() {
+            return write_json(400, &json!({"error": error}));
+        }
+        if inner
+            .quarto_bindings
+            .get_scoped(&options.binding_id, &origin, &project)
+            .is_none()
+        {
+            return write_json(
+                403,
+                &json!({"error": "quarto binding is not granted for this origin and project"}),
+            );
+        }
     }
     if job.manifest.len() > MAX_FILES {
         return write_json(413, &json!({"error": "too many files"}));
@@ -703,6 +1082,38 @@ async fn handle_jobs_post(
 
     if let Err(response) = validate_manifest(&job.manifest, &uploads) {
         return response;
+    }
+
+    // A lost browser response must be retryable without rerunning user code.
+    // Reusing a key with a different request is rejected so a stale retry
+    // cannot masquerade as the newer render.
+    if job.kind == "quarto" {
+        if let Some(options) = job.quarto.as_ref() {
+            if let Some(key) = options.idempotency_key.as_deref() {
+                let jobs = inner.jobs.lock().await;
+                for (id, entry) in jobs.iter() {
+                    let same_scope = entry.origin == origin && entry.project == project;
+                    let same_key = entry
+                        .request
+                        .quarto
+                        .as_ref()
+                        .and_then(|old| old.idempotency_key.as_deref())
+                        == Some(key);
+                    if same_scope && same_key {
+                        if entry.request == job {
+                            return write_json(
+                                202,
+                                &json!({"id": id, "status": entry.status.status}),
+                            );
+                        }
+                        return write_json(
+                            409,
+                            &json!({"error": "idempotency key was already used for a different Quarto request"}),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     let id = crate::util::new_id();
@@ -747,6 +1158,43 @@ async fn handle_jobs_post(
     let generation = job.generation;
 
     let mut jobs = inner.jobs.lock().await;
+    // The early lookup above avoids most duplicate staging, but it cannot
+    // reserve a key across concurrent requests. Recheck while holding the
+    // admission lock immediately before insertion so only one request can
+    // become executable for a given scoped idempotency key.
+    if job.kind == "quarto" {
+        if let Some(key) = job
+            .quarto
+            .as_ref()
+            .and_then(|options| options.idempotency_key.as_deref())
+        {
+            for (existing_id, entry) in jobs.iter() {
+                let same_scope = entry.origin == origin && entry.project == project;
+                let same_key = entry
+                    .request
+                    .quarto
+                    .as_ref()
+                    .and_then(|options| options.idempotency_key.as_deref())
+                    == Some(key);
+                if same_scope && same_key {
+                    let response = if entry.request == job {
+                        write_json(
+                            202,
+                            &json!({"id": existing_id, "status": entry.status.status}),
+                        )
+                    } else {
+                        write_json(
+                            409,
+                            &json!({"error": "idempotency key was already used for a different Quarto request"}),
+                        )
+                    };
+                    drop(jobs);
+                    let _ = std::fs::remove_dir_all(&root);
+                    return response;
+                }
+            }
+        }
+    }
     // A strictly newer generation of the same project supersedes any older
     // one of its own still sitting in the queue; a job already running is
     // left alone; there is only ever one of those.
@@ -788,6 +1236,25 @@ async fn handle_jobs_post(
             finished_at: None,
         },
     );
+    if jobs
+        .get(&id)
+        .is_some_and(|entry| entry.request.kind == "quarto")
+    {
+        let persisted = jobs
+            .get(&id)
+            .ok_or_else(|| "admitted Quarto job disappeared".to_string())
+            .and_then(|entry| persist_quarto_job(&id, entry));
+        if persisted.is_err() {
+            jobs.remove(&id);
+            drop(queue);
+            drop(jobs);
+            let _ = std::fs::remove_dir_all(&root);
+            return write_json(
+                500,
+                &json!({"error": "could not persist the local Quarto job admission"}),
+            );
+        }
+    }
     queue.push_back(id.clone());
     drop(queue);
     drop(jobs);
@@ -1102,4 +1569,113 @@ fn plain(status: u16, text: &str) -> Reply {
         StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     set(&mut response, "content-type", "text/plain; charset=utf-8");
     response
+}
+
+async fn handle_preview(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    id: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    let project = match authenticate(inner, headers, origin) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let origin = pairing::normalize_origin(origin.unwrap_or_default());
+    if let Some(id) = id {
+        let mut previews = inner.previews.lock().await;
+        let active_pairings = inner.pairing.active_pairings();
+        previews
+            .reap(&active_pairings, &inner.quarto_bindings)
+            .await;
+        let Some(preview) = previews
+            .0
+            .get(id)
+            .filter(|p| p.origin == origin && p.project == project)
+        else {
+            return plain(404, "preview not found");
+        };
+        if request.method() == Method::GET {
+            let address = preview
+                .url
+                .trim_start_matches("http://")
+                .trim_end_matches('/');
+            let ready = matches!(
+                tokio::time::timeout(
+                    Duration::from_millis(200),
+                    tokio::net::TcpStream::connect(address)
+                )
+                .await,
+                Ok(Ok(_))
+            );
+            return write_json(
+                200,
+                &json!({"id":id, "url":preview.url, "state":if ready { "running" } else { "starting" }}),
+            );
+        }
+        previews.stop(id).await;
+        return write_json(200, &json!({"stopped":true}));
+    }
+    let job = match read_json_body::<JobRequest>(request).await {
+        Ok(job) => job,
+        Err(e) => return e,
+    };
+    if pairing::normalize_origin(&job.origin) != origin || job.project != project {
+        return plain(403, "preview scope mismatch");
+    }
+    let mut job = job;
+    job.origin = origin.clone();
+    if !PROTOCOL_VERSIONS.contains(&job.protocol)
+        || job.kind != "quarto"
+        || job.manifest.len() > MAX_FILES
+    {
+        return plain(400, "invalid preview request");
+    }
+    let mut previews = inner.previews.lock().await;
+    let active_pairings = inner.pairing.active_pairings();
+    previews
+        .reap(&active_pairings, &inner.quarto_bindings)
+        .await;
+    if inner.jobs.lock().await.values().any(|entry| {
+        entry.finished_at.is_none()
+            && entry.request.quarto.as_ref().is_some_and(|q| {
+                job.quarto.as_ref().is_some_and(|p| {
+                    q.binding_id == p.binding_id
+                        || inner
+                            .quarto_bindings
+                            .get_scoped(&q.binding_id, &entry.origin, &entry.project)
+                            .zip(
+                                inner
+                                    .quarto_bindings
+                                    .get_scoped(&p.binding_id, &origin, &project),
+                            )
+                            .is_some_and(|(a, b)| a.root == b.root)
+                })
+            })
+    }) {
+        return plain(409, "Wait for the render job before starting preview");
+    }
+    match previews.start(&job, &inner.quarto_bindings).await {
+        Ok((id, url)) => write_json(
+            201,
+            &json!({"id":id,"url":url,"state":"starting","expires_in":3600}),
+        ),
+        Err(error) => write_json(400, &json!({"error":error})),
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::recovered_finished_at;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn recovered_terminal_jobs_always_have_an_expiry_instant() {
+        let started = Instant::now();
+        let finished = recovered_finished_at(u64::MAX);
+        let now = Instant::now();
+        assert!(started <= finished && finished <= now);
+        assert!(now.duration_since(finished) <= Duration::from_millis(100));
+    }
 }

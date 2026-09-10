@@ -414,6 +414,73 @@ pub async fn server_over_blobs_legacy(
     (format!("http://{address}"), instance)
 }
 
+/// The storage-failure variant of [`server_over_blobs_legacy`], with the
+/// catalogue enabled.  Quarto publication fencing is catalogue-authoritative,
+/// so tests that pause an object write and revoke the publisher need this
+/// variant rather than the old compatibility server.
+pub async fn server_over_blobs_catalog(
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
+    config: Configuration,
+) -> (String, Arc<Server>) {
+    let persistence = config.persistence();
+    let config = Arc::new(config);
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open_in_memory()
+            .expect("the in-memory test catalogue opens"),
+    );
+    catalog
+        .set_link_sealing_key(TEST_KEY)
+        .expect("test link sealing is configured");
+    crate::storage::journal::JournalStore::new(catalog.clone())
+        .initialize_local("test-deployment")
+        .expect("the test journal initializes");
+    let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+        .await
+        .expect("the store opens");
+    let rooms = RoomSet::new(blobs.clone(), config.clone());
+    let mut instance = Server::new(
+        store,
+        rooms,
+        load_shell(&config).expect("the shell loads"),
+        GithubApp {
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+            ..GithubApp::default()
+        },
+        TEST_KEY.to_vec(),
+        config,
+        Policy::parse(TEST_PUBLISHER),
+        Policy::parse("anyone"),
+    );
+    instance.accounts = Arc::new(TestAccounts);
+    let journal = crate::storage::journal::JournalRuntime::new_with_policy(
+        catalog,
+        blobs,
+        "test-deployment",
+        crate::storage::journal::CoordinatorLimits::from_persistence(&persistence),
+        persistence,
+        -1,
+        -1,
+    )
+    .expect("the test journal runtime opens");
+    instance.rooms.attach_journal(journal);
+    let instance = Arc::new(instance);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port");
+    let address = listener.local_addr().expect("an address");
+    let router = instance.clone().router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("serve");
+    });
+    (format!("http://{address}"), instance)
+}
+
 /// The cookie a browser carries after signing in as a GitHub login. The login
 /// itself doubles as the fake numeric id, which is fine for a test: it only
 /// has to be stable and distinct per login, the way a real account's id is.

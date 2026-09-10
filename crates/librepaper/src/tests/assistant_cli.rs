@@ -37,7 +37,7 @@ fn diagnostics_rejects_formats_the_local_engine_cannot_compile() {
     };
     let error = crate::cli::peer::diagnostics_json(&snapshot).expect_err("LaTeX is unsupported");
     assert!(error.contains("unsupported document format"));
-    assert!(error.contains("markdown, typst, and html"));
+    assert!(error.contains("markdown, quarto, typst, and html"));
 }
 
 #[test]

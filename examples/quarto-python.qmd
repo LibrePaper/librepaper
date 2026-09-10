@@ -1,0 +1,42 @@
+---
+title: "Writing around a Python analysis"
+format: html
+execute:
+  cache: true
+---
+
+A saved Python result can be read without a Python installation. This example
+uses the notebook display API and Python's standard library.
+
+```{python}
+#| label: setup
+#| include: false
+from IPython.display import display, SVG, Markdown
+values = [1, 4, 9, 16]
+```
+
+```{python}
+#| label: fig-values
+#| fig-cap: "Four squared values."
+bars = "".join(
+    f'<rect x="{20 + i * 55}" y="{180 - value * 9}" width="35" height="{value * 9}" fill="steelblue"/>'
+    for i, value in enumerate(values)
+)
+display(SVG(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 200" role="img" aria-label="Four squared values">{bars}</svg>'))
+```
+
+```{python}
+#| label: tbl-summary
+#| echo: false
+display(Markdown("| Statistic | Value |\n|---|---:|\n"
+                 f"| Minimum | {min(values)} |\n| Maximum | {max(values)} |"))
+```
+
+```{python}
+#| label: text-summary
+print(f"There are {len(values)} observations.")
+```
+
+::: {.callout-note}
+The browser displays saved outputs. Render locally after changing the analysis.
+:::

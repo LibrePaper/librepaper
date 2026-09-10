@@ -27,6 +27,7 @@ pub mod export;
 mod history;
 pub mod peer;
 mod publish;
+mod quarto;
 mod runner;
 pub(crate) mod runner_context;
 mod runner_lifecycle;
@@ -275,6 +276,9 @@ pub(crate) enum Command {
         /// sign-in needed where the deployment asks for none
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
+        /// Show the project files that would be synchronized, then exit
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show or change how a document is shared
     Share {
@@ -459,6 +463,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: LocalCommand,
     },
+    /// Import, publish, and inspect saved Quarto results without executing code
+    Quarto {
+        #[command(subcommand)]
+        command: quarto::QuartoCommand,
+    },
     /// Run a provider-neutral automation operation against a document link.
     Agent {
         #[command(subcommand)]
@@ -478,6 +487,26 @@ pub(crate) enum Command {
 /// `librepaper local <command>`. See `crate::local::cli`.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalCommand {
+    /// Grant this machine permission to render a linked Quarto project
+    BindQuarto {
+        #[arg(long)]
+        origin: String,
+        #[arg(long)]
+        project: String,
+        #[arg(long, default_value = ".")]
+        root: String,
+        #[arg(long, default_value = "main.qmd")]
+        main: String,
+    },
+    /// Revoke a local Quarto execution binding
+    UnbindQuarto { binding: String },
+    /// List bindings for an origin and document
+    QuartoBindings {
+        #[arg(long)]
+        origin: String,
+        #[arg(long)]
+        project: String,
+    },
     /// Start the loopback service and print its pairing code
     Start {
         /// Port to listen on (default 8763)
@@ -670,6 +699,7 @@ pub async fn main() {
             file,
             interval,
             key,
+            dry_run,
         } => {
             crate::cli::sync::sync_document(
                 &id,
@@ -678,6 +708,7 @@ pub async fn main() {
                 token,
                 interval.unwrap_or_default(),
                 key.unwrap_or_default(),
+                dry_run,
             )
             .await
         }
@@ -837,6 +868,11 @@ pub async fn main() {
             crate::storage::backup::restore_cli(backup, directory).await
         }
         Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
+        Command::Quarto { command } => {
+            if let Err(error) = quarto::run(command, server, token).await {
+                die(error);
+            }
+        }
         Command::Agent { command } => {
             if let Err(err) = crate::cli::peer::run_cli(command, server, token).await {
                 die(err);

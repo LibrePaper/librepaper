@@ -17,6 +17,11 @@
   import PanelHeader from "./PanelHeader.svelte";
   import { RATIOS } from "../lib/panes.js";
   import * as latex from "../lib/latex.js";
+  // Quarto uses the same paired local service as LaTeX, but its status is a
+  // separate store. Subscribe to that store directly so opening Settings
+  // reflects a Quarto connection immediately, even before a LaTeX controller
+  // has ever been configured on this page.
+  import * as localBridge from "../lib/latex/local.js";
 
   let {
     keys = "default",
@@ -34,6 +39,8 @@
   } = $props();
 
   const showsLatex = $derived(sourceFormat === "latex" && mayEdit);
+  const showsQuarto = $derived(sourceFormat === "quarto" && mayEdit);
+  const showsLocal = $derived(showsLatex || showsQuarto);
 
   /* --------------------------------------------------------------- engine */
 
@@ -64,30 +71,29 @@
 
   /* ---------------------------------------------------------------- local */
 
-  // `latex.subscribe` carries `local` as part of the whole compile status
-  // (section 2.6 of the interfaces doc), so this reads the same store
-  // `LatexStatus.svelte` does rather than polling `latex.local.status()`
-  // itself.
-  let local = $state(latex.status().local);
+  // The local bridge owns this status, independently of the LaTeX compiler
+  // controller. Quarto can therefore update this panel even when no LaTeX
+  // compile has been configured on the page.
+  let local = $state(localBridge.status());
   $effect(() => {
-    if (!showsLatex) return;
-    return latex.subscribe((status) => (local = status.local));
+    if (!showsLocal) return;
+    return localBridge.subscribe((status) => (local = status));
   });
 
-  let address = $state(latex.local.address());
+  let address = $state(localBridge.address());
   let pairingCode = $state("");
   let connecting = $state(false);
   let doctor = $state("");
 
   function setAddress() {
-    latex.local.setAddress(address);
+    localBridge.setAddress(address);
   }
 
   async function connect() {
     if (!pairingCode || connecting) return;
     connecting = true;
     try {
-      await latex.local.connect(pairingCode);
+      await localBridge.connect(pairingCode);
       pairingCode = "";
     } catch {
       // The connection state itself, read from `local` above, already says
@@ -98,12 +104,12 @@
   }
 
   function disconnect() {
-    latex.local.disconnect();
+    void localBridge.disconnect();
   }
 
   async function doctorReport() {
     try {
-      const capabilities = await latex.local.capabilities({ rescan: true });
+      const capabilities = await localBridge.capabilities({ rescan: true });
       doctor = JSON.stringify(capabilities, null, 2);
     } catch (error) {
       doctor = error?.message || "librepaper local doctor could not be reached";
@@ -232,9 +238,15 @@
       {/if}
     </section>
 
+    </details>
+  {/if}
+
+  {#if showsLocal}
     <section class="settings-section" aria-labelledby="settings-local">
-      <h3 id="settings-local" class="panel-section-title">Compile on your computer</h3>
-      <p class="panel-muted">Optional. Connect the LibrePaper app on this computer to use your installed LaTeX tools, for example when a package is unavailable in the browser.</p>
+      <h3 id="settings-local" class="panel-section-title">{showsQuarto ? "Local Quarto app" : "Local compilation"}</h3>
+      <p class="panel-muted">{showsQuarto
+        ? "Optional. Connect the LibrePaper app on this computer to render Quarto projects locally."
+        : "Optional. Connect the LibrePaper app on this computer to use your installed LaTeX tools, for example when a package is unavailable in the browser."}</p>
       <p class="panel-muted">{CONNECTION_WORDS[local?.state] || "Not checked yet."}</p>
 
       <details>
@@ -252,7 +264,7 @@
           <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={disconnect}>
             Disconnect
           </button>
-          <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => latex.local.retry()}>
+          <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.retry()}>
             Retry connection
           </button>
         </div>
@@ -267,7 +279,7 @@
                   onclick={connect}>
             Connect
           </button>
-          <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => latex.local.retry()}>
+          <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.retry()}>
             Retry connection
           </button>
         </div>
@@ -302,7 +314,9 @@
       {#if doctor}<pre class="settings-doctor">{doctor}</pre>{/if}
       </details>
     </section>
+  {/if}
 
+  {#if showsLatex}
     <section class="settings-section" aria-labelledby="settings-cache">
       <h3 id="settings-cache" class="panel-section-title">Downloaded LaTeX files</h3>
       <p class="panel-muted">Storage used: {megabytes(cacheSize)}. This browser saves compiler and package downloads to make future PDF builds faster.</p>
@@ -311,7 +325,6 @@
       </button>
       <p class="panel-meta">Use this to free space or retry a broken download. Needed files will download again the next time you build a PDF. Your documents are kept.</p>
     </section>
-    </details>
   {/if}
 </section>
 

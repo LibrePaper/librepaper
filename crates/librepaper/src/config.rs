@@ -312,6 +312,12 @@ impl Default for Configuration {
                 ".typ",
                 ".md",
                 ".markdown",
+                ".qmd",
+                ".csl",
+                ".r",
+                ".py",
+                ".jl",
+                ".lua",
                 ".bib",
                 ".sty",
                 ".cls",
@@ -365,7 +371,7 @@ impl Default for Configuration {
             // own is a document like any other -- one that reaches its
             // figures and its bibliography only if it came with them, which
             // is what `publish <directory>` is for.
-            extensions: [".html", ".htm", ".md", ".markdown", ".typ", ".tex"]
+            extensions: [".html", ".htm", ".md", ".markdown", ".qmd", ".typ", ".tex"]
                 .map(String::from)
                 .to_vec(),
             // HTML is a source format like the other two, and its renderer is
@@ -374,7 +380,7 @@ impl Default for Configuration {
             // keeps the source, and a browser that has fetched a distribution
             // is the only thing anywhere that can make pages of it. Which is
             // why `storable_source` and `renderers` are two questions.
-            source_formats: ["markdown", "typst", "html", "latex"]
+            source_formats: ["markdown", "quarto", "typst", "html", "latex"]
                 .map(String::from)
                 .to_vec(),
             caps: CapLimit {

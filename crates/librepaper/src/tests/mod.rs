@@ -33,6 +33,8 @@ mod onboarding;
 mod ownership;
 mod pseudonym;
 mod publish_cli;
+mod quarto_local;
+mod quarto_source;
 mod quota;
 mod renderings;
 mod retention;

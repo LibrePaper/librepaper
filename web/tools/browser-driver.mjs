@@ -67,11 +67,18 @@ export async function browser(name, directory, port) {
       };
       return {
         close, evaluate,
+        setCookie: (name, value) => evaluate(`document.cookie = ${JSON.stringify(`${name}=${value}; path=/`)}`),
         // A wide enough viewport so the reader's split layout (source beside
         // the document) is what renders -- a narrow one falls back to a
         // single pane, same as a real browser window this size would.
         resize: (width, height) => send("browsingContext.setViewport", { context, viewport: { width, height } }),
         navigate: (url) => send("browsingContext.navigate", { context, url, wait: "complete" }),
+        frameEvaluate: async (expression, depth = 1) => {
+          const tree = await send("browsingContext.getTree", { root: context });
+          let node = tree.contexts[0];
+          for (let level = 0; level < depth; level++) node = node?.children?.[0];
+          return node ? evaluate(expression, node.context) : null;
+        },
         text: async () => {
           const tree = await send("browsingContext.getTree", { root: context });
           const frame = tree.contexts[0].children?.[0]?.context;
@@ -100,6 +107,16 @@ export async function browser(name, directory, port) {
     const frames = new Map();
     return {
       close, evaluate, command,
+      setCookie: (name, value, url) => command("Network.setCookie", { name, value, url }),
+      frameEvaluate: async (expression) => {
+        const { targetInfos } = await send("Target.getTargets");
+        const target = targetInfos.find((one) => one.type === "iframe");
+        if (!target) return null;
+        if (!frames.has(target.targetId)) frames.set(target.targetId, (await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId);
+        const result = await send("Runtime.evaluate", { expression, returnByValue: true }, frames.get(target.targetId));
+        if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+        return result.result.value;
+      },
       resize: (width, height) => command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }),
       navigate: (url) => command("Page.navigate", { url }),
       text: async () => {
@@ -118,9 +135,30 @@ export async function browser(name, directory, port) {
         return evaluate("document.body.innerText", executionContextId);
       },
       insert: async (text, replace = false) => {
-        await evaluate('document.querySelector(".cm-content").focus()');
-        for (const type of ["keyDown", "keyUp"]) await command("Input.dispatchKeyEvent", { type, key: replace ? "a" : "Home", code: replace ? "KeyA" : "Home", modifiers: 2 });
-        await command("Input.insertText", { text });
+        const value = JSON.stringify(String(text));
+        const inserted = await evaluate(`(() => {
+          const editor = document.querySelector(".cm-content");
+          if (!editor) throw new Error("missing CodeMirror editor");
+          editor.focus();
+          const selection = getSelection();
+          selection.removeAllRanges();
+          const range = document.createRange();
+          range.selectNodeContents(editor);
+          if (!${Boolean(replace)}) range.collapse(true);
+          selection.addRange(range);
+          return document.execCommand("insertText", false, ${value});
+        })()`);
+        if (inserted) return;
+        // Some Chromium builds disable execCommand for a contenteditable
+        // editor. Fall back to protocol key events, including explicit Enter
+        // events so source newlines are retained.
+        for (const [index, line] of String(text).split("\n").entries()) {
+          if (line) await command("Input.insertText", { text: line });
+          if (index + 1 < String(text).split("\n").length) {
+            await command("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+            await command("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+          }
+        }
       },
     };
   } catch (error) { socket?.close(); child.kill(); throw error; }

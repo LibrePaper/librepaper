@@ -6,7 +6,7 @@ use serde_json::json;
 #[tokio::test]
 async fn account_examples_resume_after_admission_failure() {
     let mut config = Configuration::default();
-    config.set_counts(Some(3), Some(30)).unwrap();
+    config.set_counts(Some(4), Some(30)).unwrap();
     let server = test_server_with(
         config,
         Policy::parse("anyone"),
@@ -24,7 +24,7 @@ async fn account_examples_resume_after_admission_failure() {
     let catalog = server.instance.store.catalog.as_ref().unwrap();
     assert_eq!(catalog.pending_account_examples(&who.id).unwrap().len(), 1);
     let entries = server.instance.store.list().await;
-    assert_eq!(entries.len(), 3);
+    assert_eq!(entries.len(), 4);
     let removed = &entries[0].slug;
     server.instance.store.remove(removed).await.unwrap();
     server
@@ -43,7 +43,7 @@ async fn account_examples_resume_after_admission_failure() {
         .await
         .unwrap()
         .is_none());
-    assert_eq!(server.instance.store.list().await.len(), 3);
+    assert_eq!(server.instance.store.list().await.len(), 4);
 }
 
 #[tokio::test]
@@ -72,19 +72,26 @@ async fn account_examples_are_private_owned_and_created_once() {
         .await
         .unwrap();
     let entries = server.instance.store.list().await;
-    assert_eq!(entries.len(), 8);
+    assert_eq!(entries.len(), 10);
     for who in [&alice, &bob] {
         let owned: Vec<_> = entries
             .iter()
             .filter(|e| e.publisher_id == who.id)
             .collect();
-        assert_eq!(owned.len(), 4);
+        assert_eq!(owned.len(), 5);
         let mut formats: Vec<_> = owned.iter().map(|e| e.source_format.as_str()).collect();
         formats.sort();
-        assert_eq!(formats, ["html", "latex", "markdown", "typst"]);
+        assert_eq!(formats, ["html", "latex", "markdown", "quarto", "typst"]);
         for entry in owned {
             assert!(!entry.example && !entry.unowned);
             assert!(entry.links.is_empty());
+            if entry.source_format == "quarto" {
+                assert_eq!(entry.main, "getting-started.qmd");
+                assert_eq!(
+                    server.instance.rooms.get(&entry.slug).await.source().await,
+                    include_str!("../../../../examples/getting-started.qmd")
+                );
+            }
             assert!(!server
                 .instance
                 .rooms
@@ -143,7 +150,7 @@ async fn account_examples_are_private_owned_and_created_once() {
     }
     let removed = entries
         .iter()
-        .find(|e| e.publisher_id == alice.id && e.source_format == "html")
+        .find(|e| e.publisher_id == alice.id && e.source_format == "quarto")
         .unwrap();
     server.instance.store.remove(&removed.slug).await.unwrap();
     server
@@ -151,7 +158,7 @@ async fn account_examples_are_private_owned_and_created_once() {
         .initialize_account_examples(&alice)
         .await
         .unwrap();
-    assert_eq!(server.instance.store.list().await.len(), 7);
+    assert_eq!(server.instance.store.list().await.len(), 9);
     assert_eq!(room.source().await, "# My edited example");
     let reopened =
         crate::storage::catalog::Catalog::open(server.dir.path().join("catalog.sqlite")).unwrap();

@@ -79,14 +79,14 @@ test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 # It is not required: `cargo test` still runs everything, just more slowly and
 # only up to the first crate that fails.
 #
-# LIBREPAPER_FSYNC=0 is read by the storage layer. The suite's own crate
+# LIBREPAPER_FSYNC=false is read by the storage layer. The suite's own crate
 # relaxes durability under `cfg(test)` on its own; this is for the cases that
 # spawn the real binary, which is built without it. Nothing a test writes
 # outlives the run, so there is no crash for an fsync to survive.
 	@command -v cargo-nextest >/dev/null \
-		&& LIBREPAPER_FSYNC=0 cargo nextest run --workspace \
+		&& LIBREPAPER_FSYNC=false cargo nextest run --workspace \
 		|| { echo "cargo-nextest not installed (cargo install cargo-nextest); using cargo test"; \
-		     LIBREPAPER_FSYNC=0 cargo test --workspace; }
+		     LIBREPAPER_FSYNC=false cargo test --workspace; }
 
 # The rendered reader, in a real browser. Not part of `test`: it needs the
 # built binary and a chromium, and it starts a server of its own on a

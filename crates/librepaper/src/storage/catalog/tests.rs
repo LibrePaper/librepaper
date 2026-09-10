@@ -1,6 +1,6 @@
 use super::{
-    Account, Catalog, Checkpoint, JournalPreparation, JournalSegment, Link, MutationAuthority,
-    NewDocument, OperationRequest, Rendering,
+    Account, Catalog, CatalogError, Checkpoint, Document, JournalPreparation, JournalSegment, Link,
+    MutationAuthority, NewDocument, OperationRequest, Rendering,
 };
 use sha2::Digest;
 
@@ -100,14 +100,14 @@ fn new_account_examples_resume_without_reenrolling_on_profile_refresh() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     let pending = catalog.pending_account_examples("acct-1").unwrap();
-    assert_eq!(pending.len(), 4);
+    assert_eq!(pending.len(), 5);
     catalog.complete_account_example("acct-1", 0).unwrap();
     catalog.upsert_account(&account()).unwrap();
     assert_eq!(
         catalog.pending_account_examples("acct-1").unwrap(),
         pending[1..]
     );
-    for position in 1..4 {
+    for position in 1..5 {
         catalog
             .complete_account_example("acct-1", position)
             .unwrap();
@@ -175,6 +175,153 @@ fn measurement_keeps_maintenance_borrow_releasable() {
         .release_maintenance("compact-2", "doc", 100, 4)
         .unwrap();
     assert_eq!(catalog.totals().unwrap().0, 10);
+}
+
+#[test]
+fn quarto_selection_pointer_is_atomic_and_rejects_stale_generation() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let authority = MutationAuthority {
+        account_id: "acct-1",
+        owner_key: "",
+        generation: "generation-1",
+        link_hash: "",
+        policy_editor: false,
+        automation: false,
+        unowned_publisher: false,
+    };
+    let selection = crate::quarto::Selection {
+        document_id: "doc".into(),
+        context_id: "html".into(),
+        generation: 1,
+        render_id: "render-a".into(),
+        source_revision: "revision-a".into(),
+    };
+    catalog
+        .reserve_object_change_with_authority(
+            super::ObjectReservationRequest {
+                slug: "doc",
+                operation_id: "quarto-1",
+                object_key: "quarto/selections/storage-1/doc/html.json",
+                kind: "quarto",
+                new_bytes: 10,
+                owner_limit: -1,
+                total_limit: -1,
+            },
+            authority,
+        )
+        .unwrap();
+    catalog
+        .commit_quarto_selection_with_authority(
+            "storage-1",
+            "quarto-1",
+            "quarto/selections/storage-1/doc/html.json",
+            "quarto",
+            "v1",
+            &selection,
+            authority,
+        )
+        .unwrap();
+    assert_eq!(
+        catalog
+            .quarto_selection("storage-1", "doc", "html")
+            .unwrap()
+            .unwrap()
+            .render_id,
+        "render-a"
+    );
+
+    let stale = crate::quarto::Selection {
+        render_id: "render-b".into(),
+        ..selection
+    };
+    catalog
+        .reserve_object_change_with_authority(
+            super::ObjectReservationRequest {
+                slug: "doc",
+                operation_id: "quarto-2",
+                object_key: "quarto/selections/storage-1/doc/html.json",
+                kind: "quarto",
+                new_bytes: 10,
+                owner_limit: -1,
+                total_limit: -1,
+            },
+            authority,
+        )
+        .unwrap();
+    assert!(catalog
+        .commit_quarto_selection_with_authority(
+            "storage-1",
+            "quarto-2",
+            "quarto/selections/storage-1/doc/html.json",
+            "quarto",
+            "v2",
+            &stale,
+            authority,
+        )
+        .is_err());
+    catalog
+        .abort_object_change(
+            "storage-1",
+            "quarto-2",
+            "quarto/selections/storage-1/doc/html.json",
+        )
+        .unwrap();
+    assert_eq!(
+        catalog
+            .quarto_selection("storage-1", "doc", "html")
+            .unwrap()
+            .unwrap()
+            .render_id,
+        "render-a"
+    );
+    assert_eq!(
+        catalog
+            .quarto_selection_history("storage-1", "doc")
+            .unwrap(),
+        vec![("html".into(), "render-a".into(), 1)]
+    );
+}
+
+#[test]
+fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let actor = MutationAuthority {
+        account_id: "acct-1",
+        owner_key: "",
+        generation: "generation-1",
+        link_hash: "",
+        policy_editor: false,
+        automation: false,
+        unowned_publisher: false,
+    };
+    let mut point = attributed("quarto-render", "Alice", Some("acct-1"));
+    point.source_format = "quarto".into();
+    point.why = "render".into();
+    catalog.revoke_sessions("acct-1", "generation-2").unwrap();
+    assert!(catalog
+        .insert_checkpoints_atomic_with_authority(&[point.clone()], Some(actor))
+        .is_err());
+    assert!(catalog
+        .checkpoint("doc", "quarto-render")
+        .unwrap()
+        .is_none());
+    catalog
+        .insert_checkpoints_atomic_with_authority(
+            &[point],
+            Some(MutationAuthority {
+                generation: "generation-2",
+                ..actor
+            }),
+        )
+        .unwrap();
+    assert!(catalog
+        .checkpoint("doc", "quarto-render")
+        .unwrap()
+        .is_some());
 }
 
 #[test]
@@ -320,7 +467,7 @@ fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
 #[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 15);
+    assert_eq!(catalog.schema_version().unwrap(), 21);
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection
@@ -1596,7 +1743,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
         assert_eq!(version, 12, "an interrupted migration does not advance");
     }
     let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 15);
+    assert_eq!(catalog.schema_version().unwrap(), 21);
     let row = catalog.checkpoint("doc", "old").unwrap().unwrap();
     assert_eq!(row.by, "alice");
     assert_eq!(
@@ -1606,7 +1753,137 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
     // Reopening an already-migrated catalogue is a no-op.
     drop(catalog);
     let reopened = Catalog::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 15);
+    assert_eq!(reopened.schema_version().unwrap(), 21);
+}
+
+/// A real main schema-15 database is the legacy case: the Quarto migrations must
+/// derive the typed result metadata from `source_format`, and the metadata
+/// row must follow ordinary source-format updates and document deletion.
+#[test]
+fn result_metadata_migrates_main_schema15_rows_and_tracks_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog-schema15.db");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        for &(version, sql) in super::MIGRATIONS.iter().take(15) {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute_batch(&format!("PRAGMA user_version = {version}"))
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO documents
+                 (slug, storage_id, title, sha, created_at, published_at, updated_at,
+                  example, owner_key, owner_id, status, size, counted_size,
+                  maintenance_reserved, comment_seq, last_auto_checkpoint_at,
+                  pending_publication, last_publication_id, source_format, main)
+                 VALUES ('legacy-quarto','storage-q','Quarto','sha','now','now','now',
+                         0,'',NULL,'active',0,0,0,0,0,NULL,'','quarto','main.qmd')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO documents
+                 (slug, storage_id, title, sha, created_at, published_at, updated_at,
+                  example, owner_key, owner_id, status, size, counted_size,
+                  maintenance_reserved, comment_seq, last_auto_checkpoint_at,
+                  pending_publication, last_publication_id, source_format, main)
+                 VALUES ('legacy-markdown','storage-m','Markdown','sha','now','now','now',
+                         0,'',NULL,'active',0,0,0,0,0,NULL,'','markdown','README.md')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO comments
+            (slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,
+             position,outcome,accept_request,revision,resolved_in,point,color)
+            VALUES ('legacy-markdown','old-point',1,'commenting','Note','Alice','alice','web',
+                    'now','','','',3,'','','','',1,'#ABCDEF');",
+            )
+            .unwrap();
+    }
+    let catalog = Catalog::open(&path).unwrap();
+    assert_eq!(catalog.schema_version().unwrap(), 21);
+    let point = catalog.comment("legacy-markdown", "old-point").unwrap();
+    assert!(point.point);
+    assert_eq!(point.color.as_deref(), Some("#ABCDEF"));
+    assert_eq!(point.position, Some(3));
+    assert!(point.quarto_output.is_none());
+    let quarto = catalog.document_results_metadata("legacy-quarto").unwrap();
+    assert_eq!(
+        quarto.execution_engine,
+        crate::results::ExecutionEngine::Quarto
+    );
+    assert_eq!(quarto.draft_format, crate::results::DraftFormat::Markdown);
+    let markdown = catalog
+        .document_results_metadata("legacy-markdown")
+        .unwrap();
+    assert_eq!(
+        markdown.execution_engine,
+        crate::results::ExecutionEngine::None
+    );
+    catalog
+        .update_document(&Document {
+            source_format: "quarto".into(),
+            ..catalog.document("legacy-markdown").unwrap().unwrap()
+        })
+        .unwrap();
+    assert_eq!(
+        catalog
+            .document_results_metadata("legacy-markdown")
+            .unwrap()
+            .execution_engine,
+        crate::results::ExecutionEngine::Quarto
+    );
+    for (source, draft) in [
+        ("", "html"),
+        ("typst", "typst"),
+        ("latex", "latex"),
+        ("markdown", "markdown"),
+    ] {
+        catalog
+            .update_document(&Document {
+                source_format: source.into(),
+                ..catalog.document("legacy-markdown").unwrap().unwrap()
+            })
+            .unwrap();
+        let metadata = catalog
+            .document_results_metadata("legacy-markdown")
+            .unwrap();
+        assert_eq!(
+            metadata.execution_engine,
+            crate::results::ExecutionEngine::None
+        );
+        assert_eq!(metadata.draft_format.as_str(), draft);
+    }
+    let snapshot = dir.path().join("results-backup.db");
+    catalog
+        .with_connection(|connection| {
+            connection.execute("VACUUM INTO ?1", [&snapshot.to_string_lossy().to_string()])?;
+            Ok(())
+        })
+        .unwrap();
+    let restored = Catalog::open(&snapshot).unwrap();
+    assert_eq!(
+        restored.document_results_metadata("legacy-quarto").unwrap(),
+        quarto
+    );
+    catalog
+        .with_connection(|connection| {
+            connection.execute("DELETE FROM documents WHERE slug = 'legacy-markdown'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(
+        catalog.document_results_metadata("legacy-markdown"),
+        Err(CatalogError::NotFound)
+    ));
 }
 
 /// A local backup is a `VACUUM INTO` image, so the identity distinction has to
@@ -1644,7 +1921,7 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         })
         .unwrap();
     let restored = Catalog::open(&snapshot).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 15);
+    assert_eq!(restored.schema_version().unwrap(), 21);
     assert_eq!(
         attribution_of(&restored, "stable"),
         ("alice".to_string(), Some("acct-writer".to_string()))
@@ -1658,4 +1935,48 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         ("Deleted user".to_string(), None),
         "attribution refused at the write boundary is refused in the image too"
     );
+}
+
+#[test]
+fn quarto_starter_migration_preserves_existing_account_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog-schema19.db");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        for &(version, sql) in super::MIGRATIONS.iter().take(19) {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute_batch(&format!("PRAGMA user_version = {version}"))
+                .unwrap();
+        }
+        connection.execute_batch("INSERT INTO accounts
+            (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation)
+            VALUES ('acct-1', 'github', 'alice', 'Alice', '', 'now', 'now', 'free', 'active', 'generation');
+            INSERT INTO account_examples VALUES ('acct-1', 0, 'finished-copy', 1);
+            INSERT INTO account_examples VALUES ('acct-1', 3, 'pending-copy', 0);").unwrap();
+    }
+    let catalog = Catalog::open(&path).unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    assert_eq!(
+        catalog.pending_account_examples("acct-1").unwrap(),
+        vec![(3, "pending-copy".into())]
+    );
+    catalog.complete_account_example("acct-1", 3).unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    assert!(catalog
+        .pending_account_examples("acct-1")
+        .unwrap()
+        .is_empty());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let finished: i64 = connection
+        .query_row(
+            "SELECT completed FROM account_examples WHERE slug='finished-copy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(finished, 1);
 }

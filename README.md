@@ -118,18 +118,22 @@ server's session key signs every browser and every terminal out at once.
 
 ### Publish
 
-Publish an HTML or Markdown document:
+Publish an HTML, Markdown, or Quarto document:
 
 ```sh
 librepaper publish paper.html --title "My Paper"
 ```
 
 HTML files must be self-contained, with images, styles, and fonts embedded. For
-Quarto, render with:
+an HTML-only Quarto publication, render with:
 
 ```sh
 quarto render paper.qmd --to html -M embed-resources:true
 ```
+
+To collaborate on the Quarto source, publish `paper.qmd` instead. This preserves
+the source and does not run its code. See [Quarto documents](#quarto-documents)
+for local rendering and saved results.
 
 Publishing a file again, to a document that already exists, writes the file's
 text into the live document and marks a checkpoint in its history. It never
@@ -153,6 +157,9 @@ that LibrePaper renders, or `main.*`; when neither settles it, `--main` does:
 ```sh
 librepaper publish paper/ --main chapters/thesis.typ
 ```
+
+Quarto projects use the narrower [sharing policy below](#quarto-documents),
+which also excludes raw data, execution caches, and generated output by default.
 
 Publishing a single file that reads its neighbours says so rather than
 publishing a document that compiles here and nowhere else. A reader renders
@@ -343,6 +350,7 @@ The formats, and they are not available in the same places:
 | | Published with | Renderer | Over the wire |
 |---|---|---|---|
 | **Markdown** | `librepaper publish paper.md` | comrak | ~130 KB compressed |
+| **Quarto** | `librepaper publish paper.qmd` | Markdown draft; optional local Quarto render | Reuses the Markdown renderer |
 | **Typst** | `librepaper publish paper.typ` | typst | ~13 MB compressed |
 | **HTML** | `librepaper publish paper.html` | the identity | nothing |
 | **LaTeX** | `librepaper publish paper.tex` | the browser engine, fetched by the browser | ~6 MB for pdfTeX and its format, then the packages a document asks for |
@@ -499,6 +507,72 @@ default faces and warned about, as it would be by the binary on a machine
 without that font. Which fonts a deployment offers, and under what licence, is
 the operator's decision.
 
+### Quarto documents
+
+Publish and synchronize the actual source:
+
+```sh
+librepaper publish paper.qmd
+librepaper sync <document> paper.qmd
+```
+
+The **Draft** view renders prose without running code. Saved figures, tables,
+and text results can remain visible while you edit. **Quarto output** shows the
+complete saved render, which has its own source revision. Changes to computation
+inputs mark saved results as potentially outdated; a matching source fingerprint
+does not prove that external data or packages have stayed unchanged.
+
+Open **Saved results** to discuss a particular figure or table, or draw a region
+on a saved image. **Inspect original result** returns to the exact result that
+received the comment after a later render changes the analysis. Full PDF output
+uses the existing PDF reader; DOCX remains a downloadable artifact.
+
+Publishing a project directory includes editorial resources and code, but skips
+generated output directories, execution caches, environments, and raw data by
+default. Add exact project-relative paths to `.librepaper-share.json` when an
+additional input is intended for collaborators:
+
+```json
+{"include": ["data/public.csv"]}
+```
+
+Review the publication inventory. Shared source and assets are readable by
+collaborators with document access. Files needed only for local execution can
+remain in the author's project.
+
+With Quarto and the required R or Python environment installed, grant the local
+app access to a specific project, then start the local service:
+
+```sh
+librepaper local doctor
+librepaper local bind-quarto --origin https://your-librepaper-server.example \
+  --project <document-slug> --root /path/to/project --main paper.qmd
+librepaper local start
+```
+
+Use the returned binding ID in the reader and pair with the local service using
+its connection code. **Render locally** follows the project's execution settings;
+**Refresh computations** requests a cache refresh. These actions run the
+document's code, filters, and scripts on the bound machine. Pairing and the local
+project grant are separate requirements. Revoke a project grant with
+`librepaper local unbind-quarto <binding>`.
+
+To share an output you rendered yourself, import it explicitly:
+
+```sh
+librepaper quarto import <document> paper.html
+librepaper quarto status <document>
+```
+
+Import does not execute code. Imported outputs have unknown freshness; an HTML
+file alone does not establish which source produced it. PDF and DOCX imports
+are saved artifacts. Execution caches such as `_freeze`, Knitr caches, Python
+objects, and package environments remain local.
+
+For parser inspection without execution, use
+`librepaper quarto inspect paper.qmd`. The design and compatibility boundaries
+are documented in [SPEC-quarto.md](SPEC-quarto.md).
+
 ### Sync
 
 The editor in the page is one door into a live session. `sync` is the other:
@@ -525,9 +599,9 @@ and saving text the document already has is none. If the file is not there
 when you start, it is written from the document, which is how you pull one
 down to edit locally.
 
-Beside a Makefile that runs `quarto render`, `librepaper sync c9k paper.html`
-turns every render into a checkpoint with no step between your tools and your
-readers.
+For Quarto source documents, synchronize `paper.qmd` and share rendered outputs
+separately. Synchronizing `paper.html` is also supported for documents deliberately
+published as HTML; that workflow edits the generated file.
 
 **The one thing worth understanding.** Your editor is a snapshot client: it
 read the file at some moment and writes its whole buffer back when you save.
@@ -1074,8 +1148,8 @@ name both values explicitly, for example `make wasm-update REPO=wasm-markdown
 TAG=v0.2.0`, then review the resulting Cargo and lockfile diff.
 
 `make deploy` runs the normal application locally. Configure an OAuth app in
-`.env` (see `.env.example`), then sign in: every new account receives four
-private, editable examples, one each in HTML, Markdown, Typst, and LaTeX.
+`.env` (see `.env.example`), then sign in: every new account receives five
+private, editable examples, one each in HTML, Markdown, Typst, LaTeX, and Quarto.
 These are your own documents. In **Share**, create a Read, Comment, or Edit
 link and open it in a separate browser or private window to try that role.
 Use `PUBLISHERS=anyone COMMENTERS=anyone` for links that work without sign-in;
@@ -1083,7 +1157,7 @@ these are the Makefile defaults. An owner opening a link still has owner rights.
 
 Examples are created once per new account, survive restarts, and stay deleted
 if you remove them. Existing accounts are left unchanged. `make deploy` never
-resets or seeds the shared catalogue. The four starter sources ship inside the
+resets or seeds the shared catalogue. The five starter sources ship inside the
 binary; signing in does not require Quarto or a checkout of this repository.
 
 ### The look

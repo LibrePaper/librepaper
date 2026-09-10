@@ -533,6 +533,19 @@ import { createMathTypesetter } from "../lib/math.js";
     }
 
     const range = selection.getRangeAt(0);
+    // Draft Quarto inserts cached figures, tables, and text as generated
+    // content.  Their visible words are not source prose, so a text quote
+    // taken from them cannot safely be backfilled to a .qmd span.  Until an
+    // artifact identity selector is available, make generated output
+    // explicitly non-commentable instead of attaching a note to nearby prose.
+    const generated = (node) => {
+      const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+      return element?.closest?.("[data-librepaper-generated='quarto']");
+    };
+    if (generated(range.startContainer) || generated(range.endContainer)) {
+      post({ type: "selection", selector: null });
+      return;
+    }
     const startPoint = textPointOf(range.startContainer, range.startOffset);
     const endPoint = textPointOf(range.endContainer, range.endOffset);
     if (!startPoint || !endPoint) return;
@@ -714,6 +727,7 @@ import { createMathTypesetter } from "../lib/math.js";
       if (tool !== "region" || event.button !== 0) return;
       const image = event.target.closest?.("img");
       if (!image || !images().includes(image)) return;
+      if (image.closest("[data-librepaper-generated='quarto']")) return;
       event.preventDefault();
       // A touch drag is claimed by the browser as a scroll unless the element
       // has given it up (touch-action, set with the tool) and the drag is

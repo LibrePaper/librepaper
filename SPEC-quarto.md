@@ -1,8 +1,9 @@
 # SPEC: Quarto source, cached outputs, and local rendering
 
-Status: proposed design. This document specifies intended behavior, explores
-alternatives, and identifies implementation gates. It does not describe a
-feature that is already implemented. Written 2026-09-09.
+Status: design and implementation contract. This document specifies intended
+behavior, explores alternatives, and identifies implementation gates. See the
+[implementation and compatibility notes](docs/quarto-implementation.md) for
+implemented behavior and remaining presentation work. Written 2026-09-09.
 
 This specification supersedes the architectural recommendations in
 [the earlier Quarto draft](docs/specs/quarto.md), particularly its prohibition
@@ -60,7 +61,7 @@ browser emulation of Quarto are outside the initial scope.
 
 ## 2. Existing architecture and required changes
 
-The following observations describe the repository at the time of writing:
+The following observations describe the repository before implementation:
 
 | Existing component | Evidence | Proposed use or change |
 | --- | --- | --- |
@@ -73,8 +74,8 @@ The following observations describe the repository at the time of writing:
 | Local file synchronization | [sync.rs](crates/librepaper/src/cli/sync.rs) | Extend to `.qmd` and eventually project resources, preserving peer/merge semantics |
 | Room and storage guarantees | [invariants.md](docs/specs/invariants.md) | Preserve durable publication, authorization fencing, accounting, and retained-history guarantees |
 
-There is currently no `.qmd` branch in `formatOf`. A design document in the
-repository is not evidence that native Quarto source support exists.
+At the design baseline there was no `.qmd` branch in `formatOf`. The linked
+implementation notes distinguish that baseline from the implemented feature.
 
 The existing local TeX path provides useful transport infrastructure, but its
 execution policy is not sufficient for Quarto. Scientific code intentionally

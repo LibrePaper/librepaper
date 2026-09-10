@@ -3,18 +3,22 @@
 //!
 //! Keys are one layout, whichever store holds them:
 //!
-//!     index.json
-//!     sessions/<slug>              the live document, as one Yjs update
-//!     history/<slug>/index.json    the manifest of its checkpoints
-//!     history/<slug>/<sha>         one checkpoint: the source bytes
-//!     rooms/<slug>.json
-//!     rooms/<slug>.lock
+//! ```text
+//! index.json
+//! sessions/<slug>              the live document, as one Yjs update
+//! history/<slug>/index.json    the manifest of its checkpoints
+//! history/<slug>/<sha>         one checkpoint: the source bytes
+//! rooms/<slug>.json
+//! rooms/<slug>.lock
+//! ```
 //!
 //! And two the layout before this one wrote, which are read while a deployment
 //! is migrated and never written again:
 //!
-//!     documents/<slug>/<sha>.html
-//!     sources/<slug>/<sha>
+//! ```text
+//! documents/<slug>/<sha>.html
+//! sources/<slug>/<sha>
+//! ```
 //!
 //! There is one interface, and two implementations of it.
 

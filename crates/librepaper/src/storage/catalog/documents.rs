@@ -4,6 +4,36 @@
 use super::*;
 
 impl Catalog {
+    /// Read the explicit result metadata.  Migration 18 backfills this row
+    /// for every legacy document, so callers do not need to guess from a
+    /// missing value.  The old `source_format` column remains authoritative
+    /// for compatibility routes and is deliberately not renamed.
+    pub fn document_results_metadata(
+        &self,
+        slug: &str,
+    ) -> CatalogResult<crate::results::DocumentMetadata> {
+        self.with_connection(|connection| {
+            let (engine, draft): (String, String) = connection
+                .query_row(
+                    "SELECT execution_engine, draft_format
+                     FROM document_results_metadata WHERE slug = ?1",
+                    [slug],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)?
+                .ok_or(CatalogError::NotFound)?;
+            let execution_engine =
+                crate::results::ExecutionEngine::parse(&engine).map_err(CatalogError::Invalid)?;
+            let draft_format =
+                crate::results::DraftFormat::parse(&draft).map_err(CatalogError::Invalid)?;
+            Ok(crate::results::DocumentMetadata {
+                execution_engine,
+                draft_format,
+            })
+        })
+    }
+
     pub(super) fn admit_upload_in_tx(
         tx: &Transaction<'_>,
         owner_id: Option<&str>,

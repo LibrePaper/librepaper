@@ -248,7 +248,7 @@ impl Room {
         why: &str,
         by: impl Into<Attribution>,
     ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_impl(why, &by.into(), true, false, None, None)
+        self.checkpoint_impl(why, &by.into(), true, false, None, None, None)
             .await
     }
 
@@ -260,7 +260,19 @@ impl Room {
         why: &str,
         by: impl Into<Attribution>,
     ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_impl(why, &by.into(), false, false, None, None)
+        self.checkpoint_impl(why, &by.into(), false, false, None, None, None)
+            .await
+    }
+
+    /// Immediate checkpoint whose final catalogue insertion rechecks the
+    /// caller's editor rights and session generation in the same transaction.
+    pub async fn checkpoint_now_with_authority(
+        &self,
+        why: &str,
+        by: impl Into<Attribution>,
+        actor: crate::storage::catalog::MutationAuthority<'_>,
+    ) -> Result<Option<String>, WriteError> {
+        self.checkpoint_impl(why, &by.into(), false, false, None, None, Some(actor))
             .await
     }
 
@@ -310,7 +322,7 @@ impl Room {
         by: impl Into<Attribution>,
         token: &mut PublicationCheckpointToken,
     ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_impl_locked(why, &by.into(), false, false, None, Some(token))
+        self.checkpoint_impl_locked(why, &by.into(), false, false, None, Some(token), None)
             .await
     }
 
@@ -323,10 +335,11 @@ impl Room {
         &self,
         by: &Attribution,
     ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_impl("restore", by, false, true, None, None)
+        self.checkpoint_impl("restore", by, false, true, None, None, None)
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn checkpoint_impl(
         &self,
         why: &str,
@@ -335,14 +348,16 @@ impl Room {
         force_event: bool,
         protected: Option<&str>,
         budget_token: Option<&mut PublicationCheckpointToken>,
+        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
     ) -> Result<Option<String>, WriteError> {
         let _publication_checkpoint = self.publication_checkpoint.read().await;
-        self.checkpoint_impl_locked(why, by, defer, force_event, protected, budget_token)
+        self.checkpoint_impl_locked(why, by, defer, force_event, protected, budget_token, actor)
             .await
     }
 
     /// Checkpoint implementation for callers that already hold the room's
     /// publication mutation gate.
+    #[allow(clippy::too_many_arguments)]
     async fn checkpoint_impl_locked(
         &self,
         why: &str,
@@ -351,6 +366,7 @@ impl Room {
         force_event: bool,
         protected: Option<&str>,
         budget_token: Option<&mut PublicationCheckpointToken>,
+        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
     ) -> Result<Option<String>, WriteError> {
         let _checkpoint_writer = self.checkpoint_write.lock().await;
         let now = now_unix();
@@ -517,6 +533,19 @@ impl Room {
                     // edits can differ while the visible tree is identical.
                     // Persist and acknowledge that state before success.
                     self.write_session_inner(true, true).await?;
+                    if let (Some(catalog), Some(actor)) = (self.catalog.get(), actor) {
+                        let slug = self.slug.clone();
+                        let actor = crate::room::catalog::OwnedAuthority::new(&actor);
+                        catalog
+                            .execute_catalog(
+                                slug.len() + crate::room::catalog::DESCRIPTOR_BYTES,
+                                move |catalog| {
+                                    catalog.require_mutation_authority(&slug, actor.borrow())
+                                },
+                            )
+                            .await
+                            .map_err(WriteError::from)?;
+                    }
                     let mut state = self.state.lock().await;
                     state.session.last_checkpoint = existing.clone();
                     state.session.last_tree = Some(tree.clone());
@@ -528,8 +557,13 @@ impl Room {
                     // strict staged commit has the same coverage proof as a
                     // newly written tree.
                     if let Some(catalog) = self.catalog.get() {
-                        stage_existing_publication_checkpoint(catalog, &self.slug, &existing)
-                            .await?;
+                        stage_existing_publication_checkpoint(
+                            catalog,
+                            &self.slug,
+                            &existing,
+                            actor.map(|actor| crate::room::catalog::OwnedAuthority::new(&actor)),
+                        )
+                        .await?;
                     }
                     if moved {
                         self.record_size_now(Some(&existing), &format, &main).await;
@@ -712,7 +746,12 @@ impl Room {
                 )
                 .await;
             }
-            self.write_manifest(staged, durable_sequence).await?;
+            self.write_manifest(
+                staged,
+                durable_sequence,
+                actor.map(|actor| crate::room::catalog::OwnedAuthority::new(&actor)),
+            )
+            .await?;
             // The ordinary checkpoint is durable once its manifest is
             // committed. Release its admission before pruning or any later
             // asynchronous cleanup; cancellation there must not refund a
@@ -1160,7 +1199,7 @@ impl Room {
                 point.label = label.to_string();
             }
         }
-        self.write_manifest(staged, 0).await?;
+        self.write_manifest(staged, 0, None).await?;
         Ok(true)
     }
 
@@ -1171,10 +1210,12 @@ impl Room {
         &self,
         mut staged: Manifest,
         durable_seq: i64,
+        actor: Option<crate::room::catalog::OwnedAuthority>,
     ) -> Result<(), WriteError> {
         if let Some(catalog) = self.catalog.get() {
             let previous = self.state.lock().await.manifest.clone();
-            save_catalog_manifest(catalog, &self.slug, &previous, &staged, durable_seq).await?;
+            save_catalog_manifest(catalog, &self.slug, &previous, &staged, durable_seq, actor)
+                .await?;
             let excess = staged
                 .checkpoints
                 .len()
@@ -1225,7 +1266,7 @@ impl Room {
         let base_sha = match base_sha {
             Some(sha) if !sha.is_empty() => sha,
             _ => self
-                .checkpoint_impl("quiet", by, false, false, Some(&point.sha), None)
+                .checkpoint_impl("quiet", by, false, false, Some(&point.sha), None, None)
                 .await?
                 .ok_or_else(|| "could not create a restore base checkpoint".to_string())?,
         };

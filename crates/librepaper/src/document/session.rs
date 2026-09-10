@@ -1083,6 +1083,64 @@ pub fn put_text(doc: &Doc, path: &str, body: &str) -> String {
     }
 }
 
+/// Removes the text currently named `path`, preserving every other file and
+/// clearing the main-file marker when that file was the entrypoint.
+pub fn remove_path(doc: &Doc, path: &str) -> bool {
+    let (files, path_map, _, meta) = maps(doc);
+    let Some(id) = ({
+        let txn = doc.transact();
+        id_of_path(&path_map, &txn, path)
+    }) else {
+        return false;
+    };
+    let mut txn = doc.transact_mut();
+    path_map.remove(&mut txn, &id);
+    files.remove(&mut txn, &id);
+    if string_at(&meta, &txn, MAIN).as_deref() == Some(id.as_str()) {
+        meta.remove(&mut txn, MAIN);
+    }
+    true
+}
+
+/// Renames a text without replacing its Y.Text identity.  The destination
+/// must be free; callers use this for filesystem renames so concurrent carets
+/// and edits remain attached to the same shared file.
+pub fn rename_path(doc: &Doc, from: &str, to: &str) -> bool {
+    let (files, path_map, _, meta) = maps(doc);
+    let txn = doc.transact();
+    let Some(id) = id_of_path(&path_map, &txn, from) else {
+        return false;
+    };
+    if id_of_path(&path_map, &txn, to).is_some() {
+        return false;
+    }
+    drop(txn);
+    let mut txn = doc.transact_mut();
+    if text_at(&files, &txn, &id).is_none() {
+        return false;
+    }
+    path_map.insert(&mut txn, id.clone(), to.to_string());
+    if string_at(&meta, &txn, MAIN).as_deref() == Some(id.as_str()) {
+        meta.insert(&mut txn, MAIN, id);
+    }
+    true
+}
+
+/// Removes an asset name while leaving its immutable blob available for
+/// retention and garbage collection.
+pub fn remove_asset(doc: &Doc, path: &str) -> bool {
+    let (_, _, assets, _) = maps(doc);
+    let txn = doc.transact();
+    let exists = assets.get(&txn, path).is_some();
+    drop(txn);
+    if !exists {
+        return false;
+    }
+    let mut txn = doc.transact_mut();
+    assets.remove(&mut txn, path);
+    true
+}
+
 /// Names an asset's digest at a path.
 pub fn put_asset(doc: &Doc, path: &str, sha: &str) {
     let (_, _, assets, _) = maps(doc);

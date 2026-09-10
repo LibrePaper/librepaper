@@ -8,7 +8,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -88,6 +88,32 @@ async fn upload(State(state): State<Arc<MockState>>, request: Request<Body>) -> 
     )
 }
 
+async fn quarto_selection(
+    Path((_slug, context)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        != Some(format!("Bearer {TOKEN}").as_str())
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "missing explicit credential"})),
+        );
+    }
+    if !context.starts_with("ctx-") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"use the negotiated context ID"})),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(json!({"selection":{"generation":7},"manifest":{"assets":[]}})),
+    )
+}
+
 async fn mock_server(max_document: usize) -> MockServer {
     let state = Arc::new(MockState {
         max_document,
@@ -95,7 +121,20 @@ async fn mock_server(max_document: usize) -> MockServer {
     });
     let router = Router::new()
         .route("/api/config", get(config))
+        .route(
+            "/api/list",
+            post(|| async { Json(json!({"documents":[{"slug":SLUG,"title":TITLE}]})) }),
+        )
         .route("/api/documents/{slug}", get(existing))
+        .route(
+            "/api/documents/{slug}/snapshot",
+            get(|| async { Json(json!({"format":"quarto","main":"analysis.qmd"})) }),
+        )
+        .route(
+            "/api/documents/{slug}/quarto/bundles/selected/{context}",
+            get(quarto_selection),
+        )
+        .route("/api/documents/{slug}/quarto/bundles", post(upload))
         .route("/api/documents", post(upload))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -157,6 +196,67 @@ async fn binary_file_revision_preserves_private_title() {
         "the JSON upload did not carry the existing title: {:?}",
         String::from_utf8_lossy(&observation.upload_bodies[0]),
     );
+}
+
+#[tokio::test]
+async fn binary_quarto_publication_preserves_local_entrypoint_without_execution() {
+    let server = mock_server(1024 * 1024).await;
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("analysis.qmd");
+    let body = "# Analysis\n\n```{r}\nstop('must never execute during publish')\n```\n";
+    std::fs::write(&source, body).unwrap();
+    std::fs::write(directory.path().join("private.csv"), "private data").unwrap();
+    let output = publish_file(&server, &source).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let observation = server.state.observation.lock().await;
+    assert_eq!(observation.uploads, 1);
+    let payload = String::from_utf8_lossy(&observation.upload_bodies[0]);
+    assert!(payload.contains("analysis.qmd"), "{payload}");
+    assert!(payload.contains(body), "{payload}");
+    assert!(!payload.contains("private.csv"));
+    assert!(!payload.contains("private data"));
+}
+
+#[tokio::test]
+async fn binary_quarto_import_uses_the_selected_context_generation() {
+    let server = mock_server(1024 * 1024).await;
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = directory.path().join("analysis.html");
+    std::fs::write(&artifact, "<!doctype html><p>Existing result</p>").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
+        .args([
+            "quarto",
+            "import",
+            SLUG,
+            artifact.to_str().unwrap(),
+            "--server",
+            &server.url,
+            "--token",
+            TOKEN,
+        ])
+        .env("LIBREPAPER_TOKEN", "wrong-environment-token")
+        .env_remove("LIBREPAPER_SERVER")
+        .env_remove("XDG_CONFIG_HOME")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let observation = server.state.observation.lock().await;
+    assert_eq!(observation.uploads, 1);
+    let payload: Value = serde_json::from_slice(&observation.upload_bodies[0]).unwrap();
+    assert_eq!(payload["expected_generation"], 7);
+    assert_eq!(payload["manifest"]["source"]["main"], "analysis.qmd");
+    assert_eq!(payload["manifest"]["source"]["verification"], "imported");
+    assert!(payload["manifest"]["source"]["tree_sha256"].is_null());
 }
 
 #[tokio::test]

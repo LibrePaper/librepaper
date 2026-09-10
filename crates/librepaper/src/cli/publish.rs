@@ -285,6 +285,17 @@ pub fn main_file(files: &[String], asked: &str) -> Result<String, String> {
         .iter()
         .filter(|path| !path.contains('/'))
         .filter(|path| crate::document::render::document_format(path).is_some())
+        // A Quarto source and its generated HTML often live side by side.
+        // Select the source unless the author explicitly asks for the HTML.
+        .filter(|path| {
+            !(crate::document::render::is_html(path) || crate::document::render::is_markdown(path))
+                || !files.contains(
+                    &Path::new(path)
+                        .with_extension("qmd")
+                        .to_string_lossy()
+                        .to_string(),
+                )
+        })
         .collect();
     if top.len() == 1 {
         return Ok(top[0].clone());
@@ -306,6 +317,14 @@ pub fn main_file(files: &[String], asked: &str) -> Result<String, String> {
             .collect::<Vec<_>>()
             .join("\n  ")
     ))
+}
+
+/// A research directory often contains private data beside a paper. Quarto
+/// publication defaults to editorial inputs; additional files must be named in
+/// a local `.librepaper-share.json` {"include": ["data/public.csv"]} policy.
+/// The ordinary inventory has already excluded escaping symlinks and git ignores.
+fn quarto_shared_paths(root: &Path, main: &str, files: Vec<String>) -> Result<Vec<String>, String> {
+    crate::local::engine_adapter::quarto_shared_paths(root, main, files)
 }
 
 pub async fn publish(
@@ -365,6 +384,12 @@ pub(super) async fn publish_directory(
         .into_iter()
         .filter(|path| Path::new(path) != output.as_path())
         .collect();
+
+    let paths = if crate::document::render::is_quarto(&main) {
+        quarto_shared_paths(root, &main, paths).unwrap_or_else(|why| die(why))
+    } else {
+        paths
+    };
 
     // Every path checked before anything is read, so a refusal names the file
     // rather than arriving after a megabyte has been sent.
@@ -478,6 +503,7 @@ pub(super) async fn publish_directory(
         // HTML title scan over something that is not HTML.
         title = match crate::document::render::document_format(&main) {
             Some("markdown") => title_from_markdown(&source),
+            Some("quarto") => crate::document::render::title_from_quarto(&source),
             Some("html") => title_from_html(&source),
             Some("latex") => crate::document::render::title_from_latex(&source),
             _ => String::new(),
@@ -601,8 +627,7 @@ pub(super) async fn publish_file(
     {
         die(format!(
             "{base_name} is not a document LibrePaper can serve.\n\n  \
-             It takes HTML, markdown, typst or LaTeX.\n  \
-             From Quarto:\n    quarto render paper.qmd --to html -M embed-resources:true"
+             It takes HTML, Markdown, Quarto, Typst or LaTeX."
         ));
     }
     let raw =
@@ -732,6 +757,16 @@ pub(super) async fn publish_file(
         }
         source = html.clone();
         source_format = "html".to_string();
+    } else if crate::document::render::is_quarto(file) {
+        if title.is_empty() {
+            title = crate::document::render::title_from_quarto(&html);
+        }
+        eprintln!(
+            "read {base_name} ({} KiB of Quarto; code not executed)",
+            raw.len() / 1024
+        );
+        source = html;
+        source_format = "quarto".to_string();
     } else if is_markdown(file) {
         if title.is_empty() {
             title = title_from_markdown(&html);
@@ -776,7 +811,22 @@ pub(super) async fn publish_file(
     // stored_token, not require_token: a deployment whose publishers are
     // "anyone" takes documents with no sign-in, and one that does need an
     // account answers with its own message.
-    let (status, document) = post_json(
+    // A local Quarto binding names the author's actual entrypoint. Preserve
+    // that filename even for a one-file publication so paper.qmd can be
+    // rendered in place without renaming it to the JSON API's main.qmd.
+    let published = if source_format == "quarto" {
+        post_directory(
+            &format!("{server}/api/documents"),
+            &title,
+            &slug,
+            &base_name,
+            vec![(base_name.clone(), source.into_bytes())],
+            &stored_token_for(&server, token.as_deref()),
+            Duration::from_secs(300),
+        )
+        .await
+    } else {
+        post_json(
         &format!("{server}/api/documents"),
         // The source, and nothing rendered from it: the server stores the
         // document and every browser that shows it renders it. The compile
@@ -787,8 +837,9 @@ pub(super) async fn publish_file(
         &stored_token_for(&server, token.as_deref()),
         Duration::from_secs(300),
     )
-    .await
-    .unwrap_or_else(|err| die(err));
+        .await
+    };
+    let (status, document) = published.unwrap_or_else(|err| die(err));
     if status != 201 {
         die(format!(
             "upload failed ({status}): {}",
@@ -933,4 +984,61 @@ pub fn title_or(title: &str, file: &str) -> String {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     stem.replace(['_', '-'], " ").trim().to_string()
+}
+
+#[cfg(test)]
+mod quarto_publish_tests {
+    use super::*;
+
+    #[test]
+    fn source_wins_over_its_generated_html() {
+        let files = vec!["paper.html".into(), "paper.qmd".into(), "paper.md".into()];
+        assert_eq!(main_file(&files, "").unwrap(), "paper.qmd");
+        assert_eq!(main_file(&files, "paper.html").unwrap(), "paper.html");
+    }
+
+    #[test]
+    fn data_and_generated_outputs_require_explicit_sharing() {
+        let root = tempfile::tempdir().unwrap();
+        let files = [
+            "paper.qmd",
+            "paper.html",
+            "paper.md",
+            "paper.pdf",
+            "data/private.csv",
+            "fig/design.svg",
+            "_freeze/paper/execute-results/html.json",
+            "paper_files/figure-html/plot.png",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            quarto_shared_paths(root.path(), "paper.qmd", files.clone()).unwrap(),
+            vec!["paper.qmd", "fig/design.svg"]
+        );
+        std::fs::write(
+            root.path().join(".librepaper-share.json"),
+            r#"{"include":["data/private.csv"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            quarto_shared_paths(root.path(), "paper.qmd", files).unwrap(),
+            vec!["paper.qmd", "data/private.csv", "fig/design.svg"]
+        );
+    }
+
+    #[test]
+    fn missing_or_escaping_explicit_files_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        for path in ["../private.csv", "missing.csv"] {
+            std::fs::write(
+                root.path().join(".librepaper-share.json"),
+                serde_json::to_vec(&json!({"include":[path]})).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                quarto_shared_paths(root.path(), "paper.qmd", vec!["paper.qmd".into()]).is_err()
+            );
+        }
+    }
 }

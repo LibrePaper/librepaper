@@ -161,11 +161,13 @@ pub struct Policy {
 impl Policy {
     /// Reads the value of --publishers or --commenters:
     ///
-    ///     anyone                 no sign-in required at all
-    ///     any                    any signed-in account, either provider
-    ///     alice,bob              only these GitHub logins
-    ///     alice@example.org      the Google account with that verified email
-    ///     @example.org           any Google account on that domain
+    /// ```text
+    /// anyone                 no sign-in required at all
+    /// any                    any signed-in account, either provider
+    /// alice,bob              only these GitHub logins
+    /// alice@example.org      the Google account with that verified email
+    /// @example.org           any Google account on that domain
+    /// ```
     ///
     /// The forms mix freely in one list.
     pub fn parse(value: &str) -> Policy {

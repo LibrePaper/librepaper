@@ -58,6 +58,26 @@ pub struct Region {
     pub height: f64,
 }
 
+/// Identity of an immutable Quarto output. Coordinates are interpreted in
+/// `coordinate_system` units and dimensions belong to the artifact captured
+/// by the render, so a later render cannot silently move a discussion onto a
+/// different plot.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuartoOutputAnchor {
+    pub render_id: String,
+    #[serde(default)]
+    pub cell_id: String,
+    #[serde(default)]
+    pub output_ordinal: u32,
+    pub content_sha256: String,
+    #[serde(default)]
+    pub coordinate_system: String,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+}
+
 /// Where a passage sits in the file it actually came from, as opposed to the
 /// rendered page a reader was looking at when they wrote the comment. The
 /// source is what is versioned -- checkpoints and the CRDT both hold it, not
@@ -106,6 +126,10 @@ pub struct Comment {
     /// figure rather than on a run of words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<Region>,
+    /// Immutable Quarto output identity, present on comments made over a
+    /// rendered table, figure, or other generated result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_anchor: Option<QuartoOutputAnchor>,
     /// The anchor of record, into the source rather than the rendered page.
     /// Absent on a region comment, on a comment made before this existed, and
     /// on one whose passage could not be found in the source it was written
@@ -324,6 +348,52 @@ pub fn valid_region(spot: Option<&Region>) -> Option<Region> {
         y: spot.y,
         width: spot.width,
         height: spot.height,
+    })
+}
+
+pub fn valid_quarto_output_anchor(
+    anchor: Option<&QuartoOutputAnchor>,
+) -> Option<QuartoOutputAnchor> {
+    let anchor = anchor?;
+    let valid_text = |value: &str, max: usize| {
+        !value.is_empty()
+            && value.len() <= max
+            && value.chars().all(|character| !character.is_control())
+    };
+    if !valid_text(&anchor.render_id, 256)
+        || anchor.render_id.contains('/')
+        || anchor.render_id.contains('\\')
+        || anchor.render_id.contains("..")
+        || anchor.output_ordinal > crate::quarto::MAX_OUTPUTS as u32
+        || anchor.content_sha256.len() != 64
+        || !anchor
+            .content_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || anchor.width > 1_000_000
+        || anchor.height > 1_000_000
+    {
+        return None;
+    }
+    if !anchor.cell_id.is_empty() && !valid_text(&anchor.cell_id, 256) {
+        return None;
+    }
+    let coordinate_system = if anchor.coordinate_system.is_empty() {
+        "percent"
+    } else {
+        anchor.coordinate_system.as_str()
+    };
+    if !matches!(coordinate_system, "percent" | "pixel" | "viewbox") {
+        return None;
+    }
+    Some(QuartoOutputAnchor {
+        render_id: anchor.render_id.clone(),
+        cell_id: anchor.cell_id.clone(),
+        output_ordinal: anchor.output_ordinal,
+        content_sha256: anchor.content_sha256.clone(),
+        coordinate_system: coordinate_system.to_string(),
+        width: anchor.width,
+        height: anchor.height,
     })
 }
 
@@ -580,6 +650,7 @@ impl Room {
                 point: false,
                 color: None,
                 region: None,
+                output_anchor: None,
                 source: Some(source),
                 proposed: Some(proposed),
                 pass: pass.clone(),
@@ -771,6 +842,65 @@ impl Room {
                     "request_id": request_id}),
                 false,
             );
+        }
+        let _quarto_comment_writer = if matches!(
+            &command,
+            Command::Comment {
+                output_anchor: Some(_),
+                ..
+            }
+        ) {
+            Some(self.quarto_publication.lock().await)
+        } else {
+            None
+        };
+        if let Command::Comment {
+            output_anchor: Some(anchor),
+            region,
+            temp_id,
+            request_id,
+            ..
+        } = &command
+        {
+            if valid_quarto_output_anchor(Some(anchor)).is_none() {
+                return (
+                    json!({
+                        "type": "error",
+                        "message": "that Quarto output anchor is not valid",
+                        "temp_id": temp_id,
+                        "request_id": request_id,
+                    }),
+                    false,
+                );
+            }
+            match self
+                .quarto_output_anchor_exists(anchor, region.is_some())
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return (
+                        json!({
+                            "type": "error",
+                            "message": "that Quarto output is no longer available",
+                            "temp_id": temp_id,
+                            "request_id": request_id,
+                        }),
+                        false,
+                    )
+                }
+                Err(error) => {
+                    return (
+                        json!({
+                            "type": "error",
+                            "message": format!("could not verify Quarto output: {error}"),
+                            "temp_id": temp_id,
+                            "request_id": request_id,
+                        }),
+                        false,
+                    )
+                }
+            }
         }
         let mut state = self.state.lock().await;
         let config = self.config.clone();
@@ -1235,6 +1365,7 @@ impl Room {
                 point,
                 color: raw_color,
                 region: raw_region,
+                output_anchor: raw_output_anchor,
                 source: raw_source,
                 proposed: raw_proposed,
                 revision: supplied_revision,
@@ -1262,16 +1393,41 @@ impl Room {
                 let spot = valid_region(raw_region.as_ref());
                 // An annotation is anchored to words or to part of a figure;
                 // one or the other, never neither.
+                let output_anchor = match valid_quarto_output_anchor(raw_output_anchor.as_ref()) {
+                    Some(anchor) => Some(anchor),
+                    None if raw_output_anchor.is_some() => {
+                        return fail("that Quarto output anchor is not valid")
+                    }
+                    None => None,
+                };
+                if spot.is_some()
+                    && output_anchor
+                        .as_ref()
+                        .is_some_and(|anchor| anchor.width == 0 || anchor.height == 0)
+                {
+                    return fail("a Quarto region anchor needs positive dimensions");
+                }
+                if let (Some(spot), Some(anchor)) = (spot.as_ref(), output_anchor.as_ref()) {
+                    if spot.image_digest != anchor.content_sha256
+                        || anchor.coordinate_system != "percent"
+                    {
+                        return fail("the Quarto region does not match its output");
+                    }
+                }
+                if output_anchor.is_some() && motivation == "editing" {
+                    return fail("Quarto output comments cannot be suggestions");
+                }
                 let position = position.filter(|p| *p >= 0);
                 if point {
                     if motivation != "commenting"
                         || !exact.is_empty()
                         || spot.is_some()
+                        || output_anchor.is_some()
                         || position.is_none()
                     {
                         return fail("a point comment requires commenting motivation and a nonnegative position");
                     }
-                } else if exact.is_empty() && spot.is_none() {
+                } else if exact.is_empty() && spot.is_none() && output_anchor.is_none() {
                     return fail("select some text or part of a figure to comment on");
                 }
                 let color = match raw_color {
@@ -1331,7 +1487,9 @@ impl Room {
                 if !valid_revision(&supplied_revision) {
                     return fail("that revision is not valid");
                 }
-                let source = if spot.is_none() {
+                let source = if output_anchor.is_some() {
+                    None
+                } else if spot.is_none() {
                     match raw_source.as_ref() {
                         Some(raw) => match valid_source(&config, Some(raw)) {
                             Some(cleaned) if cleaned == *raw || supplied_revision.is_empty() => {
@@ -1370,6 +1528,7 @@ impl Room {
                     // it might otherwise have carried is not kept.
                     source,
                     region: spot,
+                    output_anchor,
                     proposed,
                     outcome: String::new(),
                     body,
@@ -1410,6 +1569,7 @@ impl Room {
                         "point": row.point,
                         "color": row.color,
                         "region": row.region,
+                        "output_anchor": row.quarto_output,
                         "source_path": row.source_path,
                         "proposed": row.proposed,
                         "author": row.author,
@@ -1463,7 +1623,7 @@ impl Room {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_color;
+    use super::*;
 
     #[test]
     fn colors_are_canonical_six_digit_rgb_values() {
@@ -1471,5 +1631,35 @@ mod tests {
         assert!(valid_color(Some("red")).is_none());
         assert!(valid_color(Some("#12GG00")).is_none());
         assert!(valid_color(Some("#1234567")).is_none());
+    }
+
+    fn anchor() -> QuartoOutputAnchor {
+        QuartoOutputAnchor {
+            render_id: "render-1".into(),
+            cell_id: "cell-plot".into(),
+            output_ordinal: 0,
+            content_sha256: "a".repeat(64),
+            coordinate_system: "pixel".into(),
+            width: 800,
+            height: 600,
+        }
+    }
+
+    #[test]
+    fn output_anchor_keeps_immutable_identity_and_dimensions() {
+        let value = valid_quarto_output_anchor(Some(&anchor())).expect("valid anchor");
+        assert_eq!(value.render_id, "render-1");
+        assert_eq!(value.content_sha256, "a".repeat(64));
+        assert_eq!((value.width, value.height), (800, 600));
+    }
+
+    #[test]
+    fn output_anchor_rejects_bad_digest_and_coordinate_system() {
+        let mut value = anchor();
+        value.content_sha256 = "not-a-digest".into();
+        assert!(valid_quarto_output_anchor(Some(&value)).is_none());
+        value = anchor();
+        value.coordinate_system = "screen-pixels".into();
+        assert!(valid_quarto_output_anchor(Some(&value)).is_none());
     }
 }

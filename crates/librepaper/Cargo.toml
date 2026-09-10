@@ -34,6 +34,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 # Every JSON body, in and out.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 # GitHub and the deployment the command line talks to. rustls rather than
 # OpenSSL, so every target cross-compiles from one machine.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2", "multipart"] }
@@ -74,9 +75,9 @@ chacha20poly1305 = "0.10"
 # The authoritative local catalogue.  Bundling keeps local deployments and
 # file-backed tests independent of the host's SQLite installation.
 rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 # A font file for the tests to put in a library.
 typst-assets = { version = "=0.15.1", features = ["fonts"] }
 sha1 = "0.10"

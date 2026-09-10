@@ -79,6 +79,425 @@ impl Drop for AssetUpload<'_> {
 }
 
 impl Room {
+    /// Run the bounded Quarto retention pass after an import has completed.
+    /// Callers invoke this after releasing their publication gate so staging
+    /// and pruning cannot deadlock each other.
+    pub async fn prune_quarto_now(&self) {
+        // Pin the retained history before reading it. The regular retention
+        // pass uses this same lock order (manifest -> Quarto -> rendering),
+        // so a checkpoint cannot shed or rename the graph while this sweep
+        // decides which bundle dependencies remain live.
+        let _manifest_writer = self.manifest_write.lock().await;
+        let points = match self.catalog.get() {
+            Some(catalog) => match load_catalog_history(catalog, &self.slug).await {
+                Ok(points) => points,
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not read Quarto retention history for {}: {error}",
+                        self.slug
+                    );
+                    return;
+                }
+            },
+            None => self.state.lock().await.manifest.checkpoints.clone(),
+        };
+        self.prune_quarto(&points).await;
+    }
+
+    /// Coalesce cleanup requests emitted by concurrent publication handlers.
+    /// A request that arrives while a sweep is pending is covered by that
+    /// sweep after the publication gate and therefore needs no second task.
+    pub(crate) fn schedule_quarto_prune(self: &Arc<Self>) {
+        if self
+            .quarto_cleanup_pending
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let room = Arc::clone(self);
+        tokio::spawn(async move {
+            // Preserve the short retry window for an idempotent publication
+            // whose transport object is still being repaired.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let _reset = QuartoCleanupPendingReset(Arc::clone(&room));
+            room.prune_quarto_now().await;
+        });
+    }
+
+    /// Physical namespace for immutable Quarto objects belonging to this
+    /// document. Callers must use this rather than the public slug.
+    pub fn quarto_scope(&self) -> &str {
+        &self.storage_id
+    }
+
+    /// Return the catalogue-confirmed selection pointer and the physical
+    /// version used by the last committed CAS. The blob itself is not read:
+    /// it is a transport cache, while this row is the durable reader view.
+    pub async fn quarto_selection(
+        &self,
+        document_id: &str,
+        context_id: &str,
+    ) -> Result<Option<(crate::quarto::Selection, String)>, String> {
+        if let Some(catalog) = self.catalog.get() {
+            let pointer = read_quarto_selection(catalog, &self.storage_id, document_id, context_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            return match pointer {
+                Some(pointer) => {
+                    // A missing cache object is recoverable: the durable
+                    // pointer remains the generation source and publication
+                    // will recreate the object with an empty CAS expectation.
+                    let version = match self.blobs.get_versioned(&pointer.object_key).await {
+                        Ok((_, version)) if version == pointer.object_version => version,
+                        Ok((_, version)) => version,
+                        Err(BlobError::NotFound) => String::new(),
+                        Err(error) => return Err(error.to_string()),
+                    };
+                    Ok(Some((
+                        crate::quarto::Selection {
+                            document_id: pointer.document_id,
+                            context_id: pointer.context_id,
+                            generation: pointer.generation,
+                            render_id: pointer.render_id,
+                            source_revision: pointer.source_revision,
+                        },
+                        version,
+                    )))
+                }
+                None => Ok(None),
+            };
+        }
+        let key = crate::quarto::scoped_selection_key(&self.storage_id, document_id, context_id);
+        match self.blobs.get_versioned(&key).await {
+            Ok((body, version)) => serde_json::from_slice(&body)
+                .map(Some)
+                .map(|selection| selection.map(|selection| (selection, version)))
+                .map_err(|error| error.to_string()),
+            Err(BlobError::NotFound) => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Return the durable generation even when a source restore cleared the
+    /// selected render and left only its tombstone epoch.
+    pub async fn quarto_selection_generation(
+        &self,
+        document_id: &str,
+        context_id: &str,
+    ) -> Result<u64, String> {
+        if let Some(catalog) = self.catalog.get() {
+            return read_quarto_selection_generation(
+                catalog,
+                &self.storage_id,
+                document_id,
+                context_id,
+            )
+            .await
+            .map_err(|error| error.to_string());
+        }
+        Ok(self
+            .quarto_selection(document_id, context_id)
+            .await?
+            .map_or(0, |(selection, _)| selection.generation))
+    }
+
+    /// Physical object reads are admitted only for an object accounting row
+    /// whose version still matches the committed bytes. Staged leftovers and
+    /// failed replacements therefore remain inaccessible after restart.
+    pub async fn quarto_object_committed(&self, key: &str) -> Result<bool, String> {
+        let Some(catalog) = self.catalog.get() else {
+            return Ok(true);
+        };
+        let version = match self.blobs.get_versioned(key).await {
+            Ok((_, version)) => version,
+            Err(BlobError::NotFound) => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        quarto_object_committed(catalog, &self.storage_id, key, &version)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Check an output comment against the immutable manifest before storing
+    /// it. The digest may identify a full artifact, a captured cell output, or
+    /// an asset; all three are content identities, so a later render cannot
+    /// accidentally inherit the discussion.
+    pub async fn quarto_output_anchor_exists(
+        &self,
+        anchor: &crate::room::QuartoOutputAnchor,
+        region: bool,
+    ) -> Result<bool, String> {
+        let store = crate::quarto::QuartoStore::new_scoped(self.blobs.clone(), self.quarto_scope());
+        let manifest_key = store.manifest_object_key(&self.slug, &anchor.render_id);
+        if self.catalog.get().is_some() && !self.quarto_object_committed(&manifest_key).await? {
+            return Ok(false);
+        }
+        let manifest = match store.get_manifest(&self.slug, &anchor.render_id).await {
+            Ok(manifest) => manifest,
+            Err(crate::quarto::BundleError::NotFound) => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        // A missing cell ID is deliberately restricted to a whole-artifact
+        // anchor. Matching an arbitrary cell by ordinal would move a comment
+        // when a cell is inserted earlier in the document.
+        if anchor.cell_id.is_empty() {
+            return Ok(!region
+                && anchor.output_ordinal == 0
+                && manifest
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|artifact| artifact.sha256 == anchor.content_sha256));
+        }
+        let Some(cell) = manifest.cells.iter().find(|cell| cell.id == anchor.cell_id) else {
+            return Ok(false);
+        };
+        let Some(output) = cell
+            .outputs
+            .iter()
+            .find(|output| output.ordinal == anchor.output_ordinal)
+        else {
+            return Ok(false);
+        };
+        if region
+            && !matches!(
+                output.kind,
+                crate::quarto::OutputKind::Image | crate::quarto::OutputKind::Svg
+            )
+        {
+            return Ok(false);
+        }
+        let digest = output.content_sha256.clone().or_else(|| {
+            output.asset.as_ref().and_then(|path| {
+                manifest
+                    .assets
+                    .iter()
+                    .find(|asset| asset.path == *path)
+                    .map(|asset| asset.sha256.clone())
+            })
+        });
+        Ok(digest.as_deref() == Some(anchor.content_sha256.as_str()))
+    }
+
+    /// Reconcile durable selections with a checkpoint restored into the
+    /// source tree. A retained bundle for the restored tree is selected again
+    /// with a fresh generation; otherwise the pointer is cleared while its
+    /// monotonic epoch remains. Both paths use the restore caller's authority
+    /// in the catalogue transaction.
+    pub async fn reconcile_quarto_selections_after_restore(
+        &self,
+        source_revision: &str,
+        main: &str,
+        actor: crate::storage::catalog::MutationAuthority<'_>,
+    ) -> Result<(usize, usize), String> {
+        let _publication = self.quarto_publication.lock().await;
+        let Some(catalog) = self.catalog.get() else {
+            return Ok((0, 0));
+        };
+        let rows = read_quarto_selections(catalog, &self.storage_id, &self.slug)
+            .await
+            .map_err(|error| error.to_string())?;
+        let epochs = read_quarto_selection_epochs(catalog, &self.storage_id, &self.slug)
+            .await
+            .map_err(|error| error.to_string())?;
+        let storage_id = self.storage_id.clone();
+        let document_id = self.slug.clone();
+        let history = catalog
+            .execute_catalog(storage_id.len() + document_id.len() + 256, move |catalog| {
+                catalog.quarto_selection_history(&storage_id, &document_id)
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let prefix = if self.storage_id.is_empty() {
+            format!("quarto/bundles/{}/", self.slug)
+        } else {
+            format!("quarto/bundles/{}/{}/", self.storage_id, self.slug)
+        };
+        let manifests = self
+            .blobs
+            .list(&prefix)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut retained = Vec::new();
+        for info in manifests {
+            if !info.key.ends_with("/manifest.json") {
+                continue;
+            }
+            let body = match self.blobs.get(&info.key).await {
+                Ok(body) => body,
+                Err(BlobError::NotFound) => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            let Ok(manifest) = serde_json::from_slice::<crate::quarto::BundleManifest>(&body)
+            else {
+                continue;
+            };
+            if manifest.validate().is_ok()
+                && (manifest.source.revision == source_revision
+                    || manifest.source.tree_sha256.as_deref() == Some(source_revision))
+                && (main.is_empty() || manifest.source.main == main)
+                && self.quarto_object_committed(&info.key).await?
+            {
+                retained.push(manifest);
+            }
+        }
+        retained.sort_by(|left, right| {
+            right
+                .provenance
+                .completed_at
+                .cmp(&left.provenance.completed_at)
+                .then_with(|| right.render_id.cmp(&left.render_id))
+        });
+        let mut contexts: HashSet<String> = rows
+            .iter()
+            .map(|row| row.context_id.clone())
+            .chain(epochs.iter().map(|(context, _)| context.clone()))
+            .chain(retained.iter().map(|manifest| manifest.context.id.clone()))
+            .collect();
+        let row_by_context: HashMap<String, crate::storage::catalog::QuartoSelection> = rows
+            .into_iter()
+            .map(|row| (row.context_id.clone(), row))
+            .collect();
+        let authority = OwnedAuthority::new(&actor);
+        let mut reselected = 0;
+        let mut cleared = 0;
+        for context_id in contexts.drain() {
+            let row = row_by_context.get(&context_id);
+            let manifest = retained
+                .iter()
+                .find(|manifest| {
+                    manifest.context.id == context_id
+                        && row.is_some_and(|row| manifest.render_id == row.render_id)
+                })
+                .or_else(|| {
+                    history
+                        .iter()
+                        .filter(|(context, _, _)| context == &context_id)
+                        .find_map(|(_, render, _)| {
+                            retained.iter().find(|manifest| {
+                                manifest.context.id == context_id && &manifest.render_id == render
+                            })
+                        })
+                });
+            let Some(manifest) = manifest else {
+                clear_quarto_selection_with_authority(
+                    catalog,
+                    &self.storage_id,
+                    &self.slug,
+                    &context_id,
+                    authority.clone(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                let selection_key =
+                    crate::quarto::scoped_selection_key(&self.storage_id, &self.slug, &context_id);
+                let keys = vec![selection_key.clone()];
+                if self
+                    .blobs
+                    .delete_each(&keys)
+                    .await
+                    .ok()
+                    .and_then(|outcomes| outcomes.into_iter().next())
+                    .is_some_and(|outcome| outcome.confirmed())
+                {
+                    release_object_accounting(catalog, &selection_key).await;
+                }
+                let generation = self
+                    .quarto_selection_generation(&self.slug, &context_id)
+                    .await?;
+                self.broadcast(&serde_json::json!({
+                    "type":"quarto-selection", "context_id":context_id,
+                    "render_id":null, "generation":generation,
+                    "source_revision":source_revision,
+                }))
+                .await;
+                cleared += 1;
+                continue;
+            };
+            let selection_key =
+                crate::quarto::scoped_selection_key(&self.storage_id, &self.slug, &context_id);
+            let expect = self
+                .blobs
+                .get_versioned(&selection_key)
+                .await
+                .map(|(_, version)| version)
+                .unwrap_or_default();
+            let epoch = epochs
+                .iter()
+                .find(|(context, _)| context == &context_id)
+                .map_or(0, |(_, generation)| *generation);
+            let generation = epoch
+                .max(row.map_or(0, |row| row.generation))
+                .saturating_add(1)
+                .max(1);
+            let selection = crate::quarto::Selection {
+                document_id: self.slug.clone(),
+                context_id: context_id.clone(),
+                generation,
+                render_id: manifest.render_id.clone(),
+                source_revision: manifest.source.revision.clone(),
+            };
+            self.swap_quarto_object(
+                &selection_key,
+                serde_json::to_vec(&selection).map_err(|error| error.to_string())?,
+                "application/json",
+                &expect,
+                Some(authority.borrow()),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            self.broadcast(&serde_json::json!({
+                "type": "quarto-selection",
+                "context_id": selection.context_id,
+                "render_id": selection.render_id,
+                "generation": selection.generation,
+                "source_revision": selection.source_revision,
+            }))
+            .await;
+            reselected += 1;
+        }
+        Ok((reselected, cleared))
+    }
+
+    /// Stores one immutable Quarto bundle dependency through the same object
+    /// reservation and authority fence used by figures and PDF renderings.
+    pub async fn put_quarto_object(
+        &self,
+        key: &str,
+        body: Vec<u8>,
+        mime: &str,
+        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
+    ) -> Result<i64, WriteError> {
+        let _rendering_writer = self.rendering_write.lock().await;
+        if !self.hold().await {
+            return Err(self.fenced());
+        }
+        let size = body.len() as i64;
+        self.put_accounted_with_type(key, body, mime, "quarto", actor)
+            .await?;
+        Ok(size)
+    }
+
+    /// Compare-and-swaps a Quarto manifest/selection while accounting the
+    /// object and rechecking the catalog authority in the same reservation.
+    pub async fn swap_quarto_object(
+        &self,
+        key: &str,
+        body: Vec<u8>,
+        mime: &str,
+        expect: &str,
+        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
+    ) -> Result<String, WriteError> {
+        let _rendering_writer = self.rendering_write.lock().await;
+        if body.is_empty() {
+            return Err(WriteError::Invalid("that Quarto object is empty".into()));
+        }
+        if !self.hold().await {
+            return Err(self.fenced());
+        }
+        self.swap_accounted_with_type(key, body, mime, "quarto", expect, actor)
+            .await
+    }
+
     async fn catalog_rendering_size(&self, sha: &str, synctex: bool) -> Option<i64> {
         let catalog = self.catalog.get()?;
         let row = read_catalog_rendering(catalog, &self.slug, sha).await?;
@@ -812,6 +1231,288 @@ impl Room {
         }
     }
 
+    /// Retain selected Quarto results and results attached to retained source
+    /// checkpoints, then shed unselected historical bundles under the same
+    /// history bound as source checkpoints. Physical bundle dependencies are
+    /// removed only after no surviving manifest names them, and every
+    /// confirmed deletion releases its catalogue object accounting.
+    pub(super) async fn prune_quarto(&self, checkpoints: &[Checkpoint]) {
+        let _quarto_writer = self.quarto_publication.lock().await;
+        let _rendering_writer = self.rendering_write.lock().await;
+        let scope = self.quarto_scope().to_owned();
+        let bundle_prefix = format!("quarto/bundles/{scope}/{}/", self.slug);
+        let bundle_infos = match self.blobs.list(&bundle_prefix).await {
+            Ok(infos) => infos,
+            Err(error) => {
+                eprintln!(
+                    "warning: could not list Quarto bundles for {}: {error}",
+                    self.slug
+                );
+                return;
+            }
+        };
+        let mut selected_renders = HashSet::new();
+        if let Some(catalog) = self.catalog.get() {
+            let selections = match read_quarto_selections(catalog, &scope, &self.slug).await {
+                Ok(selections) => selections,
+                Err(error) => {
+                    eprintln!(
+                        "warning: preserving Quarto bundles after selection catalogue read failure for {}: {error}",
+                        self.slug
+                    );
+                    return;
+                }
+            };
+            selected_renders.extend(selections.into_iter().map(|selection| selection.render_id));
+            // A comment is a durable reference to the exact output the
+            // reviewer saw. Keep that render even after its source checkpoint
+            // falls outside the ordinary history window.
+            let comments = if bundle_infos.is_empty() {
+                // Ordinary documents have no result bundles to pin. Still
+                // sweep uncommitted orphan assets below, without loading the
+                // entire comment history for every source retention pass.
+                Vec::new()
+            } else {
+                match load_catalog_comments(catalog, &self.slug).await {
+                    Ok((_, comments)) => comments,
+                    Err(error) => {
+                        eprintln!(
+                        "warning: preserving Quarto bundles after comment catalogue read failure for {}: {error}",
+                        self.slug
+                    );
+                        return;
+                    }
+                }
+            };
+            selected_renders.extend(
+                comments
+                    .into_iter()
+                    .filter_map(|comment| comment.output_anchor)
+                    .map(|anchor| anchor.render_id),
+            );
+        } else {
+            // Isolated legacy rooms have no catalogue pointer; retain their
+            // historical blob-backed behavior.
+            let selection_prefix = format!("quarto/selections/{scope}/{}/", self.slug);
+            let selection_infos = match self.blobs.list(&selection_prefix).await {
+                Ok(infos) => infos,
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not list Quarto selections for {}: {error}",
+                        self.slug
+                    );
+                    return;
+                }
+            };
+            for info in selection_infos {
+                let bytes = match self.blobs.get(&info.key).await {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        eprintln!(
+                            "warning: could not read Quarto selection {}: {error}",
+                            info.key
+                        );
+                        return;
+                    }
+                };
+                match serde_json::from_slice::<crate::quarto::Selection>(&bytes) {
+                    Ok(selection) => {
+                        selected_renders.insert(selection.render_id);
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "warning: preserving Quarto bundles after invalid selection {}: {error}",
+                            info.key
+                        );
+                        return;
+                    }
+                }
+            }
+            let state = self.state.lock().await;
+            selected_renders.extend(
+                state
+                    .comments
+                    .iter()
+                    .filter_map(|comment| comment.output_anchor.as_ref())
+                    .map(|anchor| anchor.render_id.clone()),
+            );
+        }
+        let retained_revisions: HashSet<String> = checkpoints
+            .iter()
+            .flat_map(|point| [point.sha.clone(), point.content_sha().to_owned()])
+            .collect();
+        let mut manifests = Vec::new();
+        let mut orphan_manifest_keys = Vec::new();
+        for info in bundle_infos {
+            let bytes = match self.blobs.get(&info.key).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not read Quarto bundle {}: {error}",
+                        info.key
+                    );
+                    return;
+                }
+            };
+            let manifest = match serde_json::from_slice::<crate::quarto::BundleManifest>(&bytes) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    eprintln!(
+                        "warning: preserving Quarto bundles after invalid manifest {}: {error}",
+                        info.key
+                    );
+                    return;
+                }
+            };
+            if manifest.validate().is_err() || manifest.document_id != self.slug {
+                eprintln!(
+                    "warning: preserving Quarto bundles after invalid manifest {}",
+                    info.key
+                );
+                return;
+            }
+            // A transport manifest is eligible for retention only after the
+            // catalogue has committed its accounting row. A failed CAS can
+            // leave identical bytes behind; treating those bytes as history
+            // would pin an unauthorized publication indefinitely and could
+            // retain its dependency graph forever.
+            if self.catalog.get().is_some() {
+                match self.quarto_object_committed(&info.key).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        orphan_manifest_keys.push(info.key);
+                        continue;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "warning: preserving Quarto bundles after manifest catalogue read failure for {}: {error}",
+                            self.slug
+                        );
+                        return;
+                    }
+                }
+            }
+            manifests.push((info.key, manifest));
+        }
+        let keep_all = self.config.session.history_max == 0;
+        // Keep one deterministic bundle per context/source revision. A
+        // document can be rendered repeatedly without changing its source;
+        // pinning every such render would make the history bound ineffective.
+        let mut retained_by_context: HashMap<String, String> = HashMap::new();
+        for (key, manifest) in &manifests {
+            let source_identity = if manifest.source.revision.is_empty() {
+                manifest.source.tree_sha256.clone().unwrap_or_default()
+            } else {
+                manifest.source.revision.clone()
+            };
+            if !retained_revisions.contains(&source_identity)
+                && !retained_revisions.contains(&manifest.source.revision)
+                && !manifest
+                    .source
+                    .tree_sha256
+                    .as_ref()
+                    .is_some_and(|tree| retained_revisions.contains(tree))
+            {
+                continue;
+            }
+            let identity = format!("{}\0{}", manifest.context.id, source_identity);
+            let replace = retained_by_context
+                .get(&identity)
+                .and_then(|current| {
+                    manifests
+                        .iter()
+                        .find(|(candidate_key, _)| candidate_key == current)
+                })
+                .is_none_or(|(_, current)| {
+                    manifest.provenance.completed_at > current.provenance.completed_at
+                });
+            if replace {
+                retained_by_context.insert(identity, key.clone());
+            }
+        }
+        let retained_bundle_keys: HashSet<String> = retained_by_context.into_values().collect();
+        let mut keep = HashSet::new();
+        for (key, manifest) in &manifests {
+            if keep_all
+                || selected_renders.contains(&manifest.render_id)
+                || retained_bundle_keys.contains(key)
+            {
+                keep.insert(key.clone());
+            }
+        }
+        if !keep_all {
+            let mut candidates: Vec<_> = manifests
+                .iter()
+                .filter(|(key, _)| !keep.contains(key))
+                .collect();
+            candidates.sort_by(|(_, left), (_, right)| {
+                right
+                    .provenance
+                    .completed_at
+                    .cmp(&left.provenance.completed_at)
+            });
+            for (key, _) in candidates.into_iter().take(self.config.session.history_max) {
+                keep.insert(key.clone());
+            }
+        }
+        let mut deleted = HashSet::new();
+        for key in orphan_manifest_keys {
+            let _ = self.blobs.delete_each(std::slice::from_ref(&key)).await;
+        }
+        for (key, _) in &manifests {
+            if keep.contains(key) {
+                continue;
+            }
+            if let Ok(outcomes) = self.blobs.delete_each(std::slice::from_ref(key)).await {
+                if outcomes
+                    .first()
+                    .is_some_and(crate::storage::blob::DeleteOutcome::confirmed)
+                {
+                    deleted.insert(key.clone());
+                    if let Some(catalog) = self.catalog.get() {
+                        release_object_accounting(catalog, key).await;
+                    }
+                }
+            }
+        }
+        let mut referenced = HashSet::new();
+        for (key, manifest) in &manifests {
+            if deleted.contains(key) {
+                continue;
+            }
+            if let Some(artifact) = &manifest.artifact {
+                referenced.insert(artifact.sha256.clone());
+            }
+            referenced.extend(manifest.assets.iter().map(|asset| asset.sha256.clone()));
+        }
+        let blob_prefix = format!("quarto/blobs/{scope}/");
+        let Ok(blob_infos) = self.blobs.list(&blob_prefix).await else {
+            return;
+        };
+        for info in blob_infos {
+            let Some(digest) = info.key.rsplit('/').next() else {
+                continue;
+            };
+            if referenced.contains(digest) {
+                continue;
+            }
+            if let Ok(outcomes) = self
+                .blobs
+                .delete_each(std::slice::from_ref(&info.key))
+                .await
+            {
+                if outcomes
+                    .first()
+                    .is_some_and(crate::storage::blob::DeleteOutcome::confirmed)
+                {
+                    if let Some(catalog) = self.catalog.get() {
+                        release_object_accounting(catalog, &info.key).await;
+                    }
+                }
+            }
+        }
+    }
+
     /// Drops the figures nothing refers to any more: neither the live document
     /// nor any checkpoint the manifest still holds.
     ///
@@ -900,5 +1601,15 @@ impl Room {
                 state.session.asset_written_at.remove(&sha);
             }
         }
+    }
+}
+
+struct QuartoCleanupPendingReset(Arc<Room>);
+
+impl Drop for QuartoCleanupPendingReset {
+    fn drop(&mut self) {
+        self.0
+            .quarto_cleanup_pending
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 }

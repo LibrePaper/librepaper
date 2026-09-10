@@ -9,8 +9,13 @@
 pub mod cli;
 pub mod confine;
 pub mod discovery;
+pub mod engine_adapter;
 pub mod native;
 pub mod pairing;
 pub mod protocol;
+pub mod quarto;
+pub mod quarto_capture;
 pub mod service;
 pub mod texlog;
+
+pub(crate) mod quarto_preview;

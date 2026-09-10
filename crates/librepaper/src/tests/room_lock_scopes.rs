@@ -30,6 +30,7 @@ fn comment(body: &str, temp_id: &str) -> room::Command {
         point: false,
         color: None,
         region: None,
+        output_anchor: None,
         source: None,
         proposed: None,
         revision: String::new(),

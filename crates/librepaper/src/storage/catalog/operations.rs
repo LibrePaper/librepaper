@@ -5,6 +5,22 @@
 use super::*;
 
 impl Catalog {
+    pub fn require_mutation_authority(
+        &self,
+        slug: &str,
+        actor: MutationAuthority<'_>,
+    ) -> CatalogResult<()> {
+        self.immediate(|tx| {
+            if Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
+                Ok(())
+            } else {
+                Err(CatalogError::Conflict(
+                    "actor edit rights or session generation changed".into(),
+                ))
+            }
+        })
+    }
+
     /// Atomically grow a reservation.  Owner and deployment sums include all
     /// lifecycle states, as required for safe replacement/deletion races.
     pub fn reserve(
@@ -411,7 +427,23 @@ impl Catalog {
         slug: &str,
         checkpoint: &Checkpoint,
     ) -> CatalogResult<()> {
+        self.stage_publication_checkpoint_with_authority(slug, checkpoint, None)
+    }
+
+    pub fn stage_publication_checkpoint_with_authority(
+        &self,
+        slug: &str,
+        checkpoint: &Checkpoint,
+        actor: Option<MutationAuthority<'_>>,
+    ) -> CatalogResult<()> {
         self.immediate(|tx| {
+            if let Some(actor) = actor {
+                if !Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
+                    return Err(CatalogError::Conflict(
+                        "actor edit rights or session generation changed".into(),
+                    ));
+                }
+            }
             let (storage_id, request_id): (String, String) = tx
                 .query_row(
                     "SELECT storage_id,pending_publication FROM documents
@@ -780,7 +812,88 @@ impl Catalog {
         kind: &str,
         version: &str,
     ) -> CatalogResult<()> {
+        self.commit_object_change_inner(
+            storage_id,
+            operation_id,
+            object_key,
+            kind,
+            version,
+            None,
+            None,
+        )
+    }
+
+    pub fn commit_object_change_with_authority(
+        &self,
+        storage_id: &str,
+        operation_id: &str,
+        object_key: &str,
+        kind: &str,
+        version: &str,
+        actor: MutationAuthority<'_>,
+    ) -> CatalogResult<()> {
+        self.commit_object_change_inner(
+            storage_id,
+            operation_id,
+            object_key,
+            kind,
+            version,
+            Some(actor),
+            None,
+        )
+    }
+
+    /// Commit a selection object and the durable pointer readers follow in
+    /// one transaction. A failed authority check leaves the prior pointer
+    /// untouched even when the physical CAS has already succeeded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_quarto_selection_with_authority(
+        &self,
+        storage_id: &str,
+        operation_id: &str,
+        object_key: &str,
+        kind: &str,
+        version: &str,
+        selection: &crate::quarto::Selection,
+        actor: MutationAuthority<'_>,
+    ) -> CatalogResult<()> {
+        self.commit_object_change_inner(
+            storage_id,
+            operation_id,
+            object_key,
+            kind,
+            version,
+            Some(actor),
+            Some(selection),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_object_change_inner(
+        &self,
+        storage_id: &str,
+        operation_id: &str,
+        object_key: &str,
+        kind: &str,
+        version: &str,
+        actor: Option<MutationAuthority<'_>>,
+        selection: Option<&crate::quarto::Selection>,
+    ) -> CatalogResult<()> {
         self.immediate(|tx| {
+            if let Some(actor) = actor {
+                let slug: String = tx
+                    .query_row(
+                        "SELECT slug FROM documents WHERE storage_id=?1",
+                        [storage_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if !Self::mutation_authorized_in_tx(tx, &slug, actor, "editor")? {
+                    return Err(CatalogError::Conflict(
+                        "actor edit rights or session generation changed".into(),
+                    ));
+                }
+            }
             let reserved: Option<(i64, i64)> = tx
                 .query_row(
                     "SELECT old_bytes,new_bytes FROM object_reservations WHERE storage_id=?1 AND operation_id=?2 AND object_key=?3",
@@ -792,6 +905,96 @@ impl Catalog {
             let Some((old_bytes, new_bytes)) = reserved else { return Ok(()); };
             tx.execute("INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(storage_id,object_key) DO UPDATE SET kind=excluded.kind,bytes=excluded.bytes,version=excluded.version",params![storage_id,object_key,kind,new_bytes,version]).map_err(CatalogError::from)?;
             tx.execute("DELETE FROM object_reservations WHERE storage_id=?1 AND operation_id=?2 AND object_key=?3",params![storage_id,operation_id,object_key]).map_err(CatalogError::from)?;
+            if let Some(selection) = selection {
+                if selection.document_id.is_empty()
+                    || selection.context_id.is_empty()
+                    || selection.render_id.is_empty()
+                    || selection.generation == 0
+                    || selection.generation > i64::MAX as u64
+                {
+                    return Err(CatalogError::Invalid("invalid Quarto selection pointer".into()));
+                }
+                let existing: Option<(i64, String)> = tx
+                    .query_row(
+                        "SELECT generation,render_id FROM quarto_selections
+                          WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
+                        params![storage_id, selection.document_id, selection.context_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)?;
+                let epoch: Option<i64> = tx
+                    .query_row(
+                        "SELECT generation FROM quarto_selection_epochs
+                          WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
+                        params![storage_id, selection.document_id, selection.context_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)?;
+                if let Some((generation, render_id)) = existing {
+                    if generation > selection.generation as i64
+                        || (generation == selection.generation as i64
+                            && render_id != selection.render_id)
+                    {
+                        return Err(CatalogError::Conflict(
+                            "Quarto selection generation changed".into(),
+                        ));
+                    }
+                }
+                if epoch.is_some_and(|generation| generation > selection.generation as i64) {
+                    return Err(CatalogError::Conflict(
+                        "Quarto selection generation changed".into(),
+                    ));
+                }
+                tx.execute(
+                    "INSERT INTO quarto_selection_epochs
+                       (storage_id,document_id,context_id,generation)
+                     VALUES(?1,?2,?3,?4)
+                     ON CONFLICT(storage_id,document_id,context_id) DO UPDATE SET
+                       generation=excluded.generation
+                     WHERE excluded.generation >= quarto_selection_epochs.generation",
+                    params![
+                        storage_id,
+                        selection.document_id,
+                        selection.context_id,
+                        selection.generation as i64,
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+                tx.execute(
+                    "INSERT INTO quarto_selections
+                       (storage_id,document_id,context_id,generation,render_id,
+                        source_revision,object_key,object_version,updated_at)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,unixepoch())
+                     ON CONFLICT(storage_id,document_id,context_id) DO UPDATE SET
+                       generation=excluded.generation,render_id=excluded.render_id,
+                       source_revision=excluded.source_revision,
+                       object_key=excluded.object_key,object_version=excluded.object_version,
+                       updated_at=excluded.updated_at",
+                    params![
+                        storage_id,
+                        selection.document_id,
+                        selection.context_id,
+                        selection.generation as i64,
+                        selection.render_id,
+                        selection.source_revision,
+                        object_key,
+                        version,
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+            }
+            if let Some(selection) = selection {
+                tx.execute(
+                    "INSERT INTO quarto_selection_history(storage_id,document_id,context_id,render_id,generation)
+                     VALUES(?1,?2,?3,?4,?5)
+                     ON CONFLICT(storage_id,document_id,context_id,render_id)
+                     DO UPDATE SET generation=MAX(generation,excluded.generation)",
+                    params![storage_id, selection.document_id, selection.context_id,
+                            selection.render_id, selection.generation as i64],
+                ).map_err(CatalogError::from)?;
+            }
             let pending: Option<String> = tx
                 .query_row(
                     "SELECT pending_publication FROM documents WHERE storage_id=?1",
@@ -801,6 +1004,218 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             if pending.is_none() && new_bytes<old_bytes { let released: i64 = tx.query_row("SELECT MIN(?2,MAX(0,counted_size-size)) FROM documents WHERE storage_id=?1",params![storage_id,old_bytes-new_bytes],|row|row.get(0))?; tx.execute("UPDATE documents SET counted_size=counted_size-?2 WHERE storage_id=?1",params![storage_id,released]).map_err(CatalogError::from)?; tx.execute("UPDATE totals SET bytes=bytes-?1 WHERE id=1",[released]).map_err(CatalogError::from)?; }
             Ok(())
+        })
+    }
+
+    pub fn quarto_selection_history(
+        &self,
+        storage_id: &str,
+        document_id: &str,
+    ) -> CatalogResult<Vec<(String, String, u64)>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT context_id,render_id,generation FROM quarto_selection_history
+                 WHERE storage_id=?1 AND document_id=?2 ORDER BY generation DESC",
+            )?;
+            let rows = statement.query_map(params![storage_id, document_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(CatalogError::from)
+        })
+    }
+
+    pub fn quarto_selection(
+        &self,
+        storage_id: &str,
+        document_id: &str,
+        context_id: &str,
+    ) -> CatalogResult<Option<QuartoSelection>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT storage_id,document_id,context_id,generation,render_id,
+                            source_revision,object_key,object_version,updated_at
+                       FROM quarto_selections
+                      WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
+                    params![storage_id, document_id, context_id],
+                    |row| {
+                        Ok(QuartoSelection {
+                            storage_id: row.get(0)?,
+                            document_id: row.get(1)?,
+                            context_id: row.get(2)?,
+                            generation: row.get::<_, i64>(3)? as u64,
+                            render_id: row.get(4)?,
+                            source_revision: row.get(5)?,
+                            object_key: row.get(6)?,
+                            object_version: row.get(7)?,
+                            updated_at: row.get(8)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(CatalogError::from)
+        })
+    }
+
+    /// The last committed generation, including a cleared selection.  The
+    /// epoch survives source restore so an upload already in flight cannot
+    /// reuse the generation that was selected before the restore.
+    pub fn quarto_selection_generation(
+        &self,
+        storage_id: &str,
+        document_id: &str,
+        context_id: &str,
+    ) -> CatalogResult<u64> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT generation FROM quarto_selection_epochs
+                      WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
+                    params![storage_id, document_id, context_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map(|generation| generation.unwrap_or(0) as u64)
+                .map_err(CatalogError::from)
+        })
+    }
+
+    pub fn quarto_selection_epochs(
+        &self,
+        storage_id: &str,
+        document_id: &str,
+    ) -> CatalogResult<Vec<(String, u64)>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT context_id,generation FROM quarto_selection_epochs
+                      WHERE storage_id=?1 AND document_id=?2
+                      ORDER BY context_id",
+                )
+                .map_err(CatalogError::from)?;
+            let rows = statement
+                .query_map(params![storage_id, document_id], |row| {
+                    Ok((row.get(0)?, row.get::<_, i64>(1)? as u64))
+                })
+                .map_err(CatalogError::from)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(CatalogError::from)
+        })
+    }
+
+    pub fn quarto_selections(
+        &self,
+        storage_id: &str,
+        document_id: &str,
+    ) -> CatalogResult<Vec<QuartoSelection>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT storage_id,document_id,context_id,generation,render_id,
+                            source_revision,object_key,object_version,updated_at
+                       FROM quarto_selections
+                      WHERE storage_id=?1 AND document_id=?2
+                      ORDER BY context_id",
+                )
+                .map_err(CatalogError::from)?;
+            let rows = statement
+                .query_map(params![storage_id, document_id], |row| {
+                    Ok(QuartoSelection {
+                        storage_id: row.get(0)?,
+                        document_id: row.get(1)?,
+                        context_id: row.get(2)?,
+                        generation: row.get::<_, i64>(3)? as u64,
+                        render_id: row.get(4)?,
+                        source_revision: row.get(5)?,
+                        object_key: row.get(6)?,
+                        object_version: row.get(7)?,
+                        updated_at: row.get(8)?,
+                    })
+                })
+                .map_err(CatalogError::from)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(CatalogError::from)
+        })
+    }
+
+    pub fn clear_quarto_selection_with_authority(
+        &self,
+        storage_id: &str,
+        document_id: &str,
+        context_id: &str,
+        actor: MutationAuthority<'_>,
+    ) -> CatalogResult<usize> {
+        self.immediate(|tx| {
+            let slug: String = tx
+                .query_row(
+                    "SELECT slug FROM documents WHERE storage_id=?1",
+                    [storage_id],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if !Self::mutation_authorized_in_tx(tx, &slug, actor, "editor")? {
+                return Err(CatalogError::Conflict(
+                    "actor edit rights or session generation changed".into(),
+                ));
+            }
+            let pointer_generation: Option<i64> = tx
+                .query_row(
+                    "SELECT generation FROM quarto_selections
+                      WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
+                    params![storage_id, document_id, context_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            let epoch: Option<i64> = tx
+                .query_row(
+                    "SELECT generation FROM quarto_selection_epochs
+                      WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
+                    params![storage_id, document_id, context_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            let next_generation = pointer_generation
+                .into_iter()
+                .chain(epoch)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            tx.execute(
+                "INSERT INTO quarto_selection_epochs
+                   (storage_id,document_id,context_id,generation)
+                 VALUES(?1,?2,?3,?4)
+                 ON CONFLICT(storage_id,document_id,context_id) DO UPDATE SET
+                   generation=MAX(generation,excluded.generation)",
+                params![storage_id, document_id, context_id, next_generation],
+            )
+            .map_err(CatalogError::from)?;
+            tx.execute(
+                "DELETE FROM quarto_selections
+                  WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
+                params![storage_id, document_id, context_id],
+            )
+            .map_err(CatalogError::from)
+        })
+    }
+
+    pub fn quarto_object_committed(
+        &self,
+        storage_id: &str,
+        object_key: &str,
+        version: &str,
+    ) -> CatalogResult<bool> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM object_accounting
+                                    WHERE storage_id=?1 AND object_key=?2 AND version=?3)",
+                    params![storage_id, object_key, version],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(CatalogError::from)
         })
     }
 

@@ -168,6 +168,7 @@
   function language(format) {
     if (format === "typst") return StreamLanguage.define(typstLanguage);
     if (format === "html") return htmlLanguage();
+    if (format === "quarto") return markdown();
     return markdown();
   }
 

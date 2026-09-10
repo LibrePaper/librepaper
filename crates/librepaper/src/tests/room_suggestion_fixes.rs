@@ -157,6 +157,7 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
             point: false,
             color: None,
             region: None,
+            quarto_output: None,
             source_path: Some("main.md".into()),
             source_exact: Some("A".into()),
             source_prefix: Some(String::new()),

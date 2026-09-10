@@ -16,6 +16,36 @@ pub fn is_markdown(name: &str) -> bool {
     markdown::is_markdown(name)
 }
 
+pub fn is_quarto(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with(".qmd")
+}
+
+/// Read metadata without rewriting the editable source. Incomplete front matter
+/// is an ordinary editing state and falls back to a heading.
+pub fn title_from_quarto(source: &str) -> String {
+    let mut lines = source.lines();
+    if lines
+        .next()
+        .map(|line| line.trim_start_matches('\u{feff}').trim())
+        == Some("---")
+    {
+        let mut yaml = String::new();
+        for line in lines {
+            if matches!(line.trim(), "---" | "...") {
+                if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&yaml) {
+                    if let Some(title) = value.get("title").and_then(serde_yaml::Value::as_str) {
+                        return title.to_string();
+                    }
+                }
+                break;
+            }
+            yaml.push_str(line);
+            yaml.push('\n');
+        }
+    }
+    title_from_markdown(source)
+}
+
 pub fn is_typst(name: &str) -> bool {
     typst::is_typst(name)
 }
@@ -465,6 +495,8 @@ pub fn document_format(name: &str) -> Option<&'static str> {
         // not about the filename. What a `.tex` file is does not change with
         // whether a deployment was started with `--latex`.
         Some("latex")
+    } else if is_quarto(name) {
+        Some("quarto")
     } else if is_markdown(name) {
         Some("markdown")
     } else if is_html(name) {
@@ -487,6 +519,7 @@ pub fn main_path_for(named: &str, format: &str) -> String {
     match format {
         "typst" => "main.typ",
         "markdown" => "main.md",
+        "quarto" => "main.qmd",
         "html" => "main.html",
         // A single-file LaTeX source is still LaTeX; calling it `main.txt`
         // is what made a document open advertising a format its own main

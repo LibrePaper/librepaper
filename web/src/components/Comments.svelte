@@ -28,6 +28,7 @@
     replacements = {},
     ontool,
     onreveal,
+    oninspectresult,
     onresolve,
     ondelete,
     // Several at once, behind one confirmation: the page owns that dialog.
@@ -59,7 +60,7 @@
   const filtered = $derived(comments.filter((comment) => {
     if (filter === "highlights") return comment.motivation === "highlighting";
     if (filter === "suggestions") return comment.motivation === "editing";
-    if (filter === "comments") return comment.motivation !== "editing" && (comment.motivation !== "highlighting" || comment.body || comment.replies?.length);
+    if (filter === "comments") return Boolean(comment.output_anchor) || (comment.motivation !== "editing" && (comment.motivation !== "highlighting" || comment.body || comment.replies?.length));
     return true;
   }));
   const shown = $derived([...filtered].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
@@ -208,6 +209,7 @@
         went={went[comment.id] || null}
         replacement={replacements[comment.id] ?? null}
         {onreveal}
+        {oninspectresult}
         {onresolve}
         {ondelete}
         {onreply}

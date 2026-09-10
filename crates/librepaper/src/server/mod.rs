@@ -56,6 +56,8 @@ mod history;
 pub mod latex;
 mod onboarding;
 pub mod origins;
+mod quarto;
+mod quarto_checkpoint;
 mod reply;
 mod routes;
 pub mod serve;
@@ -862,6 +864,7 @@ impl Server {
             self.ceiling_for(&who.identity()),
             now,
         );
+        let metadata = crate::results::document_metadata(&entry.source_format);
         json!({
             "slug": entry.slug,
             "title": entry.title,
@@ -871,6 +874,8 @@ impl Server {
             "example": entry.example,
             "size": entry.size,
             "source_format": entry.source_format,
+            "execution_engine": metadata.execution_engine,
+            "draft_format": metadata.draft_format,
             "main": entry.main,
             "role": role.as_str(),
         })

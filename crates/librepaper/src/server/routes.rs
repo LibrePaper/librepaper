@@ -444,6 +444,82 @@ pub(super) async fn handle(
         }
     }
 
+    // Quarto bundles are immutable render records. Publishing is an editor
+    // action; manifests and their scoped assets are readable wherever the
+    // document itself is readable.
+    if let ["api", "documents", slug, "quarto", "checkpoint"] = parts[..] {
+        if method == Method::POST {
+            return server
+                .handle_quarto_checkpoint(request, &arrival, slug)
+                .await;
+        }
+    }
+    if let ["api", "documents", slug, "quarto", "bundles"] = parts[..] {
+        if method == Method::POST {
+            return server.handle_quarto_publish(request, &arrival, slug).await;
+        }
+    }
+    if let ["api", "documents", slug, "quarto", "bundles", "selected", context] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_quarto_selected(
+                    request.headers(),
+                    &arrival,
+                    slug,
+                    context,
+                    request.uri().query(),
+                )
+                .await;
+        }
+    }
+    if let ["api", "documents", slug, "quarto", "bundles", render, "artifact"] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_quarto_artifact(
+                    request.headers(),
+                    &arrival,
+                    slug,
+                    render,
+                    request.uri().query(),
+                )
+                .await;
+        }
+    }
+    if let ["api", "documents", slug, "quarto", "bundles", render] = parts[..] {
+        if method == Method::GET {
+            return server
+                .handle_quarto_manifest(
+                    request.headers(),
+                    &arrival,
+                    slug,
+                    render,
+                    request.uri().query(),
+                )
+                .await;
+        }
+    }
+    if let ["api", "documents", slug, "quarto", "bundles", render, "asset"] = parts[..] {
+        if method == Method::GET {
+            let Some(path) = request.uri().query().and_then(|query| {
+                url::form_urlencoded::parse(query.as_bytes())
+                    .find(|(key, _)| key == "path")
+                    .map(|(_, value)| value.to_string())
+            }) else {
+                return write_json(400, &json!({"error": "asset path is required"}));
+            };
+            return server
+                .handle_quarto_asset(
+                    request.headers(),
+                    &arrival,
+                    slug,
+                    render,
+                    &path,
+                    request.uri().query(),
+                )
+                .await;
+        }
+    }
+
     // The renderings: the PDF an editor's browser compiled, stored beside the
     // checkpoint it was compiled from. Putting one takes an editor, because
     // only somebody who may change the document may say what it looks like;
@@ -539,6 +615,7 @@ pub(super) async fn handle(
             let files: Vec<String> = room.tree().await.files.into_keys().collect();
             let role = who.role;
             let owned = role.at_least(Role::Editor);
+            let metadata = crate::results::document_metadata(&entry.source_format);
             // What the comment form would sign this caller's name as, if they
             // said something right now: the account name when there is one,
             // otherwise the pseudonym their visitor cookie earns them, or ""
@@ -601,6 +678,8 @@ pub(super) async fn handle(
                     // the reader offers an editor for a document it can render
                     // again.
                     "source_format": entry.source_format,
+                    "execution_engine": metadata.execution_engine,
+                    "draft_format": metadata.draft_format,
                     // Which file in the directory is the document. A reader
                     // that has not joined the session yet has this and not the
                     // maps, which is enough to name what it is rendering.
@@ -827,7 +906,7 @@ impl Server {
             &format!(
                 "default-src 'self' data: blob: https:; \
                  script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; \
-                 style-src 'self' 'unsafe-inline' data: https:; \
+                 style-src 'self' 'unsafe-inline' data: blob: https:; \
                  frame-ancestors {reader}; form-action 'none'; base-uri 'none'"
             ),
         );

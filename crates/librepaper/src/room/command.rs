@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use super::{Message, Region, SourceAnchor};
+use super::{Message, QuartoOutputAnchor, Region, SourceAnchor};
 
 /// Validated comment protocol commands. The serde-facing [`Message`] remains
 /// compatible with existing clients; these variants carry only fields used by
@@ -19,6 +19,7 @@ pub enum Command {
         point: bool,
         color: Option<String>,
         region: Option<Region>,
+        output_anchor: Option<QuartoOutputAnchor>,
         source: Option<SourceAnchor>,
         proposed: Option<String>,
         revision: String,
@@ -183,6 +184,7 @@ impl Command {
                 point,
                 color,
                 region,
+                output_anchor,
                 source,
                 proposed,
                 revision,
@@ -200,6 +202,7 @@ impl Command {
                 point,
                 color,
                 region,
+                output_anchor,
                 source,
                 proposed,
                 revision,
@@ -252,6 +255,7 @@ impl Message {
                 point: self.point,
                 color: self.color,
                 region: self.region,
+                output_anchor: self.output_anchor,
                 source: self.source,
                 proposed: self.proposed,
                 revision: self.revision,

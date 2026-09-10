@@ -4,6 +4,7 @@
   import { anchorAll, anchorAllSources, flatten } from "../lib/anchor.js";
   import * as sync from "../lib/sync.js";
   import * as renderers from "../lib/renderers.js";
+  import * as quarto from "../lib/engines/quarto.js";
   import * as diagnosticsRule from "../lib/diagnostics.js";
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
@@ -15,12 +16,14 @@
   import { attribution, authorIndex, itemsFor } from "../lib/redlines.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
+  import * as localQuarto from "../lib/latex/local.js";
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
   import { createAnnotations } from "../lib/reader/annotations.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
+  import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import PendingAnnotations from "./PendingAnnotations.svelte";
   import {
     SHELL_HEADERS,
@@ -59,6 +62,10 @@
   import Grip from "./Grip.svelte";
   import Collaboration from "./Collaboration.svelte";
   import Changes from "./Changes.svelte";
+  import SavedResults from "./SavedResults.svelte";
+  import QuartoRenderOptions from "./QuartoRenderOptions.svelte";
+  import { loadRenderOptions, saveRenderOptions, parseRenderOptions } from "../lib/quarto-options.js";
+  import { resultItems, resultAnchor, inspectResult } from "../lib/results-comments.js";
   import Agent from "./Agent.svelte";
   import History from "./History.svelte";
   import Diagnostics from "./Diagnostics.svelte";
@@ -70,6 +77,12 @@
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { createRenderingStore } from "../lib/reader/rendering-store.js";
   import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
+  import { clearPendingResults, loadPendingResults, savePendingResults } from "../lib/results-pending.js";
+  import ResultsArtifactBrowser from "./ResultsArtifactBrowser.svelte";
+  import { prepareResultsArtifact } from "../lib/results-artifact.js";
+  import { createResultsLoader } from "../lib/results-loader.js";
+  import { publishResultsBundle } from "../lib/results-publication.js";
+  import { documentResultsIdentity } from "../lib/engines/identity.js";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -142,6 +155,190 @@
   let figureAt = $state([]); // text offset of each figure, by its index
 
   let preview = $state(null);
+  let quartoView = $state("draft");
+  let quartoProjectScope = $state(false);
+  let quartoSnapshot = $state(false);
+  let quartoDataInputs = $state("");
+  let quartoPreview = $state(null);
+  let quartoPreviewStarting = $state(false);
+  let quartoOutput = $state(null);
+  let quartoOutputState = $state("");
+  let quartoBundle = $state(null);
+  let quartoAssets = $state({});
+  let quartoObjectUrls = [];
+  let quartoArtifactDispose = null;
+  let quartoContext = $state("");
+  let quartoOptions = $state(loadRenderOptions(SLUG));
+  let quartoOptionsChanging = $state(false);
+  let quartoLoadSerial = 0;
+  let quartoRequestedContext = "";
+  let quartoFreshness = $state({ state: "missing", message: "No saved result" });
+  let quartoJob = $state(null);
+  let quartoLog = $state("");
+  let quartoBindingId = $state("");
+  let quartoGeneration = $state(0);
+  let quartoPendingPublish = $state(null);
+  let quartoLocalStatus = $state(localQuarto.status());
+  let quartoArtifactStatus = $state("No saved output");
+  let quartoFreshnessSerial = 0;
+  let quartoResultsOpen = $state(false);
+  let quartoInspected = $state(null);
+  let quartoInspectSerial = 0;
+
+  function closeQuartoResults() {
+    quartoInspectSerial += 1;
+    quartoInspected?.dispose?.();
+    quartoInspected = null;
+  }
+
+  async function inspectQuartoComment(comment) {
+    const serial = ++quartoInspectSerial;
+    try {
+      const inspected = await inspectResult(previewApi, comment.output_anchor);
+      if (serial !== quartoInspectSerial || readerDisposed) { inspected.dispose(); return; }
+      quartoInspected?.dispose?.();
+      quartoInspected = { ...inspected, region:comment.region || null };
+      quartoResultsOpen = true;
+    } catch (error) { if (serial === quartoInspectSerial) toastProblem(error.message); }
+  }
+
+  async function locateQuartoResult(item) {
+    const path = item.cell.source_path;
+    const text = treeNow().texts?.[path];
+    if (typeof text !== "string") { say("The source file for this result is unavailable.", true); return; }
+    const cells = quarto.parseQuarto(text, {path}).cells;
+    const candidates = item.cell.label ? cells.filter(cell => cell.label === item.cell.label)
+      : (await Promise.all(cells.map(async cell => ({cell, digest:await quarto.cellFingerprint(cell)}))))
+        .filter(value => value.digest === item.cell.source_sha256).map(value => value.cell);
+    if (candidates.length !== 1 || candidates[0].ambiguous) { say("This saved result cannot be mapped unambiguously to the current source.", true); return; }
+    if (treeNow().texts?.[path] !== text) { say("The source changed while locating this result; try again.", true); return; }
+    const id = session.idOf(path);
+    if (!id || !editor) return;
+    quartoResultsOpen = false;
+    closeQuartoResults();
+    openFile = id;
+    editor.goToIn(id, candidates[0].sourceStart);
+  }
+
+  function commentQuartoResult(item, geometry = {}) {
+    const manifest = quartoInspected?.manifest || quartoBundle;
+    if (!manifest || !mayChat) return;
+    try {
+      pending = { exact:item.output.caption || item.cell.label || item.cell.id, prefix:"", suffix:"",
+        position:null, source:null, region:geometry.region || null, revision:manifest.source.revision,
+        output_anchor:resultAnchor(manifest, item, geometry) };
+      tool = "commenting";
+      quartoResultsOpen = false;
+      closeQuartoResults();
+      openDialog();
+    } catch (error) { toastProblem(error.message); }
+  }
+  const quartoLoader = createResultsLoader({ api: previewApi, apply: ({ context, manifest, prepared, generation }) => {
+    if (quartoResultsOpen && !quartoInspected) quartoResultsOpen = false;
+    releaseQuartoUrls();
+    quartoContext = context;
+    quartoGeneration = generation;
+    quartoBundle = manifest;
+    quartoAssets = prepared?.assets || {};
+    quartoArtifactDispose = prepared?.dispose || null;
+    quartoOutput = prepared ? quartoPreparedOutput(manifest, prepared) : null;
+    quartoOutputState = quartoOutput ? "ready" : "missing";
+    if (!quartoOutput && quartoView === "output") quartoView = "draft";
+    void refreshQuartoFreshness();
+  } });
+
+  function quartoPreparedOutput(manifest, prepared, local = false) {
+    if (!manifest.artifact) return null;
+    return {
+      pages: prepared.pages, page: prepared.page, html: prepared.html, bytes: prepared.bytes || null, downloadUrl: prepared.downloadUrl,
+      downloadName: manifest.artifact.entrypoint, kind: prepared.kind,
+      renderId: manifest.render_id, provenance: manifest.provenance || null, local,
+    };
+  }
+
+  async function refreshQuartoFreshness() {
+    const serial = ++quartoFreshnessSerial;
+    const bundle = quartoBundle;
+    if (!bundle || !session) {
+      quartoFreshness = { state:"missing", message:"No saved result" };
+      quartoArtifactStatus = "No saved output";
+      return;
+    }
+    const tree = treeNow();
+    const parsed = quarto.parseQuarto(tree.texts?.[tree.main] || "", { path:tree.main });
+    try {
+      const [currentContext, sourceDigest] = await Promise.all([
+        contextForQuarto(parsed, tree, bundle.context), snapshotDigest(tree, tree.assets || {}),
+      ]);
+      if (readerDisposed || serial !== quartoFreshnessSerial) return;
+      quartoFreshness = quarto.classifyFreshness(parsed, bundle, { currentContext });
+      quartoArtifactStatus = !bundle.source?.tree_sha256 ? "Source revision unknown"
+        : bundle.source.tree_sha256 === sourceDigest ? "Rendered source unchanged" : "Output from an older source revision";
+    } catch {
+      if (serial !== quartoFreshnessSerial) return;
+      quartoFreshness = { state:"unknown", message:"Saved results; freshness unknown" };
+      quartoArtifactStatus = "Could not verify rendered source";
+    }
+  }
+
+  function releaseQuartoUrls() {
+    if (quartoArtifactDispose) quartoArtifactDispose();
+    quartoArtifactDispose = null;
+    for (const url of quartoObjectUrls) URL.revokeObjectURL(url);
+    quartoObjectUrls = [];
+  }
+  function quartoTargetFormat(tree = null) {
+    if (quartoOptions.format !== "default") return quartoOptions.format;
+    const main = tree?.main || session?.mainPath?.() || "main.qmd";
+    const source = tree?.texts?.[main] || session?.textOf?.(session.mainId?.())?.toString?.() || session?.text?.toString?.() || "";
+    const value = quarto.parseQuarto(source, { path: main }).metadata?.format;
+    const named = typeof value === "string" ? value : value && typeof value === "object" ? Object.keys(value)[0] : "html";
+    const format = String(named || "html").trim().toLowerCase().split(/[+:]/, 1)[0];
+    return ["html", "pdf", "docx", "revealjs"].includes(format) ? format : "html";
+  }
+  function quartoRenderContext(tree = null) {
+    return {
+      format: quartoTargetFormat(tree),
+      profiles: quartoOptions.profile ? [quartoOptions.profile] : [],
+      parameters: { ...quartoOptions.parameters },
+    };
+  }
+
+  function clearQuartoSelection() {
+    releaseQuartoUrls();
+    quartoBundle = null;
+    quartoOutput = null;
+    quartoAssets = {};
+    quartoContext = "";
+    quartoGeneration = 0;
+    quartoFreshnessSerial += 1;
+    quartoFreshness = { state:"missing", message:"No saved result" };
+    quartoArtifactStatus = "No saved output";
+    quartoView = "draft";
+    quartoResultsOpen = false;
+    closeQuartoResults();
+  }
+
+  async function applyQuartoOptions(next) {
+    if (quartoJob || quartoOptionsChanging || viewing) return;
+    const options = parseRenderOptions(next);
+    quartoOptionsChanging = true;
+    try {
+      quartoOptions = options;
+      const saved = saveRenderOptions(SLUG, options);
+      // A different context must never display the previous context's plots,
+      // including when its selected bundle is missing or cannot be fetched.
+      quartoLoadSerial += 1;
+      quartoLoader.invalidate();
+      clearQuartoSelection();
+      void paintPreview();
+      await loadQuartoOutput();
+      if (saved === false) say("Render options apply to this tab; browser storage is unavailable.", true);
+    } finally {
+      quartoOptionsChanging = false;
+      void paintPreview();
+    }
+  }
   const tell = (message, transfer) => preview?.tell(message, transfer);
   // Initialized after the derived frame kind is available. The controller's
   // callbacks still update the small bits of component state used by the
@@ -162,7 +359,7 @@
     if (!frameReady) return;
     const regions = JSON.stringify(
       comments
-        .filter((comment) => comment.region)
+        .filter((comment) => comment.region && !comment.output_anchor)
         .map((comment) => ({
           id: comment.id,
           point: Boolean(comment.point),
@@ -248,6 +445,12 @@
   // goes to the source rather than nowhere. A region has no source anchor and
   // is never in either state.
   function applyAnchorFlags(comment) {
+    if (comment.output_anchor) {
+      comment.orphaned = false;
+      comment.inSourceOnly = false;
+      comment.start = comment.end = comment.sourceStart = null;
+      return;
+    }
     const { orphaned, inSourceOnly } = orphanState({
       renderedFound: comment.start != null,
       sourceFound: comment.sourceStart != null,
@@ -265,8 +468,17 @@
   // whatever is given it since only a comment that already has a `source`
   // does anything there.
   function anchorComments(list) {
-    anchorAll(docText || "", list.filter((comment) => !comment.region), docText === null ? null : docView);
-    anchorAllSources(treeNow(), list);
+    const artifactView = sourceFormat === "quarto" && quartoView === "output";
+    const renderAnchors = artifactView ? [] : list.filter((comment) => !comment.region && !comment.output_anchor);
+    if (artifactView) {
+      for (const comment of list) {
+        if (comment.region) continue;
+        comment.start = null;
+        comment.end = null;
+      }
+    }
+    anchorAll(docText || "", renderAnchors, docText === null ? null : docView);
+    anchorAllSources(treeNow(), list.filter((comment) => !comment.output_anchor));
     for (const comment of list) applyAnchorFlags(comment);
   }
 
@@ -289,7 +501,7 @@
     const tree = treeNow();
     const open = session?.paths?.get(openFile) || "";
     for (const comment of comments) {
-      if (comment.source || comment.region || comment.point || comment.pending || comment.temp_id) continue;
+      if (comment.source || comment.region || comment.point || comment.output_anchor || comment.pending || comment.temp_id) continue;
       if (comment.start == null || triedBackfill.has(comment.id)) continue;
       triedBackfill.add(comment.id);
       const source = sync.sourceSelectorFor(
@@ -354,9 +566,14 @@
         }
         break;
       case "selection":
+        // The immutable full Quarto artifact currently has no source map or
+        // render-id selector. Keep a user from attaching an artifact quote to
+        // a plausible but wrong .qmd passage until that identity is carried.
+        if (sourceFormat === "quarto" && quartoView === "output") return;
         showSelection(message.selector, message.rect);
         break;
       case "region":
+        if (sourceFormat === "quarto" && quartoView === "output") return;
         // A rectangle drawn on a figure anchors the same way a quotation
         // does, but it has no words to look up in the source: a region has
         // no source anchor and never will.
@@ -526,6 +743,10 @@
   }
 
   async function revealAnnotation(comment) {
+    if (comment.output_anchor) {
+      await inspectQuartoComment(comment);
+      return;
+    }
     if (comment.start != null || comment.region) {
       showMobileView("document");
       await tick();
@@ -822,6 +1043,15 @@
       return;
     }
 
+    if (event.type === "quarto-selection") {
+      if (sourceFormat !== "quarto") return;
+      if (quartoContext && event.context_id && event.context_id !== quartoContext) return;
+      const generation = Number(event.generation || 0);
+      if (generation && generation <= quartoGeneration) return;
+      void loadQuartoOutput({ force: true }).then(() => paintPreview()).catch(() => {});
+      return;
+    }
+
     if (event.type === "anchor") {
       // The server's answer to this browser's own backfill, or somebody
       // else's: either way, a comment that had no anchor of record now does.
@@ -886,6 +1116,193 @@
   // file's first heading, since a chapter's heading names the chapter.
   async function headingOf(tree) {
     return doc.title || (await renderers.titleOf(tree)) || "Untitled";
+  }
+
+  async function loadQuartoOutput({ force = false } = {}) {
+    if (sourceFormat !== "quarto" || readerDisposed) return null;
+    const renderContext = quartoRenderContext();
+    const requested = JSON.stringify(renderContext);
+    if (quartoRequestedContext && requested !== quartoRequestedContext) {
+      quartoLoader.invalidate();
+      clearQuartoSelection();
+    }
+    quartoRequestedContext = requested;
+    const serial = ++quartoLoadSerial;
+    const context = await quarto.contextId(renderContext);
+    if (readerDisposed || serial !== quartoLoadSerial) return null;
+    if (!force && quartoOutput?.local && quartoPendingPublish && quartoContext === context) return quartoOutput;
+    quartoOutputState = "loading";
+    try {
+      await quartoLoader.load(context, { force });
+      if (!readerDisposed && serial === quartoLoadSerial) quartoOutputState = quartoOutput ? "ready" : "missing";
+      return quartoOutput;
+    } catch (error) {
+      if (!readerDisposed && serial === quartoLoadSerial) quartoOutputState = error.message || "Quarto output unavailable";
+      throw error;
+    }
+  }
+
+  async function selectQuartoView(view) {
+    if (sourceFormat !== "quarto") return;
+    quartoView = view === "output" ? "output" : "draft";
+    if (quartoView === "output") {
+      try { await loadQuartoOutput(); } catch (error) { say(error.message || "Quarto output unavailable", true); quartoView = "draft"; }
+    }
+    void paintPreview();
+  }
+
+  $effect(() => {
+    const active = quartoPreview;
+    if (!active) return;
+    const timer = setInterval(() => {
+      void localQuarto.quartoPreviewStatus(active.id).then(status => {
+        if (quartoPreview?.id === active.id && quartoPreview.state !== status.state) quartoPreview = {...quartoPreview, state:status.state};
+      }).catch(error => {
+        if (quartoPreview?.id === active.id) { quartoPreview = null; say("Live preview ended: " + error.message, true); }
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  });
+
+  async function toggleQuartoPreview() {
+    if (quartoPreviewStarting || quartoJob || viewing || !mayEdit) return;
+    quartoPreviewStarting = true;
+    localQuarto.configure({ project: SLUG, origin: location.origin });
+    try {
+      if (quartoPreview) { await localQuarto.stopQuartoPreview(quartoPreview.id); quartoPreview = null; }
+      else {
+        const tree = treeNow();
+        const context = quartoRenderContext(tree);
+        const started = await localQuarto.startQuartoPreview({ job:{binding:quartoBindingId}, tree,
+          options:{entrypoint:tree.main, format:context.format, profile:context.profiles[0] || null, parameters:context.parameters} });
+        if (readerDisposed || sourceFormat !== "quarto") await localQuarto.stopQuartoPreview(started.id);
+        else quartoPreview = started;
+      }
+    } catch (error) { say(error.message, true); }
+    finally { quartoPreviewStarting = false; }
+  }
+
+  async function renderQuartoLocally(policy = "project-defaults") {
+    if (!mayEdit || sourceFormat !== "quarto" || quartoJob || quartoOptionsChanging || viewing) return;
+    if (quartoPreview || quartoPreviewStarting) { say("Stop live preview before rendering saved results.", true); return; }
+    if (quartoPendingPublish) {
+      say("A completed render is waiting to be shared; use Retry sharing first.", true);
+      return;
+    }
+    const controller = new AbortController();
+    const id = crypto.randomUUID();
+    quartoJob = { id, controller, stage: "preparing" };
+    quartoLog = "";
+    localQuarto.configure({ project: SLUG, origin: location.origin });
+    try {
+      const renderTree = treeNow();
+      const renderContext = quartoRenderContext(renderTree);
+      const renderFormat = renderContext.format;
+      const inputContext = await quarto.contextId(renderContext);
+      const selectedResponse = await previewApi.selectedResults(inputContext);
+      const selected = await selectedResponse.json().catch(() => null);
+      if (!selectedResponse.ok && selectedResponse.status !== 404) throw new Error("Could not read the current Quarto selection before rendering.");
+      const inputSelectionGeneration = Number(selected?.selection?.generation ?? selected?.generation ?? 0);
+      const knownManifest = selected?.manifest || null;
+      const inputDigest = await snapshotDigest(renderTree, renderTree.assets || {});
+      const checkpointResponse = await previewApi.quartoCheckpoint(inputDigest);
+      if (!checkpointResponse.ok) throw new Error("The current source could not be checkpointed; try rendering again shortly.");
+      const checkpoint = await checkpointResponse.json();
+      const inputRevision = checkpoint?.revision || "";
+      if (!inputRevision) throw new Error("The server did not return a durable Quarto checkpoint.");
+      const result = await localQuarto.runQuarto({
+        job: { id, binding: quartoBindingId, inputRevision, inputDigest, sharedTreeSha256: inputDigest },
+        tree: renderTree,
+        options: { entrypoint: renderTree.main, format: renderFormat, profile: renderContext.profiles[0] || null,
+          parameters: renderContext.parameters, policy, inputRevision, inputDigest, sharedTreeSha256: inputDigest,
+          renderScope:quartoProjectScope ? "project" : "document", executionMode:quartoSnapshot ? "isolated-snapshot" : "working-tree", dataInputs:quartoDataInputs.split("\n").map(x => x.trim()).filter(Boolean) },
+      }, {
+        signal: controller.signal,
+        onProgress: (progress) => { if (quartoJob?.id === id) quartoJob = { ...quartoJob, stage: progress.stage || "running" }; },
+        onLog: (line) => (quartoLog += line + "\n"),
+      });
+      if (result.logs) quartoLog = result.logs;
+      if (!result.ok) throw new Error(result.error || "Quarto render failed");
+      let receipt = null;
+      if (result.publish) {
+        result.publish.manifest.context.id = inputContext;
+        result.publish.expected_generation = inputSelectionGeneration;
+        quartoPendingPublish = result.publish;
+        try {
+          await savePendingResults(SLUG, result.publish).catch((error) => { quartoLog += "Outbox: " + error.message + "\n"; });
+          receipt = await publishResultsBundle(previewApi, result.publish, knownManifest);
+          quartoPendingPublish = null;
+          await clearPendingResults(SLUG, result.publish.manifest.render_id).catch((error) => { quartoLog += "Outbox cleanup: " + error.message + "\n"; });
+        } catch (error) {
+          say("Rendered locally; not yet shared (" + error.message + ")", true);
+        }
+      }
+      if (receipt?.selected === false) {
+        try {
+          await loadQuartoOutput({ force:true });
+          say("Render saved; a newer output remains selected.");
+        } catch (error) {
+          say("Render saved; the selected preview could not be loaded (" + error.message + ")", true);
+        }
+        return;
+      }
+      if (await quarto.contextId(quartoRenderContext()) !== inputContext) {
+        if (receipt) say("Render saved for " + renderFormat.toUpperCase() + ".");
+        return;
+      }
+      if (result.artifact && result.manifest?.artifact) {
+        const blobs = new Map((result.publish?.blobs || []).map((blob) => [blob.sha256, blob]));
+        const prepared = await prepareResultsArtifact(result.manifest, result.artifact, async (asset) => {
+          const blob = blobs.get(asset.sha256);
+          if (!blob?.data) throw new Error("Local Quarto result is missing: " + asset.path);
+          return Uint8Array.from(atob(blob.data), (character) => character.charCodeAt(0));
+        });
+        if (readerDisposed) { prepared.dispose(); return; }
+        quartoLoader.invalidate();
+        if (quartoResultsOpen && !quartoInspected) quartoResultsOpen = false;
+        releaseQuartoUrls();
+        quartoBundle = receipt?.manifest || result.publish?.manifest || result.manifest;
+        quartoContext = inputContext;
+        if (receipt?.selection) quartoGeneration = Number(receipt.selection.generation);
+        quartoArtifactDispose = prepared.dispose;
+        quartoAssets = prepared.assets || {};
+        quartoOutput = quartoPreparedOutput(quartoBundle, prepared, !receipt);
+        quartoOutputState = "ready";
+        quartoView = "output";
+        await refreshQuartoFreshness();
+        if (receipt) say("Rendered and shared");
+        else if (!result.publish) say("Rendered locally; not yet shared");
+      }
+    } catch (error) {
+      if (error?.name === "Canceled" || error?.name === "AbortError") say("Quarto render cancelled", true);
+      else say(error.message || "Quarto render failed", true);
+    } finally {
+      quartoJob = null;
+      void paintPreview();
+    }
+  }
+
+  async function retryQuartoPublish() {
+    if (!quartoPendingPublish || quartoJob) return;
+    const pending = quartoPendingPublish;
+    try {
+      const receipt = await publishResultsBundle(previewApi, pending, quartoBundle);
+      if (quartoPendingPublish === pending) quartoPendingPublish = null;
+      await clearPendingResults(SLUG, pending.manifest.render_id).catch((error) => { quartoLog += "Outbox cleanup: " + error.message + "\n"; });
+      try {
+        await loadQuartoOutput({ force:true });
+        say(receipt.selected === false ? "Render saved; a newer output remains selected." : "Rendered and shared");
+      } catch (error) {
+        say("Render saved; the selected preview could not be loaded (" + error.message + ")", true);
+      }
+      void paintPreview();
+    } catch (error) {
+      say("Rendered locally; not yet shared (" + error.message + ")", true);
+    }
+  }
+
+  function cancelQuartoRender() {
+    quartoJob?.controller?.abort();
   }
 
   /* --------------------------------------------------------- the timeline */
@@ -1176,9 +1593,18 @@
   function liveTreeNow() {
     if (!session) return { main: "", texts: {}, digests: {} };
     const tree = session.tree();
-    if (tree.main) return tree;
+    if (tree.main) {
+      // CodeMirror owns the active Yjs binding and exposes the text it is
+      // displaying. During a local transaction its view can be one tick ahead
+      // of the directory observer, so use that current source for snapshots
+      // taken by the preview scheduler.
+      const activeText = typeof editing !== "undefined" && editing && typeof editor !== "undefined" && editor?.text?.() != null && (!openFile || session.paths?.get?.(openFile) === tree.main)
+        ? String(editor.text())
+        : null;
+      return activeText == null ? tree : { ...tree, texts: { ...tree.texts, [tree.main]: activeText } };
+    }
     const named =
-      { typst: "main.typ", markdown: "main.md", html: "main.html", latex: "main.tex" }[sourceFormat] ||
+      { typst: "main.typ", markdown: "main.md", quarto: "main.qmd", html: "main.html", latex: "main.tex" }[sourceFormat] ||
       "main.txt";
     return {
       main: named,
@@ -1193,7 +1619,12 @@
     // the agent, the anchoring -- is the same as for the live document,
     // because to all of it a checkpoint is just another directory.
     if (viewing) return checkpointTree(viewing);
-    return liveTreeNow();
+    const tree = liveTreeNow();
+    if (sourceFormat === "quarto" && quartoBundle) {
+      tree.quartoBundle = quartoBundle;
+      tree.urls = { ...(tree.urls || {}), ...quartoAssets };
+    }
+    return tree;
   }
 
   // Painting the preview is sending it to the frame: the draft is a document,
@@ -1319,7 +1750,10 @@
   // viewer on the documents origin rather than the empty shell. Everything
   // else about the frame is the same: same origin, same CSP, same channel.
   const pdfOutput = $derived(renderers.producesPdf(displayedFormat));
-  const framePath = $derived(renderers.outputKind(displayedFormat) === "pdf" ? "pdf" : "raw");
+  const framePath = $derived(
+    (sourceFormat === "quarto" && quartoView === "output" && quartoOutput?.kind === "pdf") ||
+      renderers.outputKind(displayedFormat) === "pdf" ? "pdf" : "raw",
+  );
 
   // How long the last compile took, and whether one is running now. Paged
   // formats expose the same short-lived loading state; the elapsed time is
@@ -1526,6 +1960,36 @@
     clearTimeout(previewTimer);
     previewTimer = null;
     renderingStore.cancelPoll();
+    if (renderers.formatOf(treeNow().main) === "quarto" && quartoView === "output" && !viewing) {
+      try {
+        const output = await loadQuartoOutput();
+        // Freshness hashes the whole Quarto tree, including included files
+        // and assets. Run it after the debounced output selection settles so
+        // it describes the bundle that was actually loaded.
+        void refreshQuartoFreshness();
+        if (output?.kind === "pdf" && output.bytes) framePreview.publish({ kind: "pdf", sha: output.renderId || quartoBundle?.render_id || null, bytes: output.bytes });
+        else if (output?.html) {
+          const document = output.page ? output.page(output.downloadName, false) : output.html;
+          framePreview.publish({ kind: "html", html: '<!doctype html><body style="margin:0"><iframe title="Saved Quarto artifact" sandbox="" referrerpolicy="no-referrer" style="border:0;width:100%;height:100vh" srcdoc="' + quarto.escapeHtml(document) + '"></iframe></body>' });
+        }
+        else if (output?.downloadUrl) framePreview.publish({ kind: "html", html: `<main class="quarto-artifact-download"><p>This saved Quarto artifact is ${output.kind.toUpperCase()}.</p><p>Use the download link above to open it.</p></main>` });
+      } catch {
+        // The draft remains available when the immutable output is missing or
+        // temporarily unavailable; selection reports the actionable error.
+      }
+      return;
+    }
+    // Draft preview work is already debounced by sourceChanged. If front
+    // matter changed the target format, refresh the selected context before
+    // hashing freshness so an older bundle cannot remain associated with the
+    // new draft.
+    if (sourceFormat === "quarto" && session) {
+      if (quartoBundle?.context?.format !== quartoTargetFormat()) {
+        try { await loadQuartoOutput(); } catch { /* the draft remains usable */ }
+        if (readerDisposed || sourceFormat !== "quarto") return;
+      }
+      void refreshQuartoFreshness();
+    }
     // A paged document is compiled in an editor's browser and nowhere else,
     // so everybody else is shown the PDF the server kept from the last one
     // who did. See `docs/specs/latex.md`.
@@ -1575,7 +2039,7 @@
         if (
           mine <= painted ||
           snapshotNavigation !== navigationGeneration ||
-          (slow && snapshotSource !== sourceGeneration) ||
+          ((slow || format === "quarto") && snapshotSource !== sourceGeneration) ||
           tree.main !== treeNow().main
         ) return;
         if (paged) {
@@ -1587,7 +2051,10 @@
           }
         }
         tree.assets = held.assets;
-        tree.urls = held.urls;
+        // Authored figure URLs and cached Quarto output assets are both part
+        // of this render. Keep both inventories when the figure collector
+        // returns its authenticated blob URLs.
+        tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
       // A LaTeX compile takes seconds rather than milliseconds, so the pane
       // says one is running. The last page that compiled stays up under it:
@@ -1639,7 +2106,7 @@
       if (
         mine <= painted ||
         snapshotNavigation !== navigationGeneration ||
-        (slow && snapshotSource !== sourceGeneration) ||
+        ((slow || format === "quarto") && snapshotSource !== sourceGeneration) ||
         tree.main !== treeNow().main
       ) return;
       painted = mine;
@@ -1702,7 +2169,7 @@
       // document rather than like a crash.
       if (!everPainted) {
         const page = await renderers
-          .failurePage(await headingOf(tree), sourceFormat)
+          .failurePage(await headingOf(tree), format)
           .catch(() => null);
         if (!readerDisposed && page && mine >= painted && snapshotNavigation === navigationGeneration) tell({ type: "preview", html: page });
       }
@@ -1735,6 +2202,24 @@
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
+    if (sourceFormat === "quarto") quartoFreshnessSerial += 1;
+    if (sourceFormat === "quarto" && session) {
+      const main = session.mainPath() || "main.qmd";
+      const parsed = quarto.parseQuarto(session.textOf(session.mainId())?.toString?.() || session.text.toString(), { path: main });
+      const nextDiagnostics = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
+      const diagnosticsGeneration = sourceGeneration;
+      // Yjs can notify this observer from inside CodeMirror's update
+      // listener. Editor.setDiagnostics dispatches another update, which
+      // CodeMirror rejects while the first one is still in progress. Source
+      // invalidation stays synchronous, but the editor repaint waits until
+      // the current transaction has returned and is skipped if newer text
+      // arrived before then.
+      queueMicrotask(() => {
+        if (readerDisposed || diagnosticsGeneration !== sourceGeneration) return;
+        renderDiagnostics = nextDiagnostics;
+        paintCombinedDiagnostics();
+      });
+    }
     const outputIsPdf = pdfOutput;
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
@@ -1743,7 +2228,8 @@
     // timer for every Typst keystroke would starve the PDF indefinitely.
     if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
     clearTimeout(previewTimer);
-    if (outputIsPdf && !compilesHere) {
+    const quartoOutputView = sourceFormat === "quarto" && quartoView === "output";
+    if (outputIsPdf && !compilesHere && !quartoOutputView) {
       // The text has moved, so what is in the frame is a rendering of an
       // earlier version. That is known here rather than asked: the rendering
       // is named by the digest of the source it was compiled from.
@@ -1753,7 +2239,11 @@
     }
     // A rendering waiting for the text to stay quiet is of a text that did
     // not.
-    if (outputIsPdf) dropHeldRendering();
+    // A saved Quarto PDF is selected through the output view while the source
+    // remains a .qmd (and therefore has an HTML source format). Keep that
+    // view on the ordinary debounced path so its tree-wide freshness check
+    // still runs if the output kind changes or the format mapping evolves.
+    if (outputIsPdf && !quartoOutputView) dropHeldRendering();
     // A LaTeX compile takes seconds, so it waits for the source to be quiet
     // for longer -- `latex.DEBOUNCE`, which is that module's number and not
     // one written twice. A reader watching somebody else type waits longer
@@ -1765,6 +2255,32 @@
           ? 300
           : READER_DEBOUNCE;
     previewTimer = setTimeout(paintPreview, wait);
+  }
+
+  async function contextForQuarto(parsed, tree, context = {}) {
+    const byPath = new Map();
+    for (const [path, text] of Object.entries(tree?.texts || {})) {
+      if (path !== parsed.path) byPath.set(path, await quarto.sha256(text));
+    }
+    for (const [path, digest] of Object.entries({ ...(tree?.assets || {}), ...(tree?.digests || {}) })) {
+      if (path !== parsed.path && typeof digest === "string" && digest) byPath.set(path, digest);
+    }
+    // Rust orders dependency records by UTF-8 path bytes. JS's default sort
+    // compares UTF-16 code units, which differs for astral Unicode paths.
+    const encoder = new TextEncoder();
+    const utf8Compare = (left, right) => {
+      const a = encoder.encode(left), b = encoder.encode(right);
+      for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] - b[i];
+      return a.length - b.length;
+    };
+    const dependencies = [...byPath.keys()].sort(utf8Compare).map((path) => `${path}\0${byPath.get(path)}`);
+    return quarto.contextFingerprint(parsed, {
+      main: parsed.path,
+      format: context.format || "html",
+      profiles: context.profiles || [],
+      parametersSha256: context.parameters_sha256 || await quarto.parameterSha256({}),
+      dependencies,
+    });
   }
 
   /* ------------------------------------------------------- keeping in step */
@@ -2043,6 +2559,7 @@
   let files = $state([]);
   let folders = $state([]);
   let openFile = $state("");
+  let handledFileTransactions = new WeakSet();
   const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
   let peersByFile = $state(new Map());
   // The deployment's rules, which say what a path may be and what may sit at
@@ -2095,6 +2612,11 @@
     const format = renderers.formatOf(session.mainPath());
     if (format && format !== sourceFormat) {
       sourceFormat = format;
+      if (format !== "quarto") {
+        quartoView = "draft";
+        quartoOutput = null;
+        quartoOutputState = "";
+      }
       configureLatex(format);
       if (mayEdit) renderers.warm(format);
       // A main-file rename can keep the same output kind (Typst -> LaTeX is
@@ -2121,11 +2643,16 @@
 
   // A file added, renamed, removed, or made the main one: the list is redrawn
   // and the document is rendered again, because every one of those changes
-  // what a compiler would produce.
-  function filesChanged(events) {
+  // what a compiler would produce. Main-text edits also arrive through the
+  // source watcher; skip them here so one Yjs transaction does not schedule
+  // the same diagnostics and preview twice. Included-file edits still need a
+  // source change of their own because they can alter a Quarto render without
+  // changing the main Y.Text.
+  function filesChanged(events, active = session) {
+    if (!active || active !== session) return;
     // Nested text edits change the preview, but not the file list.
-    if (!Array.isArray(events) || events.some((event) => event.target === session.files)) refreshFiles();
-    sourceChanged();
+    if (!Array.isArray(events) || events.some((event) => event.target === active.files)) refreshFiles();
+    if (needsSourceRefresh(events, active.text, handledFileTransactions)) sourceChanged();
   }
 
   function refreshPeers() {
@@ -2344,10 +2871,11 @@
       onState: (state_) => (persistence = state_),
       onSession: (active) => {
         session = active;
+        handledFileTransactions = new WeakSet();
         refreshFiles();
       },
       onSource: (active) => {
-        if (!active.mainId()) sourceChanged();
+        sourceChanged();
       },
       onSwap: () => (sourceEpoch += 1),
       onFiles: filesChanged,
@@ -2372,10 +2900,44 @@
       : document_.can_edit === undefined
         ? document_.can_moderate
         : document_.can_edit;
-    // A document published before HTML was a source format has one anyway: the
-    // page itself, through the identity renderer.
-    const format = document_.source_format || "html";
+    // The backend's explicit engine/draft pair is authoritative when present.
+    // Legacy source_format=quarto documents infer Quarto through the adapter
+    // helper, while a bundle without an engine discriminator remains Quarto.
+    let resultsIdentity;
+    try {
+      resultsIdentity = documentResultsIdentity(document_);
+    } catch (error) {
+      say(error.message, true);
+      settled = true;
+      return;
+    }
+    const format = resultsIdentity.execution_engine === "quarto"
+      ? "quarto"
+      : document_.source_format
+        ? resultsIdentity.draft_format
+        : "html";
     sourceFormat = format;
+    quartoBundle = document_.quarto_bundle || document_.quartoBundle || null;
+    quartoAssets = {};
+    quartoContext = document_.quarto_context_id || document_.quartoContextId || "";
+    quartoFreshness = quartoBundle
+      ? quarto.classifyFreshness(null, quartoBundle)
+      : { state: "missing", message: "No saved result" };
+    if (format !== "quarto") {
+      quartoView = "draft";
+      quartoOutput = null;
+      quartoOutputState = "";
+    }
+    if (format === "quarto") {
+      localQuarto.configure({ project: SLUG, origin: location.origin });
+      quartoBindingId = localQuarto.bindingId();
+      void loadPendingResults(SLUG).then((pending) => {
+        if (pending && !quartoPendingPublish) {
+          quartoPendingPublish = pending;
+          say("A completed local render is waiting to be shared.");
+        }
+      }).catch(() => {});
+    }
     // A document is shown by output kind. Paged documents use stored PDFs when
     // this deployment has no browser compiler, so opening a Typst paper never
     // depends on downloading Typst WASM. Compiler availability only controls
@@ -2388,6 +2950,9 @@
       return;
     }
     mayEdit = Boolean(allowed);
+    if (!mayEdit && sourceFormat === "quarto") {
+      quartoView = "output";
+    }
     // A panel remembered from an editor's visit is not one a link-holder is
     // offered. Coerced without being remembered: the preference is this
     // browser's, and an editor coming back to their own document keeps it.
@@ -2404,6 +2969,15 @@
     // session that `startCollaboration` just built, which is why this comes after
     // it rather than beside the old restore-a-distribution code above.
     configureLatex(sourceFormat);
+    if (sourceFormat === "quarto") {
+      // Fetch the selected manifest for cached draft assets even when an
+      // editor stays on Draft. Readers keep their selected full artifact
+      // preference, while both views share the same immutable bundle.
+      void loadQuartoOutput().then(() => paintPreview()).catch(() => {
+        if (!mayEdit) quartoView = "draft";
+        void paintPreview();
+      });
+    }
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
     if (mayEdit) startEditing();
@@ -2425,6 +2999,7 @@
 
   $effect(() => {
     markViewed(SLUG);
+    const stopQuartoStatus = localQuarto.subscribe((status) => { quartoLocalStatus = status; });
     pendingChat = createPendingChat({
       send: (message) => collaboration?.sendLive(message) || { ok: false },
     });
@@ -2467,13 +3042,20 @@
       // disconnects, which the socket closing does on its own; this is only
       // this browser letting go of its half.
       readerDisposed = true;
+      stopQuartoStatus();
+      quartoLoader.invalidate();
+      closeQuartoResults();
+      quartoFreshnessSerial += 1;
+      quartoJob?.controller?.abort();
       issued += 1;
       navigationGeneration += 1;
       clearTimeout(previewTimer);
       previewTimer = null;
       boot.dispose();
       passages.clearPassageCache();
+      if (quartoPreview) void localQuarto.stopQuartoPreview(quartoPreview.id).catch(() => {});
       framePreview.dispose();
+      releaseQuartoUrls();
       renderingStore?.dispose();
       stopLatex();
       pendingChat?.dispose();
@@ -2584,6 +3166,15 @@
       {/if}
       {#if state}<small class="badge {problem ? 'preset-tonal-error' : 'preset-tonal-surface'}" title={state}>{state}</small>{/if}
     {/if}
+    {#if sourceFormat === "quarto"}
+      <small class="badge preset-tonal-surface">{quartoView === "draft" ? "Draft" : "Quarto output"}</small>
+      {#if quartoView === "draft" && quartoFreshness.state !== "missing"}
+        <small class="badge {quartoFreshness.state === 'potentially-stale' ? 'preset-tonal-warning' : 'preset-tonal-surface'}" title="Saved computation results do not verify current external data or package environments.">{quartoFreshness.message}</small>
+      {:else if quartoView === "output"}
+        <small class="badge preset-tonal-surface">{quartoArtifactStatus}</small>
+        {#if quartoOutput?.local}<small class="badge preset-tonal-warning">Local output; not shared</small>{/if}
+      {/if}
+    {/if}
   {/snippet}
   {#snippet tools()}
     <Row gap={2}>
@@ -2595,6 +3186,45 @@
         {/if}
         <IconButton icon="help" label="Documentation" href="/documentation" />
       </div>
+      {#if sourceFormat === "quarto"}
+        <div class="flex gap-1" role="group" aria-label="Quarto preview">
+          <button type="button" class="btn btn-sm {quartoView === 'draft' ? 'preset-filled-primary-500' : 'preset-outlined-surface-300-700'}" aria-pressed={quartoView === "draft"} onclick={() => void selectQuartoView("draft")}>Draft</button>
+          <button type="button" class="btn btn-sm {quartoView === 'output' ? 'preset-filled-primary-500' : 'preset-outlined-surface-300-700'}" aria-pressed={quartoView === "output"} onclick={() => void selectQuartoView("output")}>Quarto output</button>
+          {#if editing && mayEdit}
+            <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => showPanel("settings")}>{quartoLocalStatus.state === "connected" ? "Local app connected" : "Connect local app"}</button>
+            <input class="input input-sm w-36" aria-label="Local Quarto binding ID" placeholder="binding ID" value={quartoBindingId}
+                   onchange={(event) => { quartoBindingId = event.currentTarget.value.trim(); localQuarto.setBindingId(quartoBindingId); }} />
+            <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={Boolean(quartoJob) || Boolean(viewing) || quartoPreviewStarting} onclick={() => void toggleQuartoPreview()}>{quartoPreview ? "Stop live preview" : "Start live preview"}</button>
+            {#if quartoPreview?.state === "starting"}<small>Starting local preview…</small>{:else if quartoPreview}<a class="anchor" href={quartoPreview.url} target="_blank" rel="noopener noreferrer">Open local preview (not shared)</a>{/if}
+            {#if quartoJob}
+              <button type="button" class="btn btn-sm preset-tonal-error" onclick={cancelQuartoRender}>Cancel render</button>
+            {:else}
+              <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={quartoOptionsChanging || Boolean(viewing)} onclick={() => void renderQuartoLocally()}>Render locally</button>
+              <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={quartoOptionsChanging || Boolean(viewing)} onclick={() => void renderQuartoLocally("refresh-computations")}>Refresh computations</button>
+              {#if quartoLocalStatus.capabilities?.quarto?.policies?.includes("frozen")}
+                <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
+                  disabled={quartoOptionsChanging || Boolean(viewing)}
+                  title="Requires a complete local freezer matching this render context."
+                  onclick={() => void renderQuartoLocally("frozen")}>Use frozen results</button>
+              {/if}
+            {/if}
+            {#if quartoPendingPublish}<button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void retryQuartoPublish()}>Retry sharing</button>{/if}
+          {/if}
+        </div>
+        {#if editing && mayEdit}
+          <details><summary>Execution workspace</summary>
+            <label><input type="checkbox" bind:checked={quartoProjectScope} disabled={Boolean(quartoJob)} /> Render all pages of a website or book (HTML)</label>
+            <label><input type="checkbox" bind:checked={quartoSnapshot} disabled={Boolean(quartoJob)} /> Render an isolated copy of all shared files</label>
+            {#if quartoSnapshot}<label>Additional local data files (one relative path per line)<textarea class="textarea" bind:value={quartoDataInputs} disabled={Boolean(quartoJob)}></textarea></label><small>Only shared files and these declared inputs are copied. Install required packages in the local environment.</small>{/if}
+          </details>
+        {/if}
+        <QuartoRenderOptions options={quartoOptions} disabled={Boolean(quartoJob) || quartoOptionsChanging || Boolean(viewing)} onapply={applyQuartoOptions} />
+        {#if quartoJob}<small class="text-surface-600-400">Quarto: {quartoJob.stage}…</small>{/if}
+        {#if quartoLog}<details class="text-xs"><summary>Local render log</summary><pre class="max-h-32 overflow-auto whitespace-pre-wrap">{quartoLog}</pre></details>{/if}
+        {#if quartoBundle?.cells?.some((cell) => cell.outputs?.length)}
+          <button class="btn btn-sm preset-tonal-surface" onclick={() => { closeQuartoResults(); quartoResultsOpen = true; }}>Saved results</button>
+        {/if}
+      {/if}
       {#if viewing}
         <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={backToNow}>Back to now</button>
         {#if mayEdit}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restoreCheckpoint(viewing.sha)}>Restore this version</button>{/if}
@@ -2684,6 +3314,7 @@
           onsend={sendLiveChat} {unreadChat} bind:tab={collaborationTab}
           {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
           canComment={mayChat} hasFigures={figureAt.length > 0} ontool={chooseTool}
+          oninspectresult={inspectQuartoComment}
           onreveal={revealAnnotation}
           onresolve={resolve} ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} />
       {:else if tab.id === "changes"}
@@ -2819,6 +3450,13 @@
        would reload the document and lose the reader's place in it. -->
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
            away={!shown.document || unrendered || failedBeforeRender} />
+  {#if sourceFormat === "quarto" && quartoView === "output" && quartoOutput?.downloadUrl}
+    <div class="px-4 py-2 text-sm text-surface-700-300">
+      Saved Quarto {quartoOutput.kind.toUpperCase()} artifact:
+      {#if quartoOutput.page}<ResultsArtifactBrowser artifact={quartoOutput} />{/if}
+      <a class="anchor" href={quartoOutput.downloadUrl} download={quartoOutput.downloadName}>Download artifact</a>
+    </div>
+  {/if}
 
   <nav class="mobile-pane-nav" aria-label="Workspace view">
     <IconButton icon="book" label="Document" pressed={shown.document}
@@ -2868,11 +3506,18 @@
 
 <!-- What a selection becomes, once the reader has said what to call it and
      what they think of it. -->
+<Modal bind:open={quartoResultsOpen} title={quartoInspected ? "Original saved result" : "Saved results"} wide onclose={closeQuartoResults}>
+  <SavedResults items={quartoInspected?.items || resultItems(quartoBundle)}
+    assets={quartoInspected?.assets || quartoAssets} renderId={quartoInspected?.manifest.render_id || quartoBundle?.render_id || ""}
+    selectedRegion={quartoInspected?.region || null}
+    onsource={editing ? locateQuartoResult : undefined} canComment={mayChat && !quartoOutput?.local} oncomment={commentQuartoResult} />
+</Modal>
+
 <Modal bind:open={commenting} title={tool === "editing" ? "Suggest a change" : "Add comment"}>
   {#snippet children()}
     <form id="commentForm" class="flex flex-col gap-3" onsubmit={submitDialog}>
       <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3 text-sm">
-        {pending?.point ? "Comment at this point" : pending?.region ? `Figure ${pending.region.image_index + 1}` : `“${pending?.exact ?? ""}”`}
+        {pending?.output_anchor ? `Saved result: ${pending.exact}${pending.region ? " (selected region)" : ""}` : pending?.point ? "Comment at this point" : pending?.region ? `Figure ${pending.region.image_index + 1}` : `“${pending?.exact ?? ""}”`}
       </blockquote>
       {#if identity}
         <p class="text-surface-600-400 text-sm">

@@ -38,6 +38,12 @@ impl Room {
         // Rendering retention depends only on event/content identities and
         // labels, so an unreadable tree body does not invalidate its evidence.
         self.prune_renderings(&points).await;
+        // Quarto bundles use the same retained checkpoint graph. This keeps a
+        // bundle associated with a named/retained source revision available
+        // while retiring unselected historical results under the deployment
+        // history bound, with object accounting released only after deletion
+        // is confirmed.
+        self.prune_quarto(&points).await;
         if self.checkpointing.load(Ordering::Relaxed) == 1 {
             if let Ok(references) = references {
                 self.prune_blobs(written, &references).await;
@@ -280,7 +286,7 @@ mod tests {
         room.prune_retained(&history::Tree::default()).await;
         assert_eq!(
             catalog.connection_operations.load(Ordering::Relaxed) - before,
-            2,
+            3,
             "one history traversal, two pages, shared by all pruning consumers"
         );
         assert_eq!(

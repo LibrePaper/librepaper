@@ -271,6 +271,7 @@ mod tests {
             point: false,
             color: None,
             region: None,
+            output_anchor: None,
             source: (motivation == "editing").then(|| SourceAnchor {
                 path: "main.md".into(),
                 exact: "alpha".into(),
