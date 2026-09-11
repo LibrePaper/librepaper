@@ -126,6 +126,11 @@
       ["path", "M12 3v12"],
     ],
     search: [["circle", { cx: 11, cy: 11, r: 8 }], ["path", "m21 21-4.3-4.3"]],
+    // Lucide's list icon, from https://github.com/lucide-icons/lucide/blob/main/icons/list.svg.
+    list: [
+      ["path", "M3 12h.01"], ["path", "M3 18h.01"], ["path", "M3 6h.01"],
+      ["path", "M8 12h13"], ["path", "M8 18h13"], ["path", "M8 6h13"],
+    ],
     // Lucide's sliders-horizontal, for the settings panel: preferences are
     // things set along a line, not a machine to open up.
     sliders: [

@@ -99,6 +99,7 @@ const context = (values) => vm.createContext({
   Uint8Array,
   ArrayBuffer,
   readerDisposed: false,
+  outlineRevision: 0,
   sourceFormat: "",
   previewMain: "",
   previewFile: "",

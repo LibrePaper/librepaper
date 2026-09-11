@@ -74,6 +74,8 @@
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import LatexStatus from "./LatexStatus.svelte";
   import Files from "./Files.svelte";
+  import Outline from "./Outline.svelte";
+  import { extractOutline } from "../lib/outline.js";
   import { renderedNoteText } from "../lib/latex/status-text.js";
   import { createPreviewApi } from "../lib/reader/preview-api.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
@@ -1467,6 +1469,22 @@
   let issued = 0;
   let painted = 0;
   let sourceGeneration = 0;
+  // Outline reads the same live text as the editor. The revision dependency
+  // is explicit because Yjs changes happen outside Svelte's normal tracking;
+  // both local and remote source observers increment it.
+  const outlineSource = $derived.by(() => {
+    void outlineRevision;
+    if (!session || !openFile) return "";
+    const live = editing ? editor?.text?.(openFile) : null;
+    if (live != null) return String(live);
+    return String(session.textOf?.(openFile)?.toString?.() || "");
+  });
+  const outlineFormat = $derived.by(() => {
+    const path = toolbarPath;
+    return renderers.formatOf(path) || (path && path === session?.mainPath?.() ? sourceFormat : "");
+  });
+  const outlineHeadings = $derived.by(() => panel === "outline" && mayEdit
+    ? extractOutline(outlineSource, outlineFormat) : []);
   // Keep one render in flight and coalesce requests into the latest tree.
   // This bounds the worker queue while typing, and keeps each LaTeX PDF
   // tied to the snapshot digest of the tree that produced it.
@@ -2084,6 +2102,7 @@
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
+    outlineRevision += 1;
     if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
       clearTimeout(quartoLiveSyncTimer);
       quartoLiveSyncTimer = setTimeout(() => void quartoPreviewController.sync(), 500);
@@ -2163,6 +2182,16 @@
   }
 
   let stepTimer = null;
+  function outlineTextChanged() {
+    // CodeMirror has applied the local or remote transaction by this point.
+    // The Yjs source observer can run before its caret has been mapped.
+    outlineActiveFrom = editor?.caret?.() ?? null;
+  }
+  function outlineCaretChanged() {
+    outlineTextChanged();
+    followCaret();
+  }
+
   function followCaret() {
     if (!linked || !editing || docText === null) return;
     clearTimeout(stepTimer);
@@ -2238,6 +2267,7 @@
   // and editor settings remain in the editor workspace.
   const TABS = [
     { id: "files", says: "Files", editorOnly: true },
+    { id: "outline", says: "Outline", editorOnly: true },
     { id: "collaboration", says: "Collaboration" },
     { id: "changes", says: "Changes", editorOnly: false },
     { id: "agent", says: "Agent" },
@@ -2525,6 +2555,8 @@
   let files = $state([]);
   let folders = $state([]);
   let openFile = $state("");
+  let outlineActiveFrom = $state(null);
+  let outlineRevision = $state(0);
   let previewMain = $state("");
   // Pin an explicitly previewed file by identity so renames keep it selected.
   // Empty means follow the shared main file; opening an include never pins it.
@@ -2651,6 +2683,7 @@
   }
 
   function openTheFile(file) {
+    if (openFile !== file.id) outlineActiveFrom = null;
     // A figure has no editor: choosing one shows it. The id of an asset is
     // its path, since its bytes are not in the shared document and there is
     // nothing else to key it by.
@@ -2663,6 +2696,27 @@
       write(LAYOUT, layout);
     }
     if (mayEdit) showMobileView("source");
+  }
+
+  // An outline entry is a source navigation command. It may be the first
+  // source command in a document-only or compact view, so mount the lazy
+  // editor before asking it to move the caret.
+  async function openOutlineHeading(heading) {
+    if (!mayEdit || !session || !heading) return;
+    const id = openFile;
+    const file = files.find((entry) => entry.id === id && entry.kind === "text");
+    if (!file) return;
+    outlineActiveFrom = heading.from;
+    const revision = outlineRevision;
+    openTheFile(file);
+    if (!editing) await startEditing();
+    if (readerDisposed || id !== openFile) return;
+    showMobileView("source");
+    await tick();
+    if (readerDisposed || id !== openFile || revision !== outlineRevision || !editor
+        || !outlineHeadings.some((item) => item.from === heading.from)) return;
+    if (editor.goToIn) editor.goToIn(id, heading.from);
+    else editor.openAt?.(id, heading.line, 1);
   }
 
   // The figure being looked at, when the chosen file is one. Held rather than
@@ -3329,7 +3383,7 @@
               </div>
             {:else}
               <IconButton
-                icon={tab.id === "files" ? "folder" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
+                icon={tab.id === "files" ? "folder" : tab.id === "outline" ? "list" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
                 label={tab.says} pressed={panel === tab.id}
                 onclick={() => selectPanel(tab.id)} />
             {/if}
@@ -3348,6 +3402,9 @@
                ondelete={deleteFiles} onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
                onfigure={addFigure} ontext={addDroppedText}
                ondownload={downloadTree} ondownloaditem={downloadEntry} />
+      {:else if tab.id === "outline" && mayEdit}
+        <Outline headings={outlineHeadings} activeFrom={outlineActiveFrom}
+                 onselect={openOutlineHeading} />
       {:else if tab.id === "agent"}
         <Agent slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"} path={session?.paths?.get(openFile) || ""}
                selection={pending} revision={pending?.revision || ""} request={assistantRequest}
@@ -3442,8 +3499,8 @@
       {:else if Editor}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit && !viewing}
-                  onbibliography={bibliographyAnalyzed} oncaret={followCaret} onsave={reportPersistence} onquit={showDocumentAlone}
-                  onfilechange={(id) => { openFile = id; shownFigure = null; }} />
+                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
+                  onfilechange={(id) => { openFile = id; outlineActiveFrom = null; shownFigure = null; }} />
         {/key}
       {/if}
     </section>
@@ -3510,7 +3567,7 @@
     {/if}
     {#each compact ? tabs : [] as tab (tab.id)}
       <IconButton
-        icon={tab.id === "files" ? "folder" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
+        icon={tab.id === "files" ? "folder" : tab.id === "outline" ? "list" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
         label={tab.says} pressed={shown.comments && panel === tab.id}
         onclick={() => selectPanel(tab.id)} />
     {/each}

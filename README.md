@@ -309,6 +309,11 @@ folders onto another folder to move them; drop onto empty space in the sidebar
 to move them to the top level. Dropping files or directories from your computer uploads them with
 their folder structure. Upload name collisions offer **Keep both** or **Skip**.
 
+The **Outline** sidebar lists headings in the open source file, indented by
+section level. Click a heading to open the source pane at that section. The
+outline updates as you and your collaborators edit, and supports Markdown,
+Quarto, Typst, HTML, and LaTeX files.
+
 Right-click an item or use its **⋯** menu to rename, move, download, or delete
 it; files can also be duplicated. Use Ctrl/Cmd-click or Shift-click to select
 several items, F2 to rename, and Delete to open the deletion confirmation.
