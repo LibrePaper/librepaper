@@ -20,6 +20,11 @@ use sha2::Digest;
 
 mod access;
 mod accounts;
+mod agent_annotations;
+mod agent_cancel;
+mod agent_lease;
+mod agent_objects;
+mod agent_source;
 mod checkpoints;
 mod comments;
 mod documents;
@@ -28,6 +33,7 @@ mod journal;
 mod operations;
 mod room_edits;
 
+pub use agent_annotations::AgentAnnotationAuthority;
 pub use execution::{
     CatalogCompletion, CatalogExecError, CatalogExecutionSnapshot, CatalogOutcome,
     CatalogReservation, CatalogServiceCompletion, MAX_ADMITTED_REQUESTS, MAX_EXECUTING,
@@ -116,6 +122,18 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         21,
         include_str!("../../../migrations/0021_quarto_selection_history.sql"),
+    ),
+    (
+        22,
+        include_str!("../../../migrations/0022_agent_protocol.sql"),
+    ),
+    (
+        23,
+        include_str!("../../../migrations/0023_agent_cancellations.sql"),
+    ),
+    (
+        24,
+        include_str!("../../../migrations/0024_agent_execution_leases.sql"),
     ),
 ];
 
@@ -229,11 +247,17 @@ pub struct QuartoSelection {
     pub updated_at: i64,
 }
 
-/// The request authority carried to a final mutation transaction.  The
-/// account and generation identify a signed-in caller; a link hash is an
-/// additional, independently revocable grant.  Policy and automation are
-/// included because a route's first role check is only advisory while a body
-/// is in flight.
+/// Replay evidence committed atomically with an agent-created checkpoint.
+#[derive(Clone, Debug)]
+pub struct AgentCheckpointCommit {
+    pub request_id: String,
+    pub digest: String,
+    pub operation: serde_json::Value,
+    pub source_revision: String,
+}
+
+/// Request authority rechecked in the final mutation transaction, including
+/// independently revocable account, document-link, and runner grants.
 #[derive(Clone, Copy, Debug)]
 pub struct MutationAuthority<'a> {
     pub account_id: &'a str,
@@ -246,6 +270,12 @@ pub struct MutationAuthority<'a> {
     /// from owner_key so a route cannot turn the document's sentinel into a
     /// caller identity.
     pub unowned_publisher: bool,
+    /// Protected sidebar runner lease. Empty means a non-runner caller and
+    /// preserves the existing authority behavior for ordinary paths.
+    pub execution_epoch: &'a str,
+    /// Optional checkpoint receipt carried to the manifest's SQL commit.
+    /// Ordinary mutations leave this empty.
+    pub agent_checkpoint: Option<&'a AgentCheckpointCommit>,
 }
 
 /// A row in `accounts`.  Provider ids, rather than mutable handles, are the

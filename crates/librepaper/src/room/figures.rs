@@ -791,6 +791,8 @@ impl Room {
                 policy_editor: true,
                 automation: false,
                 unowned_publisher: false,
+                execution_epoch: "",
+                agent_checkpoint: None,
             }),
         )
         .await
@@ -900,6 +902,8 @@ impl Room {
                 policy_editor: true,
                 automation: false,
                 unowned_publisher: false,
+                execution_epoch: "",
+                agent_checkpoint: None,
             }),
         )
         .await

@@ -412,6 +412,9 @@ impl Server {
                                     decode_update(&incoming.vector).filter(|raw| !raw.is_empty());
                                 let (update, count, server_vector) =
                                     room.open_state_with_vector(vector.as_deref()).await;
+                                if room.agent_recovery_pending() {
+                                    break 'reader;
+                                }
                                 let payload = if update.len() > self.config.session.inline_state_max {
                                     // A megabyte of state does not belong in a
                                     // text frame. The socket is given a

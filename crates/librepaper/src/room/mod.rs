@@ -30,6 +30,9 @@ use crate::storage::blob::{
 use crate::util::{clean, new_id};
 use crate::util::{now_unix, parse_timestamp, timestamp};
 
+pub(crate) mod agent;
+pub(crate) mod agent_comments;
+mod agent_view;
 mod catalog;
 mod checkpoint;
 mod command;
@@ -579,7 +582,14 @@ pub struct RoomSet {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RoomAdmissionError {
-    AtCapacity { rooms: usize, bytes: usize },
+    AtCapacity {
+        rooms: usize,
+        bytes: usize,
+    },
+    /// The room has a prepared agent transaction whose durable outcome could
+    /// not be reconciled. Serving its in-memory source would expose an
+    /// uncommitted effect, so callers must retry after recovery succeeds.
+    UnreadableState,
 }
 
 impl std::fmt::Display for RoomAdmissionError {
@@ -589,6 +599,7 @@ impl std::fmt::Display for RoomAdmissionError {
                 formatter,
                 "room admission limit reached ({rooms} rooms, {bytes} resident bytes)"
             ),
+            Self::UnreadableState => formatter.write_str("room state is awaiting recovery"),
         }
     }
 }
@@ -728,7 +739,14 @@ impl RoomSet {
     /// this never constructs a room when either hard resident limit is full;
     /// callers can return a retryable response instead of evicting dirty work.
     pub async fn try_get(&self, slug: &str) -> Result<Arc<Room>, RoomAdmissionError> {
-        if let Some(existing) = self.rooms.lock().await.get(slug).cloned() {
+        let cached = { self.rooms.lock().await.get(slug).cloned() };
+        if let Some(existing) = cached {
+            if existing.read_only()
+                && existing.fence_reason.load(Ordering::Relaxed)
+                    == FenceReason::AgentRecoveryPending as u8
+            {
+                return Err(RoomAdmissionError::UnreadableState);
+            }
             return Ok(existing);
         }
         // Serialize capacity decisions without retaining the registry during
@@ -736,7 +754,14 @@ impl RoomSet {
         // even when a candidate's state is busy.
         let slot = {
             let _admission = self.admission.lock().await;
-            if let Some(existing) = self.rooms.lock().await.get(slug).cloned() {
+            let cached = { self.rooms.lock().await.get(slug).cloned() };
+            if let Some(existing) = cached {
+                if existing.read_only()
+                    && existing.fence_reason.load(Ordering::Relaxed)
+                        == FenceReason::AgentRecoveryPending as u8
+                {
+                    return Err(RoomAdmissionError::UnreadableState);
+                }
                 return Ok(existing);
             }
             let (existing, loading_count) = {
@@ -779,6 +804,11 @@ impl RoomSet {
             }
         };
         let room = self.get(slug).await;
+        if room.read_only()
+            && room.fence_reason.load(Ordering::Relaxed) == FenceReason::AgentRecoveryPending as u8
+        {
+            return Err(RoomAdmissionError::UnreadableState);
+        }
         drop(slot);
         if self.rooms.lock().await.contains_key(slug) {
             return Ok(room);
@@ -963,6 +993,17 @@ impl RoomSet {
             }),
         });
         room.load().await;
+        // Reconcile prepared agent source operations before this room can be
+        // returned to query, socket, or checkpoint callers. The prepared
+        // intent carries its authenticated actor and a durable pre-effect
+        // backup, so restart does not rely on an expired MCP view.
+        if let Err(error) = room.recover_pending_agent_on_load().await {
+            eprintln!(
+                "warning: could not reconcile pending agent operation for {}: {error}",
+                slug
+            );
+            room.fence(FenceReason::AgentRecoveryPending);
+        }
         let room_bytes = room.resident_bytes().await;
         let _admission = self.admission.lock().await;
         if room_bytes <= self.config.session.rooms_bytes_max {
@@ -1650,6 +1691,12 @@ impl Room {
     }
 
     /// Whether another server holds this room, as of the last time we asked.
+    /// Recheck after a publication-gated read: a caller may have acquired its
+    /// room reference before an overlapping agent write became ambiguous.
+    pub(crate) fn agent_recovery_pending(&self) -> bool {
+        self.fence_reason.load(Ordering::Relaxed) == FenceReason::AgentRecoveryPending as u8
+    }
+
     pub fn read_only(&self) -> bool {
         self.read_only.load(Ordering::Relaxed)
     }

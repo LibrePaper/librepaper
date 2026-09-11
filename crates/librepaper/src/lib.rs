@@ -14,6 +14,7 @@
 //! durable, `auth` who somebody is, `seed` the examples, and `local` the
 //! loopback service that compiles TeX on the author's machine.
 
+mod agent_query;
 mod auth;
 mod cli;
 pub mod config;

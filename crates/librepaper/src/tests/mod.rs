@@ -7,6 +7,7 @@ pub use harness::*;
 
 mod admission;
 mod agent_cli;
+mod agent_transactions;
 mod assets;
 mod assistant;
 mod assistant_cli;
@@ -28,6 +29,7 @@ mod hardening;
 mod history;
 mod latex;
 mod local;
+mod mcp;
 mod mirror_server;
 mod onboarding;
 mod ownership;

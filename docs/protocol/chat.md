@@ -40,6 +40,16 @@ receive `presence` whenever either socket connects or disconnects:
 { "type": "presence", "browser": true, "agent": false }
 ```
 
+An agent's `ready` also includes an opaque `execution_epoch`. The server keeps
+its document/conversation lease in the catalog, renews it every ten seconds,
+and expires it after sixty seconds without renewal. Replacement and disconnect
+fence the old epoch. Ordinary `presence` frames do not replace the epoch.
+The runner stores it outside model context and its MCP adapter sends
+`X-LibrePaper-Runner-Conversation` and `X-LibrePaper-Execution-Epoch` on calls.
+Mutations check the epoch again in their commit transaction; recovery uses the
+epoch captured when the effect was prepared. External MCP clients do not need
+these sidebar headers. Renderer routing uses separate conversation/token headers.
+
 Closing a socket temporarily detaches that peer and leaves the channel alive
 until expiry or explicit deletion. Events sent while the other peer is absent
 are rejected; the local runner queues and reconciles work itself. A document
@@ -131,11 +141,26 @@ For browser-side candidate rendering, the runner asks for a preview:
 {
   "type": "preview_request", "id": "preview-1", "task_id": "request-1",
   "base_revision": "base-tree-sha", "revision": "candidate-tree-sha",
-  "files": { "paper.typ": "candidate source" }
+  "candidate_id": "candidate-1", "candidate_token": "renderer-token"
 }
 ```
 
-The browser returns diagnostics tied to that candidate revision:
+The browser fetches the immutable candidate manifest and source files through
+authenticated same-origin requests:
+
+```
+GET /api/documents/{slug}/agent/candidates/{candidate_id}
+GET /api/documents/{slug}/agent/candidates/{candidate_id}/source?path=paper.typ
+```
+
+When a candidate is private to the agent actor, the browser sends its
+short-lived `candidate_token` as `X-LibrePaper-Candidate-Token`; it is never
+placed in a URL. Published candidates may omit this token.
+
+The manifest contains `base_revision`, `revision`, `main`, `files`, and
+optional render `settings`. `files` includes every text and asset entry;
+source responses are exact UTF-8 text and assets continue to use their
+content digest. The browser returns diagnostics tied to that candidate revision:
 
 ```json
 {
@@ -146,11 +171,10 @@ The browser returns diagnostics tied to that candidate revision:
 }
 ```
 
-The browser captures its full source tree and assets, checks `base_revision`,
-overlays the supplied changes to existing text files, and computes the
-canonical candidate tree digest. It renders only if that digest equals
-`revision`. Verification never mutates the shared document. Source changes
-since the base snapshot and unavailable assets cause a verification refusal.
+The browser pins the fetched candidate tree and computes its canonical digest.
+It renders only if that digest equals `revision`; it does not require the live
+editor to still equal `base_revision`. Verification never mutates the shared
+document. Unavailable candidate sources or assets cause a verification refusal.
 
 Only the runner may send `task`, `capabilities`, and `preview_request`. Only
 the browser may send `cancel`, `input`, and `preview_result`. `message` is permitted in

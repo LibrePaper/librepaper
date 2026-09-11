@@ -11,6 +11,11 @@ session. Your job in the setup conversation is to start it and verify that it
 connected. The runner receives requests and manages the model session; do not
 poll for browser messages yourself.
 
+The runner configures its Codex thread with LibrePaper's MCP document tools
+and launches the bundled stdio adapter with the protected document link from
+`LIBREPAPER_DOCUMENT`. No separate MCP broker or model-visible credential is
+needed.
+
 The setup prompt supplies a document link, conversation ID and conversation
 token. Keep the link and token secret. Pass the token through
 `LIBREPAPER_CHAT_TOKEN`; never repeat credentials in replies or write them into

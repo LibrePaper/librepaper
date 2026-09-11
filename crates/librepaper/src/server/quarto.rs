@@ -188,6 +188,8 @@ impl Server {
                 policy_editor: self.publishers.allows(&who.id.handle),
                 automation: who.automation,
                 unowned_publisher: false,
+                execution_epoch: "",
+                agent_checkpoint: None,
             };
             if let Err(error) = room
                 .put_quarto_object(
@@ -252,6 +254,8 @@ impl Server {
                     policy_editor: self.publishers.allows(&current_who.id.handle),
                     automation: current_who.automation,
                     unowned_publisher: false,
+                    execution_epoch: "",
+                    agent_checkpoint: None,
                 }),
             )
             .await
@@ -313,6 +317,8 @@ impl Server {
                                     policy_editor: self.publishers.allows(&current_who.id.handle),
                                     automation: current_who.automation,
                                     unowned_publisher: false,
+                                    execution_epoch: "",
+                                    agent_checkpoint: None,
                                 }),
                             )
                             .await
@@ -398,6 +404,8 @@ impl Server {
                             policy_editor: self.publishers.allows(&current_who.id.handle),
                             automation: current_who.automation,
                             unowned_publisher: false,
+                            execution_epoch: "",
+                            agent_checkpoint: None,
                         }),
                     )
                     .await

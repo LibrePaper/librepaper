@@ -54,6 +54,7 @@ mod figures;
 pub mod fonts;
 mod history;
 pub mod latex;
+mod mcp;
 mod onboarding;
 pub mod origins;
 mod quarto;
@@ -101,6 +102,7 @@ pub struct Server {
     onboarding: tokio::sync::Mutex<()>,
     /// Private agent channels are live coordination and never durable data.
     pub chat: chat::Hub,
+    mcp_capacity: mcp::Capacity,
     /// Where the LaTeX distributions come from, or nothing. A deployment
     /// without one still stores and shows `.tex` documents; what it does not
     /// do is offer a browser anywhere to fetch a compiler from, which is why
@@ -336,6 +338,7 @@ impl Server {
             pending: PendingCodes::new(),
             onboarding: tokio::sync::Mutex::new(()),
             chat: chat::Hub::default(),
+            mcp_capacity: mcp::Capacity::default(),
             latex: None,
             fonts: None,
             biber_vm: None,

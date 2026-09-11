@@ -639,6 +639,8 @@ impl Store {
                             policy_editor: actor.policy_editor,
                             automation: actor.automation,
                             unowned_publisher: actor.unowned_publisher,
+                            execution_epoch: "",
+                            agent_checkpoint: None,
                         }),
                 )
             })
@@ -787,6 +789,17 @@ impl Store {
                             .map(str::to_owned)
                     })
             });
+            // Agent source operations are coupled to a Yjs marker in the
+            // durable session, rather than a staged checkpoint object. The
+            // room recovery path must inspect that marker; treating this row
+            // as an incomplete publication would abort a successfully saved
+            // source effect before its receipt can be reconciled.
+            if operation
+                .as_ref()
+                .is_some_and(|operation| operation.kind == "agent_apply")
+            {
+                continue;
+            }
             let staged = if let Some(sha) = staged_sha.as_deref().filter(|sha| !sha.is_empty()) {
                 match blobs
                     .get(&crate::storage::blob::checkpoint_key(

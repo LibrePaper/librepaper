@@ -215,6 +215,19 @@ pub(super) async fn handle(
     }
 
     // --- api ---------------------------------------------------------------
+    if let ["api", "documents", slug, "mcp"] = &parts[..] {
+        return server.handle_mcp(request, peer, &arrival, slug).await;
+    }
+    if let ["api", "documents", slug, "agent", "candidates", candidate_id] = &parts[..] {
+        return server
+            .handle_candidate(request, peer, &arrival, slug, candidate_id, false)
+            .await;
+    }
+    if let ["api", "documents", slug, "agent", "candidates", candidate_id, "source"] = &parts[..] {
+        return server
+            .handle_candidate(request, peer, &arrival, slug, candidate_id, true)
+            .await;
+    }
     if path == "/api/account/erase" && method == Method::POST {
         if cross_site_refused(request.headers(), &arrival) {
             return write_json(403, &cross_site_refusal());

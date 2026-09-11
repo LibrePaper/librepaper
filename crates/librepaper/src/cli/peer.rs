@@ -1003,6 +1003,119 @@ impl AutomationPeer {
             .map_err(|err| format!("request failed: {err}"))
     }
 
+    /// Forward one MCP JSON-RPC message to the document service.
+    ///
+    /// Authentication is deliberately taken from this already-open peer. MCP
+    /// tool arguments therefore contain only document/view identifiers; the
+    /// share key and any ambient agent token stay in HTTP headers. The adapter
+    /// uses a separate method because MCP's protocol metadata is carried in
+    /// headers by the document endpoint rather than in model-visible input.
+    pub(super) async fn mcp_request(
+        &self,
+        method_name: &str,
+        tool_name: Option<&str>,
+        body: &Value,
+    ) -> Result<(u16, String, String), String> {
+        self.mcp_request_with_epoch(method_name, tool_name, body, None)
+            .await
+    }
+
+    pub(super) async fn mcp_request_with_epoch(
+        &self,
+        method_name: &str,
+        tool_name: Option<&str>,
+        body: &Value,
+        captured_epoch: Option<&str>,
+    ) -> Result<(u16, String, String), String> {
+        if method_name.is_empty()
+            || method_name.len() > 128
+            || method_name
+                .bytes()
+                .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
+        {
+            return Err("invalid MCP method name".into());
+        }
+        let endpoint = format!(
+            "{}/api/documents/{}/mcp",
+            self.link.server(),
+            self.link.slug()
+        );
+        let mut request = self.client.post(endpoint);
+        if !self.token.is_empty() {
+            request = request.header("authorization", format!("Bearer {}", self.token));
+        }
+        if !self.link.key.is_empty() {
+            request = request.header(KEY_HEADER, &self.link.key);
+        }
+        request = request
+            .header("x-librepaper-automation", "1")
+            .header("x-librepaper-client", "1")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", method_name)
+            .header("Mcp-Name", tool_name.unwrap_or(method_name))
+            .header("Accept", "application/json, text/event-stream")
+            .json(body);
+        // The background runner gives the app-server a protected copy of the
+        // sidebar channel credentials. They are transport headers only: the
+        // MCP tool arguments and model context never contain either secret.
+        if let Ok(conversation) = std::env::var("LIBREPAPER_CONVERSATION") {
+            if !conversation.is_empty() {
+                request = request.header("x-librepaper-conversation", conversation.clone());
+                // This separate marker distinguishes a sidebar runner's
+                // protected provenance from an external browser render
+                // request that merely routes through the same conversation.
+                if std::env::var_os("LIBREPAPER_RUNNER_EPOCH_FILE").is_some() {
+                    request = request.header("x-librepaper-runner-conversation", conversation);
+                }
+            }
+        }
+        if let Ok(chat_token) = std::env::var("LIBREPAPER_CHAT_TOKEN") {
+            if !chat_token.is_empty() {
+                request = request.header("x-librepaper-chat-token", chat_token);
+            }
+        }
+        let epoch = captured_epoch.map(str::to_owned).or_else(|| {
+            std::env::var_os("LIBREPAPER_RUNNER_EPOCH_FILE").and_then(|path| {
+                super::runner_journal::execution_epoch(std::path::Path::new(&path))
+            })
+        });
+        if let Some(epoch) = epoch {
+            request = request.header("x-librepaper-execution-epoch", epoch);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|err| format!("MCP request failed: {err}"))?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        if response
+            .content_length()
+            .is_some_and(|length| length > 64 * 1024)
+        {
+            return Err("MCP response exceeds the 64 KiB control-message limit".into());
+        }
+        let mut bytes = Vec::new();
+        let mut response = response;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|err| format!("could not read MCP response: {err}"))?
+        {
+            if bytes.len().saturating_add(chunk.len()) > 64 * 1024 {
+                return Err("MCP response exceeds the 64 KiB control-message limit".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let body = String::from_utf8(bytes)
+            .map_err(|_| "MCP response was not valid UTF-8 JSON".to_string())?;
+        Ok((status, content_type, body))
+    }
+
     async fn asset_bytes(&self, sha: &str) -> Result<Vec<u8>, String> {
         if sha.len() != 64
             || !sha
@@ -1179,6 +1292,11 @@ pub enum AgentCommand {
         #[arg(long)]
         background: bool,
     },
+    /// Serve the document MCP tools over stdio for an MCP host.
+    ///
+    /// The document link is read from LIBREPAPER_DOCUMENT when it is `-`,
+    /// which lets a host keep the credential in its protected environment.
+    Mcp { link: String },
     /// Show the local runner state for a conversation.
     Status {
         link: String,
@@ -1341,6 +1459,7 @@ pub async fn run_cli(
 ) -> Result<(), String> {
     let link_text = match &command {
         AgentCommand::Connect { link, .. }
+        | AgentCommand::Mcp { link }
         | AgentCommand::Status { link, .. }
         | AgentCommand::Stop { link, .. }
         | AgentCommand::Inspect { link, .. }
@@ -1414,6 +1533,9 @@ pub async fn run_cli(
             } else {
                 runner::run(&peer, config).await?;
             }
+        }
+        AgentCommand::Mcp { .. } => {
+            super::mcp::stdio(&peer).await?;
         }
         AgentCommand::Status { .. } | AgentCommand::Stop { .. } => {
             unreachable!("local lifecycle handled before opening document")

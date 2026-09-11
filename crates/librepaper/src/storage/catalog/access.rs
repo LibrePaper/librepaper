@@ -114,6 +114,9 @@ impl Catalog {
         actor: MutationAuthority<'_>,
         role: &str,
     ) -> CatalogResult<bool> {
+        if !Self::agent_execution_epoch_active_tx(tx, slug, actor.execution_epoch)? {
+            return Ok(false);
+        }
         let link_ok = !actor.link_hash.is_empty()
             && actor.policy_editor
             && tx

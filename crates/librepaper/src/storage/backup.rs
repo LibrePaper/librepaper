@@ -1898,6 +1898,8 @@ mod tests {
             policy_editor: false,
             automation: false,
             unowned_publisher: false,
+            execution_epoch: "",
+            agent_checkpoint: None,
         };
         for context in ["html", "pdf"] {
             let key = format!("quarto/selections/sid/{context}.json");

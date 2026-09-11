@@ -190,6 +190,8 @@ fn quarto_selection_pointer_is_atomic_and_rejects_stale_generation() {
         policy_editor: false,
         automation: false,
         unowned_publisher: false,
+        execution_epoch: "",
+        agent_checkpoint: None,
     };
     let selection = crate::quarto::Selection {
         document_id: "doc".into(),
@@ -297,13 +299,15 @@ fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
         policy_editor: false,
         automation: false,
         unowned_publisher: false,
+        execution_epoch: "",
+        agent_checkpoint: None,
     };
     let mut point = attributed("quarto-render", "Alice", Some("acct-1"));
     point.source_format = "quarto".into();
     point.why = "render".into();
     catalog.revoke_sessions("acct-1", "generation-2").unwrap();
     assert!(catalog
-        .insert_checkpoints_atomic_with_authority(&[point.clone()], Some(actor))
+        .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
         .is_err());
     assert!(catalog
         .checkpoint("doc", "quarto-render")
@@ -320,6 +324,122 @@ fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
         .unwrap();
     assert!(catalog
         .checkpoint("doc", "quarto-render")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let first_epoch = catalog
+        .issue_agent_execution_lease("doc", "sidebar")
+        .unwrap();
+    catalog
+        .revoke_agent_execution_lease("doc", "sidebar", &first_epoch)
+        .unwrap();
+    let point = Checkpoint {
+        slug: "doc".into(),
+        sha: "fenced-checkpoint".into(),
+        seq: -1,
+        durable_seq: 0,
+        tree_sha: "tree".into(),
+        parent: String::new(),
+        at: "2026-01-01T00:00:00.000Z".into(),
+        by: "Alice".into(),
+        why: "agent".into(),
+        source_format: "markdown".into(),
+        size: 1,
+        label: String::new(),
+        git_commit: String::new(),
+        dirty: false,
+        changed: None,
+        by_account: Some("acct-1".into()),
+    };
+    let commit = super::AgentCheckpointCommit {
+        request_id: "agent-checkpoint-operation".into(),
+        digest: "payload-digest".into(),
+        operation: serde_json::json!({"epoch":"epoch","id":"checkpoint"}),
+        source_revision: "tree".into(),
+    };
+    let actor = MutationAuthority {
+        account_id: "acct-1",
+        owner_key: "",
+        generation: "generation-1",
+        link_hash: "",
+        policy_editor: false,
+        automation: false,
+        unowned_publisher: false,
+        execution_epoch: &first_epoch,
+        agent_checkpoint: Some(&commit),
+    };
+    assert!(catalog
+        .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
+        .is_err());
+    assert!(catalog
+        .checkpoint("doc", "fenced-checkpoint")
+        .unwrap()
+        .is_none());
+
+    let second_epoch = catalog
+        .issue_agent_execution_lease("doc", "sidebar")
+        .unwrap();
+    let actor = MutationAuthority {
+        execution_epoch: &second_epoch,
+        agent_checkpoint: Some(&commit),
+        ..actor
+    };
+    let storage_id = catalog.document("doc").unwrap().unwrap().storage_id;
+    catalog.with_connection(|db| {
+        db.execute("INSERT INTO agent_cancellations VALUES(?1,'agent-checkpoint-operation','cancel','digest','operation','','cancel_requested','{}',0)", [&storage_id])?;
+        Ok(())
+    }).unwrap();
+    assert!(catalog
+        .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
+        .is_err());
+    assert!(catalog
+        .checkpoint("doc", "fenced-checkpoint")
+        .unwrap()
+        .is_none());
+    catalog.with_connection(|db| {
+        db.execute("DELETE FROM agent_cancellations", [])?;
+        db.execute_batch("CREATE TRIGGER fail_agent_receipt BEFORE INSERT ON catalog_operations BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(catalog
+        .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
+        .is_err());
+    assert!(
+        catalog
+            .checkpoint("doc", "fenced-checkpoint")
+            .unwrap()
+            .is_none(),
+        "receipt failure must roll back checkpoint insertion"
+    );
+    catalog
+        .with_connection(|db| {
+            db.execute_batch("DROP TRIGGER fail_agent_receipt")?;
+            Ok(())
+        })
+        .unwrap();
+    catalog
+        .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
+        .unwrap();
+    let receipt = catalog
+        .operation(&storage_id, &commit.request_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.status, "committed");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&receipt.result).unwrap()["checkpoint_id"],
+        point.sha
+    );
+    catalog
+        .insert_checkpoints_atomic_with_authority(&[point], Some(actor))
+        .unwrap();
+    assert!(catalog
+        .checkpoint("doc", "fenced-checkpoint")
         .unwrap()
         .is_some());
 }
@@ -467,7 +587,7 @@ fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
 #[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 21);
+    assert_eq!(catalog.schema_version().unwrap(), 24);
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection
@@ -1202,6 +1322,8 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
         policy_editor: true,
         automation: false,
         unowned_publisher: false,
+        execution_epoch: "",
+        agent_checkpoint: None,
     };
     catalog
         .reserve_document_bytes_with_authority("doc", 1, 100, 1_000, Some(authority))
@@ -1816,7 +1938,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
         assert_eq!(version, 12, "an interrupted migration does not advance");
     }
     let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 21);
+    assert_eq!(catalog.schema_version().unwrap(), 24);
     let row = catalog.checkpoint("doc", "old").unwrap().unwrap();
     assert_eq!(row.by, "alice");
     assert_eq!(
@@ -1826,7 +1948,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
     // Reopening an already-migrated catalogue is a no-op.
     drop(catalog);
     let reopened = Catalog::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 21);
+    assert_eq!(reopened.schema_version().unwrap(), 24);
 }
 
 /// A real main schema-15 database is the legacy case: the Quarto migrations must
@@ -1882,7 +2004,7 @@ fn result_metadata_migrates_main_schema15_rows_and_tracks_lifecycle() {
             .unwrap();
     }
     let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 21);
+    assert_eq!(catalog.schema_version().unwrap(), 24);
     let point = catalog.comment("legacy-markdown", "old-point").unwrap();
     assert!(point.point);
     assert_eq!(point.color.as_deref(), Some("#ABCDEF"));
@@ -1994,7 +2116,7 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         })
         .unwrap();
     let restored = Catalog::open(&snapshot).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 21);
+    assert_eq!(restored.schema_version().unwrap(), 24);
     assert_eq!(
         attribution_of(&restored, "stable"),
         ("alice".to_string(), Some("acct-writer".to_string()))

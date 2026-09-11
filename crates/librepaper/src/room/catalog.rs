@@ -31,6 +31,8 @@ pub(super) struct OwnedAuthority {
     policy_editor: bool,
     automation: bool,
     unowned_publisher: bool,
+    execution_epoch: String,
+    agent_checkpoint: Option<crate::storage::catalog::AgentCheckpointCommit>,
 }
 
 impl OwnedAuthority {
@@ -43,6 +45,8 @@ impl OwnedAuthority {
             policy_editor: actor.policy_editor,
             automation: actor.automation,
             unowned_publisher: actor.unowned_publisher,
+            execution_epoch: actor.execution_epoch.to_string(),
+            agent_checkpoint: actor.agent_checkpoint.cloned(),
         }
     }
 
@@ -55,6 +59,8 @@ impl OwnedAuthority {
             policy_editor: self.policy_editor,
             automation: self.automation,
             unowned_publisher: self.unowned_publisher,
+            execution_epoch: &self.execution_epoch,
+            agent_checkpoint: self.agent_checkpoint.as_ref(),
         }
     }
 
@@ -1133,11 +1139,10 @@ fn load_catalog_comments_blocking(
     catalog: &Catalog,
     slug: &str,
 ) -> crate::storage::catalog::CatalogResult<(i64, Vec<Comment>)> {
+    let annotation_seq = catalog.agent_annotation_sequence(slug)?;
     let rows = catalog.comments(slug, None, 500)?;
     let mut comments = Vec::with_capacity(rows.len());
-    let mut seq = 0;
     for row in rows {
-        seq = seq.max(row.seq);
         let region = row
             .region
             .map(|raw| {
@@ -1204,7 +1209,7 @@ fn load_catalog_comments_blocking(
                 .collect(),
         });
     }
-    Ok((seq, comments))
+    Ok((annotation_seq, comments))
 }
 
 /// What one catalogue comment row costs as an owned job input.
@@ -1882,6 +1887,14 @@ pub(super) async fn save_catalog_manifest(
                     .and_then(|document| document.pending_publication)
                     .is_some()
                 {
+                    if actor
+                        .as_ref()
+                        .is_some_and(|actor| actor.agent_checkpoint.is_some())
+                    {
+                        return Err(crate::storage::catalog::CatalogError::Conflict(
+                            "publication must finish before agent checkpoint".into(),
+                        ));
+                    }
                     if let Some(row) = rows.last() {
                         catalog.stage_publication_checkpoint_with_authority(
                             &slug_owned,

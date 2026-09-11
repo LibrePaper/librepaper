@@ -12,7 +12,7 @@
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
-  import { capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
+  import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { attribution, authorIndex, itemsFor } from "../lib/redlines.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
@@ -667,7 +667,7 @@
     // Capture before the first await. Asset fetching and compilation may take
     // seconds, and a candidate must be checked against the exact base tree
     // that the runner used when it proposed its revision.
-    const tree = capturePreviewTree(treeNow());
+    const tree = capturePreviewTree(request?.candidate ? candidateTree(request.candidate) : treeNow());
     if (Object.keys(tree.digests || {}).length) {
       const held = await figures.gather(SLUG, tree.digests, authHeaders(KEY));
       tree.assets = held.assets;

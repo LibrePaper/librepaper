@@ -1389,6 +1389,9 @@ impl Server {
             Err(error) => return plain(503, &error.to_string()),
         };
         let (state, _) = room.open_state(None).await;
+        if room.agent_recovery_pending() {
+            return plain(503, "room state is awaiting recovery");
+        }
         let mut response = Response::new(Body::from(state));
         set(&mut response, "content-type", "application/octet-stream");
         set(&mut response, "cache-control", "no-store");
@@ -1431,6 +1434,9 @@ impl Server {
             Err(error) => return plain(503, &error.to_string()),
         };
         let source = room.source().await;
+        if room.agent_recovery_pending() {
+            return plain(503, "room state is awaiting recovery");
+        }
         let format = {
             let held = room.format().await;
             if held.is_empty() {
@@ -1482,6 +1488,9 @@ impl Server {
         };
         let (source, held_format, tree, texts, comments) =
             room.snapshot_bundle(&author, may_edit).await;
+        if room.agent_recovery_pending() {
+            return plain(503, "room state is awaiting recovery");
+        }
         let format = if held_format.is_empty() {
             if entry.source_format.is_empty() {
                 "html".to_string()

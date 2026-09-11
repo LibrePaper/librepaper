@@ -73,6 +73,22 @@ impl Catalog {
         actor: Option<MutationAuthority<'_>>,
     ) -> CatalogResult<()> {
         self.immediate(|tx| {
+            let agent = actor.and_then(|actor| actor.agent_checkpoint);
+            if let Some(agent) = agent {
+                let checkpoint = checkpoints.iter().find(|point| point.tree_sha == agent.source_revision || point.sha == agent.source_revision)
+                    .ok_or_else(|| CatalogError::Conflict("agent checkpoint revision changed".into()))?;
+                let storage_id: String = tx.query_row("SELECT storage_id FROM documents WHERE slug=?1 AND status='active'", [&checkpoint.slug], |row| row.get(0))?;
+                if let Some((kind, digest, status)) = tx.query_row(
+                    "SELECT kind,request_digest,status FROM catalog_operations WHERE storage_id=?1 AND request_id=?2",
+                    params![storage_id,agent.request_id], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?)),
+                ).optional()? {
+                    return if kind == "agent_annotations" && digest == agent.digest && status == "committed" { Ok(()) }
+                        else { Err(CatalogError::Conflict("operation key reused".into())) };
+                }
+                if Self::agent_cancellation_active_tx(tx, &storage_id, &agent.request_id)? {
+                    return Err(CatalogError::Conflict("agent operation was cancelled".into()));
+                }
+            }
             if let Some(actor) = actor {
                 let Some(checkpoint) = checkpoints.first() else {
                     return Ok(());
@@ -142,6 +158,15 @@ impl Catalog {
                     ],
                 )
                 .map_err(CatalogError::from)?;
+            }
+            if let Some(agent) = agent {
+                let checkpoint = checkpoints.iter().find(|point| point.tree_sha == agent.source_revision || point.sha == agent.source_revision)
+                    .ok_or_else(|| CatalogError::Conflict("agent checkpoint revision changed".into()))?;
+                let receipt = serde_json::json!({"operation":agent.operation,"status":"committed","action":"checkpoint",
+                    "checkpoint_id":checkpoint.sha,"source_revision":agent.source_revision,"replay":false}).to_string();
+                tx.execute("INSERT INTO catalog_operations(storage_id,request_id,kind,request_digest,status,intent,result,created_at)
+                    SELECT storage_id,?2,'agent_annotations',?3,'committed','{}',?4,?5 FROM documents WHERE slug=?1 AND status='active'",
+                    params![checkpoint.slug,agent.request_id,agent.digest,receipt,crate::auth::now_unix()])?;
             }
             Ok(())
         })
@@ -582,6 +607,8 @@ impl Catalog {
                 policy_editor: true,
                 automation: false,
                 unowned_publisher: false,
+                execution_epoch: "",
+                agent_checkpoint: None,
             },
         )
     }
@@ -734,6 +761,8 @@ impl Catalog {
                 policy_editor: true,
                 automation: false,
                 unowned_publisher: false,
+                execution_epoch: "",
+                agent_checkpoint: None,
             },
         )
     }

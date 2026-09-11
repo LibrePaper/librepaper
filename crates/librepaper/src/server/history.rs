@@ -223,6 +223,8 @@ impl Server {
             policy_editor: self.publishers.allows(&who.id.handle),
             automation: who.automation,
             unowned_publisher: false,
+            execution_epoch: "",
+            agent_checkpoint: None,
         };
         let sha = if current {
             match room
@@ -352,6 +354,8 @@ impl Server {
             policy_editor: self.publishers.allows(&current_who.id.handle),
             automation: current_who.automation,
             unowned_publisher: false,
+            execution_epoch: "",
+            agent_checkpoint: None,
         };
         let quarto_selection = match room
             .reconcile_quarto_selections_after_restore(point.content_sha(), &target_main, authority)

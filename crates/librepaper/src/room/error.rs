@@ -34,6 +34,9 @@ pub enum FenceReason {
     /// write of it could ever be saved. Fenced so the sweeper stops retrying
     /// a permanent failure; what is stored stays readable.
     Oversized = 4,
+    /// A durable agent source operation is awaiting reconciliation. Until
+    /// its marker and authority are resolved, this room must not be served.
+    AgentRecoveryPending = 5,
 }
 
 impl FenceReason {
@@ -45,6 +48,7 @@ impl FenceReason {
             2 => Self::UnreadableState,
             3 => Self::NotAuthoritative,
             4 => Self::Oversized,
+            5 => Self::AgentRecoveryPending,
             _ => Self::HeldElsewhere,
         }
     }
@@ -67,6 +71,9 @@ impl FenceReason {
             Self::Oversized => {
                 "this document's saved state is past the largest this deployment can save, so \
                  it is open read-only"
+            }
+            Self::AgentRecoveryPending => {
+                "this document has a pending agent operation and is awaiting recovery"
             }
         }
     }
