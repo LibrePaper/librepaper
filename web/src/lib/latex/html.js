@@ -56,7 +56,11 @@ export function createHtmlCompiler({
       manifest = data;
       manifestBase = base;
     }
-    const releaseId = settings?.release || manifest.default_release;
+    // Existing documents pin the PDF toolchain. Older releases predate HTML
+    // preview, so use the current preview engine without changing that pin.
+    const pinned = settings?.release;
+    const releaseId = manifest.releases?.[pinned]?.engines?.latexml
+      ? pinned : manifest.default_release;
     const release = manifest.releases?.[releaseId];
     const spec = release?.engines?.latexml;
     if (!spec) throw new Error("This LaTeX release does not include the HTML preview renderer.");

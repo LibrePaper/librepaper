@@ -20,6 +20,7 @@ const manifest = mirrorUrl
 const release = structuredClone(manifest.releases[manifest.default_release]);
 // Exercise the actual deployment manifest when checking an assembled mirror.
 // Otherwise overlay freshly built artifacts for engine development.
+const legacyRelease = Object.keys(manifest.releases).find(id => !manifest.releases[id].engines?.latexml);
 const useMirror = Boolean(mirrorUrl) || process.env.LATEXML_USE_MIRROR === "1";
 const engineFiles = [
   "latexml.worker.js", "latexml.js", "latexml.wasm", "kpse-resolve.js", "bundle-mode.js", "latexml.css",
@@ -92,10 +93,10 @@ See equation~\eqref{eq:test}.
 \includegraphics{pixel.png}
 \end{document}`;
   const png = Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJXcAAAAASUVORK5CYII=", "base64"));
-  async function render(text, chapter = "Included chapter content.") {
+  async function render(text, chapter = "Included chapter content.", settings = {}) {
     const tree = { main: "main.tex", texts: { "main.tex": text, ...(chapter === null ? {} : { "parts/section.tex": chapter }) } };
     await tab.evaluate(`window.result = null; window.failure = null;
-      window.compile({...${JSON.stringify(tree)},assets:{'pixel.png':Uint8Array.from(${JSON.stringify(png)})}}, {base:${JSON.stringify(`${base}/latex/`)}})
+      window.compile({...${JSON.stringify(tree)},assets:{'pixel.png':Uint8Array.from(${JSON.stringify(png)})}}, {base:${JSON.stringify(`${base}/latex/`)},settings:${JSON.stringify(settings)}})
       .then(value=>window.result=value,error=>window.failure=error.message); true`);
     await until("LaTeXML conversion", () => tab.evaluate("window.result !== null || window.failure !== null"), 245000);
     const error = await tab.evaluate("window.failure");
@@ -121,6 +122,11 @@ See equation~\eqref{eq:test}.
   assert.ok(!missing.ok || /section|missing|not found/i.test(missing.log), "missing input must be diagnosed");
   console.log(`latex-html-browser: HTML, MathML, images, includes, warm edits and file deletion passed (cold ${first.seconds.toFixed(2)}s; warm ${second.seconds.toFixed(2)}s)`);
 
+  if (legacyRelease) {
+    const result = await render(source, "Included chapter content.", { release: legacyRelease });
+    assert.equal(result.ok, true, "documents pinned before LaTeXML can render HTML from the current release");
+    console.log("latex-html-browser: retained PDF release pin with current HTML renderer passed");
+  }
   if (process.env.LIBREPAPER_BIN) {
     const port = 22000 + Math.floor(Math.random() * 1000);
     const appBase = `http://localhost:${port}`;

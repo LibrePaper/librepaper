@@ -17,7 +17,7 @@ function harness(options = {}) {
   const instances = [], reads = [], verified = [];
   const compiler = createHtmlCompiler({
     deadline: options.deadline ?? 1000,
-    request: async (url) => { reads.push(String(url)); return { ok: true, json: async () => manifest }; },
+    request: async (url) => { reads.push(String(url)); return { ok: true, json: async () => options.manifest ?? manifest }; },
     verified: async (release, url, check) => {
       verified.push({ release, url, check });
       return { arrayBuffer: async () => new TextEncoder().encode("{}").buffer };
@@ -60,6 +60,19 @@ await warm.compile(tree("new release"), { base, settings: { release: "r2" } });
 assert.equal(warm.instances.length, 2);
 assert.equal(warm.instances[0].dead, true);
 warm.cancel();
+
+const legacyManifest = structuredClone(manifest);
+legacyManifest.releases.legacy = { engines: { pdftex: {} } };
+const legacy = harness({ manifest: legacyManifest });
+const pinnedSettings = Object.freeze({ release: "legacy", engine: "pdflatex" });
+assert.equal((await legacy.compile(tree("existing document"), { base, settings: pinnedSettings })).ok, true);
+assert.equal(legacy.instances[0].config.url, "https://example.org/latex/engines/r1/latexml.worker.js");
+assert.equal(pinnedSettings.release, "legacy", "HTML preview preserves the PDF release pin");
+legacy.cancel();
+const unsupported = harness({ manifest: { format: 1, default_release: "legacy", releases: { legacy: legacyManifest.releases.legacy } } });
+await assert.rejects(unsupported.compile(tree("no renderer"), { base, settings: pinnedSettings }), /does not include the HTML preview renderer/);
+assert.equal(unsupported.instances.length, 0);
+unsupported.cancel();
 
 const started = deferred(), finish = deferred();
 const queue = harness({ run: async (engine, files) => {
