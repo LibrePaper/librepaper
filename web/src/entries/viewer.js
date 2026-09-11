@@ -66,8 +66,11 @@ async function paint(bytes) {
   drawn = keep;
   try {
     viewer ??= await import("../lib/pdf/render.js");
-    const pages = await viewer.render(keep.slice(), ready(), scaleMode);
+    // Several previews can arrive while the module loads. Only the newest
+    // may start drawing, so an older import continuation cannot cancel it.
     if (mine !== paintGeneration) return;
+    const pages = await viewer.render(keep.slice(), ready(), scaleMode);
+    if (mine !== paintGeneration || !pages) return;
     toolbar.update(scaleMode, Number(stage.firstElementChild.dataset.scale));
     // The page index for an offset, for the caret lock and SyncTeX. Neither
     // is built here; both need this and nothing else from the viewer, so it

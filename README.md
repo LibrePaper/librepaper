@@ -349,7 +349,7 @@ read earlier versions, compare changes, and restore a whole version or bring
 back individual passages in the editor.
 
 Rendering happens on clients. Markdown readers render HTML in the browser;
-Typst editors compile PDFs in a WebAssembly worker, using the same compiler
+Typst editors compile PDF or experimental HTML previews in a WebAssembly worker, using the same compiler
 as the command line. The deployment stores Typst and LaTeX PDFs under the
 digest of their source tree, so readers can view them without downloading a
 compiler. The server synchronizes source and stores artifacts; it does not
@@ -374,11 +374,20 @@ is published and another way when it is edited.
 The Typst module contains the compiler and embedded fonts. Renderer URLs include
 their content digest and are cached for a year.
 
-Typst uses its paged PDF exporter, preserving page layout, columns, headers,
+Typst defaults to its paged PDF exporter, preserving page layout, columns, headers,
 footers, and typography. The shared PDF viewer supplies selectable text for
 comments and highlights. Source navigation matches visible text; generated
 text and formulas can have no match. Existing project-file and package
 resolution limits still apply.
+
+Use **View → Typst HTML preview (experimental)** for a flowing preview, or
+**Typst PDF preview** to check the printed layout. The choice is remembered
+for this document in this browser. HTML supports semantic text, tables,
+citations, embedded images, and MathML equations, but does not reproduce all
+PDF formatting; some templates require HTML-specific show rules. It always
+uses the browser compiler, including when Calepin is selected for PDF previews.
+HTML previews are not stored as PDF renderings. Switch back to PDF to refresh
+the shared PDF after editing; native publishing continues to produce PDF.
 
 The first successful PDF is stored immediately; later versions are stored
 after the source stays quiet or a checkpoint is named. A compile error keeps

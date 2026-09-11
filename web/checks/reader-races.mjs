@@ -109,6 +109,7 @@ const context = (values) => vm.createContext({
   readerDisposed: false,
   outlineRevision: 0,
   sourceFormat: "",
+  typstOutput: "pdf",
   previewMain: "",
   previewFile: "",
   session: null,
@@ -414,7 +415,10 @@ for (const invalidate of [null, "navigation", "main"]) {
     sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false,
     previewTimer: null, READER_DEBOUNCE: 1000,
     diagnosticPainter: { typed: () => {} },
-    setTimeout: () => ++scheduled, clearTimeout: () => {}, paintPreview: () => {},
+    setTimeout: (fn, ms) => {
+      assert.ok(ms <= 50, "Markdown starts rendering within 50 ms of an edit");
+      return ++scheduled;
+    }, clearTimeout: () => {}, paintPreview: () => {},
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
@@ -429,7 +433,10 @@ for (const invalidate of [null, "navigation", "main"]) {
   const ctx = context({
     sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
     previewTimer: null, diagnosticPainter: { typed: () => {} },
-    setTimeout: () => ++scheduled, clearTimeout: () => {}, paintPreview: () => {}, dropHeldRendering: () => {},
+    setTimeout: (fn, ms) => {
+      assert.ok(ms <= 50, "Typst starts rendering within 50 ms of an edit");
+      return ++scheduled;
+    }, clearTimeout: () => {}, paintPreview: () => {}, dropHeldRendering: () => {},
     renderingStore: { schedulePoll: () => {}, cancelPoll: () => {} },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);

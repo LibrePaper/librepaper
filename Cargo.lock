@@ -4372,12 +4372,13 @@ dependencies = [
 
 [[package]]
 name = "wasm-typst"
-version = "0.2.0"
-source = "git+https://github.com/LibrePaper/wasm-typst?tag=v0.2.0#03d210283145b2ed7dc4953a62b14b6c47c2097b"
+version = "0.3.0"
+source = "git+https://github.com/LibrePaper/wasm-typst?tag=v0.3.0#5bd68a213687237c05929351250842aabc532da0"
 dependencies = [
  "ecow",
  "typst",
  "typst-assets",
+ "typst-html",
  "typst-layout",
  "typst-pdf",
  "wasm-helpers",

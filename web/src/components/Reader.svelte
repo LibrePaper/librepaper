@@ -206,6 +206,11 @@
   // document shows. Same shape of choice as Quarto's, remembered separately.
   const TYPST_PREVIEW_MODE_KEY = `librepaper-typst-preview:${SLUG}`;
   let typstPreviewMode = $state(read(TYPST_PREVIEW_MODE_KEY, "typst") === "calepin" ? "calepin" : "typst");
+  // Typst can paint either its ordinary stored PDF or the experimental HTML
+  // export. This is a browser preference for this document; publication and
+  // stored renderings continue to use the document's PDF output.
+  const TYPST_OUTPUT_KEY = `librepaper-typst-output:${SLUG}`;
+  let typstOutput = $state(read(TYPST_OUTPUT_KEY, "pdf") === "html" ? "html" : "pdf");
 
   async function setQuartoPreviewMode(mode) {
     navigationGeneration += 1;
@@ -223,11 +228,29 @@
   }
 
   async function setTypstPreviewMode(mode) {
+    navigationGeneration += 1;
+    renderingStore?.invalidate();
     typstPreviewMode = mode === "calepin" ? "calepin" : "typst";
     write(TYPST_PREVIEW_MODE_KEY, typstPreviewMode);
     if (typstPreviewMode === "calepin") {
       if (await ensureLocalApp() && calepinActive) await calepinPreviewController.start();
+    } else {
+      await calepinPreviewController.stop();
+      void paintPreview();
     }
+  }
+
+  async function setTypstOutput(format) {
+    const next = format === "html" ? "html" : "pdf";
+    if (typstOutput === next) return;
+    typstOutput = next;
+    write(TYPST_OUTPUT_KEY, typstOutput);
+    // Invalidate every pending delivery before stopping Calepin. A PDF that
+    // finishes after this gesture must never replace the HTML frame.
+    navigationGeneration += 1;
+    renderingStore?.invalidate();
+    if (typstOutput === "html") await calepinPreviewController.stop();
+    void paintPreview();
   }
 
   function quartoTargetFormat(tree = treeNow()) {
@@ -1078,7 +1101,7 @@
   // the calepin mode chosen, paired, connected, the calepin command itself
   // found, editable, and not looking at history.
   const calepinActive = $derived(
-    sourceFormat === "typst" && typstPreviewMode === "calepin" && mayEdit && !viewing &&
+    sourceFormat === "typst" && !typstHtmlPreview && typstPreviewMode === "calepin" && mayEdit && !viewing &&
       localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
   );
 
@@ -1680,6 +1703,12 @@
   const displayedFormat = $derived(
     viewing ? renderers.formatOf(viewing.main) || sourceFormat : sourceFormat,
   );
+  // This browser-only choice affects the pane. Publication and stored
+  // renderings continue to use the Typst document's PDF output.
+  const previewFormat = $derived(
+    editing && displayedFormat === "typst" && typstOutput === "html" ? "html" : displayedFormat,
+  );
+  const typstHtmlPreview = $derived(editing && displayedFormat === "typst" && typstOutput === "html");
   const paintsTheFrame = $derived(Boolean(viewing) || editing || displayedFormat !== "html");
 
   /* -------------------------------------------------------------- LaTeX */
@@ -1687,8 +1716,8 @@
   // Paged source formats have no HTML to paint, so their frame is the PDF
   // viewer on the documents origin rather than the empty shell. Everything
   // else about the frame is the same: same origin, same CSP, same channel.
-  const pdfOutput = $derived(renderers.producesPdf(displayedFormat));
-  const framePath = $derived(renderers.outputKind(displayedFormat) === "pdf" ? "pdf" : "raw");
+  const pdfOutput = $derived(renderers.producesPdf(previewFormat));
+  const framePath = $derived(renderers.outputKind(previewFormat) === "pdf" ? "pdf" : "raw");
 
   // How long the last compile took, and whether one is running now. Paged
   // formats expose the same short-lived loading state; the elapsed time is
@@ -1819,11 +1848,11 @@
   // chosen: not yet connected to the local app, or connected but without the
   // calepin command itself.
   const typstNeedsLocalApp = $derived(
-    sourceFormat === "typst" && typstPreviewMode === "calepin" && mayEdit && !viewing &&
+    sourceFormat === "typst" && !typstHtmlPreview && typstPreviewMode === "calepin" && mayEdit && !viewing &&
       localAppStatus.state !== "connected",
   );
   const typstNeedsCalepinCommand = $derived(
-    sourceFormat === "typst" && typstPreviewMode === "calepin" && mayEdit && !viewing &&
+    sourceFormat === "typst" && !typstHtmlPreview && typstPreviewMode === "calepin" && mayEdit && !viewing &&
       localAppStatus.state === "connected" && !localQuarto.calepinAvailable(),
   );
 
@@ -1915,7 +1944,7 @@
       || compileBadge || quartoPreviewStarting || quartoRendering || calepinRendering,
   ));
   const previewProblem = $derived(Boolean(
-    (sourceFormat === "latex" && latexPhase === "failed") || quartoPreviewError || calepinPreviewError
+    (sourceFormat === "latex" && latexPhase === "failed") || quartoPreviewError || (!typstHtmlPreview && calepinPreviewError)
       || quartoNeedsLocalApp || typstNeedsLocalApp || typstNeedsCalepinCommand,
   ));
   const previewStatusLabel = $derived(
@@ -2033,7 +2062,8 @@
     const snapshotNavigation = navigationGeneration;
     const snapshotSource = sourceGeneration;
     const format = renderers.formatOf(tree.main);
-    const paged = renderers.producesPdf(format);
+    const htmlPreview = format === "typst" && typstOutput === "html" && editing;
+    const paged = renderers.producesPdf(format) && !htmlPreview;
     const slow = format === "latex";
     if (previewPaintBusy) {
       previewPaintQueued = true;
@@ -2064,7 +2094,7 @@
       // says one is running. The last page that compiled stays up under it:
       // an author who is typing has something to look at, which is the whole
       // difference between this and a pane that blanks for four seconds.
-      if (paged) {
+      if (paged || htmlPreview) {
         compiling = true;
         if (!everPainted) pdfFailure = false;
       }
@@ -2093,11 +2123,13 @@
       try {
         const title = await headingOf(tree);
         if (readerDisposed) return;
-        rendered = await renderers.render(tree, title, manual ? { manual: true } : undefined);
+        const renderOptions = { ...(manual ? { manual: true } : {}) };
+        if (htmlPreview) renderOptions.format = "html";
+        rendered = await renderers.render(tree, title, Object.keys(renderOptions).length ? renderOptions : undefined);
       } finally {
         // Only the newest compile owns the badge. An older one finishing
         // afterwards must not turn the spinner off under a newer one.
-        if (paged && mine > painted) compiling = false;
+        if ((paged || htmlPreview) && mine > painted) compiling = false;
       }
       if (readerDisposed) return;
       if (format === "latex") lastLatexResult = rendered;
@@ -2234,9 +2266,9 @@
     const outputIsPdf = pdfOutput;
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
-    // Typst has a bounded 300 ms preview cadence like the other fast source
-    // formats. Only LaTeX owns its longer compiler debounce; postponing this
-    // timer for every Typst keystroke would starve the PDF indefinitely.
+    // Fast formats use a short bounded preview cadence. Only LaTeX owns its
+    // longer compiler debounce; postponing this timer for every Typst
+    // keystroke would starve the preview indefinitely.
     if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
     clearTimeout(previewTimer);
     if (outputIsPdf && !compilesHere) {
@@ -2258,7 +2290,7 @@
       sourceFormat === "latex"
         ? Math.max(latex.DEBOUNCE, editing ? 0 : READER_DEBOUNCE)
         : editing
-          ? 300
+          ? 50
           : READER_DEBOUNCE;
     previewTimer = setTimeout(paintPreview, wait);
   }
@@ -2574,6 +2606,8 @@
     if (value === "preview-quarto") return void setQuartoPreviewMode("quarto");
     if (value === "preview-typst") return void setTypstPreviewMode("typst");
     if (value === "preview-calepin") return void setTypstPreviewMode("calepin");
+    if (value === "preview-typst-pdf") return void setTypstOutput("pdf");
+    if (value === "preview-typst-html") return void setTypstOutput("html");
     return chose(value);
   }
 
@@ -3312,18 +3346,28 @@
       <span class="w-4">{quartoPreviewMode === "quarto" ? "✓" : ""}</span>Quarto preview
     </Menu.Item>
     <hr class="hr my-1" />
-  {:else if sourceFormat === "typst" && !viewing}
+  {:else if displayedFormat === "typst"}
     <!-- The same two-way choice, for a Typst document: "Typst preview" is
          this browser's own rendering (unchanged from before this choice
          existed); "Calepin preview" runs the document's chunks with Calepin
          on this computer, through the local app, and shows the PDF it
-         delivers. -->
-    <Menu.Item value="preview-typst" class="menuitem">
-      <span class="w-4">{typstPreviewMode === "typst" ? "✓" : ""}</span>Typst preview
+         delivers. HTML is always the browser Typst renderer, even when the
+         remembered companion mode is Calepin. -->
+    <Menu.Item value="preview-typst-pdf" class="menuitem">
+      <span class="w-4">{typstOutput === "pdf" ? "✓" : ""}</span>Typst PDF preview
     </Menu.Item>
-    <Menu.Item value="preview-calepin" class="menuitem">
-      <span class="w-4">{typstPreviewMode === "calepin" ? "✓" : ""}</span>Calepin preview
+    <Menu.Item value="preview-typst-html" class="menuitem">
+      <span class="w-4">{typstOutput === "html" ? "✓" : ""}</span>Typst HTML preview (experimental)
     </Menu.Item>
+    <hr class="hr my-1" />
+    {#if !viewing && typstOutput === "pdf"}
+      <Menu.Item value="preview-typst" class="menuitem">
+        <span class="w-4">{typstPreviewMode === "typst" ? "✓" : ""}</span>Typst preview
+      </Menu.Item>
+      <Menu.Item value="preview-calepin" class="menuitem">
+        <span class="w-4">{typstPreviewMode === "calepin" ? "✓" : ""}</span>Calepin preview
+      </Menu.Item>
+    {/if}
     <hr class="hr my-1" />
   {/if}
 {/snippet}
@@ -3646,7 +3690,7 @@
         </button>
         {#if quartoNeedsLocalApp}<button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => openSettings("local")}>Install or configure companion</button>{/if}
       {/if}
-      {#if sourceFormat === "typst" && (typstNeedsLocalApp || typstNeedsCalepinCommand || calepinPreviewError)}
+      {#if sourceFormat === "typst" && !typstHtmlPreview && (typstNeedsLocalApp || typstNeedsCalepinCommand || calepinPreviewError)}
         <p>{calepinPreviewError || localConnectionError || (typstNeedsCalepinCommand ? "Install the calepin command to use this preview." : "Connect the local LibrePaper app to use Calepin preview.")}</p>
       {/if}
       {#if previewProblem}

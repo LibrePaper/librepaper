@@ -110,6 +110,14 @@ export async function fetchNeeds(needs, fetched, { fontsIndex } = {}) {
 /// compile's, whichever way it went: a document that still needs a package
 /// the registry lacks is shown that error, as it would be by the binary.
 export async function renderResolving(wasm, tree, title, fetched, options = {}) {
+  const output = options.format;
+  const compileExport = output === "html" ? "compile_html" : "compile";
+  if (output !== undefined && output !== "pdf" && output !== "html") {
+    throw new Error(`unsupported Typst output format: ${output}`);
+  }
+  if (compileExport === "compile_html" && typeof wasm.compile_html !== "function") {
+    throw new Error("Typst HTML rendering is unavailable: this renderer module does not export compile_html");
+  }
   for (let round = 0; ; round++) {
     handOver(wasm, tree);
     for (const [path, bytes] of fetched) {
@@ -117,7 +125,7 @@ export async function renderResolving(wasm, tree, title, fetched, options = {}) 
       call(wasm, "add_file", path, bytes);
     }
     const source = tree.texts?.[tree.main] ?? "";
-    const result = call(wasm, "compile", source, title);
+    const result = call(wasm, compileExport, source, title);
     const needs = needsOf(wasm);
     const wanting = needs && (needs.packages.length || needs.fonts.length);
     if (!wanting || round >= ROUNDS) return result;

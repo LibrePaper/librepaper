@@ -114,7 +114,7 @@ export function formatOf(path) {
 /// A render carries `html` or `pdf`, never both, and the caller posts
 /// whichever it has: flow documents are painted into the shell and paged
 /// documents into the PDF frame, and that is the whole difference here.
-export async function render(tree, title, { manual = false } = {}) {
+export async function render(tree, title, { manual = false, format: requestedFormat = "pdf" } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = formatOf(tree.main);
   // HTML's renderer is the identity, so there is nothing to fetch and nothing
@@ -165,6 +165,9 @@ export async function render(tree, title, { manual = false } = {}) {
   return request(module, "render", {
     tree: { main: quartoTree.main, texts: { ...quartoTree.texts }, assets: { ...quartoTree.assets }, urls: { ...quartoTree.urls } },
     title,
+    // Typst has two compiler entry points. Keep the requested output explicit
+    // all the way through the worker so dependency retries use the same one.
+    format: format === "typst" ? requestedFormat : undefined,
   }).then((result) => {
     if (format === "quarto" && result) {
       return { ...result, diagnostics: quarto.mapQuartoDiagnostics(result.diagnostics || [], quartoTree) };
@@ -172,7 +175,16 @@ export async function render(tree, title, { manual = false } = {}) {
     // The binary worker returns `{pdf, diagnostics}` for Typst. Normalize the
     // owned bytes here so Reader never decodes a PDF through TextDecoder.
     if (format === "typst") {
+      const html = result?.html;
       const pdf = result?.pdf;
+      if (requestedFormat === "html") {
+        return {
+          ...result,
+          html: html == null ? null : String(html),
+          pdf: null,
+          diagnostics: result?.diagnostics || [],
+        };
+      }
       return {
         ...result,
         html: null,

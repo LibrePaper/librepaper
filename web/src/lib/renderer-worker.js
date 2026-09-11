@@ -13,12 +13,18 @@ function fontsIndex() {
   }
 }
 
-async function render(wasm, tree, title) {
+async function render(wasm, tree, title, format) {
   const { bytes, text, kind, ok, diagnostics } = await renderResolving(wasm, tree, title, fetched, {
+    format,
     fontsIndex: fontsIndex(),
   });
-  if (ok && kind === "pdf") return { pdf: bytes.buffer, diagnostics };
-  if (ok && kind === "html") return { html: text, diagnostics };
+  if (ok && format === "html" && kind === "html") return { html: text, diagnostics };
+  if (ok && format === "pdf" && kind === "pdf") return { pdf: bytes.buffer, diagnostics };
+  // Markdown and the other generic renderers do not carry a requested Typst
+  // target. Preserve their native output kind instead of treating it as PDF.
+  if (ok && !format && kind === "html") return { html: text, diagnostics };
+  if (ok && !format && kind === "pdf") return { pdf: bytes.buffer, diagnostics };
+  if (ok) throw new Error(`Typst renderer returned ${kind || "no output"} while ${format} output was requested`);
   const said = diagnostics.length
     ? diagnostics
     : [{ severity: "error", message: text || "this document could not be compiled", hints: [], file: "", line: 0, column: 0, end_line: 0, end_column: 0 }];
@@ -32,7 +38,7 @@ self.onmessage = ({ data: { id, url, operation, args } }) => {
     try {
       const wasm = await load(url);
       let result;
-      if (operation === "render") result = await render(wasm, args.tree, args.title);
+      if (operation === "render") result = await render(wasm, args.tree, args.title, args.format);
       else if (operation === "bibliography") {
         const parsed = call(wasm, "bibliography", JSON.stringify(args));
         if (!parsed.ok) throw new Error(parsed.text || "Bibliography analysis failed.");

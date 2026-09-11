@@ -203,6 +203,14 @@ async function run() {
   const tab = new Tab(socket, sessionId);
   await tab.send("Runtime.enable");
   await tab.send("Page.enable");
+  await tab.send("Page.addScriptToEvaluateOnNewDocument", { source: `
+    window.workerStats = { created: 0, terminated: 0 };
+    const NativeWorker = window.Worker;
+    window.Worker = class extends NativeWorker {
+      constructor(...args) { super(...args); window.workerStats.created++; }
+      terminate() { window.workerStats.terminated++; return super.terminate(); }
+    };
+  ` });
   await tab.send("Page.navigate", { url: `${BASE}/harness.html` });
   for (let tries = 0; tries < 200; tries++) {
     if (await tab.eval("return Boolean(window.ready && window.doc && window.doc())")) break;
@@ -253,6 +261,9 @@ async function run() {
   `);
   check("PDF controls fit, zoom, pan, and restore selection without changing text",
     Object.values(controls).every(Boolean), JSON.stringify(controls));
+  const workers = await tab.eval("return frame.contentWindow.workerStats");
+  check("PDF previews and zoom redraws reuse one worker", workers.created === 1 && workers.terminated === 0,
+    JSON.stringify(workers));
   check("paper text keeps Unicode and the embedded figure caption", paper.text.includes("naïve café") && paper.text.includes("—") && paper.text.includes("An embedded SVG asset."), paper.text.slice(0, 500));
   check("Typst text extraction does not leak presentation ligature code points", paper.text.includes("fixture") && !/[\uFB00-\uFB06]/.test(paper.text), paper.text);
   const columns = await tab.eval(`

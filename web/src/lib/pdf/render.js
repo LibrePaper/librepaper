@@ -33,14 +33,24 @@ export function pageForOffset(offset) {
 }
 
 let generation = 0;
+// The frame owns one worker for its lifetime. Passing it explicitly keeps
+// pdf.js from starting and terminating a worker on every preview; each
+// loading task still owns and releases its own document resources.
+let pdfWorker = null;
 
-/// Open `bytes` as a pdf.js document, run `fn` against it, and tear the
-/// worker down afterward. `fn` receives the resolved document and its
+function documentWorker() {
+  if (!pdfWorker || pdfWorker.destroyed) pdfWorker = new pdfjs.PDFWorker();
+  return pdfWorker;
+}
+
+/// Open `bytes` as a pdf.js document, run `fn` against it, and release the
+/// document afterward. `fn` receives the resolved document and its
 /// result becomes this function's result; whatever `fn` throws or returns
 /// early propagates the same way, since the teardown lives in `finally` and
 /// runs on every path.
 async function withDocument(bytes, fn) {
   const loading = pdfjs.getDocument({
+    worker: documentWorker(),
     data: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
     // No fetching of anything, from anywhere, at draw time. A PDF that names
     // a standard font gets pdf.js's own metrics; one that names a URL gets
@@ -54,9 +64,9 @@ async function withDocument(bytes, fn) {
     document_ = await loading.promise;
     return await fn(document_);
   } finally {
-    // A loading task owns a worker even after its promise resolves. Destroy
-    // both the document and task on success, failure, and generation
-    // cancellation so repeated previews do not accumulate pdf.js workers.
+    // Release document resources on success, failure, and generation
+    // cancellation. An explicitly supplied worker survives task destruction
+    // and can also serve concurrent text extraction or a newer preview.
     try {
       await document_?.destroy();
     } catch {
