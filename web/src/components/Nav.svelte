@@ -13,10 +13,9 @@
   // nowhere else, so a control added later cannot land half a line above its
   // neighbours.
   //
-  // There is no status slot. What a page has to say about its state goes
-  // in a row of its own under the bar (the Reader's status row) or in a
-  // toast; a badge squeezed between the file name and the icons was the
-  // smallest text on the page and the first thing clipped.
+  // Page-specific tools may include compact global state, such as the
+  // Reader's connection and presence indicator. Pane-specific state stays
+  // with the pane it describes.
   let { me = {}, children, menus, tools, documentation = true } = $props();
 </script>
 

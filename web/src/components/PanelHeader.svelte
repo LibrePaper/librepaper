@@ -1,14 +1,10 @@
 <script>
-  // Every sidebar panel has the same title row, optional count, a separate action row,
-  // and a place for its introductory text or transient status.
+  // The selected rail icon identifies the panel visually. Keep its heading
+  // available to assistive technology without reserving a title row.
   let { title, meta = "", actions, children } = $props();
 </script>
 
-<header class="panel-header">
-  <div class="panel-heading">
-    <h2 class="panel-title">{title}</h2>
-  </div>
-  {#if meta}<span class="panel-meta">{meta}</span>{/if}
-</header>
+<h2 class="sr-only">{title}</h2>
+{#if meta}<div class="panel-status panel-meta">{meta}</div>{/if}
 {#if actions}<div class="panel-actions">{@render actions()}</div>{/if}
 {#if children}<div class="panel-intro">{@render children()}</div>{/if}

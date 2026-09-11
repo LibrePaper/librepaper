@@ -229,7 +229,7 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".sidebar").innerText.includes("Suggest a change")'), true);
   await click('.sidebar-activity [aria-label="Files"]');
   assert.equal(await b.evaluate('document.querySelector(".explorer-scroll").scrollTop'), filesTop);
-  assert.equal(await b.evaluate('document.querySelector(".filelist .panel-title").getBoundingClientRect().top < document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
+  assert.equal(await b.evaluate('document.querySelector(".filelist .panel-actions").getBoundingClientRect().bottom <= document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
 
   await b.resize(390,844); await flush();
   await click(nav('Document'));

@@ -83,11 +83,11 @@ window.filesCheck = async () => {
   check(document.querySelector('[role="tree"]'), 'Skeleton tree mounted');
   check(!document.querySelector('.explorer-root'), 'no redundant root row');
   check(!document.querySelector('.explorer-more'), 'no collapsed action menus');
-  const titleBounds = document.querySelector('.explorer .panel-title').getBoundingClientRect();
+  check(!document.querySelector('.explorer .panel-title'), 'no visible panel title');
   for (const label of ['New file', 'New folder', 'Upload files', 'Collapse all folders', 'Download project']) {
     const control = button(label);
     check(control && control.getClientRects().length, label + ' is visible');
-    check(control.getBoundingClientRect().top >= titleBounds.bottom, label + ' is below the header');
+    check(document.querySelector('.panel-actions').contains(control), label + ' remains in the toolbar');
     check(control.querySelector('svg path, svg rect'), label + ' has an actual icon');
   }
   check(!button('Rename selected item') && !button('Move selected items') && !button('Set selected file as main'), 'no redundant selection toolbar');
@@ -270,21 +270,15 @@ window.panelTypographyCheck = async () => {
     mounted.push({ instance, host });
     await flush();
     const panel = host.querySelector('.panel');
-    const title = host.querySelector('.panel-title');
-    check(panel && title, 'every panel has a shared title');
-    const action = host.querySelector('.panel-actions button');
-    if (action) {
-      const heading = title.getBoundingClientRect(), control = action.getBoundingClientRect();
-      check(control.top >= heading.bottom, 'panel actions appear below the title');
-    }
-    const bodyStyle = getComputedStyle(panel), titleStyle = getComputedStyle(title);
-    check(parseFloat(titleStyle.fontSize) > parseFloat(bodyStyle.fontSize), 'main panel title is slightly larger than panel text');
-    samples.push({ body: [bodyStyle.fontFamily, bodyStyle.fontSize, bodyStyle.lineHeight, bodyStyle.padding], title: [titleStyle.fontFamily, titleStyle.fontSize, titleStyle.lineHeight, titleStyle.fontWeight] });
+    const title = host.querySelector('h2.sr-only');
+    check(panel && title, 'every panel retains an accessible heading');
+    check(!host.querySelector('.panel-header, .panel-title'), 'no visible title row');
+    const titleStyle = getComputedStyle(title);
+    check(titleStyle.position === 'absolute' && title.getBoundingClientRect().height <= 1, 'accessible heading takes no layout space');
+    const bodyStyle = getComputedStyle(panel);
+    samples.push([bodyStyle.fontFamily, bodyStyle.fontSize, bodyStyle.lineHeight, bodyStyle.padding]);
   }
-  check(samples.every((sample) => JSON.stringify(sample) === JSON.stringify(samples[0])), 'all five sidebar panels have identical base typography, headings and padding');
-  document.documentElement.style.setProperty('--panel-title-size', '17px');
-  check(mounted.every(({ host }) => getComputedStyle(host.querySelector('.panel-title')).fontSize === '17px'), 'one token updates every panel heading');
-  document.documentElement.style.removeProperty('--panel-title-size');
+  check(samples.every((sample) => JSON.stringify(sample) === JSON.stringify(samples[0])), 'all five sidebar panels have identical base typography and padding');
   for (const { instance, host } of mounted) { instance.$destroy(); host.remove(); }
   return true;
 };

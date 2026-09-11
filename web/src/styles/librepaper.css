@@ -196,6 +196,14 @@ main.reader {
 .panel-muted { color: var(--panel-muted); }
 .panel-meta { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
 .panel :where(input, textarea, select) { font-family: inherit; font-size: inherit; }
+/* A dropdown needs the same room between its words and its edge that every
+   button and text field has. Skeleton leaves a select's inline padding unset
+   deliberately -- the padding is also what the native arrow is drawn in, and
+   it would rather leave that alone than guess -- so a select's text sat flush
+   against the left of its own background everywhere one appears. The start
+   matches the space Skeleton gives an input; the end is wider, to leave the
+   arrow room of its own. */
+@utility select { padding-inline: calc((var(--field-size) - --spacing(0.5)) / 2 + var(--spacing)) --spacing(6); }
 /* Skeleton's text fields draw their edge as an inset ring and only make the
    native focus outline transparent; Safari paints an `auto` outline in its
    own blue regardless, and a scrolling ancestor clips it to a few sides. The
@@ -221,32 +229,22 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
   align-items: center;
   gap: --spacing(1);
 }
-/* The bracket: the range being compared, drawn down the gutter through the
-   dots. It starts at the centre of the baseline's row, runs up through
-   every row after it, and ends at the centre of the compare point's -- or
-   of the live document's, at the top. A row is `in-range` when it lies
-   inside; the two ends draw half a line each. */
+/* One quiet line down the gutter, joining the dots and nothing else. This
+   used to be a coloured bracket drawn around the compared range, which left
+   the column carrying three signals at once -- outlined dots, author-coloured
+   dots, and coloured segments -- none of them read clearly. The range is said
+   in words now, under the row it belongs to, and colour in the gutter is
+   spent only on the version being looked at. */
 .timeline-row::before {
   content: "";
   position: absolute;
   left: 10px;
   top: 0;
   bottom: 0;
-  width: 2px;
-  background: var(--color-primary-500);
+  width: 1px;
+  background: var(--color-surface-200-800);
   pointer-events: none;
   z-index: 2;
-  display: none;
-}
-.timeline-row.in-range::before,
-.timeline-row.range-start::before {
-  display: block;
-}
-.timeline-row.range-start::before {
-  bottom: 50%;
-}
-.timeline-row.range-end::before {
-  top: 50%;
 }
 .timeline-dot {
   position: relative;
@@ -293,8 +291,11 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 .timeline-here:hover {
   background: var(--color-row-selected);
 }
+/* Every timestamp in one column: a history is scanned down the times, and
+   ragged ones make the reader find each one before reading it. */
 .timeline-when {
   flex: none;
+  min-width: 4.5rem;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -353,17 +354,27 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 }
 /* The day stays in view while its marks scroll under it, so it needs a ground
    of its own -- the shell's, as the comment tools have. It sits in the text
-   column, past the dots, so the bracket runs beside it. */
+   column, past the dots, so the quiet gutter line runs beside it. A day separates runs of rows
+   rather than owning them, so it carries a hairline instead of weight. */
 .timeline-day-row {
   display: block;
   position: relative;
 }
 .timeline-day {
-  padding: --spacing(2) --spacing(1) --spacing(1) 26px;
+  display: flex;
+  align-items: center;
+  gap: --spacing(2);
+  padding: --spacing(3) --spacing(1) --spacing(1) 26px;
   font-size: var(--panel-meta-size);
-  font-weight: var(--panel-title-weight);
+  font-weight: 400;
   color: var(--panel-muted);
   background: var(--color-sidebar);
+}
+.timeline-day::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-surface-200-800);
 }
 .timeline-folded {
   flex: 1;
@@ -388,32 +399,24 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
   text-underline-offset: 2px;
   cursor: pointer;
 }
-/* How much a checkpoint changed the document's size, next to the row it
-   belongs to. It sits after the words rather than before them, so a long
-   name still wraps in the narrow column instead of pushing the bar out of
-   sight; its own width never grows or shrinks with the text beside it. */
-.timeline-size {
-  flex: none;
-  align-self: center;
-  height: 6px;
-  min-width: 2px;
-  border-radius: var(--radius-container);
+/* What changed, under the version it belongs to rather than above the whole
+   column. This used to be the head of the panel, where it took half the
+   height and competed with the history itself; it now appears on one row at
+   a time, so the timeline stays an index of when and by whom. The changes
+   themselves are still painted in the document; the list of them as prose is
+   folded away. */
+.timeline-detail-row {
+  display: block;
 }
-.timeline-size-grew {
-  background: var(--color-success-500);
-}
-.timeline-size-shrank {
-  background: var(--color-error-500);
-}
-
-/* The head of the column: which range is being shown, how many changes are
-   in it, and the arrows that step through them. The changes themselves are
-   painted in the document; the list of them as prose is folded away. */
-.history-range {
+.timeline-detail {
   display: flex;
   flex-direction: column;
   gap: --spacing(1.5);
-  padding: --spacing(2) --spacing(3) --spacing(3);
+  margin: --spacing(1) --spacing(2) --spacing(2) 26px;
+  padding: --spacing(2);
+  border-left: 2px solid var(--color-primary-500);
+  border-radius: var(--radius-base);
+  background: var(--color-surface-50-950);
 }
 .history-span {
   margin: 0;

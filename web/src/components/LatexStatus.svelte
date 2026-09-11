@@ -1,10 +1,7 @@
 <script>
-  // The compile status line: an unobtrusive compile
-  // status distinguishes browser and local output and identifies VM-backed
-  // bibliography work when used. This is the only place that status is
-  // drawn -- there is no chooser and no card any more, so what a person sees
-  // while a document loads and compiles is this line, under the toolbar
-  // badges, plus whatever contextual action the moment calls for.
+  // The detailed compile status shown from the Preview header. It
+  // distinguishes browser and local output and identifies VM-backed
+  // bibliography work when used.
   //
   // Everything here comes from `latex.subscribe`; nothing is stateful on its
   // own. The wording and the action list are pure functions in
@@ -16,7 +13,7 @@
 
   // `onconnect` opens Settings' local-compilation section, which carries the
   // fuller connection flow (address, capabilities, doctor output) than a
-  // status line has room for. `onretrybrowser` lets the reader kick off the
+  // preview popover has room for. `onretrybrowser` lets the reader kick off the
   // compile `latex.tryBrowser()` makes eligible again -- resetting the
   // session-native route is not itself a compile.
   let { onconnect, onretrybrowser } = $props();
@@ -61,9 +58,8 @@
 
 {#if status.phase !== "idle"}
   <span class="latex-status">
-    <!-- Set in the status row's own type, not a badge's: this line is the
-         whole of what a person sees of a compile, and a failure has to be
-         readable at a glance, hint and all. -->
+    <!-- The compact Preview control opens this readable message, hint and
+         action list. -->
     <span class="latex-message {tone}">
       {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
       {status.message}{#if chip}<span class="latex-backend"> · {chip}</span>{/if}
