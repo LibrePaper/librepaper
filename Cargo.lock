@@ -1931,7 +1931,6 @@ dependencies = [
  "time",
  "tokio",
  "tokio-tungstenite",
- "typst",
  "typst-assets",
  "unicode-normalization",
  "url",
@@ -4372,8 +4371,8 @@ dependencies = [
 
 [[package]]
 name = "wasm-typst"
-version = "0.3.0"
-source = "git+https://github.com/LibrePaper/wasm-typst?tag=v0.3.0#5bd68a213687237c05929351250842aabc532da0"
+version = "0.3.1"
+source = "git+https://github.com/LibrePaper/wasm-typst?tag=v0.3.1#10b6ad60d4c49759f9e833c0b7b85bfcdce6febe"
 dependencies = [
  "ecow",
  "typst",

@@ -223,12 +223,8 @@ fn content_type(name: &str) -> &'static str {
 
 /// The families a font file carries, lowercased as typst matches them, with
 /// duplicates removed. Empty for a file that is not a font.
-pub fn families_in(bytes: &[u8]) -> Vec<String> {
-    let mut families: Vec<String> =
-        typst::text::Font::iter(typst::foundations::Bytes::new(bytes.to_vec()))
-            .map(|font| font.info().family.to_lowercase())
-            .collect();
-    families.sort();
-    families.dedup();
-    families
-}
+///
+/// The engine crate answers this, because the compiler that reads the faces
+/// here has to be the one that will set the text: two typst versions in one
+/// binary would name the same file's families twice, and differently.
+pub use wasm_typst::typst::families_in;

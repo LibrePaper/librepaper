@@ -1,0 +1,1072 @@
+{
+  "source_commit": "75701a2b6744e788d0b7f0409764acf0169ddc13",
+  "cpu": "AMD Ryzen AI 7 PRO 450 w/ Radeon 860M",
+  "hardware_threads": 16,
+  "rustc": "rustc 1.99.0-nightly (11177f223 2026-08-02)",
+  "zstd_runtime": "1.5.7",
+  "fastcdc": "5.0.0 v2020, normalization Level1, seed 0, min=target/4 max=target*8",
+  "sha2": "0.10 (exact version in Cargo.lock)",
+  "warmups": 1,
+  "timed_passes": 5,
+  "timing": "microseconds; fresh document-local stores each pass; uninstrumented main pass, separate diagnostic stages; no disk IO; destruction excluded",
+  "recipe": "48-byte header (magic4/fullSHA32/fileLen8/count4), each ordered ref SHA32/rawLen4; actual serialization; raw object IDs; common tree/event records and storage indexes excluded",
+  "cases": [
+    {
+      "name": "small-markdown",
+      "versions": 201,
+      "source_bytes": 742195,
+      "rows": [
+        {
+          "method": "whole-zstd3",
+          "target": 0,
+          "checkpoint": {
+            "mean_us": 11.95097711442785,
+            "p50_us": 11.612,
+            "p95_us": 13.835999999999999,
+            "max_us": 30.328000000000003
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 11.495999999999999,
+            "p50_us": 11.110999999999999,
+            "p95_us": 12.584,
+            "max_us": 12.584
+          },
+          "history_pass": {
+            "mean_us": 2408.8316,
+            "p50_us": 2403.35,
+            "p95_us": 2447.933,
+            "max_us": 2447.933
+          },
+          "throughput_mib_s": 293.84051141853865,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 1.5383830845771138,
+            "boundaries_us": 0.021999999999999964,
+            "chunk_sha_us": 0.025472636815920355,
+            "lookup_compress_missing_us": 10.236940298507466
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 201,
+            "raw_object_bytes": 742195,
+            "payload_bytes": 342457,
+            "recipe_bytes": 16884
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 11,
+            "raw_object_bytes": 40650,
+            "payload_bytes": 18727,
+            "recipe_bytes": 924
+          },
+          "verification_us_per_version": 8.935383084577115,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-1024-zstd3",
+          "target": 1024,
+          "checkpoint": {
+            "mean_us": 8.710534328358204,
+            "p50_us": 8.596,
+            "p95_us": 10.931,
+            "max_us": 23.294
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 17.5652,
+            "p50_us": 16.430999999999997,
+            "p95_us": 19.968,
+            "max_us": 19.968
+          },
+          "history_pass": {
+            "mean_us": 1757.8502,
+            "p50_us": 1759.303,
+            "p95_us": 1770.514,
+            "max_us": 1770.514
+          },
+          "throughput_mib_s": 402.6579223105226,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 1.5265671641791039,
+            "boundaries_us": 0.9378407960199008,
+            "chunk_sha_us": 1.6037810945273627,
+            "lookup_compress_missing_us": 4.497756218905469
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 216,
+            "raw_object_bytes": 266706,
+            "payload_bytes": 108114,
+            "recipe_bytes": 34632
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 16,
+            "raw_object_bytes": 19031,
+            "payload_bytes": 8224,
+            "recipe_bytes": 1860
+          },
+          "verification_us_per_version": 11.138099502487561,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-4096-zstd3",
+          "target": 4096,
+          "checkpoint": {
+            "mean_us": 12.583134328358193,
+            "p50_us": 12.613,
+            "p95_us": 14.708,
+            "max_us": 18.233999999999998
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 12.509599999999999,
+            "p50_us": 12.243,
+            "p95_us": 13.135,
+            "max_us": 13.135
+          },
+          "history_pass": {
+            "mean_us": 2536.3968,
+            "p50_us": 2535.589,
+            "p95_us": 2541.771,
+            "max_us": 2541.771
+          },
+          "throughput_mib_s": 279.0621362024809,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 1.5352885572139305,
+            "boundaries_us": 0.7852835820895526,
+            "chunk_sha_us": 1.558557213930348,
+            "lookup_compress_missing_us": 8.729955223880594
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 203,
+            "raw_object_bytes": 634549,
+            "payload_bytes": 295458,
+            "recipe_bytes": 19080
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 12,
+            "raw_object_bytes": 36988,
+            "payload_bytes": 17210,
+            "recipe_bytes": 1032
+          },
+          "verification_us_per_version": 8.739840796019902,
+          "verified_full": 201,
+          "verified_thinned": 11
+        }
+      ]
+    },
+    {
+      "name": "small-typst",
+      "versions": 201,
+      "source_bytes": 647553,
+      "rows": [
+        {
+          "method": "whole-zstd3",
+          "target": 0,
+          "checkpoint": {
+            "mean_us": 9.665577114427851,
+            "p50_us": 9.538,
+            "p95_us": 11.702,
+            "max_us": 15.649
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 9.133199999999999,
+            "p50_us": 9.037,
+            "p95_us": 9.677999999999999,
+            "max_us": 9.677999999999999
+          },
+          "history_pass": {
+            "mean_us": 1949.7004000000002,
+            "p50_us": 1948.8310000000001,
+            "p95_us": 1956.5849999999998,
+            "max_us": 1956.5849999999998
+          },
+          "throughput_mib_s": 316.74336457632995,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 1.3633333333333335,
+            "boundaries_us": 0.021636815920397994,
+            "chunk_sha_us": 0.02533830845771139,
+            "lookup_compress_missing_us": 8.162651741293532
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 201,
+            "raw_object_bytes": 647553,
+            "payload_bytes": 293925,
+            "recipe_bytes": 16884
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 11,
+            "raw_object_bytes": 35470,
+            "payload_bytes": 16048,
+            "recipe_bytes": 924
+          },
+          "verification_us_per_version": 7.075054726368159,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-1024-zstd3",
+          "target": 1024,
+          "checkpoint": {
+            "mean_us": 7.163639800995023,
+            "p50_us": 6.702,
+            "p95_us": 8.757,
+            "max_us": 16.872
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 15.3572,
+            "p50_us": 15.019,
+            "p95_us": 16.872,
+            "max_us": 16.872
+          },
+          "history_pass": {
+            "mean_us": 1446.5782000000002,
+            "p50_us": 1442.514,
+            "p95_us": 1462.182,
+            "max_us": 1462.182
+          },
+          "throughput_mib_s": 426.9072108316138,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 1.347746268656717,
+            "boundaries_us": 0.7776368159203982,
+            "chunk_sha_us": 1.4363383084577122,
+            "lookup_compress_missing_us": 3.4770995024875617
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 210,
+            "raw_object_bytes": 188512,
+            "payload_bytes": 56413,
+            "recipe_bytes": 37476
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 16,
+            "raw_object_bytes": 13644,
+            "payload_bytes": 4892,
+            "recipe_bytes": 2040
+          },
+          "verification_us_per_version": 9.909716417910449,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-4096-zstd3",
+          "target": 4096,
+          "checkpoint": {
+            "mean_us": 10.21267064676617,
+            "p50_us": 10.049,
+            "p95_us": 12.443,
+            "max_us": 35.226
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 13.545599999999999,
+            "p50_us": 13.084,
+            "p95_us": 16.561,
+            "max_us": 16.561
+          },
+          "history_pass": {
+            "mean_us": 2059.9309999999996,
+            "p50_us": 2038.8709999999999,
+            "p95_us": 2124.052,
+            "max_us": 2124.052
+          },
+          "throughput_mib_s": 299.79385941170676,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 1.345975124378109,
+            "boundaries_us": 0.5246467661691543,
+            "chunk_sha_us": 1.3795970149253727,
+            "lookup_compress_missing_us": 6.6536517412935305
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 202,
+            "raw_object_bytes": 503553,
+            "payload_bytes": 225113,
+            "recipe_bytes": 24120
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 12,
+            "raw_object_bytes": 28270,
+            "payload_bytes": 12710,
+            "recipe_bytes": 1320
+          },
+          "verification_us_per_version": 7.9492935323383085,
+          "verified_full": 201,
+          "verified_thinned": 11
+        }
+      ]
+    },
+    {
+      "name": "small-latex",
+      "versions": 201,
+      "source_bytes": 999451,
+      "rows": [
+        {
+          "method": "whole-zstd3",
+          "target": 0,
+          "checkpoint": {
+            "mean_us": 14.21896318407961,
+            "p50_us": 13.825999999999999,
+            "p95_us": 15.959999999999999,
+            "max_us": 34.285000000000004
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 14.0464,
+            "p50_us": 14.006,
+            "p95_us": 14.567,
+            "max_us": 14.567
+          },
+          "history_pass": {
+            "mean_us": 2865.3442,
+            "p50_us": 2873.327,
+            "p95_us": 2940.294,
+            "max_us": 2940.294
+          },
+          "throughput_mib_s": 332.6479063864449,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 2.066557213930348,
+            "boundaries_us": 0.021970149253731315,
+            "chunk_sha_us": 0.026701492537313375,
+            "lookup_compress_missing_us": 11.883432835820889
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 201,
+            "raw_object_bytes": 999451,
+            "payload_bytes": 433190,
+            "recipe_bytes": 16884
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 11,
+            "raw_object_bytes": 54728,
+            "payload_bytes": 23661,
+            "recipe_bytes": 924
+          },
+          "verification_us_per_version": 10.488666666666665,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-1024-zstd3",
+          "target": 1024,
+          "checkpoint": {
+            "mean_us": 10.517870646766168,
+            "p50_us": 10.179,
+            "p95_us": 14.908,
+            "max_us": 27.351
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 25.52,
+            "p50_us": 25.107,
+            "p95_us": 27.351,
+            "max_us": 27.351
+          },
+          "history_pass": {
+            "mean_us": 2121.1944,
+            "p50_us": 2117.3089999999997,
+            "p95_us": 2143.208,
+            "max_us": 2143.208
+          },
+          "throughput_mib_s": 449.34625002147044,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 2.1308606965174133,
+            "boundaries_us": 1.3295373134328357,
+            "chunk_sha_us": 2.138467661691542,
+            "lookup_compress_missing_us": 4.897179104477613
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 217,
+            "raw_object_bytes": 301454,
+            "payload_bytes": 136248,
+            "recipe_bytes": 41400
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 18,
+            "raw_object_bytes": 23398,
+            "payload_bytes": 11000,
+            "recipe_bytes": 2256
+          },
+          "verification_us_per_version": 14.100014925373134,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-4096-zstd3",
+          "target": 4096,
+          "checkpoint": {
+            "mean_us": 17.278805970149218,
+            "p50_us": 16.971999999999998,
+            "p95_us": 19.386,
+            "max_us": 35.107
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 16.8118,
+            "p50_us": 16.752000000000002,
+            "p95_us": 18.094,
+            "max_us": 18.094
+          },
+          "history_pass": {
+            "mean_us": 3479.8728,
+            "p50_us": 3497.526,
+            "p95_us": 3510.38,
+            "max_us": 3510.38
+          },
+          "throughput_mib_s": 273.9039051101359,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 2.0616318407960192,
+            "boundaries_us": 1.2651840796019904,
+            "chunk_sha_us": 2.0780248756218906,
+            "lookup_compress_missing_us": 11.736194029850736
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 202,
+            "raw_object_bytes": 997458,
+            "payload_bytes": 432528,
+            "recipe_bytes": 16956
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 11,
+            "raw_object_bytes": 54728,
+            "payload_bytes": 23661,
+            "recipe_bytes": 924
+          },
+          "verification_us_per_version": 10.324975124378108,
+          "verified_full": 201,
+          "verified_thinned": 11
+        }
+      ]
+    },
+    {
+      "name": "large-localized",
+      "versions": 201,
+      "source_bytes": 12471826,
+      "rows": [
+        {
+          "method": "whole-zstd3",
+          "target": 0,
+          "checkpoint": {
+            "mean_us": 159.3192766169152,
+            "p50_us": 149.903,
+            "p95_us": 236.045,
+            "max_us": 274.699
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 216.4046,
+            "p50_us": 219.26399999999998,
+            "p95_us": 228.34099999999998,
+            "max_us": 228.34099999999998
+          },
+          "history_pass": {
+            "mean_us": 32036.130799999995,
+            "p50_us": 32077.626999999997,
+            "p95_us": 32536.674000000003,
+            "max_us": 32536.674000000003
+          },
+          "throughput_mib_s": 371.27018269283934,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 25.279572139303486,
+            "boundaries_us": 0.024522388059701423,
+            "chunk_sha_us": 0.02875124378109446,
+            "lookup_compress_missing_us": 128.87703980099505
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 201,
+            "raw_object_bytes": 12471826,
+            "payload_bytes": 4832999,
+            "recipe_bytes": 16884
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 11,
+            "raw_object_bytes": 682573,
+            "payload_bytes": 264489,
+            "recipe_bytes": 924
+          },
+          "verification_us_per_version": 110.37414427860698,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-1024-zstd3",
+          "target": 1024,
+          "checkpoint": {
+            "mean_us": 73.44983980099512,
+            "p50_us": 71.795,
+            "p95_us": 76.20400000000001,
+            "max_us": 384.897
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 379.7354,
+            "p50_us": 378.294,
+            "p95_us": 384.897,
+            "max_us": 384.897
+          },
+          "history_pass": {
+            "mean_us": 14771.119199999997,
+            "p50_us": 14770.899000000001,
+            "p95_us": 14795.324999999999,
+            "max_us": 14795.324999999999
+          },
+          "throughput_mib_s": 805.2240303421082,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 24.72066169154228,
+            "boundaries_us": 15.680388059701505,
+            "chunk_sha_us": 25.890562189054727,
+            "lookup_compress_missing_us": 7.24464179104478
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 258,
+            "raw_object_bytes": 312195,
+            "payload_bytes": 142654,
+            "recipe_bytes": 356796
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 64,
+            "raw_object_bytes": 80568,
+            "payload_bytes": 42380,
+            "recipe_bytes": 19572
+          },
+          "verification_us_per_version": 169.321,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-4096-zstd3",
+          "target": 4096,
+          "checkpoint": {
+            "mean_us": 78.3063253731343,
+            "p50_us": 76.084,
+            "p95_us": 82.25500000000001,
+            "max_us": 303.173
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 298.8206,
+            "p50_us": 299.01500000000004,
+            "p95_us": 303.173,
+            "max_us": 303.173
+          },
+          "history_pass": {
+            "mean_us": 15748.623800000001,
+            "p50_us": 15734.939999999999,
+            "p95_us": 15838.706,
+            "max_us": 15838.706
+          },
+          "throughput_mib_s": 755.2444128411839,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 24.722820895522386,
+            "boundaries_us": 13.74737810945275,
+            "chunk_sha_us": 25.024124378109452,
+            "lookup_compress_missing_us": 14.945880597014918
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 219,
+            "raw_object_bytes": 1090034,
+            "payload_bytes": 498004,
+            "recipe_bytes": 125964
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 29,
+            "raw_object_bytes": 125889,
+            "payload_bytes": 59139,
+            "recipe_bytes": 6900
+          },
+          "verification_us_per_version": 134.06839800995024,
+          "verified_full": 201,
+          "verified_thinned": 11
+        }
+      ]
+    },
+    {
+      "name": "large-scattered",
+      "versions": 201,
+      "source_bytes": 14464002,
+      "rows": [
+        {
+          "method": "whole-zstd3",
+          "target": 0,
+          "checkpoint": {
+            "mean_us": 207.8425960199007,
+            "p50_us": 200.41899999999998,
+            "p95_us": 291.721,
+            "max_us": 325.565
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 264.0986,
+            "p50_us": 274.45799999999997,
+            "p95_us": 275.11,
+            "max_us": 275.11
+          },
+          "history_pass": {
+            "mean_us": 41788.370200000005,
+            "p50_us": 41647.422000000006,
+            "p95_us": 42230.283,
+            "max_us": 42230.283
+          },
+          "throughput_mib_s": 330.0905767281786,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 29.24773134328357,
+            "boundaries_us": 0.02351741293532334,
+            "chunk_sha_us": 0.02492039800995018,
+            "lookup_compress_missing_us": 173.5784278606966
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 201,
+            "raw_object_bytes": 14464002,
+            "payload_bytes": 5552257,
+            "recipe_bytes": 16884
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 11,
+            "raw_object_bytes": 791966,
+            "payload_bytes": 303569,
+            "recipe_bytes": 924
+          },
+          "verification_us_per_version": 127.73434328358209,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-1024-zstd3",
+          "target": 1024,
+          "checkpoint": {
+            "mean_us": 163.47271840796026,
+            "p50_us": 166.304,
+            "p95_us": 194.12699999999998,
+            "max_us": 387.842
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 386.2794,
+            "p50_us": 386.11899999999997,
+            "p95_us": 387.842,
+            "max_us": 387.842
+          },
+          "history_pass": {
+            "mean_us": 32870.4002,
+            "p50_us": 32841.169,
+            "p95_us": 33037.059,
+            "max_us": 33037.059
+          },
+          "throughput_mib_s": 419.646464172001,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 28.898009950248753,
+            "boundaries_us": 18.31108457711442,
+            "chunk_sha_us": 30.389134328358207,
+            "lookup_compress_missing_us": 86.54794029850744
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 2531,
+            "raw_object_bytes": 3864014,
+            "payload_bytes": 2023488,
+            "recipe_bytes": 413208
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 615,
+            "raw_object_bytes": 786169,
+            "payload_bytes": 420694,
+            "recipe_bytes": 23028
+          },
+          "verification_us_per_version": 204.14538308457713,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-4096-zstd3",
+          "target": 4096,
+          "checkpoint": {
+            "mean_us": 229.9937641791044,
+            "p50_us": 237.078,
+            "p95_us": 289.918,
+            "max_us": 338.40999999999997
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 329.06139999999994,
+            "p50_us": 328.069,
+            "p95_us": 338.40999999999997,
+            "max_us": 338.40999999999997
+          },
+          "history_pass": {
+            "mean_us": 46239.7316,
+            "p50_us": 46193.558000000005,
+            "p95_us": 46454.431,
+            "max_us": 46454.431
+          },
+          "throughput_mib_s": 298.31373891124906,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 29.093432835820895,
+            "boundaries_us": 17.286049751243763,
+            "chunk_sha_us": 29.51689552238808,
+            "lookup_compress_missing_us": 153.5058308457711
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 1762,
+            "raw_object_bytes": 9843605,
+            "payload_bytes": 4467676,
+            "recipe_bytes": 119160
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 169,
+            "raw_object_bytes": 791966,
+            "payload_bytes": 364794,
+            "recipe_bytes": 6612
+          },
+          "verification_us_per_version": 162.54217910447764,
+          "verified_full": 201,
+          "verified_thinned": 11
+        }
+      ]
+    },
+    {
+      "name": "large-front-insert",
+      "versions": 201,
+      "source_bytes": 13195218,
+      "rows": [
+        {
+          "method": "whole-zstd3",
+          "target": 0,
+          "checkpoint": {
+            "mean_us": 153.6735104477613,
+            "p50_us": 148.911,
+            "p95_us": 166.064,
+            "max_us": 260.161
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 160.2726,
+            "p50_us": 159.381,
+            "p95_us": 168.207,
+            "max_us": 168.207
+          },
+          "history_pass": {
+            "mean_us": 30901.1528,
+            "p50_us": 30853.454999999998,
+            "p95_us": 31376.302000000003,
+            "max_us": 31376.302000000003
+          },
+          "throughput_mib_s": 407.23207277825065,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 26.752278606965174,
+            "boundaries_us": 0.023079601990049714,
+            "chunk_sha_us": 0.0271791044776119,
+            "lookup_compress_missing_us": 124.4330895522388
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 201,
+            "raw_object_bytes": 13195218,
+            "payload_bytes": 4840265,
+            "recipe_bytes": 16884
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 11,
+            "raw_object_bytes": 722157,
+            "payload_bytes": 264852,
+            "recipe_bytes": 924
+          },
+          "verification_us_per_version": 114.02905472636816,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-1024-zstd3",
+          "target": 1024,
+          "checkpoint": {
+            "mean_us": 75.35198109452726,
+            "p50_us": 73.489,
+            "p95_us": 78.909,
+            "max_us": 380.639
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 373.9162,
+            "p50_us": 372.854,
+            "p95_us": 380.639,
+            "max_us": 380.639
+          },
+          "history_pass": {
+            "mean_us": 15154.238800000001,
+            "p50_us": 15155.806,
+            "p95_us": 15181.314,
+            "max_us": 15181.314
+          },
+          "throughput_mib_s": 830.3908016799527,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 26.177661691542312,
+            "boundaries_us": 16.527855721393028,
+            "chunk_sha_us": 27.3314577114428,
+            "lookup_compress_missing_us": 5.18753731343284
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 259,
+            "raw_object_bytes": 421698,
+            "payload_bytes": 76808,
+            "recipe_bytes": 365580
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 66,
+            "raw_object_bytes": 98679,
+            "payload_bytes": 38891,
+            "recipe_bytes": 19932
+          },
+          "verification_us_per_version": 176.94614925373133,
+          "verified_full": 201,
+          "verified_thinned": 11
+        },
+        {
+          "method": "fastcdc-4096-zstd3",
+          "target": 4096,
+          "checkpoint": {
+            "mean_us": 73.20515920398026,
+            "p50_us": 71.696,
+            "p95_us": 76.083,
+            "max_us": 311.428
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 304.9498,
+            "p50_us": 303.513,
+            "p95_us": 311.428,
+            "max_us": 311.428
+          },
+          "history_pass": {
+            "mean_us": 14723.3546,
+            "p50_us": 14722.176,
+            "p95_us": 14744.699,
+            "max_us": 14744.699
+          },
+          "throughput_mib_s": 854.6924833272334,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 26.093402985074633,
+            "boundaries_us": 14.605442786069643,
+            "chunk_sha_us": 26.456208955223882,
+            "lookup_compress_missing_us": 5.843955223880596
+          },
+          "full": {
+            "versions": 201,
+            "unique_files": 201,
+            "objects": 220,
+            "raw_object_bytes": 753197,
+            "payload_bytes": 120705,
+            "recipe_bytes": 130608
+          },
+          "thinned": {
+            "versions": 11,
+            "unique_files": 11,
+            "objects": 29,
+            "raw_object_bytes": 106694,
+            "payload_bytes": 35414,
+            "recipe_bytes": 7152
+          },
+          "verification_us_per_version": 141.9793631840796,
+          "verified_full": 201,
+          "verified_thinned": 11
+        }
+      ]
+    },
+    {
+      "name": "real-readme-history",
+      "versions": 50,
+      "source_bytes": 2498791,
+      "rows": [
+        {
+          "method": "whole-zstd3",
+          "target": 0,
+          "checkpoint": {
+            "mean_us": 146.581724,
+            "p50_us": 142.309,
+            "p95_us": 178.407,
+            "max_us": 199.13600000000002
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 135.061,
+            "p50_us": 135.04500000000002,
+            "p95_us": 135.867,
+            "max_us": 135.867
+          },
+          "history_pass": {
+            "mean_us": 7332.669800000001,
+            "p50_us": 7229.816,
+            "p95_us": 7811.043000000001,
+            "max_us": 7811.043000000001
+          },
+          "throughput_mib_s": 324.98842355714555,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 20.384079999999997,
+            "boundaries_us": 0.024280000000000013,
+            "chunk_sha_us": 0.026080000000000013,
+            "lookup_compress_missing_us": 123.11651999999998
+          },
+          "full": {
+            "versions": 50,
+            "unique_files": 50,
+            "objects": 50,
+            "raw_object_bytes": 2498791,
+            "payload_bytes": 982703,
+            "recipe_bytes": 4200
+          },
+          "thinned": {
+            "versions": 4,
+            "unique_files": 4,
+            "objects": 4,
+            "raw_object_bytes": 208314,
+            "payload_bytes": 81726,
+            "recipe_bytes": 336
+          },
+          "verification_us_per_version": 89.88338,
+          "verified_full": 50,
+          "verified_thinned": 4
+        },
+        {
+          "method": "fastcdc-1024-zstd3",
+          "target": 1024,
+          "checkpoint": {
+            "mean_us": 88.59322800000005,
+            "p50_us": 78.62899999999999,
+            "p95_us": 152.569,
+            "max_us": 292.282
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 244.16320000000002,
+            "p50_us": 241.566,
+            "p95_us": 258.659,
+            "max_us": 258.659
+          },
+          "history_pass": {
+            "mean_us": 4432.840400000001,
+            "p50_us": 4423.935,
+            "p95_us": 4480.162,
+            "max_us": 4480.162
+          },
+          "throughput_mib_s": 537.5859683030974,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 20.031119999999998,
+            "boundaries_us": 12.52922,
+            "chunk_sha_us": 21.13366,
+            "lookup_compress_missing_us": 34.1573
+          },
+          "full": {
+            "versions": 50,
+            "unique_files": 50,
+            "objects": 258,
+            "raw_object_bytes": 348343,
+            "payload_bytes": 190101,
+            "recipe_bytes": 76452
+          },
+          "thinned": {
+            "versions": 4,
+            "unique_files": 4,
+            "objects": 134,
+            "raw_object_bytes": 168480,
+            "payload_bytes": 92698,
+            "recipe_bytes": 6312
+          },
+          "verification_us_per_version": 141.3091,
+          "verified_full": 50,
+          "verified_thinned": 4
+        },
+        {
+          "method": "fastcdc-4096-zstd3",
+          "target": 4096,
+          "checkpoint": {
+            "mean_us": 100.55371600000007,
+            "p50_us": 87.946,
+            "p95_us": 192.874,
+            "max_us": 246.48600000000002
+          },
+          "cold_first_checkpoint": {
+            "mean_us": 191.6078,
+            "p50_us": 192.143,
+            "p95_us": 194.136,
+            "max_us": 194.136
+          },
+          "history_pass": {
+            "mean_us": 5030.455199999999,
+            "p50_us": 5007.047,
+            "p95_us": 5119.109,
+            "max_us": 5119.109
+          },
+          "throughput_mib_s": 473.7211055506647,
+          "diagnostic_phase_mean": {
+            "full_sha_us": 20.6294,
+            "boundaries_us": 11.789740000000002,
+            "chunk_sha_us": 20.29596,
+            "lookup_compress_missing_us": 47.300740000000005
+          },
+          "full": {
+            "versions": 50,
+            "unique_files": 50,
+            "objects": 123,
+            "raw_object_bytes": 677330,
+            "payload_bytes": 315155,
+            "recipe_bytes": 22704
+          },
+          "thinned": {
+            "versions": 4,
+            "unique_files": 4,
+            "objects": 42,
+            "raw_object_bytes": 189743,
+            "payload_bytes": 89859,
+            "recipe_bytes": 1920
+          },
+          "verification_us_per_version": 107.99238,
+          "verified_full": 50,
+          "verified_thinned": 4
+        }
+      ]
+    }
+  ]
+}

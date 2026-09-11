@@ -1,0 +1,349 @@
+{
+  "head": "75701a2b6744e788d0b7f0409764acf0169ddc13",
+  "units": "bytes; modeled metadata, before filesystem allocation",
+  "rows": [
+    {
+      "name": "small-markdown",
+      "versions": 201,
+      "retainedVersions": 11,
+      "methods": {
+        "whole3": {
+          "payload": 343261,
+          "encodingMetadata": 46322,
+          "commonMetadata": 89582,
+          "total": 479165,
+          "thinTotal": 26149
+        },
+        "whole9": {
+          "payload": 332858,
+          "encodingMetadata": 46322,
+          "commonMetadata": 89582,
+          "total": 468762,
+          "thinTotal": 25569
+        },
+        "cdc1024": {
+          "payload": 132071,
+          "encodingMetadata": 159741,
+          "commonMetadata": 89582,
+          "total": 381394,
+          "thinTotal": 22148
+        },
+        "cdc4096": {
+          "payload": 340453,
+          "encodingMetadata": 47819,
+          "commonMetadata": 89582,
+          "total": 477854,
+          "thinTotal": 26075
+        },
+        "fixedBase": {
+          "payload": 47042,
+          "encodingMetadata": 46775,
+          "commonMetadata": 89582,
+          "total": 183399,
+          "thinTotal": 11310
+        },
+        "base50": {
+          "payload": 31793,
+          "encodingMetadata": 23252,
+          "commonMetadata": 89582,
+          "total": 144627,
+          "thinTotal": 15599
+        }
+      }
+    },
+    {
+      "name": "small-typst",
+      "versions": 201,
+      "retainedVersions": 11,
+      "methods": {
+        "whole3": {
+          "payload": 294729,
+          "encodingMetadata": 46322,
+          "commonMetadata": 89582,
+          "total": 430633,
+          "thinTotal": 23470
+        },
+        "whole9": {
+          "payload": 285987,
+          "encodingMetadata": 46322,
+          "commonMetadata": 89582,
+          "total": 421891,
+          "thinTotal": 22983
+        },
+        "cdc1024": {
+          "payload": 221082,
+          "encodingMetadata": 66512,
+          "commonMetadata": 89582,
+          "total": 377176,
+          "thinTotal": 21001
+        },
+        "cdc4096": {
+          "payload": 293541,
+          "encodingMetadata": 47819,
+          "commonMetadata": 89582,
+          "total": 430942,
+          "thinTotal": 23497
+        },
+        "fixedBase": {
+          "payload": 46304,
+          "encodingMetadata": 46172,
+          "commonMetadata": 89582,
+          "total": 182058,
+          "thinTotal": 10995
+        },
+        "base50": {
+          "payload": 30549,
+          "encodingMetadata": 23252,
+          "commonMetadata": 89582,
+          "total": 143383,
+          "thinTotal": 14357
+        }
+      }
+    },
+    {
+      "name": "small-latex",
+      "versions": 201,
+      "retainedVersions": 11,
+      "methods": {
+        "whole3": {
+          "payload": 433994,
+          "encodingMetadata": 46322,
+          "commonMetadata": 89582,
+          "total": 569898,
+          "thinTotal": 31083
+        },
+        "whole9": {
+          "payload": 422123,
+          "encodingMetadata": 46322,
+          "commonMetadata": 89582,
+          "total": 558027,
+          "thinTotal": 30435
+        },
+        "cdc1024": {
+          "payload": 247068,
+          "encodingMetadata": 104099,
+          "commonMetadata": 89582,
+          "total": 440749,
+          "thinTotal": 25259
+        },
+        "cdc4096": {
+          "payload": 432631,
+          "encodingMetadata": 47819,
+          "commonMetadata": 89582,
+          "total": 570032,
+          "thinTotal": 31099
+        },
+        "fixedBase": {
+          "payload": 45137,
+          "encodingMetadata": 46178,
+          "commonMetadata": 89582,
+          "total": 180897,
+          "thinTotal": 11545
+        },
+        "base50": {
+          "payload": 35257,
+          "encodingMetadata": 23252,
+          "commonMetadata": 89582,
+          "total": 148091,
+          "thinTotal": 17938
+        }
+      }
+    },
+    {
+      "name": "large-localized",
+      "versions": 201,
+      "retainedVersions": 11,
+      "methods": {
+        "whole3": {
+          "payload": 4833803,
+          "encodingMetadata": 46724,
+          "commonMetadata": 89783,
+          "total": 4970310,
+          "thinTotal": 271944
+        },
+        "whole9": {
+          "payload": 4583487,
+          "encodingMetadata": 46724,
+          "commonMetadata": 89783,
+          "total": 4719994,
+          "thinTotal": 258231
+        },
+        "cdc1024": {
+          "payload": 352563,
+          "encodingMetadata": 1023674,
+          "commonMetadata": 89783,
+          "total": 1466020,
+          "thinTotal": 110749
+        },
+        "cdc4096": {
+          "payload": 954955,
+          "encodingMetadata": 293791,
+          "commonMetadata": 89783,
+          "total": 1338529,
+          "thinTotal": 96152
+        },
+        "fixedBase": {
+          "payload": 68382,
+          "encodingMetadata": 47177,
+          "commonMetadata": 89783,
+          "total": 205342,
+          "thinTotal": 33548
+        },
+        "base50": {
+          "payload": 142820,
+          "encodingMetadata": 23252,
+          "commonMetadata": 89783,
+          "total": 255855,
+          "thinTotal": 127284
+        }
+      }
+    },
+    {
+      "name": "large-scattered",
+      "versions": 201,
+      "retainedVersions": 11,
+      "methods": {
+        "whole3": {
+          "payload": 5553061,
+          "encodingMetadata": 46724,
+          "commonMetadata": 89783,
+          "total": 5689568,
+          "thinTotal": 311024
+        },
+        "whole9": {
+          "payload": 5228820,
+          "encodingMetadata": 46724,
+          "commonMetadata": 89783,
+          "total": 5365327,
+          "thinTotal": 293387
+        },
+        "cdc1024": {
+          "payload": 2554627,
+          "encodingMetadata": 978381,
+          "commonMetadata": 89783,
+          "total": 3622791,
+          "thinTotal": 458940
+        },
+        "cdc4096": {
+          "payload": 4897619,
+          "encodingMetadata": 296163,
+          "commonMetadata": 89783,
+          "total": 5283565,
+          "thinTotal": 380103
+        },
+        "fixedBase": {
+          "payload": 2014201,
+          "encodingMetadata": 47805,
+          "commonMetadata": 89783,
+          "total": 2151789,
+          "thinTotal": 139295
+        },
+        "base50": {
+          "payload": 721991,
+          "encodingMetadata": 23252,
+          "commonMetadata": 89783,
+          "total": 835026,
+          "thinTotal": 167953
+        }
+      }
+    },
+    {
+      "name": "large-front-insert",
+      "versions": 201,
+      "retainedVersions": 11,
+      "methods": {
+        "whole3": {
+          "payload": 4841069,
+          "encodingMetadata": 46724,
+          "commonMetadata": 89783,
+          "total": 4977576,
+          "thinTotal": 272307
+        },
+        "whole9": {
+          "payload": 4593809,
+          "encodingMetadata": 46724,
+          "commonMetadata": 89783,
+          "total": 4730316,
+          "thinTotal": 258775
+        },
+        "cdc1024": {
+          "payload": 261724,
+          "encodingMetadata": 1028452,
+          "commonMetadata": 89783,
+          "total": 1379959,
+          "thinTotal": 106360
+        },
+        "cdc4096": {
+          "payload": 436197,
+          "encodingMetadata": 293701,
+          "commonMetadata": 89783,
+          "total": 819681,
+          "thinTotal": 70157
+        },
+        "fixedBase": {
+          "payload": 65854,
+          "encodingMetadata": 47792,
+          "commonMetadata": 89783,
+          "total": 203429,
+          "thinTotal": 33397
+        },
+        "base50": {
+          "payload": 143648,
+          "encodingMetadata": 23252,
+          "commonMetadata": 89783,
+          "total": 256683,
+          "thinTotal": 127447
+        }
+      }
+    },
+    {
+      "name": "real-readme-history",
+      "versions": 50,
+      "retainedVersions": 4,
+      "methods": {
+        "whole3": {
+          "payload": 982903,
+          "encodingMetadata": 11591,
+          "commonMetadata": 22286,
+          "total": 1016780,
+          "thinTotal": 84394
+        },
+        "whole9": {
+          "payload": 933708,
+          "encodingMetadata": 11591,
+          "commonMetadata": 22286,
+          "total": 967585,
+          "thinTotal": 80265
+        },
+        "cdc1024": {
+          "payload": 164469,
+          "encodingMetadata": 222521,
+          "commonMetadata": 22286,
+          "total": 409276,
+          "thinTotal": 104986
+        },
+        "cdc4096": {
+          "payload": 290762,
+          "encodingMetadata": 61244,
+          "commonMetadata": 22286,
+          "total": 374292,
+          "thinTotal": 96484
+        },
+        "fixedBase": {
+          "payload": 407567,
+          "encodingMetadata": 12003,
+          "commonMetadata": 22286,
+          "total": 441856,
+          "thinTotal": 51024
+        },
+        "base50": {
+          "payload": 407567,
+          "encodingMetadata": 5689,
+          "commonMetadata": 22286,
+          "total": 435542,
+          "thinTotal": 50519
+        }
+      }
+    }
+  ]
+}

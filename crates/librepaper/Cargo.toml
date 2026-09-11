@@ -18,11 +18,8 @@ path = "src/main.rs"
 [dependencies]
 wasm-helpers = { git = "https://github.com/LibrePaper/wasm-helpers", tag = "v0.1.1" }
 wasm-markdown = { git = "https://github.com/LibrePaper/wasm-markdown", tag = "v0.1.1", default-features = false }
-wasm-typst = { git = "https://github.com/LibrePaper/wasm-typst", tag = "v0.3.0", default-features = false }
+wasm-typst = { git = "https://github.com/LibrePaper/wasm-typst", tag = "v0.3.1", default-features = false }
 wasm-bibliography = { git = "https://github.com/LibrePaper/wasm-bibliography", tag = "v0.1.1", default-features = false, features = ["citations"] }
-# The compiler behind wasm-typst, for reading which families a font file in the
-# deployment's library carries. The same version, so it is the same crate.
-typst = "=0.15.1"
 # Package archives from the typst registry are gzip around a tar.
 flate2 = "1"
 
