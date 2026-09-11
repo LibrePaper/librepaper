@@ -37,16 +37,10 @@ The LibrePaper sandbox is a free website where anyone can upload small (<4MB) sh
 
 [LibrePaper sandbox](https://librepaper.arelbundock.com)
 
-If you do not want to log in but want to try annotating some documents, you can try one of these live examples:
-
-- [Markdown: What a Regression Table Is Hiding](https://librepaper.arelbundock.com/docs/markdown-what-a-regression-table-is-hiding-c9kqgt7acs)
-- [Typst: What a Confidence Interval Does Not Say](https://librepaper.arelbundock.com/docs/typst-what-a-confidence-interval-does-not-say-5vvxv8ebpd)
-- [HTML: What the Bootstrap Actually Resamples](https://librepaper.arelbundock.com/docs/html-what-the-bootstrap-actually-resamples-g6zm9dbzpa) (rendered by Quarto)
-- [LaTeX: What a Standard Error Assumes](https://librepaper.arelbundock.com/docs/latex-what-a-standard-error-assumes-75x2fwzpc8)
-- [Publication and management console](https://librepaper.arelbundock.com) (requires Github Login)
+Sign in to receive private, editable tutorials for Markdown, Typst, HTML, LaTeX, and Quarto. Each tutorial contains the same LibrePaper walkthrough in that format.
 
 A published document lives at `/docs/<title>-<suffix>`, where the suffix is
-random so the link cannot be guessed from the title. The seeded examples above
+random so the link cannot be guessed from the title. Curated tutorial documents
 are the exception: their suffix is derived from the title rather than drawn at
 random, so re-seeding the sandbox leaves these links pointing at the same
 documents. That is safe only because an example is public on purpose; every
@@ -183,10 +177,11 @@ librepaper list
 ```
 
 ```
-75x  2026-09-06  LaTeX: What a Standard Error Assumes
-g6z  2026-09-06  HTML: What the Bootstrap Actually Resamples
-5vv  2026-09-06  Typst: What a Confidence Interval Does Not Say
-c9k  2026-09-06  Markdown: What a Regression Table Is Hiding
+…  2026-09-11  Learn LibrePaper with LaTeX
+…  2026-09-11  Learn LibrePaper with HTML
+…  2026-09-11  Learn LibrePaper with Typst
+…  2026-09-11  Learn LibrePaper with Markdown
+…  2026-09-11  Learn LibrePaper with Quarto
 ```
 
 ### Share
@@ -516,7 +511,7 @@ librepaper serve                                     # LibrePaper always serves 
 `make deploy` checks that the selected mirror contains a default engine
 release with its TeX Live bundles (`latex/tools/check-mirror.mjs`; see
 `make latex-check` and `make latex-smoke`, MIRROR=). Older per-file mirrors
-and SwiftLaTeX/BusyTeX releases are rejected as legacy. `make latex-smoke` compiles `examples/standard-errors.tex`
+and SwiftLaTeX/BusyTeX releases are rejected as legacy. `make latex-smoke` compiles `examples/tutorial-latex/librepaper.tex`
 in a fresh Chromium profile against MIRROR= and requires visible PDF pages
 and selectable text before you point a deployment at it.
 

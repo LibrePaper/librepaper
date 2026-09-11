@@ -2249,13 +2249,13 @@ impl Room {
     /// empty update is a valid outcome -- writing the source a document
     /// already holds changes nothing -- so a refusal is an `Err`, never an
     /// empty `Vec`.
+    #[cfg(test)]
     pub async fn set_source(&self, source: &str, format: &str) -> Result<Vec<u8>, WriteError> {
         self.set_main_file(source, format, "").await
     }
 
-    /// The same, naming the main file. A directory publish knows what its
-    /// document is called; a one-file publish does not and takes the name its
-    /// format implies.
+    /// Writes a source into the named main file. A directory publish knows
+    /// what its document is called; other callers supply the implied name.
     pub async fn set_main_file(
         &self,
         source: &str,

@@ -415,7 +415,7 @@ mod tests {
     #[test]
     #[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
     fn real_r_render_captures_distinct_figures_hidden_cells_and_table() {
-        let capture = real_capture(include_str!("../../../../examples/quarto-r.qmd"));
+        let capture = real_capture(include_str!("../tests/fixtures/quarto/r.qmd"));
         let first = capture
             .cells
             .iter()
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     #[ignore = "requires installed Quarto and Python Jupyter kernel"]
     fn real_python_render_captures_figure_table_and_text() {
-        let capture = real_capture(include_str!("../../../../examples/quarto-python.qmd"));
+        let capture = real_capture(include_str!("../tests/fixtures/quarto/python.qmd"));
         for (label, kind) in [
             ("fig-values", OutputKind::Image),
             ("tbl-summary", OutputKind::Table),

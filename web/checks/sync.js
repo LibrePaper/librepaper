@@ -22,9 +22,9 @@ const STEP = 3;
 const ALLOWED = 0.02;
 
 const EXAMPLES = [
-  ["examples/regression-tables.md", renderMarkdown, "markdown"],
-  ["examples/intervals.typ", renderTypst, "typst"],
-  ["examples/bootstrap.html", renderHtml, "html"],
+  ["examples/tutorial-markdown/librepaper.md", renderMarkdown, "markdown"],
+  ["examples/tutorial-typst/librepaper.typ", renderTypst, "typst"],
+  ["examples/tutorial-html/librepaper.html", renderHtml, "html"],
 ];
 
 // Where a caret can be. In markdown and typst, anywhere: the whole file is
@@ -53,18 +53,23 @@ function places(source, format) {
   return out;
 }
 
-// The source of an example, or null when it is a rendered file that has not
-// been rendered here. `examples/*.html` is what Quarto makes of the `.qmd`
-// beside it, and CI has no Quarto.
+// The source of a tutorial.
 function sourceOf(file) {
   const url = new URL(`../../${file}`, import.meta.url);
   return existsSync(url) ? readFileSync(url, "utf8") : null;
 }
 
+function renderInputOf(source, format) {
+  return format === "typst"
+    ? { main: "librepaper.typ", texts: { "librepaper.typ": source }, assets: { "librepaper-icon.png": readFileSync(new URL("../../examples/tutorial-typst/librepaper-icon.png", import.meta.url)) } }
+    : source;
+}
+
 let bad = false;
 for (const [file, render, format] of EXAMPLES) {
   const source = sourceOf(file);
-  const rendered = source === null ? null : await render(source, file);
+  const renderInput = source === null ? null : renderInputOf(source, format);
+  const rendered = source === null ? null : await render(renderInput, file);
   if (rendered === null) {
     console.log(`sync: ${file} is not built; run \`make examples\``);
     continue;
@@ -171,7 +176,7 @@ function wordsAt(text, at, count) {
 
 for (const [file, render, format] of EXAMPLES) {
   const source = sourceOf(file);
-  const rendered = source === null ? null : await render(source, file);
+  const rendered = source === null ? null : await render(renderInputOf(source, format), file);
   if (rendered === null) continue; // already reported as unbuilt above
 
   const tree = { main: file, texts: { [file]: source } };

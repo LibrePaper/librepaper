@@ -29,6 +29,8 @@ async fn seeding_locally_is_stable_across_runs() {
     .unwrap();
     let documents = vec![SeedDocument {
         file: file.display().to_string(),
+        files: Vec::new(),
+        assets: Vec::new(),
         title: "Curated title",
         annotations: vec![SeedAnnotation {
             motivation: "commenting",
@@ -86,6 +88,8 @@ async fn seeding_writes_annotations_with_their_state() {
     .unwrap();
     let documents = vec![SeedDocument {
         file: file.display().to_string(),
+        files: Vec::new(),
+        assets: Vec::new(),
         title: "Curated title",
         annotations: vec![SeedAnnotation {
             motivation: "commenting",
@@ -132,6 +136,8 @@ async fn seeding_with_an_owner_makes_the_examples_theirs() {
     std::fs::write(&file, "<h1>Owned</h1><p>A phrase.</p>").unwrap();
     let documents = vec![SeedDocument {
         file: file.display().to_string(),
+        files: Vec::new(),
+        assets: Vec::new(),
         title: "Owned example",
         annotations: vec![],
     }];
@@ -273,6 +279,8 @@ async fn seeding_leaves_no_room_locks_behind() {
     .unwrap();
     let documents = vec![SeedDocument {
         file: file.display().to_string(),
+        files: Vec::new(),
+        assets: Vec::new(),
         title: "Curated title",
         annotations: vec![SeedAnnotation {
             motivation: "commenting",

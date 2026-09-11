@@ -98,8 +98,8 @@ fn add_manifest_file(directory: &tempfile::TempDir, request: &mut JobRequest, pa
 #[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
 async fn quarto_managed_job_uses_local_data_and_returns_publishable_bundle() {
     use base64::Engine;
-    let source = include_str!("../../../../examples/quarto-r.qmd")
-        .replace("x <- 1:8", "x <- read.csv('local.csv')$x");
+    let source =
+        include_str!("fixtures/quarto/r.qmd").replace("x <- 1:8", "x <- read.csv('local.csv')$x");
     let (directory, bindings, request, workspace) = fixture(&source);
     std::fs::write(
         directory.path().join("project/local.csv"),

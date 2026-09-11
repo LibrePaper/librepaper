@@ -1,0 +1,49 @@
+---
+title: "Learn LibrePaper with Quarto"
+author: "LibrePaper"
+format: html
+execute:
+  echo: true
+  warning: false
+---
+
+![The LibrePaper icon](librepaper-icon.png){#fig-librepaper fig-alt="The LibrePaper icon"}
+
+Welcome to LibrePaper. Edit this sentence in the browser and watch the draft
+update. Your Quarto source, comments, highlights, and checkpoints travel with
+the document.
+
+## Source and preview
+
+This file is Quarto. Markdown preview renders a fast, execution-free draft in the browser. Quarto preview asks the local companion to run your installed Quarto, R or Python and displays that local result. The server synchronizes shared source and assets; it neither executes the code cell nor uploads the live preview.
+
+## A small scientific example
+
+For a sample of size $n$, the standard error of a mean is
+
+$$
+SE = \frac{s}{\sqrt{n}}.
+$$
+
+{{< include sections/rendering.qmd >}}
+
+The icon in @fig-librepaper is a relative project asset. Change the values in
+the cell below, render locally, and make a checkpoint for the new result.
+
+```{r}
+#| label: tbl-summary
+#| tbl-cap: "A small summary computed by Quarto."
+values <- c(2, 4, 6, 8)
+data.frame(statistic = c("Mean", "Sample size"),
+           value = c(mean(values), length(values)))
+```
+
+## What Quarto adds
+
+Quarto combines Markdown prose with executable R or Python cells, captions, and
+cross-references. The browser can show a saved result while collaborators edit
+the source. Try changing `values` and leave a comment on this paragraph.
+
+## Working with other clients
+
+Use `librepaper sync` to keep a local editor synchronized, or bind the companion to a project folder whose private inputs remain on your computer. Publishing a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.

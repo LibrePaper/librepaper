@@ -34,7 +34,7 @@ assert.equal(diagnostic.source, "#bad");
 const explain = composeTaskMessage({ id: "m2", text: "Explain this error", task: { kind: "explain", scope: "file" }, diagnostic });
 assert.equal(explain.context.diagnostic.message, "Unknown command");
 
-const warnings = [{ severity: "warning", file: "standard-errors.tex", line: 12,
+const warnings = [{ severity: "warning", file: "librepaper.tex", line: 12,
   message: "Reference undefined", source: "\\ref{missing}", revision: "render-sha",
   provenance: { engine: "latex" } }];
 const fixWarnings = composeTaskMessage({ text: "Fix the warnings", revision: "selection-sha", diagnostics: warnings });

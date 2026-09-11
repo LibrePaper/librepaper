@@ -24,7 +24,10 @@ const wasmModule = await WebAssembly.instantiate(readFileSync(WASM), {});
 const wasm = wasmModule.instance.exports;
 const corpusNames = ["paper.typ", "lib.typ", "long.typ", "refs.bib", "broken.typ"];
 const texts = Object.fromEntries(corpusNames.map((name) => [name, readFileSync(join(CORPUS, name), "utf8")]));
-const assets = { "asset.svg": new Uint8Array(readFileSync(join(CORPUS, "asset.svg"))) };
+const assets = {
+  "asset.svg": new Uint8Array(readFileSync(join(CORPUS, "asset.svg"))),
+  "librepaper-icon.png": new Uint8Array(readFileSync(join(REPO, "examples", "tutorial-typst", "librepaper-icon.png"))),
+};
 
 function compile(main, source = texts[main]) {
   handOver(wasm, { main, texts: { ...texts, [main]: source }, assets });
@@ -37,7 +40,7 @@ function compile(main, source = texts[main]) {
 const PDFs = {
   paper: compile("paper.typ"),
   long: compile("long.typ"),
-  intervals: compile("intervals.typ", readFileSync(join(REPO, "examples", "intervals.typ"), "utf8")),
+  tutorial: compile("librepaper.typ", readFileSync(join(REPO, "examples", "tutorial-typst", "librepaper.typ"), "utf8")),
 };
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PORT = 8800 + Math.floor(Math.random() * 200);
@@ -395,13 +398,13 @@ async function run() {
   // Empty PDF end-of-line items must leave a separator in the live DOM.
   // Without it, this highlight becomes "parameteris fixed", fails to anchor,
   // and sorts after the comments instead of between them in the sidebar.
-  await tab.eval("window.paint([]); await new Promise(r => setTimeout(r, 80)); await window.sendPdf('/pdf/intervals')");
+  await tab.eval("window.paint([]); await new Promise(r => setTimeout(r, 80)); await window.sendPdf('/pdf/tutorial')");
   await settle(tab);
   const positions = await tab.eval(`
     return [
-      'A confidence interval is a statement about a procedure, not about a parameter.',
-      'Sampling error is one source of uncertainty and rarely the largest.',
-      'The parameter is fixed; the interval is what moved.',
+      'Typst combines markup, math, and scripting in one compact source file.',
+      'A small function can keep repeated labels consistent:',
+      'Try changing the estimate and leave a comment on this paragraph.',
     ].map((exact) => window.anchor({ exact })?.start ?? null);
   `);
   check("a highlight across a Typst line break anchors between comments",

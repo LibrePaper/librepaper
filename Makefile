@@ -27,7 +27,7 @@ TYPST   := web/dist/wasm/typst.wasm
 SHELL_OUT := web/dist/index.html
 WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) Cargo.toml README.md $(wildcard examples/*.md examples/*.typ examples/*.tex)
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find examples -type f) Cargo.toml README.md
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
@@ -152,21 +152,12 @@ serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX=; e
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
 	@$(BIN) serve --port $(PORT) --data $(DATA) $(LATEX_FLAG)
 
-# One example per source format LibrePaper accepts. Only the HTML one is built:
-# Quarto renders it from the .qmd beside it. The .md and the .typ are rendered
-# by LibrePaper itself at publish time, and the .tex is compiled by the browser
-# that opens it, so none of those three has a rule below.
-EXAMPLES := examples/bootstrap.html examples/regression-tables.md \
-            examples/intervals.typ examples/standard-errors.tex
+# One tutorial project per source format LibrePaper accepts. Each project has
+# a source file and the same relative icon asset; no example is generated.
+EXAMPLES := $(shell find examples/tutorial-* -type f)
 
 # Not in the help: a step of `deploy`, not an entry point.
 examples: $(EXAMPLES)
-
-# Quarto inlines its figures, so the output stands alone. It resolves paths
-# relative to the document, so it is run from inside examples/ rather than
-# from the repository root.
-examples/%.html: examples/%.qmd
-	@cd examples && quarto render $(notdir $<) --quiet
 
 # Not in the help: it is a step of `deploy`, not a thing to run on its own.
 # A deployment is seeded once. Resetting a nonempty catalogue is a `librepaper
@@ -197,11 +188,11 @@ latex-check:
 latex-smoke: $(BIN)  ## Compile and display the seeded LaTeX example in Chromium against MIRROR=
 	@node latex/tools/check-mirror.test.mjs
 	@node latex/tools/check-mirror.mjs $(MIRROR)
-	@node web/tools/latex-e2e.mjs $(BIN) browser examples/standard-errors.tex 120 $(MIRROR)
+	@node web/tools/latex-e2e.mjs $(BIN) browser examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
 
-# Use the ordinary sign-in flow: each new account receives four private
+# Use the ordinary sign-in flow: each new account receives five private
 # examples and owns its copies. Guest roles come from links created in Share.
-deploy: latex-check $(BIN)  ## Serve locally; sign in for your four examples and share links to test roles
+deploy: latex-check $(BIN)  ## Serve locally; sign in for your five examples and share links to test roles
 	@$(MAKE) serve
 
 # The deployment keys -- the Cloudflare token, the endpoints, the GitHub app

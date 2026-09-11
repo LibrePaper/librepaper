@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Learn LibrePaper with HTML</title>
+  </head>
+  <body>
+    <main>
+      <h1>Learn LibrePaper with HTML</h1>
+
+      <figure>
+        <img src="librepaper-icon.png" alt="The LibrePaper icon">
+        <figcaption>A relative image asset in the project.</figcaption>
+      </figure>
+
+      <p>Welcome to LibrePaper. Edit this sentence in the browser and watch the
+      page update. Your HTML source, comments, highlights, and checkpoints
+      travel with the document.</p>
+
+      <h2>Source and preview</h2>
+      <p>This file is HTML, so LibrePaper displays its semantic elements directly.
+      <code>librepaper sync</code> can keep a local project synchronized. The
+      server synchronizes and stores the source; there is no separate compile
+      step or rendering artifact.</p>
+
+      <h2>A small scientific example</h2>
+      <p>For a sample of size <math aria-label="s divided by square root of n">
+        <mi>n</mi></math>, the standard error of a mean is
+        <math display="block" aria-label="SE equals s divided by square root of n">
+          <mrow><mi>SE</mi><mo>=</mo><mfrac><mi>s</mi><msqrt><mi>n</mi></msqrt></mfrac></mrow>
+        </math>
+      </p>
+
+      <iframe src="sections/rendering.html" title="Where LibrePaper rendering happens"></iframe>
+      <p>HTML has no native include element. An iframe embeds the second project file as its own accessible document.</p>
+
+      <h2>What HTML adds</h2>
+      <p>HTML gives you explicit structure: headings, figures, captions, tables,
+      and accessible alternative text. Try changing the figure caption and
+      leave a comment on this paragraph.</p>
+
+      <h2>Working with other clients</h2>
+      <p>The browser editor reads and edits the page as stored. Use
+      <code>librepaper sync</code> for local work, then share the saved HTML
+      artifact. Readers need no compiler.</p>
+    </main>
+  </body>
+</html>

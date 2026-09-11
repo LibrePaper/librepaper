@@ -27,9 +27,9 @@ benchmark, and no production compression implementation was changed.
 
 ## Corpus and methods
 
-- Three real small inputs: `examples/regression-tables.md` (2,772 bytes),
-  `examples/intervals.typ` (2,298 bytes), and `examples/standard-errors.tex`
-  (4,052 bytes), each followed by 200 synthetic localized word edits.
+- Three real small inputs: `examples/tutorial-markdown/librepaper.md`,
+  `examples/tutorial-typst/librepaper.typ`, and `examples/tutorial-latex/librepaper.tex`,
+  each followed by 200 synthetic localized word edits.
 - The real 61,131-byte README followed by 200 localized-edit, scattered-edit,
   or front-insertion revisions. A scattered revision replaces 12 word matches;
   a front insertion adds one short numbered sentence. The generator is deterministic.

@@ -5,43 +5,54 @@ use super::*;
 use crate::document::store::Publication;
 
 struct Starter {
-    file: &'static str,
+    main: &'static str,
     title: &'static str,
     format: &'static str,
     source: &'static str,
+    extra: &'static str,
+    extra_source: &'static str,
 }
 
-// Slot order is durable: changing a title or source must not reorder these.
 const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
     Starter {
-        file: "regression-tables.md",
-        title: "Markdown: What a Regression Table Is Hiding",
+        main: "librepaper.md",
+        title: "Learn LibrePaper with Markdown",
         format: "markdown",
-        source: include_str!("../../../../examples/regression-tables.md"),
+        source: include_str!("../../../../examples/tutorial-markdown/librepaper.md"),
+        extra: "sections/rendering.md",
+        extra_source: include_str!("../../../../examples/tutorial-markdown/sections/rendering.md"),
     },
     Starter {
-        file: "intervals.typ",
-        title: "Typst: What a Confidence Interval Does Not Say",
+        main: "librepaper.typ",
+        title: "Learn LibrePaper with Typst",
         format: "typst",
-        source: include_str!("../../../../examples/intervals.typ"),
+        source: include_str!("../../../../examples/tutorial-typst/librepaper.typ"),
+        extra: "sections/rendering.typ",
+        extra_source: include_str!("../../../../examples/tutorial-typst/sections/rendering.typ"),
     },
     Starter {
-        file: "bootstrap.html",
-        title: "HTML: What the Bootstrap Actually Resamples",
+        main: "librepaper.html",
+        title: "Learn LibrePaper with HTML",
         format: "html",
-        source: include_str!("../../assets/bootstrap.html"),
+        source: include_str!("../../../../examples/tutorial-html/librepaper.html"),
+        extra: "sections/rendering.html",
+        extra_source: include_str!("../../../../examples/tutorial-html/sections/rendering.html"),
     },
     Starter {
-        file: "standard-errors.tex",
-        title: "LaTeX: What a Standard Error Assumes",
+        main: "librepaper.tex",
+        title: "Learn LibrePaper with LaTeX",
         format: "latex",
-        source: include_str!("../../../../examples/standard-errors.tex"),
+        source: include_str!("../../../../examples/tutorial-latex/librepaper.tex"),
+        extra: "sections/rendering.tex",
+        extra_source: include_str!("../../../../examples/tutorial-latex/sections/rendering.tex"),
     },
     Starter {
-        file: "getting-started.qmd",
-        title: "Quarto: Your First Reproducible Report",
+        main: "librepaper.qmd",
+        title: "Learn LibrePaper with Quarto",
         format: "quarto",
-        source: include_str!("../../../../examples/getting-started.qmd"),
+        source: include_str!("../../../../examples/tutorial-quarto/librepaper.qmd"),
+        extra: "sections/rendering.qmd",
+        extra_source: include_str!("../../../../examples/tutorial-quarto/sections/rendering.qmd"),
     },
 ];
 
@@ -81,7 +92,7 @@ impl Server {
                         title: starter.title.into(),
                         source: starter.source.into(),
                         source_format: starter.format.into(),
-                        main: starter.file.into(),
+                        main: starter.main.into(),
                         owner: who.handle.clone(),
                         owner_id: who.id.clone(),
                         owner_name: who.name.clone(),
@@ -97,7 +108,24 @@ impl Server {
                 // A refused starter write stops the provisioning: the
                 // checkpoint below would otherwise record an example
                 // document that has no source in it.
-                room.set_main_file(starter.source, starter.format, starter.file)
+                room.set_main_file(starter.source, starter.format, starter.main)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            if !room.tree().await.files.contains_key("librepaper-icon.png") {
+                let icon =
+                    include_bytes!("../../../../examples/tutorial-markdown/librepaper-icon.png")
+                        .to_vec();
+                let (sha, _) = room
+                    .put_asset(icon, (self.config.max_asset, self.config.max_assets))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                room.name_asset("librepaper-icon.png", &sha)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            if !room.tree().await.files.contains_key(starter.extra) {
+                room.add_text(starter.extra, starter.extra_source)
                     .await
                     .map_err(|error| error.to_string())?;
             }
@@ -113,12 +141,32 @@ impl Server {
             if starter.format == "typst" {
                 let source = room.source().await;
                 let pdf = tokio::task::spawn_blocking(move || {
-                    let rendered = crate::document::render::render_typst_document(
-                        std::path::Path::new("intervals.typ"),
+                    let files = vec![
+                        ("librepaper.typ".to_string(), source.clone().into_bytes()),
+                        (
+                            "librepaper-icon.png".to_string(),
+                            include_bytes!(
+                                "../../../../examples/tutorial-typst/librepaper-icon.png"
+                            )
+                            .to_vec(),
+                        ),
+                        (
+                            "sections/rendering.typ".to_string(),
+                            include_bytes!(
+                                "../../../../examples/tutorial-typst/sections/rendering.typ"
+                            )
+                            .to_vec(),
+                        ),
+                    ];
+                    let rendered = crate::document::render::compile_from_files(
+                        "librepaper.typ",
                         &source,
-                        "What a Confidence Interval Does Not Say",
+                        "Learn LibrePaper with Typst",
+                        &files,
+                        &[],
+                        None,
                     );
-                    crate::document::render::pdf_of(&rendered)
+                    crate::document::render::pdf_of(&rendered.compiled)
                         .ok_or_else(|| "could not render the starter Typst document".to_string())
                 })
                 .await

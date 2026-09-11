@@ -36,7 +36,7 @@ function edits(initial, count, mode) {
   }
   return out;
 }
-for(const [name,file] of [['small-markdown','examples/regression-tables.md'],['small-typst','examples/intervals.typ'],['small-latex','examples/standard-errors.tex']]) {
+for(const [name,file] of [['small-markdown','examples/tutorial-markdown/librepaper.md'],['small-typst','examples/tutorial-typst/librepaper.typ'],['small-latex','examples/tutorial-latex/librepaper.tex']]) {
   save(name,edits(readTracked(file),200,'localized'),`200 synthetic one-word edits to real ${file}; compression corpus, not a compilation test`);
 }
 const readme=readTracked('README.md');
@@ -46,4 +46,3 @@ const history=commits.map(c=>execFileSync('git',['show',`${c}:README.md`],{cwd:r
 if(history.length>1) save('real-readme-history',history,'Up to 50 actual README revisions from Git, oldest first; source histories only, not a whole-project benchmark');
 fs.writeFileSync(path.join(root,'corpus.json'),JSON.stringify({repo,head:sourceCommit,cases},null,2));
 console.log(JSON.stringify(cases.map(c=>({name:c.name,versions:c.versions.length,firstBytes:c.versions[0].size,logicalBytes:c.versions.reduce((n,v)=>n+v.size,0)})),null,2));
-

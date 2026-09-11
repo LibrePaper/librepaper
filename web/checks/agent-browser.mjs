@@ -143,13 +143,13 @@ try {
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'}); window.sockets[0].emit({type:'task',task_id:'activity',status:'completed'})");
   await until("waiting after completion", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent === "Waiting" && !document.querySelector(".working-dots")'), 1000);
 
-  await page.evaluate("window.setProps({diagnostics:[{severity:'warning',file:'standard-errors.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]})");
+  await page.evaluate("window.setProps({diagnostics:[{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]})");
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='Explain this';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
   await until("agent reply",()=>page.evaluate('document.querySelector("[role=log]")?.textContent.includes("<img")'),10000);
   assert.equal(await page.evaluate("Boolean(window.injected||document.querySelector('[role=log] img'))"),false);
   const posted=await page.evaluate('window.sockets[0].sent.find(frame=>frame.type==="message")');
   assert.equal(posted.context.file,"paper.md");
-  assert.deepEqual(posted.context.diagnostics, [{severity:'warning',file:'standard-errors.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]);
+  assert.deepEqual(posted.context.diagnostics, [{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]);
   assert.deepEqual(posted.context.selection,{path:"paper.md",exact:"A passage",prefix:"",suffix:"",position:null});
 
   await page.evaluate("window.sockets[0].emit({type:'preview_request',id:'preview-1',task_id:'task-1',base_revision:'base-revision',revision:'candidate-revision',candidate_id:'candidate-large',candidate_token:'candidate-token'})");

@@ -60,7 +60,7 @@ async fn quarto_render_checkpoint_is_durable_and_refuses_different_inputs() {
 async fn quarto_managed_render_publishes_against_a_real_durable_checkpoint() {
     use crate::local::{protocol::*, quarto::*};
     use base64::Engine;
-    let source = include_str!("../../../../examples/quarto-r.qmd");
+    let source = include_str!("fixtures/quarto/r.qmd");
     let server = new_test_server().await;
     let (status, document) = post(
         &server.url,
@@ -975,7 +975,7 @@ async fn quarto_real_html_import_uploads_required_resources() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(
         directory.path().join("paper.qmd"),
-        include_str!("../../../../examples/quarto-r.qmd"),
+        include_str!("fixtures/quarto/r.qmd"),
     )
     .unwrap();
     let rendered = std::process::Command::new("quarto")

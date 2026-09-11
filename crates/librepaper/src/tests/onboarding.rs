@@ -86,12 +86,19 @@ async fn account_examples_are_private_owned_and_created_once() {
             assert!(!entry.example && !entry.unowned);
             assert!(entry.links.is_empty());
             if entry.source_format == "quarto" {
-                assert_eq!(entry.main, "getting-started.qmd");
+                assert_eq!(entry.main, "librepaper.qmd");
                 assert_eq!(
                     server.instance.rooms.get(&entry.slug).await.source().await,
-                    include_str!("../../../../examples/getting-started.qmd")
+                    include_str!("../../../../examples/tutorial-quarto/librepaper.qmd")
                 );
             }
+            let tree = server.instance.rooms.get(&entry.slug).await.tree().await;
+            assert_eq!(tree.files.len(), 3);
+            assert!(tree.files.contains_key("librepaper-icon.png"));
+            assert!(tree
+                .files
+                .keys()
+                .any(|path| path.starts_with("sections/rendering.")));
             assert!(!server
                 .instance
                 .rooms
@@ -113,7 +120,7 @@ async fn account_examples_are_private_owned_and_created_once() {
         .find(|e| e.publisher_id == alice.id && e.source_format == "markdown")
         .unwrap();
     let room = server.instance.rooms.get(&paper.slug).await;
-    room.set_main_file("# My edited example", "markdown", "regression-tables.md")
+    room.set_main_file("# My edited example", "markdown", "librepaper.md")
         .await
         .unwrap();
     room.checkpoint("test", "alice").await.unwrap();

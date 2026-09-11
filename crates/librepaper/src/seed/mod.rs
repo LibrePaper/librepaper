@@ -9,7 +9,6 @@
 
 pub mod examples;
 
-/// Durable onboarding slots. Append new starters without reordering old ones.
 pub(crate) const ACCOUNT_EXAMPLE_COUNT: usize = 5;
 
 use std::path::Path;
@@ -26,8 +25,10 @@ use crate::document::render::{
     is_latex, is_markdown, is_typst, render_markdown_document, render_typst_document,
 };
 use crate::document::store::{example_suffix, slugify, Publication, Store};
-use crate::http::{detail_of, get_json, get_with_token, post_json, put_current_bytes, text};
-use crate::room::{main_path_for, Comment, Message, Region, Reply, Room, RoomSet, SourceAnchor};
+use crate::http::{
+    detail_of, get_json, get_with_token, post_directory, post_json, put_current_bytes, text,
+};
+use crate::room::{Comment, Message, Region, Reply, Room, RoomSet, SourceAnchor};
 use crate::storage::backup::verify_local_backup;
 use crate::storage::blob::{clear_storage_checked, release_room_locks};
 use crate::storage::journal::JournalStore;
@@ -54,8 +55,50 @@ pub struct SeedAnnotation {
 #[derive(Clone, Debug)]
 pub struct SeedDocument {
     pub file: String,
+    pub files: Vec<String>,
+    pub assets: Vec<String>,
     pub title: &'static str,
     pub annotations: Vec<SeedAnnotation>,
+}
+
+fn seed_main(document: &SeedDocument) -> String {
+    std::path::Path::new(&document.file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| die(format!("{} has no file name", document.file)))
+        .to_string()
+}
+
+fn seed_text_files(document: &SeedDocument) -> Vec<(String, Vec<u8>)> {
+    let root = std::path::Path::new(&document.file)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    document
+        .files
+        .iter()
+        .map(|path| {
+            let disk = root.join(path);
+            let bytes = std::fs::read(&disk)
+                .unwrap_or_else(|err| die(format!("could not read {}: {err}", disk.display())));
+            (path.clone(), bytes)
+        })
+        .collect()
+}
+
+fn seed_assets(document: &SeedDocument) -> Vec<(String, Vec<u8>)> {
+    let root = std::path::Path::new(&document.file)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    document
+        .assets
+        .iter()
+        .map(|path| {
+            let disk = root.join(path);
+            let bytes = std::fs::read(&disk)
+                .unwrap_or_else(|err| die(format!("could not read {}: {err}", disk.display())));
+            (path.clone(), bytes)
+        })
+        .collect()
 }
 
 /// What to anchor the annotations against, the source to store, and its
@@ -365,12 +408,14 @@ async fn seed_with_store(
         let (raw, source, format, pdf) = read_seed_document(document);
         let base = slugify(document.title, &config);
         let slug = format!("{base}-{}", example_suffix(&base, &config));
+        let main = seed_main(document);
         let entry = store
             .put(Publication {
                 slug: slug.clone(),
                 title: document.title.to_string(),
                 source: source.clone(),
                 source_format: format.clone(),
+                main: main.clone(),
                 owner: owner.trim().to_lowercase(),
                 owner_name: owner.trim().to_string(),
                 ..Publication::default()
@@ -383,8 +428,24 @@ async fn seed_with_store(
         // A seed that could not write its source has nothing to checkpoint;
         // stopping here is what keeps a half-seeded document out of the
         // catalogue.
-        if let Err(error) = room.set_source(&source, &format).await {
+        if let Err(error) = room.set_main_file(&source, &format, &main).await {
             die(format!("could not store {}: {error}", document.file));
+        }
+        for (path, bytes) in seed_text_files(document) {
+            let body = std::str::from_utf8(&bytes)
+                .unwrap_or_else(|err| die(format!("{path} is not UTF-8: {err}")));
+            room.add_text(&path, body)
+                .await
+                .unwrap_or_else(|err| die(format!("could not store {path}: {err}")));
+        }
+        for (path, bytes) in seed_assets(document) {
+            let (sha, _) = room
+                .put_asset(bytes, (config.max_asset, config.max_assets))
+                .await
+                .unwrap_or_else(|err| die(format!("could not store {path}: {err}")));
+            room.name_asset(&path, &sha)
+                .await
+                .unwrap_or_else(|err| die(format!("could not name {path}: {err}")));
         }
         // Seeded and imported documents have no authenticated caller behind
         // them: the operator ran a command. There is no account to record,
@@ -402,9 +463,8 @@ async fn seed_with_store(
                 .await
                 .unwrap_or_else(|err| die(format!("could not store {} PDF: {err}", document.file)));
         }
-        let main_path = main_path_for("", &format);
         let (placed, missed) =
-            seed_annotations(&room, &document.annotations, &text, &source, &main_path).await;
+            seed_annotations(&room, &document.annotations, &text, &source, &main).await;
         seeded.push(slug.clone());
 
         println!("  {:<28} {}", entry.slug, document.title);
@@ -477,14 +537,17 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
     println!("seeding {server}");
     let config = Configuration::default();
     for document in documents {
-        let (raw, source, format, pdf) = read_seed_document(document);
-        let (status, uploaded) = post_json(
+        let (raw, source, _format, pdf) = read_seed_document(document);
+        let main = seed_main(document);
+        let mut files = vec![(main.clone(), source.clone().into_bytes())];
+        files.extend(seed_text_files(document));
+        files.extend(seed_assets(document));
+        let (status, uploaded) = post_directory(
             &format!("{server}/api/documents"),
-            &json!({
-                "title": document.title, "html": raw, "slug": slugify(document.title, &config),
-                "source": source, "source_format": format,
-                "example": true, "annotations": document.annotations,
-            }),
+            document.title,
+            &slugify(document.title, &config),
+            &main,
+            files,
             &token,
             Duration::from_secs(300),
         )
@@ -500,7 +563,7 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
 
         let slug = text(&uploaded, "slug");
         if let Some(pdf) = pdf {
-            seed_remote_pdf(&server, &slug, &token, pdf, &source).await;
+            seed_remote_pdf(&server, &slug, &token, pdf).await;
         }
         let (placed, missed) = if uploaded
             .get("example")
@@ -515,7 +578,6 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
                 .count();
             (document.annotations.len() - missed, missed)
         } else {
-            let main_path = main_path_for("", &format);
             seed_remote_annotations(
                 &server,
                 &token,
@@ -523,7 +585,7 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
                 &document.annotations,
                 &visible_text(&raw),
                 &source,
-                &main_path,
+                &main,
             )
             .await
         };
@@ -539,7 +601,7 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
 /// Stores the PDF compiled while seeding a Typst example. The source publish
 /// is already complete; a failure is reported separately so a source example
 /// remains recoverable and can be retried later.
-async fn seed_remote_pdf(server: &str, slug: &str, token: &str, pdf: Vec<u8>, source: &str) {
+async fn seed_remote_pdf(server: &str, slug: &str, token: &str, pdf: Vec<u8>) {
     let (status, latest) = match get_with_token(
         &format!("{server}/api/documents/{slug}/renderings/latest"),
         token,
@@ -561,9 +623,9 @@ async fn seed_remote_pdf(server: &str, slug: &str, token: &str, pdf: Vec<u8>, so
         return;
     }
     let sha = text(&latest, "live");
-    let expected = one_input_digest("main.typ", source);
-    if sha.is_empty() || text(&latest, "inputs") != expected {
-        eprintln!("warning: seeded {slug} source, but its canonical Typst inputs did not match");
+    let expected = text(&latest, "inputs");
+    if sha.is_empty() || expected.is_empty() {
+        eprintln!("warning: seeded {slug} source, but its canonical Typst inputs were unavailable");
         return;
     }
     let result = put_current_bytes(
@@ -583,24 +645,6 @@ async fn seed_remote_pdf(server: &str, slug: &str, token: &str, pdf: Vec<u8>, so
         ),
         Err(err) => eprintln!("warning: seeded {slug} source, but PDF upload failed: {err}"),
     }
-}
-
-fn one_input_digest(main: &str, source: &str) -> String {
-    let mut tree = crate::document::history::Tree {
-        main: main.to_string(),
-        files: std::collections::BTreeMap::new(),
-        settings: None,
-    };
-    tree.files.insert(
-        main.to_string(),
-        crate::document::history::TreeEntry {
-            kind: "text".to_string(),
-            id: String::new(),
-            sha: crate::document::store::digest_of(source),
-            size: source.len() as i64,
-        },
-    );
-    tree.input_digest()
 }
 
 async fn seed_remote_annotations(

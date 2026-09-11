@@ -50,7 +50,7 @@ assert.equal(await cellFingerprint(parity.cells[1]), "be3a76e7ab5c71d759e4831505
 // inspection protocol; managed bundles pass their explicit format and the
 // recorded parameters_sha256 through the same API.
 assert.equal(await contextFingerprint(parity, { main: "paper.qmd", format: "" }), "bddb54e45fceb835195faeca99616ae92c1acb31bda668910280a62f29d5ef05");
-const nativeFixture = parseQuarto(fs.readFileSync(new URL("../../examples/quarto-r.qmd", import.meta.url), "utf8"), { path: "paper.qmd" });
+const nativeFixture = parseQuarto(fs.readFileSync(new URL("../../crates/librepaper/src/tests/fixtures/quarto/r.qmd", import.meta.url), "utf8"), { path: "paper.qmd" });
 assert.deepEqual(nativeFixture.cells.map((cell) => cell.id), ["paper.qmd#setup", "paper.qmd#fig-first", "paper.qmd#change-input", "paper.qmd#fig-second", "paper.qmd#tbl-summary", "paper.qmd#documented-only"]);
 assert.deepEqual(await Promise.all(nativeFixture.cells.map(cellFingerprint)), [
   "d2fe7d8aea06511b6b4067f4e7b7a5976965719eb5be3fed2e87564130cc7063",
