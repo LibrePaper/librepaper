@@ -13,15 +13,20 @@
   // The changes themselves are not listed here. They are painted into the
   // document, the way a version history does it: clicking a row shows the
   // document as it was then, with what changed since the baseline struck
-  // through and underlined in place, and the head of the column says how
-  // many changes there are and steps through them. A bracket down the gutter
-  // joins the two ends of the range. The list of changes as prose, and the
-  // files they touched, are there for whoever wants them, folded away.
+  // through and underlined in place.
+  //
+  // What the comparison covers, how many changes are in it, and the files
+  // they touched appear under the row being looked at -- one row at a time --
+  // rather than at the head of the panel. They sat at the head for a while
+  // and took half its height, so the column read as three things at once:
+  // versions in time, the edits inside one of them, and the files those edits
+  // touched. The timeline answers when and by whom; the document answers
+  // what. The list of changes as prose is still there, folded away.
   //
   // Nothing here fetches. The panel is given the checkpoints and reports what
   // was clicked; the page it sits in owns the requests, as it owns every other
   // one.
-  import { coalesce, shortSha, sizeDelta, timeline } from "../lib/history.js";
+  import { coalesce, shortSha, timeline } from "../lib/history.js";
   import IconButton from "./IconButton.svelte";
   import PanelHeader from "./PanelHeader.svelte";
   import CopyLink from "./CopyLink.svelte";
@@ -108,11 +113,6 @@
     return seen;
   });
   const swatch = (by) => `author-${authors.get(by) ?? 0}`;
-
-  // How much a checkpoint changed the document's size, for the density bar
-  // beside its row. Looked up against the manifest passed in, the same as
-  // every other relation between checkpoints in this panel.
-  const delta = (point) => sizeDelta(point, checkpoints);
 
   function unfold(row) {
     const next = new Set(opened);
@@ -227,6 +227,11 @@
   const paths = $derived([...new Set([...(changedPaths || []), ...visibleChanges.map((hunk) => hunk.path).filter(Boolean)])]);
   const name = (point) => (point ? point.label || stamp(point.at) || "Unnamed version" : "");
 
+  // The row the comparison hangs under: the version being looked at, or the
+  // baseline when the reader set one without leaving the live document. One
+  // row at a time carries detail, so the rest of the column stays an index.
+  const detailSha = $derived(viewing || baseline?.sha || "");
+
   // The words around a change, a few of them: the diff keeps six on each
   // side so that a deletion still has a place, but a row in a narrow column
   // reads best with three.
@@ -306,106 +311,6 @@
   {/if}
 
   {#if checkpoints.length > 0}
-    <section class="history-range border-surface-200-800 border-b" aria-label="Changes">
-      {#if !baseline}
-        <p class="panel-muted text-sm">Choose a version to see the words that changed.</p>
-      {:else}
-        <p class="history-span panel-meta">
-          {#if target}Changes from <strong>{name(baseline)}</strong> to <strong>{name(target)}</strong>
-          {:else}Changes since <strong>{name(baseline)}</strong>{/if}
-        </p>
-        {#if viewing && !comparingCurrent}
-          <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => oncomparecurrent?.(viewing)}>Compare with current</button>
-        {:else if comparingCurrent}
-          <p class="history-span panel-meta">Comparing <strong>{name(baseline)}</strong> with <strong>Current version</strong>.</p>
-          {#if newerEdits}
-            <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onrefreshcurrent?.()}>Newer edits available · Refresh</button>
-          {/if}
-        {/if}
-        <div class="history-nav">
-          {#if problem}
-            <span class="panel-muted text-sm">The passage comparison is unavailable.</span>
-          {:else if viewing && !target}
-            <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onback?.()}>Back to now to see changes</button>
-          {:else if changes === null}
-            <span class="panel-muted text-sm" role="status">Loading changes…</span>
-          {:else if !groups.length}
-            <span class="panel-muted text-sm">{!comparingCurrent && viewing === checkpoints[0]?.sha ? "First version." : "No text changed."}</span>
-          {:else}
-            <span class="history-count text-sm">{count}</span>
-            <span class="history-steps">
-              <IconButton icon="chevron-up" tone="plain" size="btn-icon-sm" label="Previous change ([)" onclick={() => goTo(step < 0 ? groups.length - 1 : step - 1)} />
-              <IconButton icon="chevron-down" tone="plain" size="btn-icon-sm" label="Next change (])" onclick={() => goTo(step + 1)} />
-            </span>
-          {/if}
-          <label class="history-switch label">
-            <input
-              type="checkbox"
-              class="checkbox"
-              checked={redlines}
-              onchange={(event) => onredlines?.(event.currentTarget.checked)}
-            />
-            <span class="label-text text-xs">Show changes</span>
-          </label>
-        </div>
-        {#if groups.length}
-          <details class="history-changes">
-            <summary class="panel-meta">List changes</summary>
-            <ol class="history-hunks">
-              {#each groups as group, index (`${group.path || ""}-${group.position}-${index}`)}
-                <li>
-                  <button
-                    type="button"
-                    class="history-hunk"
-                    class:history-hunk-here={index === step}
-                    onclick={() => goTo(index)}
-                    title="Find this change in the document"
-                  >
-                    <span class="history-context">{clip(group.before, true)}</span>{#each group.parts as part, at (at)}{#if part.keep !== undefined}<span class="history-context">{part.keep}</span>{:else}{#if part.old}<del>{part.old}</del>{/if}{#if part.old && part.insert}{" "}{/if}{#if part.insert}<ins>{part.insert}</ins>{/if}{/if}{/each}<span class="history-context">{clip(group.after, false)}</span>
-                  </button>
-                </li>
-              {/each}
-            </ol>
-          </details>
-        {/if}
-        {#if paths.length}
-          <details class="history-files">
-            <summary class="panel-meta">{paths.length === 1 ? "1 file changed" : `${paths.length} files changed`}</summary>
-            <div class="history-paths">
-              {#each paths as path (path)}
-                <button type="button" class="btn btn-sm preset-outlined-surface-300-700 justify-start" onclick={() => onfilediff?.(path)}>{path}</button>
-              {/each}
-            </div>
-          </details>
-        {/if}
-      {/if}
-      {#if fileDiff}
-        <section class="history-file-diff mt-3" aria-label="File diff">
-          <div class="mb-1 flex items-center justify-between gap-2">
-            <strong class="text-sm truncate">{fileDiff.path}</strong>
-            <button type="button" class="btn btn-sm preset-tonal-surface" onclick={() => onclosefilediff?.()}>Close</button>
-          </div>
-          {#if fileDiff.loading}
-            <p class="panel-muted text-sm" role="status">Loading comparison…</p>
-          {:else if fileDiff.problem}
-            <p class="panel-muted text-sm">{fileDiff.problem}</p>
-          {:else if fileDiff.old == null && fileDiff.new == null}
-            <p class="panel-muted text-sm">{!fileDiff.oldEntry ? "File added." : !fileDiff.newEntry ? "File removed." : "Binary file changed."}</p>
-          {:else if !fileDiff.hunks?.length}
-            <p class="panel-muted text-sm">{fileDiff.old == null ? "Empty file added." : fileDiff.new == null ? "Empty file removed." : "The text is unchanged."}</p>
-          {:else}
-            <div class="history-file-diff-body rounded bg-surface-100-900 p-2 text-xs">
-              {#each fileDiff.hunks as hunk}
-                <div class="mb-3 whitespace-pre-wrap">
-                  <span class="panel-muted">{hunk.before}</span>{#if hunk.old}<del>{hunk.old}</del>{/if}{#if hunk.insert}<ins>{hunk.insert}</ins>{/if}<span class="panel-muted">{hunk.after}</span>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </section>
-      {/if}
-    </section>
-
     <ol class="timeline-list">
       <!-- The live document is a row like the others, hollow because it is
            not a checkpoint yet. -->
@@ -512,16 +417,6 @@
           {#if said(point)}<span class="timeline-why panel-meta">{said(point)}</span>{/if}
         </span>
       </button>
-      {@const size = delta(point)}
-      {#if size}
-        <span
-          class="timeline-size"
-          class:timeline-size-grew={size.grew}
-          class:timeline-size-shrank={!size.grew}
-          style="width: {size.width}px"
-          title={size.title}
-        ></span>
-      {/if}
       <span class="timeline-actions">
         <IconButton
           icon="diff"
@@ -545,7 +440,7 @@
       </span>
     {/if}
   </li>
-  {#if viewing === point.sha && point.parent && point.changed?.length}
+  {#if viewing === point.sha && point.parent && point.changed?.length > 1}
     <!-- The files this checkpoint touched, under the row being looked at and
          no other: each opens against the checkpoint before. -->
     <li class="timeline-row timeline-files" class:in-range={inRange(point.sha)}>
@@ -554,4 +449,111 @@
       {/each}
     </li>
   {/if}
+{#if baseline && point.sha === detailSha}{@render versionDetail()}{/if}
+{/snippet}
+
+{#snippet versionDetail()}
+  <!-- What changed belongs to the version under the cursor, not to the top of
+       the panel. The timeline above stays a sparse index -- when, and by whom
+       -- and this is the one row that carries detail: how far the comparison
+       reaches, how many changes are in it, and the files they touched. The
+       changes themselves are still read in the document, where they are
+       painted in place. -->
+  <li class="timeline-row timeline-detail-row">
+    <div class="timeline-detail">
+      <p class="history-span panel-meta">
+        {#if target}Compared with <strong>{name(target)}</strong>
+        {:else if comparingCurrent}Compared with <strong>Current version</strong>
+        {:else}Changes since <strong>{name(baseline)}</strong>{/if}
+      </p>
+      {#if viewing && !comparingCurrent}
+        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => oncomparecurrent?.(viewing)}>Compare with current</button>
+      {:else if comparingCurrent && newerEdits}
+        <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onrefreshcurrent?.()}>Newer edits available · Refresh</button>
+      {/if}
+      <div class="history-nav">
+        {#if problem}
+          <span class="panel-muted text-sm">The passage comparison is unavailable.</span>
+        {:else if viewing && !target}
+          <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onback?.()}>Back to now to see changes</button>
+        {:else if changes === null}
+          <span class="panel-muted text-sm" role="status">Loading changes…</span>
+        {:else if !groups.length}
+          <span class="panel-muted text-sm">{!comparingCurrent && viewing === checkpoints[0]?.sha ? "First version." : "No text changed."}</span>
+        {:else}
+          <span class="history-count text-sm">{count}</span>
+          <span class="history-steps">
+            <IconButton icon="chevron-up" tone="plain" size="btn-icon-sm" label="Previous change ([)" onclick={() => goTo(step < 0 ? groups.length - 1 : step - 1)} />
+            <IconButton icon="chevron-down" tone="plain" size="btn-icon-sm" label="Next change (])" onclick={() => goTo(step + 1)} />
+          </span>
+        {/if}
+        <label class="history-switch label">
+          <input
+            type="checkbox"
+            class="checkbox"
+            checked={redlines}
+            onchange={(event) => onredlines?.(event.currentTarget.checked)}
+          />
+          <span class="label-text text-xs">Show changes</span>
+        </label>
+      </div>
+      {#if groups.length}
+        <details class="history-changes">
+          <summary class="panel-meta">List changes</summary>
+          <ol class="history-hunks">
+            {#each groups as group, index (`${group.path || ""}-${group.position}-${index}`)}
+              <li>
+                <button
+                  type="button"
+                  class="history-hunk"
+                  class:history-hunk-here={index === step}
+                  onclick={() => goTo(index)}
+                  title="Find this change in the document"
+                >
+                  <span class="history-context">{clip(group.before, true)}</span>{#each group.parts as part, at (at)}{#if part.keep !== undefined}<span class="history-context">{part.keep}</span>{:else}{#if part.old}<del>{part.old}</del>{/if}{#if part.old && part.insert}{" "}{/if}{#if part.insert}<ins>{part.insert}</ins>{/if}{/if}{/each}<span class="history-context">{clip(group.after, false)}</span>
+                </button>
+              </li>
+            {/each}
+          </ol>
+        </details>
+      {/if}
+      {#if paths.length > 1}
+        <!-- One file is the document itself, and naming it on every version
+             says nothing. More than one is worth listing. -->
+        <details class="history-files">
+          <summary class="panel-meta">{paths.length} files changed</summary>
+          <div class="history-paths">
+            {#each paths as path (path)}
+              <button type="button" class="btn btn-sm preset-outlined-surface-300-700 justify-start" onclick={() => onfilediff?.(path)}>{path}</button>
+            {/each}
+          </div>
+        </details>
+      {/if}
+      {#if fileDiff}
+        <section class="history-file-diff mt-3" aria-label="File diff">
+          <div class="mb-1 flex items-center justify-between gap-2">
+            <strong class="text-sm truncate">{fileDiff.path}</strong>
+            <button type="button" class="btn btn-sm preset-tonal-surface" onclick={() => onclosefilediff?.()}>Close</button>
+          </div>
+          {#if fileDiff.loading}
+            <p class="panel-muted text-sm" role="status">Loading comparison…</p>
+          {:else if fileDiff.problem}
+            <p class="panel-muted text-sm">{fileDiff.problem}</p>
+          {:else if fileDiff.old == null && fileDiff.new == null}
+            <p class="panel-muted text-sm">{!fileDiff.oldEntry ? "File added." : !fileDiff.newEntry ? "File removed." : "Binary file changed."}</p>
+          {:else if !fileDiff.hunks?.length}
+            <p class="panel-muted text-sm">{fileDiff.old == null ? "Empty file added." : fileDiff.new == null ? "Empty file removed." : "The text is unchanged."}</p>
+          {:else}
+            <div class="history-file-diff-body rounded bg-surface-100-900 p-2 text-xs">
+              {#each fileDiff.hunks as hunk}
+                <div class="mb-3 whitespace-pre-wrap">
+                  <span class="panel-muted">{hunk.before}</span>{#if hunk.old}<del>{hunk.old}</del>{/if}{#if hunk.insert}<ins>{hunk.insert}</ins>{/if}<span class="panel-muted">{hunk.after}</span>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      {/if}
+    </div>
+  </li>
 {/snippet}
