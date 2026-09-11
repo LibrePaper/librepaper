@@ -1,5 +1,6 @@
 //! `librepaper admin serve`: the whole service in this process.
 
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -389,54 +390,30 @@ pub async fn serve(options: ServeOptions) {
     println!("  publishing: {}", publishers.describe());
     println!("  commenting: {}", commenters.describe());
     super::host_metrics::warn(&config, &deployment_paths.deployment);
-    println!("  cost policy: v{}", config.cost.version);
-    println!(
-        "{}",
-        serde_json::json!({"event":"cost_policy", "policy":config.effective_policy()})
-    );
-    println!(
-        "    storage: {} total bytes; {} bytes per owner",
-        config.storage.total, config.storage.per_owner
-    );
-    println!(
-        "    document source: {} bytes; input assets: {} bytes per document",
-        config.max_document, config.max_assets
-    );
-    println!(
-        "    documents: {} per owner; uploads: {} per owner per rolling hour",
-        config.storage.documents_per_owner, config.storage.uploads_per_hour
-    );
-    println!(
-        "    rooms: {} / {} bytes; peer queue: {} frames; updates: {} per peer per rolling minute",
-        config.session.rooms_max,
-        config.session.rooms_bytes_max,
-        config.session.peer_queue,
-        config.session.updates_per_minute
-    );
-    println!(
-        "    transfer: {} per rolling 24 hours (origin response bytes)",
-        config
-            .cost
-            .transfer_bytes
-            .map(|bytes| bytes.to_string())
-            .unwrap_or_else(|| "unlimited".to_string())
-    );
-    println!(
-        "    requests: {} deployment / {} network / {} principal / {} document per rolling minute",
-        config.cost.requests_per_minute,
-        config.cost.requests_per_network_minute,
-        config.cost.requests_per_principal_minute,
-        config.cost.requests_per_document_minute
-    );
-    println!(
-        "    artifact transfers: {} concurrent",
-        config.cost.artifact_transfers
-    );
-    println!(
-        "    emergency allowance: {} bytes",
-        config.cost.emergency_bytes
-    );
-    println!("    trusted proxies: {}", config.cost.trusted_proxies.len());
+    if std::io::stdout().is_terminal() {
+        println!("  cost policy: v{}", config.cost.version);
+        println!(
+            "    storage: {} total bytes; {} bytes per owner",
+            config.storage.total, config.storage.per_owner
+        );
+        println!(
+            "    documents: {} source bytes; {} input-asset bytes; {} per owner",
+            config.max_document, config.max_assets, config.storage.documents_per_owner
+        );
+        println!(
+            "    transfer: {} per rolling 24 hours; run `librepaper admin status` for details",
+            config
+                .cost
+                .transfer_bytes
+                .map(|bytes| bytes.to_string())
+                .unwrap_or_else(|| "unlimited".to_string())
+        );
+    } else {
+        println!(
+            "{}",
+            serde_json::json!({"event":"cost_policy", "policy":config.effective_policy()})
+        );
+    }
     if config.session.history_max == 0 {
         eprintln!(
             "warning: unlimited checkpoint history is enabled; set --history-limit to a finite count"

@@ -3,8 +3,9 @@
 This document describes the version 1 cost and capacity policy exposed by
 `librepaper admin serve`. It is a deployment policy, expressed in bytes, counts, and
 time windows. It does not predict a provider bill. The effective policy is
-printed at startup as the `cost_policy` event and is available from the
-loopback-only status surface.
+printed at startup as the `cost_policy` event when output is redirected, summarized
+briefly on an interactive terminal, and available in full from the loopback-only
+status surface.
 
 LibrePaper keeps source, input assets, annotations, session state, and source
 history. It does not retain rendered PDF, HTML, DOCX, preview images, thumbnails,
