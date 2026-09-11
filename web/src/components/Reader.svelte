@@ -3683,12 +3683,12 @@
         <h2 class="h4">Could not render</h2>
         {#if pdfFailureReason}
           <p class="text-surface-700-300 text-sm">
-            The compiler produced no PDF, and Diagnostics has nothing to show for it. What it said:
+            The compiler produced no {latexHtmlPreview ? "HTML preview" : "PDF"}, and Diagnostics has nothing to show for it. What it said:
           </p>
           <pre class="text-surface-700-300 text-xs">{pdfFailureReason}</pre>
         {:else}
           <p class="text-surface-700-300 text-sm">
-            Fix the errors in Diagnostics to produce a PDF preview.
+            Fix the errors in Diagnostics to produce a {latexHtmlPreview ? "HTML preview" : "PDF preview"}.
           </p>
         {/if}
       </div>
