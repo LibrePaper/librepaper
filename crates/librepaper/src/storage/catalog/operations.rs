@@ -553,6 +553,8 @@ impl Catalog {
                 policy_editor: true,
                 automation: false,
                 unowned_publisher: false,
+                execution_epoch: "",
+                agent_checkpoint: None,
             }),
         )
     }
@@ -1338,6 +1340,11 @@ impl Catalog {
             let Some(operation) = operation else {
                 return Err(CatalogError::NotFound);
             };
+            if Self::agent_cancellation_active_tx(tx, storage_id, request_id)? {
+                return Err(CatalogError::Conflict(
+                    "agent operation was cancelled".into(),
+                ));
+            }
             if operation.status == "committed" {
                 return Ok(operation);
             }

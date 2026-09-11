@@ -108,6 +108,17 @@ reading the entire project. Source locations and anchors include their revision.
 The robot icon connects to a persistent local runner that owns a dedicated
 agent session. Start and manage it with the `librepaper-pair` skill.
 
+For an MCP host, the same authenticated document tools are available through
+the bundled stdio adapter:
+
+```sh
+codex mcp add librepaper -- librepaper agent mcp -
+```
+
+Configure `LIBREPAPER_DOCUMENT` in the host's protected environment. MCP tool
+arguments use document and view handles; keep the link out of model context
+and logs.
+
 ## References
 
 - [install.md](references/install.md) — installing or upgrading the binary, sign-in

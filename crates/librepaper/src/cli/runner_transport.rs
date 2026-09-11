@@ -10,8 +10,17 @@ type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 const RETRY: Duration = Duration::from_secs(2);
 
+fn retain_execution_epoch(current: &mut Option<String>, frame: &Value) {
+    if let Some(epoch) = frame["execution_epoch"].as_str() {
+        *current = Some(epoch.to_owned());
+    }
+}
+
 pub(super) enum Event {
-    Presence(bool),
+    Presence {
+        browser: bool,
+        execution_epoch: Option<String>,
+    },
     Frame(Value),
     Offline,
     Fatal(String),
@@ -79,6 +88,10 @@ impl Transport {
                 }
                 let mut browser = false;
                 let mut joined = false;
+                // The initial ready frame carries the epoch issued for this
+                // socket. Later presence announcements intentionally omit
+                // it, so retain the socket's epoch until disconnect.
+                let mut execution_epoch: Option<String> = None;
                 // One unacknowledged event preserves lifecycle ordering under
                 // backpressure. Retries retain the ID and content exactly.
                 let mut pending: Option<(Value, tokio::time::Instant)> = None;
@@ -112,7 +125,8 @@ impl Transport {
                                     if !joined { continue; }
                                     browser = value["browser"].as_bool().unwrap_or(false);
                                     if !browser { pending = None; }
-                                    if input.send(Event::Presence(browser)).await.is_err() { return; }
+                                    retain_execution_epoch(&mut execution_epoch, &value);
+                                    if input.send(Event::Presence { browser, execution_epoch: execution_epoch.clone() }).await.is_err() { return; }
                                 }
                                 "error" if !joined => {
                                     if value["status"] == 409 { break; }
@@ -153,5 +167,30 @@ impl Transport {
             incoming,
             task,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presence_without_epoch_retains_ready_epoch_until_socket_reset() {
+        let mut epoch = None;
+        retain_execution_epoch(
+            &mut epoch,
+            &json!({"type":"ready", "execution_epoch":"first"}),
+        );
+        assert_eq!(epoch.as_deref(), Some("first"));
+        retain_execution_epoch(&mut epoch, &json!({"type":"presence", "browser":true}));
+        assert_eq!(epoch.as_deref(), Some("first"));
+        // A replacement socket creates a fresh local state, so an old epoch
+        // cannot leak into the new connection.
+        epoch = None;
+        retain_execution_epoch(
+            &mut epoch,
+            &json!({"type":"ready", "execution_epoch":"second"}),
+        );
+        assert_eq!(epoch.as_deref(), Some("second"));
     }
 }

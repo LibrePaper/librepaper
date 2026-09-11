@@ -66,9 +66,11 @@
   const canPrepare = (kind) => capabilityAllows(caps, { kind, scope: chipScope(kind) }, {
     attached: attachment?.anchored ? attachment : (kind === "explain" ? attachment : null), path: contextPath,
   });
+  const interrupted = $derived(Object.values(connection.tasks || {}).some(task => task.status === "interrupted"));
   const status = $derived(
     !connection.connected || !connection.runnerConnected ? "Disconnected"
-      : Object.values(connection.tasks || {}).some(task => task.status === "working") ? "Working" : "Waiting",
+      : Object.values(connection.tasks || {}).some(task => task.status === "working") ? "Working"
+        : interrupted ? "Interrupted" : "Waiting",
   );
   const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
 
@@ -317,7 +319,13 @@
     void (async () => {
       let result;
       try {
-        result = await onpreview(preview);
+        // The relay carries only an immutable candidate handle. Source files
+        // travel over authenticated same-origin requests, so a large file
+        // never consumes the chat frame's bounded context budget.
+        const candidate = preview.candidate_id
+          ? await client.fetchCandidate(preview.candidate_id, undefined, preview.candidate_token || preview.renderer_token || "")
+          : null;
+        result = await onpreview(candidate ? { ...preview, candidate } : preview);
       } catch (error) {
         result = {
           ok: false,

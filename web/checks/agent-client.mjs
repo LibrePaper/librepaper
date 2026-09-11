@@ -9,6 +9,21 @@ const storage = { values: new Map(), getItem(key) { return this.values.get(key) 
 const fetcher = async (url, init) => {
   requests.push({ url, ...init, headers: { ...init.headers } });
   const pathname = new URL(url, "https://docs.example").pathname;
+  if (pathname === "/api/documents/paper/agent/candidates/candidate-large") {
+    return Response.json({ candidate_id: "candidate-large", base_revision: "base", revision: "candidate", main: "paper.md",
+      files: { "paper.md": { kind: "text", id: "paper", sha: "source-sha", size: 20000 } } });
+  }
+  if (pathname === "/api/documents/paper/agent/candidates/candidate-large/source") {
+    assert.equal(new URL(url, "https://docs.example").searchParams.get("path"), "paper.md");
+    return new Response("x".repeat(20000), { headers: { "content-type": "text/plain" } });
+  }
+  if (pathname === "/api/documents/paper/agent/candidates/candidate-overlimit") {
+    return Response.json({ candidate_id: "candidate-overlimit", base_revision: "base", revision: "candidate", main: "paper.md",
+      files: {
+        "paper.md": { kind: "text", id: "paper", sha: "source-sha", size: 20 * 1024 * 1024 },
+        "chapter.md": { kind: "text", id: "chapter", sha: "chapter-sha", size: 20 * 1024 * 1024 },
+      } });
+  }
   if (pathname.endsWith("/assistant/capabilities")) return Response.json({ can_read: true, can_comment: true, can_edit: false });
   const route = pathname.split("/chat")[1];
   if (route === "") return Response.json({ id: `conversation-${++conversationCount}`, token: "chat-secret" });
@@ -70,6 +85,14 @@ try {
   assert.deepEqual(capabilities, { can_read: true, can_comment: true, can_edit: false });
   assert.equal(requests[1].url, "/api/documents/paper/assistant/capabilities");
   assert.equal(requests[1].headers["X-LibrePaper-Key"], "document-secret");
+  const candidate = await client.fetchCandidate("candidate-large", undefined, "candidate-token");
+  assert.equal(candidate.texts["paper.md"].length, 20000);
+  await assert.rejects(() => client.fetchCandidate("candidate-overlimit"), /aggregate limit/);
+  const candidateRequest = requests.find((item) => item.url.endsWith("/agent/candidates/candidate-large"));
+  const sourceRequest = requests.find((item) => item.url.includes("/agent/candidates/candidate-large/source"));
+  assert.equal(candidateRequest.headers["X-LibrePaper-Key"], "document-secret");
+  assert.equal(candidateRequest.headers["X-LibrePaper-Candidate-Token"], "candidate-token");
+  assert.equal(sourceRequest.headers["X-LibrePaper-Candidate-Token"], "candidate-token");
   const socket = FakeWebSocket.instances[0];
   assert.equal(new URL(socket.url).searchParams.get("k"), "document-secret");
   assert.equal(socket.url.includes("chat-secret"), false, "chat capability stays out of the URL");
@@ -95,6 +118,10 @@ try {
   socket.emit({ type: "task", id: "event-finished", task_id: "finished", status: "completed", context: { results: { suggestions: ["suggestion-1"] } } });
   assert.equal(client.current.tasks.finished.status, "completed");
   assert.deepEqual(client.current.tasks.finished.result, { suggestions: ["suggestion-1"] });
+  socket.emit({ type: "task", id: "event-interrupted", seq: 1, task_id: "recovery", status: "interrupted", text: "Reconcile receipts" });
+  assert.equal(client.current.tasks.recovery.status, "interrupted");
+  socket.emit({ type: "task", id: "event-stale", seq: 1, task_id: "recovery", status: "completed" });
+  assert.equal(client.current.tasks.recovery.status, "interrupted", "stale task frames do not roll state back");
 
   // Admission is authoritative when the acknowledgement was lost. The task
   // event resolves the original send promise and removes its retry marker.

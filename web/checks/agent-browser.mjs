@@ -31,6 +31,15 @@ window.calls = [];
 window.previewCalls = [];
 window.sockets = [];
 window.fetch = async (url, init) => {
+  const pathname = new URL(url, location.href).pathname;
+  if (pathname === '/api/documents/paper/agent/candidates/candidate-large') {
+    window.candidateHeaders = {...init.headers};
+    return Response.json({candidate_id:'candidate-large',base_revision:'base',revision:'candidate',main:'paper.md',files:{'paper.md':{kind:'text',id:'paper',sha:'source-sha',size:20000}}});
+  }
+  if (pathname === '/api/documents/paper/agent/candidates/candidate-large/source') {
+    window.sourceHeaders = {...init.headers};
+    return new Response('x'.repeat(20000), {headers:{'content-type':'text/plain'}});
+  }
   if (new URL(url, location.href).pathname.endsWith('/share')) {
     if (init.method === 'POST') { window.createdAccess=JSON.parse(init.body); window.missingAccess=false; }
     if (window.missingAccess) return Response.json({links:{}});
@@ -143,7 +152,7 @@ try {
   assert.deepEqual(posted.context.diagnostics, [{severity:'warning',file:'standard-errors.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]);
   assert.deepEqual(posted.context.selection,{path:"paper.md",exact:"A passage",prefix:"",suffix:"",position:null});
 
-  await page.evaluate("window.sockets[0].emit({type:'preview_request',id:'preview-1',task_id:'task-1',base_revision:'base-revision',revision:'candidate-revision',files:{'paper.md':'candidate'}})");
+  await page.evaluate("window.sockets[0].emit({type:'preview_request',id:'preview-1',task_id:'task-1',base_revision:'base-revision',revision:'candidate-revision',candidate_id:'candidate-large',candidate_token:'candidate-token'})");
   await until("preview response", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.type==='preview_result')"), 1000);
   const preview = await page.evaluate("window.sockets[0].sent.find(frame=>frame.type==='preview_result')");
   assert.equal(preview.request_id, "preview-1");
@@ -151,7 +160,10 @@ try {
   assert.equal(preview.base_revision, "base-revision");
   assert.equal(preview.revision, "candidate-revision");
   assert.equal(preview.ok, true);
-  await page.evaluate("window.sockets[0].emit({type:'preview_request',id:'preview-1',task_id:'task-1',base_revision:'base-revision',revision:'candidate-revision',files:{'paper.md':'candidate'}})");
+  assert.equal(await page.evaluate("window.previewCalls[0].candidate.texts['paper.md'].length"), 20000);
+  assert.equal(await page.evaluate("window.candidateHeaders['X-LibrePaper-Candidate-Token']"), 'candidate-token');
+  assert.equal(await page.evaluate("window.sourceHeaders['X-LibrePaper-Key']"), 'secret');
+  await page.evaluate("window.sockets[0].emit({type:'preview_request',id:'preview-1',task_id:'task-1',base_revision:'base-revision',revision:'candidate-revision',candidate_id:'candidate-large',candidate_token:'candidate-token'})");
   await until("preview retry", () => page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='preview_result').length===2"), 1000);
   assert.equal(await page.evaluate("window.previewCalls.length"), 1, "a retried preview reuses its cached browser verification");
 

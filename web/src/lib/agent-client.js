@@ -6,6 +6,9 @@ const ACK_TIMEOUT_MS = 10000;
 const STORAGE_PREFIX = "librepaper.agent.session.";
 const MAX_MESSAGES = 256;
 const MAX_TASKS = 128;
+const MAX_CANDIDATE_SOURCE_BYTES = 32 * 1024 * 1024;
+const MAX_CANDIDATE_TOTAL_BYTES = 32 * 1024 * 1024;
+const MAX_CANDIDATE_FILES = 512;
 
 function randomId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -138,11 +141,11 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     }
     save();
   }
-  async function request(method, suffix = "", body, authorized = true, overrideLink = link) {
+  async function request(method, suffix = "", body, authorized = true, overrideLink = link, extraHeaders = {}) {
     const controller = new AbortController();
     requests.add(controller);
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    const headers = { Accept: "application/json", ...SHELL_HEADERS, ...keyHeaders(documentKey(overrideLink)) };
+    const headers = { Accept: "application/json", ...SHELL_HEADERS, ...keyHeaders(documentKey(overrideLink)), ...extraHeaders };
     if (authorized && token) headers["X-LibrePaper-Chat-Token"] = token;
     if (body !== undefined) headers["Content-Type"] = "application/json";
     try {
@@ -157,6 +160,108 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       if (error instanceof TypeError) throw new Error("The server is unavailable. Your draft remains in the composer.");
       throw error;
     } finally { clearTimeout(timeout); requests.delete(controller); }
+  }
+  async function requestText(suffix, overrideLink = link, extraHeaders = {}) {
+    const controller = new AbortController();
+    requests.add(controller);
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetcher(`/api/documents/${encodeURIComponent(slug)}${suffix}`, {
+        method: "GET", headers: { Accept: "text/plain", ...SHELL_HEADERS, ...keyHeaders(documentKey(overrideLink)), ...extraHeaders },
+        credentials: "same-origin", cache: "no-store", signal: controller.signal,
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(body || `Assistant request failed (${response.status}).`);
+      }
+      const advertised = Number(response.headers.get("content-length"));
+      if (Number.isFinite(advertised) && advertised > MAX_CANDIDATE_SOURCE_BYTES) {
+        throw new Error("Candidate source exceeds the browser limit.");
+      }
+      const chunks = [];
+      let total = 0;
+      if (response.body?.getReader) {
+        const reader = response.body.getReader();
+        try {
+          for (;;) {
+            const part = await reader.read();
+            if (part.done) break;
+            total += part.value.byteLength;
+            if (total > MAX_CANDIDATE_SOURCE_BYTES) {
+              await reader.cancel();
+              throw new Error("Candidate source exceeds the browser limit.");
+            }
+            chunks.push(part.value);
+          }
+        } finally { reader.releaseLock(); }
+      } else {
+        const body = new Uint8Array(await response.arrayBuffer());
+        total = body.byteLength;
+        if (total > MAX_CANDIDATE_SOURCE_BYTES) throw new Error("Candidate source exceeds the browser limit.");
+        chunks.push(body);
+      }
+      const body = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+      try { return new TextDecoder("utf-8", { fatal: true }).decode(body); }
+      catch { throw new Error("Candidate source is not valid UTF-8."); }
+    } catch (error) {
+      if (error.name === "AbortError") throw new Error("Assistant request timed out.");
+      if (error instanceof TypeError) throw new Error("The server is unavailable. Your draft remains in the composer.");
+      throw error;
+    } finally { clearTimeout(timeout); requests.delete(controller); }
+  }
+  async function fetchCandidate(candidateId, overrideLink = link, candidateToken = "") {
+    if (typeof candidateId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(candidateId)) {
+      throw new Error("The preview candidate identifier is invalid.");
+    }
+    const prefix = `/agent/candidates/${encodeURIComponent(candidateId)}`;
+    const candidateHeaders = candidateToken ? { "X-LibrePaper-Candidate-Token": candidateToken } : {};
+    const metadata = await request("GET", prefix, undefined, false, overrideLink, candidateHeaders);
+    const manifest = metadata?.files || metadata?.manifest;
+    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+      throw new Error("The server returned no candidate manifest.");
+    }
+    if (Object.keys(manifest).length === 0 || Object.keys(manifest).length > MAX_CANDIDATE_FILES) {
+      throw new Error("The candidate manifest exceeds the browser limit.");
+    }
+    const textEntries = Object.entries(manifest)
+      .filter(([, entry]) => entry?.kind === "text")
+      .map(([path, entry]) => [path, entry]);
+    const advertisedTotal = textEntries.reduce((sum, [, entry]) => {
+      const size = Number(entry?.size);
+      return Number.isSafeInteger(size) && size >= 0 ? sum + size : Number.POSITIVE_INFINITY;
+    }, 0);
+    if (!Number.isFinite(advertisedTotal) || advertisedTotal > MAX_CANDIDATE_TOTAL_BYTES) {
+      throw new Error("Candidate source exceeds the browser aggregate limit.");
+    }
+    const fetched = new Array(textEntries.length);
+    let next = 0;
+    let fetchedBytes = 0;
+    const worker = async () => {
+      for (;;) {
+        const index = next++;
+        if (index >= textEntries.length) return;
+        const [path] = textEntries[index];
+        if (typeof path !== "string" || !path || path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => !part || part === "." || part === "..")) {
+          throw new Error("The server returned an invalid candidate path.");
+        }
+        const query = `?path=${encodeURIComponent(path)}`;
+        const text = await requestText(`${prefix}/source${query}`, overrideLink, candidateHeaders);
+        fetchedBytes += new TextEncoder().encode(text).byteLength;
+        if (fetchedBytes > MAX_CANDIDATE_TOTAL_BYTES) throw new Error("Candidate source exceeds the browser aggregate limit.");
+        fetched[index] = [path, text];
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, textEntries.length) }, () => worker()));
+    const texts = Object.fromEntries(fetched.filter(Boolean).map(([path, text]) => [path, text]));
+    return {
+      ...metadata,
+      base_revision: metadata.base_revision || metadata.source_revision || "",
+      revision: metadata.revision || metadata.digest || "",
+      files: manifest,
+      texts,
+    };
   }
   function addMessage(message) {
     if (!message?.id) return;
@@ -181,13 +286,13 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     if (!taskId) return;
     const previous = view.tasks[taskId] || { id: taskId, status: "queued" };
     const merged = { ...previous, ...patch, id: taskId };
-    if (["queued", "working", "completed", "failed", "cancelled"].includes(patch.status)) delete merged.input;
+    if (["queued", "working", "completed", "failed", "cancelled", "interrupted"].includes(patch.status)) delete merged.input;
     if (patch.delivery === null) delete merged.delivery;
     const next = Object.fromEntries(Object.entries(merged).filter(([, value]) => value !== undefined));
     const tasks = { ...view.tasks, [taskId]: next };
     for (const [id, item] of Object.entries(tasks)) {
       if (Object.keys(tasks).length <= MAX_TASKS) break;
-      if (["completed", "failed", "cancelled"].includes(item.status)) delete tasks[id];
+      if (["completed", "failed", "cancelled", "interrupted"].includes(item.status)) delete tasks[id];
     }
     publish({ tasks });
   }
@@ -272,14 +377,22 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     }
     if (frame.type === "task") {
       const taskId = frame.task_id;
+      const previous = view.tasks[taskId];
+      if (frame.seq !== undefined && (!Number.isSafeInteger(frame.seq) || frame.seq <= 0)) return;
+      if (frame.seq !== undefined && Number.isSafeInteger(previous?.seq) && frame.seq <= previous.seq) {
+        // A reconnect can replay the last durable frame. It may still settle
+        // the browser's delivery promise, but must not roll task state back.
+        confirmDelivery(taskId, frame);
+        return;
+      }
       const context = frame.context && typeof frame.context === "object" ? frame.context : {};
-      updateTask(taskId, { status: frame.status, message: frame.text, input: context.input, result: context.results });
+      updateTask(taskId, { seq: frame.seq, status: frame.status, message: frame.text, input: context.input, result: context.results });
       confirmDelivery(taskId, frame);
-      if (["failed", "cancelled"].includes(frame.status)) {
+      if (["failed", "cancelled", "interrupted"].includes(frame.status)) {
         addMessage({
           id: frame.id || `task-${taskId}`,
           role: "agent",
-          text: frame.text || (frame.status === "cancelled" ? "Task cancelled." : "Task failed."),
+          text: frame.text || (frame.status === "cancelled" ? "Task cancelled." : frame.status === "interrupted" ? "Task interrupted; reconcile its document operations before retrying." : "Task failed."),
           context: { task_id: taskId },
         });
       }
@@ -438,6 +551,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     async resume() { if (id && token) { publish({ status: "reconnecting", error: "" }); connect(); } return view; },
     create, send, retry, cancel, respond, previewResult, end,
     capabilities: async (nextLink = link) => request("GET", "/assistant/capabilities", undefined, false, nextLink),
+    fetchCandidate,
     reconnect() { manuallyClosed = false; reconnectAttempt = 0; connect(); return Promise.resolve(view); },
     dispose() { disposed = true; manuallyClosed = true; clearTimeout(reconnectTimer); if (socket) socket.close(); rejectSends("The assistant panel was closed."); for (const controller of requests) controller.abort(); },
   };

@@ -103,7 +103,10 @@ async fn persistence_default_limits_refuse_without_discarding_dirty_rooms() {
                     .expect("dirty admitted room");
                 admitted.push((slug, room, marker));
             }
-            Err(error @ RoomAdmissionError::AtCapacity { .. }) => {
+            Err(
+                error @ (RoomAdmissionError::AtCapacity { .. }
+                | RoomAdmissionError::UnreadableState),
+            ) => {
                 refusal = Some(error);
                 break;
             }

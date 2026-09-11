@@ -63,6 +63,8 @@ impl Server {
             policy_editor: self.publishers.allows(&who.id.handle),
             automation: who.automation,
             unowned_publisher: false,
+            execution_epoch: "",
+            agent_checkpoint: None,
         };
         let revision = match room
             .checkpoint_now_with_authority("render", who.attribution(), actor)

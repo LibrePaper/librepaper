@@ -1,0 +1,546 @@
+[
+  {
+    "name": "document_read",
+    "description": "Read bounded exact source or search, outline, bibliography, comments and context. Reuse returned view and range handles.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "queries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "context",
+                  "source",
+                  "section",
+                  "search",
+                  "outline",
+                  "headings",
+                  "manifest",
+                  "files",
+                  "bibliography",
+                  "thread",
+                  "diagnostics",
+                  "changes",
+                  "rendered"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "maxLength": 1024
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000000
+              },
+              "end_line": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000000
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000000
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000000
+              },
+              "query": {
+                "type": "string",
+                "maxLength": 8192
+              },
+              "id": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "key": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "selection": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "maxLength": 1024
+                      },
+                      "exact": {
+                        "type": "string",
+                        "maxLength": 16000
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "maxLength": 4096
+                      },
+                      "suffix": {
+                        "type": "string",
+                        "maxLength": 4096
+                      },
+                      "position": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100000000
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "exact",
+                      "position"
+                    ]
+                  }
+                ]
+              },
+              "context": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "paragraph"
+                ]
+              },
+              "include": {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "unresolved"
+                ]
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "cursor": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "revision": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "range_id": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "latest"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "view_id": {
+                  "type": "string",
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "view_id"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 49152
+            },
+            "max_tokens": {
+              "type": "integer",
+              "minimum": 256,
+              "maximum": 12288
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "queries"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "document_propose",
+    "description": "Propose replacements for captured source ranges. Suggestions do not edit the source. Reuse operation keys on retry.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "view_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "operation": {
+          "type": "object",
+          "properties": {
+            "epoch": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "epoch",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "patches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "range_id": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "replacement": {
+                "type": "string",
+                "maxLength": 60000
+              },
+              "note": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "find": {
+                "type": "string",
+                "maxLength": 8192
+              }
+            },
+            "required": [
+              "range_id",
+              "replacement"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 100
+        },
+        "publish": {
+          "type": "string",
+          "enum": [
+            "suggestions",
+            "private"
+          ]
+        },
+        "validation": {
+          "type": "string",
+          "enum": [
+            "source",
+            "compile"
+          ]
+        },
+        "batch": {
+          "type": "string",
+          "enum": [
+            "atomic",
+            "independent"
+          ]
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "view_id",
+        "operation",
+        "patches"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "document_apply",
+    "description": "Apply a candidate only when the user authorized direct edits. Refuses changed source; replay uses the original operation key.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "view_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "operation": {
+          "type": "object",
+          "properties": {
+            "epoch": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "epoch",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "candidate_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "consistency": {
+          "type": "string",
+          "enum": [
+            "exact_tree",
+            "unchanged_dependencies"
+          ]
+        }
+      },
+      "required": [
+        "candidate_id",
+        "operation"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "document_comment",
+    "description": "Create or reply to comments, refine or decide suggestions, and resolve threads, conditional on their captured version.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "view_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "operation": {
+          "type": "object",
+          "properties": {
+            "epoch": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "epoch",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "create",
+            "reply",
+            "resolve",
+            "delete",
+            "refine",
+            "accept",
+            "reject",
+            "checkpoint"
+          ]
+        },
+        "comment_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "range_id": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 16000
+        },
+        "proposed": {
+          "type": "string",
+          "maxLength": 32000
+        },
+        "expected_version": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "resolved": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "operation"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "document_result",
+    "description": "Read an operation receipt or retained candidate; cancel a pending operation explicitly.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "operation": {
+          "type": "object",
+          "properties": {
+            "epoch": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "epoch",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "operation",
+            "candidate",
+            "render"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "get",
+            "cancel"
+          ]
+        },
+        "target_operation": {
+          "type": "object",
+          "properties": {
+            "epoch": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "epoch",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  }
+]

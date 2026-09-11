@@ -27,7 +27,7 @@ typst = "=0.15.1"
 flate2 = "1"
 
 # The server. WebSockets come with axum, so nothing here frames them by hand.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal", "process", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal", "process", "io-util", "io-std"] }
 axum = { version = "0.8", features = ["ws", "multipart", "http1"] }
 http-body-util = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }

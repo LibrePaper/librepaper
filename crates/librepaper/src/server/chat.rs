@@ -11,12 +11,23 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use tokio::sync::{mpsc, Mutex};
+use std::sync::OnceLock;
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 const CHANNEL_SECONDS: i64 = 60 * 60;
 const MAX_CONTEXT: usize = 16 * 1024;
 const MAX_EVENT_TEXT: usize = 32 * 1024;
 const MAX_ID: usize = 128;
+
+// Lease issuance is asynchronous while Hub::attach holds only its channel
+// lock. Serialize the short attach-plus-issue critical section so concurrent
+// replacement sockets cannot issue epochs out of order and fence the newer
+// socket with the older socket's epoch.
+static AGENT_LEASE_ADMISSION: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn agent_lease_admission() -> &'static Mutex<()> {
+    AGENT_LEASE_ADMISSION.get_or_init(Mutex::default)
+}
 
 impl Server {
     pub(super) async fn handle_chat_socket(
@@ -95,7 +106,12 @@ impl Server {
         let (tx, mut rx) = mpsc::channel(128);
         connection.tx = tx.clone();
         self.connections.lock().await.insert(socket_id, connection);
-        let ready = match self
+        let lease_admission = if join.role == "agent" {
+            Some(agent_lease_admission().lock().await)
+        } else {
+            None
+        };
+        let mut ready = match self
             .chat
             .attach(&slug, &id, &join.token, &join.role, socket_id, tx.clone())
             .await
@@ -113,11 +129,42 @@ impl Server {
                 return;
             }
         };
+        let execution_epoch = if join.role == "agent" {
+            let Some(catalog) = &self.store.catalog else {
+                self.connections.lock().await.remove(&socket_id);
+                self.chat.detach(&id, socket_id).await;
+                return;
+            };
+            let slug_for_lease = slug.clone();
+            let conversation_for_lease = id.clone();
+            match catalog
+                .execute_catalog(256, move |catalog| {
+                    catalog.issue_agent_execution_lease(&slug_for_lease, &conversation_for_lease)
+                })
+                .await
+            {
+                Ok(epoch) => {
+                    ready["execution_epoch"] = json!(epoch.clone());
+                    Some(epoch)
+                }
+                Err(_) => {
+                    self.connections.lock().await.remove(&socket_id);
+                    self.chat.detach(&id, socket_id).await;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        drop(lease_admission);
         self.reauthorize_connection(&slug, socket_id).await;
         if self.chat.attached(&id, socket_id).await {
             let _ = tx.try_send(Outgoing::Text(ready.to_string()));
         }
-        let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
+        // Renew well inside the 60-second lease window.  A failed renewal is
+        // terminal for this socket: continuing would let an in-flight runner
+        // keep issuing requests after its server-side fence was lost.
+        let mut housekeeping = tokio::time::interval(Duration::from_secs(10));
         let mut last_frame = tokio::time::Instant::now();
         let mut last_ping = tokio::time::Instant::now();
         loop {
@@ -142,6 +189,19 @@ impl Server {
                 }
                 _ = housekeeping.tick() => {
                     if !self.chat.attached(&id, socket_id).await || last_frame.elapsed() > Duration::from_secs(30) { break; }
+                    if let Some(epoch) = &execution_epoch {
+                        if let Some(catalog) = &self.store.catalog {
+                            let slug_for_lease = slug.clone();
+                            let conversation_for_lease = id.clone();
+                            let epoch_for_lease = epoch.clone();
+                            let renewed = catalog.execute_catalog(256, move |catalog| {
+                                catalog.renew_agent_execution_lease(&slug_for_lease, &conversation_for_lease, &epoch_for_lease)
+                            }).await;
+                            if !matches!(renewed, Ok(true)) {
+                                break;
+                            }
+                        }
+                    }
                     if last_ping.elapsed() >= Duration::from_secs(10) {
                         if !matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(WsMessage::Ping(Vec::new().into()))).await, Ok(Ok(()))) { break; }
                         last_ping = tokio::time::Instant::now();
@@ -150,6 +210,21 @@ impl Server {
             }
         }
         self.connections.lock().await.remove(&socket_id);
+        if let Some(epoch) = execution_epoch {
+            if let Some(catalog) = &self.store.catalog {
+                let slug_for_lease = slug.clone();
+                let conversation_for_lease = id.clone();
+                let _ = catalog
+                    .execute_catalog(256, move |catalog| {
+                        catalog.revoke_agent_execution_lease(
+                            &slug_for_lease,
+                            &conversation_for_lease,
+                            &epoch,
+                        )
+                    })
+                    .await;
+            }
+        }
         self.chat.detach(&id, socket_id).await;
     }
 
@@ -266,6 +341,9 @@ struct Message {
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= MAX_ID && !id.chars().any(char::is_control)
 }
+fn valid_capability(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
+}
 fn valid_task(task: Option<&Task>) -> bool {
     task.is_none_or(|task| {
         matches!(
@@ -289,7 +367,7 @@ fn valid_context(context: &Value) -> bool {
 fn valid_status(status: &str) -> bool {
     matches!(
         status,
-        "queued" | "working" | "needs_input" | "completed" | "failed" | "cancelled"
+        "queued" | "working" | "needs_input" | "completed" | "failed" | "cancelled" | "interrupted"
     )
 }
 fn bounded_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
@@ -330,6 +408,16 @@ struct Channel {
     agent: Option<Peer>,
     requests: VecDeque<(String, String)>,
     events: VecDeque<i64>,
+    render_waiters: HashMap<String, oneshot::Sender<Value>>,
+    render_results: HashMap<String, Value>,
+    /// Render request identities issued by the server, with their expected
+    /// base and candidate revisions. Browser replies are accepted into the
+    /// render cache only for these identities; arbitrary preview frames must
+    /// never be able to prefill a future waiter.
+    render_expected: HashMap<String, (String, String)>,
+    /// Highest persisted runner event sequence seen for each task. Stale
+    /// reconnect replays are acknowledged but never delivered twice.
+    task_sequences: HashMap<String, u64>,
 }
 struct Peer {
     socket: u64,
@@ -380,6 +468,10 @@ impl Hub {
                 agent: None,
                 requests: VecDeque::new(),
                 events: VecDeque::new(),
+                render_waiters: HashMap::new(),
+                render_results: HashMap::new(),
+                render_expected: HashMap::new(),
+                task_sequences: HashMap::new(),
             },
         );
         Ok(json!({"id":id,"token":token,"ephemeral":true}))
@@ -487,7 +579,102 @@ impl Hub {
         })
     }
 
-    async fn relay(
+    /// Deliver one bounded candidate render request to the connected browser
+    /// and await its correlated preview result. MCP calls use this bridge so
+    /// render source stays in the candidate HTTP endpoints; the chat channel
+    /// carries only the candidate identity and renderer token.
+    pub(crate) async fn render(
+        &self,
+        slug: &str,
+        id: &str,
+        token: &str,
+        frame: Value,
+        timeout: Duration,
+    ) -> Result<Value, Error> {
+        let request_id = frame["id"].as_str().unwrap_or("").to_string();
+        if request_id.is_empty() || request_id.len() > MAX_ID {
+            return Err((400, "render request id is required"));
+        }
+        let (sender, receiver) = oneshot::channel();
+        {
+            let mut channels = self.channels.lock().await;
+            let channel = channels
+                .get_mut(id)
+                .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
+                .ok_or((404, "channel not found"))?;
+            if let Some(result) = channel.render_results.remove(&request_id) {
+                return Ok(result);
+            }
+            if channel.render_waiters.contains_key(&request_id) {
+                return Err((409, "render request is already pending"));
+            }
+            let browser = channel
+                .browser
+                .as_ref()
+                .ok_or((409, "renderer is not connected"))?;
+            if frame.to_string().len() > MAX_CONTEXT {
+                return Err((413, "render request is too large"));
+            }
+            browser
+                .tx
+                .try_send(Outgoing::Text(frame.to_string()))
+                .map_err(|_| (409, "renderer cannot receive render request"))?;
+            channel.render_expected.insert(
+                request_id.clone(),
+                (
+                    frame["base_revision"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    frame["revision"].as_str().unwrap_or_default().to_owned(),
+                ),
+            );
+            channel.render_waiters.insert(request_id.clone(), sender);
+            while channel.render_expected.len() > 64 {
+                if let Some(oldest) = channel.render_expected.keys().next().cloned() {
+                    channel.render_expected.remove(&oldest);
+                    channel.render_results.remove(&oldest);
+                }
+            }
+            channel.touched_at = now();
+        }
+        match tokio::time::timeout(timeout, receiver).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err((409, "renderer disconnected before completing")),
+            Err(_) => {
+                self.channels
+                    .lock()
+                    .await
+                    .get_mut(id)
+                    .and_then(|channel| channel.render_waiters.remove(&request_id));
+                Err((504, "renderer timed out"))
+            }
+        }
+    }
+
+    /// Cancel one pending render waiter. This is deliberately best effort;
+    /// the durable MCP cancellation flag is the authoritative race guard.
+    pub(crate) async fn cancel_render(
+        &self,
+        slug: &str,
+        id: &str,
+        token: &str,
+        request_id: &str,
+    ) -> Result<bool, Error> {
+        if !valid_id(request_id) {
+            return Err((400, "render request id is required"));
+        }
+        let mut channels = self.channels.lock().await;
+        let channel = channels
+            .get_mut(id)
+            .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
+            .ok_or((404, "channel not found"))?;
+        channel.render_expected.remove(request_id);
+        channel.render_results.remove(request_id);
+        Ok(channel.render_waiters.remove(request_id).is_some())
+    }
+
+    pub(crate) async fn relay(
         &self,
         slug: &str,
         id: &str,
@@ -528,6 +715,12 @@ impl Hub {
                     .ok_or((400, "task status is required"))?;
                 if !valid_status(status) {
                     return Err((400, "invalid task status"));
+                }
+                if let Some(sequence) = value.get("seq") {
+                    let sequence = sequence.as_u64().ok_or((400, "invalid task sequence"))?;
+                    if sequence == 0 {
+                        return Err((400, "invalid task sequence"));
+                    }
                 }
                 if value.get("text").is_some_and(|text| {
                     !text.is_string()
@@ -575,19 +768,33 @@ impl Hub {
             "preview_request" => {
                 bounded_string(&value, "task_id")?;
                 bounded_string(&value, "base_revision")?;
+                let files = value.get("files");
+                let legacy_files = files.is_some_and(|files| {
+                    files.is_object()
+                        && valid_context(files)
+                        && files.as_object().is_some_and(|files| {
+                            files.iter().all(|(path, text)| {
+                                !path.is_empty()
+                                    && !path.starts_with('/')
+                                    && !path.contains('\\')
+                                    && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
+                                    && text.is_string()
+                            })
+                        })
+                });
+                let candidate = value["candidate_id"].as_str().unwrap_or("");
+                let candidate_ref = valid_id(candidate)
+                    && value
+                        .get("candidate_token")
+                        .and_then(Value::as_str)
+                        .is_some_and(valid_capability);
                 if role != "agent"
                     || !valid_id(value["revision"].as_str().unwrap_or(""))
-                    || !value["files"].is_object()
-                    || !valid_context(&value["files"])
-                    || !value["files"].as_object().is_some_and(|files| {
-                        files.iter().all(|(path, text)| {
-                            !path.is_empty()
-                                && !path.starts_with('/')
-                                && !path.contains('\\')
-                                && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
-                                && text.is_string()
-                        })
-                    })
+                    || (candidate_ref == legacy_files)
+                    || (candidate_ref && files.is_some())
+                    || (!candidate_ref
+                        && (value.get("candidate_id").is_some()
+                            || value.get("candidate_token").is_some()))
                 {
                     return Err((400, "invalid preview request"));
                 }
@@ -605,7 +812,79 @@ impl Hub {
                 {
                     return Err((400, "invalid preview result"));
                 }
-                self.deliver(slug, id, token, socket, role, value).await
+                let request_id = value["request_id"].as_str().unwrap_or("").to_string();
+                let (known, has_agent, sender_ok) = {
+                    let channels = self.channels.lock().await;
+                    let channel = channels
+                        .get(id)
+                        .filter(|channel| {
+                            channel.slug == slug && token_matches(&channel.token_hash, token)
+                        })
+                        .ok_or((404, "channel not found"))?;
+                    let expected = channel.render_expected.get(&request_id);
+                    if let Some((base, revision)) = expected {
+                        if value["base_revision"] != *base || value["revision"] != *revision {
+                            return Err((409, "preview result does not match render request"));
+                        }
+                    }
+                    (
+                        expected.is_some(),
+                        channel.agent.is_some(),
+                        channel
+                            .browser
+                            .as_ref()
+                            .is_some_and(|peer| peer.socket == socket),
+                    )
+                };
+                if !sender_ok {
+                    return Err((403, "wrong participant"));
+                }
+                // Server-owned render requests can complete with only the
+                // browser attached. If an agent is present, retain the
+                // existing relay echo for compatibility with runner previews.
+                let reply = if has_agent {
+                    self.deliver(slug, id, token, socket, role, value.clone())
+                        .await?
+                } else if known {
+                    json!({"type":"ack","id":value["id"]})
+                } else {
+                    return Err((409, "render request is not known"));
+                };
+                if known && !request_id.is_empty() {
+                    let waiter = self
+                        .channels
+                        .lock()
+                        .await
+                        .get_mut(id)
+                        .and_then(|channel| channel.render_waiters.remove(&request_id));
+                    if let Some(waiter) = waiter {
+                        if waiter.send(value.clone()).is_err() {
+                            let mut channels = self.channels.lock().await;
+                            if let Some(channel) = channels.get_mut(id) {
+                                channel.render_results.insert(request_id, value);
+                                while channel.render_results.len() > 32 {
+                                    if let Some(oldest) =
+                                        channel.render_results.keys().next().cloned()
+                                    {
+                                        channel.render_results.remove(&oldest);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        let mut channels = self.channels.lock().await;
+                        if let Some(channel) = channels.get_mut(id) {
+                            channel.render_results.insert(request_id, value);
+                            while channel.render_results.len() > 32 {
+                                if let Some(oldest) = channel.render_results.keys().next().cloned()
+                                {
+                                    channel.render_results.remove(&oldest);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(reply)
             }
             _ => Err((400, "unsupported chat event")),
         }
@@ -674,6 +953,31 @@ impl Hub {
             .tx
             .try_reserve()
             .map_err(|_| (409, "sender cannot receive events"))?;
+        if frame["type"].as_str() == Some("task") {
+            if let Some(sequence) = frame.get("seq").and_then(Value::as_u64) {
+                let task_id = frame["task_id"].as_str().unwrap_or_default();
+                if channel
+                    .task_sequences
+                    .get(task_id)
+                    .is_some_and(|last| sequence <= *last)
+                {
+                    return Ok(json!({
+                        "type": "ack",
+                        "id": event_id,
+                        "task_id": task_id,
+                        "status": frame["status"],
+                        "seq": sequence,
+                        "duplicate": true
+                    }));
+                }
+                if !channel.task_sequences.contains_key(task_id)
+                    && channel.task_sequences.len() >= 128
+                {
+                    return Err((429, "too many task status streams"));
+                }
+                channel.task_sequences.insert(task_id.to_string(), sequence);
+            }
+        }
         let text = frame.to_string();
         recipient_slot.send(Outgoing::Text(text.clone()));
         sender_slot.send(Outgoing::Text(text));
@@ -690,6 +994,7 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     async fn channel() -> (Hub, String, String) {
         let hub = Hub::default();
@@ -729,6 +1034,137 @@ mod tests {
             .attach("paper", &id, &token, "user", 3, mpsc::channel(4).0)
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn render_dispatch_waits_for_correlated_browser_result() {
+        let (hub, id, token) = channel().await;
+        let hub = Arc::new(hub);
+        let (user_tx, mut user_rx) = mpsc::channel(4);
+        let (agent_tx, _agent_rx) = mpsc::channel(4);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        hub.attach("paper", &id, &token, "agent", 2, agent_tx)
+            .await
+            .unwrap();
+        let frame = json!({"type":"preview_request","id":"render_1","task_id":"task-1","candidate_id":"candidate-1","base_revision":"base","revision":"candidate"});
+        let waiting = tokio::spawn({
+            let hub = Arc::clone(&hub);
+            let id = id.clone();
+            let token = token.clone();
+            async move {
+                hub.render("paper", &id, &token, frame, Duration::from_secs(1))
+                    .await
+            }
+        });
+        let raw = loop {
+            let outgoing = user_rx.recv().await.unwrap();
+            let Outgoing::Text(raw) = outgoing else {
+                panic!("render request was not text");
+            };
+            if serde_json::from_str::<Value>(&raw).unwrap()["id"] == "render_1" {
+                break raw;
+            }
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap()["id"],
+            "render_1"
+        );
+        let result = json!({"type":"preview_result","id":"result-1","request_id":"render_1","task_id":"task-1","base_revision":"base","revision":"candidate","ok":true,"diagnostics":[]});
+        hub.relay("paper", &id, &token, 1, "user", result.clone())
+            .await
+            .unwrap();
+        assert_eq!(waiting.await.unwrap().unwrap(), result);
+    }
+
+    #[tokio::test]
+    async fn server_render_completes_without_agent_and_rejects_unknown_result() {
+        let (hub, id, token) = channel().await;
+        let hub = Arc::new(hub);
+        let (user_tx, mut user_rx) = mpsc::channel(4);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        let frame = json!({"type":"preview_request","id":"render-only-browser","task_id":"task-1","base_revision":"base","revision":"candidate"});
+        let waiting = tokio::spawn({
+            let hub = Arc::clone(&hub);
+            let id = id.clone();
+            let token = token.clone();
+            async move {
+                hub.render("paper", &id, &token, frame, Duration::from_secs(1))
+                    .await
+            }
+        });
+        loop {
+            let Some(Outgoing::Text(raw)) = user_rx.recv().await else {
+                panic!("render channel closed");
+            };
+            if serde_json::from_str::<Value>(&raw).unwrap()["id"] == "render-only-browser" {
+                break;
+            }
+        }
+        let result = json!({"type":"preview_result","id":"render-only-result","request_id":"render-only-browser","task_id":"task-1","base_revision":"base","revision":"candidate","ok":true,"diagnostics":[]});
+        assert!(hub
+            .relay("paper", &id, &token, 1, "user", result.clone())
+            .await
+            .is_ok());
+        assert_eq!(waiting.await.unwrap().unwrap(), result);
+        let unknown = json!({"type":"preview_result","id":"unknown-result","request_id":"unknown-render","task_id":"task-1","base_revision":"base","revision":"candidate","ok":true,"diagnostics":[]});
+        assert_eq!(
+            hub.relay("paper", &id, &token, 1, "user", unknown)
+                .await
+                .unwrap_err()
+                .0,
+            409
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_request_accepts_candidate_reference_without_relaying_source() {
+        let (hub, id, token) = channel().await;
+        let (user_tx, mut user_rx) = mpsc::channel(8);
+        let (agent_tx, _agent_rx) = mpsc::channel(8);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        hub.attach("paper", &id, &token, "agent", 2, agent_tx)
+            .await
+            .unwrap();
+        let request = json!({
+            "type": "preview_request",
+            "id": "render-large",
+            "task_id": "task-1",
+            "base_revision": "base",
+            "revision": "candidate",
+            "candidate_id": "candidate-1",
+            "candidate_token": "v1.123.actor.signature"
+        });
+        assert!(hub
+            .relay("paper", &id, &token, 2, "agent", request.clone())
+            .await
+            .is_ok());
+        let delivered = loop {
+            let Outgoing::Text(text) = user_rx.recv().await.unwrap() else {
+                continue;
+            };
+            let value: Value = serde_json::from_str(&text).unwrap();
+            if value["type"] == "preview_request" {
+                break value;
+            }
+        };
+        assert_eq!(delivered["candidate_id"], "candidate-1");
+        assert!(delivered.get("files").is_none());
+
+        let mut leaked = request;
+        leaked["files"] = json!({"paper.md": "source"});
+        assert_eq!(
+            hub.relay("paper", &id, &token, 2, "agent", leaked)
+                .await
+                .unwrap_err()
+                .0,
+            400
+        );
     }
 
     #[tokio::test]
@@ -835,6 +1271,80 @@ mod tests {
             )
             .await;
         assert_eq!(invalid_status.unwrap_err().0, 400);
+    }
+
+    #[tokio::test]
+    async fn invalid_sender_cannot_advance_task_sequence() {
+        let (hub, id, token) = channel().await;
+        let (user_tx, _user_rx) = mpsc::channel(8);
+        let (agent_tx, _agent_rx) = mpsc::channel(8);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        hub.attach("paper", &id, &token, "agent", 2, agent_tx)
+            .await
+            .unwrap();
+        let frame =
+            json!({"type":"task","id":"t-seq-1","task_id":"task-1","status":"working","seq":1});
+        assert_eq!(
+            hub.relay("paper", &id, "wrong-token", 2, "agent", frame.clone())
+                .await
+                .unwrap_err()
+                .0,
+            404
+        );
+        assert!(hub
+            .channels
+            .lock()
+            .await
+            .get(&id)
+            .unwrap()
+            .task_sequences
+            .is_empty());
+        hub.relay("paper", &id, &token, 2, "agent", frame)
+            .await
+            .unwrap();
+        assert_eq!(
+            hub.channels.lock().await.get(&id).unwrap().task_sequences["task-1"],
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_task_delivery_can_retry_same_sequence() {
+        let (hub, id, token) = channel().await;
+        let (agent_tx, _agent_rx) = mpsc::channel(8);
+        hub.attach("paper", &id, &token, "agent", 2, agent_tx)
+            .await
+            .unwrap();
+        let frame =
+            json!({"type":"task","id":"t-seq-2","task_id":"task-2","status":"working","seq":1});
+        assert_eq!(
+            hub.relay("paper", &id, &token, 2, "agent", frame.clone())
+                .await
+                .unwrap_err()
+                .0,
+            409
+        );
+        assert!(hub
+            .channels
+            .lock()
+            .await
+            .get(&id)
+            .unwrap()
+            .task_sequences
+            .is_empty());
+        let (user_tx, _user_rx) = mpsc::channel(8);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        hub.relay("paper", &id, &token, 2, "agent", frame)
+            .await
+            .unwrap();
+        assert_eq!(
+            hub.channels.lock().await.get(&id).unwrap().task_sequences["task-2"],
+            1
+        );
     }
 
     #[tokio::test]

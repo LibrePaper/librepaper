@@ -386,6 +386,8 @@ impl Server {
             policy_editor: self.publishers.allows(&who.id.handle),
             automation: who.automation,
             unowned_publisher,
+            execution_epoch: "",
+            agent_checkpoint: None,
         };
         let reply = if current_only {
             match room

@@ -791,6 +791,15 @@ The browser reports queued work, progress, completion, and failures. Follow-up
 requests can be submitted while a task runs; cancellation requests stop active
 work where supported and never undo document changes already made.
 
+The runner configures the Codex thread with LibrePaper's MCP tools. It starts
+the bundled stdio adapter as `librepaper agent mcp -`, inheriting the protected
+`LIBREPAPER_DOCUMENT` environment value. The model uses `document_read`,
+`document_propose`, `document_apply`, `document_comment`, and
+`document_result`; document links and tokens are never MCP tool arguments.
+Hosts that need a standalone adapter can register the same command with
+`codex mcp add librepaper -- librepaper agent mcp -` and provide
+`LIBREPAPER_DOCUMENT` in the host's protected environment.
+
 Select a passage to Tighten, Rewrite, or Explain. Address a comment from its
 thread, or ask the assistant to fix a diagnostic. Requests carry their captured
 source context and revision. Suggestions use the ordinary review interface,
