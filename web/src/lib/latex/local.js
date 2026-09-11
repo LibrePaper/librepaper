@@ -830,6 +830,10 @@ export function quartoRequest({ job = {}, entrypoint, format = "html", profile =
       policy: quartoPolicy(kind, policy),
       idempotency_key: idempotency || null,
       shared_tree_sha256: sourceDigest ? safeSha256(sourceDigest, "shared tree digest") : null,
+      execution_mode: "working-tree",
+      render_scope: "document",
+      data_inputs: [],
+      shared_inventory_complete: false,
     },
   };
 }

@@ -288,22 +288,15 @@ mod tests {
     }
 
     #[test]
-    fn pending_legacy_and_asset_objects_wait_for_read_lease() {
+    fn pending_asset_objects_wait_for_read_lease() {
         let catalog = Catalog::open_in_memory().unwrap();
         catalog.upsert_account(&account()).unwrap();
         catalog.create_document(&document()).unwrap();
-        let objects = vec![
-            SourceHistoryObject {
-                object_key: "content/storage-1/blobs/legacy".into(),
-                kind: "source_legacy".into(),
-                bytes: 11,
-            },
-            SourceHistoryObject {
-                object_key: "content/storage-1/assets/figure".into(),
-                kind: "asset".into(),
-                bytes: 29,
-            },
-        ];
+        let objects = vec![SourceHistoryObject {
+            object_key: "content/storage-1/assets/figure".into(),
+            kind: "asset".into(),
+            bytes: 29,
+        }];
         catalog
             .begin_source_history_lease("storage-1", "restore-read", &objects, 10, 100)
             .unwrap();

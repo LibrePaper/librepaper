@@ -8,6 +8,7 @@ fn imported_bundle(slug: &str, render: &str, html: &str) -> serde_json::Value {
     json!({
         "manifest": {
             "schema": "librepaper-quarto-bundle/v1", "render_id": render, "document_id": slug,
+            "engine": "quarto",
             "source": {"revision":"", "tree_sha256":null, "main":"main.qmd", "verification":"imported"},
             "context": {"id":"html", "fingerprint_version":1,"computation_sha256":crate::quarto::sha256(b"unknown"),"format":"html"},
             "provenance": {"kind":"imported", "computation":"no-execution", "external_inputs":"unknown"},
@@ -314,6 +315,7 @@ async fn published_bundle_remains_readable_after_document_format_change() {
         "sha256": css_digest,
         "mime": "text/css",
         "size": css.len()
+        ,"role": "display"
     }]);
     bundle["blobs"].as_array_mut().unwrap().push(json!({
         "sha256": css_digest,
@@ -690,7 +692,8 @@ async fn failed_quarto_manifest_deletion_preserves_the_bundle_and_dependencies()
                 "path": "styles.css",
                 "sha256": digest,
                 "mime": "text/css",
-                "size": css.len()
+                "size": css.len(),
+                "role": "display"
             }]);
             bundle["blobs"].as_array_mut().unwrap().push(json!({
                 "sha256": digest,
@@ -1107,8 +1110,7 @@ async fn quarto_empty_dependencies_publish_and_remain_readable() {
     let slug = text(&publish_quarto(&server.url).await, "slug");
     let mut bundle = imported_bundle(&slug, "empty-dependency", "<p>Saved</p>");
     let digest = crate::quarto::sha256(b"");
-    bundle["manifest"]["assets"] =
-        json!([{"path":"paper_files/empty.css", "sha256":digest, "mime":"text/css", "size":0}]);
+    bundle["manifest"]["assets"] = json!([{"path":"paper_files/empty.css", "sha256":digest, "mime":"text/css", "size":0, "role":"display"}]);
     bundle["blobs"]
         .as_array_mut()
         .unwrap()

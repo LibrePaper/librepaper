@@ -8,7 +8,6 @@
 //!
 //! Where a test needs a real Yjs peer it runs one, through `tests::yjs`.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -869,273 +868,6 @@ async fn a_large_document_is_fetched_rather_than_framed() {
     assert_eq!(refused.status().as_u16(), 403);
 }
 
-/* ------------------------------------------------------------- migration */
-
-/// A document stored the way the previous implementation stored it: an index
-/// entry, the rendered page under its digest, the source beside it, and a room
-/// with a comment in it. This is the shape `store.put` wrote before there was
-/// a session, written here directly because the code that wrote it is gone.
-async fn write_the_old_layout(dir: &std::path::Path, slug: &str) {
-    let html = "<!doctype html><html><head><title>My Paper</title></head>\
-                <body><h1>My Paper</h1><p>Hello <em>world</em>.</p></body></html>";
-    let digest = crate::document::store::digest_of(html);
-    let blobs = FsStore::new(dir, true);
-    blobs
-        .put(
-            &crate::storage::blob::document_key(slug, &digest),
-            html.as_bytes().to_vec(),
-            "text/html",
-        )
-        .await
-        .unwrap();
-    blobs
-        .put(
-            &crate::storage::blob::source_key(slug, &digest),
-            TEST_MARKDOWN.as_bytes().to_vec(),
-            "text/plain",
-        )
-        .await
-        .unwrap();
-    let mut entries: HashMap<String, Value> = HashMap::new();
-    entries.insert(
-        slug.to_string(),
-        json!({
-            "slug": slug, "title": "My Paper", "sha": digest,
-            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
-            "publisher": TEST_PUBLISHER, "publisher_id": TEST_PUBLISHER,
-            "size": (html.len() + TEST_MARKDOWN.len()) as i64,
-            "source_format": "markdown",
-        }),
-    );
-    blobs
-        .put(
-            crate::storage::blob::INDEX_KEY,
-            serde_json::to_vec(&entries).unwrap(),
-            "application/json",
-        )
-        .await
-        .unwrap();
-    blobs
-        .put(
-            &crate::storage::blob::room_key(slug),
-            serde_json::to_vec(&json!({
-                "seq": 1,
-                "comments": [{
-                    "id": "c1", "seq": 1, "motivation": "commenting",
-                    "exact": "world", "prefix": "Hello ", "suffix": ".",
-                    "body": "a note from before", "creator": "Reader",
-                    "created": "2026-01-02T00:00:00Z", "resolved": false,
-                    "replies": [], "author": "github:reader",
-                }],
-            }))
-            .unwrap(),
-            "application/json",
-        )
-        .await
-        .unwrap();
-}
-
-/// Everything a deployment already holds keeps working: the document opens,
-/// its source is what it always was, its format and its owner are unchanged,
-/// and its comments are still on it. Nothing is rewritten until the document
-/// is first opened, and nothing is removed until its source is durable as a
-/// checkpoint.
-#[tokio::test]
-async fn a_document_stored_the_old_way_survives_the_migration() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let slug = "my-paper-abcdefghij";
-    write_the_old_layout(dir.path(), slug).await;
-
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path(), true));
-    let (base, instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
-    // This entry names a publisher on record, so the bare URL opens it only
-    // for them -- exactly the account the old layout recorded here.
-    let owner = session_as(TEST_PUBLISHER);
-
-    // The document opens, from the source the old layout kept.
-    let (status, payload) =
-        get_json_as(&owner, &base, &format!("/api/documents/{slug}/source")).await;
-    assert_eq!(status, 200, "{payload}");
-    assert_eq!(text(&payload, "source"), TEST_MARKDOWN);
-    assert_eq!(text(&payload, "format"), "markdown");
-
-    // Its comments are still on it.
-    let (_, listing) = get_json_as(&owner, &base, &format!("/api/documents/{slug}/comments")).await;
-    let comments = listing["comments"].as_array().unwrap();
-    assert_eq!(comments.len(), 1, "the comments did not survive: {listing}");
-    assert_eq!(comments[0]["body"], "a note from before");
-
-    // Its owner is unchanged, so it is still theirs to replace.
-    let entry = instance.store.get(slug).await.expect("in the index");
-    assert_eq!(entry.publisher, TEST_PUBLISHER);
-    assert!(entry.created_at.starts_with("2026-01-01"));
-
-    // Nothing has been removed yet: until the source is durable as a
-    // checkpoint, the old objects are the only copy there is.
-    let room = instance.rooms.get(slug).await;
-    assert!(
-        instance
-            .store
-            .blobs
-            .get(&crate::storage::blob::source_key(slug, &entry.sha))
-            .await
-            .is_ok(),
-        "the old source was removed before its replacement existed"
-    );
-
-    // And once it is, the old copies go and the document is a checkpoint.
-    let sha = room
-        .checkpoint("cli", TEST_PUBLISHER)
-        .await
-        .expect("a checkpoint")
-        .expect("not deferred");
-    // The checkpoint is the tree, and the words are in the blob it names. A
-    // migrated document is a directory of one file, so what a reader of the
-    // history gets back is exactly what was published, one indirection along.
-    let tree: crate::document::history::Tree = serde_json::from_slice(
-        &instance
-            .store
-            .blobs
-            .get(&checkpoint_key(slug, &sha))
-            .await
-            .unwrap(),
-    )
-    .expect("the checkpoint is a tree");
-    assert_eq!(tree.main, "main.md");
-    assert_eq!(
-        crate::storage::encoding::read_file(
-            instance.store.blobs.as_ref(),
-            slug,
-            &tree.files[&tree.main].sha,
-        )
-        .await
-        .map(|raw| String::from_utf8_lossy(&raw).to_string())
-        .unwrap(),
-        TEST_MARKDOWN
-    );
-    assert!(
-        instance.store.blobs.get(&session_key(slug)).await.is_ok(),
-        "the live document was not written"
-    );
-    // The migrated source and checkpoint body now share the same immutable
-    // content-addressed representation. The recipe reader is the contract;
-    // its physical chunks need not be a legacy whole-file blob.
-    assert!(crate::storage::encoding::read_file(
-        instance.store.blobs.as_ref(),
-        slug,
-        &tree.files[&tree.main].sha,
-    )
-    .await
-    .is_ok());
-}
-
-/// The oldest layout of all kept one unversioned source per document, at
-/// `sources/<slug>` -- which on a directory store is a *file* where the later
-/// layout wants a directory, so reading `sources/<slug>/<sha>` fails with
-/// ENOTDIR rather than with "not found". A seeded deployment is exactly this
-/// shape, and reading that failure as anything but an absence is what made a
-/// migrated markdown document come back with its stored HTML for a source.
-#[tokio::test]
-async fn a_document_with_an_unversioned_source_keeps_its_own_format() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let slug = "old-paper-abcdefghij";
-    let html = "<!doctype html><html><body><h1>Old Paper</h1></body></html>";
-    let digest = crate::document::store::digest_of(html);
-    let blobs = FsStore::new(dir.path(), true);
-    blobs
-        .put(
-            &crate::storage::blob::document_key(slug, &digest),
-            html.as_bytes().to_vec(),
-            "text/html",
-        )
-        .await
-        .unwrap();
-    // The unversioned key, as `seed` wrote it before sources were versioned.
-    blobs
-        .put(
-            &crate::storage::blob::legacy_source_key(slug),
-            TEST_MARKDOWN.as_bytes().to_vec(),
-            "text/plain",
-        )
-        .await
-        .unwrap();
-    let mut entries: HashMap<String, Value> = HashMap::new();
-    entries.insert(
-        slug.to_string(),
-        json!({"slug": slug, "title": "Old Paper", "sha": digest,
-               "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
-               "size": 1, "source_format": "markdown"}),
-    );
-    blobs
-        .put(
-            crate::storage::blob::INDEX_KEY,
-            serde_json::to_vec(&entries).unwrap(),
-            "application/json",
-        )
-        .await
-        .unwrap();
-
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path(), true));
-    let (base, _instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
-    let (status, payload) = get_json(&base, &format!("/api/documents/{slug}/source")).await;
-    assert_eq!(status, 200, "{payload}");
-    assert_eq!(
-        text(&payload, "source"),
-        TEST_MARKDOWN,
-        "the markdown source was not found, so the page was used instead"
-    );
-    assert_eq!(text(&payload, "format"), "markdown");
-}
-
-/// A document published as HTML by the old layout has no stored source at all
-/// -- its source was the page. It has to come back as itself.
-#[tokio::test]
-async fn an_old_html_document_is_seeded_from_its_page() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let slug = "a-page-abcdefghij";
-    let page =
-        "<!doctype html><html><head><title>A Page</title></head><body><p>prose</p></body></html>";
-    let digest = crate::document::store::digest_of(page);
-    let blobs = FsStore::new(dir.path(), true);
-    blobs
-        .put(
-            &crate::storage::blob::document_key(slug, &digest),
-            page.as_bytes().to_vec(),
-            "text/html",
-        )
-        .await
-        .unwrap();
-    let mut entries: HashMap<String, Value> = HashMap::new();
-    entries.insert(
-        slug.to_string(),
-        json!({"slug": slug, "title": "A Page", "sha": digest,
-               "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
-               "publisher": TEST_PUBLISHER, "publisher_id": TEST_PUBLISHER,
-               "size": page.len() as i64, "source_format": "html"}),
-    );
-    blobs
-        .put(
-            crate::storage::blob::INDEX_KEY,
-            serde_json::to_vec(&entries).unwrap(),
-            "application/json",
-        )
-        .await
-        .unwrap();
-
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(FsStore::new(dir.path(), true));
-    let (base, _instance) = server_over_blobs_legacy(blobs, Configuration::default()).await;
-    // This entry names a publisher on record, so it opens only for them.
-    let (status, payload) = get_json_as(
-        &session_as(TEST_PUBLISHER),
-        &base,
-        &format!("/api/documents/{slug}/source"),
-    )
-    .await;
-    assert_eq!(status, 200, "{payload}");
-    assert_eq!(text(&payload, "source"), page);
-    assert_eq!(text(&payload, "format"), "html");
-}
-
 /* ------------------------------------------------- the browser's own module */
 
 /// `web/tools/collab-peer.mjs`, which imports the editor's `collab.js` and
@@ -1521,8 +1253,13 @@ fn admission_measures_a_large_document_without_rehearsing_small_updates() {
         .unwrap();
         let before = crate::document::session::encode_vector(&scratch);
         {
-            use yrs::{Text, Transact};
-            let text = scratch.get_or_insert_text(crate::document::session::SOURCE);
+            use yrs::{Map, Out, Text, Transact};
+            let files = scratch.get_or_insert_map(crate::document::session::FILES);
+            let id = crate::document::session::main_id(&scratch);
+            let text = match files.get(&scratch.transact(), &id) {
+                Some(Out::YText(text)) => text,
+                _ => panic!("main file is not text"),
+            };
             let mut txn = scratch.transact_mut();
             text.insert(&mut txn, 0, "x");
         }
@@ -1549,8 +1286,13 @@ fn admission_measures_a_large_document_without_rehearsing_small_updates() {
         .unwrap();
         let before = crate::document::session::encode_vector(&scratch);
         {
-            use yrs::{Text, Transact};
-            let text = scratch.get_or_insert_text(crate::document::session::SOURCE);
+            use yrs::{Map, Out, Text, Transact};
+            let files = scratch.get_or_insert_map(crate::document::session::FILES);
+            let id = crate::document::session::main_id(&scratch);
+            let text = match files.get(&scratch.transact(), &id) {
+                Some(Out::YText(text)) => text,
+                _ => panic!("main file is not text"),
+            };
             let mut txn = scratch.transact_mut();
             text.insert(&mut txn, 0, &"z".repeat(4 * 1024 * 1024));
         }

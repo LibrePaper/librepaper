@@ -37,9 +37,7 @@ pub struct RetentionPass {
 }
 
 impl Catalog {
-    /// Enrol a newly-created Balanced document in routine retention. Legacy
-    /// documents are marked separately by the migration and never enter this
-    /// path until an owner performs an explicit preference migration.
+    /// Enrol a newly-created Balanced document in routine retention.
     pub fn schedule_document_balanced(
         &self,
         slug: &str,

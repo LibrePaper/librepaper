@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use yrs::{GetString, Map, Out, Text, Transact};
+use yrs::{Map, Out, Text, Transact};
 
 use crate::config::Configuration;
 use crate::document::history::{Checkpoint, Tree, TreeEntry};
@@ -22,90 +22,6 @@ fn one_file(path: &str, body: &str) -> yrs::Doc {
     let id = session::put_text(&doc, path, body);
     session::set_main(&doc, &id);
     doc
-}
-
-/// What the retired `source` text still holds. Named before the transaction
-/// is taken: asking a document for a type it may not have needs a write
-/// transaction, and taking one while a read transaction is open is a deadlock.
-fn retired(doc: &yrs::Doc) -> String {
-    let source = doc.get_or_insert_text(session::SOURCE);
-    let txn = doc.transact();
-    source.get_string(&txn)
-}
-
-/// A session written the old way: one `source` text and nothing else. What
-/// every document in storage looks like before this step runs.
-fn old_session(body: &str) -> yrs::Doc {
-    let doc = session::new_doc();
-    let text = doc.get_or_insert_text(session::SOURCE);
-    let mut txn = doc.transact_mut();
-    text.insert(&mut txn, 0, body);
-    drop(txn);
-    doc
-}
-
-/* ------------------------------------------------------------- the migration */
-
-#[test]
-fn a_document_that_was_one_text_becomes_a_directory_of_one_file() {
-    let doc = old_session("= Title\n\nA paragraph.\n");
-    assert!(session::migrate(&doc, "main.typ"));
-
-    // The words are where they were, under a name.
-    assert_eq!(session::text_of(&doc), "= Title\n\nA paragraph.\n");
-    assert_eq!(session::main_path(&doc), "main.typ");
-    let texts = session::texts_of(&doc);
-    assert_eq!(texts.len(), 1);
-    assert_eq!(texts["main.typ"], "= Title\n\nA paragraph.\n");
-
-    // And the text it came out of is empty, so nothing is stored twice and
-    // nothing measures it twice.
-    assert_eq!(retired(&doc), "");
-}
-
-#[test]
-fn migrating_twice_is_migrating_once() {
-    let doc = old_session("one file\n");
-    assert!(session::migrate(&doc, "main.md"));
-    let after = session::texts_of(&doc);
-    let id = session::main_id(&doc);
-
-    // The second call has nothing to do, and says so: a session loaded twice
-    // must not grow a second copy of itself.
-    assert!(!session::migrate(&doc, "main.md"));
-    assert_eq!(session::texts_of(&doc), after);
-    assert_eq!(session::main_id(&doc), id, "the file was made again");
-}
-
-#[test]
-fn a_migrated_session_still_reads_as_the_old_shape_would_leave_it() {
-    // The rollback caveat: a deployment that goes back to the old code reads
-    // `sessions/<slug>` with a `source` text in it. After the migration that
-    // text is empty -- the words are in the directory -- so what an old server
-    // would show is an empty document rather than a broken one. That is the
-    // bargain the migration makes, and it is worth stating as a test rather
-    // than as a sentence in a file nobody opens: the state stays *readable*,
-    // and not more than that.
-    let doc = old_session("words\n");
-    session::migrate(&doc, "main.md");
-    let state = session::encode_state(&doc);
-
-    let old = session::new_doc();
-    session::apply_update(&old, &state).expect("an old server still applies it");
-    assert_eq!(
-        retired(&old),
-        "",
-        "the retired text should be empty, not unreadable"
-    );
-}
-
-#[test]
-fn an_empty_old_session_is_left_alone() {
-    // A document created and never typed into has nothing to move, and making
-    // it a file would write a state for a session that has none.
-    let doc = session::new_doc();
-    assert!(!session::migrate(&doc, "main.typ"));
-    assert!(session::texts_of(&doc).is_empty());
 }
 
 /* ------------------------------------------------------------------ the rules */
@@ -255,37 +171,6 @@ fn a_decodable_update_with_a_damaged_block_does_not_panic_at_commit() {
 }
 
 #[test]
-fn what_the_old_bundle_wrote_is_folded_in_the_same_repair_that_finds_a_main() {
-    // Found by fuzz/fuzz_targets/document.rs. A document with words in the
-    // retired text and a `meta.main` that names nothing: the first repair
-    // used to settle the main file and leave the fold for the next update,
-    // so the same document was repaired twice with two different answers.
-    let doc = old_session("from the old tab\n");
-    let files = doc.get_or_insert_map("files");
-    let path_map = doc.get_or_insert_map("paths");
-    {
-        let mut txn = doc.transact_mut();
-        files.insert(
-            &mut txn,
-            "abcdefabcdef".to_string(),
-            yrs::types::text::TextPrelim::new("the new file\n"),
-        );
-        path_map.insert(&mut txn, "abcdefabcdef".to_string(), "main.typ".to_string());
-    }
-    let config = rules();
-
-    let first = session::repair(&doc, &config.paths());
-    assert!(
-        first.contains(&session::Repair::Folded),
-        "the fold waited for another update: {first:?}"
-    );
-    assert_eq!(session::text_of(&doc), "from the old tab\n");
-    assert_eq!(retired(&doc), "");
-    let second = session::repair(&doc, &config.paths());
-    assert!(second.is_empty(), "a second repair found work: {second:?}");
-}
-
-#[test]
 fn two_files_at_one_path_both_survive_and_one_is_moved_aside() {
     // Two people create `notes.md` at the same instant. Neither loses their
     // file: a CRDT has no way to refuse the second, so the repair names it
@@ -380,29 +265,6 @@ fn a_document_whose_main_file_is_missing_takes_the_first_one() {
         [session::Repair::Remained { .. }]
     ));
     assert_eq!(session::main_path(&doc), "alpha.typ");
-}
-
-#[test]
-fn what_the_old_bundle_writes_is_folded_in_rather_than_lost() {
-    // During a deploy a tab loaded before it is still writing to `source`.
-    // What it wrote is the document as that tab understands it, so it becomes
-    // the main file's text; the alternative is a person watching their words
-    // go nowhere.
-    let doc = one_file("main.md", "before\n");
-    {
-        let text = doc.get_or_insert_text(session::SOURCE);
-        let mut txn = doc.transact_mut();
-        text.insert(&mut txn, 0, "what the old tab typed\n");
-    }
-
-    let done = session::repair(&doc, &rules().paths());
-    assert!(done.contains(&session::Repair::Folded));
-    assert_eq!(session::text_of(&doc), "what the old tab typed\n");
-    assert_eq!(
-        retired(&doc),
-        "",
-        "the retired text should be emptied once it is folded in"
-    );
 }
 
 /* ---------------------------------------------------------------- the ceiling */

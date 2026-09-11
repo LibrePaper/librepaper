@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
 use serde_json::{json, Value};
-use yrs::{Doc, Text, Transact};
+use yrs::{Doc, Map, Text, Transact};
 
 /// A browser's Yjs, in a subprocess. Dropped with the test that made it.
 pub struct Browser {
@@ -239,6 +239,21 @@ fn server_doc() -> Doc {
     session::new_doc()
 }
 
+fn seed_main(doc: &Doc) {
+    let id = session::put_text(doc, "main.md", "");
+    session::set_main(doc, &id);
+}
+
+fn main_text(doc: &Doc) -> yrs::TextRef {
+    let id = session::main_id(doc);
+    let files = doc.get_or_insert_map(session::FILES);
+    let txn = doc.transact();
+    let yrs::Out::YText(text) = files.get(&txn, &id).expect("main file") else {
+        panic!("main file must be text");
+    };
+    text
+}
+
 fn server_text(doc: &Doc) -> String {
     session::text_of(doc)
 }
@@ -276,9 +291,8 @@ fn a_browser_edit_reaches_the_server_and_returns() {
     needs_browser!();
     let mut browser = Browser::start();
     let doc = server_doc();
-    // The server has to name the shared type before it can receive into it,
-    // exactly as the room does when it loads a session.
-    doc.get_or_insert_text("source");
+    seed_main(&doc);
+    browser.apply("a", &server_state(&doc, None));
 
     browser.insert("a", 0, "the first sentence");
     for update in browser.outbox("a") {
@@ -300,7 +314,8 @@ fn deletions_travel_in_both_directions() {
     needs_browser!();
     let mut browser = Browser::start();
     let doc = server_doc();
-    doc.get_or_insert_text("source");
+    seed_main(&doc);
+    browser.apply("a", &server_state(&doc, None));
 
     browser.insert("a", 0, "keep this and drop that");
     for update in browser.outbox("a") {
@@ -321,7 +336,8 @@ fn a_state_vector_asks_for_only_what_is_missing() {
     needs_browser!();
     let mut browser = Browser::start();
     let doc = server_doc();
-    doc.get_or_insert_text("source");
+    seed_main(&doc);
+    browser.apply("a", &server_state(&doc, None));
 
     browser.insert("a", 0, "one");
     for update in browser.outbox("a") {
@@ -329,7 +345,7 @@ fn a_state_vector_asks_for_only_what_is_missing() {
     }
     // The server writes something the browser has not seen.
     {
-        let text = doc.get_or_insert_text("source");
+        let text = main_text(&doc);
         let mut txn = doc.transact_mut();
         text.insert(&mut txn, 3, " two");
     }
@@ -353,7 +369,8 @@ fn concurrent_edits_converge_through_the_server() {
     needs_browser!();
     let mut browser = Browser::start();
     let doc = server_doc();
-    doc.get_or_insert_text("source");
+    seed_main(&doc);
+    browser.apply("a", &server_state(&doc, None));
 
     // A shared starting point, reached the way a second editor reaches it.
     browser.insert("a", 0, "alpha beta");
@@ -368,7 +385,7 @@ fn concurrent_edits_converge_through_the_server() {
     browser.insert("a", 5, " ONE");
     browser.insert("b", 10, " TWO");
     {
-        let text = doc.get_or_insert_text("source");
+        let text = main_text(&doc);
         let mut txn = doc.transact_mut();
         text.insert(&mut txn, 0, "S ");
     }
@@ -397,7 +414,8 @@ fn positions_are_utf16_code_units_on_both_sides() {
     needs_browser!();
     let mut browser = Browser::start();
     let doc = server_doc();
-    doc.get_or_insert_text("source");
+    seed_main(&doc);
+    browser.apply("a", &server_state(&doc, None));
 
     // "a" then an astral emoji (two UTF-16 units) then "b": length 4 in Yjs.
     browser.insert("a", 0, "a\u{1F600}b");
@@ -410,7 +428,7 @@ fn positions_are_utf16_code_units_on_both_sides() {
     // The server inserts at index 3, which is after the emoji and before the
     // "b" in UTF-16 counting -- and after the emoji in yrs's counting too.
     {
-        let text = doc.get_or_insert_text("source");
+        let text = main_text(&doc);
         let mut txn = doc.transact_mut();
         text.insert(&mut txn, 3, "X");
     }
@@ -460,7 +478,8 @@ fn a_restart_keeps_what_was_persisted_and_takes_what_was_missed() {
     needs_browser!();
     let mut browser = Browser::start();
     let doc = server_doc();
-    doc.get_or_insert_text("source");
+    seed_main(&doc);
+    browser.apply("a", &server_state(&doc, None));
 
     browser.insert("a", 0, "before the crash");
     for update in browser.outbox("a") {
@@ -476,7 +495,6 @@ fn a_restart_keeps_what_was_persisted_and_takes_what_was_missed() {
 
     // Up again, from storage alone.
     let doc = server_doc();
-    doc.get_or_insert_text("source");
     server_apply(&doc, &persisted);
     assert_eq!(server_text(&doc), "before the crash");
 
@@ -647,34 +665,6 @@ fn positions_inside_a_mapped_text_are_utf16_code_units() {
         browser.file_text("a", "f1").as_deref(),
         Some("e\u{301}\u{1F600}x!")
     );
-}
-
-/// A browser still running the bundle from before the deploy writes to the
-/// retired `source` text. What it wrote is folded into the main file and its
-/// socket stays open: closing it would lose the rest of what that person is
-/// typing, and they have done nothing wrong.
-#[test]
-fn what_a_browser_on_the_old_bundle_writes_is_not_lost() {
-    needs_browser!();
-    let mut browser = Browser::start();
-    let doc = server_doc();
-    let id = session::put_text(&doc, "main.md", "the server's copy\n");
-    session::set_main(&doc, &id);
-
-    // The old bundle has no maps at all, so it writes where it was taught to.
-    // `text` on a peer that has never seen the directory is the retired text.
-    browser.insert("old", 0, "typed on the old bundle\n");
-    for update in browser.outbox("old") {
-        server_apply(&doc, &update);
-    }
-    let done = session::repair(&doc, &crate::config::Configuration::default().paths());
-    assert!(done.contains(&session::Repair::Folded), "{done:?}");
-    assert_eq!(session::text_of(&doc), "typed on the old bundle\n");
-
-    // And the correction reaches that browser, which then sees one document
-    // rather than two halves of one.
-    browser.apply("old", &server_state(&doc, None));
-    assert_eq!(browser.text("old"), "typed on the old bundle\n");
 }
 
 /// An asset is a path and a digest in the shared document, and nothing else:

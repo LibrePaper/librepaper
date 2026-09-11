@@ -9,10 +9,20 @@ use crate::document::session::{self, Admission, DecodedAdmission};
 fn insertion_update(doc: &yrs::Doc, value: &str) -> Vec<u8> {
     let scratch = session::new_doc();
     session::apply_update(&scratch, &session::encode_state(doc)).expect("copy must apply");
+    let id = if session::main_id(&scratch).is_empty() {
+        let id = session::put_text(&scratch, "main.md", "");
+        session::set_main(&scratch, &id);
+        id
+    } else {
+        session::main_id(&scratch)
+    };
     let before = session::encode_vector(&scratch);
-    let source = scratch.get_or_insert_text(session::SOURCE);
+    let files = scratch.get_or_insert_map(session::FILES);
     let mut txn = scratch.transact_mut();
-    source.insert(&mut txn, 0, value);
+    let yrs::Out::YText(text) = files.get(&txn, &id).expect("main file must exist") else {
+        panic!("main file must be text");
+    };
+    text.insert(&mut txn, 0, value);
     drop(txn);
     session::encode_diff(&scratch, &before).expect("the diff must encode")
 }
@@ -36,9 +46,12 @@ fn files_doc(count: usize) -> yrs::Doc {
 #[test]
 fn decoded_admission_can_be_applied_without_decoding_again() {
     let source = session::new_doc();
+    let id = session::put_text(&source, "main.md", "");
+    session::set_main(&source, &id);
     let update = insertion_update(&source, "hello");
     let decoded = session::decode_update(&update).expect("the update must decode");
     let target = session::new_doc();
+    session::apply_update(&target, &session::encode_state(&source)).expect("base state must apply");
     let admitted = session::admit_decoded_update(&target, decoded, &update, 1024, 200);
     let DecodedAdmission::Fits(decoded) = admitted else {
         panic!("small decoded update should fit");
@@ -62,8 +75,15 @@ fn unknown_roots_still_count_towards_the_byte_ceiling() {
 #[test]
 fn pending_update_is_rehearsed_before_a_predecessor_can_cross_the_limit() {
     let source = session::new_doc();
+    let id = session::put_text(&source, "main.md", "");
+    session::set_main(&source, &id);
+    let files = source.get_or_insert_map(session::FILES);
     let before = session::encode_vector(&source);
-    let text = source.get_or_insert_text(session::SOURCE);
+    let txn = source.transact();
+    let yrs::Out::YText(text) = files.get(&txn, &id).expect("main file must exist") else {
+        panic!("main file must be text");
+    };
+    drop(txn);
     text.insert(&mut source.transact_mut(), 0, &"p".repeat(256));
     let predecessor = session::encode_diff(&source, &before).expect("predecessor must encode");
 

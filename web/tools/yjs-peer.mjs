@@ -24,7 +24,6 @@ function peer(id) {
     const doc = new Y.Doc();
     found = {
       doc,
-      text: doc.getText("source"),
       // The directory: one Y.Text per file under an id, the paths beside it,
       // and which id is the main file. A map of texts is a shape the two
       // implementations have to agree about on its own -- an update that
@@ -49,18 +48,12 @@ function peer(id) {
   return found;
 }
 
-// The text a browser is bound to, which is the main file's -- exactly what
-// `collab.js` resolves. A session the server has not migrated yet has its
-// words in the retired `source` text and no directory at all, so that is the
-// fallback, and it is the same fallback the editor makes during a deploy.
-//
-// Every op below that says "the text" means this one. The tests that were
-// written when a document was one text therefore go on saying what they said,
-// and go on being true: they were never about which Yjs type held the words.
+// The current main file's text, exactly as `collab.js` resolves it.
 function main(found) {
   const id = found.meta.get("main");
   const text = id ? found.files.get(id) : null;
-  return text instanceof Y.Text ? text : found.text;
+  if (!(text instanceof Y.Text)) throw new Error("document has no current main file");
+  return text;
 }
 
 const ops = {

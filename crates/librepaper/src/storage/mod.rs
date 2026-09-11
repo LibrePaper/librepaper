@@ -46,7 +46,6 @@ impl StorageOptions {
 pub async fn open_storage(options: StorageOptions) -> Result<Arc<dyn BlobStore>, String> {
     let paths = options.paths()?;
 
-    refuse_legacy_deployment(&paths.deployment)?;
     create_private_dir(&paths.deployment)?;
     create_private_dir(&paths.objects)?;
     create_private_dir(&paths.state)?;
@@ -62,33 +61,6 @@ fn create_private_dir(path: &std::path::Path) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
             .map_err(|err| format!("could not protect {}: {err}", path.display()))?;
-    }
-    Ok(())
-}
-
-/// A fresh catalogue must never silently reinterpret bytes from the removed
-/// JSON/session layout as an empty deployment. This check intentionally runs
-/// before creating `objects/`, so a refused legacy directory remains intact
-/// and the operator can export or republish it explicitly.
-fn refuse_legacy_deployment(deployment: &std::path::Path) -> Result<(), String> {
-    if !deployment.exists() {
-        return Ok(());
-    }
-    const LEGACY: &[&str] = &[
-        "index.json",
-        "documents",
-        "sources",
-        "history",
-        "sessions",
-        "rooms",
-        "examples",
-    ];
-    if let Some(name) = LEGACY.iter().find(|name| deployment.join(name).exists()) {
-        return Err(format!(
-            "legacy deployment detected at {} ({}); export/republish it into a fresh catalogue",
-            deployment.display(),
-            deployment.join(name).display()
-        ));
     }
     Ok(())
 }
@@ -125,62 +97,4 @@ impl StorageFlags {
             fsync: self.fsync,
         }
     }
-}
-
-/// Move source files from the pre-versioned object layout into the legacy
-/// source key that readers still understand. Local catalogue startup rejects
-/// whole legacy deployments before reaching this shim; it remains useful for
-/// injected/blob-backed compatibility stores and is deliberately independent
-/// of the catalogue's stable `storage_id` layout.
-pub async fn migrate_legacy_source(blobs: &dyn BlobStore) -> usize {
-    const PAGE: usize = 200;
-    let mut after: Option<String> = None;
-    let mut moved = 0;
-    loop {
-        let page = match blobs.list_page("documents/", after.as_deref(), PAGE).await {
-            Ok(page) => page,
-            Err(_) => break,
-        };
-        if page.is_empty() {
-            break;
-        }
-        for object in &page {
-            let Some(slug) = object
-                .key
-                .strip_prefix("documents/")
-                .and_then(|tail| tail.strip_suffix("/source.txt"))
-                .filter(|slug| !slug.is_empty() && !slug.contains('/'))
-            else {
-                continue;
-            };
-            let target = crate::storage::blob::legacy_source_key(slug);
-            let body = match blobs.get(&object.key).await {
-                Ok(body) => body,
-                Err(_) => continue,
-            };
-            // Never replace a source that has already been migrated. Deleting
-            // the old duplicate still makes retries converge to one object.
-            match blobs.get(&target).await {
-                Ok(_) => {}
-                Err(crate::storage::blob::BlobError::NotFound) => {
-                    if blobs.put(&target, body, "text/plain").await.is_err() {
-                        continue;
-                    }
-                }
-                Err(_) => continue,
-            }
-            if blobs
-                .delete(std::slice::from_ref(&object.key))
-                .await
-                .is_ok()
-            {
-                moved += 1;
-            }
-        }
-        after = page.last().map(|object| object.key.clone());
-        if page.len() < PAGE {
-            break;
-        }
-    }
-    moved
 }

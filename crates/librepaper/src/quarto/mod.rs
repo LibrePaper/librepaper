@@ -587,11 +587,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_bundle_defaults_engine_and_asset_role_without_wire_changes() {
-        let old = serde_json::json!({
+    fn bundle_requires_explicit_engine_and_asset_roles() {
+        let current = serde_json::json!({
             "schema": BUNDLE_SCHEMA,
             "render_id": "render-one",
             "document_id": "doc-one",
+            "engine": "quarto",
             "source": {
                 "revision": "",
                 "tree_sha256": null,
@@ -611,18 +612,29 @@ mod tests {
             },
             "artifact": null,
             "cells": [],
-            "assets": [],
+            "assets": [{"path": "plot.png", "sha256": sha256(b""), "mime": "image/png", "size": 0, "role": "display"}],
             "coverage": {"full_artifact": false, "cell_outputs": "none"}
         });
-        let old_bytes = serde_json::to_vec(&old).expect("legacy JSON encodes");
+        let current_bytes = serde_json::to_vec(&current).expect("current JSON encodes");
         let manifest: BundleManifest =
-            serde_json::from_slice(&old_bytes).expect("legacy manifest decodes");
+            serde_json::from_slice(&current_bytes).expect("current manifest decodes");
         assert_eq!(manifest.engine, ExecutionEngine::Quarto);
-        let current_bytes = manifest.encoded().expect("legacy manifest re-encodes");
+        assert_eq!(manifest.assets[0].role, crate::results::AssetRole::Display);
+        let encoded = manifest.encoded().expect("manifest re-encodes");
         let reparsed: BundleManifest =
-            serde_json::from_slice(&current_bytes).expect("re-encoded manifest decodes");
-        assert_eq!(current_bytes, reparsed.encoded().expect("retry is stable"));
-        assert!(!String::from_utf8_lossy(&current_bytes).contains("\"engine\""));
+            serde_json::from_slice(&encoded).expect("re-encoded manifest decodes");
+        assert_eq!(encoded, reparsed.encoded().expect("retry is stable"));
+        assert!(String::from_utf8_lossy(&encoded).contains("\"engine\":\"quarto\""));
+        assert!(String::from_utf8_lossy(&encoded).contains("\"role\":\"display\""));
+        let mut missing_engine = current.clone();
+        missing_engine.as_object_mut().unwrap().remove("engine");
+        assert!(serde_json::from_value::<BundleManifest>(missing_engine).is_err());
+        let mut missing_role = current;
+        missing_role["assets"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("role");
+        assert!(serde_json::from_value::<BundleManifest>(missing_role).is_err());
     }
 
     #[test]

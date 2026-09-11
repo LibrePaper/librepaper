@@ -2,7 +2,6 @@ use super::*;
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::catalog::NewDocument;
 use crate::storage::maintenance::JournalRetirementWorker;
-use sha2::Digest;
 
 #[test]
 fn segment_round_trip_and_digest_validation() {
@@ -36,53 +35,6 @@ fn multi_fragment_segment_rejects_non_hex_aggregate_digest() {
         Segment::new(records),
         Err(JournalError::Corrupt(message)) if message.contains("digest")
     ));
-}
-
-#[test]
-fn legacy_segment_reencoding_preserves_legacy_header_layout() {
-    let payload = b"legacy-state".to_vec();
-    let digest = hex::encode(sha2::Sha256::digest(&payload));
-    let record = JournalRecord {
-        format_version: 1,
-        storage_id: "storage".into(),
-        sequence: 1,
-        retry_id: "retry".into(),
-        epoch: 0,
-        fragment_index: 0,
-        fragment_count: 1,
-        payload,
-        digest: digest.clone(),
-        chunk_digest: digest,
-    };
-    let segment = Segment::new(vec![record]).expect("legacy segment");
-    let encoded = segment.encode().expect("legacy encode");
-    assert_eq!(&encoded[4..6], &1u16.to_le_bytes());
-    assert_eq!(Segment::decode(&encoded).expect("legacy decode"), segment);
-}
-
-#[test]
-fn recovery_base_decoder_accepts_legacy_json_payloads() {
-    let payload = b"legacy-base".to_vec();
-    let mut body = RecoveryBaseBody {
-        format_version: SEGMENT_FORMAT,
-        storage_id: "storage".into(),
-        epoch: 0,
-        sequence: 1,
-        digest: hex::encode(sha2::Sha256::digest(&payload)),
-        payload,
-    };
-    let legacy_json = serde_json::to_vec(&body).expect("legacy JSON");
-    assert_eq!(decode_recovery_base(&legacy_json).expect("decode"), body);
-    assert_ne!(
-        encode_recovery_base(&body).expect("binary").as_slice(),
-        legacy_json
-    );
-    body.format_version = LEGACY_SEGMENT_FORMAT;
-    let legacy_json = serde_json::to_vec(&body).expect("format-1 legacy JSON");
-    assert_eq!(
-        decode_recovery_base(&legacy_json).expect("format-1 decode"),
-        body
-    );
 }
 
 #[test]

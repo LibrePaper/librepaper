@@ -1,5 +1,5 @@
 use super::{
-    Account, Catalog, CatalogError, Checkpoint, Document, JournalPreparation, JournalSegment, Link,
+    Account, Catalog, CatalogError, Checkpoint, JournalPreparation, JournalSegment, Link,
     MutationAuthority, NewDocument, OperationRequest, Rendering, SourceHistoryObject,
     SourceHistoryRecord,
 };
@@ -910,9 +910,10 @@ fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
 }
 
 #[test]
-fn migrations_enable_foreign_keys_and_create_all_tables() {
+fn fresh_schema_enables_foreign_keys_and_creates_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 28);
+    assert_eq!(catalog.schema_version().unwrap(), 1);
+    assert_eq!(catalog.totals().unwrap(), (0, 0));
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection
@@ -2196,216 +2197,6 @@ fn finish_erasure_waits_for_checkpoint_attribution() {
     catalog.finish_erasure("acct-writer").unwrap();
 }
 
-/// Migration 13 is applied in one transaction: a catalogue that crashed
-/// during it comes back at its old version with its rows intact, and the
-/// retry adds the column without inventing attribution for existing rows.
-#[test]
-fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("catalog.db");
-    {
-        // A catalogue one version behind, with a checkpoint written the old
-        // way: a display handle and nothing else.
-        let mut connection = rusqlite::Connection::open(&path).unwrap();
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .unwrap();
-        for &(version, sql) in super::MIGRATIONS {
-            if version > 12 {
-                break;
-            }
-            connection.execute_batch(sql).unwrap();
-            connection
-                .execute_batch(&format!("PRAGMA user_version = {version}"))
-                .unwrap();
-        }
-        connection
-            .execute(
-                "INSERT INTO accounts (id, provider, handle, name, email, first_seen,
-                 last_seen, plan, status, session_generation, erasure_cursor)
-                 VALUES ('acct-1','github','alice','Alice','a@example.test',
-                 '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z','free','active','g1',NULL)",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO documents (slug, storage_id, title, sha, created_at, published_at,
-                 updated_at, example, owner_key, owner_id, status, size, counted_size,
-                 maintenance_reserved, comment_seq, last_auto_checkpoint_at,
-                 pending_publication, last_publication_id, source_format, main)
-                 VALUES ('doc','storage-1','Document','sha','2026-01-01T00:00:00.000Z',
-                 '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0,'',NULL,'active',
-                 10,20,0,0,0,NULL,'','markdown','README.md')",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO checkpoints
-                 (slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,
-                  size,label,git_commit,dirty,changed)
-                 VALUES('doc','old',0,0,'tree-old','','2026-01-01T00:00:00.000Z',
-                 'alice','cli','markdown',7,'','',0,'[]')",
-                [],
-            )
-            .unwrap();
-        // The interrupted attempt: migration 13's statements run and are
-        // rolled back, exactly as a crash before the commit leaves them.
-        let attempt = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .unwrap();
-        attempt.execute_batch(super::MIGRATIONS[12].1).unwrap();
-        attempt.rollback().unwrap();
-        let version: i64 = connection
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 12, "an interrupted migration does not advance");
-    }
-    let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 28);
-    let row = catalog.checkpoint("doc", "old").unwrap().unwrap();
-    assert_eq!(row.by, "alice");
-    assert_eq!(
-        row.by_account, None,
-        "no authoritative record associates a legacy row with an account"
-    );
-    // Reopening an already-migrated catalogue is a no-op.
-    drop(catalog);
-    let reopened = Catalog::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 28);
-}
-
-/// A real main schema-15 database is the legacy case: the Quarto migrations must
-/// derive the typed result metadata from `source_format`, and the metadata
-/// row must follow ordinary source-format updates and document deletion.
-#[test]
-fn result_metadata_migrates_main_schema15_rows_and_tracks_lifecycle() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("catalog-schema15.db");
-    {
-        let connection = rusqlite::Connection::open(&path).unwrap();
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .unwrap();
-        for &(version, sql) in super::MIGRATIONS.iter().take(15) {
-            connection.execute_batch(sql).unwrap();
-            connection
-                .execute_batch(&format!("PRAGMA user_version = {version}"))
-                .unwrap();
-        }
-        connection
-            .execute(
-                "INSERT INTO documents
-                 (slug, storage_id, title, sha, created_at, published_at, updated_at,
-                  example, owner_key, owner_id, status, size, counted_size,
-                  maintenance_reserved, comment_seq, last_auto_checkpoint_at,
-                  pending_publication, last_publication_id, source_format, main)
-                 VALUES ('legacy-quarto','storage-q','Quarto','sha','now','now','now',
-                         0,'',NULL,'active',0,0,0,0,0,NULL,'','quarto','main.qmd')",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO documents
-                 (slug, storage_id, title, sha, created_at, published_at, updated_at,
-                  example, owner_key, owner_id, status, size, counted_size,
-                  maintenance_reserved, comment_seq, last_auto_checkpoint_at,
-                  pending_publication, last_publication_id, source_format, main)
-                 VALUES ('legacy-markdown','storage-m','Markdown','sha','now','now','now',
-                         0,'',NULL,'active',0,0,0,0,0,NULL,'','markdown','README.md')",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute_batch(
-                "INSERT INTO comments
-            (slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,
-             position,outcome,accept_request,revision,resolved_in,point,color)
-            VALUES ('legacy-markdown','old-point',1,'commenting','Note','Alice','alice','web',
-                    'now','','','',3,'','','','',1,'#ABCDEF');",
-            )
-            .unwrap();
-    }
-    let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 28);
-    let point = catalog.comment("legacy-markdown", "old-point").unwrap();
-    assert!(point.point);
-    assert_eq!(point.color.as_deref(), Some("#ABCDEF"));
-    assert_eq!(point.position, Some(3));
-    assert!(point.quarto_output.is_none());
-    let quarto = catalog.document_results_metadata("legacy-quarto").unwrap();
-    assert_eq!(
-        quarto.execution_engine,
-        crate::results::ExecutionEngine::Quarto
-    );
-    assert_eq!(quarto.draft_format, crate::results::DraftFormat::Markdown);
-    let markdown = catalog
-        .document_results_metadata("legacy-markdown")
-        .unwrap();
-    assert_eq!(
-        markdown.execution_engine,
-        crate::results::ExecutionEngine::None
-    );
-    catalog
-        .update_document(&Document {
-            source_format: "quarto".into(),
-            ..catalog.document("legacy-markdown").unwrap().unwrap()
-        })
-        .unwrap();
-    assert_eq!(
-        catalog
-            .document_results_metadata("legacy-markdown")
-            .unwrap()
-            .execution_engine,
-        crate::results::ExecutionEngine::Quarto
-    );
-    for (source, draft) in [
-        ("", "html"),
-        ("typst", "typst"),
-        ("latex", "latex"),
-        ("markdown", "markdown"),
-    ] {
-        catalog
-            .update_document(&Document {
-                source_format: source.into(),
-                ..catalog.document("legacy-markdown").unwrap().unwrap()
-            })
-            .unwrap();
-        let metadata = catalog
-            .document_results_metadata("legacy-markdown")
-            .unwrap();
-        assert_eq!(
-            metadata.execution_engine,
-            crate::results::ExecutionEngine::None
-        );
-        assert_eq!(metadata.draft_format.as_str(), draft);
-    }
-    let snapshot = dir.path().join("results-backup.db");
-    catalog
-        .with_connection(|connection| {
-            connection.execute("VACUUM INTO ?1", [&snapshot.to_string_lossy().to_string()])?;
-            Ok(())
-        })
-        .unwrap();
-    let restored = Catalog::open(&snapshot).unwrap();
-    assert_eq!(
-        restored.document_results_metadata("legacy-quarto").unwrap(),
-        quarto
-    );
-    catalog
-        .with_connection(|connection| {
-            connection.execute("DELETE FROM documents WHERE slug = 'legacy-markdown'", [])?;
-            Ok(())
-        })
-        .unwrap();
-    assert!(matches!(
-        catalog.document_results_metadata("legacy-markdown"),
-        Err(CatalogError::NotFound)
-    ));
-}
-
 /// A local backup is a `VACUUM INTO` image, so the identity distinction has to
 /// survive it: attributed, unattributed and already-erased rows all come back
 /// as they were, and an erasure done after the backup was taken is not undone
@@ -2441,7 +2232,7 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         })
         .unwrap();
     let restored = Catalog::open(&snapshot).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 28);
+    assert_eq!(restored.schema_version().unwrap(), 1);
     assert_eq!(
         attribution_of(&restored, "stable"),
         ("alice".to_string(), Some("acct-writer".to_string()))
@@ -2455,50 +2246,6 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         ("Deleted user".to_string(), None),
         "attribution refused at the write boundary is refused in the image too"
     );
-}
-
-#[test]
-fn quarto_starter_migration_preserves_existing_account_progress() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("catalog-schema19.db");
-    {
-        let connection = rusqlite::Connection::open(&path).unwrap();
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .unwrap();
-        for &(version, sql) in super::MIGRATIONS.iter().take(19) {
-            connection.execute_batch(sql).unwrap();
-            connection
-                .execute_batch(&format!("PRAGMA user_version = {version}"))
-                .unwrap();
-        }
-        connection.execute_batch("INSERT INTO accounts
-            (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation)
-            VALUES ('acct-1', 'github', 'alice', 'Alice', '', 'now', 'now', 'free', 'active', 'generation');
-            INSERT INTO account_examples VALUES ('acct-1', 0, 'finished-copy', 1);
-            INSERT INTO account_examples VALUES ('acct-1', 3, 'pending-copy', 0);").unwrap();
-    }
-    let catalog = Catalog::open(&path).unwrap();
-    catalog.upsert_account(&account()).unwrap();
-    assert_eq!(
-        catalog.pending_account_examples("acct-1").unwrap(),
-        vec![(3, "pending-copy".into())]
-    );
-    catalog.complete_account_example("acct-1", 3).unwrap();
-    catalog.upsert_account(&account()).unwrap();
-    assert!(catalog
-        .pending_account_examples("acct-1")
-        .unwrap()
-        .is_empty());
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    let finished: i64 = connection
-        .query_row(
-            "SELECT completed FROM account_examples WHERE slug='finished-copy'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(finished, 1);
 }
 
 #[test]

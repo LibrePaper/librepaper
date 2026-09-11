@@ -802,37 +802,6 @@ impl Room {
             .await?;
         }
 
-        // Keep this compatibility set for legacy whole-file blobs. New
-        // encoded files are read through recipes and do not enter `blobs/`.
-        let unwritten: Vec<(String, String)> = {
-            let state = self.state.lock().await;
-            bodies
-                .iter()
-                .filter(|(digest, _)| !state.session.blobs_written.contains(*digest))
-                .map(|(digest, body)| (digest.clone(), body.clone()))
-                .filter(|(digest, _)| {
-                    !encoded_sources
-                        .iter()
-                        .any(|(record, _)| record.file_digest.as_str() == digest.as_str())
-                })
-                .collect()
-        };
-        for (digest, body) in &unwritten {
-            self.put_accounted(
-                &crate::storage::blob::blob_key(&self.storage_id, digest),
-                body.clone().into_bytes(),
-                "text",
-                None,
-            )
-            .await?;
-        }
-        {
-            let mut state = self.state.lock().await;
-            for (digest, _) in &unwritten {
-                state.session.blobs_written.insert(digest.clone());
-            }
-        }
-
         // 2. the tree, which names them.
         self.put_accounted(
             &checkpoint_key(&self.storage_id, &sha),
@@ -1149,14 +1118,6 @@ impl Room {
         // what makes a crash leave an unreferenced object rather than a tree
         // pointing at one that is gone.
         self.prune_retained(&tree).await;
-        // The migration's one and only cleanup. A document stored the old way
-        // has a rendered page and a source under the old keys; both are copies
-        // of what is now a checkpoint, and this is the first moment at which
-        // that is true. Before this point nothing has been removed, so a
-        // deployment rolled back before its first checkpoint loses nothing.
-        if let Some(store) = self.store.get() {
-            store.drop_derived(&self.slug).await;
-        }
         if why == "automatic" {
             if let Some(catalog) = self.catalog.get() {
                 touch_auto_checkpoint(catalog, &self.slug, now).await;
@@ -1363,28 +1324,17 @@ impl Room {
                     if !seen.insert(digest.to_owned()) {
                         continue;
                     }
-                    if let Some(record) =
-                        read_source_history_record(catalog, &self.storage_id, digest)
-                            .await
-                            .map_err(|error| error.to_string())?
-                    {
-                        native_digests.insert(digest.to_owned());
-                        objects.push(crate::storage::catalog::SourceHistoryObject {
-                            object_key: record.recipe_key,
-                            kind: "source_recipe".into(),
-                            bytes: record.recipe_bytes,
-                        });
-                        objects.extend(record.objects);
-                    } else {
-                        objects.push(crate::storage::catalog::SourceHistoryObject {
-                            object_key: crate::storage::blob::content_blob_key(
-                                &self.storage_id,
-                                digest,
-                            ),
-                            kind: "source_legacy".into(),
-                            bytes: 0,
-                        });
-                    }
+                    let record = read_source_history_record(catalog, &self.storage_id, digest)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| format!("checkpoint source recipe {digest} is missing"))?;
+                    native_digests.insert(digest.to_owned());
+                    objects.push(crate::storage::catalog::SourceHistoryObject {
+                        object_key: record.recipe_key,
+                        kind: "source_recipe".into(),
+                        bytes: record.recipe_bytes,
+                    });
+                    objects.extend(record.objects);
                 }
                 // Assets are tree references too, but were previously absent
                 // from the read lease. Their recorded byte size is the exact
@@ -1617,23 +1567,18 @@ impl Room {
             if !seen.insert(digest.to_owned()) {
                 continue;
             }
-            if let Some(record) = read_source_history_record(catalog, &self.storage_id, digest)
+            let record = read_source_history_record(catalog, &self.storage_id, digest)
                 .await
                 .map_err(|error| WriteError::Storage(error.to_string()))?
-            {
-                objects.push(crate::storage::catalog::SourceHistoryObject {
-                    object_key: record.recipe_key,
-                    kind: "source_recipe".into(),
-                    bytes: record.recipe_bytes,
-                });
-                objects.extend(record.objects);
-            } else {
-                objects.push(crate::storage::catalog::SourceHistoryObject {
-                    object_key: crate::storage::blob::content_blob_key(&self.storage_id, digest),
-                    kind: "source_legacy".into(),
-                    bytes: 0,
-                });
-            }
+                .ok_or_else(|| {
+                    WriteError::Storage(format!("checkpoint source recipe {digest} is missing"))
+                })?;
+            objects.push(crate::storage::catalog::SourceHistoryObject {
+                object_key: record.recipe_key,
+                kind: "source_recipe".into(),
+                bytes: record.recipe_bytes,
+            });
+            objects.extend(record.objects);
         }
         for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
             if entry.size < 0 {
@@ -2212,84 +2157,9 @@ impl Room {
                     })
                     .map(|object| object.key),
             );
-            if !obsolete.is_empty() && self.blobs.delete(&obsolete).await.is_err() {
-                return;
+            if !obsolete.is_empty() {
+                let _ = self.blobs.delete(&obsolete).await;
             }
-        }
-        let Ok(found) = self
-            .blobs
-            .list(&crate::storage::blob::blob_prefix(&self.storage_id))
-            .await
-        else {
-            return;
-        };
-        let mut gone: Vec<(String, i64)> = found
-            .into_iter()
-            .filter_map(|object| {
-                let digest = object.key.rsplit('/').next()?;
-                if kept.contains(digest) {
-                    None
-                } else {
-                    Some((object.key.clone(), object.size))
-                }
-            })
-            .collect();
-        if gone.is_empty() {
-            return;
-        }
-        // A source edit may have arrived while the object list was read.
-        // Refresh live references at the deletion boundary. Text-object
-        // writers remain excluded by this pass's checkpoint_write ownership;
-        // later edits carry their text in the CRDT and a later checkpoint
-        // rewrites any digest removed from blobs_written below.
-        {
-            let state = self.state.lock().await;
-            let live: HashSet<_> = session::texts_of(&state.session.doc)
-                .into_values()
-                .map(|body| crate::document::store::digest_of(&body))
-                .collect();
-            gone.retain(|(key, _)| {
-                key.rsplit('/')
-                    .next()
-                    .is_none_or(|digest| !live.contains(digest))
-            });
-        }
-        if gone.is_empty() {
-            return;
-        }
-        let digests: std::collections::HashSet<String> = gone
-            .iter()
-            .filter_map(|(key, _)| key.rsplit('/').next().map(str::to_owned))
-            .collect();
-        if let Some(catalog) = self.catalog.get() {
-            // Catalogue rooms must hand deletion to the durable worker.  A
-            // direct object-store delete would race a source-history reader,
-            // and would also release accounting without a durable deletion
-            // record if the process stopped between the two operations.
-            let now = now_unix();
-            for (key, bytes) in &gone {
-                if let Err(error) =
-                    crate::room::catalog::queue_object_delete(catalog, &self.slug, key, *bytes, now)
-                        .await
-                {
-                    eprintln!(
-                        "warning: could not queue obsolete source object {}: {error}",
-                        key
-                    );
-                }
-            }
-            return;
-        }
-        let keys: Vec<String> = gone.into_iter().map(|(key, _)| key).collect();
-        if self.blobs.delete(&keys).await.is_ok() {
-            // Forgotten here too, or a later checkpoint that happens to
-            // reuse this exact digest would believe it is already written
-            // and never restore the object it just deleted.
-            let mut state = self.state.lock().await;
-            state
-                .session
-                .blobs_written
-                .retain(|digest| !digests.contains(digest.as_str()));
         }
     }
 

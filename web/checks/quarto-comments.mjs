@@ -20,7 +20,7 @@ assert.doesNotMatch(reader, /oninspectresult/);
 
 const text = "Previous statistical result";
 const digest = await sha256(text);
-const manifest = { render_id:"original", cells:[{ id:"chapters/paper.qmd#tbl-model", label:"tbl-model", outputs:[{ ordinal:0, kind:"text", text, content_sha256:digest }] }], assets:[] };
+const manifest = { engine:"quarto", render_id:"original", cells:[{ id:"chapters/paper.qmd#tbl-model", label:"tbl-model", outputs:[{ ordinal:0, kind:"text", text, content_sha256:digest }] }], assets:[] };
 const item = resultItems(manifest)[0];
 const anchor = resultAnchor(manifest,item);
 assert.equal(anchor.cell_id,"chapters/paper.qmd#tbl-model");
@@ -35,7 +35,7 @@ await assert.rejects(inspectResult({ resultBundle:async () => ({ ok:true, json:a
 const tampered = structuredClone(manifest);
 tampered.cells[0].outputs[0].text = "Changed result";
 await assert.rejects(inspectResult({ resultBundle:async () => ({ ok:true,json:async () => tampered }) },anchor),/integrity/);
-const image = { render_id:"plot", cells:[{ id:"paper.qmd#fig-main", outputs:[{ordinal:0,kind:"image",asset:"plot.png"}] }],assets:[{path:"plot.png",sha256:digest}] };
+const image = { engine:"quarto", render_id:"plot", cells:[{ id:"paper.qmd#fig-main", outputs:[{ordinal:0,kind:"image",asset:"plot.png"}] }],assets:[{path:"plot.png",sha256:digest,role:"display"}] };
 assert.equal(resultItems(image)[0].digest,digest,"asset identity supports collectors without a redundant output digest");
 assert.deepEqual(resultAnchor(image,resultItems(image)[0],{width:800,height:600}),{
   render_id:"plot",cell_id:"paper.qmd#fig-main",output_ordinal:0,content_sha256:digest,coordinate_system:"percent",width:800,height:600,

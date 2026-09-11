@@ -31,13 +31,7 @@ pub struct BundleManifest {
     pub schema: String,
     pub render_id: String,
     pub document_id: String,
-    /// The execution engine that produced this bundle.  Quarto is the
-    /// historical default, so omitting this field keeps old manifests byte
-    /// compatible when they are retried or repaired.
-    #[serde(
-        default = "default_quarto_engine",
-        skip_serializing_if = "ExecutionEngine::is_quarto"
-    )]
+    /// The execution engine that produced this bundle.
     pub engine: ExecutionEngine,
     pub source: SourceReference,
     pub context: RenderContext,
@@ -157,9 +151,7 @@ pub struct AssetDescriptor {
     pub mime: String,
     pub size: u64,
     /// Whether this object is displayed in the draft or is retained as a
-    /// dependency of the captured result.  Legacy manifests had no role and
-    /// therefore deserialize as display assets.
-    #[serde(default, skip_serializing_if = "AssetRole::is_display")]
+    /// dependency of the captured result.
     pub role: AssetRole,
 }
 
@@ -386,10 +378,6 @@ impl DocumentMetadata {
         }
         Ok(())
     }
-}
-
-fn default_quarto_engine() -> ExecutionEngine {
-    ExecutionEngine::Quarto
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1279,18 +1267,25 @@ fn storage_error(error: BlobError) -> BundleError {
 }
 
 #[cfg(test)]
-mod compatibility_tests {
+mod manifest_contract_tests {
     use super::*;
 
     #[test]
-    fn legacy_manifest_encoding_omits_new_engine_and_role_fields() {
-        // Golden bytes from the v1 serializer before engine and asset-role
-        // metadata existed. Keeping this exact protects immutable object
-        // retries and publication equality checks.
-        let golden = br#"{"schema":"librepaper-quarto-bundle/v1","render_id":"render-one","document_id":"doc-one","source":{"revision":"","tree_sha256":null,"main":"main.qmd","verification":"imported"},"context":{"id":"html","fingerprint_version":1,"computation_sha256":"b23a6a8439c0dde5515893e7c90c1e3233b8616e634470f20dc4928bcf3609bc","format":"html","profiles":[],"parameters_sha256":null},"provenance":{"kind":"imported","quarto_version":"","collector_version":"","policy":"","computation":"no-execution","external_inputs":"unknown","started_at":"","completed_at":""},"artifact":null,"cells":[],"assets":[{"path":"plot.png","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","mime":"image/png","size":0}],"coverage":{"full_artifact":false,"cell_outputs":"none","diagnostics":[]}}"#;
-        let manifest: BundleManifest = serde_json::from_slice(golden).expect("legacy bundle");
+    fn manifest_requires_and_roundtrips_engine_and_asset_role() {
+        let current = br#"{"schema":"librepaper-quarto-bundle/v1","render_id":"render-one","document_id":"doc-one","engine":"quarto","source":{"revision":"","tree_sha256":null,"main":"main.qmd","verification":"imported"},"context":{"id":"html","fingerprint_version":1,"computation_sha256":"b23a6a8439c0dde5515893e7c90c1e3233b8616e634470f20dc4928bcf3609bc","format":"html","profiles":[],"parameters_sha256":null},"provenance":{"kind":"imported","quarto_version":"","collector_version":"","policy":"","computation":"no-execution","external_inputs":"unknown","started_at":"","completed_at":""},"artifact":null,"cells":[],"assets":[{"path":"plot.png","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","mime":"image/png","size":0,"role":"display"}],"coverage":{"full_artifact":false,"cell_outputs":"none","diagnostics":[]}}"#;
+        let manifest: BundleManifest = serde_json::from_slice(current).expect("current bundle");
         assert_eq!(manifest.engine, ExecutionEngine::Quarto);
         assert_eq!(manifest.assets[0].role, AssetRole::Display);
-        assert_eq!(manifest.encoded().expect("encode"), golden);
+        assert_eq!(manifest.encoded().expect("encode"), current);
+
+        let mut missing_engine: serde_json::Value = serde_json::from_slice(current).unwrap();
+        missing_engine.as_object_mut().unwrap().remove("engine");
+        assert!(serde_json::from_value::<BundleManifest>(missing_engine).is_err());
+        let mut missing_role: serde_json::Value = serde_json::from_slice(current).unwrap();
+        missing_role["assets"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("role");
+        assert!(serde_json::from_value::<BundleManifest>(missing_role).is_err());
     }
 }

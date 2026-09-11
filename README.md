@@ -1229,6 +1229,8 @@ make wasm     # all four pinned browser renderers
 make build    # dist/librepaper, with the pages and renderers embedded
 make install  # build and install to ~/.local/bin (override PREFIX= or BINDIR=)
 make test     # rustfmt, clippy and the test suite
+make test-external          # Quarto/R/Python and local-service integrations
+make test-release-workloads # supported limits and diagnostic workloads
 ```
 
 `make build` needs [bun](https://bun.sh) and Node.js. The four browser

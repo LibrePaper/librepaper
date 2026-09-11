@@ -26,7 +26,7 @@
 
 import * as Y from "yjs";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { cacheName, restoreLegacyCache } from "./collab-cache.js";
+import { cacheName } from "./collab-cache.js";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate } from "y-protocols/awareness.js";
 import { authHeaders } from "./api.js";
 import { keyFor } from "./storage.js";
@@ -83,12 +83,6 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
   // name somebody gave it and what is at that name.
   const assets = doc.getMap("assets");
   const meta = doc.getMap("meta");
-  // The text every document was before it was a directory. It is read here and
-  // never written: a session the server has not migrated yet arrives with the
-  // maps empty and this full, and the editor has to show something. The server
-  // migrates it the first time it loads it, and what this browser then sees is
-  // the same words under a name.
-  const legacy = doc.getText("source");
   const awareness = new Awareness(doc);
 
   // The text the editor and the preview are following, and who is following
@@ -103,7 +97,7 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
   function mainText() {
     const id = meta.get("main");
     const text = id ? files.get(id) : null;
-    return text instanceof Y.Text ? text : legacy;
+    return text instanceof Y.Text ? text : null;
   }
 
   function rebind() {
@@ -111,7 +105,7 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
     if (next === bound) return;
     for (const watcher of watchers) {
       bound?.unobserve(watcher);
-      next.observe(watcher);
+      next?.observe(watcher);
     }
     bound = next;
     for (const swap of swaps) swap();
@@ -140,7 +134,6 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
   // blocked -- is not a browser that cannot edit. It simply has nowhere to
   // keep the document, which is exactly what `local` is for saying.
   let store = null;
-  let legacyRestore = null;
   try {
     if (slug && mayEdit && typeof indexedDB !== "undefined") {
       store = new IndexeddbPersistence(cacheName(slug, createdAt), doc);
@@ -537,10 +530,6 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
         Y.applyUpdate(doc, new Uint8Array(await response.arrayBuffer()), "remote");
       } else if (state.update) {
         Y.applyUpdate(doc, decode(state.update), "remote");
-      }
-      if (store && createdAt) {
-        legacyRestore ??= restoreLegacyCache(slug, doc);
-        await legacyRestore;
       }
       joined = true;
       // Whatever this browser has that the server may not: its own unsent

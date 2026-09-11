@@ -6,9 +6,8 @@
 //! and cannot edit; an editor link edits wherever the deployment would let an
 //! anonymous caller edit, and is capped at whatever it would let one comment
 //! or read otherwise; minting a role's link again rotates it; revoking is a
-//! role word; an expired link reads as no link at all; a legacy named grant
-//! is still honoured and still revocable by login, but the share route makes
-//! none any more; only the owner ever sees or changes the sharing; and a
+//! role word; an expired link reads as no link at all; only the owner ever
+//! sees or changes the sharing; and a
 //! transfer moves the quota.
 
 use serde_json::{json, Value};
@@ -16,12 +15,10 @@ use serde_json::{json, Value};
 use super::*;
 use crate::auth::Policy;
 use crate::config::Configuration;
-use crate::document::store::{Grant, Role};
 
-/// The shape most of these need: any signed-in account may publish, so a
-/// legacy grant can still be recorded and honoured, and anyone may comment,
-/// so the ceiling is not what is being measured unless a test narrows it on
-/// purpose.
+/// The shape most of these need: any signed-in account may publish and anyone
+/// may comment, so the ceiling is not what is being measured unless a test
+/// narrows it on purpose.
 async fn open_server() -> TestServer {
     test_server_with(
         Configuration::default(),
@@ -91,31 +88,6 @@ async fn refused_with(base: &str, key: &str, slug: &str) -> u16 {
         .0
 }
 
-/// Writes a legacy named grant straight into the index. The route that used
-/// to make these is gone -- a document names nobody by hand any more, only by
-/// link -- but `role_of` still honours whatever is already on record, and
-/// this is how a test gets one onto a document without a time machine.
-async fn grant_legacy(server: &TestServer, slug: &str, login: &str, role: Role) {
-    server
-        .instance
-        .store
-        .modify(slug, |entry| {
-            let grant = Grant {
-                id: format!("github:{login}"),
-                login: login.to_string(),
-                since: crate::util::timestamp(),
-                name: login.to_string(),
-            };
-            match role {
-                Role::Editor => entry.editors.push(grant),
-                _ => entry.commenters.push(grant),
-            }
-            Ok(())
-        })
-        .await
-        .expect("the legacy grant is recorded");
-}
-
 /// Mints a role's link and returns its key, which is shown once at mint time
 /// and, since the key is stored from here on, every time `sharing_json` is
 /// asked afterward.
@@ -131,112 +103,6 @@ async fn mint(base: &str, login: &str, slug: &str, role: &str, until: &str) -> S
     let key = text(&payload, "key");
     assert!(!key.is_empty(), "no key was returned: {payload}");
     key
-}
-
-/* --------------------------------------------------------- legacy grants */
-
-// A legacy named editor edits and a legacy named commenter cannot -- the same
-// rung, asked of the same function, that a link asks today. Revoking one by
-// login still works, and a second revoke says there was nothing left to
-// revoke rather than reporting success.
-#[tokio::test]
-async fn a_legacy_grant_is_still_honoured_and_revocable_by_login() {
-    let server = open_server().await;
-    let slug = publish_as(&server.url, "alice", "Alice Paper").await;
-    grant_legacy(&server, &slug, "anne", Role::Editor).await;
-    grant_legacy(&server, &slug, "rachel", Role::Commenter).await;
-
-    assert_eq!(
-        role_of(&server.url, &session_as("anne"), "", &slug).await,
-        "editor"
-    );
-    assert_eq!(
-        role_of(&server.url, &session_as("rachel"), "", &slug).await,
-        "commenter"
-    );
-
-    // The editor writes the document through the socket, which is the gate
-    // that used to ask about ownership.
-    let mut editing = dial_websocket_with(
-        &server.url,
-        &slug,
-        &format!("Cookie: {}\r\n", session_as("anne")),
-    )
-    .await
-    .expect("the socket opens");
-    assert_eq!(editing.read().await["type"], "hello");
-    editing.write(json!({"type": "y-open", "vector": ""})).await;
-    assert_eq!(editing.read().await["type"], "y-state");
-
-    // And the commenter's `y-update` is dropped, as a reader's is: the
-    // document does not move.
-    let before = server.instance.rooms.get(&slug).await.source().await;
-    let mut commenting = dial_websocket_with(
-        &server.url,
-        &slug,
-        &format!("Cookie: {}\r\n", session_as("rachel")),
-    )
-    .await
-    .expect("the socket opens");
-    assert_eq!(commenting.read().await["type"], "hello");
-    commenting
-        .write(json!({"type": "y-update", "update": "AAAA", "seq": 1}))
-        .await;
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    assert_eq!(
-        server.instance.rooms.get(&slug).await.source().await,
-        before,
-        "a commenter changed the document"
-    );
-
-    // Revoking is deleting the row, and the person drops back to what the
-    // bare URL gives anybody who is not on the document: nothing.
-    let (status, payload) = share(&server.url, "alice", &slug, json!({"revoke": "anne"})).await;
-    assert_eq!(status, 200, "{payload}");
-    let (status, payload) = get_json_as(
-        &session_as("anne"),
-        &server.url,
-        &format!("/api/documents/{slug}"),
-    )
-    .await;
-    assert_eq!(status, 404, "a revoked editor still reads: {payload}");
-    let (status, payload) = share(&server.url, "alice", &slug, json!({"revoke": "anne"})).await;
-    assert_eq!(status, 400, "{payload}");
-}
-
-// The switches are a ceiling rather than a gate passed once: a legacy grant
-// recorded while a switch was open stops answering when the switch narrows,
-// without anybody having to go back and delete rows.
-#[tokio::test]
-async fn a_legacy_grant_stops_answering_when_the_switch_narrows() {
-    let server = open_server().await;
-    let slug = publish_as(&server.url, "alice", "Alice Paper").await;
-    grant_legacy(&server, &slug, "anne", Role::Editor).await;
-    let entry = server
-        .instance
-        .store
-        .get(&slug)
-        .await
-        .expect("the document");
-    assert_eq!(entry.named_role("github:anne"), Some(Role::Editor));
-
-    // The same entry, read under a deployment that names its publishers and
-    // does not name @anne. She keeps what --commenters still gives her.
-    let narrow = test_server_with(
-        Configuration::default(),
-        Policy::parse("alice"),
-        Policy::parse("anyone"),
-        true,
-    )
-    .await;
-    let ceiling = narrow
-        .instance
-        .ceiling_for(&crate::auth::Identity::github("anne", "anne"));
-    assert_eq!(
-        entry.role_of("anne", "github:anne", "", ceiling, crate::util::now_unix()),
-        Role::Commenter,
-        "a grant the switch forbids was still honoured"
-    );
 }
 
 /* --------------------------------------------------------------- transfer */
@@ -762,8 +628,6 @@ async fn a_comment_records_the_link_it_arrived_on() {
 async fn only_the_owner_may_see_or_change_the_sharing() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
-    grant_legacy(&server, &slug, "anne", Role::Editor).await;
-
     let (status, payload) = get_json_as(
         &session_as("anne"),
         &server.url,
@@ -1262,12 +1126,11 @@ async fn signing_in_adopts_what_the_visitor_published() {
 /* ------------------------------------------------------------ who may read */
 
 // A document answers 404 to a stranger, as an unowned slug does, and hello to
-// whoever is on it -- by a legacy grant or by link.
+// whoever holds its link.
 #[tokio::test]
 async fn a_document_answers_404_to_a_stranger_and_hello_to_whoever_is_on_it() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
-    grant_legacy(&server, &slug, "anne", Role::Commenter).await;
     let key = mint(&server.url, "alice", &slug, "commenter", "").await;
 
     // Every route a stranger could reach it by.
@@ -1293,23 +1156,8 @@ async fn a_document_answers_404_to_a_stranger_and_hello_to_whoever_is_on_it() {
         "a stranger opened a document's socket"
     );
 
-    // And the people on it are let in: by legacy name, and by link.
-    assert_eq!(
-        role_of(&server.url, &session_as("anne"), "", &slug).await,
-        "commenter"
-    );
+    // The link holder is let in.
     assert_eq!(role_of(&server.url, "", &key, &slug).await, "commenter");
-    let (status, source) = get_json_as(
-        &session_as("anne"),
-        &server.url,
-        &format!("/api/documents/{slug}/source"),
-    )
-    .await;
-    assert_eq!(
-        status, 200,
-        "a named reader was refused the source: {source}"
-    );
-    assert_eq!(text(&source, "source"), "<p>Alice Paper</p>");
 }
 
 // The documents origin has no cookie of the reader's -- that is the whole
@@ -1377,50 +1225,6 @@ async fn the_documents_origin_serves_a_page_only_to_a_frame_token() {
     );
 }
 
-// The landing page's filter: the examples, everything the caller holds a role
-// on by a legacy grant, and everything they are a guest of. A document shared
-// by a link nobody has opened is not there, because the link is in a browser
-// rather than on an account.
-#[tokio::test]
-async fn the_listing_shows_named_grants_and_not_unopened_links() {
-    let server = open_server().await;
-    let mine = publish_as(&server.url, "anne", "Anne's Own").await;
-    let shared = publish_as(&server.url, "alice", "Shared By Name").await;
-    let by_link = publish_as(&server.url, "alice", "Shared By Link").await;
-    let hidden = publish_as(&server.url, "alice", "Not Anne's Business").await;
-
-    grant_legacy(&server, &shared, "anne", Role::Commenter).await;
-    mint(&server.url, "alice", &by_link, "commenter", "").await;
-
-    let (status, payload) = post_as(&session_as("anne"), &server.url, "/api/list", json!({})).await;
-    assert_eq!(status, 200, "{payload}");
-    let rows = payload["documents"].as_array().expect("documents");
-    let slugs: Vec<String> = rows.iter().map(|row| text(row, "slug")).collect();
-    assert!(slugs.contains(&mine), "{slugs:?}");
-    assert!(
-        slugs.contains(&shared),
-        "a named grant is not listed: {slugs:?}"
-    );
-    assert!(
-        !slugs.contains(&by_link),
-        "a link grant put a document on an account's list: {slugs:?}"
-    );
-    assert!(!slugs.contains(&hidden), "{slugs:?}");
-
-    // Each row says what is held on it, which is what `librepaper list` marks.
-    let row = rows
-        .iter()
-        .find(|row| text(row, "slug") == shared)
-        .expect("the shared row");
-    assert_eq!(text(row, "role"), "commenter", "{row}");
-    // And no row carries the grants themselves: who else a document is shared
-    // with is the share dialog's answer and the owner's business.
-    assert!(
-        row.get("links").is_none() && row.get("editors").is_none(),
-        "a listing row carried the grants: {row}"
-    );
-}
-
 // `--no-listing` is the operator saying this deployment has no public front
 // page. The reserved examples are the only documents that were ever on one,
 // so under it they are listed to nobody who holds nothing on them.
@@ -1475,7 +1279,7 @@ async fn no_listing_keeps_the_examples_off_a_strangers_list() {
 }
 
 // Sharing is not the text: publishing a revision over a document leaves the
-// links exactly as they were, and the same for a legacy grant.
+// links exactly as they were.
 #[tokio::test]
 async fn publishing_a_revision_keeps_the_links() {
     let server = open_server().await;
@@ -1496,29 +1300,5 @@ async fn publishing_a_revision_keeps_the_links() {
         text(&sharing["links"]["editor"], "key"),
         key,
         "the editor link was dropped by a revision: {sharing}"
-    );
-}
-
-// The same for a legacy grant, which a revision must not drop either.
-#[tokio::test]
-async fn publishing_a_revision_keeps_legacy_grants() {
-    let server = open_server().await;
-    let slug = publish_as(&server.url, "alice", "Alice Paper").await;
-    grant_legacy(&server, &slug, "anne", Role::Editor).await;
-
-    let (status, saved) = post_as(
-        &session_as("alice"),
-        &server.url,
-        "/api/documents",
-        json!({"title": "Alice Paper", "slug": slug, "html": "<p>a revision</p>"}),
-    )
-    .await;
-    assert_eq!(status, 201, "{saved}");
-
-    let sharing = sharing_of(&server.url, "alice", &slug).await;
-    assert_eq!(
-        sharing["legacy"]["editors"].as_array().map(Vec::len),
-        Some(1),
-        "the legacy editor was dropped by a revision: {sharing}"
     );
 }

@@ -11,8 +11,8 @@ use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::storage::blob::{
-    content_prefix, examples_key, history_index_key, legacy_source_key, room_key, room_lock_key,
-    session_key, source_prefix, BlobStore,
+    content_prefix, examples_key, history_index_key, room_key, room_lock_key, session_key,
+    source_prefix, BlobStore,
 };
 use crate::storage::catalog::{Catalog, CatalogError};
 use crate::storage::journal::{finalize_manifest_shard, ManifestShard, Segment};
@@ -235,7 +235,6 @@ pub fn document_object_key_for(slug: &str, storage_id: &str, object_key: &str) -
         room_lock_key(slug),
         session_key(slug),
         history_index_key(slug),
-        legacy_source_key(slug),
         format!("chat/{slug}.json"),
         format!("documents/{slug}"),
     ];
@@ -448,15 +447,6 @@ impl DeletionWorker {
                                          'content/' || d.storage_id || '/chunks/%'
                                       OR p.object_key LIKE
                                          'content/' || d.storage_id || '/recipes/%'
-                                      -- Legacy whole-file source objects have
-                                      -- no native graph edge.  Their queue is
-                                      -- admitted only after the room's
-                                      -- retention scan has resolved retained
-                                      -- trees; the lease/graph predicates
-                                      -- above still close an active read or a
-                                      -- concurrent native publication.
-                                      OR p.object_key LIKE
-                                         'content/' || d.storage_id || '/blobs/%'
                                       OR (p.object_key LIKE
                                          'content/' || d.storage_id || '/assets/%'
                                           AND NOT EXISTS (
@@ -581,7 +571,6 @@ impl DeletionWorker {
                 room_lock_key(&slug),
                 session_key(&slug),
                 history_index_key(&slug),
-                legacy_source_key(&slug),
                 format!("chat/{slug}.json"),
                 format!("documents/{slug}"),
             ];
@@ -1898,7 +1887,7 @@ mod tests {
     }
 
     #[test]
-    fn document_cleanup_accepts_only_owned_legacy_keys() {
+    fn document_cleanup_accepts_only_owned_result_keys() {
         for key in [
             "quarto/blobs/sid/digest",
             "quarto/bundles/sid/paper/render/manifest.json",
@@ -1914,14 +1903,6 @@ mod tests {
         ] {
             assert!(!document_object_key_for("paper", "sid", key));
         }
-        assert!(document_object_key_for("paper", "sid", "sources/paper"));
-        assert!(document_object_key_for(
-            "paper",
-            "sid",
-            "history/paper/old-sha"
-        ));
-        assert!(document_object_key_for("paper", "sid", "rooms/paper.json"));
-        assert!(!document_object_key_for("paper", "sid", "sources/other"));
         assert!(!document_object_key_for(
             "paper",
             "sid",

@@ -19,6 +19,12 @@ let peers = 1;
 let state = { pending: 0, local: false, joined: false };
 const outbox = [];
 
+function currentText() {
+  const value = session?.textOf?.(session.mainId?.());
+  if (!value) throw new Error("document has no current main file");
+  return value;
+}
+
 function send(message) {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(message));
@@ -59,10 +65,10 @@ const ops = {
     return {};
   },
   insert: ({ index, text }) => {
-    session.text.insert(index, text);
+    currentText().insert(index, text);
     return {};
   },
-  text: () => ({ text: session.text.toString() }),
+  text: () => ({ text: currentText().toString() }),
   state: () => ({ ...state, acknowledged, peers }),
   // Pretends the socket dropped, without telling the server: what the peer
   // types from here is held rather than sent.
@@ -87,10 +93,11 @@ const ops = {
   },
   await_text: async ({ contains }) => {
     for (let tries = 0; tries < 200; tries++) {
-      if (session.text.toString().includes(contains)) break;
+      const value = session?.text;
+      if (value?.toString().includes(contains)) return { text: value.toString() };
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    return { text: session.text.toString() };
+    return { text: currentText().toString() };
   },
   stop: () => {
     session?.leave();

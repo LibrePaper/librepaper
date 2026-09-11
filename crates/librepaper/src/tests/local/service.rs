@@ -851,7 +851,7 @@ async fn quarto_calepin_engine_is_rejected_at_admission() {
         "project": "quarto-calepin", "origin": ORIGIN,
         "snapshot": "revision-1", "generation": 1,
         "manifest": manifest_for(&[("paper.qmd", source)]),
-        "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html"}
+        "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html", "execution_mode":"working-tree", "render_scope":"document", "data_inputs":[], "shared_inventory_complete":false}
     });
     let response = post_job(&test, ORIGIN, &token, job, &[("paper.qmd", source)]).await;
     let status = response.status();
@@ -882,7 +882,7 @@ async fn completed_quarto_job_survives_service_restart_without_rerun() {
     let job = json!({
         "protocol": 1, "kind": "quarto", "project": "quarto-project", "origin": ORIGIN,
         "snapshot": "revision-1", "generation": 1, "main": "paper.qmd", "manifest": manifest_for(&[("paper.qmd", source)]),
-        "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html", "policy": "project-defaults", "idempotency_key": "restart-key", "shared_tree_sha256": "a".repeat(64)}
+        "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html", "policy": "project-defaults", "idempotency_key": "restart-key", "shared_tree_sha256": "a".repeat(64), "execution_mode":"working-tree", "render_scope":"document", "data_inputs":[], "shared_inventory_complete":false}
     });
     let response = post_job(
         &first,
@@ -952,7 +952,7 @@ async fn interrupted_quarto_job_is_recovered_as_failed_and_keeps_idempotency() {
     let job = json!({
         "protocol": 1, "kind": "quarto", "project": "quarto-interrupted", "origin": ORIGIN,
         "snapshot": "revision-1", "generation": 1, "main": "paper.qmd", "manifest": manifest_for(&[("paper.qmd", source)]),
-        "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html", "policy": "project-defaults", "idempotency_key": "interrupted-key", "shared_tree_sha256": "b".repeat(64)}
+        "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html", "policy": "project-defaults", "idempotency_key": "interrupted-key", "shared_tree_sha256": "b".repeat(64), "execution_mode":"working-tree", "render_scope":"document", "data_inputs":[], "shared_inventory_complete":false}
     });
     let response = post_job(
         &first,
@@ -1024,7 +1024,7 @@ async fn preview_requires_pairing_binding_scope_and_matching_inputs() {
     let binding = BindingStore::new(test.state_home.path())
         .grant(ORIGIN, "paper", project.path(), "paper.qmd")
         .unwrap();
-    let mut body = json!({"protocol":1,"kind":"quarto","origin":ORIGIN,"project":"other","snapshot":"revision","generation":1,"manifest":manifest_for(&[("paper.qmd", b"old source")]),"quarto":{"binding_id":binding.id,"main":"paper.qmd","format":"html"}});
+    let mut body = json!({"protocol":1,"kind":"quarto","origin":ORIGIN,"project":"other","snapshot":"revision","generation":1,"manifest":manifest_for(&[("paper.qmd", b"old source")]),"quarto":{"binding_id":binding.id,"main":"paper.qmd","format":"html","execution_mode":"working-tree","render_scope":"document","data_inputs":[],"shared_inventory_complete":false}});
     let response = test
         .client
         .post(format!("{}/previews", test.base))
@@ -1073,7 +1073,7 @@ async fn quarto_managed_preview_starts_serves_and_stops() {
     let binding = BindingStore::new(test.state_home.path())
         .grant(ORIGIN, "paper", project.path(), "paper.qmd")
         .unwrap();
-    let body = json!({"protocol":1,"kind":"quarto","origin":ORIGIN,"project":"paper","snapshot":"revision","generation":1,"manifest":manifest_for(&[("paper.qmd", source)]),"quarto":{"binding_id":binding.id,"main":"paper.qmd","format":"html"}});
+    let body = json!({"protocol":1,"kind":"quarto","origin":ORIGIN,"project":"paper","snapshot":"revision","generation":1,"manifest":manifest_for(&[("paper.qmd", source)]),"quarto":{"binding_id":binding.id,"main":"paper.qmd","format":"html","execution_mode":"working-tree","render_scope":"document","data_inputs":[],"shared_inventory_complete":false}});
     let response = test
         .client
         .post(format!("{}/previews", test.base))
@@ -1327,7 +1327,7 @@ async fn hosted_binding_preview_starts_after_workspace_sync() {
     let body = json!({
         "protocol":1,"kind":"quarto","origin":ORIGIN,"project":"paper",
         "snapshot":"revision","generation":1,"manifest":manifest,
-        "quarto":{"binding_id":"hosted","main":"paper.qmd","format":"html"},
+        "quarto":{"binding_id":"hosted","main":"paper.qmd","format":"html","execution_mode":"working-tree","render_scope":"document","data_inputs":[],"shared_inventory_complete":false},
     });
     let response = test
         .client
@@ -1495,7 +1495,7 @@ async fn preview_render_failure_reports_no_page_and_logs_the_error() {
     let body = json!({
         "protocol":1,"kind":"quarto","origin":ORIGIN,"project":"paper",
         "snapshot":"revision","generation":1,"manifest":manifest,
-        "quarto":{"binding_id":"hosted","main":"paper.qmd","format":"html"},
+        "quarto":{"binding_id":"hosted","main":"paper.qmd","format":"html","execution_mode":"working-tree","render_scope":"document","data_inputs":[],"shared_inventory_complete":false},
     });
     let response = test
         .client

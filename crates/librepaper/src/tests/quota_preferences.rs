@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use super::*;
-use crate::document::quota::{QuotaPreferences, RetentionBounds};
+use crate::document::quota::QuotaPreferences;
 use crate::storage::catalog::{Checkpoint, Comment};
 
 const ACCOUNT: &str = "github:vincent";
@@ -454,53 +454,4 @@ async fn thinning_removes_routine_bucket_loser_but_preserves_open_annotation_and
     );
     assert!(catalog.checkpoint(&slug, &protected).unwrap().is_some());
     assert!(catalog.checkpoint(&slug, &newest).unwrap().is_some());
-}
-
-#[tokio::test]
-async fn legacy_documents_do_not_enter_automatic_balanced_pruning() {
-    let server = new_test_server().await;
-    let legacy_slug = publish_and_slug(&server).await;
-    let catalog = server.instance.store.catalog.as_ref().unwrap();
-    catalog
-        .with_connection(|connection| {
-            connection
-                .execute(
-                    "UPDATE document_retention_policy SET mode='legacy' WHERE slug=?1",
-                    [legacy_slug.as_str()],
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
-    let bounds = RetentionBounds {
-        hard_quota: server.instance.store.config.storage.per_owner,
-        ..RetentionBounds::default()
-    };
-    assert_eq!(
-        catalog
-            .schedule_document_balanced(&legacy_slug, crate::util::now_unix(), bounds.clone())
-            .unwrap(),
-        0,
-        "legacy history was silently enrolled in balanced pruning"
-    );
-
-    let (status, document) = post(
-        &server.url,
-        "/api/documents",
-        json!({"title": "New Balanced Paper", "html": "<!doctype html><p>new</p>"}),
-    )
-    .await;
-    assert_eq!(status, 201, "new publication: {document}");
-    let new_slug = text(&document, "slug");
-    let mode: String = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT mode FROM document_retention_policy WHERE slug=?1",
-                    [new_slug.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
-    assert_eq!(mode, "balanced", "new history did not enroll in Balanced");
 }

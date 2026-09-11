@@ -1,9 +1,6 @@
 //! Regression coverage for authentication lifecycle and disclosure edges.
 
-use base64::Engine;
-use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
-use sha2::Sha256;
 use std::sync::Arc;
 
 use super::harness::{
@@ -283,38 +280,6 @@ async fn a_device_code_cannot_be_reapproved_as_another_account() {
     let (status, body) = bearer_get(&server, token, "/api/me").await;
     assert_eq!(status, 200, "approved identity: {body}");
     assert_eq!(body["handle"], "first-approver");
-}
-
-#[tokio::test]
-async fn legacy_visitor_cookie_is_upgraded_without_changing_ownership() {
-    let server = test_server_with(
-        Default::default(),
-        Policy::parse(TEST_PUBLISHER),
-        Policy::parse("anyone"),
-        true,
-    )
-    .await;
-    let token = "0123456789abcdef0123456789abcdef";
-    let mut mac = Hmac::<Sha256>::new_from_slice(TEST_KEY).expect("HMAC key");
-    mac.update(token.as_bytes());
-    let signature =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    let legacy = format!("librepaper_visitor={token}.{signature}");
-    let response = client()
-        .get(format!("{}/", server.url))
-        .header("cookie", legacy)
-        .send()
-        .await
-        .expect("a response");
-    assert_eq!(response.status().as_u16(), 200);
-    let set_cookie = response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .find(|value| value.starts_with("librepaper_visitor="))
-        .expect("upgraded visitor cookie");
-    assert!(set_cookie.starts_with(&format!("librepaper_visitor=v1.{token}.")));
 }
 
 #[tokio::test]

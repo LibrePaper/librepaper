@@ -24,8 +24,6 @@ const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
 import * as Y from ${JSON.stringify(join(root, "web/node_modules/yjs/dist/yjs.mjs"))};
-import { IndexeddbPersistence } from ${JSON.stringify(join(root, "web/node_modules/y-indexeddb/src/y-indexeddb.js"))};
-import { cacheName } from ${JSON.stringify(join(root, "web/src/lib/collab-cache.js"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
 import { undoDepth } from ${JSON.stringify(join(root, "web/node_modules/y-codemirror.next/src/y-undomanager.js"))};
@@ -212,18 +210,11 @@ window.collabCacheCheck = async () => {
     const server = create();
     const main = server.addText("main.md", "server");
     server.setMain(main);
-    const old = create();
-    Y.applyUpdate(old.doc, Y.encodeStateAsUpdate(server.doc));
-    const legacyStore = new IndexeddbPersistence(cacheName(slug), old.doc);
-    await legacyStore.whenSynced;
-    old.textOf(main).insert(0, "unsent ");
-    await legacyStore.destroy();
-
-    const upgraded = await cached("first-creation");
-    await upgraded.start(snapshot(server));
-    const migrated = upgraded.text.toString();
-    upgraded.text.insert(0, "new offline ");
-    upgraded.leave();
+    const opened = await cached("first-creation");
+    await opened.start(snapshot(server));
+    opened.text.insert(0, "new offline ");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    opened.leave();
     const reopened = await cached("first-creation");
     await reopened.start(snapshot(server));
     const recovered = reopened.text.toString();
@@ -235,16 +226,11 @@ window.collabCacheCheck = async () => {
     await recreated.start(snapshot(replacement));
     recreated.text.insert(0, "edited ");
     const result = {
-      migrated, recovered,
+      recovered,
       files: recreated.list().length,
       main: recreated.mainId() === newMain,
       preview: recreated.tree().texts["main.md"],
     };
-    const retained = create();
-    const retainedStore = new IndexeddbPersistence(cacheName(slug), retained.doc);
-    await retainedStore.whenSynced;
-    result.legacy = retained.text.toString();
-    await retainedStore.destroy();
     return result;
   } finally {
     sessions.forEach((value) => value.leave());
@@ -439,13 +425,11 @@ try {
   assert.match(diagnostics.empty, /No warnings or errors/);
   console.log("editor-browser: diagnostics, hints, source links and empty state passed");
   const cache = await evaluate("collabCacheCheck()");
-  assert.equal(cache.migrated, "unsent server");
-  assert.equal(cache.recovered, "new offline unsent server");
+  assert.equal(cache.recovered, "new offline server");
   assert.equal(cache.files, 1);
   assert.equal(cache.main, true);
   assert.equal(cache.preview, "edited reseeded");
-  assert.equal(cache.legacy, "unsent server");
-  console.log("editor-browser: cache upgrade preserves offline edits and isolates recreated documents");
+  console.log("editor-browser: current cache preserves offline edits and isolates recreated documents");
   const vim = await evaluate("vimCheck()");
   assert.equal(vim.panelShown, true, "turning Vim on did not draw its status panel");
   assert.equal(vim.sameViewOn, true, "turning Vim on rebuilt the editor");

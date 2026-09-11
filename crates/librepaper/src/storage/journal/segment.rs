@@ -5,8 +5,6 @@ use super::*;
 
 pub const SEGMENT_FORMAT: u16 = 2;
 
-pub(super) const LEGACY_SEGMENT_FORMAT: u16 = 1;
-
 pub const SEGMENT_MAGIC: &[u8; 4] = b"KJNL";
 
 pub const MAX_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
@@ -111,7 +109,7 @@ impl JournalRecord {
     }
 
     pub fn validate(&self) -> JournalResult<()> {
-        if self.format_version != SEGMENT_FORMAT && self.format_version != LEGACY_SEGMENT_FORMAT {
+        if self.format_version != SEGMENT_FORMAT {
             return Err(JournalError::Invalid(format!(
                 "unsupported record version {}",
                 self.format_version
@@ -185,18 +183,6 @@ impl Segment {
         if self.records.len() > MAX_RECORDS_PER_SEGMENT {
             return Err(JournalError::Limit("too many records in segment".into()));
         }
-        let Some(segment_format) = self.records.first().map(|record| record.format_version) else {
-            return Err(JournalError::Invalid("empty segment".into()));
-        };
-        if self
-            .records
-            .iter()
-            .any(|record| record.format_version != segment_format)
-        {
-            return Err(JournalError::Invalid(
-                "legacy and current records cannot share a segment".into(),
-            ));
-        }
         if self.encoded_len() > MAX_SEGMENT_BYTES {
             return Err(JournalError::Limit("segment is too large".into()));
         }
@@ -221,33 +207,28 @@ impl Segment {
         self.validate()?;
         let mut bytes = Vec::with_capacity(self.encoded_len());
         bytes.extend_from_slice(SEGMENT_MAGIC);
-        let segment_format = self.records[0].format_version;
-        bytes.extend_from_slice(&segment_format.to_le_bytes());
+        bytes.extend_from_slice(&SEGMENT_FORMAT.to_le_bytes());
         bytes.extend_from_slice(&(self.records.len() as u32).to_le_bytes());
         for record in &self.records {
             put_u16(&mut bytes, record.format_version);
             put_bytes_u16(&mut bytes, record.storage_id.as_bytes())?;
             put_u64(&mut bytes, record.sequence);
             put_u64(&mut bytes, record.epoch);
-            if segment_format == SEGMENT_FORMAT {
-                put_u32(&mut bytes, record.fragment_index);
-                put_u32(&mut bytes, record.fragment_count);
-            }
+            put_u32(&mut bytes, record.fragment_index);
+            put_u32(&mut bytes, record.fragment_count);
             put_bytes_u16(&mut bytes, record.retry_id.as_bytes())?;
             let digest = record.digest.as_bytes();
             if digest.len() != 64 {
                 return Err(JournalError::Invalid("digest must be sha256 hex".into()));
             }
             put_bytes_u16(&mut bytes, digest)?;
-            if segment_format == SEGMENT_FORMAT {
-                let chunk_digest = record.chunk_digest.as_bytes();
-                if chunk_digest.len() != 64 {
-                    return Err(JournalError::Invalid(
-                        "chunk digest must be sha256 hex".into(),
-                    ));
-                }
-                put_bytes_u16(&mut bytes, chunk_digest)?;
+            let chunk_digest = record.chunk_digest.as_bytes();
+            if chunk_digest.len() != 64 {
+                return Err(JournalError::Invalid(
+                    "chunk digest must be sha256 hex".into(),
+                ));
             }
+            put_bytes_u16(&mut bytes, chunk_digest)?;
             let payload_len = u32::try_from(record.payload.len())
                 .map_err(|_| JournalError::Limit("payload length overflow".into()))?;
             put_u32(&mut bytes, payload_len);
@@ -277,7 +258,7 @@ impl Segment {
             return Err(JournalError::Corrupt("bad segment magic".into()));
         }
         let segment_format = cursor.u16()?;
-        if segment_format != SEGMENT_FORMAT && segment_format != LEGACY_SEGMENT_FORMAT {
+        if segment_format != SEGMENT_FORMAT {
             return Err(JournalError::Corrupt("unsupported segment version".into()));
         }
         let count = cursor.u32()? as usize;
@@ -296,21 +277,13 @@ impl Segment {
                 .map_err(|_| JournalError::Corrupt("storage id is not utf-8".into()))?;
             let sequence = cursor.u64()?;
             let epoch = cursor.u64()?;
-            let (fragment_index, fragment_count) = if segment_format == SEGMENT_FORMAT {
-                (cursor.u32()?, cursor.u32()?)
-            } else {
-                (0, 1)
-            };
+            let (fragment_index, fragment_count) = (cursor.u32()?, cursor.u32()?);
             let retry_id = String::from_utf8(cursor.bytes_u16()?)
                 .map_err(|_| JournalError::Corrupt("retry id is not utf-8".into()))?;
             let digest = String::from_utf8(cursor.bytes_u16()?)
                 .map_err(|_| JournalError::Corrupt("digest is not utf-8".into()))?;
-            let chunk_digest = if segment_format == SEGMENT_FORMAT {
-                String::from_utf8(cursor.bytes_u16()?)
-                    .map_err(|_| JournalError::Corrupt("chunk digest is not utf-8".into()))?
-            } else {
-                digest.clone()
-            };
+            let chunk_digest = String::from_utf8(cursor.bytes_u16()?)
+                .map_err(|_| JournalError::Corrupt("chunk digest is not utf-8".into()))?;
             let payload_len = cursor.u32()? as usize;
             if payload_len == 0 || payload_len > MAX_RECORD_BYTES {
                 return Err(JournalError::Corrupt("invalid payload length".into()));
@@ -383,20 +356,13 @@ pub(super) fn encoded_record_len(record: &JournalRecord) -> usize {
         + record.storage_id.len()
         + 8
         + 8
-        + if record.format_version == SEGMENT_FORMAT {
-            8
-        } else {
-            0
-        }
+        + 8
         + 2
         + record.retry_id.len()
         + 2
         + 64
-        + if record.format_version == SEGMENT_FORMAT {
-            2 + 64
-        } else {
-            0
-        }
+        + 2
+        + 64
         + 4
         + record.payload.len()
 }

@@ -291,27 +291,17 @@ pub struct QuartoJobOptions {
     /// changes during execution.
     #[serde(default)]
     pub shared_tree_sha256: Option<String>,
-    /// Where the adapter may read inputs.  The omitted value keeps the
-    /// original linked-working-tree protocol byte-for-byte compatible.
-    #[serde(default, skip_serializing_if = "QuartoExecutionMode::is_working_tree")]
+    /// Where the adapter may read inputs.
     pub execution_mode: QuartoExecutionMode,
-    /// Render one bound document or the complete Quarto project.  The
-    /// historical document scope is omitted from legacy JSON.
-    #[serde(default, skip_serializing_if = "QuartoRenderScope::is_document")]
+    /// Render one bound document or the complete Quarto project.
     pub render_scope: QuartoRenderScope,
     /// Local files required by the document in addition to the shared
     /// manifest.  Snapshot mode copies these only after checking their
     /// declared, project-relative paths.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub data_inputs: Vec<String>,
     /// Snapshot mode requires the caller to attest that `manifest` is the
     /// complete shared inventory.  This is intentionally opt-in.
-    #[serde(default, skip_serializing_if = "is_false")]
     pub shared_inventory_complete: bool,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 fn default_quarto_main() -> String {
@@ -361,24 +351,12 @@ pub enum QuartoExecutionMode {
     IsolatedSnapshot,
 }
 
-impl QuartoExecutionMode {
-    pub const fn is_working_tree(&self) -> bool {
-        matches!(self, Self::WorkingTree)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum QuartoRenderScope {
     #[default]
     Document,
     Project,
-}
-
-impl QuartoRenderScope {
-    pub const fn is_document(&self) -> bool {
-        matches!(self, Self::Document)
-    }
 }
 
 impl QuartoJobOptions {
@@ -732,18 +710,23 @@ mod tests {
     }
 
     #[test]
-    fn quarto_options_keep_legacy_wire_shape_and_gate_snapshots() {
+    fn quarto_options_have_an_explicit_current_schema_and_gate_snapshots() {
         let options = QuartoJobOptions {
             binding_id: "binding".into(),
             ..Default::default()
         };
         let encoded = serde_json::to_value(&options).expect("encode");
-        assert!(encoded.get("execution_mode").is_none());
-        assert!(encoded.get("render_scope").is_none());
-        assert!(encoded.get("data_inputs").is_none());
-        assert!(encoded.get("shared_inventory_complete").is_none());
+        assert_eq!(encoded["execution_mode"], "working-tree");
+        assert_eq!(encoded["render_scope"], "document");
+        assert_eq!(encoded["data_inputs"], serde_json::json!([]));
+        assert_eq!(encoded["shared_inventory_complete"], false);
         let decoded: QuartoJobOptions = serde_json::from_value(encoded).expect("decode");
         assert_eq!(decoded.execution_mode, QuartoExecutionMode::WorkingTree);
+
+        let missing = serde_json::json!({
+            "binding_id": "binding", "main": "index.qmd", "format": "html"
+        });
+        assert!(serde_json::from_value::<QuartoJobOptions>(missing).is_err());
 
         let mut snapshot = options;
         snapshot.execution_mode = QuartoExecutionMode::IsolatedSnapshot;

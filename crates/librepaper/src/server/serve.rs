@@ -15,7 +15,7 @@ use crate::server::shell::load_shell;
 use crate::server::Server;
 use crate::storage::journal::JournalStore;
 use crate::storage::maintenance::{DeletionLimits, DeletionWorker, JournalRetirementWorker};
-use crate::storage::{migrate_legacy_source, open_storage, StorageOptions};
+use crate::storage::{open_storage, StorageOptions};
 use crate::util::die;
 
 /// With no --port, serve takes the first free port in this range, so a second
@@ -204,12 +204,6 @@ pub async fn serve(options: ServeOptions) {
             reset_marker.display()
         ));
     }
-    // One pass, and nothing to do on a store that never had the old layout.
-    let moved = migrate_legacy_source(blobs.as_ref()).await;
-    if moved > 0 {
-        println!("  moved {moved} source file(s) to the shared key layout");
-    }
-
     // Claim the port first, so a port already in use costs nothing and the
     // advice below can name the callback URL this run would actually use.
     let listener = listen(options.bind, options.port).await;

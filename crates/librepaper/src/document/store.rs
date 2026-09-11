@@ -33,8 +33,8 @@ use tokio::sync::Mutex;
 use crate::auth::stored_id;
 use crate::config::Configuration;
 use crate::storage::blob::{
-    document_key, document_prefix, examples_key, legacy_source_key, room_key, room_lock_key,
-    source_key, source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
+    document_key, document_prefix, examples_key, room_key, room_lock_key, source_key,
+    source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
 };
 use crate::storage::catalog::{
     Account, Catalog, CatalogError, CheckpointAssetRef, OperationActor, OperationRequest,
@@ -43,7 +43,6 @@ use crate::storage::catalog::{
 use crate::util::new_id;
 use crate::util::{now_unix, parse_timestamp, timestamp};
 
-const MAX_GRANTS_PER_RESULT: i64 = 256;
 const MAX_LINKS_PER_RESULT: i64 = 16;
 const MAX_GUESTS_PER_RESULT: i64 = 256;
 
@@ -255,13 +254,6 @@ pub struct IndexEntry {
     /// file such a document has.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub main: String,
-    /// The accounts this document names, by role. A grant by name is keyed on
-    /// the GitHub numeric id, exactly as ownership is, so it survives a rename
-    /// and follows the person across browsers.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub editors: Vec<Grant>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub commenters: Vec<Grant>,
     /// The links that carry a role: at most one per role, since minting a
     /// role's link again rotates it rather than adding a second one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -287,33 +279,6 @@ pub struct Guest {
     pub link: String,
 }
 
-/// One account named on a document. The id is what the grant is matched on;
-/// `login` holds the handle -- a GitHub login, or a Google account's verified
-/// email -- which is what the owner typed and what a revoke names; `name` is
-/// what the dialog shows to everyone else. The field is still called `login`
-/// because it is a serialised name in every index already written.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Grant {
-    pub id: String,
-    pub login: String,
-    #[serde(default)]
-    pub since: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
-}
-
-impl Grant {
-    /// What to show for this grant: the recorded name, or the handle for a
-    /// grant from before names were recorded, which is a GitHub login.
-    pub fn shown(&self) -> &str {
-        if self.name.is_empty() {
-            &self.login
-        } else {
-            &self.name
-        }
-    }
-}
-
 /// One link that carries a role. `hash` is the SHA-256 of the key in hex, and
 /// `until` is an expiry -- empty for none -- past which the link answers as no
 /// link at all. `key` is the key itself, kept so the owner can copy the link
@@ -327,7 +292,6 @@ impl Grant {
 pub struct LinkGrant {
     pub hash: String,
     pub role: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
@@ -430,20 +394,8 @@ impl IndexEntry {
             return Role::Owner;
         }
         let mut role = Role::Reader;
-        // A named editor whom `--publishers` no longer allows keeps whatever
-        // `--commenters` still gives them, rather than dropping to a reader.
-        // This is legacy: no document is given a new named grant any more,
-        // but one recorded before links existed is still honoured exactly
-        // this way.
-        if let Some(named) = self.named_role(caller_id) {
-            if named == Role::Editor && ceiling.edit {
-                role = role.max(Role::Editor);
-            } else if ceiling.comment {
-                role = role.max(Role::Commenter);
-            }
-        }
-        // A link asks the same ceiling a named grant does, because a link is
-        // not a different kind of caller, it is a caller with no name: an
+        // A link asks the deployment ceiling because it is a caller with no
+        // name: an
         // editor link edits under exactly the switch that lets an anonymous
         // caller edit at all, and a reader link never has to ask, since
         // reading is the rung everybody who reaches the document already
@@ -465,25 +417,6 @@ impl IndexEntry {
         role
     }
 
-    /// The role this document names an account for, if any. A grant by name
-    /// never matches a caller with no account, whose id is empty. A grant
-    /// recorded before providers existed holds a bare id and means a GitHub
-    /// account, and is qualified before the comparison the same way ownership
-    /// is.
-    pub fn named_role(&self, caller_id: &str) -> Option<Role> {
-        if caller_id.is_empty() {
-            return None;
-        }
-        let names = |grants: &[Grant]| grants.iter().any(|grant| stored_id(&grant.id) == caller_id);
-        if names(&self.editors) {
-            return Some(Role::Editor);
-        }
-        if names(&self.commenters) {
-            return Some(Role::Commenter);
-        }
-        None
-    }
-
     /// The role a link carries, when the document knows its hash and it has
     /// not expired. Revoking is deleting the row; an expired link answers the
     /// same way a revoked one does, as no link at all.
@@ -503,9 +436,8 @@ impl IndexEntry {
             .find(|link| link.hash == link_hash && link.live_at(now))
     }
 
-    /// The link that carries a role, live or not. The dead one still matters:
-    /// it is what lets the dialog say "expired" or "legacy link, reset to get
-    /// a new one" instead of just "off".
+    /// The link that carries a role, live or not. The dead one still matters
+    /// because it lets the dialog report that the link expired.
     pub fn link_for(&self, role: Role) -> Option<&LinkGrant> {
         self.links.iter().find(|link| link.granted() == role)
     }
@@ -521,8 +453,7 @@ impl IndexEntry {
     }
 
     /// Removes the link carrying this role, if there is one. Returns whether
-    /// a row actually went, the way `revoke_from` does, so a revoke that
-    /// matched nothing can say so.
+    /// a row actually went so a revoke that matched nothing can say so.
     pub fn drop_link(&mut self, role: Role) -> bool {
         let before = self.links.len();
         self.links.retain(|link| link.granted() != role);
@@ -544,16 +475,14 @@ impl IndexEntry {
         self.guests.retain(|guest| live.contains(&guest.link));
     }
 
-    /// Whether a caller is on this document at all: its owner, named in any
-    /// role, or holding a live link.
+    /// Whether a caller is on this document at all: its owner or the holder of
+    /// a live link.
     pub fn names(&self, owner_key: &str, caller_id: &str, link_hash: &str, now: i64) -> bool {
-        self.owned_by(owner_key, caller_id)
-            || self.named_role(caller_id).is_some()
-            || self.link_role(link_hash, now).is_some()
+        self.owned_by(owner_key, caller_id) || self.link_role(link_hash, now).is_some()
     }
 
-    /// Whether a caller may read this document at all: its owner, anyone on
-    /// it by a legacy grant, and whoever holds a live link, since a read link
+    /// Whether a caller may read this document at all: its owner and whoever
+    /// holds a live link, since a read link
     /// is the least a link carries. The URL alone opens nothing for anybody
     /// else -- a link is the whole of sharing, and the bare slug is not one.
     /// The reserved examples are the exception: they are there to be read.
@@ -1345,10 +1274,7 @@ impl Store {
                 }
             }
         };
-        match self.blobs.get(&source_key(&identity, &digest)).await {
-            Err(BlobError::NotFound) => self.blobs.get(&legacy_source_key(slug)).await,
-            other => other,
-        }
+        self.blobs.get(&source_key(&identity, &digest)).await
     }
 
     pub async fn read(&self, slug: &str, digest: &str) -> Result<Vec<u8>, BlobError> {
@@ -1445,8 +1371,6 @@ impl Store {
             publisher_name: owner_name,
             source_format: v.source_format,
             main: v.main,
-            editors: shared.editors,
-            commenters: shared.commenters,
             links: shared.links,
             guests: shared.guests,
         };
@@ -1957,20 +1881,6 @@ impl Store {
             .entries
             .insert(v.slug, entry.clone());
         Ok(entry)
-    }
-
-    /// Removes what the old layout kept: the rendered HTML of every version,
-    /// and the sources beside them. Called once a document's source is durable
-    /// as a checkpoint, and never before, so the copy that goes is a copy and
-    /// not the document. A failure leaves objects behind for a later pass and
-    /// is not worth reporting: nothing depends on them any more.
-    pub async fn drop_derived(&self, slug: &str) {
-        // The content-addressed catalogue layout has no disposable derived
-        // subtree: trees, blobs, assets, and renderings share one identity
-        // prefix and are reclaimed only after a reference scan.  The sole
-        // obsolete object this compatibility hook may remove is the old,
-        // unversioned source object.
-        let _ = self.blobs.delete(&[legacy_source_key(slug)]).await;
     }
 
     /// Records what a document's session and history now cost, and -- when a
@@ -2560,7 +2470,6 @@ impl Store {
                     crate::storage::blob::session_key(slug),
                     crate::storage::blob::history_index_key(slug),
                     format!("chat/{slug}.json"),
-                    legacy_source_key(slug),
                     format!("documents/{slug}"),
                 ]
                 .into_iter()
@@ -2650,10 +2559,6 @@ impl Store {
                 let _ = self.blobs.delete(&sources).await;
             }
         }
-        // Alone: on a directory store the versioned sources live under this
-        // key's own name, so removing it is a request to remove a directory,
-        // and a store that refuses would take the rest of a batch down with it.
-        let _ = self.blobs.delete(&[legacy_source_key(slug)]).await;
         // The history and the live document go with the document, which is
         // what destroy has promised in the README since before there was a
         // history to delete.
@@ -2979,30 +2884,6 @@ fn load_catalog_entry_sql(
                 entry.publisher_name = name;
             }
         }
-        let mut grants = connection.prepare(
-            "SELECT g.role, g.account_id, a.handle, a.name, g.since
-             FROM grants g JOIN accounts a ON a.id = g.account_id
-             WHERE g.slug = ?1 ORDER BY g.account_id LIMIT ?2",
-        )?;
-        let rows = grants.query_map(rusqlite::params![slug, MAX_GRANTS_PER_RESULT], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                Grant {
-                    id: row.get(1)?,
-                    login: row.get(2)?,
-                    name: row.get(3)?,
-                    since: row.get(4)?,
-                },
-            ))
-        })?;
-        for row in rows {
-            let (role, grant) = row?;
-            match role.as_str() {
-                "editor" => entry.editors.push(grant),
-                "commenter" => entry.commenters.push(grant),
-                _ => {}
-            }
-        }
         if decrypt_links {
             let mut links = connection.prepare(
                 "SELECT role, hash, sealed, label, budget, since, until
@@ -3154,39 +3035,6 @@ fn update_catalog_entry_access_sql(
             until: link.until.clone(),
         });
     }
-    let mut grants = Vec::with_capacity(entry.editors.len() + entry.commenters.len());
-    for (role, rows) in [("editor", &entry.editors), ("commenter", &entry.commenters)] {
-        for grant in rows {
-            let provider = grant
-                .id
-                .split_once(':')
-                .map(|part| part.0)
-                .unwrap_or("github");
-            catalog.upsert_account(&Account {
-                id: grant.id.clone(),
-                provider: provider.into(),
-                handle: grant.login.clone(),
-                name: grant.shown().to_string(),
-                email: String::new(),
-                first_seen: grant.since.clone(),
-                last_seen: grant.since.clone(),
-                plan: "default".into(),
-                status: "active".into(),
-                session_generation: if cfg!(test) {
-                    "test-session-generation".into()
-                } else {
-                    random_storage_id()
-                },
-                erasure_cursor: None,
-            })?;
-            grants.push(crate::storage::catalog::Grant {
-                slug: entry.slug.clone(),
-                role: role.to_string(),
-                account_id: grant.id.clone(),
-                since: grant.since.clone(),
-            });
-        }
-    }
     let guests = entry
         .guests
         .iter()
@@ -3200,7 +3048,7 @@ fn update_catalog_entry_access_sql(
     catalog
         .update_document_access(
             &document,
-            &grants,
+            &[],
             &links,
             &guests,
             actor.map(|actor| {

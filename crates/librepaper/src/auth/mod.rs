@@ -365,10 +365,9 @@ pub fn verifies(key: &[u8], purpose: &str, payload: &str, signature: &str) -> bo
 /// deliberately rejects credentials from before purpose separation: accepting
 /// those as a fallback would preserve their cross-use vulnerability.
 ///
-/// Version two adds the picture. A v1 credential is still read, as the same
-/// identity with no picture, so nobody is signed out the day this ships. The
-/// version is part of the signed purpose, so a v1 payload relabelled as v2
-/// fails its signature instead of being parsed with its fields shifted.
+/// Version two carries the complete current identity envelope. The version is
+/// part of the signed purpose, so a payload relabelled with another version
+/// fails its signature instead of being parsed with shifted fields.
 pub fn sign_session(key: &[u8], id: &Identity, expiry_unix: i64) -> String {
     sign_identity(key, "session", id, expiry_unix)
 }
@@ -407,17 +406,13 @@ pub fn read_device(key: &[u8], token: &str) -> Identity {
 }
 
 fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
-    let (version, versioned) = if let Some(rest) = credential.strip_prefix("v2.") {
-        (2, rest)
-    } else if let Some(rest) = credential.strip_prefix("v1.") {
-        (1, rest)
-    } else {
+    let Some(versioned) = credential.strip_prefix("v2.") else {
         return Identity::anonymous();
     };
     let Some((payload, signature)) = versioned.split_once('.') else {
         return Identity::anonymous();
     };
-    if !verifies(key, &format!("{purpose}-v{version}"), payload, signature) {
+    if !verifies(key, &format!("{purpose}-v2"), payload, signature) {
         return Identity::anonymous();
     }
     let Ok(raw) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
@@ -436,18 +431,9 @@ fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
     if now_unix() >= expiry {
         return Identity::anonymous();
     }
-    let (provider, handle, id, generation, picture, name) = if version == 2 {
-        let fields: Vec<&str> = front.splitn(6, '|').collect();
-        let [provider, handle, id, generation, picture, name] = fields[..] else {
-            return Identity::anonymous();
-        };
-        (provider, handle, id, generation, picture, name)
-    } else {
-        let fields: Vec<&str> = front.splitn(5, '|').collect();
-        let [provider, handle, id, generation, name] = fields[..] else {
-            return Identity::anonymous();
-        };
-        (provider, handle, id, generation, "", name)
+    let fields: Vec<&str> = front.splitn(6, '|').collect();
+    let [provider, handle, id, generation, picture, name] = fields[..] else {
+        return Identity::anonymous();
     };
     if !matches!(provider, PROVIDER_GITHUB | PROVIDER_GOOGLE)
         || handle.is_empty()
@@ -480,36 +466,11 @@ pub fn sign_visitor(key: &[u8], token: &str) -> String {
     format!("v1.{token}.{}", sign(key, "visitor-v1", token))
 }
 
-/// The token a visitor cookie carries, or "" when the cookie is forged,
-/// damaged, or in the old unsigned form a browser issued by an earlier server
-/// might still hold. Treating that old form as absent means such a browser is
-/// simply reissued a signed cookie, rather than kept on a value nothing here
-/// can verify.
+/// The token a visitor cookie carries, or "" when the cookie is forged or
+/// damaged.
 pub fn read_visitor(key: &[u8], cookie: &str) -> String {
-    // Preserve ownership for anonymous browsers issued before v1. That format
-    // only ever carried a 128-bit lowercase hex token. Enforcing its shape
-    // excludes legacy sessions and frame capabilities from this migration.
     let Some(versioned) = cookie.strip_prefix("v1.") else {
-        let Some((token, signature)) = cookie.split_once('.') else {
-            return String::new();
-        };
-        if token.len() != 32
-            || !token
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return String::new();
-        }
-        let Ok(given) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(signature) else {
-            return String::new();
-        };
-        let mut mac = HmacSha256::new_from_slice(key).expect("HMAC takes any key length");
-        mac.update(token.as_bytes());
-        return if mac.verify_slice(&given).is_ok() {
-            token.to_string()
-        } else {
-            String::new()
-        };
+        return String::new();
     };
     let Some((token, signature)) = versioned.split_once('.') else {
         return String::new();
@@ -535,17 +496,13 @@ pub fn link_sealing_key_file(
 }
 
 /// Versioned local link-key ring. The first key encrypts new envelopes; the
-/// remainder are retained for interrupted rotations and backup restore. A
-/// legacy single hex key is accepted as a one-entry ring.
+/// remainder are retained for interrupted rotations and backup restore.
 pub fn link_sealing_keyring_file(
     path: &std::path::Path,
     catalog_nonempty: bool,
 ) -> Result<Vec<Vec<u8>>, String> {
     match std::fs::read(path) {
         Ok(raw) => {
-            if let Some(key) = decode_session_key(&raw) {
-                return Ok(vec![key]);
-            }
             let value: serde_json::Value = serde_json::from_slice(&raw).map_err(|err| {
                 format!("the link keyring at {} is invalid: {err}", path.display())
             })?;

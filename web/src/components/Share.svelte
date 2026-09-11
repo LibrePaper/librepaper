@@ -95,7 +95,6 @@
   const createLink = (role) => change(linkChange(role), "Access link created.");
   const resetLink = (role) => change(linkChange(role), "Access link reset. The old link no longer works.");
   const revokeLink = (role) => change({ revoke: role }, "");
-  const revokePerson = (person) => change({ revoke: person.login }, `Access removed for ${person.login}.`);
 
   async function copy(value, label = "Link copied.") {
     try {
@@ -126,8 +125,8 @@
               <p class="panel-meta min-w-0 truncate">
                 {link.label || "Unlabelled"} · {link.until ? `Expires ${dateOf(link.until)}` : "No expiry"}{link.budget == null ? "" : ` · ${link.budget} comments/hour`}
               </p>
-            {:else if link}
-              <p class="panel-muted">{link.expired ? "This link has expired." : "This is an older link format."}</p>
+            {:else if link?.expired}
+              <p class="panel-muted">This link has expired.</p>
             {/if}
             <div class="share-fields">
               <label class="share-setting panel-meta">Label
@@ -158,21 +157,6 @@
         {/each}
       </div>
 
-      {#if sharing.legacy}
-        <section class="share-section space-y-2" aria-labelledby="legacy-heading">
-          <h3 id="legacy-heading" class="panel-section-title">People (legacy)</h3>
-          <div class="share-people" aria-label="Legacy people with access">
-            {#each [...(sharing.legacy.editors || []).map((person) => ({ ...person, role: "Can edit" })), ...(sharing.legacy.commenters || []).map((person) => ({ ...person, role: "Can comment" }))] as person}
-              <div class="share-person">
-                <span class="min-w-0 flex-1 truncate" title={person.login}>{person.name || person.login}</span>
-                <span class="panel-muted">{person.role}</span>
-                <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={busy}
-                  aria-label="Remove access for {person.login}" onclick={() => revokePerson(person)}>Remove</button>
-              </div>
-            {/each}
-          </div>
-        </section>
-      {/if}
     {/if}
     {#if error}
       <p class="text-error-600-400" role="alert">{error}</p>

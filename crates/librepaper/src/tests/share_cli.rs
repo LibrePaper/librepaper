@@ -91,25 +91,6 @@ fn a_role_with_no_link_is_off() {
     assert!(!row.contains("http"), "{row}");
 }
 
-/// A link written before the key was kept has an empty `key`: the document
-/// remembers it existed but cannot show it, so the row says to reset it
-/// rather than printing an empty link.
-#[test]
-fn a_keyless_legacy_link_says_to_reset_it() {
-    let link = json!({
-        "key": "",
-        "url": "",
-        "since": "2025-01-01T00:00:00Z",
-        "until": "",
-        "expired": false,
-    });
-    let row = crate::cli::format_role_row("editor", &link, "https://example.com");
-    assert!(
-        row.contains("reset to get a new one"),
-        "a keyless link should point at resetting it: {row}"
-    );
-}
-
 /* --------------------------------------------------------------- listing */
 
 /// With no flags, `librepaper share` prints the slug, the owner's own link,
@@ -143,31 +124,6 @@ fn the_no_flag_listing_prints_the_owner_then_roles_in_order() {
     assert!(lines[read_line].contains("off"));
     assert!(lines[comment_line].contains("expired"));
     assert!(lines[edit_line].contains("https://example.com/docs/c9k#k=ek"));
-}
-
-/// Legacy named people are printed under their own heading, and only when
-/// the document actually has any: a document with no legacy grants at all
-/// should not print an empty heading.
-#[test]
-fn legacy_people_print_under_their_own_heading_only_when_present() {
-    let with_legacy = json!({
-        "slug": "c9k",
-        "links": {"reader": Value::Null, "commenter": Value::Null, "editor": Value::Null},
-        "legacy": {
-            "editors": [{"login": "alice", "since": "2025-05-01T00:00:00Z"}],
-            "commenters": [],
-        },
-    });
-    let lines = crate::cli::sharing_report_lines(&with_legacy, "https://example.com", "c9k");
-    assert!(lines.iter().any(|l| l.contains("people (legacy)")));
-    assert!(lines.iter().any(|l| l.contains("@alice")));
-
-    let without_legacy = json!({
-        "slug": "c9k",
-        "links": {"reader": Value::Null, "commenter": Value::Null, "editor": Value::Null},
-    });
-    let lines = crate::cli::sharing_report_lines(&without_legacy, "https://example.com", "c9k");
-    assert!(!lines.iter().any(|l| l.contains("legacy")));
 }
 
 /* --------------------------------------------------------------- --key */

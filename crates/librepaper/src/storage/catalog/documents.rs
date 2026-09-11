@@ -52,10 +52,7 @@ impl Catalog {
         })
     }
 
-    /// Read the explicit result metadata.  Migration 18 backfills this row
-    /// for every legacy document, so callers do not need to guess from a
-    /// missing value.  The old `source_format` column remains authoritative
-    /// for compatibility routes and is deliberately not renamed.
+    /// Read the explicit result metadata stored for every document.
     pub fn document_results_metadata(
         &self,
         slug: &str,

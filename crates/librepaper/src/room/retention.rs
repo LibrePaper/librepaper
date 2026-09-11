@@ -152,16 +152,13 @@ mod tests {
     use super::*;
     use crate::storage::blob::{BlobInfo, BlobResult, FsStore};
     use crate::storage::catalog::{Catalog, CheckpointAssetRef, NewDocument};
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::atomic::AtomicUsize;
 
     struct CountedStore {
         inner: FsStore,
         reads: AtomicUsize,
         active: AtomicUsize,
         peak: AtomicUsize,
-        pause_text_listing: AtomicBool,
-        reached: tokio::sync::Notify,
-        resume: tokio::sync::Notify,
     }
 
     struct Reading<'a>(&'a AtomicUsize);
@@ -188,12 +185,6 @@ mod tests {
             self.inner.delete(keys).await
         }
         async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
-            if prefix == crate::storage::blob::blob_prefix("doc")
-                && self.pause_text_listing.swap(false, Ordering::Relaxed)
-            {
-                self.reached.notify_one();
-                self.resume.notified().await;
-            }
             self.inner.list(prefix).await
         }
         async fn swap(&self, key: &str, body: Vec<u8>, version: &str) -> BlobResult<BlobVersion> {
@@ -221,9 +212,6 @@ mod tests {
             reads: AtomicUsize::new(0),
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
-            pause_text_listing: AtomicBool::new(false),
-            reached: tokio::sync::Notify::new(),
-            resume: tokio::sync::Notify::new(),
         });
         let catalog = Arc::new(Catalog::open_in_memory().unwrap());
         catalog
@@ -323,14 +311,11 @@ mod tests {
         assert_eq!(room.state.lock().await.manifest.checkpoints.len(), 64);
         let _writer = room.checkpoint_write.lock().await;
         room.checkpointing.store(1, Ordering::Relaxed);
-        let unused_text = crate::storage::blob::blob_key(
-            "doc",
-            &crate::document::store::digest_of("unreferenced"),
-        );
         let unused_asset = crate::storage::blob::asset_key("doc", "unused-asset");
-        for key in [&unused_text, &unused_asset] {
-            blobs.put(key, b"unreferenced".to_vec(), "").await.unwrap();
-        }
+        blobs
+            .put(&unused_asset, b"unreferenced".to_vec(), "")
+            .await
+            .unwrap();
         let before = catalog.connection_operations.load(Ordering::Relaxed);
         blobs.reads.store(0, Ordering::Relaxed);
         blobs.peak.store(0, Ordering::Relaxed);
@@ -352,16 +337,9 @@ mod tests {
         );
         assert!(blobs.exists(&text_key).await.unwrap());
         assert!(blobs.exists(&asset_key).await.unwrap());
-        // Catalogue pruning is a durable handoff. The room leaves both
-        // objects charged until the deletion worker confirms their physical
-        // removal; this pass only proves that the queue was populated.
-        assert!(blobs.exists(&unused_text).await.unwrap());
+        // Catalogue pruning is a durable handoff. The room leaves the object
+        // charged until the deletion worker confirms physical removal.
         assert!(blobs.exists(&unused_asset).await.unwrap());
-        assert!(catalog
-            .due_deletes(crate::util::now_unix(), 100)
-            .unwrap()
-            .iter()
-            .any(|pending| pending.object_key == unused_text));
         assert!(catalog
             .due_deletes(crate::util::now_unix(), 100)
             .unwrap()
@@ -374,45 +352,17 @@ mod tests {
         )
         .unwrap();
         worker.run_once(crate::util::now_unix()).await.unwrap();
-        assert!(!blobs.exists(&unused_text).await.unwrap());
         assert!(!blobs.exists(&unused_asset).await.unwrap());
 
         blobs
-            .put(&unused_text, b"unreferenced".to_vec(), "")
+            .put(&unused_asset, b"possibly referenced".to_vec(), "")
             .await
             .unwrap();
-        blobs.pause_text_listing.store(true, Ordering::Relaxed);
-        let pruning = tokio::spawn({
-            let room = room.clone();
-            async move { room.prune_retained(&history::Tree::default()).await }
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(2), blobs.reached.notified())
-            .await
-            .unwrap();
-        room.set_source("unreferenced", "markdown").await.unwrap();
-        blobs.resume.notify_one();
-        pruning.await.unwrap();
-        assert!(
-            blobs.exists(&unused_text).await.unwrap(),
-            "source edits during listing are protected by the final live check"
-        );
-        room.set_source("retained text", "markdown").await.unwrap();
-
-        for key in [&unused_text, &unused_asset] {
-            blobs
-                .put(key, b"possibly referenced".to_vec(), "")
-                .await
-                .unwrap();
-        }
         blobs
             .delete(&[checkpoint_key("doc", "event-0")])
             .await
             .unwrap();
         room.prune_retained(&history::Tree::default()).await;
-        assert!(
-            blobs.exists(&unused_text).await.unwrap(),
-            "incomplete reference evidence must retain text"
-        );
         assert!(
             blobs.exists(&unused_asset).await.unwrap(),
             "incomplete reference evidence must retain assets"

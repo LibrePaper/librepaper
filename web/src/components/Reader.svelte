@@ -91,17 +91,6 @@
 
   const SLUG = location.pathname.split("/").pop();
 
-  // A one-time migration: the old distribution chooser kept its choice under
-  // this key, in this browser, forever. The engine initializes automatically --
-  // there is nothing left to remember here, and a stale entry is only ever
-  // read by code that no longer exists.
-  try {
-    localStorage.removeItem("librepaper-latex");
-  } catch {
-    // Storage can be unavailable (private browsing, a locked-down profile);
-    // there is nothing to migrate away from in that case either.
-  }
-
   // The key a reader arrived with, taken out of the fragment before anything
   // asks the server a question. A fragment never leaves the browser, so this
   // is the one part of the URL a link key can safely travel in; from here it
@@ -1049,10 +1038,8 @@
   // are compared to this by identity. A deep proxy would never be equal to it.
   let session = $state.raw(null);
   let editing = $state(false);
-  // Which text the editor is bound to. It changes once on a document migrated
-  // from before there were directories: the words arrive in the retired text
-  // and the session then holds them in a file. Keying the component on this is
-  // what binds it to the file rather than to what the file used to be.
+  // Which text the editor is bound to. Keying the component on this binds it
+  // to the current main file when another file becomes main.
   let sourceEpoch = $state(0);
   let mayEdit = $state(false);
   let sourceFormat = $state("");

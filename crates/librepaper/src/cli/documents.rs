@@ -452,13 +452,6 @@ pub(crate) fn format_role_row(role: &str, link: &Value, server: &str) -> String 
     if link.is_null() {
         return format!("  {role:<8} off");
     }
-    let key = text(link, "key");
-    if key.is_empty() {
-        // A link written before the key was kept: the document still knows
-        // it existed, but cannot show it, so the only way forward is a new
-        // one.
-        return format!("  {role:<8} legacy link, reset to get a new one");
-    }
     let url = text(link, "url");
     let expired = link.get("expired") == Some(&Value::Bool(true));
     let mut until = text(link, "until");
@@ -487,7 +480,7 @@ pub(crate) fn format_role_row(role: &str, link: &Value, server: &str) -> String 
 /// The full listing `librepaper share` with no flags prints, one line per
 /// entry: the slug, the owner's own link, then one row per role in the fixed
 /// order a reader, a commenter, and an editor matter to somebody deciding what
-/// to change, then whatever legacy people are still named on the document.
+/// to change.
 /// Built as a plain `Vec<String>` rather than printed straight away, so the
 /// order and the content of the report can be checked without capturing
 /// stdout.
@@ -503,21 +496,6 @@ pub(crate) fn sharing_report_lines(payload: &Value, server: &str, slug: &str) ->
     for role in ["reader", "commenter", "editor"] {
         let link = links.get(role).unwrap_or(&empty);
         lines.push(format_role_row(role, link, server));
-    }
-    if let Some(legacy) = payload.get("legacy") {
-        lines.push("  people (legacy)".to_string());
-        for (field, role) in [("editors", "editor"), ("commenters", "commenter")] {
-            for grant in legacy
-                .get(field)
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-            {
-                let mut since = text(&grant, "since");
-                since.truncate(10);
-                lines.push(format!("    {role:<9} @{}  {since}", text(&grant, "login")));
-            }
-        }
     }
     lines
 }

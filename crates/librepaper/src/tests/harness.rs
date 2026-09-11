@@ -903,14 +903,7 @@ pub async fn test_server_checking(
     serve_instance(Arc::new(instance), dir).await
 }
 
-/// The words one checkpoint holds, whichever shape it is in.
-///
-/// A checkpoint is a tree: an object naming every path and the digest of what
-/// was at it, with each text beside it under `history/<slug>/blobs/<digest>`.
-/// A checkpoint written before a document was a directory is the text itself,
-/// and reads back that way here -- which is the same allowance the timeline
-/// makes, so a test that asks "what did this checkpoint say" gets an answer
-/// across the change rather than one shape of it.
+/// The words held by the main file in a current-format checkpoint tree.
 pub async fn checkpoint_text(
     blobs: &dyn crate::storage::blob::BlobStore,
     storage_id: &str,
@@ -920,23 +913,11 @@ pub async fn checkpoint_text(
         .get(&crate::storage::blob::checkpoint_key(storage_id, sha))
         .await
         .expect("the checkpoint object");
-    let Ok(tree) = serde_json::from_slice::<crate::document::history::Tree>(&raw) else {
-        return String::from_utf8_lossy(&raw).to_string();
-    };
+    let tree = serde_json::from_slice::<crate::document::history::Tree>(&raw)
+        .expect("the checkpoint tree");
     let entry = tree.files.get(&tree.main).expect("the main file");
-    // New checkpoints store each text through a recipe and compressed source
-    // objects. Keep the legacy fallback for trees written before native source
-    // encoding existed, but read current content through the verified reader
-    // rather than assuming a whole-file `blobs/<digest>` object.
-    let body = if entry.sha.len() == 64 && hex::decode(&entry.sha).is_ok() {
-        crate::storage::encoding::read_file(blobs, storage_id, &entry.sha)
-            .await
-            .expect("the text the tree names")
-    } else {
-        blobs
-            .get(&crate::storage::blob::blob_key(storage_id, &entry.sha))
-            .await
-            .expect("the text the tree names")
-    };
+    let body = crate::storage::encoding::read_file(blobs, storage_id, &entry.sha)
+        .await
+        .expect("the text the tree names");
     String::from_utf8_lossy(&body).to_string()
 }

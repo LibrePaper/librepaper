@@ -6,11 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::storage::blob::{
-    clear_storage, document_key, document_prefix, legacy_source_key, room_key, room_lock_key,
-    source_key, take_room_lease, version_of, BlobError, BlobStore, FsStore, RoomLock, INDEX_KEY,
+    clear_storage, document_key, document_prefix, room_key, room_lock_key, source_key,
+    take_room_lease, version_of, BlobError, BlobStore, FsStore, RoomLock, INDEX_KEY,
     LEASE_GUARD_SECONDS, LOCK_STALE_SECONDS,
 };
-use crate::storage::migrate_legacy_source;
 use crate::util::{format_unix, now_unix};
 
 #[tokio::test]
@@ -243,33 +242,6 @@ async fn clearing_leaves_what_is_not_ours() {
         b"theirs",
         "clearing removed something that was not ours"
     );
-}
-
-// The source used to sit inside the document's directory and now has a key of
-// its own. A store written by the old layout keeps working, and is moved once.
-#[tokio::test]
-async fn legacy_source_is_migrated() {
-    let dir = tempfile::tempdir().unwrap();
-    let blobs = FsStore::new(dir.path(), true);
-    blobs
-        .put("documents/a-paper/source.txt", b"# was here".to_vec(), "")
-        .await
-        .unwrap();
-
-    assert_eq!(migrate_legacy_source(&blobs).await, 1);
-    assert_eq!(
-        blobs.get(&legacy_source_key("a-paper")).await.unwrap(),
-        b"# was here"
-    );
-    assert!(
-        matches!(
-            blobs.get("documents/a-paper/source.txt").await,
-            Err(BlobError::NotFound)
-        ),
-        "copied but not moved"
-    );
-    // And running again does nothing, which is what makes it safe at startup.
-    assert_eq!(migrate_legacy_source(&blobs).await, 0);
 }
 
 // A key that escaped the directory would be a serious thing to get wrong.

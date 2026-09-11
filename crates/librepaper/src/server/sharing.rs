@@ -1,5 +1,5 @@
-//! Who else may see a document: grants to accounts, links that carry a role,
-//! and handing the whole document to somebody else.
+//! Who else may see a document: links that carry a role, and handing the whole
+//! document to somebody else.
 
 use super::*;
 
@@ -22,8 +22,7 @@ pub(super) const MAX_LINK_LABEL: usize = 80;
 /// rotation asked for the long way.
 #[derive(Deserialize, Default)]
 pub(super) struct ShareRequest {
-    /// A role word (`read`/`reader`, `comment`/`commenter`, `edit`/`editor`),
-    /// or, for a legacy row, a login or the first characters of a link's id.
+    /// A role word (`read`/`reader`, `comment`/`commenter`, `edit`/`editor`).
     #[serde(default)]
     pub(super) revoke: Option<String>,
     #[serde(default)]
@@ -81,9 +80,6 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
     Ok(crate::util::format_unix(crate::util::now_unix() + seconds))
 }
 
-/// Removes one grant, by the login it names or by the first characters of a
-/// link's id. Returns whether anything went, so a revoke that matched nothing
-/// says so rather than reporting success.
 /// Which provider a stored id belongs to, read off its prefix; a bare id from
 /// before providers existed is GitHub's, as `stored_id` says.
 pub(super) fn provider_of(id: &str) -> String {
@@ -112,25 +108,6 @@ pub(super) fn no_such_account(asked: &str) -> String {
         "github has no account called @{}",
         clean(asked.trim().trim_start_matches('@'), 64)
     )
-}
-
-pub(super) fn revoke_from(entry: &mut IndexEntry, asked: &str) -> bool {
-    let login = asked.trim_start_matches('@').to_lowercase();
-    let before = entry.editors.len() + entry.commenters.len() + entry.links.len();
-    entry
-        .editors
-        .retain(|grant| !grant.login.eq_ignore_ascii_case(&login));
-    entry
-        .commenters
-        .retain(|grant| !grant.login.eq_ignore_ascii_case(&login));
-    // A prefix, so the id `list` prints is enough; but not a single character,
-    // which would revoke more than whoever typed it meant.
-    if asked.len() >= 4 {
-        entry
-            .links
-            .retain(|link| !link.hash.starts_with(&asked.to_lowercase()));
-    }
-    before != entry.editors.len() + entry.commenters.len() + entry.links.len()
 }
 
 /// The digest a link key is known by. Empty in, empty out: no link at all is
@@ -304,13 +281,8 @@ impl Server {
             .modify_as_owner(slug, &mutation_actor, |entry| {
                 let asked_revoke = revoke.trim();
                 if !asked_revoke.is_empty() {
-                    // A role word revokes that role's link; anything else is a
-                    // legacy row, named by login or by the first characters of
-                    // a link's id.
-                    let went = match parse_role_word(asked_revoke) {
-                        Some(role) => entry.drop_link(role),
-                        None => revoke_from(entry, asked_revoke),
-                    };
+                    let went =
+                        parse_role_word(asked_revoke).is_some_and(|role| entry.drop_link(role));
                     if !went {
                         return Err(format!("nothing shared with {asked_revoke:?} to revoke"));
                     }
@@ -367,25 +339,11 @@ impl Server {
     }
 
     /// Everything the share dialog draws: the owner's own link, the three
-    /// role links, the legacy people still named on it, and what this
+    /// role links, and what this
     /// deployment's switches will let the owner offer. Only the owner ever
     /// asks for this now, so nothing here is held back from the caller.
     pub(super) fn sharing_json(&self, entry: &IndexEntry) -> Value {
         let now = crate::util::now_unix();
-        let people = |grants: &Vec<Grant>| -> Vec<Value> {
-            grants
-                .iter()
-                .map(|grant| {
-                    json!({
-                        "login": grant.login,
-                        "name": grant.shown(),
-                        "provider": provider_of(&grant.id),
-                        "id": grant.id,
-                        "since": grant.since,
-                    })
-                })
-                .collect()
-        };
         // One row per role, or null where the document has never had one.
         // `url` is built exactly the way `handle_publish` builds a document's
         // own `url`: a path on this same origin, since that is what a dialog
@@ -409,7 +367,7 @@ impl Server {
                 "expired": !link.live_at(now),
             })
         };
-        let mut answer = json!({
+        json!({
             "slug": entry.slug,
             // The owner's own way in: the bare URL, which opens for the owner
             // by their sign-in and for nobody else. It is a link in the
@@ -449,18 +407,7 @@ impl Server {
             // anonymous caller.
             "edit_needs_signin": !self.publishers.public,
             "comment_needs_signin": !self.commenters.public,
-        });
-        // The people named before links existed: still honoured, still
-        // revocable by login, but never grown, so this is left out entirely
-        // once the last of them is gone rather than shown as two empty lists
-        // forever.
-        if !entry.editors.is_empty() || !entry.commenters.is_empty() {
-            answer["legacy"] = json!({
-                "editors": people(&entry.editors),
-                "commenters": people(&entry.commenters),
-            });
-        }
-        answer
+        })
     }
 
     /// Hands a document to another account: its history, its comments and its
@@ -652,14 +599,6 @@ impl Server {
                     entry.publisher = account.handle.clone();
                     entry.publisher_id = account.id.clone();
                     entry.publisher_name = account.name.clone();
-                    // The new owner holds everything by owning it, so a grant
-                    // to them is a row that no longer says anything.
-                    entry
-                        .editors
-                        .retain(|grant| stored_id(&grant.id) != account.id);
-                    entry
-                        .commenters
-                        .retain(|grant| stored_id(&grant.id) != account.id);
                     Ok(())
                 })
                 .await

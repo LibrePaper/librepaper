@@ -949,49 +949,18 @@ async fn a_google_owner_is_shown_by_name_and_never_by_email() {
     let slug = text(&payload, "slug");
     let share = format!("/api/documents/{slug}/share");
 
-    // A legacy grant, the only way a document names anybody by hand any more
-    // -- the share route no longer makes one, but it still honours one
-    // already on record and still lets the owner revoke it by login.
-    server
-        .instance
-        .store
-        .modify(&slug, |entry| {
-            entry.editors.push(crate::document::store::Grant {
-                id: "github:vincent".into(),
-                login: "vincent".into(),
-                since: crate::util::timestamp(),
-                name: "vincent".into(),
-            });
-            Ok(())
-        })
-        .await
-        .expect("the grant is recorded");
-
-    // The share route is the owner's alone now: a named editor -- even one
-    // who may still write the document through the socket -- learns nothing
-    // from it, not the owner's email or anything else.
+    // The share route is the owner's alone; another signed-in account learns
+    // nothing from it, including the owner's email.
     let (status, payload) = get_json_as(&session_as("vincent"), &server.url, &share).await;
     assert_eq!(status, 404, "an editor saw the sharing: {payload}");
 
     // The owner sees their own login, which for a Google account is the
-    // email address they signed in with, and the legacy editor's name and
-    // provider.
+    // email address they signed in with.
     let (status, payload) = get_json_as(&anne, &server.url, &share).await;
     assert_eq!(status, 200, "{payload}");
     assert_eq!(text(&payload["owner"], "login"), "anne@umontreal.ca");
     assert_eq!(text(&payload["owner"], "name"), "Anne Grandchamp");
     assert_eq!(text(&payload["owner"], "provider"), "google");
-    assert_eq!(text(&payload["legacy"]["editors"][0], "login"), "vincent");
-    assert_eq!(text(&payload["legacy"]["editors"][0], "name"), "vincent");
-    assert_eq!(text(&payload["legacy"]["editors"][0], "provider"), "github");
-
-    let (status, payload) = post_as(&anne, &server.url, &share, json!({"revoke": "vincent"})).await;
-    assert_eq!(status, 200, "{payload}");
-    assert!(
-        payload.get("legacy").is_none(),
-        "a fully revoked legacy grant should leave no trace: {payload}"
-    );
-
     // An entry from before names were recorded shows its login, which is a
     // GitHub login and so is its name.
     let entry = server

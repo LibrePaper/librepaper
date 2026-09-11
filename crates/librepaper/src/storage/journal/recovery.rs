@@ -90,9 +90,7 @@ const RECOVERY_BASE_CODEC_VERSION: u16 = 1;
 /// journal record. Keep its aggregate bounded independently of record framing.
 pub const MAX_RECOVERY_BASE_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
-/// Encode recovery bases as bounded binary objects. Older deployments wrote
-/// JSON with `Vec<u8>`'s array representation, so decoding deliberately keeps
-/// that representation as a compatibility path.
+/// Encode recovery bases as bounded binary objects.
 pub(super) fn encode_recovery_base(body: &RecoveryBaseBody) -> JournalResult<Vec<u8>> {
     validate_recovery_base(body)?;
     let mut encoded = Vec::with_capacity(64 + body.storage_id.len() + body.payload.len());
@@ -116,49 +114,44 @@ pub(super) fn encode_recovery_base(body: &RecoveryBaseBody) -> JournalResult<Vec
 }
 
 pub(super) fn decode_recovery_base(bytes: &[u8]) -> JournalResult<RecoveryBaseBody> {
-    let body = if bytes.starts_with(RECOVERY_BASE_MAGIC) {
-        let mut cursor = Cursor::new(bytes);
-        if cursor.take(4)? != RECOVERY_BASE_MAGIC {
-            return Err(JournalError::Corrupt("bad recovery base magic".into()));
-        }
-        if cursor.u16()? != RECOVERY_BASE_CODEC_VERSION {
-            return Err(JournalError::Corrupt(
-                "unsupported recovery base version".into(),
-            ));
-        }
-        let format_version = cursor.u16()?;
-        let storage_id = String::from_utf8(cursor.bytes_u16()?)
-            .map_err(|_| JournalError::Corrupt("recovery base storage id is not utf-8".into()))?;
-        let epoch = cursor.u64()?;
-        let sequence = cursor.u64()?;
-        let payload_len = cursor.u32()? as usize;
-        if payload_len > MAX_RECOVERY_BASE_PAYLOAD_BYTES {
-            return Err(JournalError::Limit("recovery base is too large".into()));
-        }
-        let digest = String::from_utf8(cursor.bytes_u16()?)
-            .map_err(|_| JournalError::Corrupt("recovery base digest is not utf-8".into()))?;
-        let payload = cursor.take(payload_len)?.to_vec();
-        if !cursor.is_empty() {
-            return Err(JournalError::Corrupt("trailing recovery base bytes".into()));
-        }
-        RecoveryBaseBody {
-            format_version,
-            storage_id,
-            epoch,
-            sequence,
-            payload,
-            digest,
-        }
-    } else {
-        serde_json::from_slice(bytes)
-            .map_err(|error| JournalError::Corrupt(format!("invalid recovery base: {error}")))?
+    let mut cursor = Cursor::new(bytes);
+    if cursor.take(4)? != RECOVERY_BASE_MAGIC {
+        return Err(JournalError::Corrupt("bad recovery base magic".into()));
+    }
+    if cursor.u16()? != RECOVERY_BASE_CODEC_VERSION {
+        return Err(JournalError::Corrupt(
+            "unsupported recovery base version".into(),
+        ));
+    }
+    let format_version = cursor.u16()?;
+    let storage_id = String::from_utf8(cursor.bytes_u16()?)
+        .map_err(|_| JournalError::Corrupt("recovery base storage id is not utf-8".into()))?;
+    let epoch = cursor.u64()?;
+    let sequence = cursor.u64()?;
+    let payload_len = cursor.u32()? as usize;
+    if payload_len > MAX_RECOVERY_BASE_PAYLOAD_BYTES {
+        return Err(JournalError::Limit("recovery base is too large".into()));
+    }
+    let digest = String::from_utf8(cursor.bytes_u16()?)
+        .map_err(|_| JournalError::Corrupt("recovery base digest is not utf-8".into()))?;
+    let payload = cursor.take(payload_len)?.to_vec();
+    if !cursor.is_empty() {
+        return Err(JournalError::Corrupt("trailing recovery base bytes".into()));
+    }
+    let body = RecoveryBaseBody {
+        format_version,
+        storage_id,
+        epoch,
+        sequence,
+        payload,
+        digest,
     };
     validate_recovery_base(&body)?;
     Ok(body)
 }
 
 fn validate_recovery_base(body: &RecoveryBaseBody) -> JournalResult<()> {
-    if !matches!(body.format_version, LEGACY_SEGMENT_FORMAT | SEGMENT_FORMAT)
+    if body.format_version != SEGMENT_FORMAT
         || body.storage_id.is_empty()
         || body.sequence == 0
         || body.payload.is_empty()

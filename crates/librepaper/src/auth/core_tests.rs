@@ -27,7 +27,7 @@ fn credentials_cannot_cross_purposes() {
 }
 
 #[test]
-fn pictures_travel_in_v2_credentials_and_v1_credentials_still_read() {
+fn pictures_travel_in_current_credentials() {
     let key = [3; 32];
     let expiry = now_unix() + 3600;
     let mut who = Identity::google(
@@ -72,26 +72,8 @@ fn pictures_travel_in_v2_credentials_and_v1_credentials_still_read() {
         );
     }
 
-    // A v1 cookie from before pictures existed is the same identity without
-    // one; its five fields are read as five, so a bar in the name survives.
-    let v1_payload = base64url(
-        format!("google|alice@example.org|google:42|generation|Alice | Example|{expiry}")
-            .as_bytes(),
-    );
-    let v1 = format!("v1.{v1_payload}.{}", sign(&key, "session-v1", &v1_payload));
-    let read = read_session(&key, &v1);
-    assert_eq!(read.name, "Alice | Example");
-    assert_eq!(read.handle, "alice@example.org");
-    assert!(read.picture.is_empty());
-    assert!(read.picture_url().is_empty());
-
-    // Relabelling a v1 payload as v2, or the reverse, fails the signature
-    // rather than shifting the fields.
-    assert!(!read_session(
-        &key,
-        &format!("v2.{v1_payload}.{}", sign(&key, "session-v1", &v1_payload))
-    )
-    .is_signed_in());
+    // Relabelling the current payload with a retired version fails rather
+    // than selecting another parser.
     let v2_payload = session
         .strip_prefix("v2.")
         .unwrap()
@@ -103,35 +85,6 @@ fn pictures_travel_in_v2_credentials_and_v1_credentials_still_read() {
         &format!("v1.{v2_payload}.{}", sign(&key, "session-v2", v2_payload))
     )
     .is_signed_in());
-}
-
-fn legacy_signature(key: &[u8], payload: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(key).unwrap();
-    mac.update(payload.as_bytes());
-    base64url(&mac.finalize().into_bytes())
-}
-
-#[test]
-fn legacy_visitors_keep_ownership_but_other_legacy_credentials_do_not_migrate() {
-    let key = [9; 32];
-    let token = "0123456789abcdef0123456789abcdef";
-    let legacy = format!("{token}.{}", legacy_signature(&key, token));
-    assert_eq!(read_visitor(&key, &legacy), token);
-    assert_eq!(
-        read_visitor(&key, &sign_visitor(&key, &read_visitor(&key, &legacy))),
-        token
-    );
-    let payload = base64url(
-        format!(
-            "github|alice|github:42|generation|Alice|{}",
-            now_unix() + 3600
-        )
-        .as_bytes(),
-    );
-    let old_session = format!("{payload}.{}", legacy_signature(&key, &payload));
-    assert!(read_visitor(&key, &old_session).is_empty());
-    assert!(!read_session(&key, &old_session).is_signed_in());
-    assert!(!read_device(&key, &format!("{DEVICE_TOKEN_PREFIX}{old_session}")).is_signed_in());
 }
 
 #[test]
@@ -200,6 +153,7 @@ fn keyring_rotation_roundtrips_and_preserves_old_keys() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("links.key");
     let old = link_sealing_key_file(&path, false).unwrap();
+    assert!(link_sealing_keyring_file(&path, true).is_err());
     let keys = vec![vec![8; 32], old];
     write_link_sealing_keyring(&path, &keys).unwrap();
     assert_eq!(link_sealing_keyring_file(&path, true).unwrap(), keys);

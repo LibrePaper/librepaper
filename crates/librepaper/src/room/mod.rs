@@ -243,12 +243,6 @@ pub struct Session {
     /// paths moved without reading it back. Empty on a cold room, and filled
     /// from storage by the first checkpoint that needs it.
     pub last_tree: Option<crate::document::history::Tree>,
-    /// The text digests this server has already written under
-    /// `history/<slug>/blobs/`. A chapter untouched between twenty
-    /// checkpoints is written once, and a room that was evicted and brought
-    /// back writes each of its texts once more -- the same bytes to the same
-    /// key, which costs a write and changes nothing.
-    pub blobs_written: std::collections::HashSet<String>,
     /// Every asset this document holds, by digest, and what it costs. Read
     /// once when the room is loaded and added to by each upload, because a
     /// checkpoint has to record what a figure weighs and the shared document
@@ -999,7 +993,6 @@ impl RoomSet {
                     last_checkpoint: String::new(),
                     format: String::new(),
                     last_tree: None,
-                    blobs_written: std::collections::HashSet::new(),
                     asset_sizes: HashMap::new(),
                     asset_written_at: HashMap::new(),
                     rendering_sizes: HashMap::new(),
@@ -1610,11 +1603,6 @@ impl Room {
             None => {
                 if let Some((source, format)) = seed {
                     state.session.format = format.clone();
-                    // A seeded document is a directory of one file from the
-                    // start: `replace_text` makes the file, and the migration
-                    // below only ever has work to do for a session that was
-                    // written before there were directories.
-                    session::migrate(&state.session.doc, &main_path_for(&named, &format));
                     session::replace_text(
                         &state.session.doc,
                         &source,
@@ -1626,16 +1614,6 @@ impl Room {
                     state.session.dirty = false;
                 }
             }
-        }
-        // The migration, once per document, the first time this code loads a
-        // session that was written when a document was one text. It is done
-        // here rather than lazily on the first write so that everything after
-        // it -- the ceiling, the repair, the checkpoint -- sees a directory
-        // and never has to ask which shape it is looking at.
-        let format = state.session.format.clone();
-        if session::migrate(&state.session.doc, &main_path_for(&named, &format)) {
-            state.session.mark_dirty(now_unix());
-            state.session.generation += 1;
         }
         // A journal-backed room was opened from an already durable snapshot.
         // Treat that load as the beginning of the next flush interval; the

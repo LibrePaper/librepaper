@@ -34,7 +34,7 @@ use crate::config::Configuration;
 use crate::document::history::{Tree, TreeEntry};
 use crate::document::render::{title_from_html, title_from_markdown};
 use crate::document::store::{
-    random_suffix, slugify, Ceiling, Grant, Guest, IndexEntry, LinkGrant, ModifyError, Publication,
+    random_suffix, slugify, Ceiling, Guest, IndexEntry, LinkGrant, ModifyError, Publication,
     PutError, Role, Store,
 };
 use crate::room::{
@@ -833,7 +833,6 @@ impl Server {
             .filter(|entry| {
                 (entry.example && self.listing)
                     || entry.owned_by(&who.key, &who.id)
-                    || entry.named_role(&who.id).is_some()
                     || entry.guests.iter().any(|guest| guest.id == who.id)
             })
             .collect()

@@ -55,12 +55,6 @@ use yrs::{
 
 use crate::document::paths::{self, Rules};
 
-/// The name of the text every document held before it held a directory. It is
-/// read in two places and written in none: the migration, which moves it into
-/// the directory, and the repair, which folds in whatever a browser still
-/// running the old bundle wrote to it during a deploy.
-pub const SOURCE: &str = "source";
-
 pub const FILES: &str = "files";
 pub const PATHS: &str = "paths";
 pub const ASSETS: &str = "assets";
@@ -76,11 +70,7 @@ pub fn new_doc() -> Doc {
         ..Options::default()
     });
     // Named up front: a type that has never been asked for cannot receive an
-    // update into it. `source` is named for the same reason, so that an update
-    // from a browser still running the old bundle applies rather than being
-    // refused -- the repair below is what then puts what it wrote where the
-    // rest of the document can see it.
-    doc.get_or_insert_text(SOURCE);
+    // update into it.
     doc.get_or_insert_map(FILES);
     doc.get_or_insert_map(PATHS);
     doc.get_or_insert_map(ASSETS);
@@ -263,56 +253,18 @@ pub fn paths_of(doc: &Doc) -> HashMap<String, String> {
 /// meant by "the source", and what the command line reads.
 pub fn text_of(doc: &Doc) -> String {
     let (files, _, _, meta) = maps(doc);
-    // Named before the transaction, for the reason `measure` gives.
-    let source = doc.get_or_insert_text(SOURCE);
     let txn = doc.transact();
     let Some(id) = string_at(&meta, &txn, MAIN) else {
-        // No directory yet: the document is whatever the retired text holds,
-        // which is how a session reads between being loaded and being
-        // migrated.
-        return source.get_string(&txn);
+        return String::new();
     };
     text_at(&files, &txn, &id)
         .map(|text| text.get_string(&txn))
         .unwrap_or_default()
 }
 
-/// Moves a document that is one text into a directory of one file. Idempotent,
-/// and the whole of the migration: a session with a `files` map already is
-/// left exactly as it is, so running it twice costs one read.
-///
-/// Returns whether anything moved, which is what says the state has to be
-/// written back.
-pub fn migrate(doc: &Doc, main_path: &str) -> bool {
-    let (files, path_map, _, meta) = maps(doc);
-    let source = doc.get_or_insert_text(SOURCE);
-    let mut txn = doc.transact_mut();
-    if files.len(&txn) > 0 {
-        return false;
-    }
-    let text = source.get_string(&txn);
-    if text.is_empty() && string_at(&meta, &txn, MAIN).is_none() {
-        // Nothing to move and nothing to name. A document created under the
-        // new code fills the maps itself; an empty old one is migrated by the
-        // first thing written into it.
-        return false;
-    }
-    let id = mint_id();
-    files.insert(&mut txn, id.clone(), TextPrelim::new(text.clone()));
-    path_map.insert(&mut txn, id.clone(), main_path.to_string());
-    meta.insert(&mut txn, MAIN, id);
-    if !text.is_empty() {
-        source.remove_range(&mut txn, 0, text.encode_utf16().count() as u32);
-    }
-    true
-}
-
 /// What the repair did, so the room can say it and the tests can see it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Repair {
-    /// A browser still running the old bundle wrote to `source`; what it wrote
-    /// is now the main file's text.
-    Folded,
     /// A path the rules refuse, renamed to something a person can see.
     Renamed { id: String, to: String },
     /// Two files at one path; the second one seen was moved aside.
@@ -343,7 +295,6 @@ pub enum Repair {
 /// that says what those strings may be.
 pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
     let (files, path_map, assets, meta) = maps(doc);
-    let source = doc.get_or_insert_text(SOURCE);
     let mut done = Vec::new();
     let mut txn = doc.transact_mut();
 
@@ -489,21 +440,6 @@ pub fn repair(doc: &Doc, rules: &Rules) -> Vec<Repair> {
         }
     }
 
-    // The old bundle's text, folded into the main file. Only ever reached
-    // during a deploy, when a tab loaded before it is still writing where it
-    // was taught to. Last, once the main file is settled: a document whose
-    // `meta.main` named nothing has one by now, and the fold must not wait
-    // for the next update to find it. (Found by fuzz/fuzz_targets/document.rs.)
-    let stale = source.get_string(&txn);
-    if !stale.is_empty() {
-        if let Some(id) = string_at(&meta, &txn, MAIN) {
-            if let Some(text) = text_at(&files, &txn, &id) {
-                edit_text(&mut txn, &text, &stale);
-                source.remove_range(&mut txn, 0, stale.encode_utf16().count() as u32);
-                done.push(Repair::Folded);
-            }
-        }
-    }
     done
 }
 
@@ -666,17 +602,11 @@ fn measure(doc: &Doc) -> Measurement {
             bytes += value_bytes(&txn, &value);
         }
     }
-    // The retired text, so that a document being written by a browser on the
-    // old bundle is measured for what it holds rather than for what it will
-    // hold once the repair has folded it in.
-    if let Some(source) = TextRef::root(SOURCE).get(&txn) {
-        bytes += source.get_string(&txn).len();
-    }
     // Any root this schema did not name. `new_doc` names every root it uses
     // up front for exactly this reason -- see its comment -- but an update
     // decoded from a socket is not obliged to have come from this code, and
     // a root nothing here reads is still bytes the store keeps.
-    let known: HashSet<&str> = [SOURCE, FILES, PATHS, ASSETS, META].into_iter().collect();
+    let known: HashSet<&str> = [FILES, PATHS, ASSETS, META].into_iter().collect();
     for (name, value) in txn.root_refs() {
         if known.contains(name) {
             continue;

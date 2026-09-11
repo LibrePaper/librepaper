@@ -30,7 +30,7 @@ WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html 
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find examples -type f) Cargo.toml README.md
 
 .DEFAULT_GOAL := help
-.PHONY: help build install test smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
+.PHONY: help build install test test-external test-release-workloads smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -90,6 +90,20 @@ test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 		&& LIBREPAPER_FSYNC=false cargo nextest run --workspace \
 		|| { echo "cargo-nextest not installed (cargo install cargo-nextest); using cargo test"; \
 		     LIBREPAPER_FSYNC=false cargo test --workspace; }
+
+# Explicit suites kept out of the default inventory because they require
+# host tools or intentionally exercise release-sized resource ceilings.
+test-external:  ## Run Quarto/R/Python and real local-service integration tests
+	@cargo test -p librepaper quarto -- --ignored --nocapture
+	@cargo test -p librepaper quarto_managed_preview_starts_serves_and_stops -- --ignored --nocapture
+
+test-release-workloads:  ## Run supported-limit and diagnostic workloads
+	@cargo test -p librepaper the_supported_maximum_source_survives_a_restart -- --ignored --nocapture
+	@cargo test -p librepaper measure_source_history_profiles -- --ignored --nocapture
+	@cargo test -p librepaper profile_unchanged_resident_metadata -- --ignored --nocapture
+	@cargo test -p librepaper persistence_capacity_workload -- --ignored --nocapture
+	@cargo test -p librepaper persistence_default_limits_refuse_without_discarding_dirty_rooms -- --ignored --nocapture
+	@cargo test -p librepaper mcp_protocol_transfer_benchmark -- --ignored --nocapture
 
 # The rendered reader, in a real browser. Not part of `test`: it needs the
 # built binary and a chromium, and it starts a server of its own on a

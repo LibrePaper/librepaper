@@ -961,12 +961,6 @@ pub fn source_key(slug: &str, digest: &str) -> String {
 pub fn source_prefix(slug: &str) -> String {
     format!("content/{slug}/blobs/")
 }
-/// Where a source lived before it was versioned: one key for the document,
-/// whatever version it was at. Read for documents published then, never
-/// written.
-pub fn legacy_source_key(slug: &str) -> String {
-    format!("sources/{slug}")
-}
 pub fn room_key(slug: &str) -> String {
     format!("rooms/{slug}.json")
 }
@@ -998,12 +992,6 @@ pub fn checkpoint_key(slug: &str, sha: &str) -> String {
 /// twenty checkpoints is stored once.
 pub fn blob_key(slug: &str, sha: &str) -> String {
     content_blob_key(slug, sha)
-}
-/// Every text blob a document has ever written, regardless of which
-/// checkpoint still names it -- what a sweep that reclaims obsolete ones
-/// lists before deciding which are unreferenced (R21).
-pub fn blob_prefix(slug: &str) -> String {
-    format!("content/{slug}/blobs/")
 }
 /// One figure, by the digest of its bytes, under the document that holds it.
 ///

@@ -219,10 +219,6 @@ impl CheckpointCache {
     /// Reads a checkpoint's tree and all its text bodies. Authorization and
     /// manifest membership remain the caller's responsibility.
     ///
-    /// For a legacy checkpoint, the checkpoint object is the source itself;
-    /// its one-file tree is reconstructed from the supplied current path/id on
-    /// every call. This keeps mutable legacy metadata out of the cache and
-    /// avoids the old implementation's duplicate read of that object.
     pub async fn load_checkpoint(
         &self,
         blobs: &dyn BlobStore,
@@ -235,10 +231,8 @@ impl CheckpointCache {
             .await
     }
 
-    /// As [`load_checkpoint`], but require the native recipe path for text
-    /// digests known to have a committed source-history graph. This prevents
-    /// a missing native recipe from silently falling back to an old legacy
-    /// blob with the same digest.
+    /// As [`load_checkpoint`], with the committed source-history digests
+    /// supplied by the caller's catalogue lease.
     pub async fn load_checkpoint_with_native_digests(
         &self,
         blobs: &dyn BlobStore,
@@ -288,14 +282,9 @@ impl CheckpointCache {
         let reads = digests.into_iter().map(|sha| async move {
             let raw = if sha.len() == 64 && hex::decode(&sha).is_ok() {
                 let cache_key = format!("source:{slug}:{sha}");
-                let native = native_digests.contains(&sha);
-                let cache_key = format!("{cache_key}:{}", if native { "native" } else { "legacy" });
+                let _ = native_digests;
                 self.get_loaded(&cache_key, || async {
-                    let read = if native {
-                        crate::storage::encoding::read_file_native(blobs, slug, &sha).await
-                    } else {
-                        crate::storage::encoding::read_file(blobs, slug, &sha).await
-                    };
+                    let read = crate::storage::encoding::read_file(blobs, slug, &sha).await;
                     read.map_err(|error| BlobError::Other(error.to_string()))
                 })
                 .await
@@ -591,39 +580,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_load_reads_the_checkpoint_once() {
-        let dir = tempdir().unwrap();
-        let store = CountingStore {
-            inner: FsStore::new(dir.path(), true),
-            gets: AtomicUsize::new(0),
-            fail: AtomicBool::new(false),
-            gate: None,
-        };
-        let sha = "a".repeat(64);
-        store
-            .put(
-                &checkpoint_key("doc", &sha),
-                b"legacy".to_vec(),
-                "text/plain",
-            )
-            .await
-            .unwrap();
-        let point = Checkpoint {
-            sha: sha.clone(),
-            tree: false,
-            ..Checkpoint::default()
-        };
-        let cache = CheckpointCache::new(1024, 8, 2);
-        let (tree, bodies) = cache
-            .load_checkpoint(&store, "doc", &point, "main.md", "id")
-            .await
-            .unwrap();
-        assert_eq!(tree.main, "main.md");
-        assert_eq!(bodies.get(&sha).unwrap(), "legacy");
-        assert_eq!(store.gets.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
     async fn cancellation_releases_waiters_and_allows_retry() {
         let dir = tempdir().unwrap();
         let gate = Arc::new(Gate {
@@ -723,14 +679,28 @@ mod tests {
         };
         for (path, body) in [("a.md", "shared"), ("b.md", "shared"), ("c.md", "other")] {
             let sha = crate::document::store::digest_of(body);
+            let encoded = crate::storage::encoding::encode_source(body.as_bytes()).unwrap();
             store
                 .put(
-                    &blob_key("doc", &sha),
-                    body.as_bytes().to_vec(),
-                    "text/plain",
+                    &crate::storage::blob::content_recipe_key("doc", &sha),
+                    encoded.recipe_bytes,
+                    "application/octet-stream",
                 )
                 .await
                 .unwrap();
+            for object in encoded.objects {
+                store
+                    .put(
+                        &crate::storage::blob::content_chunk_key(
+                            "doc",
+                            &hex::encode(object.digest),
+                        ),
+                        object.encoded,
+                        "application/octet-stream",
+                    )
+                    .await
+                    .unwrap();
+            }
             tree.files.insert(
                 path.into(),
                 crate::document::history::TreeEntry {
@@ -764,7 +734,7 @@ mod tests {
         assert_eq!(
             store.gets.load(Ordering::Relaxed),
             5,
-            "one tree plus a recipe probe and legacy body for each distinct text"
+            "one tree plus a recipe and body for each distinct text"
         );
         let second = cache
             .load_checkpoint(&store, "doc", &point, "", "")

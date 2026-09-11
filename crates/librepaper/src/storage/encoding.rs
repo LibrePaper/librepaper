@@ -518,34 +518,12 @@ where
     Ok(output)
 }
 
-/// Read the new recipe/chunk representation, retaining compatibility with a
-/// legacy whole-file object at `blobs/<file-digest>`. The recipe is read first;
-/// a corrupt or incomplete new representation is an error and is never
-/// silently substituted with an unrelated legacy object.
+/// Read the recipe/chunk representation. Missing or corrupt recipes and chunks
+/// are errors and are never substituted with unrelated bytes.
 pub async fn read_file(
     blobs: &dyn crate::storage::blob::BlobStore,
     storage_id: &str,
     file_digest: &str,
-) -> Result<Vec<u8>, EncodingError> {
-    read_file_with_legacy_fallback(blobs, storage_id, file_digest, true).await
-}
-
-/// Read a file whose catalogue graph has committed a native recipe. A
-/// missing recipe is corruption in that case, not permission to substitute a
-/// legacy object that happens to have the same digest.
-pub async fn read_file_native(
-    blobs: &dyn crate::storage::blob::BlobStore,
-    storage_id: &str,
-    file_digest: &str,
-) -> Result<Vec<u8>, EncodingError> {
-    read_file_with_legacy_fallback(blobs, storage_id, file_digest, false).await
-}
-
-async fn read_file_with_legacy_fallback(
-    blobs: &dyn crate::storage::blob::BlobStore,
-    storage_id: &str,
-    file_digest: &str,
-    allow_legacy_fallback: bool,
 ) -> Result<Vec<u8>, EncodingError> {
     // Admit before object I/O, not after materializing every chunk. Otherwise
     // queued readers retain unbounded compressed inputs while awaiting CPU.
@@ -556,31 +534,10 @@ async fn read_file_with_legacy_fallback(
         .map_err(|_| EncodingError::Worker("reconstruction pool is closed".into()))?;
     let expected = decode_digest(file_digest)?;
     let recipe_key = crate::storage::blob::content_recipe_key(storage_id, file_digest);
-    let recipe_bytes = match blobs.get(&recipe_key).await {
-        Ok(bytes) => bytes,
-        Err(crate::storage::blob::BlobError::NotFound) => {
-            if !allow_legacy_fallback {
-                return Err(EncodingError::Integrity(
-                    "committed native source recipe is missing".into(),
-                ));
-            }
-            let legacy = blobs
-                .get(&crate::storage::blob::content_blob_key(
-                    storage_id,
-                    file_digest,
-                ))
-                .await
-                .map_err(|error| EncodingError::Integrity(error.to_string()))?;
-            return tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                verify_complete_bytes(&legacy, expected)?;
-                Ok(legacy)
-            })
-            .await
-            .map_err(|error| EncodingError::Worker(error.to_string()))?;
-        }
-        Err(error) => return Err(EncodingError::Integrity(error.to_string())),
-    };
+    let recipe_bytes = blobs
+        .get(&recipe_key)
+        .await
+        .map_err(|error| EncodingError::Integrity(error.to_string()))?;
     let recipe = Recipe::from_bytes(&recipe_bytes)?;
     if recipe.file_digest != expected {
         return Err(EncodingError::Integrity(
@@ -622,21 +579,6 @@ async fn read_file_with_legacy_fallback(
     })
     .await
     .map_err(|error| EncodingError::Worker(error.to_string()))?
-}
-
-fn verify_complete_bytes(bytes: &[u8], expected: [u8; 32]) -> Result<(), EncodingError> {
-    if bytes.len() as u64 > MAX_SOURCE_BYTES {
-        return Err(EncodingError::Integrity(
-            "source exceeds decode limit".into(),
-        ));
-    }
-    let actual: [u8; 32] = Sha256::digest(bytes).into();
-    if actual != expected {
-        return Err(EncodingError::Integrity(
-            "legacy source digest does not match its key".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn decode_digest(value: &str) -> Result<[u8; 32], EncodingError> {
