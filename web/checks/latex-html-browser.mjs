@@ -86,6 +86,7 @@ See equation~\eqref{eq:test}.
   }
   const first = await render(source);
   assert.equal(first.ok, true, first.log);
+  assert.doesNotMatch(first.log || "", /no precompiled kernel dump found/, "the release must embed its kernel snapshots");
   assert.match(first.html, /First\s*(?:<[^>]+>\s*)*live paragraph/);
   assert.match(first.html, /Included chapter content/);
   assert.match(first.html, /<math\b/);
